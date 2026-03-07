@@ -4,7 +4,6 @@ import java.io.*;
 import java.nio.file.Files;
 import java.util.*;
 
-import edu.uva.liftlab.graphchecker.isolation.stateredirection.ClassFilterHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.*;
@@ -18,8 +17,6 @@ import soot.util.Chain;
 import soot.util.JasminOutputStream;
 import soot.validation.ValidationException;
 
-import static edu.uva.liftlab.graphchecker.distributedtracing.CallablePropagator.NEED_DRY_RUN_TRACE;
-import static edu.uva.liftlab.graphchecker.util.Constants.ENTRY_RECOVERY_POINT;
 import static edu.uva.liftlab.graphchecker.util.Constants.*;
 
 
@@ -28,8 +25,6 @@ import static edu.uva.liftlab.graphchecker.util.Constants.*;
  */
 public class SootUtils {
     public static boolean verbose = false;
-
-    public static Set<SootMethod> shouldInstrumentedMethods = new HashSet<>();
 
     private static final Logger LOG = LoggerFactory.getLogger(SootUtils.class);
 
@@ -91,6 +86,7 @@ public class SootUtils {
         put(PropertyType.CTX_TREE_BLACK_LIST, CTX_TREE_BLACK_LIST);
         put(PropertyType.SIMPLE_INSTRUMENTATION, SIMPLE_INSTRUMENTATION);
         put(PropertyType.TRACK_INIT_CLASSES, TRACK_INIT_CLASSES);
+        put(PropertyType.CONTEXT_PROPAGATION_ENABLED, CONTEXT_PROPAGATION_ENABLED);
     }};
 
 
@@ -163,10 +159,6 @@ public class SootUtils {
             return false;
         }
         return true;
-    }
-
-    public static String getDryRunTraceFieldName(SootClass cls) {
-        return NEED_DRY_RUN_TRACE + cls.getName().replace(".", "");
     }
 
     public static boolean originalMethodShouldBeInstrumented(SootMethod originalMethod, SootClass sootClass) {
@@ -244,189 +236,6 @@ public class SootUtils {
         }
         return lastIdentity;
     }
-
-    public static void getShouldInstrumentedMethodForCtxTree(ClassFilterHelper classFilterHelper) {
-        for(SootClass sc: Scene.v().getApplicationClasses()){
-            // Skip interfaces and phantom classes
-            if(classFilterHelper.isContextTrackingBlackListClass(sc) && !classFilterHelper.isTraceClass(sc) && !classFilterHelper.isIsolateClass(sc) && !classFilterHelper.isManuallyInstrumentedClass(sc)){
-                continue;
-            }
-
-
-            for (SootMethod method : sc.getMethods()) {
-                LOG.info("Evaluating method {} for context tracking instrumentation", method.getSignature());
-                if (!method.isConcrete() || method.getName().contains("$") || method.isStaticInitializer() || method.isConstructor()) {
-                    continue;
-                }
-                if(method.getName().contains(ENTRY_RECOVERY_POINT)){
-                    continue;
-                }
-
-
-                LOG.info("Method {} is being evaluated for context tracking instrumentation", method.getSignature());
-                if(method.getName().contains("run") || method.getName().contains("call") || method.getName().contains("execute")){
-                    LOG.info("Method {} selected for context tracking instrumentation because it is a run/call method", method.getSignature());
-                    SootUtils.shouldInstrumentedMethods.add(method);
-                    continue;
-                }
-
-                if(isMethodComplexEnoughForInstrumentation(method) && !skipInstrumentationForCtxTree(method)) {
-                    LOG.info("Method {} selected for context tracking instrumentation", method.getSignature());
-                    SootUtils.shouldInstrumentedMethods.add(method);
-                }
-                SootUtils.shouldInstrumentedMethods.add(method);
-            }
-        }
-    }
-
-    public static boolean skipInstrumentationForCtxTree(SootMethod method){
-        Body body = method.retrieveActiveBody();
-        Unit firstNonIdentity = getFirstNonIdentityStmt(body);
-        for (Trap trap : body.getTraps()) {
-            Unit trapBegin = trap.getBeginUnit();
-            if (trapBegin == firstNonIdentity) {
-                LOG.debug("Skipping method {} because it starts with a try block", method.getSignature());
-                return true;
-            }
-
-            boolean inTrap = false;
-            for (Unit u = trapBegin; u != trap.getEndUnit(); u = body.getUnits().getSuccOf(u)) {
-                if (u == firstNonIdentity) {
-                    inTrap = true;
-                    break;
-                }
-            }
-            if (inTrap) {
-                LOG.debug("Skipping method {} because first statement is in try block", method.getSignature());
-                return inTrap;
-            }
-        }
-        return false;
-    }
-
-    public static boolean isMethodComplexEnoughForInstrumentation(SootMethod method) {
-        if (!method.hasActiveBody()) return false;
-
-        LOG.info("Analyzing method for instrumentation: {}", method.getSignature());
-
-        if(method.getName().equals("run") && method.getParameterCount() == 0){
-            return true;
-        }
-
-        Body body = method.retrieveActiveBody();
-        PatchingChain<Unit> units = body.getUnits();
-
-        
-        int unitCount = units.size();
-        int meaningfulInvokes = 0;
-        boolean hasLoops = false;
-        int branchCount = 0;
-        int trapCount = body.getTraps().size();
-
-        for (Unit unit : units) {
-            // Check for method calls
-            InvokeExpr invoke = null;
-            if (unit instanceof InvokeStmt) {
-                invoke = ((InvokeStmt) unit).getInvokeExpr();
-            } else if (unit instanceof AssignStmt) {
-                Value rightOp = ((AssignStmt) unit).getRightOp();
-                if (rightOp instanceof InvokeExpr) {
-                    invoke = (InvokeExpr) rightOp;
-                }
-            }
-
-            if (invoke != null) {
-                String invokedClass = invoke.getMethod().getDeclaringClass().getName();
-                String invokedMethod = invoke.getMethod().getName();
-
-                // Count as meaningful if not a simple utility call
-                if (!invokedClass.startsWith("java.lang.String") &&
-                        !invokedClass.startsWith("java.lang.StringBuilder") &&
-                        !invokedClass.startsWith("java.util.logging") &&
-                        !invokedClass.startsWith("org.slf4j") &&
-                        !invokedMethod.equals("toString") &&
-                        !invokedMethod.equals("hashCode") &&
-                        !invokedMethod.equals("equals") &&
-                        !invokedMethod.startsWith("get") &&
-                        !invokedMethod.startsWith("set") &&
-                        !invokedMethod.startsWith("is")) {
-                    meaningfulInvokes++;
-                }
-            }
-
-            // Check for loops
-            if (unit instanceof GotoStmt) {
-                GotoStmt gotoStmt = (GotoStmt) unit;
-                Unit target = gotoStmt.getTarget();
-                boolean isBackwardJump = false;
-                for (Unit u : units) {
-                    if (u == target) {
-                        isBackwardJump = true;
-                        break;
-                    }
-                    if (u == unit) {
-                        break;
-                    }
-                }
-                if (isBackwardJump) {
-                    hasLoops = true;
-                }
-            }
-
-            // Check for conditional branching
-            if (unit instanceof IfStmt) {
-                branchCount++;
-            } else if (unit instanceof TableSwitchStmt || unit instanceof LookupSwitchStmt) {
-                branchCount += 3;
-            }
-        }
-
-        
-        List<String> metConditions = new ArrayList<>();
-
-        
-        boolean shouldInstrument = false;
-
-        
-        if (unitCount >= 100) {
-            metConditions.add(String.format("sufficient units (%d >= 100)", unitCount));
-            shouldInstrument = true;
-        }
-
-        
-        if (meaningfulInvokes >= 8) {
-            metConditions.add(String.format("sufficient meaningful invokes (%d >= 8)", meaningfulInvokes));
-            shouldInstrument = true;
-        }
-
-        
-        if (branchCount >= 3 || hasLoops) {
-            metConditions.add(String.format("sufficient control flow (branches: %d >= 3, has loops: %b)",
-                    branchCount, hasLoops));
-            shouldInstrument = true;
-        }
-
-        
-        if (trapCount >= 3) {
-            metConditions.add(String.format("sufficient exception handlers (%d >= 3)", trapCount));
-            shouldInstrument = true;
-        }
-
-        
-        if (shouldInstrument) {
-            LOG.debug("Instrumenting {} - met conditions: {}, metrics: units={}, invokes={}, branches={}, loops={}, traps={}",
-                    method.getSignature(),
-                    String.join(", ", metConditions),
-                    unitCount, meaningfulInvokes, branchCount, hasLoops, trapCount);
-        } else {
-            LOG.debug("Skipping {} - no conditions met. Metrics: units={} (<100), invokes={} (<8), branches={} (<3), loops={}, traps={} (<3)",
-                    method.getSignature(), unitCount, meaningfulInvokes, branchCount, hasLoops, trapCount);
-        }
-
-        return shouldInstrument;
-    }
-
-
 
     /**
      * Add a new phase into a phase pack in Soot

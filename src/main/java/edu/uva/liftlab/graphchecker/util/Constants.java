@@ -77,4 +77,6 @@ public class Constants {
 
     public static final String ENTRY_RECOVERY_POINT = "repairAsync";
 
+    public static final String CONTEXT_PROPAGATION_ENABLED = "context_propagation_enabled";
+
 }
