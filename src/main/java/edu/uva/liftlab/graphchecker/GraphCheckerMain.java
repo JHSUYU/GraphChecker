@@ -196,6 +196,9 @@ public class GraphCheckerMain {
         Scene.v().addBasicClass("java.lang.Throwable", SIGNATURES);
         Scene.v().addBasicClass("org.apache.hbase.thirdparty.com.google.gson.JsonSerializer",SootClass.HIERARCHY);
 
+        Scene.v().addBasicClass("io.opentelemetry.context.Context", SIGNATURES);
+        Scene.v().addBasicClass("io.opentelemetry.context.Scope", SIGNATURES);
+
 
 
 

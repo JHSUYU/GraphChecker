@@ -1,7 +1,5 @@
-package edu.uva.liftlab.graphchecker.isolation.stateredirection;
+package edu.uva.liftlab.graphchecker.util;
 
-import edu.uva.liftlab.graphchecker.util.PropertyType;
-import edu.uva.liftlab.graphchecker.util.SootUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.SootClass;
@@ -31,6 +29,7 @@ public class ClassFilterHelper {
     public final Set<String> trackInitClasses;
     public boolean isSimpleInstrumentation = false;
     public boolean isStateBWEnabled = false;
+    public boolean contextPropagationEnabled = false;
 
     public ClassFilterHelper(String configPath) {
         this.configPath = configPath;
@@ -52,6 +51,7 @@ public class ClassFilterHelper {
         this.ctxTreeBlackList = new HashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.CTX_TREE_BLACK_LIST));
         this.isSimpleInstrumentation = !new HashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.SIMPLE_INSTRUMENTATION)).isEmpty();
         this.trackInitClasses = new HashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.TRACK_INIT_CLASSES));
+        this.contextPropagationEnabled = !SootUtils.getListFromProperty(configPath, PropertyType.CONTEXT_PROPAGATION_ENABLED).isEmpty();
 
         Set<String> sedaQueueList = SootUtils.getListFromProperty(configPath, PropertyType.SEDA_QUEUE);
         for( String queue : sedaQueueList) {
