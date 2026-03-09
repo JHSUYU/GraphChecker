@@ -145,13 +145,18 @@ do_test() {
         echo "==> Running all HDFS unit tests"
     fi
 
+    local trace_output="${gc_dir}/experiments/hdfs/trace.txt"
+
     # surefire:test runs the Surefire plugin directly, skipping compile phases
     # so the instrumented classes in hdfs_dir/target/classes/ are used as-is
     cd "${hdfs_dir}"
     mvn surefire:test \
         ${test_arg} \
         -DfailIfNoTests=false \
-        -Dhadoop.log.dir="${hdfs_dir}/target/test-logs"
+        -Dhadoop.log.dir="${hdfs_dir}/target/test-logs" \
+        -DargLine="-Dgraphchecker.trace.output=${trace_output}"
+
+    echo "==> Trace output: ${trace_output}"
 }
 
 do_restore() {

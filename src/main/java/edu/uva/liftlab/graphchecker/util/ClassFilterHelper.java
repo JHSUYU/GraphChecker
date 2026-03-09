@@ -27,6 +27,7 @@ public class ClassFilterHelper {
     public final Map<String, String> sedaWorkerMap;
     public final Set<String> entryClasses;
     public final Set<String> trackInitClasses;
+    public final Set<String> startingPointFile;
     public boolean isSimpleInstrumentation = false;
     public boolean isStateBWEnabled = false;
     public boolean contextPropagationEnabled = false;
@@ -51,6 +52,7 @@ public class ClassFilterHelper {
         this.ctxTreeBlackList = new HashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.CTX_TREE_BLACK_LIST));
         this.isSimpleInstrumentation = !new HashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.SIMPLE_INSTRUMENTATION)).isEmpty();
         this.trackInitClasses = new HashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.TRACK_INIT_CLASSES));
+        this.startingPointFile = new LinkedHashSet<>(SootUtils.getListFromProperty(configPath, PropertyType.STARTING_POINT_FILE));
         this.contextPropagationEnabled = !SootUtils.getListFromProperty(configPath, PropertyType.CONTEXT_PROPAGATION_ENABLED).isEmpty();
 
         Set<String> sedaQueueList = SootUtils.getListFromProperty(configPath, PropertyType.SEDA_QUEUE);
