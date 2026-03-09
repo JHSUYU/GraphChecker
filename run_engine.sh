@@ -72,6 +72,7 @@ if [[ "$1" == "transform" ]]; then
   SECONDS=0
   java -cp "${full_class_path}" edu.uva.liftlab.graphchecker.GraphCheckerMain \
     -i "${system_classes_path}" \
+    -x "${java_class_path}" \
     -C "${conf_file_realpath}" \
     -o "${system_classes_path}"
   duration=$SECONDS

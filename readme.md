@@ -1,6 +1,6 @@
 # OTel Context Propagation — Coverage Reference
 
-`GraphCheckerTransformer` now includes a context propagation phase (Phase 1) that runs **before** PropTracer instrumentation. When enabled via config, it detects async boundary call sites in the target bytecode and injects:
+`GraphCheckerTransformer` detects async boundary call sites in the target bytecode and injects:
 
 ```jimple
 $ctx     = staticinvoke <io.opentelemetry.context.Context: Context current()>();
@@ -30,7 +30,7 @@ Enable with: `context_propagation_enabled=true` in the `.properties` config.
 | `Futures.transformAsync(…, executor)` | same, method `transformAsync` | last arg | `Executor` |
 | `Futures.transform(…, executor)` | same, method `transform` | last arg | `Executor` |
 
-Detection matches the **declared parameter type** of the call site's method reference, not the runtime type of the argument. Only application classes are scanned; JDK internals, OTel classes, and PropTracer are excluded.
+Detection matches the **declared parameter type** of the call site's method reference, not the runtime type of the argument. Only application classes are scanned; JDK internals and OTel classes are excluded.
 
 ## Not Supported
 
@@ -91,8 +91,8 @@ To instrument and immediately run a specific test in one step:
 | Command | What it does |
 |---------|-------------|
 | `./run_hdfs.sh build` | Build `target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar` |
-| `./run_hdfs.sh compile` | Compile HDFS main + test sources into `target/classes/` |
-| `./run_hdfs.sh instrument` | Run GraphCheckerTransformer — rewrites `.class` files in `target/classes/` in-place |
+| `./run_hdfs.sh compile` | Compile HDFS sources, then snapshot classes into `experiments/hdfs/original_classes/` |
+| `./run_hdfs.sh instrument` | Run GraphCheckerTransformer — output to `experiments/hdfs/instrumented_classes/`, then deploy to `hdfs_dir/target/classes/` |
 | `./run_hdfs.sh test [Class[#method]]` | Run tests via `mvn surefire:test` — **skips recompile** so instrumented classes are used |
 | `./run_hdfs.sh run [Class[#method]]` | `instrument` + `test` in one step |
 | `./run_hdfs.sh restore` | Recompile HDFS to recover the original un-instrumented classes |
@@ -101,23 +101,35 @@ Each command prints `[Profiler] <command> took Ns` on completion.
 
 ### How it works
 
-`run_hdfs.sh` sources `hdfs.properties` to read three bash variables:
+`run_hdfs.sh` sources `hdfs.properties` to read these bash variables:
 
 | Variable | Value |
 |----------|-------|
-| `system_dir_path` | HDFS project root |
-| `system_classes_path` | `$system_dir_path/target/classes` — instrumented in-place |
+| `hdfs_dir` | Real HDFS project root (compile / test target) |
+| `system_dir_path` | `experiments/hdfs/original_classes/` — snapshot of compiled classes, GraphChecker input |
+| `instrumented_classes_path` | `experiments/hdfs/instrumented_classes/` — GraphChecker output |
+| `system_classes_path` | Same as `system_dir_path` (it is the classes root directly) |
 | `java_class_path` | Full HDFS dependency classpath (Maven `.m2` jars) |
+
+Data flow:
+
+```
+compile:     hdfs_dir/target/classes/  →(rsync)→  original_classes/
+instrument:  original_classes/  →(GraphChecker)→  instrumented_classes/
+                                →(deploy)→  hdfs_dir/target/classes/
+test:        mvn surefire:test in hdfs_dir  (uses deployed instrumented classes)
+```
 
 Instrumentation invokes:
 
 ```bash
 java -cp "<graphchecker-jar>:<java_class_path>" \
      edu.uva.liftlab.graphchecker.GraphCheckerMain \
-     -i <system_classes_path> \   # input: compiled HDFS classes
-     -x <java_class_path>    \   # Soot dependency resolution
-     -C hdfs.properties      \   # GraphChecker config
-     -o <system_classes_path>    # output: same dir → overwrites originals
+     -i <original_classes>       \   # input: original snapshot
+     -x <java_class_path>        \   # Soot dependency resolution
+     -C hdfs.properties          \   # GraphChecker config
+     -o <instrumented_classes>       # output: dedicated output dir
+# then: delete .class from hdfs_dir/target/classes/, copy instrumented in
 ```
 
 Tests run via `mvn surefire:test` (not `mvn test`), which invokes the Surefire

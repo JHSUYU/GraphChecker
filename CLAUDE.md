@@ -4,13 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GraphChecker is a Soot-based bytecode transformer that instruments distributed system bytecode to enable "dry-run" recovery execution with isolated I/O and state, allowing operators to test recovery strategies safely before performing real recovery.
-
-The main component is the **Instrumentation Engine** (`src/`): a Soot-based bytecode transformer that rewrites target system classes to enable pilot execution.
+GraphChecker is a Soot-based bytecode transformer that injects **OpenTelemetry context propagation** at async boundaries in distributed system bytecode. It wraps async hand-off points (thread spawns, executor submissions, `CompletableFuture` chains, Guava `Futures`) with `Context.current().wrap(...)` so OTel context is preserved across threads.
 
 ## Build Commands
 
-### Instrumentation Engine (root Maven project)
 ```bash
 # Build (creates target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar)
 mvn clean package -DskipTests
@@ -32,49 +29,46 @@ mvn test    # JUnit 5 via Surefire
 
 ## Architecture
 
-### Bytecode Transformation Pipeline (`GraphCheckerTransformer.instrument()`)
+### Bytecode Transformation (`GraphCheckerTransformer.internalTransform()`)
 
-The engine processes target system classes through these ordered phases:
+The transformer iterates over all application classes and for each concrete method body scans statements for async boundary call sites. When found, it inserts two Jimple statements before the call:
 
-1. **IO Isolation** — Redirects all file I/O to `/opt/ShadowDirectory`
-2. **HTTP Hook Injection** — Adds OpenTelemetry baggage to HTTP headers for context propagation
-3. **Method Divergence** — For each method, creates `method$instrumentation()` (dry-run) and `method$original()` variants; the original method checks `isDryRun()` to dispatch
-4. **State Redirection** — Redirects field reads/writes to `org.pilot.State` class for isolation
-5. **Baggage Propagation** — Wraps context-passing constructs (Runnables, Futures, condition variables, executor submissions)
-6. **Context Tracking** — Injects OpenTelemetry initialization into configured classes
-7. **Sanitization** — Final validation and cleanup
+1. `$ctx = staticinvoke Context.current()` — capture the current OTel context
+2. `$wrapped = interfaceinvoke $ctx.wrap($arg)` — wrap the Runnable/Callable/Executor
 
-### Key Source Packages (Engine — `src/main/java/edu/uva/liftlab/graphchecker/`)
+The wrapped value replaces the original argument so OTel context flows across thread hand-offs.
 
-| Package | Purpose |
-|---------|---------|
-| `transformer/` | Main orchestration: `GraphCheckerTransformer` drives the pipeline |
-| `generator/` | `GraphCheckerMethodGenerator` creates diverged method variants |
-| `isolation/IO/` | IO handler strategy classes (`FileOutputStreamHandler`, `FileChannelHandler`, `PathHandler`, etc.) |
-| `isolation/stateredirection/` | `StateRedirection` + `ClassFilterHelper` for field-level state isolation |
-| `distributedtracing/` | `BaggagePropagation`, `HTTPPropagator`, and parameter wrappers for cross-thread/cross-process context |
-| `option/` | CLI parsing via Apache Commons CLI |
-| `staticanalysis/` | Recovery pattern detection |
+**Covered async boundary patterns:**
+- `Thread.<init>(Runnable)`
+- `Executor.execute(Runnable)` / `ExecutorService.submit(Runnable|Callable)`
+- `ScheduledExecutorService.schedule*(Runnable|Callable, ...)`
+- `CompletableFuture.*Async(...)` — wraps trailing `Executor` arg
+- Guava `Futures.addCallback` / `transformAsync` / `transform` — wraps trailing `Executor` arg
 
-Entry point: `GraphCheckerMain.java` — initializes Soot, registers `GraphCheckerTransformer`, and runs the transformation.
+### Key Source Files (`src/main/java/edu/uva/liftlab/graphchecker/`)
+
+| File/Package | Purpose |
+|---|---|
+| `transformer/GraphCheckerTransformer.java` | The single `SceneTransformer` — async boundary detection and `Context.wrap()` injection |
+| `analysis/` | `AnalysisManager` and `PhaseInfo` — Soot phase registration |
+| `option/` | CLI parsing via Apache Commons CLI (`OptionParser`, `GraphCheckerOptions`) |
+| `util/ClassFilterHelper.java` | Config-driven class filtering (whitelist/blacklist) |
+| `GraphCheckerMain.java` | Entry point — initializes Soot, registers the transformer, runs transformation |
 
 ### Configuration System
 
-Target system behavior is controlled via `.properties` files (see `experiments/solr17515/conf/` for examples). Key sections parsed by `ClassFilterHelper`:
+Controlled via `.properties` files (see `experiments/hdfs/conf/hdfs.properties`). Key options:
 
-- `blacklist_pilotfunc_classes` / `whitelist_pilotfunc_classes` — Control method divergence scope
-- `blacklist_state_classes` / `whitelist_state_classes` — Control state isolation scope
-- `http_send_classes` / `http_recv_classes` — HTTP context propagation targets
-- `io_classes` — I/O-intensive classes for isolation
-- `seda_queue` / `seda_worker` — SEDA queue instrumentation
-- `entry_classes` / `startpoint_methods` — Recovery entry points
+- `blacklist_pilotfunc_classes` / `whitelist_pilotfunc_classes` — Control which classes are instrumented
+- `context_propagation_enabled` — Enable/disable OTel async boundary wrapping (default: true)
+- `java_class_path` — JVM classpath for Soot resolution (must include all runtime deps of the target system)
 
 ## Technical Notes
 
 - Java 8 source/target
 - Uses **Soot 4.4.1** for bytecode analysis/transformation (Jimple IR)
 - The `src/recipes/java` directory is included as an additional source root via build-helper-maven-plugin
-- `org.pilot.*` references in the code are EXTERNAL runtime dependencies — do NOT rename these
+
 
 
 

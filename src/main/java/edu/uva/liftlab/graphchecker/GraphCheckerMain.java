@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import soot.*;
 import soot.options.Options;
 
+import java.io.File;
 import java.io.PrintStream;
 import java.util.*;
 
@@ -215,6 +216,31 @@ public class GraphCheckerMain {
     }
 
     /**
+     * Expand classpath entries containing '*' wildcards (e.g. "dir/lib/*") into
+     * explicit colon-separated jar paths, since Soot does not support glob expansion.
+     */
+    private static String expandClassPath(String classPath) {
+        if (classPath == null) return null;
+        StringBuilder expanded = new StringBuilder();
+        for (String entry : classPath.split(":")) {
+            if (entry.endsWith("/*") || entry.endsWith(File.separator + "*")) {
+                String dir = entry.substring(0, entry.length() - 2);
+                File[] jars = new File(dir).listFiles(f -> f.getName().endsWith(".jar"));
+                if (jars != null && jars.length > 0) {
+                    for (File jar : jars) {
+                        if (expanded.length() > 0) expanded.append(':');
+                        expanded.append(jar.getAbsolutePath());
+                    }
+                    continue;
+                }
+            }
+            if (expanded.length() > 0) expanded.append(':');
+            expanded.append(entry);
+        }
+        return expanded.toString();
+    }
+
+    /**
      * Prepare environment to run GraphChecker: set options, register analyses,
      * load classes, initialize Soot, etc.
      *
@@ -225,19 +251,17 @@ public class GraphCheckerMain {
 
         /* Setup Soot options */
         Options.v().set_allow_phantom_refs(true);
-        Options.v().set_soot_classpath(options.getClassPath());
+        Options.v().set_soot_classpath(expandClassPath(options.getClassPath()));
         Options.v().set_java_version(8);
         //Options.v().set_output_format(Options.output_format_J);
 
         if (options.noOutput()) {
             Options.v().set_output_format(Options.output_format_none);
+        } else if (options.isOutputJar()) {
+            Options.v().set_output_jar(true);
         } else {
-            if (!options.genExecutable() && !options.isOutputJar()) {
-                // If the output format is not a jar or .class files,
-                // we output Jimple by default
-                Options.v().set_output_format(Options.output_format_J);
-            }
-            Options.v().set_output_jar(options.isOutputJar());
+            // Directory input → emit .class files
+            Options.v().set_output_format(Options.output_format_class);
         }
         // Well, the truth is even if we specify output format as none
         // PILOT still relies on the output dir option to decide
