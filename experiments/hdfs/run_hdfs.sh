@@ -150,6 +150,8 @@ do_test() {
     # surefire:test runs the Surefire plugin directly, skipping compile phases
     # so the instrumented classes in hdfs_dir/target/classes/ are used as-is
     cd "${hdfs_dir}"
+    #cleanup trace_output content before test execution
+    > "${trace_output}"
     mvn surefire:test \
         ${test_arg} \
         -DfailIfNoTests=false \

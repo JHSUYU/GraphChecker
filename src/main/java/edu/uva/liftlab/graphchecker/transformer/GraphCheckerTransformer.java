@@ -86,6 +86,7 @@ public class GraphCheckerTransformer extends SceneTransformer {
 
                     // Phase 1: Starting point trace initiation + TraceRecorder.onTraceStart
                     if (isStartingPointMethod(sc, sm)) {
+                        LOG.info("Instrumenting starting point method: {}.{}", sc.getName(), sm.getName());
                         instrumentStartingPoint(body);
                         startingPointCount++;
                     }
@@ -140,6 +141,9 @@ public class GraphCheckerTransformer extends SceneTransformer {
     // ========================================================================
 
     private boolean instrumentBody(Body body) {
+        LOG.info("Instrumenting method for async boundaries: {}.{}",
+                body.getMethod().getDeclaringClass().getName(),
+                body.getMethod().getName());
         PatchingChain<Unit> units = body.getUnits();
         List<Unit> snapshot = new ArrayList<>(units);
         boolean wrapped = false;
@@ -373,8 +377,7 @@ public class GraphCheckerTransformer extends SceneTransformer {
         }
 
         for (Map.Entry<String, Set<String>> entry : startingPointInterfaces.entrySet()) {
-            if (entry.getValue().contains(methodName)
-                    && implementsInterface(sc, entry.getKey())) {
+            if (entry.getValue().contains(methodName)) {
                 return true;
             }
         }
@@ -483,6 +486,17 @@ public class GraphCheckerTransformer extends SceneTransformer {
         // --- Create branch target ---
         Unit bodyStartNop = Jimple.v().newNopStmt();
 
+        // --- Save existing trap begin/end units before preamble insertion ---
+        // PatchingChain auto-patches trap refs on insertBefore, which would
+        // extend existing traps to cover our preamble where locals are not
+        // yet initialized — causing VerifyError from bad stack map frames.
+        Map<Trap, Unit> savedTrapBegins = new IdentityHashMap<>();
+        Map<Trap, Unit> savedTrapEnds = new IdentityHashMap<>();
+        for (Trap trap : body.getTraps()) {
+            savedTrapBegins.put(trap, trap.getBeginUnit());
+            savedTrapEnds.put(trap, trap.getEndUnit());
+        }
+
         // --- Insert preamble before firstNonIdentity (in order) ---
 
         // $scope = null
@@ -563,7 +577,34 @@ public class GraphCheckerTransformer extends SceneTransformer {
                                 Collections.<Value>singletonList(StringConstant.v(methodSig)))),
                 firstNonIdentity);
 
-        // --- Insert scope.close() before each return statement ---
+        // --- Restore existing trap begin/end units (undo PatchingChain redirects) ---
+        for (Trap trap : body.getTraps()) {
+            Unit savedBegin = savedTrapBegins.get(trap);
+            Unit savedEnd = savedTrapEnds.get(trap);
+            if (savedBegin != null) trap.setBeginUnit(savedBegin);
+            if (savedEnd != null) trap.setEndUnit(savedEnd);
+        }
+
+        // --- Redirect all return statements to a single cleanup block ---
+        // Instead of inserting scope.close() before each return (which puts
+        // $gcScope reads inside existing catch blocks and causes VerifyError
+        // from local-variable slot conflicts in stack map frames), we redirect
+        // all returns through one cleanup block outside the original control flow.
+
+        Type returnType = body.getMethod().getReturnType();
+        boolean isVoid = returnType instanceof VoidType;
+        Local retValLocal = null;
+        if (!isVoid) {
+            retValLocal = newLocal(body, returnType, "$gcRetVal");
+        }
+
+        Unit cleanupNop = Jimple.v().newNopStmt();
+        Unit cleanupSkipClose = Jimple.v().newNopStmt();
+        Unit cleanupReturn = isVoid
+                ? Jimple.v().newReturnVoidStmt()
+                : Jimple.v().newReturnStmt(retValLocal);
+
+        // Replace every original return with goto cleanup (saving return value if needed)
         List<Unit> returnUnits = new ArrayList<>();
         for (Unit u : new ArrayList<>(units)) {
             if (u instanceof ReturnStmt || u instanceof ReturnVoidStmt) {
@@ -572,20 +613,35 @@ public class GraphCheckerTransformer extends SceneTransformer {
         }
 
         for (Unit ret : returnUnits) {
-            Unit skipCloseNop = Jimple.v().newNopStmt();
-            units.insertBefore(
-                    Jimple.v().newIfStmt(
-                            Jimple.v().newEqExpr(scopeLocal, NullConstant.v()),
-                            skipCloseNop),
-                    ret);
-            units.insertBefore(
-                    Jimple.v().newInvokeStmt(
-                            Jimple.v().newInterfaceInvokeExpr(scopeLocal, scopeCloseRef)),
-                    ret);
-            units.insertBefore(skipCloseNop, ret);
+            if (!isVoid && ret instanceof ReturnStmt) {
+                Value retVal = ((ReturnStmt) ret).getOp();
+                units.insertBefore(
+                        Jimple.v().newAssignStmt(retValLocal, retVal), ret);
+            }
+            units.insertBefore(Jimple.v().newGotoStmt(cleanupNop), ret);
+            units.remove(ret);
         }
 
-        // --- Add exception handler at the end of the body ---
+        // Append cleanup block at the end of the original body:
+        //   cleanupNop: nop
+        //   if $gcScope == null goto cleanupSkipClose
+        //   $gcScope.close()
+        //   cleanupSkipClose: nop
+        //   return / return $gcRetVal
+        Unit lastUnit = units.getLast();
+        Unit ifNullStmt = Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(scopeLocal, NullConstant.v()),
+                cleanupSkipClose);
+        Unit closeStmt = Jimple.v().newInvokeStmt(
+                Jimple.v().newInterfaceInvokeExpr(scopeLocal, scopeCloseRef));
+
+        units.insertAfter(cleanupNop, lastUnit);
+        units.insertAfter(ifNullStmt, cleanupNop);
+        units.insertAfter(closeStmt, ifNullStmt);
+        units.insertAfter(cleanupSkipClose, closeStmt);
+        units.insertAfter(cleanupReturn, cleanupSkipClose);
+
+        // --- Add catch-all exception handler after the cleanup block ---
         Local exLocal = newLocal(body, throwableType, "$gcEx");
         Unit handlerIdentity = Jimple.v().newIdentityStmt(
                 exLocal, Jimple.v().newCaughtExceptionRef());
@@ -597,13 +653,13 @@ public class GraphCheckerTransformer extends SceneTransformer {
                 Jimple.v().newInterfaceInvokeExpr(scopeLocal, scopeCloseRef));
         Unit handlerThrow = Jimple.v().newThrowStmt(exLocal);
 
-        Unit prev = units.getLast();
-        units.insertAfter(handlerIdentity, prev);
+        units.insertAfter(handlerIdentity, cleanupReturn);
         units.insertAfter(handlerIfNull, handlerIdentity);
         units.insertAfter(handlerClose, handlerIfNull);
         units.insertAfter(rethrowNop, handlerClose);
         units.insertAfter(handlerThrow, rethrowNop);
 
+        // Trap covers the original body + cleanup block; handler is outside
         body.getTraps().add(Jimple.v().newTrap(
                 Scene.v().getSootClass("java.lang.Throwable"),
                 bodyStartNop,
@@ -626,6 +682,9 @@ public class GraphCheckerTransformer extends SceneTransformer {
      * @return true if at least one field access was instrumented
      */
     private boolean instrumentFieldAccess(Body body) {
+        LOG.info("Instrumenting method for field accesses: {}.{}",
+                body.getMethod().getDeclaringClass().getName(),
+                body.getMethod().getName());
         String methodName = body.getMethod().getName();
         // Skip constructors — too noisy (object being built)
         if (methodName.equals("<init>") || methodName.equals("<clinit>")) return false;
