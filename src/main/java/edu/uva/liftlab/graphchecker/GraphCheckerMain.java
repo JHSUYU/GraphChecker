@@ -199,6 +199,10 @@ public class GraphCheckerMain {
 
         Scene.v().addBasicClass("io.opentelemetry.context.Context", SIGNATURES);
         Scene.v().addBasicClass("io.opentelemetry.context.Scope", SIGNATURES);
+        Scene.v().addBasicClass("io.opentelemetry.api.baggage.Baggage", SIGNATURES);
+        Scene.v().addBasicClass("io.opentelemetry.api.baggage.BaggageBuilder", SIGNATURES);
+        Scene.v().addBasicClass("java.util.UUID", SIGNATURES);
+        Scene.v().addBasicClass("org.apache.hadoop.hdfs.tracing.TraceRecorder", SIGNATURES);
 
 
 

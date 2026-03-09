@@ -79,4 +79,6 @@ public class Constants {
 
     public static final String CONTEXT_PROPAGATION_ENABLED = "context_propagation_enabled";
 
+    public static final String STARTING_POINT_FILE = "starting_point_file";
+
 }

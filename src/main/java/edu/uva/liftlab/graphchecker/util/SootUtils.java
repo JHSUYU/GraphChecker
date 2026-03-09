@@ -87,6 +87,7 @@ public class SootUtils {
         put(PropertyType.SIMPLE_INSTRUMENTATION, SIMPLE_INSTRUMENTATION);
         put(PropertyType.TRACK_INIT_CLASSES, TRACK_INIT_CLASSES);
         put(PropertyType.CONTEXT_PROPAGATION_ENABLED, CONTEXT_PROPAGATION_ENABLED);
+        put(PropertyType.STARTING_POINT_FILE, STARTING_POINT_FILE);
     }};
 
 
