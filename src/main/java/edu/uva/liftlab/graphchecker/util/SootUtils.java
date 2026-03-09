@@ -496,8 +496,6 @@ public class SootUtils {
     }
 
     public static void SecureExportSootClass(SootClass sClass) {
-        //SootUtils.printSootClassJimple(contextClass);
-        SootUtils.dumpSootClassJimple(sClass);
         sClass.validate();
         SootUtils.tryDumpSootClass(sClass);
     }
