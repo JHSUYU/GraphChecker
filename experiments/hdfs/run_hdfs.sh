@@ -17,7 +17,8 @@ gc_dir=$(realpath "${script_dir}/../..")
 conf="${script_dir}/conf/hdfs.properties"
 gc_jar="${gc_dir}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
 
-# ── Load config (gives us system_dir_path, system_classes_path, java_class_path)
+# ── Load config (gives us hdfs_dir, system_dir_path, system_classes_path,
+#                         instrumented_classes_path, java_class_path)
 if [[ ! -f "${conf}" ]]; then
     echo "[ERROR] Config not found: ${conf}"
     exit 1
@@ -30,9 +31,10 @@ echo "  ╔═══════════════════════
 echo "  ║   GraphChecker — HDFS Workflow Script    ║"
 echo "  ╚══════════════════════════════════════════╝"
 echo ""
-echo "  gc_dir:              ${gc_dir}"
-echo "  system_dir_path:     ${system_dir_path}"
-echo "  system_classes_path: ${system_classes_path}"
+echo "  gc_dir:                   ${gc_dir}"
+echo "  hdfs_dir:                 ${hdfs_dir}"
+echo "  original_classes (input): ${system_dir_path}"
+echo "  instrumented classes:     ${instrumented_classes_path}"
 echo ""
 
 # ── Usage ─────────────────────────────────────────────────────────────────────
@@ -41,6 +43,7 @@ usage() {
     echo ""
     echo "  Commands:"
     echo "    build                         Build GraphChecker jar"
+    echo "    build-hadoop                  Build required Hadoop modules (generates classpath JARs)"
     echo "    compile                       Compile HDFS main + test sources"
     echo "    instrument                    Instrument HDFS classes in-place"
     echo "    test [TestClass[#method]]     Run HDFS unit tests (no recompile)"
@@ -71,11 +74,33 @@ do_build() {
     echo "==> Built: ${gc_jar}"
 }
 
+do_build_hadoop() {
+    local hadoop_root
+    hadoop_root=$(realpath "${hdfs_dir}/../..")
+    echo "==> Building required Hadoop modules (DskipTests)..."
+    echo "    Hadoop root: ${hadoop_root}"
+    # Build only the modules referenced in java_class_path, in dependency order.
+    # -am also builds any upstream modules they depend on.
+    mvn -f "${hadoop_root}/pom.xml" install -DskipTests -Pdist \
+        -pl hadoop-common-project/hadoop-common,\
+hadoop-common-project/hadoop-kms,\
+hadoop-hdfs-project/hadoop-hdfs-client,\
+hadoop-hdfs-project/hadoop-hdfs \
+        -am
+    echo "==> Hadoop modules built."
+}
+
 do_compile() {
     echo "==> Compiling HDFS (main + test sources)..."
-    mvn -f "${system_dir_path}/pom.xml" \
+    mvn -f "${hdfs_dir}/pom.xml" \
         compile test-compile \
         -DskipTests
+
+    echo "==> Snapshotting original classes → ${system_classes_path}"
+    rm -rf "${system_classes_path}"
+    mkdir -p "${system_classes_path}"
+    rsync -a "${hdfs_dir}/target/classes/" "${system_classes_path}/"
+    echo "==> Snapshot done."
 }
 
 do_instrument() {
@@ -85,19 +110,29 @@ do_instrument() {
         exit 1
     fi
     if [[ ! -d "${system_classes_path}" ]]; then
-        echo "[ERROR] HDFS classes directory not found: ${system_classes_path}"
+        echo "[ERROR] Original classes snapshot not found: ${system_classes_path}"
         echo "        Run './run_hdfs.sh compile' first."
         exit 1
     fi
 
-    echo "==> Instrumenting HDFS classes at: ${system_classes_path}"
+    rm -rf "${instrumented_classes_path}"
+    mkdir -p "${instrumented_classes_path}"
+
+    echo "==> Instrumenting HDFS classes..."
+    echo "    input:  ${system_classes_path}"
+    echo "    output: ${instrumented_classes_path}"
+
     java -cp "${gc_jar}:${java_class_path}" \
         edu.uva.liftlab.graphchecker.GraphCheckerMain \
         -i "${system_classes_path}" \
         -x "${java_class_path}" \
         -C "${conf}" \
-        -o "${system_classes_path}"
-    echo "==> Instrumentation done. Classes replaced in-place."
+        -o "${instrumented_classes_path}"
+
+    echo "==> Deploying instrumented classes → ${hdfs_dir}/target/classes"
+    find "${hdfs_dir}/target/classes" -name "*.class" -delete
+    cp -r "${instrumented_classes_path}/." "${hdfs_dir}/target/classes/"
+    echo "==> Instrumentation done."
 }
 
 do_test() {
@@ -111,17 +146,17 @@ do_test() {
     fi
 
     # surefire:test runs the Surefire plugin directly, skipping compile phases
-    # so the instrumented classes in target/classes/ are used as-is
-    cd "${system_dir_path}"
+    # so the instrumented classes in hdfs_dir/target/classes/ are used as-is
+    cd "${hdfs_dir}"
     mvn surefire:test \
         ${test_arg} \
         -DfailIfNoTests=false \
-        -Dhadoop.log.dir="${system_dir_path}/target/test-logs"
+        -Dhadoop.log.dir="${hdfs_dir}/target/test-logs"
 }
 
 do_restore() {
     echo "==> Restoring original HDFS classes by recompiling..."
-    mvn -f "${system_dir_path}/pom.xml" \
+    mvn -f "${hdfs_dir}/pom.xml" \
         compile \
         -DskipTests
     echo "==> Restore done."
@@ -134,6 +169,9 @@ shift || true
 case "${cmd}" in
     build)
         timing "build" do_build
+        ;;
+    build-hadoop)
+        timing "build-hadoop" do_build_hadoop
         ;;
     compile)
         timing "compile" do_compile
