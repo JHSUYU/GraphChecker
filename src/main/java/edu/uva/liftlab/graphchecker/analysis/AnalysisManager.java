@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Set;
 
 import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
+import edu.uva.liftlab.graphchecker.transformer.GreyStateLifecycleTransformer;
 import edu.uva.liftlab.graphchecker.util.SootUtils;
 import soot.Transform;
 import soot.Transformer;
@@ -21,7 +22,8 @@ public class AnalysisManager {
 
     private static PhaseInfo[] PHASES  = {
             //PilotMethodAnalyzer.PHASE_INFO,
-            GraphCheckerTransformer.PHASE_INFO
+            GraphCheckerTransformer.PHASE_INFO,
+            GreyStateLifecycleTransformer.PHASE_INFO
 
     };
     private static AnalysisManager instance;
