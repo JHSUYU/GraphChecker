@@ -6,6 +6,8 @@ import edu.uva.liftlab.graphchecker.option.OptionError;
 import edu.uva.liftlab.graphchecker.option.OptionParser;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
+import edu.uva.liftlab.graphchecker.transformer.GreyStateLifecycleTransformer;
+import edu.uva.liftlab.graphchecker.grey.GreyStateSpecLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.*;
@@ -72,7 +74,7 @@ public class GraphCheckerMain {
             Options.v().setPhaseOption("wjtp", "enabled:true");
             PackManager.v().runPacks();
 
-            System.out.println("=== Classes processed by Soot ===");
+            System.err.println("=== Classes processed by Soot ===");
             if (!Options.v().oaat()) {
                 PackManager.v().writeOutput();
             }
@@ -118,9 +120,16 @@ public class GraphCheckerMain {
      * Register the analyses to run with Soot pack manager
      */
     private void registerAnalyses() {
-        GraphCheckerTransformer pilotTransformer = new GraphCheckerTransformer(options.getConfigFilePath());
-        AnalysisManager.getInstance().registerAnalysis(pilotTransformer, GraphCheckerTransformer.PHASE_INFO);
-        AnalysisManager.getInstance().validateAllRegistered();
+        if (defaultAnalysisName().equals(GreyStateLifecycleTransformer.PHASE_INFO.getFullName())) {
+            GreyStateLifecycleTransformer greyStateLifecycleTransformer =
+                    new GreyStateLifecycleTransformer(options.getConfigFilePath());
+            AnalysisManager.getInstance().registerAnalysis(
+                    greyStateLifecycleTransformer,
+                    GreyStateLifecycleTransformer.PHASE_INFO);
+        } else {
+            GraphCheckerTransformer pilotTransformer = new GraphCheckerTransformer(options.getConfigFilePath());
+            AnalysisManager.getInstance().registerAnalysis(pilotTransformer, GraphCheckerTransformer.PHASE_INFO);
+        }
     }
 
     /**
@@ -203,6 +212,7 @@ public class GraphCheckerMain {
         Scene.v().addBasicClass("io.opentelemetry.api.baggage.BaggageBuilder", SIGNATURES);
         Scene.v().addBasicClass("java.util.UUID", SIGNATURES);
         Scene.v().addBasicClass("org.apache.hadoop.hdfs.tracing.TraceRecorder", SIGNATURES);
+        Scene.v().addBasicClass("org.apache.hadoop.hdfs.tracing.GreyTraceRecorder", SIGNATURES);
 
 
 
@@ -282,9 +292,7 @@ public class GraphCheckerMain {
         }
         String[] analyses = options.getAnalyses();
         if (analyses == null || analyses.length == 0) {
-            // If no analysis is specified, run the default analysis
-            //analyses = new String[] {PilotMethodAnalyzer.PHASE_INFO.getFullName(), GraphCheckerTransformer.PHASE_INFO.getFullName()};
-            analyses = new String[] {GraphCheckerTransformer.PHASE_INFO.getFullName()};
+            analyses = new String[] {defaultAnalysisName()};
         }
 
         if (analyses != null) {
@@ -382,6 +390,16 @@ public class GraphCheckerMain {
         return true;
     }
 
+    private String defaultAnalysisName() {
+        String configFilePath = options.getConfigFilePath();
+        if (configFilePath != null && (configFilePath.endsWith(".yaml") || configFilePath.endsWith(".yml"))) {
+            if (new GreyStateSpecLoader().looksLikeGreyStateConfig(new File(configFilePath).toPath())) {
+                return GreyStateLifecycleTransformer.PHASE_INFO.getFullName();
+            }
+        }
+        return GraphCheckerTransformer.PHASE_INFO.getFullName();
+    }
+
     public static void main(String[] args) {
         OptionParser parser = new OptionParser();
         GraphCheckerOptions options = null;
@@ -402,7 +420,6 @@ public class GraphCheckerMain {
             parser.printHelp();
             System.exit(0);
         }
-        System.out.println("Line314");
         if (options.listAnalysis()) {
             parser.listAnalyses();
             System.exit(0);
@@ -412,7 +429,6 @@ public class GraphCheckerMain {
             parser.printHelp();
             System.exit(1);
         }
-        System.out.println("Parsed options: " + options);
         // Create GraphChecker now with the parsed options
         GraphCheckerMain main = new GraphCheckerMain(options);
         if (!main.initialize() || !main.run()) {

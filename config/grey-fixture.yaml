@@ -1,0 +1,11 @@
+fatal_seeds:
+  - id: fixture
+    class: edu.uva.liftlab.graphchecker.grey.fixture.GreyStateFixture
+    method: retrieveDataEncryptionKey
+    exception: edu.uva.liftlab.graphchecker.grey.fixture.GreyStateFixture$InvalidEncryptionKeyException
+
+analysis_classes:
+  - edu.uva.liftlab.graphchecker.grey.fixture.GreyStateFixture
+
+output_dir: target/grey-fixture
+bound: 3
