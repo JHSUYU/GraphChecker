@@ -1,40 +1,31 @@
 package edu.uva.liftlab.graphchecker.analysis;
 
+import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
+import edu.uva.liftlab.graphchecker.util.SootUtils;
+import soot.Transform;
+import soot.Transformer;
+
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
-import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
-import edu.uva.liftlab.graphchecker.transformer.GreyStateLifecycleTransformer;
-import edu.uva.liftlab.graphchecker.util.SootUtils;
-import soot.Transform;
-import soot.Transformer;
-
-/**
- * Manage the major analyses in GraphChecker
- */
 public class AnalysisManager {
-    private Map<String, Transform> analysisMap;
-    private Map<String, PhaseInfo> phaseInfoMap;
-    private Set<String> enabledAnalysisSet;
-
-    private static PhaseInfo[] PHASES  = {
-            //PilotMethodAnalyzer.PHASE_INFO,
-            GraphCheckerTransformer.PHASE_INFO,
-            GreyStateLifecycleTransformer.PHASE_INFO
-
+    private static final PhaseInfo[] PHASES = {
+            GraphCheckerTransformer.PHASE_INFO
     };
+
     private static AnalysisManager instance;
 
+    private final Map<String, Transform> analysisMap = new HashMap<>();
+    private final Map<String, PhaseInfo> phaseInfoMap = new HashMap<>();
+    private final Set<String> enabledAnalysisSet = new HashSet<>();
+
     private AnalysisManager() {
-        analysisMap = new HashMap<>();
-        phaseInfoMap = new HashMap<>();
         for (PhaseInfo info : PHASES) {
             phaseInfoMap.put(info.getFullName(), info);
         }
-        enabledAnalysisSet = new HashSet<>();
     }
 
     public static AnalysisManager getInstance() {
@@ -44,25 +35,16 @@ public class AnalysisManager {
         return instance;
     }
 
-    public Transform getAnalysis(String name) {
-        return analysisMap.get(name);
-    }
-
-    public boolean isAnalysiEnabled(String name) {
-        return enabledAnalysisSet.contains(name);
-    }
-
     public boolean enableAnalysis(String name) {
-        if (phaseInfoMap.containsKey(name)) {
-            // Enable only it is available
-            enabledAnalysisSet.add(name);
-            return true;
+        if (!phaseInfoMap.containsKey(name)) {
+            return false;
         }
-        return false;
+        enabledAnalysisSet.add(name);
+        return true;
     }
 
-    public Set<String> enabledAnalyses() {
-        return enabledAnalysisSet;
+    public boolean isAnalysisEnabled(String name) {
+        return enabledAnalysisSet.contains(name);
     }
 
     public PhaseInfo getPhaseInfo(String name) {
@@ -78,12 +60,5 @@ public class AnalysisManager {
         analysisMap.put(info.getFullName(), phase);
         phaseInfoMap.put(info.getFullName(), info);
         return phase;
-    }
-
-    public void validateAllRegistered() {
-        for (PhaseInfo info : PHASES) {
-            if(!analysisMap.containsKey(info.getFullName()))
-                throw new RuntimeException(info.getFullName()+" not registered! ");
-        }
     }
 }
