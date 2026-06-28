@@ -1,158 +1,67 @@
-# OTel Context Propagation — Coverage Reference
+# GraphChecker
 
-`GraphCheckerTransformer` detects async boundary call sites in the target bytecode and injects:
+GraphChecker is now a minimal Soot-based bytecode processing skeleton.
 
-```jimple
-$ctx     = staticinvoke <io.opentelemetry.context.Context: Context current()>();
-$wrapped = interfaceinvoke $ctx.<io.opentelemetry.context.Context: T wrap(T)>($arg);
-// original call uses $wrapped instead of $arg
-```
+The project keeps only the plumbing needed to:
 
-This relies solely on the three `wrap()` overloads natively provided by `io.opentelemetry.context.Context`: `wrap(Runnable)`, `wrap(Callable)`, and `wrap(Executor)`.
+- parse command-line input;
+- configure Soot classpaths, input directories, input jars, and output;
+- load target classes;
+- run one registered whole-program Soot phase;
+- leave an empty `GraphCheckerTransformer` for future analysis or transformation logic.
 
-Enable with: `context_propagation_enabled=true` in the `.properties` config.
+All previous grey-state, OpenTelemetry, context propagation, state tracing, and HDFS-specific analysis logic has been removed.
 
-## Supported
-
-| Async Boundary | Detection Rule | Arg Wrapped | Wrap Type |
-|----------------|---------------|-------------|-----------|
-| `new Thread(runnable)` | `java.lang.Thread.<init>`, first param is `Runnable` | arg 0 | `Runnable` |
-| `executor.execute(runnable)` | any method named `execute`, first param is `Runnable` | arg 0 | `Runnable` |
-| `executor.submit(runnable)` | any method named `submit`, first param is `Runnable` | arg 0 | `Runnable` |
-| `executor.submit(callable)` | any method named `submit`, first param is `Callable` | arg 0 | `Callable` |
-| `scheduled.schedule(runnable, …)` | method `schedule`, first param is `Runnable` | arg 0 | `Runnable` |
-| `scheduled.schedule(callable, …)` | method `schedule`, first param is `Callable` | arg 0 | `Callable` |
-| `scheduled.scheduleAtFixedRate(runnable, …)` | method `scheduleAtFixedRate`, first param is `Runnable` | arg 0 | `Runnable` |
-| `scheduled.scheduleWithFixedDelay(runnable, …)` | method `scheduleWithFixedDelay`, first param is `Runnable` | arg 0 | `Runnable` |
-| `ForkJoinPool.execute/submit` | same method name rules as above | arg 0 | `Runnable` / `Callable` |
-| `CompletableFuture.*Async(…, executor)` | declaring class `java.util.concurrent.CompletableFuture`, method ends with `Async`, last param is `Executor`/`ExecutorService`/`ScheduledExecutorService` | last arg | `Executor` |
-| `Futures.addCallback(…, executor)` | declaring class contains `.Futures`, method `addCallback`, last param is Executor type | last arg | `Executor` |
-| `Futures.transformAsync(…, executor)` | same, method `transformAsync` | last arg | `Executor` |
-| `Futures.transform(…, executor)` | same, method `transform` | last arg | `Executor` |
-
-Detection matches the **declared parameter type** of the call site's method reference, not the runtime type of the argument. Only application classes are scanned; JDK internals and OTel classes are excluded.
-
-## Not Supported
-
-| Pattern | Reason |
-|---------|--------|
-| `CompletableFuture.supplyAsync(Supplier)` / `thenApply(Function)` / `thenAccept(Consumer)` / `thenCombine(BiFunction)` — variants **without** an explicit `Executor` arg | OTel `Context` has no `wrap(Supplier)`, `wrap(Function)`, etc. Runtime helper classes would be needed. |
-| `Thread` subclasses that override `run()` directly (no `Runnable` passed to constructor) | No call-site arg to replace; would require injecting a context field into the subclass and rewriting its `run()`. |
-| `java.util.Timer.schedule(TimerTask, …)` / `scheduleAtFixedRate(TimerTask, …)` | `TimerTask` is an abstract class; OTel has no native `wrap(TimerTask)`. A wrapper subclass would be needed. |
-| `AccessController.doPrivileged(PrivilegedAction)` / `Subject.doAs(…)` / `UserGroupInformation.doAs(…)` | OTel has no native wrap for `PrivilegedAction` or `PrivilegedExceptionAction`. |
-| `ExecutorService.invokeAll(Collection<Callable>)` / `invokeAny(Collection<Callable>)` | The `Collection` argument requires runtime iteration to wrap each element; not handleable at a single call-site arg. |
-| `ForkJoinTask.fork()` | Takes no argument — the task itself is the receiver. Wrapping requires injecting context into the task object. |
-| NIO `AsynchronousChannel` operations with `CompletionHandler` | Handler is registered separately from execution; detecting the correct site is complex. |
-| RxJava / Project Reactor (`subscribeOn`, `publishOn`, `Schedulers.*`) | Not in the detection table. |
-| Non-`Local` arguments at the detected position (e.g. `NullConstant`) | Silently skipped — only Jimple `Local` values can be replaced. |
-| Double-wrap guard | No check for already-wrapped args; chained executor submissions may wrap the same Runnable multiple times. |
-
----
-
-## Running GraphChecker on Apache Hadoop HDFS
-
-Everything is driven by a single script:
-
-```
-experiments/hdfs/run_hdfs.sh
-```
-
-It sources `experiments/hdfs/conf/hdfs.properties` for all paths automatically —
-no need to copy-paste directories or classpaths by hand.
-
-### Prerequisites
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Java (JDK) | 1.8 | Soot requires JDK 8 (`rt.jar` / `jce.jar` under `$JAVA_HOME/lib/`) |
-| Maven | 3.x | Build tool for GraphChecker and HDFS |
-| Hadoop HDFS source | 3.3.4 | Path set in `hdfs.properties` → `system_dir_path` |
-
-### Quick start (first time)
+## Build
 
 ```bash
-cd /path/to/GraphChecker/experiments/hdfs
-
-./run_hdfs.sh build      # 1) build GraphChecker jar
-./run_hdfs.sh compile    # 2) compile HDFS sources
-./run_hdfs.sh instrument # 3) instrument HDFS classes in-place
-./run_hdfs.sh test       # 4) run all unit tests (no recompile → uses instrumented classes)
+mvn clean package -DskipTests
 ```
 
-To instrument and immediately run a specific test in one step:
+This produces:
+
+```text
+target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
+```
+
+## Run
+
+Process a directory of compiled classes:
 
 ```bash
-./run_hdfs.sh run org.apache.hadoop.hdfs.TestDFSClientRetries
-./run_hdfs.sh run org.apache.hadoop.hdfs.TestDFSClientRetries#testGetFileChecksum
+java -cp target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar \
+  edu.uva.liftlab.graphchecker.GraphCheckerMain \
+  -i /path/to/classes \
+  -x /path/to/dependencies/* \
+  -o /path/to/output
 ```
 
-### Command reference
-
-| Command | What it does |
-|---------|-------------|
-| `./run_hdfs.sh build` | Build `target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar` |
-| `./run_hdfs.sh compile` | Compile HDFS sources, then snapshot classes into `experiments/hdfs/original_classes/` |
-| `./run_hdfs.sh instrument` | Run GraphCheckerTransformer — output to `experiments/hdfs/instrumented_classes/`, then deploy to `hdfs_dir/target/classes/` |
-| `./run_hdfs.sh test [Class[#method]]` | Run tests via `mvn surefire:test` — **skips recompile** so instrumented classes are used |
-| `./run_hdfs.sh run [Class[#method]]` | `instrument` + `test` in one step |
-| `./run_hdfs.sh restore` | Recompile HDFS to recover the original un-instrumented classes |
-
-Each command prints `[Profiler] <command> took Ns` on completion.
-
-### How it works
-
-`run_hdfs.sh` sources `hdfs.properties` to read these bash variables:
-
-| Variable | Value |
-|----------|-------|
-| `hdfs_dir` | Real HDFS project root (compile / test target) |
-| `system_dir_path` | `experiments/hdfs/original_classes/` — snapshot of compiled classes, GraphChecker input |
-| `instrumented_classes_path` | `experiments/hdfs/instrumented_classes/` — GraphChecker output |
-| `system_classes_path` | Same as `system_dir_path` (it is the classes root directly) |
-| `java_class_path` | Full HDFS dependency classpath (Maven `.m2` jars) |
-
-Data flow:
-
-```
-compile:     hdfs_dir/target/classes/  →(rsync)→  original_classes/
-instrument:  original_classes/  →(GraphChecker)→  instrumented_classes/
-                                →(deploy)→  hdfs_dir/target/classes/
-test:        mvn surefire:test in hdfs_dir  (uses deployed instrumented classes)
-```
-
-Instrumentation invokes:
+Process a jar:
 
 ```bash
-java -cp "<graphchecker-jar>:<java_class_path>" \
-     edu.uva.liftlab.graphchecker.GraphCheckerMain \
-     -i <original_classes>       \   # input: original snapshot
-     -x <java_class_path>        \   # Soot dependency resolution
-     -C hdfs.properties          \   # GraphChecker config
-     -o <instrumented_classes>       # output: dedicated output dir
-# then: delete .class from hdfs_dir/target/classes/, copy instrumented in
+java -cp target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar \
+  edu.uva.liftlab.graphchecker.GraphCheckerMain \
+  -j /path/to/app.jar \
+  -x /path/to/dependencies/* \
+  -o /path/to/output
 ```
 
-Tests run via `mvn surefire:test` (not `mvn test`), which invokes the Surefire
-plugin directly — skipping the compile phase so Maven cannot overwrite the
-instrumented classes.
-
-### Iterating
+Disable output when only loading and visiting classes:
 
 ```bash
-# Edit hdfs.properties or GraphCheckerTransformer, then:
-./run_hdfs.sh build      # rebuild tool (only if Java source changed)
-./run_hdfs.sh restore    # recompile HDFS to get fresh .class files
-./run_hdfs.sh run org.apache.hadoop.hdfs.TestDFSClientRetries
+java -cp target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar \
+  edu.uva.liftlab.graphchecker.GraphCheckerMain \
+  -i /path/to/classes \
+  -x /path/to/dependencies/* \
+  --no_output
 ```
 
-### Configuration — `experiments/hdfs/conf/hdfs.properties`
+## Extension Point
 
-Key properties to adjust:
+Future work should start in:
 
-| Property | Default | Description |
-|----------|---------|-------------|
-| `whitelist_pilotfunc_classes` | `org.apache.hadoop.hdfs` | Only classes whose name contains this prefix are instrumented |
-| `blacklist_pilotfunc_classes` | `…protocolPB,…protocol.proto` | Name fragments excluded from instrumentation |
-| `entry_classes` | `…NameNode` | Recovery entry point |
-| `startpoint_methods` | `…NameNode#main` | Starting method for static analysis |
-| `context_propagation_enabled` | `true` | Inject OTel `Context.wrap()` at async boundaries |
+```text
+src/main/java/edu/uva/liftlab/graphchecker/transformer/GraphCheckerTransformer.java
+```
+
+The current transformer only visits application classes and counts concrete methods. It does not mutate bytecode.

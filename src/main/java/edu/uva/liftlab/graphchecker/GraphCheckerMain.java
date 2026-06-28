@@ -2,49 +2,60 @@ package edu.uva.liftlab.graphchecker;
 
 import edu.uva.liftlab.graphchecker.analysis.AnalysisManager;
 import edu.uva.liftlab.graphchecker.analysis.PhaseInfo;
+import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.option.OptionError;
 import edu.uva.liftlab.graphchecker.option.OptionParser;
-import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
-import edu.uva.liftlab.graphchecker.transformer.GreyStateLifecycleTransformer;
-import edu.uva.liftlab.graphchecker.grey.GreyStateSpecLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import soot.*;
+import soot.G;
+import soot.PackManager;
+import soot.PhaseOptions;
+import soot.Scene;
+import soot.SootClass;
+import soot.Timers;
 import soot.options.Options;
 
 import java.io.File;
 import java.io.PrintStream;
-import java.util.*;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static soot.SootClass.SIGNATURES;
 
 public class GraphCheckerMain {
     private static final Logger LOG = LoggerFactory.getLogger(GraphCheckerMain.class);
 
-    // Arguments passed through the command line
-    static public GraphCheckerOptions options;
+    private final GraphCheckerOptions options;
     private boolean initialized;
-
-    static public Date analyzeFinishTime=null;
 
     public GraphCheckerMain(GraphCheckerOptions options) {
         this.options = options;
-        initialized = false;
     }
 
-    /**
-     * Invoke Soot with our customized options and additional arguments.
-     */
+    public boolean initialize() {
+        registerAnalyses();
+        configureSoot();
+        enableAnalyses();
+        loadClasses();
+        initialized = true;
+        return true;
+    }
+
     public boolean run() {
         if (!initialized) {
             System.err.println("GraphChecker is not initialized");
             return false;
         }
+
         if (!Options.v().parse(options.getArgs())) {
             System.err.println("Error in parsing Soot options");
             return false;
         }
+
         Options.v().warnNonexistentPhase();
         if (Options.v().phase_list()) {
             System.out.println(Options.v().getPhaseList());
@@ -56,367 +67,194 @@ public class GraphCheckerMain {
             }
             return true;
         }
-        if (AnalysisManager.getInstance().enabledAnalyses().isEmpty()) {
-            System.err.println("No GraphChecker analysis is specified.");
-            System.err.println("Run with --list to list the analysis available in GraphChecker");
-            return false;
-        }
-        if (Options.v().on_the_fly()) {
-            Options.v().set_whole_program(true);
-            PhaseOptions.v().setPhaseOption("cg", "off");
-        }
-        // Invoke Soot's pack manager to run the packs
+
         try {
             Date start = new Date();
-            LOG.info("GraphChecker started on " + start);
+            LOG.info("GraphChecker started on {}", start);
             Timers.v().totalTimer.start();
-            Scene.v().loadNecessaryClasses();
-            Options.v().setPhaseOption("wjtp", "enabled:true");
-            PackManager.v().runPacks();
 
-            System.err.println("=== Classes processed by Soot ===");
-            if (!Options.v().oaat()) {
+            Scene.v().loadNecessaryClasses();
+            PackManager.v().runPacks();
+            if (!options.noOutput()) {
                 PackManager.v().writeOutput();
             }
+
             Timers.v().totalTimer.end();
-            // Print out time stats.
-            if (Options.v().time())
+            if (Options.v().time()) {
                 Timers.v().printProfilingInformation();
+            }
+
             Date finish = new Date();
-            LOG.info("GraphChecker finished on " + finish);
             long runtime = finish.getTime() - start.getTime();
-
-            //analyzeFinishTime could be null if running countMethod scripts
-            //TODO: refine the logic of setting analyzeFinishTime
-            if(analyzeFinishTime!=null) {
-                long analysisTime = analyzeFinishTime.getTime() - start.getTime();
-                long generationTime = finish.getTime() - analyzeFinishTime.getTime();
-                LOG.info("Analysis Time: " + (analysisTime / 60000) + " min. "
-                        + ((analysisTime % 60000) / 1000) + " sec. " + (analysisTime % 1000)
-                        + " ms.");
-                LOG.info("Generation Time: " + (generationTime / 60000) + " min. "
-                        + ((generationTime % 60000) / 1000) + " sec. " + (generationTime % 1000)
-                        + " ms.");
-            }
-            LOG.info("GraphChecker has run for " + (runtime / 60000) + " min. "
-                    + ((runtime % 60000) / 1000) + " sec. " + (runtime % 1000) + " ms.");
-        } catch (StackOverflowError e ) {
-            LOG.error( "GraphChecker has run out of stack memory." );
+            LOG.info("GraphChecker finished on {}", finish);
+            LOG.info("GraphChecker ran for {} ms", runtime);
+            return true;
+        } catch (StackOverflowError exception) {
+            LOG.error("Soot ran out of stack memory", exception);
             return false;
-        } catch (OutOfMemoryError e) {
-            LOG.error( "Soot has run out of the memory allocated to it by the Java VM." );
+        } catch (OutOfMemoryError exception) {
+            LOG.error("Soot ran out of heap memory", exception);
             return false;
-        } catch (RuntimeException e) {
-            LOG.error("Unexpected exception encountered: " + e);
-            e.printStackTrace();
+        } catch (RuntimeException exception) {
+            LOG.error("Unexpected exception encountered", exception);
             return false;
-        } finally {
-            //AutoIO.getInstance().closeAll();
-        }
-        return true;
-    }
-
-    /**
-     * Register the analyses to run with Soot pack manager
-     */
-    private void registerAnalyses() {
-        if (defaultAnalysisName().equals(GreyStateLifecycleTransformer.PHASE_INFO.getFullName())) {
-            GreyStateLifecycleTransformer greyStateLifecycleTransformer =
-                    new GreyStateLifecycleTransformer(options.getConfigFilePath());
-            AnalysisManager.getInstance().registerAnalysis(
-                    greyStateLifecycleTransformer,
-                    GreyStateLifecycleTransformer.PHASE_INFO);
-        } else {
-            GraphCheckerTransformer pilotTransformer = new GraphCheckerTransformer(options.getConfigFilePath());
-            AnalysisManager.getInstance().registerAnalysis(pilotTransformer, GraphCheckerTransformer.PHASE_INFO);
         }
     }
 
-    /**
-     * Load basic classes to Soot
-     */
-    private void loadClasses() {
-        // add input classes
-        String[] classes = options.getClasses();
-        if (classes != null) {
-            for (String cls : classes) {
-                LOG.info("Load class, add class "+cls.toString());
-                Options.v().classes().add(cls); // all to Soot class to be loaded
-            }
-        }
-
-        // add basic classes
-        Class<?>[] basicClasses = {PrintStream.class, System.class,
-                Thread.class,
-                Throwable.class,
-                //Preload a dummy class here so we can use it later
-                //Assertion.class
-        };
-        for (Class<?> cls : basicClasses) {
-            LOG.debug("Adding basic class " + cls.getCanonicalName() + " to Soot");
-            Scene.v().addBasicClass(cls.getCanonicalName(), SIGNATURES);
-            for (Class<?> innerCls : cls.getDeclaredClasses()) {
-                // Must use getName instead of getCanonicalName for inner class
-                LOG.debug("- inner class " + innerCls.getName() + " added");
-                Scene.v().addBasicClass(innerCls.getName(), SIGNATURES);
-            }
-        }
-
-        Scene.v().addBasicClass("int[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("boolean[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("byte[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("char[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("short[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("float[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("double[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("long[]", SootClass.HIERARCHY);
-
-        Scene.v().addBasicClass("java.lang.Object[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.String[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Integer[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Boolean[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Byte[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Character[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Short[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Float[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Double[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Long[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Class[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.Throwable[]", SootClass.HIERARCHY);
-        Scene.v().addBasicClass("java.lang.StackTraceElement[]", SootClass.HIERARCHY);
-
-
-        Scene.v().addBasicClass("org.pilot.PilotUtil",SIGNATURES);
-        Scene.v().addBasicClass("org.pilot.filesystem.ShadowFiles",SIGNATURES);
-        Scene.v().addBasicClass("org.pilot.concurrency.LockManager",SIGNATURES);
-        Scene.v().addBasicClass("org.pilot.concurrency.ThreadManager",SIGNATURES);
-        Scene.v().addBasicClass("org.pilot.State",SIGNATURES);
-        Scene.v().addBasicClass("org.pilot.trace.TraceRecorder", SIGNATURES);
-        Scene.v().addBasicClass("org.pilot.trace.PilotContextTracking", SIGNATURES);
-        //add wrapper primitive type
-        Scene.v().addBasicClass("java.lang.Integer", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Boolean", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Byte", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Character", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Short", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Float", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Double", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Long", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.String", SIGNATURES);
-        Scene.v().addBasicClass("java.lang.Throwable", SIGNATURES);
-        Scene.v().addBasicClass("org.apache.hbase.thirdparty.com.google.gson.JsonSerializer",SootClass.HIERARCHY);
-
-        Scene.v().addBasicClass("io.opentelemetry.context.Context", SIGNATURES);
-        Scene.v().addBasicClass("io.opentelemetry.context.Scope", SIGNATURES);
-        Scene.v().addBasicClass("io.opentelemetry.api.baggage.Baggage", SIGNATURES);
-        Scene.v().addBasicClass("io.opentelemetry.api.baggage.BaggageBuilder", SIGNATURES);
-        Scene.v().addBasicClass("java.util.UUID", SIGNATURES);
-        Scene.v().addBasicClass("org.apache.hadoop.hdfs.tracing.TraceRecorder", SIGNATURES);
-        Scene.v().addBasicClass("org.apache.hadoop.hdfs.tracing.GreyTraceRecorder", SIGNATURES);
-
-
-
-
-    }
-
-    /**
-     * Reset the analysis
-     */
     public void reset() {
-        // Don't put the G.reset() at the beginning of the initialize() as in the Unit test
-        // we may register some special phases, e.g., TestHelper, before calling initialize().
-        // They will get cleared if we do reset()...
-        G.reset(); // reset Soot
+        G.reset();
+        initialized = false;
     }
 
-    /**
-     * Expand classpath entries containing '*' wildcards (e.g. "dir/lib/*") into
-     * explicit colon-separated jar paths, since Soot does not support glob expansion.
-     */
-    private static String expandClassPath(String classPath) {
-        if (classPath == null) return null;
-        StringBuilder expanded = new StringBuilder();
-        for (String entry : classPath.split(":")) {
-            if (entry.endsWith("/*") || entry.endsWith(File.separator + "*")) {
-                String dir = entry.substring(0, entry.length() - 2);
-                File[] jars = new File(dir).listFiles(f -> f.getName().endsWith(".jar"));
-                if (jars != null && jars.length > 0) {
-                    for (File jar : jars) {
-                        if (expanded.length() > 0) expanded.append(':');
-                        expanded.append(jar.getAbsolutePath());
-                    }
-                    continue;
-                }
-            }
-            if (expanded.length() > 0) expanded.append(':');
-            expanded.append(entry);
-        }
-        return expanded.toString();
+    private void registerAnalyses() {
+        GraphCheckerTransformer transformer = new GraphCheckerTransformer();
+        AnalysisManager.getInstance().registerAnalysis(transformer, GraphCheckerTransformer.PHASE_INFO);
     }
 
-    /**
-     * Prepare environment to run GraphChecker: set options, register analyses,
-     * load classes, initialize Soot, etc.
-     *
-     * @return true if the initialization is successful; false otherwise
-     */
-    public boolean initialize() {
-        registerAnalyses(); // register analyses with Soot
-
-        /* Setup Soot options */
+    private void configureSoot() {
         Options.v().set_allow_phantom_refs(true);
+        Options.v().set_prepend_classpath(true);
         Options.v().set_soot_classpath(expandClassPath(options.getClassPath()));
-        Options.v().set_java_version(8);
-        //Options.v().set_output_format(Options.output_format_J);
+        Options.v().set_keep_line_number(options.keepDebug());
+        Options.v().set_whole_program(options.isWholeProgram());
+
+        if (options.getMainClass() != null) {
+            Options.v().set_main_class(options.getMainClass());
+        }
+        if (!options.isInputListEmpty()) {
+            Options.v().set_process_dir(options.getInputList());
+        }
+        if (options.getOutputDir() != null) {
+            Options.v().set_output_dir(options.getOutputDir());
+        }
 
         if (options.noOutput()) {
             Options.v().set_output_format(Options.output_format_none);
         } else if (options.isOutputJar()) {
             Options.v().set_output_jar(true);
         } else {
-            // Directory input → emit .class files
             Options.v().set_output_format(Options.output_format_class);
         }
-        // Well, the truth is even if we specify output format as none
-        // PILOT still relies on the output dir option to decide
-        // where to write its intermediate results... :|
-        if (options.getOutputDir() != null) {
-            Options.v().set_output_dir(options.getOutputDir());
+
+        if (options.getArgs().length == 0) {
+            Options.v().set_unfriendly_mode(true);
         }
-        //Options.v().set_validate(options.keepValidate());
-        Options.v().set_keep_line_number(options.keepDebug());
-        Options.v().set_main_class(options.getMainClass());
-        Options.v().set_whole_program(true);
-        if (!options.isInputListEmpty()) {
-            Options.v().set_process_dir(options.getInputList());
-        }
+    }
+
+    private void enableAnalyses() {
         String[] analyses = options.getAnalyses();
         if (analyses == null || analyses.length == 0) {
-            analyses = new String[] {defaultAnalysisName()};
+            analyses = new String[] {GraphCheckerTransformer.PHASE_INFO.getFullName()};
         }
 
-        if (analyses != null) {
-            boolean need_call_graph = false;
-            for (String analysis : analyses) {
-                // Enable the analysis in the manager
-                AnalysisManager.getInstance().enableAnalysis(analysis);
-                PhaseInfo phaseInfo = AnalysisManager.getInstance().getPhaseInfo(analysis);
-                // if any phase needs call graph, we should enable it
-                if (phaseInfo.needCallGraph())
-                    need_call_graph = true;
+        boolean needCallGraph = false;
+        Set<String> enabledFromCommandLine = new HashSet<>();
+        for (String analysis : analyses) {
+            AnalysisManager.getInstance().enableAnalysis(analysis);
+            PhaseInfo phaseInfo = AnalysisManager.getInstance().getPhaseInfo(analysis);
+            if (phaseInfo != null && phaseInfo.needCallGraph()) {
+                needCallGraph = true;
             }
-//            if (options.isWholeProgram() && !need_call_graph) {
-//                // if it is whole program analysis and we don't need call graph analysis
-//                // we should explicitly disable it
-//                PhaseOptions.v().setPhaseOption("cg", "off");
-//            }
         }
 
-        //We enable spark to get on-the-fly callgraph
-        Options.v().setPhaseOption("cg.spark","enabled:true");
-        //We enable context-sensitive points-to analysis to better achieve
-        Options.v().setPhaseOption("cg.spark","cs-demand:true");
-        Options.v().setPhaseOption("cg.spark","apponly:true");
-        Options.v().setPhaseOption("cg.spark","geom-pta:true");
-//        Options.v().set_exclude(Arrays.asList(
-//                "java.lang.invoke.*",
-//                "sun.invoke.*"
-//        ));
-//        Options.v().set_prepend_classpath(false);
-//        Options.v().set_no_bodies_for_excluded(true);
-        //Options.v().setPhaseOption("cg.paddle","enabled:true");
-
-        Map<String, List<String>> all_phase_options = options.getPhaseOptions();
-        Set<String> analysis_with_options = new HashSet<>();
-        if (all_phase_options != null) {
-            for (Map.Entry<String, List<String>> entry : all_phase_options.entrySet()) {
+        Map<String, List<String>> phaseOptions = options.getPhaseOptions();
+        if (phaseOptions != null) {
+            for (Map.Entry<String, List<String>> entry : phaseOptions.entrySet()) {
                 String phase = entry.getKey();
-                // If the the option from command line is for an PILOT analysis
-                // We must both enable it and add the custom option str
-                if (AnalysisManager.getInstance().isAnalysiEnabled(phase)) {
-                    analysis_with_options.add(phase);
+                if (AnalysisManager.getInstance().isAnalysisEnabled(phase)) {
+                    enabledFromCommandLine.add(phase);
                     PhaseOptions.v().setPhaseOption(phase, "enabled:true");
                 }
-                for(String option_str: entry.getValue())
-                {
-                    // Otherwise, the option from command line is for a standard Soot phase
-                    // e.g., -p jb use-original-names:true, we will just pass it along
-                    // to Soot
-                    boolean success = PhaseOptions.v().setPhaseOption(phase, option_str);
-                    if(!success)
-                    {
-                        System.err.println("ERROR: options not set successfully");
+                for (String option : entry.getValue()) {
+                    if (!PhaseOptions.v().setPhaseOption(phase, option)) {
+                        System.err.println("Failed to set Soot phase option: " + phase + " " + option);
                     }
                 }
             }
         }
-        if (analyses != null) {
-            for (String analysis : analyses) {
-                // For any specified analysis that does not have an option from command line
-                // We must at least enable it in Soot
-                if (!analysis_with_options.contains(analysis)) {
-                    Options.v().setPhaseOption(analysis, "on");
-                }
+
+        for (String analysis : analyses) {
+            if (!enabledFromCommandLine.contains(analysis)) {
+                PhaseOptions.v().setPhaseOption(analysis, "enabled:true");
             }
         }
-        String[] args = options.getArgs();
-        if (args == null) {
-            args = new String[]{};
+
+        if (!needCallGraph) {
+            PhaseOptions.v().setPhaseOption("cg", "off");
         }
-        if (args.length == 0) {
-            Options.v().set_unfriendly_mode(true); // allow no arguments to be specified for Soot
-        }
-
-
-
-        // load classes
-        loadClasses();
-        // load config
-//        if (!PILOTConfig.getInstance().load() || !AutoIO.getInstance().initialize()) {
-//            return false;
-//        }
-
-        // override any config that is specified through command line argument
-//        if (options.getOverrideProperties() != null) {
-//            LOG.info("Overriding config file setting with command line config settings: " +
-//                    options.getOverrideProperties().toString());
-//            PILOTConfig.getInstance().parseProperties(options.getOverrideProperties());
-//        }
-
-//        recoveryAnalyzer.initializeAnalysis();
-//        initialized = true;
-//        LOG.info("GraphChecker initialization finished");
-        initialized = true;
-        return true;
     }
 
-    private String defaultAnalysisName() {
-        String configFilePath = options.getConfigFilePath();
-        if (configFilePath != null && (configFilePath.endsWith(".yaml") || configFilePath.endsWith(".yml"))) {
-            if (new GreyStateSpecLoader().looksLikeGreyStateConfig(new File(configFilePath).toPath())) {
-                return GreyStateLifecycleTransformer.PHASE_INFO.getFullName();
+    private void loadClasses() {
+        String[] classes = options.getClasses();
+        if (classes != null) {
+            for (String className : classes) {
+                LOG.info("Adding input class {}", className);
+                Options.v().classes().add(className);
             }
         }
-        return GraphCheckerTransformer.PHASE_INFO.getFullName();
+
+        Class<?>[] basicClasses = {PrintStream.class, System.class, Thread.class, Throwable.class};
+        for (Class<?> cls : basicClasses) {
+            Scene.v().addBasicClass(cls.getCanonicalName(), SIGNATURES);
+            for (Class<?> innerCls : cls.getDeclaredClasses()) {
+                Scene.v().addBasicClass(innerCls.getName(), SIGNATURES);
+            }
+        }
+        Scene.v().addBasicClass("java.lang.Object[]", SootClass.HIERARCHY);
+        Scene.v().addBasicClass("java.lang.String[]", SootClass.HIERARCHY);
+    }
+
+    private static String expandClassPath(String classPath) {
+        if (classPath == null || classPath.trim().isEmpty()) {
+            return classPath;
+        }
+
+        StringBuilder expanded = new StringBuilder();
+        for (String entry : classPath.split(File.pathSeparator)) {
+            if (entry.endsWith(File.separator + "*") || entry.endsWith("/*")) {
+                String dir = entry.substring(0, entry.length() - 2);
+                File[] jars = new File(dir).listFiles(file -> file.getName().endsWith(".jar"));
+                if (jars != null) {
+                    for (File jar : jars) {
+                        appendClasspathEntry(expanded, jar.getAbsolutePath());
+                    }
+                    continue;
+                }
+            }
+            appendClasspathEntry(expanded, entry);
+        }
+        return expanded.toString();
+    }
+
+    private static void appendClasspathEntry(StringBuilder classPath, String entry) {
+        if (entry == null || entry.isEmpty()) {
+            return;
+        }
+        if (classPath.length() > 0) {
+            classPath.append(File.pathSeparator);
+        }
+        classPath.append(entry);
     }
 
     public static void main(String[] args) {
         OptionParser parser = new OptionParser();
-        GraphCheckerOptions options = null;
+        GraphCheckerOptions options;
         try {
             options = parser.parse(args);
         } catch (OptionError optionError) {
             System.out.println("Error in parsing options: " + optionError.getMessage() + "\n");
             parser.printHelp();
             System.exit(1);
+            return;
         }
+
         if (options.isSootHelp()) {
             parser.printHelp();
-            System.out.println("\n*********************************************");
-            System.out.println("Soot OPTIONS:\n");
+            System.out.println("\nSoot OPTIONS:\n");
             System.out.println(Options.v().getUsage());
             System.exit(0);
-        } else if (options.isHelp()) {
+        }
+        if (options.isHelp()) {
             parser.printHelp();
             System.exit(0);
         }
@@ -425,15 +263,14 @@ public class GraphCheckerMain {
             System.exit(0);
         }
         if (options.isInputListEmpty() && options.getClasses() == null) {
-            System.out.println("Must set either a jar file/input directory or a list of classes as input.");
+            System.out.println("Must set either an input jar/input directory or a list of classes.");
             parser.printHelp();
             System.exit(1);
         }
-        // Create GraphChecker now with the parsed options
+
         GraphCheckerMain main = new GraphCheckerMain(options);
         if (!main.initialize() || !main.run()) {
             System.exit(1);
         }
-
     }
 }
