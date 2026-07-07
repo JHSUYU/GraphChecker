@@ -1,19 +1,22 @@
 package edu.uva.liftlab.graphchecker.transformer;
 
 import edu.uva.liftlab.graphchecker.analysis.PhaseInfo;
+import edu.uva.liftlab.graphchecker.causynth.CausynthPipeline;
+import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.Scene;
 import soot.SceneTransformer;
 import soot.SootClass;
 
+import java.io.IOException;
 import java.util.Map;
 
 public class GraphCheckerTransformer extends SceneTransformer {
     public static final PhaseInfo PHASE_INFO = new PhaseInfo(
             "wjtp",
             "graphchecker",
-            "Empty GraphChecker transformer",
+            "Causynth graph synthesis transformer",
             true,
             false);
 
@@ -31,7 +34,13 @@ public class GraphCheckerTransformer extends SceneTransformer {
                     .count();
         }
 
-        LOG.info("Empty transformer visited {} application classes and {} concrete methods",
+        LOG.info("GraphChecker visited {} application classes and {} concrete methods",
                 classCount, concreteMethodCount);
+
+        try {
+            new CausynthPipeline(GraphCheckerOptions.getInstance(), classCount, concreteMethodCount).run();
+        } catch (IOException exception) {
+            throw new RuntimeException("Causynth pipeline failed", exception);
+        }
     }
 }

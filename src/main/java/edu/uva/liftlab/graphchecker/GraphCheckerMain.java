@@ -17,12 +17,21 @@ import soot.Timers;
 import soot.options.Options;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Date;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import static soot.SootClass.SIGNATURES;
 
@@ -114,15 +123,17 @@ public class GraphCheckerMain {
     private void configureSoot() {
         Options.v().set_allow_phantom_refs(true);
         Options.v().set_prepend_classpath(true);
-        Options.v().set_soot_classpath(expandClassPath(options.getClassPath()));
+        List<String> processDirs = expandProcessDirs(options.getInputList());
+        Options.v().set_soot_classpath(expandClassPath(appendClasspathEntries(
+                options.getClassPath(), processDirs)));
         Options.v().set_keep_line_number(options.keepDebug());
         Options.v().set_whole_program(options.isWholeProgram());
 
         if (options.getMainClass() != null) {
             Options.v().set_main_class(options.getMainClass());
         }
-        if (!options.isInputListEmpty()) {
-            Options.v().set_process_dir(options.getInputList());
+        if (!processDirs.isEmpty()) {
+            Options.v().set_process_dir(processDirs);
         }
         if (options.getOutputDir() != null) {
             Options.v().set_output_dir(options.getOutputDir());
@@ -200,6 +211,9 @@ public class GraphCheckerMain {
                 Scene.v().addBasicClass(innerCls.getName(), SIGNATURES);
             }
         }
+        Scene.v().addBasicClass(
+                "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder",
+                SIGNATURES);
         Scene.v().addBasicClass("java.lang.Object[]", SootClass.HIERARCHY);
         Scene.v().addBasicClass("java.lang.String[]", SootClass.HIERARCHY);
     }
@@ -218,12 +232,169 @@ public class GraphCheckerMain {
                     for (File jar : jars) {
                         appendClasspathEntry(expanded, jar.getAbsolutePath());
                     }
-                    continue;
                 }
+                continue;
             }
             appendClasspathEntry(expanded, entry);
         }
         return expanded.toString();
+    }
+
+    private List<String> expandProcessDirs(List<String> inputDirs) {
+        LinkedHashSet<String> dirs = new LinkedHashSet<>();
+        if (inputDirs != null) {
+            for (String inputDir : inputDirs) {
+                addExistingDirectory(dirs, inputDir);
+            }
+        }
+
+        Properties config = loadGraphCheckerConfig();
+        addConfiguredProcessDirs(dirs, firstNonBlank(
+                System.getProperty("causynth.process.dirs"),
+                config.getProperty("causynth_process_dirs"),
+                config.getProperty("causynth_extra_process_dirs")));
+        String repo = firstNonBlank(
+                System.getProperty("causynth.repo"),
+                config.getProperty("causynth_repo"),
+                System.getenv("CAUSYNTH_REPO"));
+        String spec = firstNonBlank(
+                System.getProperty("causynth.target.spec"),
+                config.getProperty("causynth_target_spec"));
+        if (repo != null && spec != null) {
+            addTargetSpecProcessDirs(dirs, Paths.get(repo), Paths.get(spec));
+        }
+
+        if (dirs.size() > (inputDirs == null ? 0 : inputDirs.size())) {
+            LOG.info("Expanded Soot process dirs to {}", dirs);
+        }
+        return new ArrayList<>(dirs);
+    }
+
+    private void addConfiguredProcessDirs(Set<String> dirs, String configuredDirs) {
+        if (configuredDirs == null || configuredDirs.trim().isEmpty()) {
+            return;
+        }
+        String normalized = configuredDirs.replace(';', File.pathSeparatorChar);
+        for (String dir : normalized.split(Pattern.quote(File.pathSeparator))) {
+            addExistingDirectory(dirs, dir);
+        }
+    }
+
+    private Properties loadGraphCheckerConfig() {
+        Properties properties = new Properties();
+        String configPath = options.getConfigFilePath();
+        if (configPath == null || configPath.trim().isEmpty()) {
+            return properties;
+        }
+        Path path = Paths.get(configPath);
+        if (!Files.isRegularFile(path)) {
+            return properties;
+        }
+        try {
+            for (String rawLine : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+                String line = rawLine.trim();
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                int eq = line.indexOf('=');
+                if (eq <= 0) {
+                    continue;
+                }
+                String key = line.substring(0, eq).trim();
+                String value = line.substring(eq + 1).trim();
+                if ((value.startsWith("\"") && value.endsWith("\""))
+                        || (value.startsWith("'") && value.endsWith("'"))) {
+                    value = value.substring(1, value.length() - 1);
+                }
+                properties.setProperty(key, value);
+            }
+        } catch (IOException exception) {
+            LOG.warn("Unable to read GraphChecker config {}", configPath, exception);
+        }
+        return properties;
+    }
+
+    private void addTargetSpecProcessDirs(Set<String> dirs, Path repo, Path specPath) {
+        if (!Files.isRegularFile(specPath)) {
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(specPath, StandardCharsets.UTF_8);
+            boolean inFiles = false;
+            boolean inPretestModules = false;
+            for (String rawLine : lines) {
+                String line = rawLine;
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    continue;
+                }
+                if (!line.startsWith(" ") && trimmed.endsWith(":")) {
+                    String section = trimmed.substring(0, trimmed.length() - 1);
+                    inFiles = "files".equals(section);
+                    inPretestModules = false;
+                    continue;
+                }
+                if (trimmed.startsWith("pretest_install_modules:")) {
+                    inPretestModules = true;
+                    continue;
+                }
+                if (inFiles && line.startsWith("  ")) {
+                    int colon = trimmed.indexOf(':');
+                    if (colon < 0) {
+                        continue;
+                    }
+                    String value = trimmed.substring(colon + 1).trim();
+                    String beforePipe = value.split("\\|", 2)[0].trim();
+                    addModuleClassesForSourcePath(dirs, repo, beforePipe);
+                    continue;
+                }
+                if (inPretestModules && trimmed.startsWith("- ")) {
+                    addModuleClassesDir(dirs, repo.resolve(trimmed.substring(2).trim()));
+                    continue;
+                }
+                if (!line.startsWith("    ") && !trimmed.startsWith("- ")) {
+                    inPretestModules = false;
+                }
+            }
+        } catch (IOException exception) {
+            LOG.warn("Unable to read target spec {}", specPath, exception);
+        }
+    }
+
+    private void addModuleClassesForSourcePath(Set<String> dirs, Path repo, String sourcePath) {
+        if (sourcePath == null || sourcePath.trim().isEmpty()
+                || !sourcePath.contains("/src/main/java/")) {
+            return;
+        }
+        String modulePath = sourcePath.substring(0, sourcePath.indexOf("/src/main/java/"));
+        addModuleClassesDir(dirs, repo.resolve(modulePath));
+    }
+
+    private void addModuleClassesDir(Set<String> dirs, Path moduleDir) {
+        addExistingDirectory(dirs, moduleDir.resolve("target/classes").toString());
+    }
+
+    private void addExistingDirectory(Set<String> dirs, String path) {
+        if (path == null || path.trim().isEmpty()) {
+            return;
+        }
+        File file = new File(path.trim());
+        if (file.isDirectory()) {
+            dirs.add(file.getAbsolutePath());
+        }
+    }
+
+    private static String appendClasspathEntries(String classPath, List<String> entries) {
+        StringBuilder builder = new StringBuilder();
+        if (classPath != null && !classPath.trim().isEmpty()) {
+            builder.append(classPath);
+        }
+        if (entries != null) {
+            for (String entry : entries) {
+                appendClasspathEntry(builder, entry);
+            }
+        }
+        return builder.toString();
     }
 
     private static void appendClasspathEntry(StringBuilder classPath, String entry) {
@@ -234,6 +405,15 @@ public class GraphCheckerMain {
             classPath.append(File.pathSeparator);
         }
         classPath.append(entry);
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     public static void main(String[] args) {
