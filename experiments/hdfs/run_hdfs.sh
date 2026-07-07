@@ -20,7 +20,7 @@ usage() {
     echo "  build                         Build GraphChecker jar"
     echo "  build-hadoop                  Build required Hadoop modules"
     echo "  compile                       Compile HDFS and snapshot original classes"
-    echo "  process                       Run the empty Soot transformer"
+    echo "  process                       Run the Causynth Soot transformer"
     echo "  test [TestClass[#method]]     Run HDFS unit tests"
     echo "  run [TestClass[#method]]      process + test"
     echo "  restore                       Recompile HDFS to restore original classes"
@@ -71,12 +71,17 @@ do_process() {
     rm -rf "${instrumented_classes_path}"
     mkdir -p "${instrumented_classes_path}"
 
-    java -cp "${gc_jar}:${java_class_path}" \
+    java -Dcausynth.instrument.trace=true \
+        -cp "${gc_jar}:${java_class_path}" \
         edu.uva.liftlab.graphchecker.GraphCheckerMain \
         -i "${system_classes_path}" \
         -x "${java_class_path}" \
         -C "${conf}" \
         -o "${instrumented_classes_path}"
+
+    while IFS= read -r runtime_class; do
+        (cd "${instrumented_classes_path}" && jar xf "${gc_jar}" "${runtime_class}")
+    done < <(jar tf "${gc_jar}" | grep '^edu/uva/liftlab/graphchecker/runtime/CausynthTraceRecorder')
 
     find "${hdfs_dir}/target/classes" -name "*.class" -delete
     cp -r "${instrumented_classes_path}/." "${hdfs_dir}/target/classes/"
@@ -88,12 +93,42 @@ do_test() {
     if [[ -n "${test_name}" ]]; then
         test_arg="-Dtest=${test_name}"
     fi
+    local trace_test_name="${test_name:-all}"
+    local safe_test_name
+    safe_test_name=$(printf "%s" "${trace_test_name}" | tr -c 'A-Za-z0-9._-' '_')
+    local trace_dir="${causynth_output_dir}/unit-test-graphs/${safe_test_name}"
+    rm -rf "${trace_dir}"
+    mkdir -p "${trace_dir}"
+    local max_graph_edges="${CAUSYNTH_TRACE_MAX_GRAPH_EDGES:-200000}"
+    local max_context_pairs="${CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE:-2000}"
+    local trace_arg_line="-Dcausynth.trace.output.dir=${trace_dir} -Dcausynth.static.graph=${causynth_output_dir}/static_dataflow_edges.jsonl -Dcausynth.trace.test=${trace_test_name} -Dcausynth.trace.max.graph.edges=${max_graph_edges} -Dcausynth.trace.max.context.pairs.per.edge=${max_context_pairs} -Dcausynth.trace.aggregate.on.shutdown=false"
 
     cd "${hdfs_dir}"
     mvn surefire:test \
         ${test_arg} \
         -DfailIfNoTests=false \
-        -Dhadoop.log.dir="${hdfs_dir}/target/test-logs"
+        -Dhadoop.log.dir="${hdfs_dir}/target/test-logs" \
+        -Dcausynth.trace.output.dir="${trace_dir}" \
+        -Dcausynth.static.graph="${causynth_output_dir}/static_dataflow_edges.jsonl" \
+        -Dcausynth.trace.test="${trace_test_name}" \
+        -Dcausynth.trace.max.graph.edges="${max_graph_edges}" \
+        -Dcausynth.trace.max.context.pairs.per.edge="${max_context_pairs}" \
+        -Dcausynth.trace.aggregate.on.shutdown=false \
+        -DargLine="${trace_arg_line}"
+
+    if [[ -s "${trace_dir}/runtime_trace.jsonl" ]]; then
+        java -cp "${gc_jar}" \
+            edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+            --trace-dir "${trace_dir}" \
+            --static-graph "${causynth_output_dir}/static_dataflow_edges.jsonl" \
+            --test "${trace_test_name}" \
+            --max-graph-edges "${max_graph_edges}" \
+            --max-context-pairs-per-edge "${max_context_pairs}"
+    else
+        cat > "${trace_dir}/summary.json" <<EOF
+{"test":"${trace_test_name}","status":"no_runtime_trace","message":"No instrumented selected method executed; the requested test may not exist or may not touch the selected static graph."}
+EOF
+    fi
 }
 
 do_restore() {

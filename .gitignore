@@ -1,3 +1,6 @@
 
 .idea/
 target/
+causynth-output/
+experiments/hdfs/instrumented_classes/
+experiments/hdfs/original_classes/

@@ -10,7 +10,7 @@ usage() {
   echo ""
   echo "Commands:"
   echo "  build              Build the GraphChecker tool"
-  echo "  process <conf>     Run the empty Soot transformer over configured classes"
+  echo "  process <conf>     Run the Causynth Soot transformer over configured classes"
   echo "  transform <conf>   Alias for process"
   echo "  help               Print this help message"
 }
