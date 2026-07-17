@@ -1,0 +1,3362 @@
+package edu.uva.liftlab.graphchecker.concolic;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Builds graph-directed concolic jobs from static regions and concrete
+ * unit-test activations.
+ *
+ * <p>The scheduler deliberately separates three phases:</p>
+ * <ol>
+ *   <li>capture a VM path condition for one runtime-confirmed activation,</li>
+ *   <li>keep the prefix and negate one stable branch occurrence, and</li>
+ *   <li>solve/materialize a new workload input in a later executor.</li>
+ * </ol>
+ *
+ * <p>Protocol equality and shared-state read-from are not flattened into the
+ * same operation.  Equality ports form symbolic alias classes, while heap
+ * state is merged as an ordered, object-sensitive version relation.</p>
+ */
+public final class ConcolicScheduler {
+    private static final Gson GSON = new GsonBuilder()
+            .disableHtmlEscaping().setPrettyPrinting().create();
+    private static final Gson JSONL_GSON = new GsonBuilder()
+            .disableHtmlEscaping().create();
+    private static final Pattern LOCAL_CELL = Pattern.compile(
+            "^(<.+>)::([^#]+)(?:#.*)?$");
+    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
+            "<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>");
+    private static final Pattern FIELD_DETAIL = Pattern.compile(
+            "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
+    private static final Pattern FIELD_PROJECTION = Pattern.compile(
+            "#field:([^#]+)");
+    private static final String VM_CURRENT_TIME_MILLIS_RETURN =
+            "<java.lang.System: long currentTimeMillis()>.return";
+    private static final String CONSUMED_FIELD_SITE_AUTHORITY =
+            "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
+                    + "OWNER_WITHIN_REGION_INSTANCE_V1";
+    private static final String DIRECT_FIELD_ROOT_AUTHORITY =
+            "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1";
+    private static final String ARGUMENT_FIELD_ROOT_AUTHORITY =
+            "ROOT_ARGUMENT_IDENTITY_AT_REGION_ENTRY_AND_"
+                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
+    private static final String RECEIVER_FIELD_ROOT_AUTHORITY =
+            "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
+                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
+    private static final String LOCAL_FIELD_ROOT_AUTHORITY =
+            "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
+                    + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
+    private static final Map<String, String> OPPOSITE = opposites();
+
+    private ConcolicScheduler() {
+    }
+
+    public static void main(String[] args) throws Exception {
+        Arguments arguments = Arguments.parse(args);
+        Result result = schedule(arguments);
+        System.out.println(GSON.toJson(result.summary));
+        if (result.jobs.isEmpty()) {
+            System.exit(2);
+        }
+    }
+
+    public static Result schedule(Arguments arguments) throws IOException {
+        requireFile(arguments.regions, "symbolic regions");
+        requireFile(arguments.activations, "activation plan");
+        requireFile(arguments.edgeValidations, "runtime edge validation");
+        Files.createDirectories(arguments.outputDirectory);
+
+        List<JsonObject> regions = readJsonl(arguments.regions);
+        List<JsonObject> activations = readJsonl(arguments.activations);
+        List<JsonObject> edges = readJsonl(arguments.edgeValidations);
+        List<JsonObject> summaries = arguments.captureOnly
+                || arguments.summaries == null
+                ? Collections.<JsonObject>emptyList()
+                : readJsonl(arguments.summaries);
+        List<JsonObject> staticGraph = arguments.staticGraph == null
+                ? Collections.<JsonObject>emptyList()
+                : readJsonl(arguments.staticGraph);
+        List<JsonObject> pathRecords = arguments.pathRecords == null
+                ? Collections.<JsonObject>emptyList()
+                : readJsonl(arguments.pathRecords);
+        DefinitionIndex definitions = arguments.staticGraph == null
+                ? DefinitionIndex.fallback()
+                : DefinitionIndex.from(staticGraph);
+
+        Map<String, Region> regionIndex = new LinkedHashMap<>();
+        for (JsonObject row : regions) {
+            Region region = new Region(row);
+            if (!region.regionId.isEmpty()) {
+                regionIndex.put(region.regionId, region);
+            }
+        }
+
+        MergePlan mergePlan = buildMergePlan(regionIndex, edges);
+        List<Candidate> candidates = candidates(arguments, activations,
+                regionIndex, definitions);
+        Collections.sort(candidates, Candidate.ORDER);
+
+        Result result = new Result();
+        result.mergePlan = mergePlan.json;
+        List<JsonObject> worklistRoots = new ArrayList<>();
+        Set<String> rootActivations = new LinkedHashSet<>();
+        for (Candidate candidate : candidates) {
+            String rootKey = candidate.region.regionId + "\n"
+                    + candidate.activationId;
+            if (rootActivations.add(rootKey)) {
+                worklistRoots.add(candidate.activation.deepCopy());
+            }
+        }
+        RecursiveRegionWorklist.Result recursive =
+                RecursiveRegionWorklist.explore(regions, activations, edges,
+                        summaries, worklistRoots, arguments.regionBounds);
+        result.regionWorkItems.addAll(recursive.workItems);
+        result.upstreamRequests.addAll(recursive.upstreamRequests);
+        result.alternativeWriterGroups.addAll(
+                recursive.alternativeWriterGroups);
+        result.regionManifest = recursive.manifest;
+        RegionPathWorklist.Result pathWork = RegionPathWorklist.plan(
+                summaries, activations, pathRecords, arguments.pathBounds);
+        result.pathTasks.addAll(pathWork.tasks);
+        result.pathManifest = pathWork.manifest;
+        Set<String> selectedRegions = new LinkedHashSet<>();
+        Map<String, JsonObject> emittedActivationDefinitions =
+                new LinkedHashMap<>();
+        int upstreamCaptureJobCount = 0;
+        int reachabilitySupportActivationCount = 0;
+        int activationBundleJobCount = 0;
+        for (Candidate candidate : candidates) {
+            if (result.jobs.size() >= arguments.maxJobs) {
+                break;
+            }
+            if (!arguments.allowMultipleJobsPerRegion
+                    && !selectedRegions.add(candidate.region.regionId)) {
+                continue;
+            }
+            String scheduleId = "SCHEDULE." + result.jobs.size();
+            MaterializationPlan materialization = candidate.materialization;
+            JsonObject scheduledActivation = candidate.activation.deepCopy();
+            JsonObject captured = candidate.outputClosure ? null
+                    : exactTargetSummary(candidate, summaries);
+            String executionPhase = candidate.outputClosure
+                    ? "CAPTURE_OUTPUT_PATH"
+                    : arguments.captureOnly
+                    ? "CAPTURE_ONLY"
+                    : captured != null
+                    ? "NEGATE_CAPTURED_PATH" : "CAPTURE_THEN_NEGATE";
+            RegionCaptureGoal goal = RegionCaptureGoal.from(
+                    candidate.activation);
+            goal.writeTo(scheduledActivation);
+            scheduledActivation.remove("summaryMode");
+            scheduledActivation.addProperty("scheduleId", scheduleId);
+            scheduledActivation.addProperty("executionPhase", executionPhase);
+            scheduledActivation.addProperty("targetReplayRequired", false);
+            scheduledActivation.addProperty("branchOverrideProhibited",
+                    !arguments.forceBranchValidation);
+            scheduledActivation.addProperty("discoverySymbolicReady",
+                    bool(candidate.activation, "symbolicReady", false));
+            scheduledActivation.addProperty("schedulerReady",
+                    materialization.ready);
+            scheduledActivation.addProperty("materializationComplete",
+                    materialization.complete);
+            scheduledActivation.addProperty("executableMaterializationCount",
+                    materialization.executableCount);
+            scheduledActivation.addProperty("deferredMaterializationCount",
+                    materialization.deferredCount);
+            scheduledActivation.addProperty("vmIntrinsicPlaceholderCount",
+                    materialization.vmIntrinsicPlaceholderCount);
+            scheduledActivation.addProperty("symbolicReady",
+                    materialization.ready);
+            scheduledActivation.addProperty("readinessAuthority",
+                    "SCHEDULER_MATERIALIZATION_PLAN");
+            scheduledActivation.add("materializations",
+                    materialization.actions.deepCopy());
+            if (!candidate.outputClosure) {
+                scheduledActivation.add("targetBranch",
+                        candidate.target.toJson());
+            }
+
+            if (arguments.forceBranchValidation
+                    && !candidate.outputClosure) {
+                JsonArray forced = new JsonArray();
+                JsonObject force = new JsonObject();
+                force.addProperty("siteId", candidate.target.siteId);
+                force.addProperty("occurrence",
+                        candidate.target.selectedOccurrence);
+                force.addProperty("desiredOutcome",
+                        candidate.target.desiredOutcome);
+                force.addProperty("mode", "SOOT_BRANCH_OVERRIDE_VALIDATION");
+                force.addProperty("solverDerived", false);
+                forced.add(force);
+                scheduledActivation.add("forcedBranches", forced);
+            }
+
+            JsonObject job = new JsonObject();
+            job.addProperty("scheduleId", scheduleId);
+            job.addProperty("phase", executionPhase);
+            job.addProperty("activationId", candidate.activationId);
+            job.addProperty("regionId", candidate.region.regionId);
+            job.addProperty("test", string(candidate.activation, "test"));
+            job.addProperty("rootMethod",
+                    string(candidate.activation, "rootMethod"));
+            job.addProperty("invocationOrdinal",
+                    integer(candidate.activation, "invocationOrdinal", 1));
+            job.addProperty("workloadKind", workloadKind(candidate, edges));
+            job.addProperty("selectionReason", candidate.reason);
+            job.add("captureGoal", goal.toJson());
+            job.addProperty("captureReady", materialization.ready);
+            job.addProperty("materializationComplete",
+                    materialization.complete);
+            job.addProperty("executableMaterializationCount",
+                    materialization.executableCount);
+            job.addProperty("deferredMaterializationCount",
+                    materialization.deferredCount);
+            job.addProperty("vmIntrinsicPlaceholderCount",
+                    materialization.vmIntrinsicPlaceholderCount);
+            job.addProperty("solverReplayReady", false);
+            job.addProperty("forceValidationEnabled",
+                    arguments.forceBranchValidation);
+            if (!candidate.outputClosure) {
+                job.add("targetBranch", candidate.target.toJson());
+            } else {
+                upstreamCaptureJobCount++;
+                JsonElement requestedOutput = candidate.activation.get(
+                        "requestedOutput");
+                JsonElement edgeBindings = firstElement(candidate.activation,
+                        "edgeBindings", "producerBindings");
+                job.add("requestedOutput", requestedOutput == null
+                        ? new JsonObject() : requestedOutput.deepCopy());
+                job.add("edgeBindings", edgeBindings == null
+                        ? new JsonArray() : edgeBindings.deepCopy());
+            }
+            job.add("materializations", materialization.actions.deepCopy());
+            job.add("symbolicContext",
+                    mergePlan.contextFor(candidate.region.regionId,
+                            string(candidate.activation, "regionInstanceId")));
+            if (captured != null && !candidate.outputClosure) {
+                boolean freshObservation = bool(candidate.activation,
+                        "targetObservationOnly", false)
+                        || "FRESH_INSTANCE_UPSTREAM_SUPPORT_TARGET_"
+                        .concat("OBSERVATION").equals(string(
+                                candidate.activation,
+                                "targetRebaseAuthority"));
+                JsonObject query;
+                boolean replayAlreadyValidated;
+                if (freshObservation) {
+                    FreshTargetQueryResult rebuilt =
+                            rebuildFreshObservedTargetQuery(regions,
+                                    activations, edges, object(
+                                            candidate.activation,
+                                            "directedTargetQuery"),
+                                    candidate.activation, captured,
+                                    firstNonBlank(string(
+                                            candidate.activation,
+                                            "targetRebaseSourceExecutionId"),
+                                            string(candidate.activation,
+                                                    "postDiscoveryTargetExecutionId"),
+                                            string(candidate.activation,
+                                                    "discoveredExecutionId")));
+                    if (rebuilt.ready) {
+                        rebuilt = validateFreshScheduleHandoff(rebuilt,
+                                candidate.activation, captured);
+                    }
+                    query = rebuilt.query.deepCopy();
+                    replayAlreadyValidated = rebuilt.ready;
+                    if (!rebuilt.ready) {
+                        query.addProperty("activationId",
+                                candidate.activationId);
+                        query.addProperty("regionId",
+                                candidate.region.regionId);
+                        query.addProperty("regionInstanceId", string(
+                                candidate.activation, "regionInstanceId"));
+                        query.addProperty("siteId", candidate.target.siteId);
+                        query.addProperty("occurrence",
+                                candidate.target.selectedOccurrence);
+                        query.addProperty("desiredOutcome",
+                                candidate.target.desiredOutcome);
+                        query.addProperty("readyForSolver", false);
+                        query.addProperty("readyForReplay", false);
+                        query.addProperty("blocker", rebuilt.reason);
+                        query.add("freshTargetQueryAdmission",
+                                rebuilt.admission.deepCopy());
+                    }
+                } else {
+                    query = validatedDirectedTargetQuery(candidate,
+                            captured, mergePlan);
+                    replayAlreadyValidated = query.size() > 0;
+                    if (!replayAlreadyValidated) {
+                        query = branchQuery(candidate, captured, mergePlan,
+                                staticGraph);
+                    }
+                }
+                job.add("branchQuery", query);
+                if (object(query, "symbolicContext").size() > 0) {
+                    job.add("symbolicContext", object(query,
+                            "symbolicContext").deepCopy());
+                }
+                scheduledActivation.add("directedTargetQuery",
+                        query.deepCopy());
+                boolean replayReady = !replayAlreadyValidated
+                        && bool(query, "readyForReplay", false);
+                job.addProperty("solverReplayReady", replayReady);
+                scheduledActivation.addProperty("targetReplayRequired",
+                        replayReady);
+                if (replayAlreadyValidated) {
+                    executionPhase = "TARGET_REPLAY_VALIDATED";
+                    scheduledActivation.addProperty("executionPhase",
+                            executionPhase);
+                    job.addProperty("phase", executionPhase);
+                    job.addProperty("targetReplayAlreadyValidated", true);
+                }
+                JsonArray replayMaterializations = array(query,
+                        "replayMaterializations");
+                if (replayReady && replayMaterializations.size() > 0) {
+                    scheduledActivation.add("replayMaterializations",
+                            replayMaterializations.deepCopy());
+                    job.add("replayMaterializations",
+                            replayMaterializations.deepCopy());
+                }
+                result.queries.add(query);
+            }
+            List<JsonObject> activationBundle = scheduledActivationBundle(
+                    scheduledActivation, scheduleId);
+            JsonArray supportActivationIds = new JsonArray();
+            for (JsonObject member : activationBundle) {
+                if ("REACHABILITY_SUPPORT".equals(string(member,
+                        "activationBundleMemberRole"))) {
+                    supportActivationIds.add(string(member,
+                            "activationId"));
+                }
+            }
+            int supportCount = supportActivationIds.size();
+            job.addProperty("reachabilitySupportActivationCount",
+                    supportCount);
+            job.add("reachabilitySupportActivationIds",
+                    supportActivationIds);
+            job.addProperty("activationSelectionRequired", supportCount > 0
+                    ? "ALL" : candidate.activationId);
+            if (supportCount > 0) {
+                activationBundleJobCount++;
+                reachabilitySupportActivationCount += supportCount;
+            }
+            result.jobs.add(job);
+            appendUniqueActivationBundle(result.scheduledActivations,
+                    emittedActivationDefinitions, activationBundle);
+        }
+
+        result.summary.addProperty("candidateCount", candidates.size());
+        result.summary.addProperty("scheduledJobCount", result.jobs.size());
+        result.summary.addProperty("scheduledActivationCount",
+                result.scheduledActivations.size());
+        result.summary.addProperty("upstreamCaptureJobCount",
+                upstreamCaptureJobCount);
+        result.summary.addProperty("reachabilitySupportActivationCount",
+                reachabilitySupportActivationCount);
+        result.summary.addProperty("activationBundleJobCount",
+                activationBundleJobCount);
+        result.summary.addProperty("activationSelectionRequired",
+                activationBundleJobCount > 0 ? "ALL" : "EXACT_JOB_ACTIVATION");
+        result.summary.addProperty("equalityClassCount",
+                mergePlan.equalityClasses.size());
+        result.summary.addProperty("versionedStateMergeCount",
+                mergePlan.stateMerges.size());
+        result.summary.addProperty("branchQueryCount", result.queries.size());
+        result.summary.addProperty("forceBranchValidation",
+                arguments.forceBranchValidation);
+        result.summary.addProperty("captureOnly", arguments.captureOnly);
+        result.summary.addProperty("recursiveRegionQueryCount",
+                result.regionWorkItems.size());
+        result.summary.addProperty("recursiveUpstreamRequestCount",
+                result.upstreamRequests.size());
+        result.summary.addProperty("alternativeWriterGroupCount",
+                result.alternativeWriterGroups.size());
+        result.summary.addProperty("recursiveRegionComplete",
+                bool(result.regionManifest, "complete", false));
+        result.summary.addProperty("regionPathTaskCount",
+                result.pathTasks.size());
+        result.summary.addProperty("regionPathClosureComplete",
+                bool(result.pathManifest, "complete", false));
+        result.summary.addProperty("definitionSiteAuthority",
+                definitions.authoritative
+                        ? "STATIC_DATAFLOW_DEF_SITE" : "LOCAL_NAME_FALLBACK");
+        boolean finiteTheorySolved = false;
+        for (JsonObject query : result.queries) {
+            finiteTheorySolved |= bool(query, "readyForReplay", false);
+        }
+        result.summary.addProperty("solver", finiteTheorySolved
+                ? "FINITE_THEORY_PLUGIN" : "NOT_RUN_BY_SCHEDULER");
+        result.summary.addProperty("precision",
+                "STATIC_REGION_PLUS_RUNTIME_ACTIVATION_AND_EDGE_VALIDATION");
+
+        writeJsonl(arguments.outputDirectory.resolve("concolic_schedule.jsonl"),
+                result.jobs);
+        writeJsonl(arguments.outputDirectory.resolve(
+                        "scheduled_activation_plan.jsonl"),
+                result.scheduledActivations);
+        writeJsonl(arguments.outputDirectory.resolve("branch_queries.jsonl"),
+                result.queries);
+        writeJson(arguments.outputDirectory.resolve("symbolic_merge_plan.json"),
+                result.mergePlan);
+        writeJson(arguments.outputDirectory.resolve(
+                "concolic_scheduler_summary.json"), result.summary);
+        writeJsonl(arguments.outputDirectory.resolve(
+                        "recursive_region_worklist.jsonl"),
+                result.regionWorkItems);
+        writeJsonl(arguments.outputDirectory.resolve(
+                        "recursive_upstream_requests.jsonl"),
+                result.upstreamRequests);
+        writeJsonl(arguments.outputDirectory.resolve(
+                        "alternative_writer_groups.jsonl"),
+                result.alternativeWriterGroups);
+        writeJson(arguments.outputDirectory.resolve(
+                        "recursive_region_manifest.json"),
+                result.regionManifest);
+        writeJsonl(arguments.outputDirectory.resolve(
+                        "region_path_worklist.jsonl"), result.pathTasks);
+        writeJson(arguments.outputDirectory.resolve(
+                        "region_path_manifest.json"), result.pathManifest);
+        return result;
+    }
+
+    /**
+     * Expands the recursively declared reachability support for one selected
+     * activation.  Support rows must precede their consumer in the emitted
+     * plan so the runtime can activate every upstream region needed by the
+     * same concrete execution.  The custom runtime must select ALL rows for a
+     * bundle; selecting only the primary activation silently loses the
+     * producer path and is therefore recorded as an explicit requirement.
+     */
+    private static List<JsonObject> scheduledActivationBundle(
+            JsonObject primary, String scheduleId) throws IOException {
+        List<JsonObject> definitions = new ArrayList<>();
+        Map<String, JsonObject> byId = new LinkedHashMap<>();
+        Set<String> visiting = new LinkedHashSet<>();
+        String primaryId = string(primary, "activationId");
+        if (primaryId.isEmpty()) {
+            throw new IOException("Scheduled activation has no activationId");
+        }
+        flattenReachabilityActivation(primary, primaryId, scheduleId, false,
+                definitions, byId, visiting);
+        int bundleSize = definitions.size();
+        for (int index = 0; index < definitions.size(); index++) {
+            JsonObject member = definitions.get(index);
+            member.addProperty("activationBundleIndex", index);
+            member.addProperty("activationBundleSize", bundleSize);
+            member.addProperty("activationSelectionRequired",
+                    bundleSize > 1 ? "ALL" : primaryId);
+        }
+        return definitions;
+    }
+
+    private static void flattenReachabilityActivation(
+            JsonObject activation, String primaryId, String scheduleId,
+            boolean support, List<JsonObject> result,
+            Map<String, JsonObject> definitions, Set<String> visiting)
+            throws IOException {
+        String activationId = string(activation, "activationId");
+        if (activationId.isEmpty()) {
+            throw new IOException("Reachability activation has no "
+                    + "activationId for bundle " + primaryId);
+        }
+        if (!visiting.add(activationId)) {
+            throw new IOException("Cyclic reachability activation bundle at "
+                    + activationId + " for " + primaryId);
+        }
+        JsonArray nested = array(activation,
+                "reachabilitySupportActivations");
+        for (JsonElement element : nested) {
+            if (!element.isJsonObject()) {
+                throw new IOException("Non-object reachability support in "
+                        + activationId);
+            }
+            flattenReachabilityActivation(element.getAsJsonObject(),
+                    primaryId, scheduleId, true, result, definitions,
+                    visiting);
+        }
+        visiting.remove(activationId);
+
+        JsonObject normalized = activation.deepCopy();
+        normalized.remove("reachabilitySupportActivations");
+        JsonObject previous = definitions.get(activationId);
+        if (previous != null) {
+            if (!previous.equals(normalized)) {
+                throw new IOException("Conflicting reachability activation "
+                        + "definitions for " + activationId);
+            }
+            return;
+        }
+        definitions.put(activationId, normalized.deepCopy());
+        normalized.addProperty("activationBundleRootActivationId",
+                primaryId);
+        normalized.addProperty("activationBundleScheduleId", scheduleId);
+        normalized.addProperty("activationBundleMemberRole", support
+                ? "REACHABILITY_SUPPORT" : "PRIMARY");
+        if (support) {
+            normalized.addProperty("reachabilitySupportForActivationId",
+                    primaryId);
+        }
+        result.add(normalized);
+    }
+
+    private static void appendUniqueActivationBundle(
+            List<JsonObject> output, Map<String, JsonObject> emitted,
+            List<JsonObject> bundle) throws IOException {
+        for (JsonObject activation : bundle) {
+            String activationId = string(activation, "activationId");
+            JsonObject previous = emitted.get(activationId);
+            if (previous != null) {
+                JsonObject left = previous.deepCopy();
+                JsonObject right = activation.deepCopy();
+                for (String annotation : new String[]{
+                        "activationBundleRootActivationId",
+                        "activationBundleScheduleId",
+                        "activationBundleMemberRole",
+                        "reachabilitySupportForActivationId",
+                        "activationBundleIndex", "activationBundleSize",
+                        "activationSelectionRequired"}) {
+                    left.remove(annotation);
+                    right.remove(annotation);
+                }
+                if (!left.equals(right)) {
+                    throw new IOException("Conflicting scheduled activation "
+                            + "definitions for " + activationId);
+                }
+                continue;
+            }
+            emitted.put(activationId, activation.deepCopy());
+            output.add(activation);
+        }
+    }
+
+    /**
+     * Converts one discovered output-closure activation into an executable,
+     * scheduler-authorized capture plan.  Campaign execution uses exactly the
+     * same definition-site resolver as ordinary scheduling.
+     */
+    public static JsonObject prepareOutputCapture(
+            JsonObject activation, List<JsonObject> staticGraph) {
+        JsonObject result = activation == null
+                ? new JsonObject() : activation.deepCopy();
+        RegionCaptureGoal captureGoal = RegionCaptureGoal.from(result);
+        DefinitionIndex definitions = staticGraph == null
+                || staticGraph.isEmpty() ? DefinitionIndex.fallback()
+                : DefinitionIndex.from(staticGraph);
+        MaterializationPlan materialization = materializationPlan(result,
+                definitions);
+        if (captureGoal.isTransitionDiscovery()) {
+            RegionCaptureGoal.transitionDiscovery().writeTo(result);
+        } else {
+            RegionCaptureGoal.outputClosure().writeTo(result);
+        }
+        result.remove("summaryMode");
+        result.remove("targetBranch");
+        result.remove("forcedBranches");
+        result.remove("replayMaterializations");
+        result.remove("modelAssignments");
+        boolean outputCaptureReady = outputCaptureReady(result);
+        boolean transitionTemplateReady =
+                transitionDiscoveryCaptureTemplateReady(result);
+        boolean schedulerReady = materialization.ready
+                && (outputCaptureReady || transitionTemplateReady);
+        result.addProperty("executionPhase", transitionTemplateReady
+                && !outputCaptureReady
+                ? "CAPTURE_TRANSITION_GUARD_PATH"
+                : "CAPTURE_OUTPUT_PATH");
+        result.addProperty("schedulerReady", schedulerReady);
+        result.addProperty("materializationComplete",
+                materialization.complete);
+        result.addProperty("outputCaptureReady", outputCaptureReady);
+        result.addProperty("transitionDiscoveryCaptureTemplateReady",
+                transitionTemplateReady);
+        result.addProperty("executableMaterializationCount",
+                materialization.executableCount);
+        result.addProperty("deferredMaterializationCount",
+                materialization.deferredCount);
+        result.addProperty("vmIntrinsicPlaceholderCount",
+                materialization.vmIntrinsicPlaceholderCount);
+        result.addProperty("symbolicReady", schedulerReady);
+        result.addProperty("readinessAuthority",
+                "SCHEDULER_MATERIALIZATION_PLAN");
+        result.addProperty("branchOverrideProhibited", true);
+        result.add("materializations", materialization.actions.deepCopy());
+        return result;
+    }
+
+    /**
+     * Rebuilds the final fatal query after an unforced replay has observed the
+     * target on the fresh logical region instance.  This is deliberately an
+     * in-memory API: a campaign already owns the current activation/edge
+     * ledger and must not round-trip it through another scheduler CLI run.
+     *
+     * <p>The old target is only an identity template (site, occurrence and
+     * desired outcome).  Its path formula, engine-array bindings and symbolic
+     * context are never copied.  The formula comes from {@code freshSummary};
+     * the context is selected again from the current runtime-edge ledger.</p>
+     */
+    public static FreshTargetQueryResult rebuildFreshObservedTargetQuery(
+            List<JsonObject> regions, List<JsonObject> activations,
+            List<JsonObject> edges, JsonObject targetTemplate,
+            JsonObject freshActivation, JsonObject freshSummary,
+            String transitionExecutionId) {
+        if (targetTemplate == null || freshActivation == null
+                || freshSummary == null) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_QUERY_INPUT_MISSING");
+        }
+        String activationId = string(freshActivation, "activationId");
+        String regionId = string(freshActivation, "regionId");
+        String regionInstanceId = string(freshActivation,
+                "regionInstanceId");
+        if (activationId.isEmpty() || regionId.isEmpty()
+                || regionInstanceId.isEmpty()
+                || safe(transitionExecutionId).trim().isEmpty()) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_IDENTITY_OR_TRANSITION_EXECUTION_MISSING");
+        }
+        if (!activationId.equals(string(freshSummary, "activationId"))
+                || !regionId.equals(string(freshSummary, "regionId"))
+                || !regionInstanceId.equals(string(freshSummary,
+                "regionInstanceId"))
+                || string(freshSummary, "summaryId").isEmpty()) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_SUMMARY_INSTANCE_MISMATCH");
+        }
+        JsonObject replayAdmission = object(freshSummary,
+                "executionAdmission");
+        if (!bool(freshSummary, "valid", false)
+                || !bool(freshSummary, "targetReplayValidated", false)
+                || bool(freshSummary, "branchOverrideUsed", true)
+                || !RegionCaptureGoal.from(freshSummary).isTargetBranch()
+                || !bool(replayAdmission, "required", false)
+                || !bool(replayAdmission, "valid", false)
+                || bool(replayAdmission, "branchOverrideAccepted", true)
+                || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_"
+                .concat("OBSERVATION").equals(string(replayAdmission,
+                        "authority"))) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_UNFORCED_REPLAY_ADMISSION_INVALID");
+        }
+
+        JsonObject target = object(freshActivation, "targetBranch");
+        String siteId = firstNonBlank(string(target, "siteId"),
+                string(targetTemplate, "siteId"));
+        int occurrence = integer(target, "occurrence",
+                integer(targetTemplate, "occurrence", -1));
+        boolean desiredOutcome = target.has("desiredOutcome")
+                ? bool(target, "desiredOutcome", false)
+                : bool(targetTemplate, "desiredOutcome", false);
+        if (siteId.isEmpty() || occurrence < 1
+                || !siteId.equals(string(targetTemplate, "siteId"))
+                || occurrence != integer(targetTemplate, "occurrence", -2)
+                || desiredOutcome != bool(targetTemplate,
+                "desiredOutcome", !desiredOutcome)) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_TEMPLATE_IDENTITY_MISMATCH");
+        }
+
+        JsonObject mapping = null;
+        int mappingCount = 0;
+        for (JsonElement element : array(freshSummary, "branchMappings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (siteId.equals(string(candidate, "siteId"))
+                    && occurrence == integer(candidate, "occurrence", -1)) {
+                mapping = candidate;
+                mappingCount++;
+            }
+        }
+        if (mappingCount != 1 || mapping == null
+                || bool(mapping, "overrideApplied", false)
+                || desiredOutcome != bool(mapping, "observedOutcome",
+                bool(mapping, "outcome", !desiredOutcome))) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_BRANCH_MAPPING_NOT_UNIQUE_OR_NOT_DESIRED");
+        }
+        JsonArray path = array(freshSummary, "pathCondition");
+        int conditionIndex = integer(mapping, "conditionIndex", -1);
+        if (conditionIndex < 0 || conditionIndex >= path.size()) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_CONDITION_MAPPING_INVALID");
+        }
+        if (mapping.has("condition")
+                && !mapping.get("condition").equals(path.get(
+                conditionIndex))) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_MAPPING_CONDITION_PATH_MISMATCH");
+        }
+
+        Map<String, Region> regionIndex = new LinkedHashMap<>();
+        for (JsonObject row : regions == null
+                ? Collections.<JsonObject>emptyList() : regions) {
+            Region region = new Region(row);
+            if (region.regionId.isEmpty()
+                    || regionIndex.put(region.regionId, region) != null) {
+                return FreshTargetQueryResult.failure(
+                        "STATIC_REGION_ID_MISSING_OR_DUPLICATED");
+            }
+        }
+        if (!regionIndex.containsKey(regionId)) {
+            return FreshTargetQueryResult.failure(
+                    "FRESH_TARGET_STATIC_REGION_MISSING");
+        }
+        ExactBindingScope scope = ExactBindingScope.create(activations,
+                transitionExecutionId, freshActivation);
+        if (!scope.ready) {
+            return FreshTargetQueryResult.failure(scope.reason);
+        }
+        MergePlan mergePlan = buildMergePlan(regionIndex, edges == null
+                ? Collections.<JsonObject>emptyList() : edges);
+        ExactContextResult selectedContext = mergePlan.contextForExact(
+                regionId, regionInstanceId, scope);
+        if (selectedContext.gaps.size() > 0
+                || selectedContext.selectedBindingCount == 0) {
+            JsonObject admission = new JsonObject();
+            admission.addProperty("ready", false);
+            String reason = selectedContext.gaps.size() > 0
+                    ? "FRESH_TARGET_SYMBOLIC_CONTEXT_ENDPOINT_INVALID"
+                    : "FRESH_TARGET_SYMBOLIC_CONTEXT_EMPTY";
+            admission.addProperty("reason", reason);
+            admission.add("contextGaps", selectedContext.gaps.deepCopy());
+            admission.addProperty("selectedBindingCount",
+                    selectedContext.selectedBindingCount);
+            return new FreshTargetQueryResult(false, reason,
+                    new JsonObject(), admission);
+        }
+
+        JsonArray constraints = new JsonArray();
+        for (int index = 0; index < conditionIndex; index++) {
+            constraints.add(path.get(index).deepCopy());
+        }
+        JsonElement observedTarget = path.get(conditionIndex).deepCopy();
+        constraints.add(observedTarget.deepCopy());
+        JsonObject query = new JsonObject();
+        query.addProperty("activationId", activationId);
+        query.addProperty("regionId", regionId);
+        query.addProperty("regionInstanceId", regionInstanceId);
+        query.addProperty("siteId", siteId);
+        query.addProperty("occurrence", occurrence);
+        query.addProperty("observedOutcome", desiredOutcome);
+        query.addProperty("desiredOutcome", desiredOutcome);
+        query.addProperty("conditionIndex", conditionIndex);
+        query.addProperty("prefixPolicy",
+                "KEEP_FRESH_CONDITIONS_BEFORE_TARGET");
+        query.addProperty("targetPolicy",
+                "KEEP_FRESH_OBSERVED_DESIRED_TARGET_CONDITION");
+        query.addProperty("suffixPolicy", "DROP_FRESH_SUFFIX");
+        query.add("constraints", constraints);
+        // Preserve the historical pair-shaped schema without pretending that
+        // the synthetic opposite was observed in this execution.
+        query.add("originalTargetCondition", negate(observedTarget));
+        query.add("negatedTargetCondition", observedTarget.deepCopy());
+        query.add("freshObservedTargetCondition",
+                observedTarget.deepCopy());
+        query.addProperty("targetConditionPairAuthority",
+                "FRESH_OBSERVED_DESIRED_TARGET_PLUS_SYNTHETIC_OPPOSITE");
+        query.add("engineArrayInputBindings", array(freshSummary,
+                "engineArrayInputBindings").deepCopy());
+        query.add("symbolicContext", selectedContext.context.deepCopy());
+        query.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
+        query.addProperty("readyForSolver", true);
+        query.addProperty("readyForReplay", false);
+        query.addProperty("replayAlreadyValidated", true);
+        query.addProperty("targetReplayValidated", true);
+        query.addProperty("validatedSummaryId", string(freshSummary,
+                "summaryId"));
+        query.addProperty("replayValidationAuthority",
+                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
+                        + "TARGET_REPLAY");
+        query.addProperty("formulaAuthority",
+                "FRESH_INSTANCE_IMPORTED_UNFORCED_TARGET_PREFIX_PLUS_"
+                        + "OBSERVED_TARGET");
+        JsonObject validatedSummary = new JsonObject();
+        validatedSummary.addProperty("summaryId", string(freshSummary,
+                "summaryId"));
+        validatedSummary.addProperty("activationId", activationId);
+        validatedSummary.addProperty("regionId", regionId);
+        validatedSummary.addProperty("regionInstanceId", regionInstanceId);
+        validatedSummary.addProperty("targetReplayValidated", true);
+        validatedSummary.addProperty("branchOverrideUsed", false);
+        validatedSummary.add("executionAdmission",
+                replayAdmission.deepCopy());
+        query.add("validatedTargetSummary", validatedSummary);
+        JsonObject targetRebaseProvenance = new JsonObject();
+        targetRebaseProvenance.addProperty("activationId", activationId);
+        targetRebaseProvenance.addProperty("regionInstanceId",
+                regionInstanceId);
+        targetRebaseProvenance.addProperty("transitionExecutionId",
+                transitionExecutionId);
+        targetRebaseProvenance.addProperty("downstreamInjectionUsed", false);
+        targetRebaseProvenance.addProperty("branchOverrideUsed", false);
+        targetRebaseProvenance.addProperty("authority",
+                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
+                        + "TARGET_REPLAY");
+        query.add("targetRebaseProvenance", targetRebaseProvenance);
+        JsonObject provenance = new JsonObject();
+        provenance.addProperty("freshSummaryId", string(freshSummary,
+                "summaryId"));
+        provenance.addProperty("transitionExecutionId",
+                transitionExecutionId);
+        provenance.addProperty("activationId", activationId);
+        provenance.addProperty("regionInstanceId", regionInstanceId);
+        provenance.addProperty("targetTemplateIdentitySha256",
+                RecursiveRegionWorklist.stableQueryKey(
+                        string(targetTemplate, "regionId"), siteId,
+                        "TARGET_TEMPLATE", Boolean.toString(desiredOutcome),
+                        string(targetTemplate, "activationId"),
+                        string(targetTemplate, "regionInstanceId") + "#"
+                                + occurrence));
+        provenance.addProperty("authority",
+                "FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER");
+        query.add("freshQueryRebuildProvenance", provenance);
+
+        JsonObject admission = new JsonObject();
+        admission.addProperty("ready", true);
+        admission.addProperty("reason", "");
+        admission.addProperty("selectedBindingCount",
+                selectedContext.selectedBindingCount);
+        admission.addProperty("contextAuthority",
+                "CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE");
+        admission.addProperty("formulaAuthority", string(query,
+                "formulaAuthority"));
+        admission.add("contextGaps", new JsonArray());
+        return new FreshTargetQueryResult(true, "", query, admission);
+    }
+
+    /**
+     * Binds a rebuilt formula to the enriched campaign summary before the
+     * scheduler is allowed to publish it as a validated fatal query.
+     */
+    private static FreshTargetQueryResult validateFreshScheduleHandoff(
+            FreshTargetQueryResult rebuilt, JsonObject activation,
+            JsonObject summary) {
+        JsonObject query = rebuilt.query.deepCopy();
+        JsonObject storedFresh = object(summary,
+                "freshObservedTargetQuery");
+        JsonObject summaryAdmission = object(summary,
+                "freshTargetSummaryAdmission");
+        String summaryId = string(summary, "summaryId");
+        String transitionExecutionId = string(activation,
+                "targetRebaseSourceExecutionId");
+        String issue = "";
+        if (storedFresh.size() == 0) {
+            issue = "FRESH_SCHEDULE_SUMMARY_QUERY_MISSING";
+        } else if (!"FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER"
+                .equals(string(summaryAdmission, "authority"))
+                || !summaryId.equals(string(summaryAdmission,
+                "sourceSummaryId"))
+                || string(summaryAdmission,
+                "targetReplayExecutionId").isEmpty()
+                || string(summaryAdmission, "derivedQuerySha256").isEmpty()
+                || !"CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE"
+                .equals(string(summaryAdmission, "edgeAuthority"))
+                || bool(summaryAdmission, "downstreamInjectionUsed", true)) {
+            issue = "FRESH_SCHEDULE_SUMMARY_ADMISSION_INVALID";
+        } else if (!bool(activation, "targetObservationOnly", false)
+                || !"FRESH_INSTANCE_UPSTREAM_SUPPORT_TARGET_OBSERVATION"
+                .equals(string(activation, "targetRebaseAuthority"))
+                || transitionExecutionId.isEmpty()
+                || string(activation, "replacesTargetActivationId").isEmpty()
+                || string(activation,
+                "replacesTargetRegionInstanceId").isEmpty()) {
+            issue = "FRESH_SCHEDULE_ACTIVATION_REBASE_METADATA_INVALID";
+        }
+        if (!issue.isEmpty()) {
+            return failedFreshScheduleHandoff(query, rebuilt.admission,
+                    issue, new JsonObject());
+        }
+
+        JsonObject provenance = object(query,
+                "targetRebaseProvenance").deepCopy();
+        provenance.addProperty("replacesActivationId", string(activation,
+                "replacesTargetActivationId"));
+        provenance.addProperty("replacesRegionInstanceId", string(activation,
+                "replacesTargetRegionInstanceId"));
+        provenance.addProperty("transitionExecutionId",
+                transitionExecutionId);
+        provenance.addProperty("targetReplayExecutionId", string(
+                summaryAdmission, "targetReplayExecutionId"));
+        provenance.addProperty("upstreamReachabilitySupportCount", integer(
+                summaryAdmission, "upstreamReachabilitySupportCount", 0));
+        provenance.addProperty("downstreamInjectionUsed", false);
+        provenance.addProperty("branchOverrideUsed", false);
+        provenance.addProperty("authority",
+                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
+                        + "TARGET_REPLAY");
+        query.add("targetRebaseProvenance", provenance);
+        query.add("freshTargetSummaryAdmission",
+                summaryAdmission.deepCopy());
+
+        ConcolicSmtComposer.FreshFatalArtifactValidation validation =
+                ConcolicSmtComposer.validateFreshFatalArtifact(query,
+                        Collections.singletonList(summary));
+        if (!validation.valid) {
+            return failedFreshScheduleHandoff(query, rebuilt.admission,
+                    validation.reason, validation.toJson());
+        }
+        JsonObject admission = rebuilt.admission.deepCopy();
+        admission.add("freshFatalArtifactValidation", validation.toJson());
+        admission.addProperty("scheduleHandoffAuthority",
+                "ENRICHED_CAMPAIGN_SUMMARY_PLUS_SHARED_COMPOSER_VALIDATOR");
+        return new FreshTargetQueryResult(true, "", query, admission);
+    }
+
+    private static FreshTargetQueryResult failedFreshScheduleHandoff(
+            JsonObject source, JsonObject schedulerAdmission,
+            String reason, JsonObject artifactValidation) {
+        JsonObject query = source == null
+                ? new JsonObject() : source.deepCopy();
+        query.addProperty("readyForSolver", false);
+        query.addProperty("readyForReplay", false);
+        query.addProperty("replayAlreadyValidated", false);
+        query.addProperty("targetReplayValidated", false);
+        query.addProperty("replayValidationAuthority", "NONE");
+        query.addProperty("blocker", reason);
+        JsonObject admission = schedulerAdmission == null
+                ? new JsonObject() : schedulerAdmission.deepCopy();
+        admission.addProperty("ready", false);
+        admission.addProperty("reason", reason);
+        admission.add("freshFatalArtifactValidation",
+                artifactValidation == null
+                        ? new JsonObject() : artifactValidation.deepCopy());
+        return new FreshTargetQueryResult(false, reason, query, admission);
+    }
+
+    private static List<Candidate> candidates(Arguments arguments,
+                                              List<JsonObject> activations,
+                                              Map<String, Region> regions,
+                                              DefinitionIndex definitions) {
+        List<Candidate> result = new ArrayList<>();
+        for (JsonObject activation : activations) {
+            String activationId = string(activation, "activationId");
+            String regionId = string(activation, "regionId");
+            Region region = regions.get(regionId);
+            if (region == null || activationId.isEmpty()
+                    || !bool(activation, "replayable", false)) {
+                continue;
+            }
+            if (!arguments.activationId.isEmpty()
+                    && !arguments.activationId.equals(activationId)) {
+                continue;
+            }
+            if (!arguments.regionId.isEmpty()
+                    && !arguments.regionId.equals(regionId)) {
+                continue;
+            }
+            RegionCaptureGoal captureGoal = RegionCaptureGoal.from(activation);
+            if (captureGoal.isOutputClosure()) {
+                MaterializationPlan upstreamPlan = materializationPlan(
+                        activation, definitions);
+                if (!bool(activation, "requestedOutputSliceComplete", false)
+                        || !upstreamPlan.complete
+                        || !outputCaptureReady(activation)
+                        && !transitionDiscoveryCaptureTemplateReady(
+                        activation)) {
+                    upstreamPlan = upstreamPlan.notReady();
+                }
+                result.add(new Candidate(activation, activationId, region,
+                        TargetBranch.outputCapture(), true,
+                        upstreamPlan, true));
+                continue;
+            }
+            if (bool(activation, "targetObservationOnly", false)) {
+                JsonObject observedTarget = object(activation,
+                        "targetBranch");
+                String siteId = string(observedTarget, "siteId");
+                int occurrence = integer(observedTarget, "occurrence", -1);
+                if (!siteId.isEmpty() && occurrence > 0
+                        && observedTarget.has("desiredOutcome")) {
+                    boolean desired = bool(observedTarget,
+                            "desiredOutcome", false);
+                    TargetBranch target = new TargetBranch(siteId, -1,
+                            occurrence, desired, desired,
+                            "FRESH_OBSERVED_TARGET_VALIDATION");
+                    result.add(new Candidate(activation, activationId,
+                            region, target, true,
+                            materializationPlan(activation, definitions),
+                            false));
+                }
+                continue;
+            }
+            JsonArray branches = array(activation, "branches");
+            for (int index = 0; index < branches.size(); index++) {
+                JsonElement element = branches.get(index);
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject branch = element.getAsJsonObject();
+                String siteId = string(branch, "siteId");
+                if (!arguments.targetSite.isEmpty()
+                        && !arguments.targetSite.equals(siteId)) {
+                    continue;
+                }
+                if (!bool(branch, "observed", false)
+                        || !branch.has("requiredOutcome")
+                        || branch.get("requiredOutcome").isJsonNull()) {
+                    continue;
+                }
+                boolean required = bool(branch, "requiredOutcome", false);
+                boolean hasWitness = hasOutcome(branch, required);
+                boolean explicitlySelected = !arguments.targetSite.isEmpty();
+                boolean explore = "EXPLORE".equals(string(branch, "policy"));
+                if (hasWitness && !explicitlySelected && !explore) {
+                    continue;
+                }
+                boolean observed = hasWitness
+                        ? required
+                        : bool(branch, "observedOutcome", !required);
+                int occurrence = selectedOccurrence(branch, required,
+                        !hasWitness);
+                boolean desired = hasWitness ? !observed : required;
+                TargetBranch target = new TargetBranch(siteId, index,
+                        occurrence, observed, desired,
+                        hasWitness ? "EXPLORE_ALTERNATIVE"
+                                : "DIRECTED_REQUIRED_OUTCOME");
+                result.add(new Candidate(activation, activationId, region,
+                        target, hasWitness,
+                        materializationPlan(activation, definitions), false));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * An ordinary output closure may execute only with an exact runtime
+     * capture request.  A transition-discovery seed is the sole exception:
+     * it captures only the guard path and is quarantined until a fresh
+     * flipped execution discovers the concrete occurrence.
+     */
+    private static boolean outputCaptureReady(JsonObject activation) {
+        return !bool(activation, "requestedOutputCaptureRequired", false)
+                || bool(activation, "requestedOutputCaptureComplete",
+                false);
+    }
+
+    private static boolean transitionDiscoveryCaptureTemplateReady(
+            JsonObject activation) {
+        if (!RegionCaptureGoal.from(activation).isTransitionDiscovery()
+                || !bool(activation, "requestedOutputSliceComplete", false)
+                || !bool(activation,
+                "requestedOutputCaptureRefinementRequired", false)
+                || !"STATIC_EXACT_OUTPUT_ENDPOINT_RUNTIME_OCCURRENCE_PENDING"
+                .equals(string(activation,
+                        "requestedOutputCaptureTemplateAuthority"))) {
+            return false;
+        }
+        JsonArray captures = array(activation, "requestedOutputCapture");
+        if (captures.size() != 1 || !captures.get(0).isJsonObject()) {
+            return false;
+        }
+        JsonObject capture = captures.get(0).getAsJsonObject();
+        if (integer(capture, "occurrence", -1) != 0
+                || string(capture, "captureBindingId").isEmpty()
+                || string(capture, "outputPort").isEmpty()
+                || string(capture, "outputCell").isEmpty()
+                || string(capture, "siteId").isEmpty()
+                || integer(capture, "unitIndex", -1) < 0
+                || !"RUNTIME_INSTANCE_REFINEMENT_REQUIRED".equals(
+                string(capture, "occurrenceAuthority"))) {
+            return false;
+        }
+        String kind = firstNonBlank(string(capture, "captureKind"),
+                "CALL_ARGUMENT");
+        if ("FIELD_ASSIGNMENT_RHS".equals(kind)) {
+            return !string(capture, "method").isEmpty()
+                    && !string(capture, "fieldSignature").isEmpty()
+                    && "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS".equals(
+                    string(capture, "bindingAuthority"));
+        }
+        return "CALL_ARGUMENT".equals(kind)
+                && !string(capture, "callerMethod").isEmpty()
+                && !string(capture, "calleeMethod").isEmpty()
+                && integer(capture, "argumentIndex", -1) >= 0;
+    }
+
+    private static boolean hasOutcome(JsonObject branch, boolean outcome) {
+        JsonArray occurrences = array(branch, "occurrences");
+        if (occurrences.size() == 0) {
+            return bool(branch, "matchesRequiredOutcome", false);
+        }
+        for (JsonElement element : occurrences) {
+            if (element.isJsonObject()
+                    && bool(element.getAsJsonObject(), "outcome", !outcome)
+                    == outcome) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int selectedOccurrence(JsonObject branch,
+                                          boolean desiredOutcome,
+                                          boolean selectObservedMismatch) {
+        JsonArray occurrences = array(branch, "occurrences");
+        if (occurrences.size() == 0) {
+            return Math.max(1, integer(branch, "selectedOccurrence", 1));
+        }
+        int fallback = 1;
+        for (int index = 0; index < occurrences.size(); index++) {
+            JsonObject occurrence = occurrences.get(index).getAsJsonObject();
+            boolean value = bool(occurrence, "outcome", false);
+            fallback = integer(occurrence, "occurrence", index + 1);
+            if (selectObservedMismatch && value != desiredOutcome) {
+                return fallback;
+            }
+            if (!selectObservedMismatch && value == desiredOutcome) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private static MaterializationPlan materializationPlan(
+            JsonObject activation, DefinitionIndex definitions) {
+        JsonArray result = new JsonArray();
+        boolean hardFailure = false;
+        boolean complete = true;
+        int sourceActionCount = 0;
+        int executableCount = 0;
+        int deferredCount = 0;
+        int vmIntrinsicPlaceholderCount = 0;
+        JsonArray sourceActions = array(activation, "symbolize");
+        if (sourceActions.size() == 0) {
+            sourceActions = array(activation, "materializations");
+        }
+        for (JsonElement element : sourceActions) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            sourceActionCount++;
+            JsonObject action = element.getAsJsonObject();
+            JsonObject binding = action.deepCopy();
+            String location = string(action, "location");
+            String cell = string(action, "cell");
+            if ("ARGUMENT".equals(location)
+                    || "ARGUMENT_FIELD".equals(location)
+                    || "RECEIVER_FIELD".equals(location)) {
+                binding.addProperty("bindingMode", "ROOT_ENTRY");
+                executableCount++;
+            } else if ("ARGUMENT_FIELD_PATH".equals(location)) {
+                if (validFieldPaths(action)) {
+                    binding.addProperty("bindingMode", "ROOT_ENTRY");
+                    executableCount++;
+                } else {
+                    binding.addProperty("bindingMode",
+                            "UNRESOLVED_ARGUMENT_FIELD_PATH");
+                    hardFailure = true;
+                    complete = false;
+                    deferredCount++;
+                }
+            } else if ("CALL_RETURN".equals(location)) {
+                JsonArray sites = definitions.returnSites(cell,
+                        requestedOutputMethods(activation),
+                        requestedOutputSites(activation));
+                boolean pendingArrayFieldRoot =
+                        pendingArrayFieldCallReturnRoot(action);
+                if (pendingArrayFieldRoot
+                        && (!definitions.authoritative
+                        || sites.size() != 1)) {
+                    binding.addProperty("bindingMode",
+                            "UNRESOLVED_CALL_RETURN_DEFINITION");
+                    binding.add("definitionSites", sites.deepCopy());
+                    binding.addProperty("definitionAuthority",
+                            definitions.authoritative
+                                    ? "STATIC_DATAFLOW_DEF_SITE"
+                                    : "LOCAL_NAME_FALLBACK");
+                    binding.addProperty(
+                            "arrayFieldMaterializationComplete", false);
+                    binding.addProperty("materializationIssue",
+                            !definitions.authoritative
+                                    ? "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
+                                    + "AUTHORITATIVE_DEFINITION_INDEX"
+                                    : "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
+                                    + "ONE_EXACT_FILTERED_RETURN_SITE:"
+                                    + sites.size());
+                    hardFailure = true;
+                    complete = false;
+                    deferredCount++;
+                    result.add(binding);
+                    continue;
+                }
+                if (sites.size() == 0) {
+                    binding.addProperty("bindingMode",
+                            "UNRESOLVED_CALL_RETURN_DEFINITION");
+                    binding.addProperty("definitionAuthority",
+                            definitions.authoritative
+                                    ? "STATIC_DATAFLOW_DEF_SITE"
+                                    : "LOCAL_NAME_FALLBACK");
+                    complete = false;
+                    deferredCount++;
+                    result.add(binding);
+                    continue;
+                }
+                for (JsonElement siteElement : sites) {
+                    JsonObject site = siteElement.getAsJsonObject();
+                    JsonObject localBinding = binding.deepCopy();
+                    localBinding.addProperty("bindingMode",
+                            "LOCAL_DEFINITION");
+                    localBinding.addProperty("sourceBindingMode",
+                            "CALL_RETURN_DEFINITION");
+                    localBinding.addProperty("method",
+                            string(site, "method"));
+                    localBinding.addProperty("local",
+                            string(site, "local"));
+                    JsonArray oneSite = new JsonArray();
+                    oneSite.add(site.deepCopy());
+                    localBinding.add("definitionSites", oneSite);
+                    localBinding.addProperty("definitionAuthority",
+                            "STATIC_DATAFLOW_DEF_SITE");
+                    localBinding.addProperty("lazy", true);
+                    finalizePendingLocalArrayRoot(localBinding,
+                            definitions.authoritative);
+                    if (!validateExactArrayFieldMaterialization(
+                            localBinding)) {
+                        hardFailure = true;
+                        complete = false;
+                        deferredCount++;
+                        result.add(localBinding);
+                        continue;
+                    }
+                    result.add(localBinding);
+                    executableCount++;
+                }
+                continue;
+            } else if (verifiedVmIntrinsicPlaceholder(action, location,
+                    cell)) {
+                binding.addProperty("bindingMode",
+                        "VM_INTRINSIC_PLACEHOLDER");
+                binding.addProperty("placeholderFunction",
+                        "currentTimeMills");
+                binding.addProperty("captureAuthority",
+                        "CUSTOM_JDK_SYMBOLIC_ND_FUNC");
+                binding.addProperty("modelControllable", false);
+                binding.addProperty("replayPolicy",
+                        "UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION");
+                vmIntrinsicPlaceholderCount++;
+            } else if ("HEAP_OBJECT_FIELD".equals(location)) {
+                binding.addProperty("bindingMode", "FIELD_ACCESS");
+                List<String> path = fieldPath(cell);
+                boolean exactMetadata = retainOrVerifyDerived(
+                        binding, "fieldPath",
+                        JSONL_GSON.toJsonTree(path))
+                        && retainOrVerifyDerived(binding,
+                        "accessOwnerClass", accessOwnerClass(cell))
+                        && retainOrVerifyDerived(binding, "accessField",
+                        path.isEmpty() ? "" : path.get(0))
+                        && retainOrVerifyDerived(binding, "leafField",
+                        leafField(cell))
+                        && retainOrVerifyDerived(binding,
+                        "leafOwnerClass", leafOwnerClass(cell));
+                binding.addProperty("lazy", true);
+                if (!exactMetadata) {
+                    binding.addProperty("materializationIssue",
+                            "PLANNER_EXACT_FIELD_METADATA_CONFLICTS_WITH_"
+                                    + "STATIC_CELL");
+                    hardFailure = true;
+                    complete = false;
+                    deferredCount++;
+                } else {
+                    executableCount++;
+                }
+            } else if ("REGION_LIVE_IN".equals(location)) {
+                Matcher matcher = LOCAL_CELL.matcher(cell);
+                if (matcher.matches()) {
+                    binding.addProperty("bindingMode", "LOCAL_DEFINITION");
+                    binding.addProperty("method", matcher.group(1));
+                    binding.addProperty("local", matcher.group(2));
+                    JsonArray sites = definitions.sites(cell);
+                    binding.add("definitionSites", sites);
+                    binding.addProperty("definitionAuthority",
+                            definitions.authoritative
+                                    ? "STATIC_DATAFLOW_DEF_SITE"
+                                    : "LOCAL_NAME_FALLBACK");
+                    finalizePendingLocalArrayRoot(binding,
+                            definitions.authoritative);
+                    if (definitions.authoritative && sites.size() == 0) {
+                        binding.addProperty("bindingMode",
+                                "UNRESOLVED_LOCAL_DEFINITION");
+                        complete = false;
+                        deferredCount++;
+                    } else {
+                        executableCount++;
+                    }
+                    binding.addProperty("lazy", true);
+                } else {
+                    binding.addProperty("bindingMode", "UNSUPPORTED_LIVE_IN");
+                    binding.addProperty("deferred", true);
+                    complete = false;
+                    deferredCount++;
+                }
+            } else {
+                binding.addProperty("bindingMode", "UNSUPPORTED");
+                binding.addProperty("deferred", true);
+                complete = false;
+                deferredCount++;
+            }
+            if (!validateExactArrayFieldMaterialization(binding)) {
+                hardFailure = true;
+                complete = false;
+                if (isExecutableBindingMode(string(binding,
+                        "bindingMode")) && executableCount > 0) {
+                    executableCount--;
+                }
+                deferredCount++;
+            }
+            result.add(binding);
+        }
+        boolean ready = !hardFailure
+                && (sourceActionCount == 0 || executableCount > 0
+                || vmIntrinsicPlaceholderCount > 0);
+        return new MaterializationPlan(result, ready, complete,
+                executableCount, deferredCount,
+                vmIntrinsicPlaceholderCount);
+    }
+
+    private static boolean verifiedVmIntrinsicPlaceholder(
+            JsonObject action, String location, String cell) {
+        return "ENVIRONMENT_MODEL".equals(location)
+                && "ENVIRONMENT".equals(string(action, "sourceKind"))
+                && VM_CURRENT_TIME_MILLIS_RETURN.equals(safe(cell));
+    }
+
+    /**
+     * A runtime-proven consumed array field can be rooted in a call-return
+     * local only after the authoritative static DefinitionIndex identifies
+     * that local's one exact return assignment.  The leaf getfield event does
+     * not distinguish two candidate return definitions, so splitting them
+     * would turn ambiguity into two false claims of unique root identity.
+     */
+    private static boolean pendingArrayFieldCallReturnRoot(
+            JsonObject action) {
+        if (!"CALL_RETURN".equals(string(action, "location"))
+                || !"CALL_RETURN_DEFINITION".equals(string(action,
+                "consumedFieldPendingRootKind"))
+                || !"LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
+                .concat("SCHEDULER_DEFINITION_INDEX_V1").equals(
+                        string(action, "consumedFieldRootAuthority"))) {
+            return false;
+        }
+        return ArrayFieldContract.from(action).fieldBackedArray;
+    }
+
+    private static boolean validFieldPaths(JsonObject action) {
+        JsonArray paths = array(action, "fieldPaths");
+        if (paths.size() == 0) {
+            return false;
+        }
+        for (JsonElement pathElement : paths) {
+            if (!pathElement.isJsonArray()
+                    || pathElement.getAsJsonArray().size() == 0) {
+                return false;
+            }
+            for (JsonElement segment : pathElement.getAsJsonArray()) {
+                if (!segment.isJsonPrimitive()
+                        || safe(segment.getAsString()).trim().isEmpty()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean retainOrVerifyDerived(JsonObject binding,
+                                                 String field,
+                                                 String derived) {
+        return retainOrVerifyDerived(binding, field,
+                JSONL_GSON.toJsonTree(safe(derived)));
+    }
+
+    /** Preserve planner authority; a scheduler-derived value may only agree. */
+    private static boolean retainOrVerifyDerived(JsonObject binding,
+                                                 String field,
+                                                 JsonElement derived) {
+        JsonElement existing = binding.get(field);
+        if (existing == null || existing.isJsonNull()) {
+            binding.add(field, derived.deepCopy());
+            return true;
+        }
+        return existing.equals(derived);
+    }
+
+    private static boolean isExecutableBindingMode(String mode) {
+        return "ROOT_ENTRY".equals(mode)
+                || "LOCAL_DEFINITION".equals(mode)
+                || "FIELD_ACCESS".equals(mode);
+    }
+
+    /**
+     * Scheduler-side defense for array-valued fields.  The planner's exact
+     * consumed-getfield evidence is data, not a hint: definition refinement
+     * may preserve it but cannot synthesize a missing field-read site or
+     * silently replace its root authority.
+     */
+    private static boolean validateExactArrayFieldMaterialization(
+            JsonObject binding) {
+        ArrayFieldContract contract = ArrayFieldContract.from(binding);
+        if (!contract.fieldBackedArray) {
+            return true;
+        }
+        String issue = contract.issue;
+        String consumedMethod = string(binding, "consumedFieldMethod");
+        int consumedUnit = integer(binding, "consumedFieldUnitIndex", -1);
+        String consumedSite = string(binding, "consumedFieldSiteId");
+        if (issue.isEmpty() && !bool(binding,
+                "consumedFieldBindingComplete", false)) {
+            issue = "PLANNER_CONSUMED_FIELD_BINDING_INCOMPLETE";
+        }
+        if (issue.isEmpty() && (consumedMethod.isEmpty()
+                || consumedUnit < 0
+                || !consumedSite.equals(consumedMethod + "#u"
+                + consumedUnit))) {
+            issue = "EXACT_CONSUMED_FIELD_METHOD_UNIT_SITE_MISSING";
+        }
+        if (issue.isEmpty() && !CONSUMED_FIELD_SITE_AUTHORITY.equals(
+                string(binding, "consumedFieldSiteAuthority"))) {
+            issue = "EXACT_CONSUMED_FIELD_SITE_AUTHORITY_MISSING";
+        }
+        if (issue.isEmpty()
+                && (integer(binding, "consumedFieldOccurrence", -1) != 1
+                || !"UNIQUE_CONTAINED_RUNTIME_FIELD_READ_V1".equals(
+                string(binding,
+                        "consumedFieldOccurrenceAuthority")))) {
+            issue = "EXACT_CONSUMED_FIELD_OCCURRENCE_INVALID";
+        }
+        if (issue.isEmpty()) {
+            issue = exactArrayRootIssue(binding, contract.path);
+        }
+        if (!issue.isEmpty()) {
+            binding.addProperty("arrayFieldMaterializationComplete", false);
+            binding.addProperty("materializationIssue", issue);
+            return false;
+        }
+        binding.addProperty("arrayFieldMaterializationComplete", true);
+        binding.addProperty("arrayFieldMaterializationAuthority",
+                "PLANNER_EXACT_CONSUMED_FIELD_EVIDENCE_PRESERVED_V1");
+        return true;
+    }
+
+    private static void finalizePendingLocalArrayRoot(
+            JsonObject binding, boolean authoritativeDefinitions) {
+        if (!"LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
+                .concat("SCHEDULER_DEFINITION_INDEX_V1").equals(
+                        string(binding, "consumedFieldRootAuthority"))
+                || !bool(binding, "consumedFieldSiteBindingComplete",
+                false)
+                || !authoritativeDefinitions
+                || !"STATIC_DATAFLOW_DEF_SITE".equals(string(binding,
+                "definitionAuthority"))) {
+            return;
+        }
+        JsonArray sites = array(binding, "definitionSites");
+        String method = string(binding, "method");
+        String local = string(binding, "local");
+        if (sites.size() != 1 || !sites.get(0).isJsonObject()
+                || method.isEmpty() || local.isEmpty()) {
+            return;
+        }
+        JsonObject site = sites.get(0).getAsJsonObject();
+        int unit = integer(site, "unitIndex", -1);
+        if (unit < 0 || !method.equals(string(site, "method"))
+                || !local.equals(string(site, "local"))) {
+            return;
+        }
+        String kind = string(binding, "consumedFieldPendingRootKind");
+        if ("LOCAL_DEFINITION".equals(kind)) {
+            if (!method.equals(string(binding,
+                    "consumedFieldPendingRootMethod"))
+                    || !local.equals(string(binding,
+                    "consumedFieldPendingRootLocal"))) {
+                return;
+            }
+        } else if (!"CALL_RETURN_DEFINITION".equals(kind)
+                || !"CALL_RETURN_DEFINITION".equals(string(binding,
+                "sourceBindingMode"))) {
+            return;
+        }
+        binding.addProperty("consumedFieldRootAuthority",
+                LOCAL_FIELD_ROOT_AUTHORITY);
+        binding.addProperty("consumedFieldBindingComplete", true);
+        binding.remove("consumedFieldBindingIssue");
+        binding.addProperty("consumedFieldRootResolutionAuthority",
+                "AUTHORITATIVE_UNIQUE_STATIC_DEFINITION_SITE_V1");
+    }
+
+    private static String exactArrayRootIssue(JsonObject binding,
+                                              JsonArray path) {
+        String location = string(binding, "location");
+        String mode = string(binding, "bindingMode");
+        String authority = string(binding, "consumedFieldRootAuthority");
+        if ("ARGUMENT_FIELD".equals(location)
+                || "ARGUMENT_FIELD_PATH".equals(location)) {
+            return integer(binding, "index", -1) >= 0
+                    && ARGUMENT_FIELD_ROOT_AUTHORITY.equals(authority)
+                    ? "" : "ARGUMENT_ARRAY_ROOT_AUTHORITY_INVALID";
+        }
+        if ("RECEIVER_FIELD".equals(location)) {
+            return RECEIVER_FIELD_ROOT_AUTHORITY.equals(authority)
+                    ? "" : "RECEIVER_ARRAY_ROOT_AUTHORITY_INVALID";
+        }
+        if ("LOCAL_DEFINITION".equals(mode)) {
+            String method = string(binding, "method");
+            String local = string(binding, "local");
+            JsonArray definitions = array(binding, "definitionSites");
+            if (!LOCAL_FIELD_ROOT_AUTHORITY.equals(authority)
+                    || method.isEmpty() || local.isEmpty()
+                    || definitions.size() != 1
+                    || !definitions.get(0).isJsonObject()) {
+                return "LOCAL_ARRAY_ROOT_DEFINITION_AUTHORITY_INVALID";
+            }
+            JsonObject definition = definitions.get(0).getAsJsonObject();
+            int unit = integer(definition, "unitIndex", -1);
+            return unit >= 0
+                    && method.equals(string(definition, "method"))
+                    && local.equals(string(definition, "local"))
+                    && (string(definition, "siteId").isEmpty()
+                    || string(definition, "siteId").equals(method + "#u"
+                    + unit))
+                    ? "" : "LOCAL_ARRAY_ROOT_DEFINITION_SITE_MISMATCH";
+        }
+        if (RECEIVER_FIELD_ROOT_AUTHORITY.equals(authority)) {
+            return "";
+        }
+        return DIRECT_FIELD_ROOT_AUTHORITY.equals(authority)
+                && path.size() == 1 ? ""
+                : "DIRECT_ARRAY_ROOT_REQUIRES_ONE_EXACT_LEAF";
+    }
+
+    private static final class ArrayFieldContract {
+        private final boolean fieldBackedArray;
+        private final JsonArray path;
+        private final String issue;
+
+        private ArrayFieldContract(boolean fieldBackedArray,
+                                   JsonArray path, String issue) {
+            this.fieldBackedArray = fieldBackedArray;
+            this.path = path;
+            this.issue = safe(issue);
+        }
+
+        private static ArrayFieldContract from(JsonObject binding) {
+            String location = string(binding, "location");
+            String mode = string(binding, "bindingMode");
+            boolean fieldShape = "ARGUMENT_FIELD".equals(location)
+                    || "ARGUMENT_FIELD_PATH".equals(location)
+                    || "RECEIVER_FIELD".equals(location)
+                    || "HEAP_OBJECT_FIELD".equals(location)
+                    || "FIELD".equals(location)
+                    || "FIELD_ACCESS".equals(mode);
+
+            Set<String> signatures = new LinkedHashSet<>();
+            for (String field : new String[]{"leafFieldSignature",
+                    "accessFieldSignature", "field", "cell"}) {
+                signatures.add(string(binding, field));
+            }
+            JsonArray declarations = array(binding,
+                    "fieldPathLeafDeclarations");
+            for (JsonElement element : declarations) {
+                if (element.isJsonObject()) {
+                    signatures.add(string(element.getAsJsonObject(),
+                            "fieldSignature"));
+                }
+            }
+            signatures.remove("");
+            Set<String> arrayDeclarations = new LinkedHashSet<>();
+            String leafName = "";
+            String leafType = "";
+            for (String signature : signatures) {
+                String[] field = declaredField(signature);
+                if (field != null && isArrayType(field[1])) {
+                    arrayDeclarations.add("<" + field[0] + ": "
+                            + field[1] + " " + field[2] + ">");
+                    leafName = field[2];
+                    leafType = field[1];
+                }
+            }
+            String javaType = firstNonBlank(string(binding, "javaType"),
+                    string(binding, "inputJavaType"));
+            boolean array = isArrayType(javaType)
+                    || !arrayDeclarations.isEmpty();
+            if ("CALL_RETURN".equals(location)
+                    && "CALL_RETURN_DEFINITION".equals(string(binding,
+                    "consumedFieldPendingRootKind"))
+                    && (binding.has("fieldPath")
+                    || binding.has("fieldPaths")
+                    || declarations.size() > 0)) {
+                fieldShape = true;
+            }
+            if ("LOCAL_DEFINITION".equals(mode)
+                    && !arrayDeclarations.isEmpty()
+                    && (binding.has("fieldPath")
+                    || binding.has("fieldPaths")
+                    || declarations.size() > 0)) {
+                fieldShape = true;
+            }
+            boolean backed = fieldShape && array;
+            if (!backed) {
+                return new ArrayFieldContract(false, new JsonArray(), "");
+            }
+
+            JsonArray path = exactBindingFieldPath(binding);
+            String issue = "";
+            if (arrayDeclarations.size() != 1) {
+                issue = "EXACT_ARRAY_LEAF_DECLARATION_NOT_UNIQUE";
+            } else if (javaType.isEmpty()
+                    || !isArrayType(javaType)
+                    || !sameArrayType(javaType, leafType)) {
+                issue = "ACTION_ARRAY_TYPE_CONFLICTS_WITH_LEAF_DECLARATION";
+            } else if (path.size() == 0) {
+                issue = "EXACT_ARRAY_FIELD_PATH_NOT_UNIQUE";
+            } else if (!leafName.equals(path.get(path.size() - 1)
+                    .getAsString())) {
+                issue = "EXACT_ARRAY_FIELD_PATH_LEAF_MISMATCH";
+            }
+            return new ArrayFieldContract(true, path, issue);
+        }
+    }
+
+    private static JsonArray exactBindingFieldPath(JsonObject binding) {
+        JsonArray direct = array(binding, "fieldPath");
+        if (validStringPath(direct)) {
+            return direct.deepCopy();
+        }
+        JsonArray paths = array(binding, "fieldPaths");
+        if (paths.size() == 1 && paths.get(0).isJsonArray()
+                && validStringPath(paths.get(0).getAsJsonArray())) {
+            return paths.get(0).getAsJsonArray().deepCopy();
+        }
+        return new JsonArray();
+    }
+
+    private static boolean validStringPath(JsonArray path) {
+        if (path == null || path.size() == 0) return false;
+        for (JsonElement segment : path) {
+            if (!segment.isJsonPrimitive()
+                    || safe(segment.getAsString()).trim().isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isArrayType(String type) {
+        String value = safe(type).trim();
+        return value.startsWith("[") || value.endsWith("[]");
+    }
+
+    private static boolean sameArrayType(String left, String right) {
+        return safe(left).replace(" ", "").equals(
+                safe(right).replace(" ", ""));
+    }
+
+    private static Set<String> stringSet(JsonObject object, String field) {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement element : array(object, field)) {
+            if (element.isJsonPrimitive()) {
+                String value = safe(element.getAsString()).trim();
+                if (!value.isEmpty()) {
+                    result.add(value);
+                }
+            }
+        }
+        return result;
+    }
+
+    private static Set<String> requestedOutputSites(JsonObject activation) {
+        Set<String> result = new LinkedHashSet<>();
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        if (slice != null) {
+            result.addAll(stringSet(slice, "sites"));
+        }
+        return result;
+    }
+
+    private static Set<String> requestedOutputMethods(
+            JsonObject activation) {
+        Set<String> result = new LinkedHashSet<>();
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        if (slice != null) {
+            result.addAll(stringSet(slice, "methods"));
+        }
+        result.addAll(stringSet(activation, "requestedOutputMethods"));
+        return result;
+    }
+
+    private static MaterializationPlan materializationPlan(
+            JsonObject activation) {
+        return materializationPlan(activation, DefinitionIndex.fallback());
+    }
+
+    private static String leafField(String cell) {
+        String value = safe(cell);
+        int projected = value.lastIndexOf("#field:");
+        if (projected >= 0) {
+            String leaf = value.substring(projected + 7);
+            int end = leaf.indexOf('#');
+            return (end < 0 ? leaf : leaf.substring(0, end)).trim();
+        }
+        String[] declared = declaredField(value);
+        return declared == null ? "" : declared[2];
+    }
+
+    private static String leafOwnerClass(String cell) {
+        String[] declared = declaredField(cell);
+        if (declared == null) {
+            return "";
+        }
+        return safe(cell).contains("#field:")
+                ? declared[1] : declared[0];
+    }
+
+    private static String accessOwnerClass(String cell) {
+        String[] declared = declaredField(cell);
+        return declared == null ? "" : declared[0];
+    }
+
+    private static List<String> fieldPath(String cell) {
+        List<String> result = new ArrayList<>();
+        String[] declared = declaredField(cell);
+        if (declared != null) {
+            result.add(declared[2]);
+        }
+        Matcher projection = FIELD_PROJECTION.matcher(safe(cell));
+        while (projection.find()) {
+            String field = projection.group(1).trim();
+            if (!field.isEmpty()) {
+                result.add(field);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Parses only an actual Soot field signature.  Method locals and method
+     * returns may also carry {@code #field:...} projections, but the method
+     * name (for example {@code <init>}) is not a field-path component and its
+     * declaring class is not the runtime owner of the projected value.
+     */
+    private static String[] declaredField(String cell) {
+        String value = safe(cell);
+        int projection = value.indexOf("#field:");
+        String base = projection < 0 ? value
+                : value.substring(0, projection);
+        Matcher matcher = FIELD_DETAIL.matcher(base);
+        if (!matcher.matches()) {
+            return null;
+        }
+        return new String[]{matcher.group(1).trim(),
+                matcher.group(2).trim(), matcher.group(3).trim()};
+    }
+
+    private static MergePlan buildMergePlan(Map<String, Region> regions,
+                                            List<JsonObject> edges) {
+        UnionFind aliases = new UnionFind();
+        List<JsonObject> equalityRelations = new ArrayList<>();
+        List<JsonObject> stateMerges = new ArrayList<>();
+        for (JsonObject edge : edges) {
+            if (!AutomaticRegionEdge.composable(edge)) {
+                continue;
+            }
+            String relation = firstNonBlank(
+                    string(edge, "validatedRelation"),
+                    string(edge, "relation"));
+            String fromRegion = string(edge, "fromRegion");
+            String toRegion = string(edge, "toRegion");
+            String fromCell = string(edge, "fromPort");
+            String toCell = string(edge, "toPort");
+            Endpoint from = endpoint(regions.get(fromRegion), fromRegion,
+                    fromCell);
+            Endpoint to = endpoint(regions.get(toRegion), toRegion, toCell);
+            if ("EQUALITY".equals(relation)) {
+                aliases.union(from.id, to.id);
+                JsonObject equality = relation(edge, from, to,
+                        "SYMBOLIC_EQUALITY");
+                equalityRelations.add(equality);
+            } else if ("READ_FROM".equals(relation)) {
+                JsonObject state = relation(edge, from, to,
+                        "VERSIONED_HEAP_READ_FROM");
+                state.addProperty("requiresOrder",
+                        bool(edge, "requiresOrder", true));
+                state.addProperty("requiresObjectIdentity",
+                        bool(edge, "requiresObjectIdentity", true));
+                state.addProperty("confirmedReadFromPairCount",
+                        integer(edge, "confirmedReadFromPairCount", 0));
+                stateMerges.add(state);
+            }
+        }
+
+        Map<String, List<JsonObject>> stateByConsumer = new LinkedHashMap<>();
+        for (JsonObject state : stateMerges) {
+            add(stateByConsumer, string(state, "toEndpoint"), state);
+        }
+        List<JsonObject> directStateMerges = new ArrayList<>();
+        List<JsonObject> alternativeWriterGroups = new ArrayList<>();
+        for (Map.Entry<String, List<JsonObject>> entry
+                : stateByConsumer.entrySet()) {
+            List<JsonObject> alternatives = entry.getValue();
+            Collections.sort(alternatives, Comparator.comparing(value ->
+                    string(value, "fromEndpoint") + "\n"
+                            + string(value, "edgeId")));
+            if (alternatives.size() == 1) {
+                directStateMerges.add(alternatives.get(0));
+                continue;
+            }
+            String stable = RecursiveRegionWorklist.stableQueryKey(
+                    regionOfEndpoint(entry.getKey()), entry.getKey(),
+                    "READ_FROM", "LATEST_BEFORE_READ", "MERGE_PLAN",
+                    "ALTERNATIVE_WRITERS");
+            JsonObject group = new JsonObject();
+            group.addProperty("groupId", "MERGED.ALT."
+                    + stable.substring(0, 16));
+            group.addProperty("kind", "GUARDED_VERSIONED_HEAP_READ_FROM");
+            group.addProperty("downstreamEndpoint", entry.getKey());
+            group.addProperty("selectionSemantics", "EXACTLY_ONE_GUARDED");
+            JsonArray guarded = new JsonArray();
+            for (JsonObject alternative : alternatives) {
+                JsonObject copy = alternative.deepCopy();
+                String guardKey = RecursiveRegionWorklist.stableQueryKey(
+                        regionOfEndpoint(string(copy, "fromEndpoint")),
+                        string(copy, "fromEndpoint"), "WRITER_GUARD",
+                        firstNonBlank(string(copy, "transportKind"),
+                                "LATEST_BEFORE_READ"),
+                        stable, entry.getKey());
+                copy.addProperty("guardSymbol", "writer_guard__"
+                        + guardKey.substring(0, 16));
+                guarded.add(copy);
+            }
+            group.add("alternatives", guarded);
+            alternativeWriterGroups.add(group);
+        }
+
+        Map<String, List<String>> classes = new LinkedHashMap<>();
+        for (JsonObject relation : equalityRelations) {
+            String left = string(relation, "fromEndpoint");
+            String right = string(relation, "toEndpoint");
+            add(classes, aliases.find(left), left);
+            add(classes, aliases.find(right), right);
+        }
+        List<JsonObject> equalityClasses = new ArrayList<>();
+        int index = 0;
+        for (List<String> members : classes.values()) {
+            LinkedHashSet<String> unique = new LinkedHashSet<>(members);
+            if (unique.size() < 2) {
+                continue;
+            }
+            JsonObject value = new JsonObject();
+            value.addProperty("canonicalSymbol", "MERGED.EQ." + index++);
+            value.add("members", JSONL_GSON.toJsonTree(unique));
+            equalityClasses.add(value);
+        }
+
+        JsonObject json = new JsonObject();
+        json.addProperty("schemaVersion", 1);
+        json.add("equalityClasses", JSONL_GSON.toJsonTree(equalityClasses));
+        json.add("equalityRelations", JSONL_GSON.toJsonTree(equalityRelations));
+        json.add("versionedStateMerges",
+                JSONL_GSON.toJsonTree(directStateMerges));
+        json.add("alternativeWriterGroups",
+                JSONL_GSON.toJsonTree(alternativeWriterGroups));
+        json.addProperty("heapMergeSemantics",
+                "SINGLE_READ_FROM_OR_EXACTLY_ONE_GUARDED_ALTERNATIVE");
+        return new MergePlan(json, equalityClasses, directStateMerges,
+                alternativeWriterGroups);
+    }
+
+    private static String regionOfEndpoint(String endpoint) {
+        String value = safe(endpoint);
+        int marker = -1;
+        for (String delimiter : new String[]{".in.", ".out.", "::"}) {
+            int candidate = value.indexOf(delimiter);
+            if (candidate > 0 && (marker < 0 || candidate < marker)) {
+                marker = candidate;
+            }
+        }
+        return marker <= 0 ? "" : endpoint.substring(0, marker);
+    }
+
+    private static JsonObject relation(JsonObject edge, Endpoint from,
+                                       Endpoint to, String kind) {
+        JsonObject result = new JsonObject();
+        result.addProperty("edgeId", string(edge, "edgeId"));
+        result.addProperty("kind", kind);
+        result.addProperty("transportKind", string(edge, "kind"));
+        result.addProperty("fromRegion", string(edge, "fromRegion"));
+        result.addProperty("toRegion", string(edge, "toRegion"));
+        result.addProperty("fromEndpoint", from.id);
+        result.addProperty("fromCell", from.cell);
+        result.addProperty("toEndpoint", to.id);
+        result.addProperty("toCell", to.cell);
+        result.addProperty("mappingKind", string(edge, "mappingKind"));
+        result.addProperty("mappingAuthority",
+                string(edge, "mappingAuthority"));
+        result.addProperty("runtimeStatus", string(edge, "status"));
+        result.addProperty("discoveredExecutionId",
+                string(edge, "discoveredExecutionId"));
+        result.add("discoveredExecutionIds", array(edge,
+                "discoveredExecutionIds").deepCopy());
+        result.add("runtimeBindings", runtimeBindings(edge).deepCopy());
+        return result;
+    }
+
+    private static Endpoint endpoint(Region region, String regionId,
+                                     String cell) {
+        if (region != null) {
+            String port = region.portByCell.get(cell);
+            if (port != null) {
+                return new Endpoint(port, cell);
+            }
+        }
+        return new Endpoint(regionId + "::" + cell, cell);
+    }
+
+    private static JsonObject branchQuery(Candidate candidate,
+                                          JsonObject summary,
+                                          MergePlan mergePlan,
+                                          List<JsonObject> staticGraph) {
+        JsonObject query = new JsonObject();
+        query.addProperty("activationId", candidate.activationId);
+        query.addProperty("regionId", candidate.region.regionId);
+        query.addProperty("regionInstanceId",
+                string(candidate.activation, "regionInstanceId"));
+        query.addProperty("siteId", candidate.target.siteId);
+        query.addProperty("occurrence",
+                candidate.target.selectedOccurrence);
+        query.addProperty("observedOutcome",
+                candidate.target.observedOutcome);
+        query.addProperty("desiredOutcome",
+                candidate.target.desiredOutcome);
+        JsonArray path = array(summary, "pathCondition");
+        JsonObject mapping = branchMapping(summary, candidate.target.siteId,
+                candidate.target.selectedOccurrence);
+        int conditionIndex = integer(mapping, "conditionIndex", -1);
+        query.addProperty("conditionIndex", conditionIndex);
+        query.addProperty("prefixPolicy", "KEEP_CONDITIONS_BEFORE_TARGET");
+        query.addProperty("targetPolicy", "NEGATE_TARGET_CONDITION");
+        query.addProperty("suffixPolicy", "DROP_OLD_SUFFIX");
+        JsonArray constraints = new JsonArray();
+        if (conditionIndex >= 0 && conditionIndex < path.size()) {
+            for (int index = 0; index < conditionIndex; index++) {
+                constraints.add(path.get(index).deepCopy());
+            }
+            JsonElement negated = negate(path.get(conditionIndex));
+            constraints.add(negated);
+            query.add("originalTargetCondition",
+                    path.get(conditionIndex).deepCopy());
+            query.add("negatedTargetCondition", negated.deepCopy());
+            query.addProperty("readyForSolver", true);
+        } else {
+            query.addProperty("readyForSolver", false);
+            query.addProperty("blocker",
+                    "target branch occurrence has no engine condition mapping");
+        }
+        query.add("constraints", constraints);
+        query.add("engineArrayInputBindings", array(summary,
+                "engineArrayInputBindings").deepCopy());
+        query.add("symbolicContext",
+                mergePlan.contextFor(candidate.region.regionId,
+                        string(candidate.activation, "regionInstanceId")));
+        addSemanticReplayModel(query, candidate, staticGraph);
+        return query;
+    }
+
+    /**
+     * Reuses only the directed query that produced an already admitted replay.
+     * The query is instance-scoped evidence copied through the executed
+     * activation plan; it is never reconstructed from a global merge plan or
+     * from application/domain knowledge.  The current instance-scoped merge
+     * context is refreshed because additional upstream summaries may have
+     * become available since the replay was imported.
+     */
+    private static JsonObject validatedDirectedTargetQuery(
+            Candidate candidate, JsonObject summary, MergePlan mergePlan) {
+        if (!bool(summary, "targetReplayValidated", false)
+                || bool(summary, "branchOverrideUsed", true)
+                || !bool(object(summary, "executionAdmission"), "valid",
+                false)
+                || bool(object(summary, "executionAdmission"),
+                "branchOverrideAccepted", true)
+                || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION"
+                .equals(string(object(summary, "executionAdmission"),
+                        "authority"))
+                || !candidate.activationId.equals(string(summary,
+                "activationId"))
+                || !candidate.region.regionId.equals(string(summary,
+                "regionId"))) {
+            return new JsonObject();
+        }
+        String instance = string(candidate.activation, "regionInstanceId");
+        if (instance.isEmpty()
+                || !instance.equals(string(summary, "regionInstanceId"))) {
+            return new JsonObject();
+        }
+        JsonObject stored = object(summary, "directedTargetQuery");
+        if (!candidate.activationId.equals(string(stored, "activationId"))
+                || !candidate.region.regionId.equals(string(stored,
+                "regionId"))
+                || !candidate.target.siteId.equals(string(stored, "siteId"))
+                || candidate.target.selectedOccurrence != integer(stored,
+                "occurrence", -1)
+                || candidate.target.desiredOutcome != bool(stored,
+                "desiredOutcome", !candidate.target.desiredOutcome)
+                || !bool(stored, "readyForSolver", false)
+                || !stored.has("originalTargetCondition")
+                || !stored.has("negatedTargetCondition")
+                || array(stored, "constraints").size() == 0) {
+            return new JsonObject();
+        }
+        JsonObject result = stored.deepCopy();
+        result.add("engineArrayInputBindings", array(summary,
+                "engineArrayInputBindings").deepCopy());
+        result.addProperty("regionInstanceId", instance);
+        result.addProperty("readyForReplay", false);
+        result.addProperty("replayAlreadyValidated", true);
+        result.addProperty("targetReplayValidated", true);
+        result.addProperty("validatedSummaryId", string(summary,
+                "summaryId"));
+        result.addProperty("replayValidationAuthority",
+                "SAME_INSTANCE_IMPORTED_UNFORCED_TARGET_REPLAY");
+        result.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
+        JsonObject validatedSummary = new JsonObject();
+        validatedSummary.addProperty("summaryId", string(summary,
+                "summaryId"));
+        validatedSummary.addProperty("activationId", candidate.activationId);
+        validatedSummary.addProperty("regionId", candidate.region.regionId);
+        validatedSummary.addProperty("regionInstanceId", instance);
+        validatedSummary.addProperty("targetReplayValidated", true);
+        validatedSummary.addProperty("branchOverrideUsed", false);
+        validatedSummary.add("executionAdmission", object(summary,
+                "executionAdmission").deepCopy());
+        result.add("validatedTargetSummary", validatedSummary);
+        result.add("symbolicContext", mergePlan.contextFor(
+                candidate.region.regionId, instance));
+        return result;
+    }
+
+    /**
+     * Solves the small finite-map theory used by this demo.  A negated
+     * reference condition {@code Map.get(map,key) == null} has a direct model:
+     * the selected lookup is absent.  The replay transformer materializes that
+     * modeled function result at the exact static lookup site; it does not
+     * mutate the shared map or pretend this is a general-purpose SMT model.
+     */
+    private static void addSemanticReplayModel(JsonObject query,
+                                               Candidate candidate,
+                                               List<JsonObject> staticGraph) {
+        query.addProperty("readyForReplay", false);
+        JsonElement negatedElement = query.get("negatedTargetCondition");
+        if (negatedElement == null || !negatedElement.isJsonObject()) {
+            return;
+        }
+        JsonObject negated = negatedElement.getAsJsonObject();
+        if (!"==".equals(string(negated, "_op"))) {
+            return;
+        }
+        JsonObject left = object(negated, "_left");
+        JsonObject right = object(negated, "_right");
+        if (isNull(left) && !isNull(right)) {
+            JsonObject swap = left;
+            left = right;
+            right = swap;
+        }
+        if (!isNull(right)) {
+            return;
+        }
+        String resultSymbol = string(left, "_exp");
+        JsonObject lookup = lookupProducing(array(query, "constraints"),
+                resultSymbol);
+        if (lookup.size() == 0) {
+            return;
+        }
+        String method = methodFromSite(candidate.target.siteId);
+        int branchUnit = unitFromSite(candidate.target.siteId);
+        JsonObject site = nearestMapLookup(staticGraph, method, branchUnit);
+        if (site.size() == 0) {
+            return;
+        }
+
+        JsonArray parameters = array(lookup, "_param_list");
+        JsonObject model = new JsonObject();
+        model.addProperty("status", "SAT");
+        model.addProperty("solver", "FINITE_MAP_SEMANTIC_MODEL");
+        model.addProperty("theory", "MAP_LOOKUP_ABSENCE");
+        model.addProperty("resultSymbol", resultSymbol);
+        model.addProperty("assignment", "NULL");
+        if (parameters.size() > 0) {
+            model.add("mapExpression", parameters.get(0).deepCopy());
+        }
+        if (parameters.size() > 1) {
+            model.add("keyExpression", parameters.get(1).deepCopy());
+        }
+        model.addProperty("scope",
+                "ONE_SCHEDULED_LOOKUP_RESULT_NOT_SHARED_MAP_MUTATION");
+        query.add("semanticModel", model);
+
+        JsonObject replay = new JsonObject();
+        // The transformer/runtime interface stays independent of the theory
+        // plugin that produced the model.  It only knows that a reference
+        // result at one exact site must be materialized; MAP_LOOKUP remains
+        // provenance carried by the scheduler output.
+        replay.addProperty("kind", "REFERENCE_RESULT");
+        replay.addProperty("operationSemantics", "MAP_LOOKUP");
+        replay.addProperty("method", method);
+        replay.addProperty("unitIndex", integer(site, "unitIndex", -1));
+        replay.addProperty("siteId", string(site, "siteId"));
+        replay.addProperty("occurrence",
+                Math.max(1, candidate.target.selectedOccurrence));
+        replay.addProperty("occurrencePolicy",
+                "ALIGNED_WITH_TARGET_BRANCH_OCCURRENCE");
+        replay.addProperty("desiredResult", "NULL");
+        replay.addProperty("resultSymbol", resultSymbol);
+        replay.addProperty("solverDerived", true);
+        replay.addProperty("mode",
+                "SOOT_VALUE_MATERIALIZATION_FROM_FINITE_MAP_MODEL");
+        replay.addProperty("authority",
+                "NEGATED_PC_PLUS_STATIC_MAP_LOOKUP_SITE");
+        JsonArray materializations = new JsonArray();
+        materializations.add(replay);
+        query.add("replayMaterializations", materializations);
+        query.addProperty("readyForReplay", true);
+    }
+
+    private static JsonObject lookupProducing(JsonArray constraints,
+                                              String resultSymbol) {
+        for (int index = constraints.size() - 1; index >= 0; index--) {
+            JsonElement element = constraints.get(index);
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject expression = element.getAsJsonObject();
+            if (!"MethodExpression".equals(string(expression, "_type"))
+                    || !string(expression, "_name").endsWith(" get")) {
+                continue;
+            }
+            if (resultSymbol.equals(string(object(expression, "_res_exp"),
+                    "_exp"))) {
+                return expression;
+            }
+        }
+        return new JsonObject();
+    }
+
+    private static JsonObject nearestMapLookup(List<JsonObject> staticGraph,
+                                               String method,
+                                               int beforeUnit) {
+        JsonObject best = new JsonObject();
+        int bestUnit = -1;
+        for (JsonObject edge : staticGraph) {
+            int unit = integer(edge, "unitIndex", -1);
+            if (!method.equals(string(edge, "method")) || unit < 0
+                    || unit >= beforeUnit
+                    || !"map_lookup_state".equals(string(edge, "kind"))) {
+                continue;
+            }
+            if (unit > bestUnit) {
+                best = edge.deepCopy();
+                bestUnit = unit;
+            }
+        }
+        return best;
+    }
+
+    private static boolean isNull(JsonObject expression) {
+        return "SymbolExpression".equals(string(expression, "_type"))
+                && "N".equals(string(expression, "_exp"));
+    }
+
+    private static String methodFromSite(String siteId) {
+        int marker = safe(siteId).lastIndexOf("#u");
+        return marker < 0 ? safe(siteId) : siteId.substring(0, marker);
+    }
+
+    private static int unitFromSite(String siteId) {
+        int marker = safe(siteId).lastIndexOf("#u");
+        try {
+            return marker < 0 ? Integer.MAX_VALUE
+                    : Integer.parseInt(siteId.substring(marker + 2));
+        } catch (RuntimeException ignored) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    private static JsonObject branchMapping(JsonObject summary, String siteId,
+                                            int occurrence) {
+        int seen = 0;
+        JsonObject legacyMatch = new JsonObject();
+        for (JsonElement element : array(summary, "branchMappings")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject mapping = element.getAsJsonObject();
+            if (siteId.equals(string(mapping, "siteId"))) {
+                int declaredOccurrence = integer(mapping, "occurrence", -1);
+                if (declaredOccurrence == occurrence) {
+                    return mapping;
+                }
+                if (declaredOccurrence >= 0) {
+                    continue;
+                }
+                seen++;
+                if (seen == occurrence) {
+                    legacyMatch = mapping;
+                }
+            }
+        }
+        return legacyMatch;
+    }
+
+    static JsonElement negate(JsonElement condition) {
+        if (condition == null || !condition.isJsonObject()) {
+            return condition == null ? new JsonObject() : condition.deepCopy();
+        }
+        JsonObject result = condition.getAsJsonObject().deepCopy();
+        String operator = string(result, "_op");
+        String opposite = OPPOSITE.get(operator);
+        if (opposite != null) {
+            result.addProperty("_op", opposite);
+            return result;
+        }
+        JsonObject wrapper = new JsonObject();
+        wrapper.addProperty("_type", "LogicalNotExpression");
+        wrapper.add("_operand", result);
+        return wrapper;
+    }
+
+    private static String workloadKind(Candidate candidate,
+                                       List<JsonObject> edges) {
+        for (JsonObject edge : edges) {
+            if (!candidate.region.regionId.equals(string(edge, "toRegion"))) {
+                continue;
+            }
+            for (JsonElement item : runtimeBindings(edge)) {
+                if (!item.isJsonObject()) continue;
+                JsonObject evidence = item.getAsJsonObject();
+                if (bool(evidence, "differentThread", false)
+                        || !string(evidence, "fromProcess").equals(
+                        string(evidence, "toProcess"))) {
+                    return "LOCAL_MULTI_CONTEXT_UNIT_TEST";
+                }
+            }
+        }
+        return "LOCAL_UNIT_TEST";
+    }
+
+    private static JsonArray runtimeBindings(JsonObject edge) {
+        JsonArray validated = array(edge, "validatedBindings");
+        return validated.size() > 0 ? validated : array(edge, "evidence");
+    }
+
+    /**
+     * Selects target-PC provenance only from the exact runtime activation.
+     * Activation ids restart in every trace (for example every trace has an
+     * ACT.0), so an id-only index can silently join a path condition from a
+     * different JVM execution to the current region instance.
+     */
+    private static JsonObject exactTargetSummary(
+            Candidate candidate, List<JsonObject> summaries) {
+        String expectedInstance = string(candidate.activation,
+                "regionInstanceId");
+        if (expectedInstance.isEmpty()) return null;
+        JsonObject selected = null;
+        for (JsonObject summary : summaries) {
+            if (!candidate.activationId.equals(string(summary,
+                    "activationId"))
+                    || !candidate.region.regionId.equals(string(summary,
+                    "regionId"))
+                    || !expectedInstance.equals(string(summary,
+                    "regionInstanceId"))
+                    || !RegionCaptureGoal.from(summary).isTargetBranch()
+                    || !bool(summary, "valid", false)
+                    || bool(summary, "branchOverrideUsed", true)
+                    || string(summary, "summaryId").isEmpty()) {
+                continue;
+            }
+            JsonObject admission = object(summary, "executionAdmission");
+            if (!bool(admission, "valid", false)
+                    || bool(admission, "branchOverrideAccepted", true)) {
+                continue;
+            }
+            boolean validated = bool(summary, "targetReplayValidated", false);
+            if (validated && (!bool(admission, "required", false)
+                    || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION"
+                    .equals(string(admission, "authority")))) {
+                continue;
+            }
+            if (!validated && bool(admission, "required", true)) {
+                continue;
+            }
+            if (selected == null || validated
+                    && !bool(selected, "targetReplayValidated", false)) {
+                selected = summary;
+            }
+        }
+        return selected;
+    }
+
+    private static List<JsonObject> readJsonl(Path path) throws IOException {
+        if (path == null) {
+            return Collections.emptyList();
+        }
+        requireFile(path, "JSONL input");
+        List<JsonObject> result = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(path,
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) {
+                    continue;
+                }
+                JsonElement parsed = JsonParser.parseString(line);
+                if (parsed.isJsonObject()) {
+                    result.add(parsed.getAsJsonObject());
+                }
+            }
+        }
+        return result;
+    }
+
+    private static void writeJsonl(Path path, List<JsonObject> rows)
+            throws IOException {
+        StringBuilder builder = new StringBuilder();
+        for (JsonObject row : rows) {
+            builder.append(JSONL_GSON.toJson(row)).append('\n');
+        }
+        writeAtomic(path, builder.toString());
+    }
+
+    private static void writeJson(Path path, JsonObject value)
+            throws IOException {
+        writeAtomic(path, GSON.toJson(value) + System.lineSeparator());
+    }
+
+    private static void writeAtomic(Path path, String value) throws IOException {
+        Path parent = path.toAbsolutePath().getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Path temporary = Files.createTempFile(parent, path.getFileName().toString(),
+                ".tmp");
+        Files.write(temporary, value.getBytes(StandardCharsets.UTF_8));
+        try {
+            Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException ignored) {
+            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void requireFile(Path path, String label) throws IOException {
+        if (path == null || !Files.isRegularFile(path)) {
+            throw new IOException(label + " not found: " + path);
+        }
+    }
+
+    private static JsonArray array(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonArray()
+                ? value.getAsJsonArray() : new JsonArray();
+    }
+
+    private static JsonObject object(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : new JsonObject();
+    }
+
+    private static String string(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || value.isJsonNull() ? "" : value.getAsString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private static boolean bool(JsonObject object, String field,
+                                boolean fallback) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static int integer(JsonObject object, String field, int fallback) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsInt();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values != null) {
+            for (String value : values) {
+                if (value != null && !value.trim().isEmpty()) {
+                    return value.trim();
+                }
+            }
+        }
+        return "";
+    }
+
+    private static JsonElement firstElement(JsonObject object,
+                                            String... names) {
+        if (object == null) return null;
+        for (String name : names) {
+            JsonElement value = object.get(name);
+            if (value != null && !value.isJsonNull()) return value;
+        }
+        return null;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static <T> void add(Map<String, List<T>> map, String key, T value) {
+        List<T> values = map.get(key);
+        if (values == null) {
+            values = new ArrayList<>();
+            map.put(key, values);
+        }
+        values.add(value);
+    }
+
+    private static Map<String, String> opposites() {
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("==", "!=");
+        result.put("!=", "==");
+        result.put("<", ">=");
+        result.put(">", "<=");
+        result.put("<=", ">");
+        result.put(">=", "<");
+        return result;
+    }
+
+    /** Exact Jimple definitions for live-in locals, recovered from the static graph. */
+    private static final class DefinitionIndex {
+        private final boolean authoritative;
+        private final Map<String, List<JsonObject>> byCell =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> byCallReturn =
+                new LinkedHashMap<>();
+
+        private DefinitionIndex(boolean authoritative) {
+            this.authoritative = authoritative;
+        }
+
+        private static DefinitionIndex fallback() {
+            return new DefinitionIndex(false);
+        }
+
+        private static DefinitionIndex from(List<JsonObject> edges) {
+            DefinitionIndex result = new DefinitionIndex(true);
+            Set<String> seen = new LinkedHashSet<>();
+            Set<String> seenCallReturns = new LinkedHashSet<>();
+            for (JsonObject edge : edges) {
+                String cell = string(edge, "toCell");
+                Matcher localCell = LOCAL_CELL.matcher(cell);
+                if (!localCell.matches()) {
+                    continue;
+                }
+                String method = string(edge, "method");
+                int unitIndex = integer(edge, "unitIndex", -1);
+                String unit = string(edge, "unit");
+                if (!localCell.group(1).equals(method) || unitIndex < 0
+                        || !definesLocal(unit, localCell.group(2))) {
+                    continue;
+                }
+                String key = cell + "\n" + method + "#u" + unitIndex;
+                JsonObject site = new JsonObject();
+                site.addProperty("method", method);
+                site.addProperty("local", localCell.group(2));
+                site.addProperty("unitIndex", unitIndex);
+                site.addProperty("siteId", method + "#u" + unitIndex);
+                site.addProperty("unit", unit);
+                site.addProperty("authority", "STATIC_DATAFLOW_DEF_SITE");
+                if (seen.add(key)) {
+                    result.byCell.computeIfAbsent(cell,
+                            ignored -> new ArrayList<>()).add(site);
+                }
+
+                String source = string(edge, "fromCell");
+                if (source.contains(">.return")) {
+                    String returnKey = source + "\n" + method + "#u"
+                            + unitIndex + "\n" + localCell.group(2);
+                    if (seenCallReturns.add(returnKey)) {
+                        result.byCallReturn.computeIfAbsent(source,
+                                ignored -> new ArrayList<>())
+                                .add(site.deepCopy());
+                    }
+                }
+            }
+            return result;
+        }
+
+        private static boolean definesLocal(String unit, String local) {
+            if (unit == null || local == null) {
+                return false;
+            }
+            int assignment = unit.indexOf('=');
+            if (assignment < 0) {
+                return false;
+            }
+            return local.equals(unit.substring(0, assignment).trim());
+        }
+
+        private JsonArray sites(String cell) {
+            JsonArray result = new JsonArray();
+            List<JsonObject> sites = byCell.get(cell);
+            if (sites != null) {
+                for (JsonObject site : sites) {
+                    result.add(site.deepCopy());
+                }
+            }
+            return result;
+        }
+
+        private JsonArray returnSites(String callReturnCell,
+                                      Set<String> allowedMethods,
+                                      Set<String> allowedSites) {
+            JsonArray result = new JsonArray();
+            List<JsonObject> sites = byCallReturn.get(callReturnCell);
+            if (sites == null) {
+                return result;
+            }
+            for (JsonObject site : sites) {
+                String method = string(site, "method");
+                String siteId = string(site, "siteId");
+                if (allowedMethods != null && !allowedMethods.isEmpty()
+                        && !allowedMethods.contains(method)) {
+                    continue;
+                }
+                if (allowedSites != null && !allowedSites.isEmpty()
+                        && !allowedSites.contains(siteId)) {
+                    continue;
+                }
+                result.add(site.deepCopy());
+            }
+            return result;
+        }
+    }
+
+    private static final class Region {
+        private final String regionId;
+        private final Map<String, String> portByCell = new LinkedHashMap<>();
+
+        private Region(JsonObject row) {
+            this.regionId = string(row, "regionId");
+            collectPorts(array(row, "symbolicInputs"));
+            collectPorts(array(row, "outputs"));
+        }
+
+        private void collectPorts(JsonArray ports) {
+            for (JsonElement element : ports) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject port = element.getAsJsonObject();
+                String id = firstNonBlank(string(port, "portId"),
+                        string(port, "symbol"));
+                String cell = string(port, "cell");
+                if (!id.isEmpty() && !cell.isEmpty()) {
+                    portByCell.put(cell, id);
+                }
+            }
+        }
+    }
+
+    private static final class Endpoint {
+        private final String id;
+        private final String cell;
+
+        private Endpoint(String id, String cell) {
+            this.id = safe(id);
+            this.cell = safe(cell);
+        }
+    }
+
+    private static final class MaterializationPlan {
+        private final JsonArray actions;
+        private final boolean ready;
+        private final boolean complete;
+        private final int executableCount;
+        private final int deferredCount;
+        private final int vmIntrinsicPlaceholderCount;
+
+        private MaterializationPlan(JsonArray actions, boolean ready,
+                                    boolean complete, int executableCount,
+                                    int deferredCount,
+                                    int vmIntrinsicPlaceholderCount) {
+            this.actions = actions;
+            this.ready = ready;
+            this.complete = complete;
+            this.executableCount = executableCount;
+            this.deferredCount = deferredCount;
+            this.vmIntrinsicPlaceholderCount = vmIntrinsicPlaceholderCount;
+        }
+
+        private MaterializationPlan notReady() {
+            return new MaterializationPlan(actions, false, complete,
+                    executableCount, deferredCount,
+                    vmIntrinsicPlaceholderCount);
+        }
+    }
+
+    private static final class TargetBranch {
+        private final String siteId;
+        private final int branchIndex;
+        private final int selectedOccurrence;
+        private final boolean observedOutcome;
+        private final boolean desiredOutcome;
+        private final String selectionMode;
+
+        private TargetBranch(String siteId, int branchIndex,
+                             int selectedOccurrence, boolean observedOutcome,
+                             boolean desiredOutcome, String selectionMode) {
+            this.siteId = safe(siteId);
+            this.branchIndex = branchIndex;
+            this.selectedOccurrence = Math.max(1, selectedOccurrence);
+            this.observedOutcome = observedOutcome;
+            this.desiredOutcome = desiredOutcome;
+            this.selectionMode = safe(selectionMode);
+        }
+
+        private static TargetBranch outputCapture() {
+            return new TargetBranch("", -1, 1, false, false,
+                    "OUTPUT_CLOSURE_CAPTURE");
+        }
+
+        private JsonObject toJson() {
+            JsonObject value = new JsonObject();
+            value.addProperty("siteId", siteId);
+            value.addProperty("branchIndex", branchIndex);
+            value.addProperty("occurrence", selectedOccurrence);
+            value.addProperty("observedOutcome", observedOutcome);
+            value.addProperty("desiredOutcome", desiredOutcome);
+            value.addProperty("selectionMode", selectionMode);
+            value.addProperty("operation",
+                    "OUTPUT_CLOSURE_CAPTURE".equals(selectionMode)
+                            ? "CAPTURE_OUTPUT_PATH"
+                            : "NEGATE_CONDITION");
+            return value;
+        }
+    }
+
+    private static final class Candidate {
+        private static final Comparator<Candidate> ORDER =
+                Comparator.comparing((Candidate value) -> !value.directed)
+                        .thenComparing(value -> !value.materialization.ready)
+                        .thenComparingInt(value -> value.target.branchIndex)
+                        .thenComparingInt(value -> integer(value.activation,
+                                "invocationOrdinal", Integer.MAX_VALUE))
+                        .thenComparing(value -> value.activationId);
+
+        private final JsonObject activation;
+        private final String activationId;
+        private final Region region;
+        private final TargetBranch target;
+        private final boolean directed;
+        private final boolean outputClosure;
+        private final MaterializationPlan materialization;
+        private final String reason;
+
+        private Candidate(JsonObject activation, String activationId,
+                          Region region, TargetBranch target,
+                          boolean hasRequiredWitness,
+                          MaterializationPlan materialization,
+                          boolean outputClosure) {
+            this.activation = activation;
+            this.activationId = activationId;
+            this.region = region;
+            this.target = target;
+            this.outputClosure = outputClosure;
+            this.directed = outputClosure || !hasRequiredWitness;
+            this.materialization = materialization;
+            this.reason = outputClosure
+                    ? "runtime-confirmed upstream region selected for output closure"
+                    : directed
+                    ? "runtime path reaches the branch but misses the static required outcome"
+                    : "static branch is explicitly explorable";
+        }
+    }
+
+    private static final class UnionFind {
+        private final Map<String, String> parent = new LinkedHashMap<>();
+
+        private String find(String value) {
+            String current = parent.get(value);
+            if (current == null) {
+                parent.put(value, value);
+                return value;
+            }
+            if (current.equals(value)) {
+                return current;
+            }
+            String root = find(current);
+            parent.put(value, root);
+            return root;
+        }
+
+        private void union(String left, String right) {
+            String leftRoot = find(left);
+            String rightRoot = find(right);
+            if (!leftRoot.equals(rightRoot)) {
+                parent.put(rightRoot, leftRoot);
+            }
+        }
+    }
+
+    private static final class MergePlan {
+        private final JsonObject json;
+        private final List<JsonObject> equalityClasses;
+        private final List<JsonObject> stateMerges;
+        private final List<JsonObject> alternativeWriterGroups;
+
+        private MergePlan(JsonObject json, List<JsonObject> equalityClasses,
+                          List<JsonObject> stateMerges,
+                          List<JsonObject> alternativeWriterGroups) {
+            this.json = json;
+            this.equalityClasses = equalityClasses;
+            this.stateMerges = stateMerges;
+            this.alternativeWriterGroups = alternativeWriterGroups;
+        }
+
+        private JsonObject contextFor(String regionId, String regionInstanceId) {
+            JsonObject context = new JsonObject();
+            JsonArray equalityBindings = new JsonArray();
+            for (JsonElement element : array(json, "equalityRelations")) {
+                JsonObject value = element.getAsJsonObject();
+                if (!relevant(value, regionId)) {
+                    continue;
+                }
+                JsonArray selected = selectedBindings(value, regionInstanceId,
+                        false);
+                if (selected.size() > 0) {
+                    JsonObject copy = value.deepCopy();
+                    copy.remove("runtimeBindings");
+                    copy.add("selectedBindings", selected);
+                    equalityBindings.add(copy);
+                }
+            }
+            // Rebuild equality classes from the witness-bearing relations
+            // selected for this concrete region instance.  Reusing the global
+            // static class here could transitively assert an equality whose
+            // runtime fingerprint belonged to a different invocation.
+            JsonArray equality = new JsonArray();
+            int equalityIndex = 0;
+            for (JsonElement element : equalityBindings) {
+                JsonObject relation = element.getAsJsonObject();
+                JsonArray members = new JsonArray();
+                members.add(string(relation, "fromEndpoint"));
+                members.add(string(relation, "toEndpoint"));
+                JsonObject value = new JsonObject();
+                value.addProperty("canonicalSymbol",
+                        "SELECTED.EQ." + equalityIndex++);
+                value.add("members", members);
+                value.addProperty("selectionAuthority",
+                        "INSTANCE_MATCHED_COMPLETE_RUNTIME_FINGERPRINT");
+                equality.add(value);
+            }
+            JsonArray states = new JsonArray();
+            for (JsonObject value : stateMerges) {
+                if (!relevant(value, regionId)) {
+                    continue;
+                }
+                JsonArray selected = selectedBindings(value, regionInstanceId,
+                        true);
+                if (selected.size() > 0) {
+                    JsonObject copy = value.deepCopy();
+                    copy.remove("runtimeBindings");
+                    copy.add("selectedBindings", selected);
+                    states.add(copy);
+                }
+            }
+            JsonArray alternatives = new JsonArray();
+            for (JsonObject value : alternativeWriterGroups) {
+                if (!GSON.toJson(value).contains(regionId)) {
+                    continue;
+                }
+                JsonObject copy = value.deepCopy();
+                JsonArray selectedAlternatives = new JsonArray();
+                for (JsonElement element : array(copy, "alternatives")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject alternative = element.getAsJsonObject();
+                    JsonArray selected = selectedBindings(alternative,
+                            regionInstanceId, true);
+                    if (selected.size() > 0) {
+                        JsonObject selectedAlternative =
+                                alternative.deepCopy();
+                        selectedAlternative.remove("runtimeBindings");
+                        selectedAlternative.add("selectedBindings", selected);
+                        selectedAlternatives.add(selectedAlternative);
+                    }
+                }
+                if (selectedAlternatives.size() == 1) {
+                    states.add(selectedAlternatives.get(0).deepCopy());
+                } else if (selectedAlternatives.size() > 1) {
+                    copy.add("alternatives", selectedAlternatives);
+                    alternatives.add(copy);
+                }
+            }
+            context.add("equalityClasses", equality);
+            context.add("equalityRelations", equalityBindings);
+            context.add("versionedStateMerges", states);
+            context.add("alternativeWriterGroups", alternatives);
+            context.addProperty("regionInstanceId", regionInstanceId);
+            return context;
+        }
+
+        /** Selects a context for a fresh campaign target without accepting a
+         * binding merely because either endpoint happens to mention its
+         * instance.  The static endpoint role determines which runtime side
+         * must be the target, and both endpoints are attested by the current
+         * activation catalog. */
+        private ExactContextResult contextForExact(String regionId,
+                                                   String regionInstanceId,
+                                                   ExactBindingScope scope) {
+            JsonObject context = new JsonObject();
+            JsonArray gaps = new JsonArray();
+            JsonArray equalityBindings = new JsonArray();
+            int selectedCount = 0;
+            for (JsonElement element : array(json, "equalityRelations")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject value = element.getAsJsonObject();
+                if (!relevant(value, regionId)) continue;
+                JsonArray selected = selectedBindingsExact(value, regionId,
+                        regionInstanceId, false, scope, gaps);
+                selectedCount += selected.size();
+                if (selected.size() > 0) {
+                    JsonObject copy = value.deepCopy();
+                    copy.remove("runtimeBindings");
+                    copy.add("selectedBindings", selected);
+                    equalityBindings.add(copy);
+                }
+            }
+            JsonArray equality = new JsonArray();
+            int equalityIndex = 0;
+            for (JsonElement element : equalityBindings) {
+                JsonObject relation = element.getAsJsonObject();
+                JsonArray members = new JsonArray();
+                members.add(string(relation, "fromEndpoint"));
+                members.add(string(relation, "toEndpoint"));
+                JsonObject value = new JsonObject();
+                value.addProperty("canonicalSymbol",
+                        "SELECTED.EQ." + equalityIndex++);
+                value.add("members", members);
+                value.addProperty("selectionAuthority",
+                        "EXACT_TARGET_ENDPOINT_AND_SAME_EXECUTION_"
+                                + "ACTIVATION_CATALOG");
+                equality.add(value);
+            }
+
+            JsonArray states = new JsonArray();
+            for (JsonObject value : stateMerges) {
+                if (!relevant(value, regionId)) continue;
+                JsonArray selected = selectedBindingsExact(value, regionId,
+                        regionInstanceId, true, scope, gaps);
+                selectedCount += selected.size();
+                if (selected.size() > 0) {
+                    JsonObject copy = value.deepCopy();
+                    copy.remove("runtimeBindings");
+                    copy.add("selectedBindings", selected);
+                    states.add(copy);
+                }
+            }
+
+            JsonArray alternatives = new JsonArray();
+            for (JsonObject value : alternativeWriterGroups) {
+                if (!GSON.toJson(value).contains(regionId)) continue;
+                JsonObject copy = value.deepCopy();
+                JsonArray selectedAlternatives = new JsonArray();
+                for (JsonElement element : array(copy, "alternatives")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject alternative = element.getAsJsonObject();
+                    JsonArray selected = selectedBindingsExact(alternative,
+                            regionId, regionInstanceId, true, scope, gaps);
+                    selectedCount += selected.size();
+                    if (selected.size() > 0) {
+                        JsonObject selectedAlternative =
+                                alternative.deepCopy();
+                        selectedAlternative.remove("runtimeBindings");
+                        selectedAlternative.add("selectedBindings", selected);
+                        selectedAlternatives.add(selectedAlternative);
+                    }
+                }
+                if (selectedAlternatives.size() == 1) {
+                    states.add(selectedAlternatives.get(0).deepCopy());
+                } else if (selectedAlternatives.size() > 1) {
+                    copy.add("alternatives", selectedAlternatives);
+                    alternatives.add(copy);
+                }
+            }
+            context.add("equalityClasses", equality);
+            context.add("equalityRelations", equalityBindings);
+            context.add("versionedStateMerges", states);
+            context.add("alternativeWriterGroups", alternatives);
+            context.addProperty("regionId", regionId);
+            context.addProperty("regionInstanceId", regionInstanceId);
+            context.addProperty("selectionAuthority",
+                    "CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE");
+            context.addProperty("transitionExecutionId",
+                    scope.executionId);
+            return new ExactContextResult(context, gaps, selectedCount);
+        }
+
+        private static boolean relevant(JsonObject value, String regionId) {
+            return string(value, "fromEndpoint").startsWith(regionId + ".")
+                    || string(value, "fromEndpoint").startsWith(regionId + "::")
+                    || string(value, "toEndpoint").startsWith(regionId + ".")
+                    || string(value, "toEndpoint").startsWith(regionId + "::");
+        }
+
+        private static JsonArray selectedBindings(JsonObject relation,
+                                                  String regionInstanceId,
+                                                  boolean requireHeapWitness) {
+            JsonArray result = new JsonArray();
+            for (JsonElement element : array(relation, "runtimeBindings")) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject binding = element.getAsJsonObject();
+                if (!regionInstanceId.isEmpty()
+                        && !regionInstanceId.equals(string(binding,
+                        "fromRegionInstance"))
+                        && !regionInstanceId.equals(string(binding,
+                        "toRegionInstance"))) {
+                    continue;
+                }
+                if (requireHeapWitness
+                        && (!binding.has("writeSeq")
+                        || !binding.has("readSeq")
+                        || !binding.has("receiverObjectId"))) {
+                    continue;
+                }
+                if (!requireHeapWitness
+                        && (!bool(binding, "valueEqualityObserved", false)
+                        || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(
+                        string(binding, "valueEqualityAuthority"))
+                        || string(binding, "valueFingerprint").isEmpty())) {
+                    continue;
+                }
+                result.add(binding.deepCopy());
+            }
+            return result;
+        }
+
+        private static JsonArray selectedBindingsExact(JsonObject relation,
+                                                       String regionId,
+                                                       String regionInstanceId,
+                                                       boolean requireHeapWitness,
+                                                       ExactBindingScope scope,
+                                                       JsonArray gaps) {
+            JsonArray result = new JsonArray();
+            String fromRegion = firstNonBlank(string(relation,
+                    "fromRegion"), regionOfEndpoint(string(relation,
+                    "fromEndpoint")));
+            String toRegion = firstNonBlank(string(relation, "toRegion"),
+                    regionOfEndpoint(string(relation, "toEndpoint")));
+            boolean targetFrom = regionId.equals(fromRegion);
+            boolean targetTo = regionId.equals(toRegion);
+            if (!targetFrom && !targetTo) return result;
+            if (targetFrom && targetTo) {
+                addContextGap(gaps, relation,
+                        "AMBIGUOUS_SELF_REGION_ENDPOINT_ROLE");
+                return result;
+            }
+            for (JsonElement element : array(relation, "runtimeBindings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                String fromInstance = string(binding,
+                        "fromRegionInstance");
+                String toInstance = string(binding, "toRegionInstance");
+                if (targetFrom && !regionInstanceId.equals(fromInstance)
+                        || targetTo && !regionInstanceId.equals(toInstance)) {
+                    // Historical bindings are expected in a cumulative edge
+                    // ledger.  They are simply not selected for this target.
+                    continue;
+                }
+                if (requireHeapWitness
+                        && (!binding.has("writeSeq")
+                        || !binding.has("readSeq")
+                        || !binding.has("receiverObjectId"))) {
+                    addContextGap(gaps, relation,
+                            "EXACT_TARGET_HEAP_BINDING_WITNESS_INCOMPLETE");
+                    continue;
+                }
+                if (!requireHeapWitness
+                        && (!bool(binding, "valueEqualityObserved", false)
+                        || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(
+                        string(binding, "valueEqualityAuthority"))
+                        || string(binding, "valueFingerprint").isEmpty())) {
+                    addContextGap(gaps, relation,
+                            "EXACT_TARGET_EQUALITY_FINGERPRINT_INCOMPLETE");
+                    continue;
+                }
+                String issue = scope.bindingIssue(relation, binding,
+                        fromRegion, toRegion);
+                if (!issue.isEmpty()) {
+                    addContextGap(gaps, relation, issue);
+                    continue;
+                }
+                result.add(binding.deepCopy());
+            }
+            return result;
+        }
+
+        private static void addContextGap(JsonArray gaps,
+                                          JsonObject relation,
+                                          String reason) {
+            JsonObject gap = new JsonObject();
+            gap.addProperty("edgeId", string(relation, "edgeId"));
+            gap.addProperty("fromEndpoint", string(relation,
+                    "fromEndpoint"));
+            gap.addProperty("toEndpoint", string(relation, "toEndpoint"));
+            gap.addProperty("reason", reason);
+            String key = gap.toString();
+            for (JsonElement existing : gaps) {
+                if (key.equals(existing.toString())) return;
+            }
+            gaps.add(gap);
+        }
+    }
+
+    private static final class ExactContextResult {
+        private final JsonObject context;
+        private final JsonArray gaps;
+        private final int selectedBindingCount;
+
+        private ExactContextResult(JsonObject context, JsonArray gaps,
+                                   int selectedBindingCount) {
+            this.context = context;
+            this.gaps = gaps;
+            this.selectedBindingCount = selectedBindingCount;
+        }
+    }
+
+    /**
+     * Catalog authority for a fresh target's runtime bindings.  Dynamic ids
+     * are opaque: execution membership is read from activation/edge metadata,
+     * never inferred by parsing an id prefix.
+     */
+    private static final class ExactBindingScope {
+        private final String executionId;
+        private final Map<String, List<JsonObject>> activationsByInstance;
+        private final boolean ready;
+        private final String reason;
+
+        private ExactBindingScope(String executionId,
+                                  Map<String, List<JsonObject>> catalog,
+                                  boolean ready, String reason) {
+            this.executionId = executionId;
+            this.activationsByInstance = catalog;
+            this.ready = ready;
+            this.reason = reason;
+        }
+
+        private static ExactBindingScope create(
+                List<JsonObject> activations, String executionId,
+                JsonObject freshActivation) {
+            Map<String, List<JsonObject>> catalog = new LinkedHashMap<>();
+            for (JsonObject activation : activations == null
+                    ? Collections.<JsonObject>emptyList() : activations) {
+                String instance = string(activation, "regionInstanceId");
+                if (instance.isEmpty()) continue;
+                List<JsonObject> values = catalog.get(instance);
+                if (values == null) {
+                    values = new ArrayList<>();
+                    catalog.put(instance, values);
+                }
+                values.add(activation);
+            }
+            String freshInstance = string(freshActivation,
+                    "regionInstanceId");
+            List<JsonObject> matches = catalog.get(freshInstance);
+            if (matches == null || matches.size() != 1
+                    || !string(freshActivation, "activationId").equals(
+                    string(matches.get(0), "activationId"))
+                    || !string(freshActivation, "regionId").equals(
+                    string(matches.get(0), "regionId"))) {
+                return new ExactBindingScope(executionId, catalog, false,
+                        "FRESH_TARGET_ACTIVATION_CATALOG_NOT_UNIQUE");
+            }
+            String observedExecution = activationExecution(matches.get(0));
+            if (!executionId.equals(observedExecution)) {
+                return new ExactBindingScope(executionId, catalog, false,
+                        "FRESH_TARGET_ACTIVATION_EXECUTION_NOT_ATTESTED");
+            }
+            return new ExactBindingScope(executionId, catalog, true, "");
+        }
+
+        private String bindingIssue(JsonObject relation,
+                                    JsonObject binding,
+                                    String fromRegion,
+                                    String toRegion) {
+            Set<String> declaredExecutions = new LinkedHashSet<>();
+            String single = string(relation, "discoveredExecutionId");
+            if (!single.isEmpty()) declaredExecutions.add(single);
+            for (JsonElement element : array(relation,
+                    "discoveredExecutionIds")) {
+                if (element.isJsonPrimitive()) {
+                    String value = element.getAsString();
+                    if (!value.isEmpty()) declaredExecutions.add(value);
+                }
+            }
+            if (!declaredExecutions.contains(executionId)) {
+                return "EDGE_TRANSITION_EXECUTION_NOT_ATTESTED";
+            }
+            String bindingExecution = string(binding,
+                    "discoveredExecutionId");
+            if (!bindingExecution.isEmpty()
+                    && !executionId.equals(bindingExecution)) {
+                return "BINDING_EXPLICIT_EXECUTION_MISMATCH";
+            }
+            String issue = endpointIssue(string(binding,
+                    "fromRegionInstance"), fromRegion);
+            if (!issue.isEmpty()) return "FROM_" + issue;
+            issue = endpointIssue(string(binding, "toRegionInstance"),
+                    toRegion);
+            return issue.isEmpty() ? "" : "TO_" + issue;
+        }
+
+        private String endpointIssue(String instance, String region) {
+            if (instance.isEmpty() || region.isEmpty()) {
+                return "ENDPOINT_IDENTITY_MISSING";
+            }
+            List<JsonObject> matches = activationsByInstance.get(instance);
+            if (matches == null || matches.size() != 1) {
+                return "ENDPOINT_ACTIVATION_NOT_UNIQUE";
+            }
+            JsonObject activation = matches.get(0);
+            if (!region.equals(string(activation, "regionId"))) {
+                return "ENDPOINT_STATIC_REGION_MISMATCH";
+            }
+            if (!executionId.equals(activationExecution(activation))) {
+                return "ENDPOINT_TRANSITION_EXECUTION_NOT_ATTESTED";
+            }
+            return "";
+        }
+
+        private static String activationExecution(JsonObject activation) {
+            Set<String> values = new LinkedHashSet<>();
+            String discovered = string(activation,
+                    "discoveredExecutionId");
+            String target = string(activation,
+                    "postDiscoveryTargetExecutionId");
+            if (!discovered.isEmpty()) values.add(discovered);
+            if (!target.isEmpty()) values.add(target);
+            return values.size() == 1 ? values.iterator().next() : "";
+        }
+    }
+
+    public static final class FreshTargetQueryResult {
+        public final boolean ready;
+        public final String reason;
+        public final JsonObject query;
+        public final JsonObject admission;
+
+        private FreshTargetQueryResult(boolean ready, String reason,
+                                       JsonObject query,
+                                       JsonObject admission) {
+            this.ready = ready;
+            this.reason = safe(reason);
+            this.query = query == null ? new JsonObject() : query;
+            this.admission = admission == null
+                    ? new JsonObject() : admission;
+        }
+
+        private static FreshTargetQueryResult failure(String reason) {
+            JsonObject admission = new JsonObject();
+            admission.addProperty("ready", false);
+            admission.addProperty("reason", reason);
+            admission.add("contextGaps", new JsonArray());
+            admission.addProperty("selectedBindingCount", 0);
+            return new FreshTargetQueryResult(false, reason,
+                    new JsonObject(), admission);
+        }
+    }
+
+    public static final class Result {
+        public final List<JsonObject> jobs = new ArrayList<>();
+        public final List<JsonObject> scheduledActivations = new ArrayList<>();
+        public final List<JsonObject> queries = new ArrayList<>();
+        public final List<JsonObject> regionWorkItems = new ArrayList<>();
+        public final List<JsonObject> upstreamRequests = new ArrayList<>();
+        public final List<JsonObject> alternativeWriterGroups =
+                new ArrayList<>();
+        public final List<JsonObject> pathTasks = new ArrayList<>();
+        public final JsonObject summary = new JsonObject();
+        public JsonObject mergePlan = new JsonObject();
+        public JsonObject regionManifest = new JsonObject();
+        public JsonObject pathManifest = new JsonObject();
+    }
+
+    public static final class Arguments {
+        public final Path regions;
+        public final Path activations;
+        public final Path edgeValidations;
+        public final Path staticGraph;
+        public final Path summaries;
+        public final Path pathRecords;
+        public final Path outputDirectory;
+        public final String regionId;
+        public final String activationId;
+        public final String targetSite;
+        public final int maxJobs;
+        public final boolean allowMultipleJobsPerRegion;
+        public final boolean forceBranchValidation;
+        public final boolean captureOnly;
+        public final RecursiveRegionWorklist.Bounds regionBounds;
+        public final RegionPathWorklist.Bounds pathBounds;
+
+        private Arguments(Path regions, Path activations,
+                          Path edgeValidations, Path staticGraph,
+                          Path summaries, Path pathRecords,
+                          Path outputDirectory, String regionId,
+                          String activationId, String targetSite, int maxJobs,
+                          boolean allowMultipleJobsPerRegion,
+                          boolean forceBranchValidation,
+                          boolean captureOnly,
+                          RecursiveRegionWorklist.Bounds regionBounds,
+                          RegionPathWorklist.Bounds pathBounds) {
+            this.regions = regions;
+            this.activations = activations;
+            this.edgeValidations = edgeValidations;
+            this.staticGraph = staticGraph;
+            this.summaries = summaries;
+            this.pathRecords = pathRecords;
+            this.outputDirectory = outputDirectory;
+            this.regionId = safe(regionId);
+            this.activationId = safe(activationId);
+            this.targetSite = safe(targetSite);
+            this.maxJobs = Math.max(1, maxJobs);
+            this.allowMultipleJobsPerRegion = allowMultipleJobsPerRegion;
+            this.forceBranchValidation = forceBranchValidation;
+            this.captureOnly = captureOnly;
+            this.regionBounds = regionBounds;
+            this.pathBounds = pathBounds;
+        }
+
+        public static Arguments parse(String[] args) {
+            Map<String, String> values = new LinkedHashMap<>();
+            for (int index = 0; args != null && index < args.length; index++) {
+                String value = args[index];
+                if (!value.startsWith("--")) {
+                    continue;
+                }
+                String key = value.substring(2);
+                boolean hasNext = index + 1 < args.length;
+                String next = hasNext ? args[index + 1] : "";
+                if (hasNext && !next.startsWith("--")) {
+                    values.put(key, next);
+                    index++;
+                } else {
+                    values.put(key, "true");
+                }
+            }
+            Path regions = requiredPath(values, "regions");
+            Path activations = requiredPath(values, "activation-plan");
+            Path edges = requiredPath(values, "edge-validations");
+            Path output = Paths.get(firstNonBlank(values.get("output-dir"),
+                    sibling(activations, "concolic-schedule").toString()));
+            Path staticGraph = optionalPath(values.get("static-graph"));
+            Path summaries = optionalPath(values.get("summaries"));
+            Path pathRecords = optionalPath(values.get("path-records"));
+            return new Arguments(regions, activations, edges, staticGraph,
+                    summaries, pathRecords, output,
+                    firstNonBlank(values.get("region-id")),
+                    firstNonBlank(values.get("activation-id")),
+                    firstNonBlank(values.get("target-site")),
+                    parseInt(values.get("max-jobs"), 1),
+                    Boolean.parseBoolean(values.get("multiple-per-region")),
+                    Boolean.parseBoolean(values.get("force-branch-validation")),
+                    Boolean.parseBoolean(values.get("capture-only")),
+                    new RecursiveRegionWorklist.Bounds(
+                            parseInt(firstNonBlank(values.get(
+                                    "max-region-depth"), values.get(
+                                    "max-producer-depth")), 8),
+                            parseInt(firstNonBlank(values.get(
+                                    "max-recursive-regions"), values.get(
+                                    "max-producer-regions")), 64),
+                            parseInt(values.get(
+                                    "max-activations-per-region"), 8),
+                            parseInt(values.get(
+                                    "max-alternative-writers"), 8),
+                            parseInt(firstNonBlank(values.get(
+                                    "max-region-queries"), values.get(
+                                    "max-producer-queries")), 256),
+                            parseInt(firstNonBlank(values.get(
+                                    "max-graph-alternatives"), values.get(
+                                    "max-producer-paths")), 512),
+                            parseLong(firstNonBlank(values.get(
+                                    "max-region-wall-clock-ms"), values.get(
+                                    "max-producer-wall-clock-ms")), 30000L)),
+                    new RegionPathWorklist.Bounds(
+                            parseInt(values.get("max-region-paths"), 64),
+                            parseInt(values.get("max-flips-per-path"), 32),
+                            parseInt(values.get("max-path-tasks"), 256),
+                            parseLong(values.get(
+                                    "max-path-wall-clock-ms"), 30000L)));
+        }
+
+        private static Path requiredPath(Map<String, String> values,
+                                         String key) {
+            String value = values.get(key);
+            if (value == null || value.trim().isEmpty()) {
+                throw new IllegalArgumentException("Missing --" + key);
+            }
+            return Paths.get(value);
+        }
+
+        private static Path optionalPath(String value) {
+            return value == null || value.trim().isEmpty()
+                    ? null : Paths.get(value);
+        }
+
+        private static Path sibling(Path path, String name) {
+            Path parent = path.toAbsolutePath().getParent();
+            return (parent == null ? Paths.get(".") : parent).resolve(name);
+        }
+
+        private static int parseInt(String value, int fallback) {
+            try {
+                return value == null ? fallback : Integer.parseInt(value);
+            } catch (RuntimeException ignored) {
+                return fallback;
+            }
+        }
+
+        private static long parseLong(String value, long fallback) {
+            try {
+                return value == null ? fallback : Long.parseLong(value);
+            } catch (RuntimeException ignored) {
+                return fallback;
+            }
+        }
+    }
+}

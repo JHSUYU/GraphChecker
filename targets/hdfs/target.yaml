@@ -1,4 +1,1 @@
-seed_variables:
-  - allKeys
-  - request.getKeyId()
-seed_function: retrievePassword
+seed_exception: org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException

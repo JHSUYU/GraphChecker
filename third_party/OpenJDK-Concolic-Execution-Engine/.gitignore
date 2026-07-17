@@ -1,0 +1,13 @@
+a.out
+cache/
+build/
+builds/
+.hg/
+*/.hg/
+.vscode/
+*.iml
+*.log
+cmake-build-debug/
+compile_commands.json
+core
+*/core
