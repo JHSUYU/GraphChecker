@@ -5,11 +5,19 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -31,9 +39,34 @@ public final class CausynthTraceRecorder {
             new LinkedHashMap<>();
     private static final List<TraceEvent> EVENTS = new ArrayList<>();
     private static final List<FieldEvent> FIELD_EVENTS = new ArrayList<>();
+    private static final List<ExecutionEvent> EXECUTION_EVENTS = new ArrayList<>();
+    private static final ThreadLocal<Deque<ActiveCall>> ACTIVE_CALLS =
+            new ThreadLocal<Deque<ActiveCall>>() {
+                @Override
+                protected Deque<ActiveCall> initialValue() {
+                    return new ArrayDeque<>();
+                }
+            };
+    private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
+            new ThreadLocal<Deque<ActiveCallSite>>() {
+                @Override
+                protected Deque<ActiveCallSite> initialValue() {
+                    return new ArrayDeque<>();
+                }
+            };
     private static final int DEFAULT_MAX_EVENTS = 200000;
     private static final int DEFAULT_MAX_GRAPH_EDGES = 50000;
     private static final int DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE = 2000;
+    /**
+     * A plain concolic replay uses the rich-trace call stacks only as exact
+     * accessor-site context.  It does not publish a runtime trace, so hashing
+     * every HDFS packet/argument is both semantically unused and prohibitively
+     * expensive on the interpreted custom JVM.  Campaign discovery supplies
+     * an explicit trace output directory and therefore keeps fingerprints.
+     * The system property is an auditable override for either mode.
+     */
+    private static volatile boolean valueFingerprintsEnabled = true;
+    private static volatile boolean contextOnlyConcolicReplay;
 
     private static volatile File outputDir;
     private static volatile File traceFile;
@@ -41,9 +74,50 @@ public final class CausynthTraceRecorder {
     private static volatile int maxEvents;
     private static volatile int maxGraphEdges;
     private static volatile int maxContextPairsPerEdge;
+    /**
+     * Rich campaign replays may emit hundreds of thousands of events.  When
+     * aggregation is performed by a fresh host JVM, retaining the same rows
+     * in the MiniDFSCluster JVM only doubles memory and can make shutdown
+     * aggregation fail.  Streaming-only mode keeps the call-stack TLS needed
+     * by instrumentation, but writes event rows directly to disk without
+     * building the offline graph inputs in this JVM.
+     */
+    private static volatile boolean retainRecordedEventsInMemory = true;
+    /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
+    private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
+    /** Guarded by {@link #LOCK}; a reset must not install duplicate hooks. */
+    private static boolean shutdownHookRegistered;
 
     private CausynthTraceRecorder() {
+    }
+
+    private static boolean configuredValueFingerprintsEnabled() {
+        String explicit = firstNonBlank(System.getProperty(
+                        "causynth.trace.value.fingerprints"),
+                System.getenv("CAUSYNTH_TRACE_VALUE_FINGERPRINTS"));
+        if (explicit != null && !explicit.trim().isEmpty()) {
+            return Boolean.parseBoolean(explicit.trim());
+        }
+        String concolicResults = firstNonBlank(System.getProperty(
+                        "causynth.concolic.results"),
+                System.getenv("CAUSYNTH_CONCOLIC_RESULTS"));
+        String traceOutput = firstNonBlank(System.getProperty(
+                        "causynth.trace.output.dir"),
+                System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"));
+        return concolicResults == null || concolicResults.trim().isEmpty()
+                || traceOutput != null && !traceOutput.trim().isEmpty();
+    }
+
+    private static boolean configuredContextOnlyConcolicReplay() {
+        String concolicResults = firstNonBlank(System.getProperty(
+                        "causynth.concolic.results"),
+                System.getenv("CAUSYNTH_CONCOLIC_RESULTS"));
+        String traceOutput = firstNonBlank(System.getProperty(
+                        "causynth.trace.output.dir"),
+                System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"));
+        return concolicResults != null && !concolicResults.trim().isEmpty()
+                && (traceOutput == null || traceOutput.trim().isEmpty());
     }
 
     public static void main(String[] args) {
@@ -57,6 +131,18 @@ public final class CausynthTraceRecorder {
                 System.getProperty("causynth.static.graph"),
                 System.getenv("CAUSYNTH_STATIC_GRAPH"),
                 new File(directory, "static_dataflow_edges.jsonl").getPath()));
+        String regions = firstNonBlank(params.get("regions"),
+                System.getProperty("causynth.symbolic.regions"),
+                System.getenv("CAUSYNTH_SYMBOLIC_REGIONS"));
+        String regionEdges = firstNonBlank(params.get("region-edges"),
+                System.getProperty("causynth.symbolic.region.edges"),
+                System.getenv("CAUSYNTH_SYMBOLIC_REGION_EDGES"));
+        if (regions != null && !regions.isEmpty()) {
+            System.setProperty("causynth.symbolic.regions", regions);
+        }
+        if (regionEdges != null && !regionEdges.isEmpty()) {
+            System.setProperty("causynth.symbolic.region.edges", regionEdges);
+        }
         String test = firstNonBlank(params.get("test"),
                 System.getProperty("causynth.trace.test"),
                 System.getenv("CAUSYNTH_TRACE_TEST"),
@@ -95,6 +181,9 @@ public final class CausynthTraceRecorder {
         if (id > maxEvents) {
             return;
         }
+        if (contextOnlyConcolicReplay) {
+            return;
+        }
         Thread thread = Thread.currentThread();
         String threadName = thread.getName();
         long tid = thread.getId();
@@ -104,15 +193,201 @@ public final class CausynthTraceRecorder {
         TraceEvent event = new TraceEvent(id, testName, process, threadName, tid,
                 method, objectId, timeNanos);
         synchronized (LOCK) {
-            EVENTS.add(event);
-            MethodContext context = CONTEXTS.get(event.contextKey());
-            if (context == null) {
-                context = new MethodContext(event);
-                CONTEXTS.put(event.contextKey(), context);
+            if (retainRecordedEventsInMemory) {
+                EVENTS.add(event);
+                MethodContext context = CONTEXTS.get(event.contextKey());
+                if (context == null) {
+                    context = new MethodContext(event);
+                    CONTEXTS.put(event.contextKey(), context);
+                }
+                context.observe(event);
             }
-            context.observe(event);
             writeTraceLine(event);
         }
+    }
+
+    /** Rich method-entry event used by graph-directed symbolic instrumentation. */
+    public static long enterMethod(String method, Object receiver) {
+        if (method == null) {
+            return 0L;
+        }
+        initialize();
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) {
+            return 0L;
+        }
+        Thread thread = Thread.currentThread();
+        String threadName = thread.getName();
+        long tid = thread.getId();
+        int objectId = identity(receiver);
+        String process = inferProcessName(method, threadName);
+        long timeNanos = System.nanoTime();
+        Deque<ActiveCall> calls = ACTIVE_CALLS.get();
+        ActiveCall parent = calls.peek();
+        Deque<ActiveCallSite> sites = ACTIVE_CALL_SITES.get();
+        ActiveCallSite parentSite = sites.peek();
+        long parentCallId = parent == null ? 0L : parent.callId;
+        long parentSiteId = parentSite == null ? 0L : parentSite.invocationId;
+        TraceEvent event = new TraceEvent(id, testName, process, threadName, tid,
+                method, objectId, timeNanos, id, parentCallId, parentSiteId,
+                method + "#entry", runtimeType(receiver));
+        calls.push(new ActiveCall(id, parentCallId, parentSiteId, method));
+        if (contextOnlyConcolicReplay) {
+            return id;
+        }
+        synchronized (LOCK) {
+            if (retainRecordedEventsInMemory) {
+                EVENTS.add(event);
+                MethodContext context = CONTEXTS.get(event.contextKey());
+                if (context == null) {
+                    context = new MethodContext(event);
+                    CONTEXTS.put(event.contextKey(), context);
+                }
+                context.observe(event);
+            }
+            writeTraceLine(event);
+        }
+        return id;
+    }
+
+    public static void recordMethodArgument(long callId, int argumentIndex,
+                                            String declaredType, Object value,
+                                            String primitiveValue) {
+        ActiveCall call = activeCall(callId);
+        ExecutionEvent event = newExecutionEvent("METHOD_ARGUMENT",
+                call == null ? "" : call.method, callId);
+        event.argumentIndex = argumentIndex;
+        event.declaredType = safe(declaredType);
+        event.runtimeType = runtimeType(value);
+        event.objectId = identity(value);
+        event.primitiveValue = safe(primitiveValue);
+        event.captureValueFingerprint(value, primitiveValue);
+        emitExecutionEvent(event);
+    }
+
+    public static long beginCall(long ownerCallId, String caller, int unitIndex,
+                                 String declaredCallee, Object receiver) {
+        ActiveCall owner = activeCall(ownerCallId);
+        closeStaleCallSite(ownerCallId);
+        ExecutionEvent event = newExecutionEvent("CALL_SITE_ENTER",
+                firstNonBlank(caller, owner == null ? "" : owner.method), ownerCallId);
+        event.unitIndex = unitIndex;
+        event.siteId = siteId(event.method, unitIndex);
+        event.declaredCallee = safe(declaredCallee);
+        event.runtimeType = runtimeType(receiver);
+        event.objectId = identity(receiver);
+        event.parentCallId = owner == null ? 0L : owner.parentCallId;
+        event.invocationId = event.id;
+        emitExecutionEvent(event);
+        if (event.id > 0L) {
+            ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
+                    event.siteId, event.method, event.declaredCallee));
+        }
+        return event.id;
+    }
+
+    public static void recordCallArgument(long invocationId, int argumentIndex,
+                                          String declaredType, Object value,
+                                          String primitiveValue) {
+        ActiveCallSite site = activeCallSite(invocationId);
+        ExecutionEvent event = newExecutionEvent("CALL_ARGUMENT",
+                site == null ? "" : site.caller,
+                site == null ? 0L : site.ownerCallId);
+        event.invocationId = invocationId;
+        event.siteId = site == null ? "" : site.siteId;
+        event.declaredCallee = site == null ? "" : site.declaredCallee;
+        event.argumentIndex = argumentIndex;
+        event.declaredType = safe(declaredType);
+        event.runtimeType = runtimeType(value);
+        event.objectId = identity(value);
+        event.primitiveValue = safe(primitiveValue);
+        event.captureValueFingerprint(value, primitiveValue);
+        emitExecutionEvent(event);
+    }
+
+    public static void endCall(long invocationId, Object returnValue,
+                               String primitiveValue) {
+        ActiveCallSite site = activeCallSite(invocationId);
+        ExecutionEvent event = newExecutionEvent("CALL_SITE_RETURN",
+                site == null ? "" : site.caller,
+                site == null ? 0L : site.ownerCallId);
+        event.invocationId = invocationId;
+        event.siteId = site == null ? "" : site.siteId;
+        event.declaredCallee = site == null ? "" : site.declaredCallee;
+        event.runtimeType = runtimeType(returnValue);
+        event.objectId = identity(returnValue);
+        event.primitiveValue = safe(primitiveValue);
+        event.captureValueFingerprint(returnValue, primitiveValue);
+        emitExecutionEvent(event);
+        removeCallSite(invocationId);
+    }
+
+    public static void recordBranch(long callId, String method, int unitIndex,
+                                    String expression, boolean outcome) {
+        ExecutionEvent event = newExecutionEvent("BRANCH",
+                firstNonBlank(method, methodForCall(callId)), callId);
+        event.unitIndex = unitIndex;
+        event.siteId = siteId(event.method, unitIndex);
+        event.expression = safe(expression);
+        event.outcome = outcome;
+        event.hasOutcome = true;
+        emitExecutionEvent(event);
+    }
+
+    public static void exitMethod(long callId, Object returnValue,
+                                  String primitiveValue) {
+        ActiveCall call = activeCall(callId);
+        long resolvedCallId = call == null ? callId : call.callId;
+        closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE",
+                "method exited without call return");
+        ExecutionEvent event = newExecutionEvent("METHOD_EXIT_NORMAL",
+                call == null ? "" : call.method, resolvedCallId);
+        event.parentCallId = call == null ? 0L : call.parentCallId;
+        event.parentSiteId = call == null ? 0L : call.parentSiteId;
+        event.runtimeType = runtimeType(returnValue);
+        event.objectId = identity(returnValue);
+        event.primitiveValue = safe(primitiveValue);
+        event.captureValueFingerprint(returnValue, primitiveValue);
+        emitExecutionEvent(event);
+        removeCall(resolvedCallId);
+    }
+
+    /** Normal exit resolved from the current thread-local call stack. */
+    public static void exitActiveMethod(Object returnValue,
+                                        String primitiveValue) {
+        exitMethod(0L, returnValue, primitiveValue);
+    }
+
+    public static void throwMethod(long callId, Throwable throwable) {
+        ActiveCall call = activeCall(callId);
+        long resolvedCallId = call == null ? callId : call.callId;
+        String exceptionType = throwable == null ? "" : throwable.getClass().getName();
+        closeCallSites(resolvedCallId, "CALL_SITE_THROW", exceptionType);
+        ExecutionEvent event = newExecutionEvent("METHOD_EXIT_THROW",
+                call == null ? "" : call.method, resolvedCallId);
+        event.parentCallId = call == null ? 0L : call.parentCallId;
+        event.parentSiteId = call == null ? 0L : call.parentSiteId;
+        event.exceptionType = exceptionType;
+        event.runtimeType = exceptionType;
+        event.objectId = identity(throwable);
+        emitExecutionEvent(event);
+        if (call != null && call.parentSiteId > 0L) {
+            ActiveCallSite parentSite = activeCallSite(call.parentSiteId);
+            if (parentSite != null) {
+                closeCallSite(parentSite, "CALL_SITE_THROW", exceptionType);
+            }
+        }
+        removeCall(resolvedCallId);
+    }
+
+    /**
+     * Exceptional-exit hook that resolves the call id from the thread-local
+     * call stack.  The injected catch-all handler deliberately does not read
+     * the synthetic long local: some JVM/Soot stack-map combinations do not
+     * keep that local live at an exceptional handler entry.
+     */
+    public static void throwActiveMethod(Throwable throwable) {
+        throwMethod(0L, throwable);
     }
 
     public static void recordField(String kind, String method, int unitIndex,
@@ -122,7 +397,14 @@ public final class CausynthTraceRecorder {
         if (method == null || field == null) {
             return;
         }
+        // Keep this before trace truncation: concolic soundness must not turn
+        // a max-events diagnostic limit into a false no-write proof.
+        ConcolicRegionRuntime.observeRuntimeFieldEvent(kind, fieldReceiver,
+                field);
         initialize();
+        if (contextOnlyConcolicReplay) {
+            return;
+        }
         long id = EVENT_COUNTER.incrementAndGet();
         if (id > maxEvents) {
             return;
@@ -133,48 +415,293 @@ public final class CausynthTraceRecorder {
         int methodObjectId = methodReceiver == null ? 0 : System.identityHashCode(methodReceiver);
         int receiverObjectId = fieldReceiver == null ? 0 : System.identityHashCode(fieldReceiver);
         int valueObjectId = valueObject == null ? 0 : System.identityHashCode(valueObject);
+        ValueFingerprint fingerprint = valueFingerprintsEnabled
+                ? ValueFingerprint.capture(valueObject, primitiveValue)
+                : ValueFingerprint.disabled();
         String process = inferProcessName(method, threadName);
         long timeNanos = System.nanoTime();
+        ActiveCall activeCall = ACTIVE_CALLS.get().peek();
         FieldEvent event = new FieldEvent(id, testName, process, threadName, tid,
                 method, methodObjectId, unitIndex, kind, field, receiverObjectId,
-                valueObjectId, primitiveValue, timeNanos);
+                valueObjectId, primitiveValue, timeNanos,
+                activeCall == null ? 0L : activeCall.callId,
+                siteId(method, unitIndex), fingerprint.digest,
+                fingerprint.complete, fingerprint.nodes,
+                fingerprint.reason);
         synchronized (LOCK) {
-            FIELD_EVENTS.add(event);
-            String key = fieldEventKey(event.process, event.threadName, event.tid,
-                    event.method, event.methodObjectId, event.unitIndex, event.field);
-            FIELD_EVENTS_BY_CONTEXT_UNIT.put(key, event);
+            if (retainRecordedEventsInMemory) {
+                FIELD_EVENTS.add(event);
+                String key = fieldEventKey(event.process, event.threadName,
+                        event.tid, event.method, event.methodObjectId,
+                        event.unitIndex, event.field);
+                FIELD_EVENTS_BY_CONTEXT_UNIT.put(key, event);
+            }
             writeFieldTraceLine(event);
         }
     }
 
-    private static void initialize() {
-        if (!INITIALIZED.compareAndSet(false, true)) {
+    private static ExecutionEvent newExecutionEvent(String kind, String method,
+                                                    long callId) {
+        initialize();
+        long id = EVENT_COUNTER.incrementAndGet();
+        if (id > maxEvents) {
+            return new ExecutionEvent();
+        }
+        Thread thread = Thread.currentThread();
+        ExecutionEvent event = new ExecutionEvent();
+        event.id = id;
+        event.kind = safe(kind);
+        event.testName = testName;
+        event.threadName = thread.getName();
+        event.tid = thread.getId();
+        event.method = safe(method);
+        event.process = inferProcessName(event.method, event.threadName);
+        event.callId = callId;
+        event.timeNanos = System.nanoTime();
+        return event;
+    }
+
+    private static void emitExecutionEvent(ExecutionEvent event) {
+        if (event == null || event.id <= 0L) {
             return;
         }
-        testName = firstNonBlank(System.getProperty("causynth.trace.test"),
-                System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
-        maxEvents = parseInt(firstNonBlank(System.getProperty("causynth.trace.max.events"),
-                System.getenv("CAUSYNTH_TRACE_MAX_EVENTS"),
-                String.valueOf(DEFAULT_MAX_EVENTS)), DEFAULT_MAX_EVENTS);
-        maxGraphEdges = parseInt(firstNonBlank(System.getProperty("causynth.trace.max.graph.edges"),
-                System.getenv("CAUSYNTH_TRACE_MAX_GRAPH_EDGES"),
-                String.valueOf(DEFAULT_MAX_GRAPH_EDGES)), DEFAULT_MAX_GRAPH_EDGES);
-        maxContextPairsPerEdge = parseInt(firstNonBlank(
-                System.getProperty("causynth.trace.max.context.pairs.per.edge"),
-                System.getenv("CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE"),
-                String.valueOf(DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE)),
-                DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE);
-        outputDir = new File(firstNonBlank(System.getProperty("causynth.trace.output.dir"),
-                System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"),
-                "target/causynth-trace"));
-        traceFile = new File(outputDir, "runtime_trace.jsonl");
-        if (!outputDir.exists()) {
-            outputDir.mkdirs();
+        if (contextOnlyConcolicReplay) {
+            return;
         }
-        try {
-            traceWriter = new BufferedWriter(new FileWriter(traceFile, false));
-        } catch (IOException ignored) {
-            traceWriter = null;
+        synchronized (LOCK) {
+            if (retainRecordedEventsInMemory) {
+                EXECUTION_EVENTS.add(event);
+            }
+            writeExecutionTraceLine(event);
+        }
+    }
+
+    private static ActiveCall activeCall(long callId) {
+        if (callId <= 0L) {
+            return ACTIVE_CALLS.get().peek();
+        }
+        for (ActiveCall call : ACTIVE_CALLS.get()) {
+            if (call.callId == callId) {
+                return call;
+            }
+        }
+        return null;
+    }
+
+    private static ActiveCallSite activeCallSite(long invocationId) {
+        for (ActiveCallSite site : ACTIVE_CALL_SITES.get()) {
+            if (site.invocationId == invocationId) {
+                return site;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Correlates a field hook inside an accessor body with the exact caller
+     * callsite that selected that accessor.  The static dependency edge names
+     * the invoke site, whereas the actual getfield hook executes in the
+     * callee; comparing the two code positions directly would reject the
+     * correct runtime event.
+     */
+    public static boolean currentCallParentSiteMatches(
+            String callerMethod, int callerUnitIndex, String callerSiteId,
+            String declaredCallee) {
+        ActiveCall call = ACTIVE_CALLS.get().peek();
+        if (call == null || call.parentSiteId <= 0L
+                || callerUnitIndex < 0) {
+            return false;
+        }
+        ActiveCallSite site = activeCallSite(call.parentSiteId);
+        String expectedSite = siteId(callerMethod, callerUnitIndex);
+        return site != null
+                && safe(callerMethod).equals(site.caller)
+                && safe(callerSiteId).equals(expectedSite)
+                && expectedSite.equals(site.siteId)
+                && safe(declaredCallee).equals(site.declaredCallee);
+    }
+
+    private static void removeCall(long callId) {
+        ActiveCall found = activeCall(callId);
+        if (found != null) {
+            ACTIVE_CALLS.get().remove(found);
+        }
+    }
+
+    private static void removeCallSite(long invocationId) {
+        ActiveCallSite found = activeCallSite(invocationId);
+        if (found != null) {
+            ACTIVE_CALL_SITES.get().remove(found);
+        }
+    }
+
+    private static void closeStaleCallSite(long ownerCallId) {
+        ActiveCallSite top = ACTIVE_CALL_SITES.get().peek();
+        if (top != null && top.ownerCallId == ownerCallId) {
+            closeCallSite(top, "CALL_SITE_INCOMPLETE",
+                    "next callsite reached before a normal return event");
+        }
+    }
+
+    private static void closeCallSites(long ownerCallId, String kind,
+                                       String detail) {
+        List<ActiveCallSite> matches = new ArrayList<>();
+        for (ActiveCallSite site : ACTIVE_CALL_SITES.get()) {
+            if (site.ownerCallId == ownerCallId) {
+                matches.add(site);
+            }
+        }
+        for (ActiveCallSite site : matches) {
+            closeCallSite(site, kind, detail);
+        }
+    }
+
+    private static void closeCallSite(ActiveCallSite site, String kind,
+                                      String detail) {
+        if (site == null) {
+            return;
+        }
+        ExecutionEvent event = newExecutionEvent(kind, site.caller,
+                site.ownerCallId);
+        event.invocationId = site.invocationId;
+        event.siteId = site.siteId;
+        event.declaredCallee = site.declaredCallee;
+        event.exceptionType = safe(detail);
+        emitExecutionEvent(event);
+        ACTIVE_CALL_SITES.get().remove(site);
+    }
+
+    private static String methodForCall(long callId) {
+        ActiveCall call = activeCall(callId);
+        return call == null ? "" : call.method;
+    }
+
+    private static String siteId(String method, int unitIndex) {
+        return safe(method) + "#u" + unitIndex;
+    }
+
+    private static int identity(Object value) {
+        return value == null ? 0 : System.identityHashCode(value);
+    }
+
+    private static String runtimeType(Object value) {
+        return value == null ? "" : value.getClass().getName();
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static void initialize() {
+        if (INITIALIZED.get()) {
+            return;
+        }
+        synchronized (LOCK) {
+            if (INITIALIZED.get()) {
+                return;
+            }
+
+            String configuredTestName = firstNonBlank(
+                    System.getProperty("causynth.trace.test"),
+                    System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
+            int configuredMaxEvents = parseInt(firstNonBlank(
+                    System.getProperty("causynth.trace.max.events"),
+                    System.getenv("CAUSYNTH_TRACE_MAX_EVENTS"),
+                    String.valueOf(DEFAULT_MAX_EVENTS)), DEFAULT_MAX_EVENTS);
+            int configuredMaxGraphEdges = parseInt(firstNonBlank(
+                    System.getProperty("causynth.trace.max.graph.edges"),
+                    System.getenv("CAUSYNTH_TRACE_MAX_GRAPH_EDGES"),
+                    String.valueOf(DEFAULT_MAX_GRAPH_EDGES)),
+                    DEFAULT_MAX_GRAPH_EDGES);
+            int configuredMaxContextPairsPerEdge = parseInt(firstNonBlank(
+                    System.getProperty("causynth.trace.max.context.pairs.per.edge"),
+                    System.getenv("CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE"),
+                    String.valueOf(DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE)),
+                    DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE);
+            boolean configuredStreamingOnly = Boolean.parseBoolean(
+                    firstNonBlank(System.getProperty(
+                                    "causynth.trace.streaming.only"),
+                            System.getenv(
+                                    "CAUSYNTH_TRACE_STREAMING_ONLY"),
+                            "false"));
+            boolean configuredContextOnly =
+                    configuredContextOnlyConcolicReplay();
+            boolean configuredFingerprints =
+                    configuredValueFingerprintsEnabled();
+            File configuredOutputDir = configuredContextOnly ? null
+                    : new File(firstNonBlank(
+                    System.getProperty("causynth.trace.output.dir"),
+                    System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"),
+                    "target/causynth-trace"));
+            File configuredTraceFile = configuredOutputDir == null ? null
+                    : new File(configuredOutputDir, "runtime_trace.jsonl");
+            BufferedWriter configuredWriter = null;
+            try {
+                if (configuredContextOnly) {
+                    // Keep the exact method/call-site TLS alive for every
+                    // accessor invocation.  Applying the ordinary trace event
+                    // cap here would silently erase context before a late
+                    // selected region executes.
+                    testName = configuredTestName;
+                    maxEvents = Integer.MAX_VALUE;
+                    maxGraphEdges = configuredMaxGraphEdges;
+                    maxContextPairsPerEdge =
+                            configuredMaxContextPairsPerEdge;
+                    retainRecordedEventsInMemory = false;
+                    traceWriteFailure = false;
+                    outputDir = null;
+                    traceFile = null;
+                    traceWriter = null;
+                    contextOnlyConcolicReplay = true;
+                    valueFingerprintsEnabled = configuredFingerprints;
+                    INITIALIZED.set(true);
+                    return;
+                }
+                if (configuredOutputDir.exists()) {
+                    if (!configuredOutputDir.isDirectory()) {
+                        throw new IOException("Trace output path is not a directory: "
+                                + configuredOutputDir);
+                    }
+                } else if (!configuredOutputDir.mkdirs()
+                        && !configuredOutputDir.isDirectory()) {
+                    throw new IOException("Unable to create trace output directory: "
+                            + configuredOutputDir);
+                }
+                configuredWriter = new BufferedWriter(new FileWriter(
+                        configuredTraceFile, false));
+                ensureShutdownHookRegistered();
+
+                // INITIALIZED is the release publication for every field above.
+                // No recording thread can observe a partially initialized writer
+                // or the JVM default value of an event limit.
+                testName = configuredTestName;
+                maxEvents = configuredMaxEvents;
+                maxGraphEdges = configuredMaxGraphEdges;
+                maxContextPairsPerEdge = configuredMaxContextPairsPerEdge;
+                retainRecordedEventsInMemory = !configuredStreamingOnly;
+                traceWriteFailure = false;
+                outputDir = configuredOutputDir;
+                traceFile = configuredTraceFile;
+                traceWriter = configuredWriter;
+                contextOnlyConcolicReplay = false;
+                valueFingerprintsEnabled = configuredFingerprints;
+                INITIALIZED.set(true);
+            } catch (IOException | RuntimeException failure) {
+                closeQuietly(configuredWriter);
+                // A later recording call may retry after configuration or the
+                // filesystem has been repaired.  Never publish a disabled
+                // recorder as successfully initialized.
+                INITIALIZED.set(false);
+                throw new IllegalStateException(
+                        "Failed to initialize Causynth trace recorder at "
+                                + configuredTraceFile, failure);
+            }
+        }
+    }
+
+    private static void ensureShutdownHookRegistered() {
+        if (shutdownHookRegistered) {
+            return;
         }
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             @Override
@@ -182,6 +709,17 @@ public final class CausynthTraceRecorder {
                 shutdown();
             }
         }, "causynth-trace-shutdown"));
+        shutdownHookRegistered = true;
+    }
+
+    private static void closeQuietly(BufferedWriter writer) {
+        if (writer == null) {
+            return;
+        }
+        try {
+            writer.close();
+        } catch (IOException ignored) {
+        }
     }
 
     private static void shutdown() {
@@ -190,12 +728,41 @@ public final class CausynthTraceRecorder {
                 try {
                     traceWriter.flush();
                     traceWriter.close();
-                } catch (IOException ignored) {
+                } catch (IOException failure) {
+                    // A streaming trace is complete only after the buffered
+                    // bytes have reached the underlying file and the writer
+                    // has closed successfully.  Preserve that failure in the
+                    // close manifest so the campaign never feeds a partial
+                    // execution to the offline aggregator.
+                    traceWriteFailure = true;
                 }
                 traceWriter = null;
             }
+            if (!retainRecordedEventsInMemory && outputDir != null) {
+                long attempted = EVENT_COUNTER.get();
+                boolean truncated = attempted > maxEvents;
+                writeFile(new File(outputDir,
+                                "streaming_trace_manifest.json"),
+                        jsonObject(
+                                "schemaVersion", 1,
+                                "kind", "STREAMING_RUNTIME_TRACE",
+                                "status", "CLOSED",
+                                "traceFile", traceFile == null ? ""
+                                        : traceFile.getPath(),
+                                "attemptedEventCount", attempted,
+                                "maxEvents", maxEvents,
+                                "truncated", truncated,
+                                "writeFailure", traceWriteFailure,
+                                "complete", !truncated
+                                        && !traceWriteFailure));
+            }
             try {
                 if (aggregateOnShutdown()) {
+                    if (!retainRecordedEventsInMemory) {
+                        throw new IllegalStateException(
+                                "streaming-only trace requires offline "
+                                        + "aggregation in a fresh JVM");
+                    }
                     writeInstantiatedGraph();
                 }
             } catch (Throwable throwable) {
@@ -222,6 +789,10 @@ public final class CausynthTraceRecorder {
             maxEvents = Integer.MAX_VALUE;
             maxGraphEdges = graphEdges;
             maxContextPairsPerEdge = contextPairs;
+            // This JVM is the offline aggregator.  Rows loaded below must be
+            // retained regardless of the recording-mode property inherited
+            // from a caller.
+            retainRecordedEventsInMemory = true;
             traceWriter = null;
             System.setProperty("causynth.static.graph", staticGraph.getPath());
             loadExistingTrace(traceFile);
@@ -236,6 +807,13 @@ public final class CausynthTraceRecorder {
         FIELD_EVENTS_BY_CONTEXT_UNIT.clear();
         EVENTS.clear();
         FIELD_EVENTS.clear();
+        EXECUTION_EVENTS.clear();
+        ACTIVE_CALLS.remove();
+        ACTIVE_CALL_SITES.remove();
+        retainRecordedEventsInMemory = true;
+        contextOnlyConcolicReplay = false;
+        valueFingerprintsEnabled = true;
+        traceWriteFailure = false;
         traceWriter = null;
     }
 
@@ -249,24 +827,36 @@ public final class CausynthTraceRecorder {
             while ((line = reader.readLine()) != null) {
                 String eventKind = jsonField(line, "event");
                 if ("METHOD_ENTER".equals(eventKind)) {
+                    String method = jsonField(line, "method");
+                    String threadName = jsonField(line, "threadName");
                     addTraceEvent(new TraceEvent(
                             jsonLongField(line, "seq", 0L),
                             firstNonBlank(jsonField(line, "test"), testName),
-                            jsonField(line, "process"),
-                            jsonField(line, "threadName"),
+                            normalizeRecordedProcess(jsonField(line, "process"),
+                                    method, threadName),
+                            threadName,
                             jsonLongField(line, "tid", 0L),
-                            jsonField(line, "method"),
+                            method,
                             jsonIntField(line, "objectId", 0),
-                            jsonLongField(line, "timeNanos", 0L)));
+                            jsonLongField(line, "timeNanos", 0L),
+                            jsonLongField(line, "callId",
+                                    jsonLongField(line, "seq", 0L)),
+                            jsonLongField(line, "parentCallId", 0L),
+                            jsonLongField(line, "parentSiteId", 0L),
+                            jsonField(line, "siteId"),
+                            jsonField(line, "receiverType")));
                 } else if ("FIELD_READ".equals(eventKind)
                         || "FIELD_WRITE".equals(eventKind)) {
+                    String method = jsonField(line, "method");
+                    String threadName = jsonField(line, "threadName");
                     addFieldEvent(new FieldEvent(
                             jsonLongField(line, "seq", 0L),
                             firstNonBlank(jsonField(line, "test"), testName),
-                            jsonField(line, "process"),
-                            jsonField(line, "threadName"),
+                            normalizeRecordedProcess(jsonField(line, "process"),
+                                    method, threadName),
+                            threadName,
                             jsonLongField(line, "tid", 0L),
-                            jsonField(line, "method"),
+                            method,
                             jsonIntField(line, "objectId", 0),
                             jsonIntField(line, "unitIndex", -1),
                             eventKind,
@@ -274,9 +864,54 @@ public final class CausynthTraceRecorder {
                             jsonIntField(line, "fieldReceiverObjectId", 0),
                             jsonIntField(line, "valueObjectId", 0),
                             jsonField(line, "primitiveValue"),
-                            jsonLongField(line, "timeNanos", 0L)));
+                            jsonLongField(line, "timeNanos", 0L),
+                            jsonLongField(line, "callId", 0L),
+                            jsonField(line, "siteId"),
+                            jsonField(line, "valueFingerprint"),
+                            jsonBooleanField(line,
+                                    "valueFingerprintComplete", false),
+                            jsonIntField(line, "valueFingerprintNodes", 0),
+                            jsonField(line, "valueFingerprintReason")));
+                } else if (isExecutionEventKind(eventKind)) {
+                    addExecutionEvent(ExecutionEvent.fromJson(line, eventKind));
                 }
             }
+        }
+        normalizeRecordedEventOrderAndRebuildIndexes();
+    }
+
+    /**
+     * A recorder sequence is allocated before a thread acquires the streaming
+     * writer lock.  Consequently a valid multi-threaded trace can contain
+     * rows in a different file order from their sequence order.  Every
+     * offline consumer uses the recorder sequence as its observation-order
+     * authority, so rebuild all order-sensitive indexes after loading instead
+     * of accidentally treating writer-lock acquisition order as execution
+     * order.
+     */
+    private static void normalizeRecordedEventOrderAndRebuildIndexes() {
+        EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
+        FIELD_EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
+        EXECUTION_EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
+
+        CONTEXTS.clear();
+        for (TraceEvent event : EVENTS) {
+            MethodContext context = CONTEXTS.get(event.contextKey());
+            if (context == null) {
+                context = new MethodContext(event);
+                CONTEXTS.put(event.contextKey(), context);
+            }
+            context.observe(event);
+        }
+
+        FIELD_EVENTS_BY_CONTEXT_UNIT.clear();
+        for (FieldEvent event : FIELD_EVENTS) {
+            String key = fieldEventKey(event.process, event.threadName,
+                    event.tid, event.method, event.methodObjectId,
+                    event.unitIndex, event.field);
+            // FIELD_EVENTS is sequence ordered, therefore the retained value
+            // is the latest observation for this exact runtime field site.
+            FIELD_EVENTS_BY_CONTEXT_UNIT.put(key, event);
         }
     }
 
@@ -306,6 +941,27 @@ public final class CausynthTraceRecorder {
         EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
     }
 
+    private static void addExecutionEvent(ExecutionEvent event) {
+        if (event == null || event.id <= 0L || event.kind == null
+                || event.kind.isEmpty()) {
+            return;
+        }
+        EXECUTION_EVENTS.add(event);
+        EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
+    }
+
+    private static boolean isExecutionEventKind(String kind) {
+        return "METHOD_ARGUMENT".equals(kind)
+                || "METHOD_EXIT_NORMAL".equals(kind)
+                || "METHOD_EXIT_THROW".equals(kind)
+                || "CALL_SITE_ENTER".equals(kind)
+                || "CALL_ARGUMENT".equals(kind)
+                || "CALL_SITE_RETURN".equals(kind)
+                || "CALL_SITE_THROW".equals(kind)
+                || "CALL_SITE_INCOMPLETE".equals(kind)
+                || "BRANCH".equals(kind);
+    }
+
     private static void writeTraceLine(TraceEvent event) {
         if (traceWriter == null) {
             return;
@@ -320,9 +976,15 @@ public final class CausynthTraceRecorder {
                     "tid", event.tid,
                     "method", event.method,
                     "objectId", event.objectId,
+                    "receiverType", event.receiverType,
+                    "callId", event.callId,
+                    "parentCallId", event.parentCallId,
+                    "parentSiteId", event.parentSiteId,
+                    "siteId", event.siteId,
                     "timeNanos", event.timeNanos));
             traceWriter.newLine();
         } catch (IOException ignored) {
+            traceWriteFailure = true;
         }
     }
 
@@ -340,18 +1002,69 @@ public final class CausynthTraceRecorder {
                     "tid", event.tid,
                     "method", event.method,
                     "objectId", event.methodObjectId,
+                    "callId", event.callId,
+                    "siteId", event.siteId,
                     "unitIndex", event.unitIndex,
                     "field", event.field,
                     "fieldReceiverObjectId", event.receiverObjectId,
                     "valueObjectId", event.valueObjectId,
                     "primitiveValue", event.primitiveValue,
+                    "valueFingerprint", event.valueFingerprint,
+                    "valueFingerprintComplete", event.valueFingerprintComplete,
+                    "valueFingerprintNodes", event.valueFingerprintNodes,
+                    "valueFingerprintReason", event.valueFingerprintReason,
                     "timeNanos", event.timeNanos));
             traceWriter.newLine();
         } catch (IOException ignored) {
+            traceWriteFailure = true;
+        }
+    }
+
+    private static void writeExecutionTraceLine(ExecutionEvent event) {
+        if (traceWriter == null || event == null) {
+            return;
+        }
+        try {
+            traceWriter.write(jsonObject(
+                    "event", event.kind,
+                    "seq", event.id,
+                    "test", event.testName,
+                    "process", event.process,
+                    "threadName", event.threadName,
+                    "tid", event.tid,
+                    "method", event.method,
+                    "callId", event.callId,
+                    "parentCallId", event.parentCallId,
+                    "parentSiteId", event.parentSiteId,
+                    "invocationId", event.invocationId,
+                    "siteId", event.siteId,
+                    "unitIndex", event.unitIndex,
+                    "declaredCallee", event.declaredCallee,
+                    "argumentIndex", event.argumentIndex,
+                    "declaredType", event.declaredType,
+                    "runtimeType", event.runtimeType,
+                    "objectId", event.objectId,
+                    "primitiveValue", event.primitiveValue,
+                    "valueFingerprint", event.valueFingerprint,
+                    "valueFingerprintComplete", event.valueFingerprintComplete,
+                    "valueFingerprintNodes", event.valueFingerprintNodes,
+                    "valueFingerprintReason", event.valueFingerprintReason,
+                    "expression", event.expression,
+                    "hasOutcome", event.hasOutcome,
+                    "outcome", event.hasOutcome ? event.outcome : null,
+                    "exceptionType", event.exceptionType,
+                    "timeNanos", event.timeNanos));
+            traceWriter.newLine();
+        } catch (IOException ignored) {
+            traceWriteFailure = true;
         }
     }
 
     private static void writeInstantiatedGraph() {
+        // In-memory aggregation has the same cross-thread row-order property
+        // as an offline-loaded stream.  Normalize centrally before any graph,
+        // latest-write, or region-planning consumer observes the collections.
+        normalizeRecordedEventOrderAndRebuildIndexes();
         File staticGraph = new File(firstNonBlank(System.getProperty("causynth.static.graph"),
                 System.getenv("CAUSYNTH_STATIC_GRAPH"),
                 new File(outputDir, "static_dataflow_edges.jsonl").getPath()));
@@ -378,12 +1091,20 @@ public final class CausynthTraceRecorder {
         int mergedRoleEdgeInputCount = 0;
         int skippedGraphEdgeInstances = 0;
         int skippedRoleGraphEdgeInstances = 0;
+        long skippedContextPairInstances = 0L;
         boolean truncated = false;
         boolean roleTruncated = false;
+        boolean contextPairTruncated = false;
         for (StaticEdge edge : staticEdges) {
-            List<InstantiatedContextPair> contexts = contextsForGraphEdge(edge,
+            ContextPairSelection contextSelection = contextsForGraphEdge(edge,
                     contextsByMethod);
-            for (InstantiatedContextPair context : contexts) {
+            if (contextSelection.truncated) {
+                contextPairTruncated = true;
+                truncated = true;
+                roleTruncated = true;
+                skippedContextPairInstances += contextSelection.skipped;
+            }
+            for (InstantiatedContextPair context : contextSelection.pairs) {
                 String fromCell = instantiateCell(context.fromContext, edge, edge.fromCell);
                 String toCell = instantiateCell(context.toContext, edge, edge.toCell);
                 String fromId = nodeId(context.fromContext, fromCell);
@@ -459,6 +1180,7 @@ public final class CausynthTraceRecorder {
                 "staticGraph", staticGraph.getPath(),
                 "traceEventCount", EVENTS.size(),
                 "fieldEventCount", FIELD_EVENTS.size(),
+                "executionEventCount", EXECUTION_EVENTS.size(),
                 "observedMethodContextCount", CONTEXTS.size(),
                 "observedMethodCount", contextsByMethod.size(),
                 "staticEdgeCount", staticEdges.size(),
@@ -475,6 +1197,8 @@ public final class CausynthTraceRecorder {
                 "skippedRoleGraphEdgeInstances", skippedRoleGraphEdgeInstances,
                 "skippedRuntimeFieldBridgeInstances", runtimeFieldBridgeStats.skippedGraphEdgeInstances,
                 "skippedRuntimeRoleFieldBridgeInstances", runtimeFieldBridgeStats.skippedRoleGraphEdgeInstances,
+                "skippedContextPairInstances", skippedContextPairInstances,
+                "contextPairTruncated", contextPairTruncated,
                 "truncated", truncated,
                 "roleTruncated", roleTruncated,
                 "maxEvents", maxEvents,
@@ -493,8 +1217,431 @@ public final class CausynthTraceRecorder {
         writeFile(new File(outputDir, "unit_test_instantiated_graph.json"), graph);
         writeFile(new File(outputDir, "unit_test_role_merged_graph.json"), roleGraph);
         writeFile(new File(outputDir, "summary.json"), summary);
+        writeSymbolicGuidanceDag(emittedEdges, emittedRoleEdges,
+                contextsByMethod, truncated, roleTruncated);
         writeSeedChainSummary(staticEdges);
         writeRuntimeValidationSummary(staticEdges, contextsByMethod);
+        writeRuntimeRefinedSymbolicPlan(staticGraph);
+        writeRuntimeRegionPlans(staticGraph);
+    }
+
+    private static void writeSymbolicGuidanceDag(
+            Map<String, EdgeAccumulator> objectEdges,
+            Map<String, EdgeAccumulator> roleEdges,
+            Map<String, List<MethodContext>> contextsByMethod,
+            boolean objectGraphTruncated,
+            boolean roleGraphTruncated) {
+        List<String> guidanceEdges = new ArrayList<>();
+        Map<String, Integer> modelCounts = new LinkedHashMap<>();
+        int emitted = 0;
+        int index = 0;
+        for (EdgeAccumulator edge : roleEdges.values()) {
+            String model = guidanceModel(edge);
+            increment(modelCounts, model);
+            if (!shouldEmitGuidanceEdge(edge)) {
+                continue;
+            }
+            if (emitted++ >= 1500) {
+                continue;
+            }
+            guidanceEdges.add(guidanceEdgeJson("GUIDE." + index++, edge, model));
+        }
+
+        List<String> modelRequirements = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : modelCounts.entrySet()) {
+            modelRequirements.add(modelRequirementJson(entry.getKey(),
+                    entry.getValue()));
+        }
+
+        // The generic trace layer deliberately does not synthesize
+        // project-specific relationships.  Concrete edge evidence and merge
+        // points remain available; symbolic expressions come only from
+        // imported region summaries later in the concolic campaign.
+        List<String> evidence = new ArrayList<>();
+        List<String> symbolicExpressions = new ArrayList<>();
+        List<String> mergePoints = symbolicMergePoints(roleEdges);
+        List<String> limitations = symbolicGuidanceLimitations();
+
+        String summary = jsonObject(
+                "test", testName,
+                "purpose", "symbolic_execution_guidance",
+                "objectEdgeCount", objectEdges.size(),
+                "roleEdgeCount", roleEdges.size(),
+                "observedMethodCount", contextsByMethod.size(),
+                "objectGraphTruncated", objectGraphTruncated,
+                "roleGraphTruncated", roleGraphTruncated,
+                "guidanceEdgeCount", guidanceEdges.size(),
+                "symbolicExpressionCount", symbolicExpressions.size(),
+                "mergePointCount", mergePoints.size(),
+                "precision", "over_approx_static_graph_plus_runtime_context");
+        String dag = "{"
+                + "\"summary\":" + summary
+                + ",\"symbolicExpressions\":[" + join(symbolicExpressions) + "]"
+                + ",\"evidence\":[" + join(evidence) + "]"
+                + ",\"modelRequirements\":[" + join(modelRequirements) + "]"
+                + ",\"mergePoints\":[" + join(mergePoints) + "]"
+                + ",\"guidanceEdges\":[" + join(guidanceEdges) + "]"
+                + ",\"limitations\":[" + join(limitations) + "]"
+                + "}";
+        writeFile(new File(outputDir, "symbolic_guidance_dag.json"), dag);
+    }
+
+    private static void increment(Map<String, Integer> counts, String key) {
+        Integer value = counts.get(key);
+        counts.put(key, value == null ? 1 : value + 1);
+    }
+
+    private static boolean shouldEmitGuidanceEdge(EdgeAccumulator edge) {
+        return edge != null;
+    }
+
+    private static String guidanceModel(EdgeAccumulator edge) {
+        String kind = lower(edge == null ? "" : edge.kind);
+        String text = edgeText(edge);
+        if (kind.contains("rpc") || kind.contains("protocol")
+                || kind.contains("transfer")) {
+            return "port_mapping_candidate";
+        }
+        if (kind.contains("runtime_field_state")) {
+            return "heap_latest_write";
+        }
+        if (text.contains("<java.util.map:")) {
+            return "symbolic_map_state";
+        }
+        if (kind.contains("field_write") || kind.contains("field_mutation")) {
+            return "heap_write";
+        }
+        if (kind.contains("field_read")) {
+            return "heap_read";
+        }
+        if (kind.contains("constructor")) {
+            return "constructor_summary";
+        }
+        if (kind.contains("call_return") || kind.contains("caller_return")) {
+            return "method_return_summary";
+        }
+        if (kind.contains("argument")) {
+            return "argument_binding";
+        }
+        if (kind.contains("seed")) {
+            return "target_seed";
+        }
+        if (kind.contains("guard")) {
+            return "path_condition";
+        }
+        if (kind.contains("throw")) {
+            return "exception_condition";
+        }
+        return "local_dataflow";
+    }
+
+    private static String guidanceEdgeJson(String id, EdgeAccumulator edge,
+                                           String model) {
+        return jsonObject(
+                "id", id,
+                "kind", edge.kind,
+                "model", model,
+                "summary", guidanceSummary(model),
+                "expressionHint", guidanceExpressionHint(model),
+                "precision", guidancePrecision(model),
+                "from", edge.from,
+                "to", edge.to,
+                "fromProcess", edge.firstFromContext.process,
+                "fromThreadRole", threadRole(edge.firstFromContext.threadName),
+                "toProcess", edge.firstToContext.process,
+                "toThreadRole", threadRole(edge.firstToContext.threadName),
+                "method", edge.method,
+                "occurrences", edge.occurrences,
+                "mergedInstances", edge.mergedInstances,
+                "fromContextCount", edge.fromContexts.size(),
+                "toContextCount", edge.toContexts.size(),
+                "firstSeq", edge.firstSeq == Long.MAX_VALUE ? 0 : edge.firstSeq,
+                "lastSeq", edge.lastSeq == Long.MIN_VALUE ? 0 : edge.lastSeq,
+                "staticEdgeIds", join(edge.staticEdgeIds, ";"));
+    }
+
+    private static String guidanceSummary(String model) {
+        if ("port_mapping_candidate".equals(model)) {
+            return "Use only to locate endpoint ports; it is not a symbolic equality until runtime value evidence or region summaries prove one.";
+        }
+        if ("heap_latest_write".equals(model)) {
+            return "Model read as latest observed write to the same process, receiver object, and field.";
+        }
+        if ("symbolic_map_state".equals(model)) {
+            return "Model as symbolic map state; precise entry lookup requires Map put/get/remove summaries.";
+        }
+        if ("heap_write".equals(model)) {
+            return "Model as heap field update.";
+        }
+        if ("heap_read".equals(model)) {
+            return "Model as heap field read.";
+        }
+        if ("constructor_summary".equals(model)) {
+            return "Model constructor as object creation with argument-to-field summaries.";
+        }
+        if ("method_return_summary".equals(model)) {
+            return "Obtain the return expression from a captured region summary; otherwise leave it uninterpreted.";
+        }
+        if ("argument_binding".equals(model)) {
+            return "Bind caller actual to callee formal in the symbolic environment.";
+        }
+        if ("target_seed".equals(model)) {
+            return "Target seed dependency that should be preserved in the symbolic slice.";
+        }
+        if ("path_condition".equals(model)) {
+            return "Model as path condition or ITE guard.";
+        }
+        if ("exception_condition".equals(model)) {
+            return "Model as exception feasibility condition.";
+        }
+        return "Local def-use dependency inside an observed method context.";
+    }
+
+    private static String guidanceExpressionHint(String model) {
+        if ("port_mapping_candidate".equals(model)) {
+            return "no assertion; await runtime fingerprint equality or captured transformation summaries";
+        }
+        if ("heap_latest_write".equals(model)) {
+            return "read(field) := latestWrite(field, readSeq)";
+        }
+        if ("symbolic_map_state".equals(model)) {
+            return "mapValue := symbolicMapGet(mapState, key); mapState' := symbolicMapPut(mapState, key, value)";
+        }
+        if ("heap_write".equals(model)) {
+            return "Heap(receiver, field) := sourceExpr";
+        }
+        if ("heap_read".equals(model)) {
+            return "local := Field(receiver, field)";
+        }
+        if ("constructor_summary".equals(model)) {
+            return "object := ConstructorSummary(args)";
+        }
+        if ("method_return_summary".equals(model)) {
+            return "lhs := MethodSummary(receiver, args)";
+        }
+        if ("argument_binding".equals(model)) {
+            return "formal := actual";
+        }
+        if ("target_seed".equals(model)) {
+            return "target := seedExpression(operands)";
+        }
+        if ("path_condition".equals(model)) {
+            return "path := path && guardExpr";
+        }
+        if ("exception_condition".equals(model)) {
+            return "exceptionFeasible := condition";
+        }
+        return "to := from";
+    }
+
+    private static String guidancePrecision(String model) {
+        if ("heap_latest_write".equals(model) || "heap_read".equals(model)
+                || "heap_write".equals(model)) {
+            return "runtime_object_field_level";
+        }
+        if ("port_mapping_candidate".equals(model)) {
+            return "mapping_only_not_eligible_for_automatic_smt";
+        }
+        if ("symbolic_map_state".equals(model)) {
+            return "map_object_level_without_entry_equality";
+        }
+        if ("method_return_summary".equals(model)
+                || "constructor_summary".equals(model)) {
+            return "static_context_instantiated";
+        }
+        return "static_context_instantiated";
+    }
+
+    private static String modelRequirementJson(String model, int count) {
+        return jsonObject(
+                "model", model,
+                "edgeCount", count,
+                "summary", guidanceSummary(model),
+                "expressionHint", guidanceExpressionHint(model),
+                "precision", guidancePrecision(model));
+    }
+
+    private static List<String> symbolicMergePoints(
+            Map<String, EdgeAccumulator> roleEdges) {
+        Map<String, List<EdgeAccumulator>> incoming = new LinkedHashMap<>();
+        for (EdgeAccumulator edge : roleEdges.values()) {
+            if (!shouldEmitGuidanceEdge(edge)) {
+                continue;
+            }
+            List<EdgeAccumulator> edges = incoming.get(edge.to);
+            if (edges == null) {
+                edges = new ArrayList<>();
+                incoming.put(edge.to, edges);
+            }
+            edges.add(edge);
+        }
+        List<String> result = new ArrayList<>();
+        int index = 0;
+        for (Map.Entry<String, List<EdgeAccumulator>> entry : incoming.entrySet()) {
+            List<EdgeAccumulator> edges = entry.getValue();
+            if (edges.size() < 2 || !interestingMergeTarget(entry.getKey(), edges)) {
+                continue;
+            }
+            result.add(jsonObject(
+                    "id", "MERGE." + index++,
+                    "target", entry.getKey(),
+                    "incomingCount", edges.size(),
+                    "incomingKinds", incomingKinds(edges),
+                    "suggestedModel", suggestedMergeModel(entry.getKey(), edges),
+                    "guidance", "Use Merge(...) for role-level summaries; use runtime sequence/latest-write when a concrete occurrence is selected."));
+            if (result.size() >= 200) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private static boolean interestingMergeTarget(String target,
+                                                  List<EdgeAccumulator> edges) {
+        String text = lower(target);
+        if (text.contains("keyid") || text.contains("currentkey")
+                || text.contains("allkeys") || text.contains("exportedblockkeys")
+                || text.contains("dataencryptionkey")
+                || text.contains("getblockkeys")
+                || text.contains("retrievepassword")
+                || text.contains("retrievedataencryptionkey")
+                || text.contains("sasl")) {
+            return true;
+        }
+        for (EdgeAccumulator edge : edges) {
+            String model = guidanceModel(edge);
+            if ("rpc_transfer_summary".equals(model)
+                    || "protocol_sasl_transfer".equals(model)
+                    || "heap_latest_write".equals(model)
+                    || "symbolic_map_state".equals(model)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String incomingKinds(List<EdgeAccumulator> edges) {
+        Set<String> kinds = new LinkedHashSet<>();
+        for (EdgeAccumulator edge : edges) {
+            kinds.add(edge.kind);
+        }
+        return join(kinds, ";");
+    }
+
+    private static String suggestedMergeModel(String target,
+                                              List<EdgeAccumulator> edges) {
+        String text = lower(target);
+        if (text.contains("allkeys") || text.contains("<java.util.map:")) {
+            return "SymbolicMapState/MergeMapUpdates";
+        }
+        if (text.contains("currentkey") || text.contains("encryptionkey")) {
+            return "merge_latest(fieldWrites)";
+        }
+        if (text.contains(".return")) {
+            return "Merge(MethodSummary alternatives)";
+        }
+        return "Merge(incomingExpressions)";
+    }
+
+    private static List<String> symbolicGuidanceLimitations() {
+        List<String> limitations = new ArrayList<>();
+        limitations.add(jsonObject(
+                "id", "lim.method_return_values",
+                "summary", "A method return becomes a relation only after its region is captured; a runtime digest proves concrete equality, not a general transformer.",
+                "impact", "Keep uncaptured return transformers uninterpreted."));
+        limitations.add(jsonObject(
+                "id", "lim.role_merge",
+                "summary", "Role graph merges multiple runtime occurrences.",
+                "impact", "Use object-level graph and runtime seq for a concrete occurrence; use Merge(...) for role-level guidance."));
+        limitations.add(jsonObject(
+                "id", "lim.latest_write",
+                "summary", "runtime_field_state is latest observed write by process, receiver object, and field signature.",
+                "impact", "Treat as execution guidance, not a full Java happens-before proof."));
+        limitations.add(jsonObject(
+                "id", "lim.map_entries",
+                "summary", "Map put/get/remove entry equality is not dynamically validated.",
+                "impact", "Keep the map as symbolic state unless entry-level region summaries are captured."));
+        limitations.add(jsonObject(
+                "id", "lim.rpc_correlation",
+                "summary", "Static RPC/protocol edges are format and port mappings only.",
+                "impact", "Exclude them from automatic SMT until complete endpoint fingerprints or captured encode/decode regions establish the relation."));
+        return limitations;
+    }
+
+    private static StaticEdge findStaticEdge(Collection<StaticEdge> edges,
+                                             String kindNeedle,
+                                             String... needles) {
+        String kind = lower(kindNeedle);
+        for (StaticEdge edge : edges) {
+            if (edge == null) {
+                continue;
+            }
+            if (!kind.isEmpty() && !lower(edge.kind).contains(kind)) {
+                continue;
+            }
+            String text = staticEdgeText(edge);
+            boolean matches = true;
+            if (needles != null) {
+                for (String needle : needles) {
+                    String value = lower(needle);
+                    if (!value.isEmpty() && !text.contains(value)) {
+                        matches = false;
+                        break;
+                    }
+                }
+            }
+            if (matches) {
+                return edge;
+            }
+        }
+        return null;
+    }
+
+    private static String staticEdgeText(StaticEdge edge) {
+        if (edge == null) {
+            return "";
+        }
+        return lower(edge.kind + "\n" + edge.fromCell + "\n" + edge.toCell
+                + "\n" + edge.method + "\n" + edge.id);
+    }
+
+    private static EdgeAccumulator findRoleEdge(Collection<EdgeAccumulator> edges,
+                                                String kindNeedle,
+                                                String... needles) {
+        String kind = lower(kindNeedle);
+        for (EdgeAccumulator edge : edges) {
+            if (!kind.isEmpty() && !lower(edge.kind).contains(kind)) {
+                continue;
+            }
+            String text = edgeText(edge);
+            boolean matches = true;
+            if (needles != null) {
+                for (String needle : needles) {
+                    String value = lower(needle);
+                    if (!value.isEmpty() && !text.contains(value)) {
+                        matches = false;
+                        break;
+                    }
+                }
+            }
+            if (matches) {
+                return edge;
+            }
+        }
+        return null;
+    }
+
+    private static String edgeText(EdgeAccumulator edge) {
+        if (edge == null) {
+            return "";
+        }
+        return lower(edge.kind + "\n" + edge.from + "\n" + edge.to + "\n"
+                + edge.method + "\n" + edge.firstFromContext.process + "\n"
+                + edge.firstToContext.process);
+    }
+
+    private static String lower(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
 
     private static RuntimeFieldBridgeStats addRuntimeFieldBridges(
@@ -593,7 +1740,7 @@ public final class CausynthTraceRecorder {
         return stats;
     }
 
-    private static List<InstantiatedContextPair> contextsForGraphEdge(StaticEdge edge,
+    private static ContextPairSelection contextsForGraphEdge(StaticEdge edge,
             Map<String, List<MethodContext>> contextsByMethod) {
         if (isCrossBoundaryMappingEdge(edge)) {
             String fromEndpointMethod = embeddedMethodSignature(edge.fromCell);
@@ -610,32 +1757,43 @@ public final class CausynthTraceRecorder {
         }
         List<MethodContext> contexts = contextsByMethod.get(edge.method);
         if (contexts == null || contexts.isEmpty()) {
-            return Collections.emptyList();
+            return ContextPairSelection.empty();
         }
         List<InstantiatedContextPair> pairs = new ArrayList<>();
         int limit = Math.max(1, maxContextPairsPerEdge);
-        for (MethodContext context : contexts) {
+        int emitted = Math.min(contexts.size(), limit);
+        for (int index = 0; index < emitted; index++) {
+            MethodContext context = contexts.get(index);
             pairs.add(new InstantiatedContextPair(context, context));
-            if (pairs.size() >= limit) {
-                return pairs;
-            }
         }
-        return pairs;
+        long skipped = Math.max(0L, (long) contexts.size() - emitted);
+        return new ContextPairSelection(pairs, skipped > 0L, skipped);
     }
 
-    private static List<InstantiatedContextPair> pairContexts(
+    private static ContextPairSelection pairContexts(
             List<MethodContext> fromContexts, List<MethodContext> toContexts) {
         List<InstantiatedContextPair> pairs = new ArrayList<>();
         int limit = Math.max(1, maxContextPairsPerEdge);
+        long total = saturatedProduct(fromContexts.size(), toContexts.size());
         for (MethodContext fromContext : fromContexts) {
             for (MethodContext toContext : toContexts) {
                 pairs.add(new InstantiatedContextPair(fromContext, toContext));
                 if (pairs.size() >= limit) {
-                    return pairs;
+                    long skipped = Math.max(0L, total - pairs.size());
+                    return new ContextPairSelection(pairs, skipped > 0L,
+                            skipped);
                 }
             }
         }
-        return pairs;
+        return new ContextPairSelection(pairs, false, 0L);
+    }
+
+    private static long saturatedProduct(int left, int right) {
+        if (left <= 0 || right <= 0) {
+            return 0L;
+        }
+        long result = (long) left * (long) right;
+        return result < 0L ? Long.MAX_VALUE : result;
     }
 
     private static String edgeKey(StaticEdge edge, String fromId, String toId) {
@@ -774,6 +1932,10 @@ public final class CausynthTraceRecorder {
     }
 
     private static String inferProcessName(String method, String threadName) {
+        String methodProcess = processForMethod(method);
+        if (!methodProcess.isEmpty()) {
+            return methodProcess;
+        }
         StringBuilder evidence = new StringBuilder();
         evidence.append(method == null ? "" : method).append(' ')
                 .append(threadName == null ? "" : threadName);
@@ -811,6 +1973,47 @@ public final class CausynthTraceRecorder {
             return "client";
         }
         return "unknown";
+    }
+
+    private static String normalizeRecordedProcess(String recorded, String method,
+                                                   String threadName) {
+        String methodProcess = processForMethod(method);
+        if (!methodProcess.isEmpty()) {
+            return methodProcess;
+        }
+        return firstNonBlank(recorded, inferProcessName(method, threadName), "unknown");
+    }
+
+    /**
+     * Returns a role only when the method itself is unambiguous.  This must run
+     * before stack/thread heuristics: an in-process MiniDFSCluster RPC handler
+     * can have DataNode-originated frames while executing NameNode code.
+     */
+    private static String processForMethod(String method) {
+        String lower = lower(method);
+        if (lower.isEmpty()) {
+            return "";
+        }
+        if (lower.contains("server.balancer")
+                || lower.contains("keymanager")) {
+            return "balancer";
+        }
+        if (lower.contains("server.namenode")
+                || lower.contains("server.blockmanagement")
+                || lower.contains("namenodeprotocolserversidetranslatorpb")
+                || lower.contains("namenoderpcserver")) {
+            return "namenode";
+        }
+        if (lower.contains("server.datanode")
+                || lower.contains("sasldatatransferserver")) {
+            return "datanode";
+        }
+        if (lower.contains("blocktokensecretmanager: boolean updatekeys(")
+                || lower.contains("blocktokensecretmanager: void generatekeys(")
+                || lower.contains("blocktokensecretmanager: org.apache.hadoop.hdfs.security.token.block.exportedblockkeys exportkeys(")) {
+            return "namenode";
+        }
+        return "";
     }
 
     private static String threadRole(String threadName) {
@@ -922,6 +2125,14 @@ public final class CausynthTraceRecorder {
         } catch (RuntimeException ignored) {
             return fallback;
         }
+    }
+
+    private static boolean jsonBooleanField(String json, String field,
+                                            boolean fallback) {
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field)
+                + "\"\\s*:\\s*(true|false)", Pattern.CASE_INSENSITIVE)
+                .matcher(json);
+        return matcher.find() ? Boolean.parseBoolean(matcher.group(1)) : fallback;
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -1055,6 +2266,179 @@ public final class CausynthTraceRecorder {
         return !name.isEmpty() && selection.fieldNames.contains(name);
     }
 
+    private static void writeRuntimeRefinedSymbolicPlan(File staticGraph) {
+        File configured = new File(firstNonBlank(
+                System.getProperty("causynth.symbolic.plan"),
+                System.getenv("CAUSYNTH_SYMBOLIC_PLAN"),
+                staticGraph == null || staticGraph.getParentFile() == null
+                        ? "symbolic_execution_plan.jsonl"
+                        : new File(staticGraph.getParentFile(),
+                        "symbolic_execution_plan.jsonl").getPath()));
+        if (!configured.isFile()) {
+            return;
+        }
+
+        Map<String, MethodRuntimeEvidence> evidenceByMethod = new LinkedHashMap<>();
+        Map<Long, ExecutionEvent> callSitesByInvocation = new LinkedHashMap<>();
+        for (TraceEvent event : EVENTS) {
+            MethodRuntimeEvidence evidence = runtimeEvidence(evidenceByMethod,
+                    event.method);
+            evidence.methodEnterCount++;
+            if (!event.receiverType.isEmpty()) {
+                evidence.receiverTypes.add(event.receiverType);
+            }
+            evidence.processes.add(event.process);
+            evidence.threadRoles.add(threadRole(event.threadName));
+        }
+        for (ExecutionEvent event : EXECUTION_EVENTS) {
+            MethodRuntimeEvidence evidence = runtimeEvidence(evidenceByMethod,
+                    event.method);
+            evidence.observe(event);
+            if ("CALL_SITE_ENTER".equals(event.kind)) {
+                callSitesByInvocation.put(event.invocationId, event);
+            }
+        }
+
+        Map<String, RuntimeCallEdgeEvidence> callEdges = new LinkedHashMap<>();
+        for (TraceEvent event : EVENTS) {
+            if (event.parentSiteId <= 0L) {
+                continue;
+            }
+            ExecutionEvent site = callSitesByInvocation.get(event.parentSiteId);
+            if (site == null) {
+                continue;
+            }
+            MethodRuntimeEvidence callerEvidence = runtimeEvidence(evidenceByMethod,
+                    site.method);
+            callerEvidence.observedCallees.add(event.method);
+            callerEvidence.actualCalleesBySite.add(site.siteId + "=>" + event.method);
+            String key = site.method + "\n" + site.siteId + "\n"
+                    + site.declaredCallee + "\n" + event.method + "\n"
+                    + event.process + "\n" + threadRole(event.threadName);
+            RuntimeCallEdgeEvidence edge = callEdges.get(key);
+            if (edge == null) {
+                edge = new RuntimeCallEdgeEvidence(site.method, site.siteId,
+                        site.declaredCallee, event.method, event.process,
+                        threadRole(event.threadName), event.receiverType);
+                callEdges.put(key, edge);
+            }
+            edge.occurrences++;
+        }
+
+        StringBuilder refined = new StringBuilder();
+        try (BufferedReader reader = Files.newBufferedReader(configured.toPath(),
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                String method = jsonField(trimmed, "method");
+                MethodRuntimeEvidence evidence = evidenceByMethod.get(method);
+                if (evidence == null) {
+                    evidence = new MethodRuntimeEvidence(method);
+                }
+                refined.append('{')
+                        .append("\"staticPlan\":").append(trimmed).append(',')
+                        .append("\"runtimeEvidence\":")
+                        .append(evidence.toJson())
+                        .append("}\n");
+            }
+        } catch (IOException ignored) {
+            return;
+        }
+        writeFile(new File(outputDir, "runtime_refined_symbolic_plan.jsonl"),
+                refined.toString());
+
+        StringBuilder callEdgeRows = new StringBuilder();
+        int emitted = 0;
+        for (RuntimeCallEdgeEvidence edge : callEdges.values()) {
+            if (emitted++ >= 10000) {
+                break;
+            }
+            callEdgeRows.append(edge.toJson()).append('\n');
+        }
+        writeFile(new File(outputDir, "runtime_call_edges.jsonl"),
+                callEdgeRows.toString());
+    }
+
+    /**
+     * Binds static same-thread regions to concrete unit-test invocations.  The
+     * resulting activation plan is consumed by the concolic replay runner; it
+     * is intentionally separate from the descriptive runtime graph.
+     */
+    private static void writeRuntimeRegionPlans(File staticGraph) {
+        File parent = staticGraph == null ? null : staticGraph.getParentFile();
+        File regionFile = new File(firstNonBlank(
+                System.getProperty("causynth.symbolic.regions"),
+                System.getenv("CAUSYNTH_SYMBOLIC_REGIONS"),
+                parent == null ? "symbolic_regions.jsonl"
+                        : new File(parent, "symbolic_regions.jsonl").getPath()));
+        File regionEdgeFile = new File(firstNonBlank(
+                System.getProperty("causynth.symbolic.region.edges"),
+                System.getenv("CAUSYNTH_SYMBOLIC_REGION_EDGES"),
+                parent == null ? "symbolic_region_edges.jsonl"
+                        : new File(parent, "symbolic_region_edges.jsonl").getPath()));
+
+        List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
+        for (TraceEvent event : EVENTS) {
+            methods.add(new RuntimeRegionPlanner.MethodEvent(
+                    event.id, event.testName, event.process, event.threadName,
+                    event.tid, event.method, event.objectId, event.receiverType,
+                    event.callId, event.parentCallId, event.parentSiteId,
+                    event.timeNanos));
+        }
+        List<RuntimeRegionPlanner.RuntimeEvent> runtimeEvents = new ArrayList<>();
+        for (ExecutionEvent event : EXECUTION_EVENTS) {
+            runtimeEvents.add(new RuntimeRegionPlanner.RuntimeEvent(
+                    event.id, event.kind, event.method, event.callId,
+                    event.invocationId, event.parentSiteId, event.siteId,
+                    event.declaredCallee, event.argumentIndex,
+                    event.runtimeType, event.objectId,
+                    event.primitiveValue, event.hasOutcome, event.outcome,
+                    event.valueFingerprint,
+                    event.valueFingerprintComplete,
+                    event.valueFingerprintNodes,
+                    event.valueFingerprintReason));
+        }
+        List<RuntimeRegionPlanner.FieldAccessEvent> fields = new ArrayList<>();
+        for (FieldEvent event : FIELD_EVENTS) {
+            fields.add(new RuntimeRegionPlanner.FieldAccessEvent(
+                    event.id, event.kind, event.method, event.callId,
+                    event.unitIndex, event.siteId, event.field,
+                    event.receiverObjectId, event.valueObjectId,
+                    event.primitiveValue, event.valueFingerprint,
+                    event.valueFingerprintComplete,
+                    event.valueFingerprintNodes,
+                    event.valueFingerprintReason));
+        }
+
+        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
+                regionFile, regionEdgeFile, methods, runtimeEvents, fields);
+        writeFile(new File(outputDir, "runtime_region_instances.jsonl"),
+                planned.instancesJsonl());
+        writeFile(new File(outputDir, "runtime_region_validation.jsonl"),
+                planned.regionValidationsJsonl());
+        writeFile(new File(outputDir, "runtime_region_edge_validation.jsonl"),
+                planned.edgeValidationsJsonl());
+        writeFile(new File(outputDir, "concolic_activation_plan.jsonl"),
+                planned.activationsJsonl());
+        writeFile(new File(outputDir, "runtime_region_summary.json"),
+                planned.summaryJson());
+    }
+
+    private static MethodRuntimeEvidence runtimeEvidence(
+            Map<String, MethodRuntimeEvidence> evidenceByMethod, String method) {
+        String key = safe(method);
+        MethodRuntimeEvidence evidence = evidenceByMethod.get(key);
+        if (evidence == null) {
+            evidence = new MethodRuntimeEvidence(key);
+            evidenceByMethod.put(key, evidence);
+        }
+        return evidence;
+    }
+
     private static void writeRuntimeValidationSummary(List<StaticEdge> staticEdges,
                                                       Map<String, List<MethodContext>> contextsByMethod) {
         File file = new File(outputDir, "runtime_validation_summary.jsonl");
@@ -1134,7 +2518,8 @@ public final class CausynthTraceRecorder {
             return false;
         }
         String kind = edge.kind.toLowerCase(Locale.ROOT);
-        return kind.contains("rpc") || kind.contains("hdfs_sasl");
+        return kind.contains("rpc") || kind.contains("protocol")
+                || kind.contains("sasl") || kind.contains("transfer");
     }
 
     private static String crossBoundaryRelation(String kind) {
@@ -1145,7 +2530,8 @@ public final class CausynthTraceRecorder {
         if (lower.contains("rpc")) {
             return "rpc_field_mapping";
         }
-        if (lower.contains("hdfs_sasl")) {
+        if (lower.contains("protocol") || lower.contains("sasl")
+                || lower.contains("transfer")) {
             return "protocol_field_mapping";
         }
         return "cross_boundary_mapping";
@@ -1315,6 +2701,7 @@ public final class CausynthTraceRecorder {
                 "traceFile", traceFile == null ? "" : traceFile.getPath(),
                 "traceEventCount", EVENTS.size(),
                 "fieldEventCount", FIELD_EVENTS.size(),
+                "executionEventCount", EXECUTION_EVENTS.size(),
                 "maxEvents", maxEvents,
                 "maxGraphEdges", maxGraphEdges,
                 "maxContextPairsPerEdge", maxContextPairsPerEdge));
@@ -1348,6 +2735,25 @@ public final class CausynthTraceRecorder {
                                         MethodContext toContext) {
             this.fromContext = fromContext;
             this.toContext = toContext;
+        }
+    }
+
+    private static final class ContextPairSelection {
+        private final List<InstantiatedContextPair> pairs;
+        private final boolean truncated;
+        private final long skipped;
+
+        private ContextPairSelection(List<InstantiatedContextPair> pairs,
+                                     boolean truncated, long skipped) {
+            this.pairs = pairs;
+            this.truncated = truncated;
+            this.skipped = skipped;
+        }
+
+        private static ContextPairSelection empty() {
+            return new ContextPairSelection(
+                    Collections.<InstantiatedContextPair>emptyList(), false,
+                    0L);
         }
     }
 
@@ -1461,6 +2867,133 @@ public final class CausynthTraceRecorder {
         private final Set<String> fieldNames = new LinkedHashSet<>();
     }
 
+    private static final class MethodRuntimeEvidence {
+        private final String method;
+        private final Set<String> receiverTypes = new LinkedHashSet<>();
+        private final Set<String> argumentTypes = new LinkedHashSet<>();
+        private final Set<String> returnTypes = new LinkedHashSet<>();
+        private final Set<String> exceptionTypes = new LinkedHashSet<>();
+        private final Set<String> branchOutcomes = new LinkedHashSet<>();
+        private final Set<String> observedCallSites = new LinkedHashSet<>();
+        private final Set<String> callsiteReceiverTypes = new LinkedHashSet<>();
+        private final Set<String> declaredCallees = new LinkedHashSet<>();
+        private final Set<String> observedCallees = new LinkedHashSet<>();
+        private final Set<String> actualCalleesBySite = new LinkedHashSet<>();
+        private final Set<String> processes = new LinkedHashSet<>();
+        private final Set<String> threadRoles = new LinkedHashSet<>();
+        private int methodEnterCount;
+        private int normalExitCount;
+        private int throwExitCount;
+        private int callSiteCount;
+
+        private MethodRuntimeEvidence(String method) {
+            this.method = safe(method);
+        }
+
+        private void observe(ExecutionEvent event) {
+            if (event == null) {
+                return;
+            }
+            if (!event.process.isEmpty()) {
+                processes.add(event.process);
+            }
+            if (!event.threadName.isEmpty()) {
+                threadRoles.add(threadRole(event.threadName));
+            }
+            if ("METHOD_ARGUMENT".equals(event.kind)) {
+                argumentTypes.add("arg" + event.argumentIndex + ":"
+                        + firstNonBlank(event.runtimeType, event.declaredType, "unknown"));
+            } else if ("METHOD_EXIT_NORMAL".equals(event.kind)) {
+                normalExitCount++;
+                if (!event.runtimeType.isEmpty()) {
+                    returnTypes.add(event.runtimeType);
+                }
+            } else if ("METHOD_EXIT_THROW".equals(event.kind)) {
+                throwExitCount++;
+                if (!event.exceptionType.isEmpty()) {
+                    exceptionTypes.add(event.exceptionType);
+                }
+            } else if ("BRANCH".equals(event.kind)) {
+                branchOutcomes.add(event.siteId + "=" + event.outcome);
+            } else if ("CALL_SITE_ENTER".equals(event.kind)) {
+                callSiteCount++;
+                observedCallSites.add(event.siteId);
+                if (!event.declaredCallee.isEmpty()) {
+                    declaredCallees.add(event.declaredCallee);
+                }
+                if (!event.runtimeType.isEmpty()) {
+                    callsiteReceiverTypes.add(event.siteId + ":" + event.runtimeType);
+                }
+            } else if ("CALL_SITE_THROW".equals(event.kind)
+                    && !event.exceptionType.isEmpty()) {
+                exceptionTypes.add(event.exceptionType);
+            }
+        }
+
+        private String toJson() {
+            return jsonObject(
+                    "observed", methodEnterCount > 0,
+                    "method", method,
+                    "methodEnterCount", methodEnterCount,
+                    "normalExitCount", normalExitCount,
+                    "throwExitCount", throwExitCount,
+                    "callSiteCount", callSiteCount,
+                    "receiverTypes", join(receiverTypes, ";"),
+                    "argumentTypes", join(argumentTypes, ";"),
+                    "returnTypes", join(returnTypes, ";"),
+                    "exceptionTypes", join(exceptionTypes, ";"),
+                    "branchOutcomes", join(branchOutcomes, ";"),
+                    "observedCallSites", join(observedCallSites, ";"),
+                    "callsiteReceiverTypes", join(callsiteReceiverTypes, ";"),
+                    "declaredCallees", join(declaredCallees, ";"),
+                    "observedCallees", join(observedCallees, ";"),
+                    "actualCalleesBySite", join(actualCalleesBySite, ";"),
+                    "processes", join(processes, ";"),
+                    "threadRoles", join(threadRoles, ";"),
+                    "evidenceLevel", actualCalleesBySite.isEmpty()
+                            ? (methodEnterCount > 0 ? "METHOD_OBSERVED" : "UNOBSERVED")
+                            : "CALLSITE_CORRELATED");
+        }
+    }
+
+    private static final class RuntimeCallEdgeEvidence {
+        private final String caller;
+        private final String siteId;
+        private final String declaredCallee;
+        private final String actualCallee;
+        private final String process;
+        private final String threadRole;
+        private final String receiverType;
+        private int occurrences;
+
+        private RuntimeCallEdgeEvidence(String caller, String siteId,
+                                        String declaredCallee, String actualCallee,
+                                        String process, String threadRole,
+                                        String receiverType) {
+            this.caller = safe(caller);
+            this.siteId = safe(siteId);
+            this.declaredCallee = safe(declaredCallee);
+            this.actualCallee = safe(actualCallee);
+            this.process = safe(process);
+            this.threadRole = safe(threadRole);
+            this.receiverType = safe(receiverType);
+        }
+
+        private String toJson() {
+            return jsonObject(
+                    "event", "RUNTIME_CALL_EDGE",
+                    "caller", caller,
+                    "siteId", siteId,
+                    "declaredCallee", declaredCallee,
+                    "actualCallee", actualCallee,
+                    "receiverType", receiverType,
+                    "process", process,
+                    "threadRole", threadRole,
+                    "occurrences", occurrences,
+                    "evidenceLevel", "CALLSITE_CORRELATED");
+        }
+    }
+
     private static final class TraceEvent {
         private final long id;
         private final String testName;
@@ -1470,9 +3003,22 @@ public final class CausynthTraceRecorder {
         private final String method;
         private final int objectId;
         private final long timeNanos;
+        private final long callId;
+        private final long parentCallId;
+        private final long parentSiteId;
+        private final String siteId;
+        private final String receiverType;
 
         private TraceEvent(long id, String testName, String process, String threadName,
                            long tid, String method, int objectId, long timeNanos) {
+            this(id, testName, process, threadName, tid, method, objectId,
+                    timeNanos, id, 0L, 0L, method + "#entry", "");
+        }
+
+        private TraceEvent(long id, String testName, String process, String threadName,
+                           long tid, String method, int objectId, long timeNanos,
+                           long callId, long parentCallId, long parentSiteId,
+                           String siteId, String receiverType) {
             this.id = id;
             this.testName = testName;
             this.process = process;
@@ -1481,10 +3027,128 @@ public final class CausynthTraceRecorder {
             this.method = method;
             this.objectId = objectId;
             this.timeNanos = timeNanos;
+            this.callId = callId;
+            this.parentCallId = parentCallId;
+            this.parentSiteId = parentSiteId;
+            this.siteId = safe(siteId);
+            this.receiverType = safe(receiverType);
         }
 
         private String contextKey() {
             return process + "|" + threadName + "|" + tid + "|" + objectId + "|" + method;
+        }
+    }
+
+    private static final class ExecutionEvent {
+        private long id;
+        private String kind = "";
+        private String testName = "";
+        private String process = "";
+        private String threadName = "";
+        private long tid;
+        private String method = "";
+        private long callId;
+        private long parentCallId;
+        private long parentSiteId;
+        private long invocationId;
+        private String siteId = "";
+        private int unitIndex = -1;
+        private String declaredCallee = "";
+        private int argumentIndex = -1;
+        private String declaredType = "";
+        private String runtimeType = "";
+        private int objectId;
+        private String primitiveValue = "";
+        private String valueFingerprint = "";
+        private boolean valueFingerprintComplete;
+        private int valueFingerprintNodes;
+        private String valueFingerprintReason = "";
+        private String expression = "";
+        private boolean outcome;
+        private boolean hasOutcome;
+        private String exceptionType = "";
+        private long timeNanos;
+
+        private static ExecutionEvent fromJson(String line, String eventKind) {
+            ExecutionEvent event = new ExecutionEvent();
+            event.id = jsonLongField(line, "seq", 0L);
+            event.kind = safe(eventKind);
+            event.testName = firstNonBlank(jsonField(line, "test"),
+                    CausynthTraceRecorder.testName);
+            event.process = jsonField(line, "process");
+            event.threadName = jsonField(line, "threadName");
+            event.tid = jsonLongField(line, "tid", 0L);
+            event.method = jsonField(line, "method");
+            event.callId = jsonLongField(line, "callId", 0L);
+            event.parentCallId = jsonLongField(line, "parentCallId", 0L);
+            event.parentSiteId = jsonLongField(line, "parentSiteId", 0L);
+            event.invocationId = jsonLongField(line, "invocationId", 0L);
+            event.siteId = jsonField(line, "siteId");
+            event.unitIndex = jsonIntField(line, "unitIndex", -1);
+            event.declaredCallee = jsonField(line, "declaredCallee");
+            event.argumentIndex = jsonIntField(line, "argumentIndex", -1);
+            event.declaredType = jsonField(line, "declaredType");
+            event.runtimeType = jsonField(line, "runtimeType");
+            event.objectId = jsonIntField(line, "objectId", 0);
+            event.primitiveValue = jsonField(line, "primitiveValue");
+            event.valueFingerprint = jsonField(line, "valueFingerprint");
+            event.valueFingerprintComplete = jsonBooleanField(line,
+                    "valueFingerprintComplete", false);
+            event.valueFingerprintNodes = jsonIntField(line,
+                    "valueFingerprintNodes", 0);
+            event.valueFingerprintReason = jsonField(line,
+                    "valueFingerprintReason");
+            event.expression = jsonField(line, "expression");
+            event.hasOutcome = jsonBooleanField(line, "hasOutcome",
+                    "BRANCH".equals(eventKind));
+            event.outcome = jsonBooleanField(line, "outcome", false);
+            event.exceptionType = jsonField(line, "exceptionType");
+            event.timeNanos = jsonLongField(line, "timeNanos", 0L);
+            return event;
+        }
+
+        private void captureValueFingerprint(Object value,
+                                             String primitiveValue) {
+            ValueFingerprint fingerprint = valueFingerprintsEnabled
+                    ? ValueFingerprint.capture(value, primitiveValue)
+                    : ValueFingerprint.disabled();
+            valueFingerprint = fingerprint.digest;
+            valueFingerprintComplete = fingerprint.complete;
+            valueFingerprintNodes = fingerprint.nodes;
+            valueFingerprintReason = fingerprint.reason;
+        }
+    }
+
+    private static final class ActiveCall {
+        private final long callId;
+        private final long parentCallId;
+        private final long parentSiteId;
+        private final String method;
+
+        private ActiveCall(long callId, long parentCallId, long parentSiteId,
+                           String method) {
+            this.callId = callId;
+            this.parentCallId = parentCallId;
+            this.parentSiteId = parentSiteId;
+            this.method = safe(method);
+        }
+    }
+
+    private static final class ActiveCallSite {
+        private final long invocationId;
+        private final long ownerCallId;
+        private final String siteId;
+        private final String caller;
+        private final String declaredCallee;
+
+        private ActiveCallSite(long invocationId, long ownerCallId,
+                               String siteId, String caller,
+                               String declaredCallee) {
+            this.invocationId = invocationId;
+            this.ownerCallId = ownerCallId;
+            this.siteId = safe(siteId);
+            this.caller = safe(caller);
+            this.declaredCallee = safe(declaredCallee);
         }
     }
 
@@ -1502,12 +3166,46 @@ public final class CausynthTraceRecorder {
         private final int receiverObjectId;
         private final int valueObjectId;
         private final String primitiveValue;
+        private final String valueFingerprint;
+        private final boolean valueFingerprintComplete;
+        private final int valueFingerprintNodes;
+        private final String valueFingerprintReason;
         private final long timeNanos;
+        private final long callId;
+        private final String siteId;
 
         private FieldEvent(long id, String testName, String process, String threadName,
                            long tid, String method, int methodObjectId, int unitIndex,
                            String kind, String field, int receiverObjectId,
                            int valueObjectId, String primitiveValue, long timeNanos) {
+            this(id, testName, process, threadName, tid, method, methodObjectId,
+                    unitIndex, kind, field, receiverObjectId, valueObjectId,
+                    primitiveValue, timeNanos, 0L, siteId(method, unitIndex),
+                    "", false, 0, "LEGACY_TRACE_NO_FINGERPRINT");
+        }
+
+        private FieldEvent(long id, String testName, String process, String threadName,
+                           long tid, String method, int methodObjectId, int unitIndex,
+                           String kind, String field, int receiverObjectId,
+                           int valueObjectId, String primitiveValue, long timeNanos,
+                           long callId, String siteId) {
+            this(id, testName, process, threadName, tid, method,
+                    methodObjectId, unitIndex, kind, field,
+                    receiverObjectId, valueObjectId, primitiveValue,
+                    timeNanos, callId, siteId, "", false, 0,
+                    "LEGACY_TRACE_NO_FINGERPRINT");
+        }
+
+        private FieldEvent(long id, String testName, String process,
+                           String threadName, long tid, String method,
+                           int methodObjectId, int unitIndex, String kind,
+                           String field, int receiverObjectId,
+                           int valueObjectId, String primitiveValue,
+                           long timeNanos, long callId, String siteId,
+                           String valueFingerprint,
+                           boolean valueFingerprintComplete,
+                           int valueFingerprintNodes,
+                           String valueFingerprintReason) {
             this.id = id;
             this.testName = testName;
             this.process = process;
@@ -1521,7 +3219,253 @@ public final class CausynthTraceRecorder {
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
             this.primitiveValue = primitiveValue == null ? "" : primitiveValue;
+            this.valueFingerprint = safe(valueFingerprint);
+            this.valueFingerprintComplete = valueFingerprintComplete;
+            this.valueFingerprintNodes = valueFingerprintNodes;
+            this.valueFingerprintReason = safe(valueFingerprintReason);
             this.timeNanos = timeNanos;
+            this.callId = callId;
+            this.siteId = safe(siteId);
+        }
+    }
+
+    /**
+     * A bounded, digest-only representation of a concrete runtime value.
+     *
+     * <p>The canonical text never leaves this method.  Only its SHA-256 digest
+     * and completeness metadata are written to the trace.  Consequently a
+     * static port mapping can be promoted to an equality only when both
+     * endpoints were completely observed; reflection failures or bounds
+     * produce an explicit non-composable gap instead of an assumed
+     * relationship.</p>
+     */
+    private static final class ValueFingerprint {
+        private static final int MAX_DEPTH = 10;
+        private static final int MAX_NODES = 2048;
+        private static final int MAX_COLLECTION_ELEMENTS = 256;
+        private static final int MAX_TEXT_LENGTH = 1 << 20;
+
+        private final String digest;
+        private final boolean complete;
+        private final int nodes;
+        private final String reason;
+
+        private ValueFingerprint(String digest, boolean complete, int nodes,
+                                 String reason) {
+            this.digest = safe(digest);
+            this.complete = complete;
+            this.nodes = nodes;
+            this.reason = safe(reason);
+        }
+
+        private static ValueFingerprint disabled() {
+            return new ValueFingerprint("", false, 0,
+                    "DISABLED_FOR_CONTEXT_ONLY_CONCOLIC_REPLAY");
+        }
+
+        private static ValueFingerprint capture(Object value,
+                                                String primitiveValue) {
+            try {
+                return captureUnchecked(value, primitiveValue);
+            } catch (Throwable failure) {
+                // Runtime evidence must be observational.  In particular, a
+                // shared Map/Collection may change while it is fingerprinted;
+                // a ConcurrentModificationException (or any reflective
+                // access failure) must never escape into the instrumented
+                // HDFS execution.  Incomplete fingerprints are already
+                // ineligible for automatic endpoint equality.
+                String type = failure.getClass().getName();
+                return new ValueFingerprint("", false, 0,
+                        "CAPTURE_FAILURE:" + type);
+            }
+        }
+
+        private static ValueFingerprint captureUnchecked(Object value,
+                                                         String primitiveValue) {
+            FingerprintState state = new FingerprintState();
+            StringBuilder canonical = new StringBuilder();
+            if (value == null && primitiveValue != null
+                    && !primitiveValue.isEmpty()) {
+                appendToken(canonical, "PRIMITIVE", primitiveValue);
+                state.nodes = 1;
+            } else {
+                appendValue(value, canonical, state, 0);
+            }
+            if (canonical.length() > MAX_TEXT_LENGTH) {
+                state.fail("MAX_CANONICAL_TEXT");
+            }
+            return new ValueFingerprint(sha256(canonical.toString()),
+                    state.complete, state.nodes, state.reason);
+        }
+
+        private static void appendValue(Object value, StringBuilder out,
+                                        FingerprintState state, int depth) {
+            if (!state.complete) return;
+            if (depth > MAX_DEPTH) {
+                state.fail("MAX_DEPTH");
+                return;
+            }
+            if (++state.nodes > MAX_NODES) {
+                state.fail("MAX_NODES");
+                return;
+            }
+            if (value == null) {
+                appendToken(out, "NULL", "");
+                return;
+            }
+            Class<?> type = value.getClass();
+            if (value instanceof CharSequence || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Enum<?>) {
+                appendToken(out, type.getName(), String.valueOf(value));
+                return;
+            }
+            Integer previous = state.seen.get(value);
+            if (previous != null) {
+                appendToken(out, "REF", String.valueOf(previous));
+                return;
+            }
+            state.seen.put(value, state.seen.size());
+            if (type.isArray()) {
+                int length = Array.getLength(value);
+                appendToken(out, "ARRAY", type.getName() + ":" + length);
+                int limit = Math.min(length, MAX_COLLECTION_ELEMENTS);
+                for (int index = 0; index < limit; index++) {
+                    appendToken(out, "INDEX", String.valueOf(index));
+                    appendValue(Array.get(value, index), out, state,
+                            depth + 1);
+                }
+                if (length > limit) state.fail("MAX_ARRAY_ELEMENTS");
+                return;
+            }
+            if (value instanceof Map<?, ?>) {
+                Map<?, ?> map = (Map<?, ?>) value;
+                appendToken(out, "MAP", type.getName() + ":" + map.size());
+                List<String> entries = new ArrayList<>();
+                int count = 0;
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (count++ >= MAX_COLLECTION_ELEMENTS) {
+                        state.fail("MAX_MAP_ENTRIES");
+                        break;
+                    }
+                    FingerprintState entryState = new FingerprintState();
+                    StringBuilder item = new StringBuilder();
+                    appendValue(entry.getKey(), item, entryState, depth + 1);
+                    appendValue(entry.getValue(), item, entryState, depth + 1);
+                    if (!entryState.complete) {
+                        state.fail(entryState.reason);
+                        break;
+                    }
+                    state.nodes += entryState.nodes;
+                    if (state.nodes > MAX_NODES) {
+                        state.fail("MAX_NODES");
+                        break;
+                    }
+                    entries.add(item.toString());
+                }
+                Collections.sort(entries);
+                for (String entry : entries) appendToken(out, "ENTRY", entry);
+                return;
+            }
+            if (value instanceof Collection<?>) {
+                Collection<?> collection = (Collection<?>) value;
+                appendToken(out, "COLLECTION",
+                        type.getName() + ":" + collection.size());
+                int index = 0;
+                for (Object item : collection) {
+                    if (index >= MAX_COLLECTION_ELEMENTS) {
+                        state.fail("MAX_COLLECTION_ELEMENTS");
+                        break;
+                    }
+                    appendToken(out, "INDEX", String.valueOf(index++));
+                    appendValue(item, out, state, depth + 1);
+                }
+                return;
+            }
+            if (value instanceof Class<?> || value instanceof ClassLoader
+                    || value instanceof Thread
+                    || type.getName().startsWith("java.lang.reflect.")) {
+                state.fail("UNSUPPORTED_RUNTIME_OBJECT:" + type.getName());
+                return;
+            }
+            appendToken(out, "OBJECT", type.getName());
+            List<Field> fields = instanceFields(type);
+            for (Field field : fields) {
+                try {
+                    if (!field.isAccessible()) field.setAccessible(true);
+                    appendToken(out, "FIELD", field.getDeclaringClass()
+                            .getName() + "#" + field.getName());
+                    appendValue(field.get(value), out, state, depth + 1);
+                } catch (Throwable failure) {
+                    state.fail("INACCESSIBLE_FIELD:"
+                            + field.getDeclaringClass().getName() + "#"
+                            + field.getName());
+                    return;
+                }
+            }
+        }
+
+        private static List<Field> instanceFields(Class<?> type) {
+            List<Field> result = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (Class<?> current = type; current != null
+                    && current != Object.class; current = current.getSuperclass()) {
+                for (Field field : current.getDeclaredFields()) {
+                    int modifiers = field.getModifiers();
+                    if (Modifier.isStatic(modifiers)
+                            || Modifier.isTransient(modifiers)
+                            || field.isSynthetic()) continue;
+                    String key = field.getDeclaringClass().getName() + "#"
+                            + field.getName();
+                    if (seen.add(key)) result.add(field);
+                }
+            }
+            Collections.sort(result, (left, right) -> {
+                String leftKey = left.getDeclaringClass().getName() + "#"
+                        + left.getName();
+                String rightKey = right.getDeclaringClass().getName() + "#"
+                        + right.getName();
+                return leftKey.compareTo(rightKey);
+            });
+            return result;
+        }
+
+        private static void appendToken(StringBuilder out, String type,
+                                        String value) {
+            String safeType = safe(type);
+            String safeValue = safe(value);
+            out.append(safeType.length()).append(':').append(safeType)
+                    .append(safeValue.length()).append(':').append(safeValue);
+        }
+
+        private static String sha256(String value) {
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                byte[] bytes = digest.digest(value.getBytes(
+                        StandardCharsets.UTF_8));
+                StringBuilder result = new StringBuilder(bytes.length * 2);
+                for (byte item : bytes) {
+                    result.append(String.format(Locale.ROOT, "%02x",
+                            item & 0xff));
+                }
+                return "sha256:" + result;
+            } catch (NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+        }
+    }
+
+    private static final class FingerprintState {
+        private final IdentityHashMap<Object, Integer> seen =
+                new IdentityHashMap<>();
+        private boolean complete = true;
+        private int nodes;
+        private String reason = "COMPLETE";
+
+        private void fail(String why) {
+            if (!complete) return;
+            complete = false;
+            reason = firstNonBlank(why, "INCOMPLETE");
         }
     }
 
@@ -1546,7 +3490,8 @@ public final class CausynthTraceRecorder {
 
         private void observe(TraceEvent event) {
             occurrences++;
-            lastSeq = event.id;
+            firstSeq = Math.min(firstSeq, event.id);
+            lastSeq = Math.max(lastSeq, event.id);
         }
 
         private String contextKey() {

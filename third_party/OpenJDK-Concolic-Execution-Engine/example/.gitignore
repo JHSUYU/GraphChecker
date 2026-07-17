@@ -1,0 +1,6 @@
+*.class
+.gdbinit
+*.log
+*.iml
+
+*.txt

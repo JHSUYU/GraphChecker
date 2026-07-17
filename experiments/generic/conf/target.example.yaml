@@ -1,0 +1,2 @@
+# Replace this with the exception thrown by the target fixture/application.
+seed_exception: example.ReachBugException
