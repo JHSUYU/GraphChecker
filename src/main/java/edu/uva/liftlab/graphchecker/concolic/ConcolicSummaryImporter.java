@@ -2841,17 +2841,21 @@ public final class ConcolicSummaryImporter {
         }
         List<HeapEffectIssue> issues = new ArrayList<>();
         Map<String, RuntimeHeapObservation> byId = new LinkedHashMap<>();
+        Map<String, RuntimeFiniteMapSnapshot> finiteMapSnapshotsById =
+                new LinkedHashMap<>();
         if (!declaredObservations.isJsonArray()) {
             issues.add(new HeapEffectIssue(
                     "MALFORMED_RUNTIME_HEAP_OBSERVATIONS", -1,
                     "runtimeHeapObservations", "expected JSON array"));
             return new RuntimeHeapObservationCatalog(false, 0, byId,
-                    issues);
+                    finiteMapSnapshotsById, issues);
         }
 
         JsonArray records = declaredObservations.getAsJsonArray();
         Set<Long> eventSequences = new LinkedHashSet<>();
         Set<String> siteOccurrences = new LinkedHashSet<>();
+        Map<Integer, JsonObject> finiteMapSnapshotRecords =
+                new LinkedHashMap<>();
         for (int ordinal = 0; ordinal < records.size(); ordinal++) {
             JsonElement element = records.get(ordinal);
             if (!element.isJsonObject()) {
@@ -2862,7 +2866,12 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             JsonObject record = element.getAsJsonObject();
-            if (!"MAP_ENTRY_READ".equals(string(record, "kind"))) {
+            String kind = string(record, "kind");
+            if ("FINITE_MAP_ENTRY_SNAPSHOT".equals(kind)) {
+                finiteMapSnapshotRecords.put(ordinal, record);
+                continue;
+            }
+            if (!"MAP_ENTRY_READ".equals(kind)) {
                 issues.add(new HeapEffectIssue(
                         "UNSUPPORTED_RUNTIME_HEAP_OBSERVATION_KIND", -1,
                         "runtimeHeapObservations[" + ordinal + "]",
@@ -2931,8 +2940,320 @@ public final class ConcolicSummaryImporter {
             }
             byId.put(observationId, new RuntimeHeapObservation(record));
         }
+        Set<Long> snapshotEventSequences = new LinkedHashSet<>();
+        Set<String> snapshotSiteOccurrences = new LinkedHashSet<>();
+        for (Map.Entry<Integer, JsonObject> entry
+                : finiteMapSnapshotRecords.entrySet()) {
+            int ordinal = entry.getKey();
+            JsonObject record = entry.getValue();
+            String siteId = string(record, "siteId");
+            int occurrence = finiteMapSnapshotOccurrence(record, siteId);
+            String observationId = string(record, "observationId");
+            long eventSequence = longInteger(record, "eventSequence", -1L);
+            boolean complete = completeRuntimeFiniteMapSnapshot(record,
+                    activationId, byId, occurrence);
+            if (!complete) {
+                issues.add(new HeapEffectIssue(
+                        "INCOMPLETE_RUNTIME_FINITE_MAP_SNAPSHOT", -1,
+                        observationId,
+                        "runtimeHeapObservations[" + ordinal + "]"));
+                continue;
+            }
+            boolean duplicate = byId.containsKey(observationId)
+                    || finiteMapSnapshotsById.containsKey(observationId)
+                    || !snapshotEventSequences.add(eventSequence)
+                    || !snapshotSiteOccurrences.add(siteId + "#"
+                    + occurrence);
+            if (duplicate) {
+                issues.add(new HeapEffectIssue(
+                        "DUPLICATE_RUNTIME_FINITE_MAP_SNAPSHOT", -1,
+                        observationId, siteId));
+                continue;
+            }
+            finiteMapSnapshotsById.put(observationId,
+                    new RuntimeFiniteMapSnapshot(record));
+        }
         return new RuntimeHeapObservationCatalog(false, records.size(), byId,
-                issues);
+                finiteMapSnapshotsById, issues);
+    }
+
+    private static int finiteMapSnapshotOccurrence(JsonObject record,
+                                                   String siteId) {
+        String prefix = "FINITE_MAP_ENTRY_SNAPSHOT:" + siteId + "#";
+        String observationId = string(record, "observationId");
+        if (siteId.isEmpty() || !observationId.startsWith(prefix)) return -1;
+        String suffix = observationId.substring(prefix.length());
+        if (!suffix.matches("[1-9][0-9]*")) return -1;
+        try {
+            int occurrence = Integer.parseInt(suffix);
+            return record.has("occurrence")
+                    && integer(record, "occurrence", -1) != occurrence
+                    ? -1 : occurrence;
+        } catch (NumberFormatException invalid) {
+            return -1;
+        }
+    }
+
+    private static boolean completeRuntimeFiniteMapSnapshot(
+            JsonObject record, String activationId,
+            Map<String, RuntimeHeapObservation> entryReads,
+            int occurrence) {
+        String originMethod = string(record, "originMethod");
+        int originUnitIndex = integer(record, "originUnitIndex", -1);
+        String siteId = string(record, "siteId");
+        long eventSequence = longInteger(record, "eventSequence", -1L);
+        long backingToken = longInteger(record,
+                "backingMapObjectToken", -1L);
+        int count = integer(record, "entryCount", -1);
+        JsonArray keys = array(record, "keyExpressions");
+        JsonArray keyTokens = array(record, "keyObjectTokens");
+        JsonArray values = array(record, "valueExpressions");
+        JsonArray valueTokens = array(record, "valueObjectTokens");
+        JsonArray entries = array(record, "entries");
+        boolean complete = integer(record, "schemaVersion", -1) == 1
+                && "FINITE_MAP_ENTRY_SNAPSHOT".equals(string(record,
+                "kind"))
+                && "java.util.Map.entrySet".equals(string(record,
+                "operation"))
+                && occurrence > 0
+                && !originMethod.isEmpty() && originUnitIndex >= 0
+                && siteId.equals(originMethod + "#u" + originUnitIndex)
+                && eventSequence > 0L
+                && "SAME_ITERATOR_NEXT_AS_MAP_ENTRY_READ".equals(
+                string(record, "eventSequenceAuthority"))
+                && "ENTRY_SET".equals(string(record, "viewKind"))
+                && MATERIALIZATION_HOOK_SITE.matcher(string(record,
+                "viewOriginSiteId")).matches()
+                && MATERIALIZATION_HOOK_SITE.matcher(string(record,
+                "iteratorOriginSiteId")).matches()
+                && ("java.util.HashMap".equals(string(record,
+                "mapImplementationClass"))
+                || "java.util.LinkedHashMap".equals(string(record,
+                "mapImplementationClass")))
+                && "EXACT_RUNTIME_CLASS_JAVA_UTIL_HASHMAP_OR_LINKEDHASHMAP_"
+                .concat("JAVA_EQUALS_HASHCODE_EXTENSIONAL_V1").equals(
+                string(record, "mapImplementationAuthority"))
+                && backingToken > 0L
+                && longInteger(record, "mapObjectToken", -1L)
+                == backingToken
+                && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
+                string(record, "objectTokenAuthority"))
+                && !activationId.isEmpty()
+                && activationId.equals(string(record, "objectTokenScope"))
+                && record.get("mapExpression") != null
+                && record.get("mapExpression").isJsonObject()
+                && ("CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_FIRST_ENTRY_SET_"
+                .concat("NEXT").equals(string(record,
+                        "mapExpressionAuthority"))
+                || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_FIRST_ENTRY_SET_NEXT"
+                .equals(string(record, "mapExpressionAuthority")))
+                && count >= 1 && count <= 4096
+                && integer(record, "finiteEntryBound", -1) == 4096
+                && integer(record, "sizeBefore", -1) == count
+                && integer(record, "entrySetSizeBefore", -1) == count
+                && integer(record, "sizeAfter", -1) == count
+                && integer(record, "entrySetSizeAfter", -1) == count
+                && keys.size() == count && keyTokens.size() == count
+                && values.size() == count && valueTokens.size() == count
+                && entries.size() == count
+                && "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
+                .concat("ENTRY_SET_SNAPSHOT").equals(string(record,
+                        "keyExpressionAuthority"))
+                && "PER_ENTRY_EXACT_RUNTIME_NULL_OR_ACTIVATION_LOCAL_OBJECT_"
+                .concat("TOKEN_REF_WITNESS_V1").equals(string(record,
+                        "valueExpressionAuthority"))
+                && bool(record, "keysDistinct", false)
+                && bool(record, "firstIteratorEntryMatched", false)
+                && bool(record, "sizeStable", false)
+                && bool(record, "entrySetStable", false)
+                && bool(record, "preRemove", false)
+                && "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT_EXACT_HASHMAP_OR_"
+                .concat("LINKEDHASHMAP_SAME_EXECUTION_PRE_REMOVE_STABLE_SIZE_")
+                .concat("AND_ENTRY_SET_DISTINCT_IMMUTABLE_KEYS_V1").equals(
+                        string(record, "authority"))
+                && bool(record, "complete", false);
+        if (!complete) return false;
+
+        Set<String> distinctKeys = new LinkedHashSet<>();
+        Set<Long> distinctKeyTokens = new LinkedHashSet<>();
+        for (int index = 0; index < count; index++) {
+            JsonElement entryElement = entries.get(index);
+            if (!entryElement.isJsonObject()) return false;
+            JsonObject row = entryElement.getAsJsonObject();
+            long keyToken = strictNonNegativeLong(keyTokens.get(index));
+            long valueToken = strictNonNegativeLong(valueTokens.get(index));
+            String key = runtimeFiniteMapKey(keys.get(index));
+            if (integer(row, "index", -1) != index
+                    || key.isEmpty() || !distinctKeys.add(key)
+                    || keyToken <= 0L || !distinctKeyTokens.add(keyToken)
+                    || !keys.get(index).equals(row.get("keyExpression"))
+                    || longInteger(row, "keyObjectToken", -1L) != keyToken
+                    || !values.get(index).equals(row.get("valueExpression"))
+                    || longInteger(row, "valueObjectToken", -1L)
+                    != valueToken
+                    || !validRuntimeFiniteMapValue(row, valueToken,
+                    activationId)) {
+                return false;
+            }
+        }
+
+        RuntimeHeapObservation matchingRead = null;
+        for (RuntimeHeapObservation read : entryReads.values()) {
+            if (read.eventSequence != eventSequence) continue;
+            if (matchingRead != null) return false;
+            matchingRead = read;
+        }
+        if (matchingRead == null) return false;
+        JsonObject first = entries.get(0).getAsJsonObject();
+        JsonObject read = matchingRead.record;
+        return originMethod.equals(string(read, "originMethod"))
+                && originUnitIndex == integer(read, "originUnitIndex", -1)
+                && siteId.equals(string(read, "siteId"))
+                && activationId.equals(string(read, "objectTokenScope"))
+                && backingToken == longInteger(read,
+                "backingMapObjectToken", -1L)
+                && record.get("mapExpression").equals(
+                read.get("mapExpression"))
+                && runtimeFiniteMapKey(first.get("keyExpression")).equals(
+                runtimeFiniteMapReadKey(read.get("keyExpression")))
+                && longInteger(first, "keyObjectToken", -1L)
+                == longInteger(read, "keyObjectToken", -2L)
+                && longInteger(first, "valueObjectToken", -1L)
+                == longInteger(read, "valueObjectToken", -2L);
+    }
+
+    private static long strictNonNegativeLong(JsonElement value) {
+        if (value == null || !value.isJsonPrimitive()
+                || !value.getAsJsonPrimitive().isNumber()
+                || !value.getAsString().matches("0|[1-9][0-9]*")) {
+            return -1L;
+        }
+        try {
+            return Long.parseLong(value.getAsString());
+        } catch (NumberFormatException invalid) {
+            return -1L;
+        }
+    }
+
+    private static String runtimeFiniteMapKey(JsonElement element) {
+        if (element == null || !element.isJsonObject()) return "";
+        JsonObject expression = element.getAsJsonObject();
+        if (!"ConstExpr".equals(string(expression, "_type"))) return "";
+        String raw = string(expression, "_exp");
+        if (!raw.startsWith("Y_") || raw.length() < 4
+                || raw.charAt(3) != '_') return "";
+        char kind = raw.charAt(2);
+        String type = string(expression, "_java_type").replace('.', '/');
+        char declared = "java/lang/Boolean".equals(type) ? 'Z'
+                : "java/lang/Byte".equals(type) ? 'B'
+                : "java/lang/Character".equals(type) ? 'C'
+                : "java/lang/Short".equals(type) ? 'S'
+                : "java/lang/Integer".equals(type) ? 'I'
+                : "java/lang/Long".equals(type) ? 'J'
+                : "java/lang/String".equals(type) ? 'L' : 0;
+        if (kind != declared || declared == 0) return "";
+        String payload = raw.substring(4);
+        if (kind == 'L') return "L:" + payload;
+        try {
+            java.math.BigInteger integer = new java.math.BigInteger(payload);
+            if (!integer.toString().equals(payload)) return "";
+            java.math.BigInteger lower;
+            java.math.BigInteger upper;
+            if (kind == 'Z') {
+                lower = java.math.BigInteger.ZERO;
+                upper = java.math.BigInteger.ONE;
+            } else if (kind == 'B') {
+                lower = java.math.BigInteger.valueOf(Byte.MIN_VALUE);
+                upper = java.math.BigInteger.valueOf(Byte.MAX_VALUE);
+            } else if (kind == 'C') {
+                lower = java.math.BigInteger.ZERO;
+                upper = java.math.BigInteger.valueOf(Character.MAX_VALUE);
+            } else if (kind == 'S') {
+                lower = java.math.BigInteger.valueOf(Short.MIN_VALUE);
+                upper = java.math.BigInteger.valueOf(Short.MAX_VALUE);
+            } else if (kind == 'I') {
+                lower = java.math.BigInteger.valueOf(Integer.MIN_VALUE);
+                upper = java.math.BigInteger.valueOf(Integer.MAX_VALUE);
+            } else if (kind == 'J') {
+                lower = java.math.BigInteger.valueOf(Long.MIN_VALUE);
+                upper = java.math.BigInteger.valueOf(Long.MAX_VALUE);
+            } else {
+                return "";
+            }
+            return integer.compareTo(lower) >= 0
+                    && integer.compareTo(upper) <= 0
+                    ? kind + ":" + payload : "";
+        } catch (NumberFormatException invalid) {
+            return "";
+        }
+    }
+
+    private static String runtimeFiniteMapReadKey(JsonElement element) {
+        String structured = runtimeFiniteMapKey(element);
+        if (!structured.isEmpty()) return structured;
+        if (element == null || !element.isJsonObject()) return "";
+        JsonObject expression = element.getAsJsonObject();
+        JsonElement value = expression.get("value");
+        if (!"CONCRETE_RUNTIME_VALUE".equals(string(expression, "kind"))
+                || bool(expression, "symbolic", true)
+                || value == null || !value.isJsonPrimitive()) {
+            return "";
+        }
+        String type = string(expression, "valueType").replace('.', '/');
+        char kind = "java/lang/Boolean".equals(type) ? 'Z'
+                : "java/lang/Byte".equals(type) ? 'B'
+                : "java/lang/Character".equals(type) ? 'C'
+                : "java/lang/Short".equals(type) ? 'S'
+                : "java/lang/Integer".equals(type) ? 'I'
+                : "java/lang/Long".equals(type) ? 'J'
+                : "java/lang/String".equals(type) ? 'L' : 0;
+        if (kind == 0) return "";
+        String payload;
+        try {
+            if (kind == 'Z') {
+                if (!value.getAsJsonPrimitive().isBoolean()) return "";
+                payload = value.getAsBoolean() ? "1" : "0";
+            } else if (kind == 'C') {
+                if (!value.getAsJsonPrimitive().isString()
+                        || value.getAsString().length() != 1) return "";
+                payload = Integer.toString(value.getAsString().charAt(0));
+            } else {
+                payload = value.getAsString();
+            }
+        } catch (RuntimeException malformed) {
+            return "";
+        }
+        JsonObject normalized = new JsonObject();
+        normalized.addProperty("_type", "ConstExpr");
+        normalized.addProperty("_java_type", type);
+        normalized.addProperty("_exp", "Y_" + kind + "_" + payload);
+        return runtimeFiniteMapKey(normalized);
+    }
+
+    private static boolean validRuntimeFiniteMapValue(
+            JsonObject row, long valueToken, String activationId) {
+        JsonElement expressionElement = row.get("valueExpression");
+        if (expressionElement == null || !expressionElement.isJsonObject()) {
+            return false;
+        }
+        JsonObject expression = expressionElement.getAsJsonObject();
+        if (bool(row, "valueWasNull", false)) {
+            return valueToken == 0L
+                    && "EXACT_RUNTIME_NULL_AT_SAME_EXECUTION_ENTRY_SET_"
+                    .concat("SNAPSHOT").equals(string(row,
+                            "valueExpressionAuthority"))
+                    && "SymbolExpression".equals(string(expression,
+                    "_type"))
+                    && "L".equals(string(expression, "_java_type"))
+                    && "N".equals(string(expression, "_exp"));
+        }
+        return valueToken > 0L
+                && VALUE_REF_WITNESS_AUTHORITY.equals(string(row,
+                "valueExpressionAuthority"))
+                && "SymbolExpression".equals(string(expression, "_type"))
+                && "L".equals(string(expression, "_java_type"))
+                && valueRefWitnessSymbol(activationId, valueToken).equals(
+                string(expression, "_exp"));
     }
 
     private static boolean completeObservationExpressions(JsonObject record) {
@@ -8443,25 +8764,38 @@ public final class ConcolicSummaryImporter {
         }
     }
 
+    private static final class RuntimeFiniteMapSnapshot {
+        private final JsonObject record;
+
+        private RuntimeFiniteMapSnapshot(JsonObject record) {
+            this.record = record.deepCopy();
+        }
+    }
+
     private static final class RuntimeHeapObservationCatalog {
         private final boolean legacy;
         private final int recordCount;
         private final Map<String, RuntimeHeapObservation> byId;
+        private final Map<String, RuntimeFiniteMapSnapshot>
+                finiteMapSnapshotsById;
         private final List<HeapEffectIssue> issues;
 
         private RuntimeHeapObservationCatalog(
                 boolean legacy, int recordCount,
                 Map<String, RuntimeHeapObservation> byId,
+                Map<String, RuntimeFiniteMapSnapshot> finiteMapSnapshotsById,
                 List<HeapEffectIssue> issues) {
             this.legacy = legacy;
             this.recordCount = recordCount;
             this.byId = byId;
+            this.finiteMapSnapshotsById = finiteMapSnapshotsById;
             this.issues = issues;
         }
 
         private static RuntimeHeapObservationCatalog legacy() {
             return new RuntimeHeapObservationCatalog(true, 0,
                     Collections.<String, RuntimeHeapObservation>emptyMap(),
+                    Collections.<String, RuntimeFiniteMapSnapshot>emptyMap(),
                     Collections.<HeapEffectIssue>emptyList());
         }
     }
@@ -8656,7 +8990,10 @@ public final class ConcolicSummaryImporter {
         private boolean complete() {
             return catalog.issues.isEmpty() && issues.isEmpty()
                     && (catalog.legacy
-                    || observations.size() == catalog.byId.size());
+                    || observations.size() == catalog.byId.size()
+                    && catalog.byId.size()
+                    + catalog.finiteMapSnapshotsById.size()
+                    == catalog.recordCount);
         }
 
         private JsonObject toJson() {
@@ -8666,7 +9003,11 @@ public final class ConcolicSummaryImporter {
             result.addProperty("legacy", catalog.legacy);
             result.addProperty("declared", !catalog.legacy);
             result.addProperty("recordCount", catalog.recordCount);
-            result.addProperty("validatedCount", catalog.byId.size());
+            result.addProperty("validatedCount", catalog.byId.size()
+                    + catalog.finiteMapSnapshotsById.size());
+            result.addProperty("mapEntryReadCount", catalog.byId.size());
+            result.addProperty("finiteMapSnapshotCount",
+                    catalog.finiteMapSnapshotsById.size());
             result.addProperty("observationCount", observations.size());
             result.addProperty("issueCount",
                     catalog.issues.size() + issues.size());

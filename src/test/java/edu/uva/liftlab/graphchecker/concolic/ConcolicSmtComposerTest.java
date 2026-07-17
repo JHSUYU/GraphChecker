@@ -181,6 +181,169 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void registersAuthenticatedVmPlaceholderInFatalScope()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            String cell = vmCurrentTimeCell();
+            addRegionPort(fixture, "REGION.F", "symbolicInputs",
+                    port("REGION.F.in.8", cell));
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            fatal.getAsJsonArray("constraints").add(binaryCondition(
+                    placeholderExpression("currentTimeMills", 3), ">",
+                    constant("J", "Y_J_0")));
+            addVmPlaceholderCertificate(fatal, "REGION.F.in.8", 3);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertFalse(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "PlaceholderExpression"));
+            assertTrue(result.smtLib.contains(
+                    "sym__port__REGION_F_in_8__int"));
+            assertEquals(0, countDeclarationLines(result.smtLib,
+                    "placeholder__", "currentTimeMills_3"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void registersAuthenticatedVmPlaceholderInPlainSummaryScope()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.6", vmCurrentTimeCell()));
+            JsonObject summary = producerSummary(singlePutEffect(), true);
+            summary.getAsJsonArray("pathCondition").add(binaryCondition(
+                    placeholderExpression("currentTimeMills", 3), ">",
+                    constant("J", "Y_J_0")));
+            addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertFalse(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "PlaceholderExpression"));
+            assertTrue(result.smtLib.contains(
+                    "sym__port__REGION_P_in_6__int"));
+            assertEquals(0, countDeclarationLines(result.smtLib,
+                    "placeholder__", "currentTimeMills_3"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void mergerPreservesAndComposerRegistersCaseLocalVmPlaceholders()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.6", vmCurrentTimeCell()));
+            JsonObject positive = producerSummary(singlePutEffect(), true);
+            positive.add("captureGoal",
+                    RegionCaptureGoal.outputClosure().toJson());
+            positive.add("requestedOutput",
+                    requestedOutput("REGION.P.out.0"));
+            positive.getAsJsonArray("pathCondition").add(binaryCondition(
+                    placeholderExpression("currentTimeMills", 3), ">",
+                    constant("J", "Y_J_0")));
+            addVmPlaceholderCertificate(positive, "REGION.P.in.6", 3);
+
+            JsonObject nonPositive = positive.deepCopy();
+            nonPositive.addProperty("summaryId", "SUMMARY.P.TIME.SECOND");
+            nonPositive.addProperty("activationId", "ACT.P.TIME.SECOND");
+            nonPositive.add("pathCondition", new JsonArray());
+            nonPositive.getAsJsonArray("pathCondition").add(binaryCondition(
+                    placeholderExpression("currentTimeMills", 7), "<=",
+                    constant("J", "Y_J_0")));
+            addVmPlaceholderCertificate(nonPositive,
+                    "REGION.P.in.6", 7);
+            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                    java.util.Arrays.asList(positive, nonPositive),
+                    closedPathManifest());
+            JsonArray cases = merged.summaries.get(0).getAsJsonObject(
+                    "regionRelation").getAsJsonArray("cases");
+            assertEquals(2, cases.size());
+            for (JsonElement element : cases) {
+                assertEquals(1, element.getAsJsonObject().getAsJsonArray(
+                        "vmIntrinsicPlaceholderBindings").size());
+                assertTrue(element.getAsJsonObject().getAsJsonObject(
+                        "vmIntrinsicPlaceholderBindingAdmission")
+                        .get("complete").getAsBoolean());
+            }
+            writeSummary(fixture, merged.summaries.get(0));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertEquals(2, result.manifest.get(
+                    "guardedPathCaseCount").getAsInt());
+            assertFalse(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "PlaceholderExpression"));
+            assertEquals(1, countDeclarationLines(result.smtLib,
+                    "sym__port__REGION_P_in_6__int"));
+            assertEquals(0, countDeclarationLines(result.smtLib,
+                    "placeholder__", "currentTimeMills"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void rejectsTamperedVmPlaceholderAdmissionCertificate()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.6", vmCurrentTimeCell()));
+            JsonObject summary = producerSummary(singlePutEffect(), true);
+            summary.getAsJsonArray("pathCondition").add(binaryCondition(
+                    placeholderExpression("currentTimeMills", 3), ">",
+                    constant("J", "Y_J_0")));
+            addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3);
+            summary.getAsJsonObject(
+                    "vmIntrinsicPlaceholderBindingAdmission")
+                    .addProperty("bindingCount", 2);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "BINDING_ADMISSION_CERTIFICATE_INVALID"));
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "PlaceholderExpression:currentTimeMills#3"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void syntheticNnUsernameServerSplitParseFeedsUpstreamIntToMapGet()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -3408,6 +3571,95 @@ public class ConcolicSmtComposerTest {
         return placeholder;
     }
 
+    private static String vmCurrentTimeCell() {
+        return "<java.lang.System: long currentTimeMillis()>.return";
+    }
+
+    private static void addVmPlaceholderCertificate(
+            JsonObject container, String inputPort, int count) {
+        String identity = "currentTimeMills#" + count;
+        JsonObject requirement = new JsonObject();
+        requirement.addProperty("kind",
+                "UNFORCED_ENVIRONMENT_VALIDATION_REQUIREMENT");
+        requirement.addProperty("required", true);
+        requirement.addProperty("inputPort", inputPort);
+        requirement.addProperty("cell", vmCurrentTimeCell());
+        requirement.addProperty("sourceKind", "ENVIRONMENT");
+        requirement.addProperty("bindingMode",
+                "VM_INTRINSIC_PLACEHOLDER");
+        requirement.addProperty("placeholderFunction",
+                "currentTimeMills");
+        requirement.addProperty("captureAuthority",
+                "CUSTOM_JDK_SYMBOLIC_ND_FUNC");
+        requirement.addProperty("modelControllable", false);
+        requirement.addProperty("replayPolicy",
+                "UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION");
+        requirement.addProperty("evidenceAuthority",
+                "CUSTOM_JDK_STRUCTURED_PLACEHOLDER_EXPRESSION");
+        JsonArray evidence = new JsonArray();
+        evidence.add(identity);
+        requirement.add("placeholderEvidenceIdentities", evidence);
+        JsonArray requirements = new JsonArray();
+        requirements.add(requirement);
+
+        JsonObject inputAdmission = new JsonObject();
+        inputAdmission.addProperty("complete", true);
+        inputAdmission.add("globalSliceInputs", singletonString(inputPort));
+        inputAdmission.add("requiredSliceInputs", singletonString(inputPort));
+        inputAdmission.add("admittedVmIntrinsicPlaceholderInputs",
+                singletonString(inputPort));
+        inputAdmission.add("unforcedEnvironmentValidationRequirements",
+                requirements.deepCopy());
+        inputAdmission.add("failures", new JsonArray());
+        inputAdmission.addProperty("authority",
+                "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                        + "TRANSFORMER_RUNTIME_PATH_PROOFS");
+        inputAdmission.addProperty("vmIntrinsicPlaceholderAuthority",
+                "EXACT_SCHEDULER_BINDING_PLUS_CUSTOM_JDK_STRUCTURED_"
+                        + "PLACEHOLDER_EVIDENCE");
+        container.add("inputMaterializationAdmission", inputAdmission);
+        container.add("unforcedEnvironmentValidationRequirements",
+                requirements);
+
+        JsonObject binding = new JsonObject();
+        binding.addProperty("schemaVersion", 1);
+        binding.addProperty("kind",
+                "VM_INTRINSIC_PLACEHOLDER_PORT_BINDING");
+        binding.addProperty("placeholderIdentity", identity);
+        binding.addProperty("placeholderFunction", "currentTimeMills");
+        binding.addProperty("placeholderCount", count);
+        binding.addProperty("inputPort", inputPort);
+        binding.addProperty("cell", vmCurrentTimeCell());
+        binding.addProperty("javaTypeDescriptor", "J");
+        binding.addProperty("sourceKind", "ENVIRONMENT");
+        binding.addProperty("bindingMode", "VM_INTRINSIC_PLACEHOLDER");
+        binding.addProperty("captureAuthority",
+                "CUSTOM_JDK_SYMBOLIC_ND_FUNC");
+        binding.addProperty("evidenceAuthority",
+                "CUSTOM_JDK_STRUCTURED_PLACEHOLDER_EXPRESSION");
+        binding.addProperty("modelControllable", false);
+        binding.addProperty("replayPolicy",
+                "UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION");
+        binding.addProperty("ownerAuthority",
+                "UNIQUE_USED_PLACEHOLDER_IDENTITY_TO_EXACT_SLICE_INPUT");
+        binding.addProperty("required", true);
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        container.add("vmIntrinsicPlaceholderBindings", bindings);
+
+        JsonObject admission = new JsonObject();
+        admission.addProperty("schemaVersion", 1);
+        admission.addProperty("kind",
+                "VM_INTRINSIC_PLACEHOLDER_BINDING_ADMISSION");
+        admission.addProperty("complete", true);
+        admission.addProperty("bindingCount", 1);
+        admission.add("bindings", bindings.deepCopy());
+        admission.add("failures", new JsonArray());
+        admission.addProperty("authority",
+                "OWNER_EXACT_UNIQUE_USED_CUSTOM_JDK_PLACEHOLDER_V1");
+        container.add("vmIntrinsicPlaceholderBindingAdmission", admission);
+    }
+
     private static JsonObject arrayLoad(String array, String value) {
         JsonObject result = new JsonObject();
         result.addProperty("_type", "_array_expr");
@@ -3916,6 +4168,12 @@ public class ConcolicSmtComposerTest {
     }
 
     private static JsonArray singleton(JsonElement value) {
+        JsonArray result = new JsonArray();
+        result.add(value);
+        return result;
+    }
+
+    private static JsonArray singletonString(String value) {
         JsonArray result = new JsonArray();
         result.add(value);
         return result;

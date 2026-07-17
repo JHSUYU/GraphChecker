@@ -160,6 +160,8 @@ public final class ConcolicSmtComposer {
                 string(fatal, "regionId"), "selected"));
         try {
             emitter.registerEngineArrayInputBindings(fatal, "fatal query");
+            emitter.registerVmIntrinsicPlaceholderBindings(fatal,
+                    "fatal query");
             for (JsonElement constraint : fatalConstraints) {
                 fatalTerms.add(emitter.constraint(constraint,
                         "fatal query"));
@@ -2754,6 +2756,231 @@ public final class ConcolicSmtComposer {
             }
         }
 
+        private void registerVmIntrinsicPlaceholderBindings(
+                JsonObject container, String origin) {
+            JsonElement declared = container.get(
+                    "vmIntrinsicPlaceholderBindings");
+            JsonElement admissionElement = container.get(
+                    "vmIntrinsicPlaceholderBindingAdmission");
+            if ((declared == null || declared.isJsonNull())
+                    && (admissionElement == null
+                    || admissionElement.isJsonNull())) {
+                return;
+            }
+            if (declared != null && declared.isJsonArray()
+                    && declared.getAsJsonArray().size() == 0
+                    && (admissionElement == null
+                    || admissionElement.isJsonNull())) {
+                return;
+            }
+            List<String> issues = new ArrayList<>();
+            if (declared == null || !declared.isJsonArray()) {
+                issues.add("BINDING_CATALOG_MISSING_OR_MALFORMED");
+            }
+            if (admissionElement == null
+                    || !admissionElement.isJsonObject()) {
+                issues.add("BINDING_ADMISSION_MISSING_OR_MALFORMED");
+            }
+            if (!issues.isEmpty()) {
+                addVmIntrinsicPlaceholderIssues(origin, issues);
+                return;
+            }
+
+            JsonArray rows = declared.getAsJsonArray();
+            JsonObject admission = admissionElement.getAsJsonObject();
+            if (integer(admission, "schemaVersion", -1) != 1
+                    || !"VM_INTRINSIC_PLACEHOLDER_BINDING_ADMISSION".equals(
+                    string(admission, "kind"))
+                    || !bool(admission, "complete", false)
+                    || integer(admission, "bindingCount", -1) != rows.size()
+                    || admission.get("bindings") == null
+                    || !admission.get("bindings").isJsonArray()
+                    || !rows.equals(admission.getAsJsonArray("bindings"))
+                    || admission.get("failures") == null
+                    || !admission.get("failures").isJsonArray()
+                    || admission.getAsJsonArray("failures").size() != 0
+                    || !"OWNER_EXACT_UNIQUE_USED_CUSTOM_JDK_PLACEHOLDER_V1"
+                    .equals(string(admission, "authority"))) {
+                issues.add("BINDING_ADMISSION_CERTIFICATE_INVALID");
+            }
+
+            JsonElement inputAdmissionElement = container.get(
+                    "inputMaterializationAdmission");
+            JsonElement requirementsElement = container.get(
+                    "unforcedEnvironmentValidationRequirements");
+            JsonObject inputAdmission = inputAdmissionElement != null
+                    && inputAdmissionElement.isJsonObject()
+                    ? inputAdmissionElement.getAsJsonObject() : null;
+            JsonArray requirements = requirementsElement != null
+                    && requirementsElement.isJsonArray()
+                    ? requirementsElement.getAsJsonArray() : null;
+            if (rows.size() > 0 && (inputAdmission == null
+                    || requirements == null)) {
+                issues.add("OWNER_INPUT_ADMISSION_MISSING_OR_MALFORMED");
+            }
+            if (inputAdmission != null
+                    && (!bool(inputAdmission, "complete", false)
+                    || !"STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                    .concat("TRANSFORMER_RUNTIME_PATH_PROOFS").equals(
+                            string(inputAdmission, "authority"))
+                    || !"EXACT_SCHEDULER_BINDING_PLUS_CUSTOM_JDK_STRUCTURED_"
+                    .concat("PLACEHOLDER_EVIDENCE").equals(string(
+                            inputAdmission,
+                            "vmIntrinsicPlaceholderAuthority"))
+                    || inputAdmission.get("failures") == null
+                    || !inputAdmission.get("failures").isJsonArray()
+                    || array(inputAdmission, "failures").size() != 0
+                    || requirements == null
+                    || !requirements.equals(array(inputAdmission,
+                    "unforcedEnvironmentValidationRequirements")))) {
+                issues.add("OWNER_INPUT_ADMISSION_CERTIFICATE_INVALID");
+            }
+
+            Map<String, String> validated = new LinkedHashMap<>();
+            Set<String> portsSeen = new LinkedHashSet<>();
+            for (int ordinal = 0; ordinal < rows.size(); ordinal++) {
+                JsonElement element = rows.get(ordinal);
+                if (!element.isJsonObject()) {
+                    issues.add("NON_OBJECT_BINDING:" + ordinal);
+                    continue;
+                }
+                JsonObject row = element.getAsJsonObject();
+                String identity = string(row, "placeholderIdentity");
+                String function = string(row, "placeholderFunction");
+                int count = integer(row, "placeholderCount", -1);
+                String port = string(row, "inputPort");
+                String cell = string(row, "cell");
+                Port schema = ports.get(port);
+                boolean uniqueIdentity = !validated.containsKey(identity);
+                boolean uniquePort = !portsSeen.contains(port);
+                boolean valid = integer(row, "schemaVersion", -1) == 1
+                        && "VM_INTRINSIC_PLACEHOLDER_PORT_BINDING".equals(
+                        string(row, "kind"))
+                        && count > 0
+                        && identity.equals(function + "#" + count)
+                        && "currentTimeMills".equals(function)
+                        && "<java.lang.System: long currentTimeMillis()>"
+                        .concat(".return").equals(cell)
+                        && "J".equals(string(row, "javaTypeDescriptor"))
+                        && "ENVIRONMENT".equals(string(row, "sourceKind"))
+                        && "VM_INTRINSIC_PLACEHOLDER".equals(string(row,
+                        "bindingMode"))
+                        && "CUSTOM_JDK_SYMBOLIC_ND_FUNC".equals(string(row,
+                        "captureAuthority"))
+                        && "CUSTOM_JDK_STRUCTURED_PLACEHOLDER_EXPRESSION"
+                        .equals(string(row, "evidenceAuthority"))
+                        && row.has("modelControllable")
+                        && !bool(row, "modelControllable", true)
+                        && "UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION".equals(
+                        string(row, "replayPolicy"))
+                        && "UNIQUE_USED_PLACEHOLDER_IDENTITY_TO_EXACT_"
+                        .concat("SLICE_INPUT").equals(string(row,
+                                "ownerAuthority"))
+                        && bool(row, "required", false)
+                        && schema != null && schema.input
+                        && schema.sort == Sort.VALUE
+                        && cell.equals(schema.cell)
+                        && "J".equals(javaTypeDescriptor(schema.javaType))
+                        && uniqueIdentity && uniquePort
+                        && inputAdmissionOwnsVmPlaceholder(inputAdmission,
+                        requirements, port, identity, function, cell);
+                if (!valid) {
+                    issues.add("BINDING_INVALID:" + ordinal + ":"
+                            + firstNonBlank(identity, port, "unnamed"));
+                } else {
+                    validated.put(identity, port);
+                    portsSeen.add(port);
+                }
+            }
+            if (validated.size() != rows.size()) {
+                issues.add("VALIDATED_BINDING_COUNT_MISMATCH");
+            }
+            Set<String> admittedPorts = inputAdmission == null ? null
+                    : strictStringSet(array(inputAdmission,
+                    "admittedVmIntrinsicPlaceholderInputs"));
+            if (rows.size() > 0 && (requirements == null
+                    || requirements.size() != rows.size()
+                    || admittedPorts == null
+                    || !admittedPorts.equals(portsSeen))) {
+                issues.add("OWNER_REQUIREMENT_OR_PORT_CATALOG_MISMATCH");
+            }
+            String scope = currentSymbolScope;
+            if (vmIntrinsicPlaceholderBindingsByScope.containsKey(scope)) {
+                issues.add("SCOPED_BINDING_CATALOG_DUPLICATE");
+            }
+            if (!issues.isEmpty()) {
+                addVmIntrinsicPlaceholderIssues(origin, issues);
+                return;
+            }
+            vmIntrinsicPlaceholderBindingsByScope.put(scope, validated);
+        }
+
+        private boolean inputAdmissionOwnsVmPlaceholder(
+                JsonObject admission, JsonArray requirements, String port,
+                String identity, String function, String cell) {
+            if (admission == null || requirements == null
+                    || !containsString(array(admission,
+                    "globalSliceInputs"), port)
+                    || !containsString(array(admission,
+                    "requiredSliceInputs"), port)
+                    || !containsString(array(admission,
+                    "admittedVmIntrinsicPlaceholderInputs"), port)) {
+                return false;
+            }
+            int matches = 0;
+            for (JsonElement element : requirements) {
+                if (!element.isJsonObject()) return false;
+                JsonObject requirement = element.getAsJsonObject();
+                if (!port.equals(string(requirement, "inputPort"))) {
+                    continue;
+                }
+                matches++;
+                if (!"UNFORCED_ENVIRONMENT_VALIDATION_REQUIREMENT".equals(
+                        string(requirement, "kind"))
+                        || !bool(requirement, "required", false)
+                        || !cell.equals(string(requirement, "cell"))
+                        || !"ENVIRONMENT".equals(string(requirement,
+                        "sourceKind"))
+                        || !"VM_INTRINSIC_PLACEHOLDER".equals(string(
+                        requirement, "bindingMode"))
+                        || !function.equals(string(requirement,
+                        "placeholderFunction"))
+                        || !"CUSTOM_JDK_SYMBOLIC_ND_FUNC".equals(string(
+                        requirement, "captureAuthority"))
+                        || !requirement.has("modelControllable")
+                        || bool(requirement, "modelControllable", true)
+                        || !"UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION"
+                        .equals(string(requirement, "replayPolicy"))
+                        || !"CUSTOM_JDK_STRUCTURED_PLACEHOLDER_EXPRESSION"
+                        .equals(string(requirement, "evidenceAuthority"))
+                        || !containsString(array(requirement,
+                        "placeholderEvidenceIdentities"), identity)) {
+                    return false;
+                }
+            }
+            return matches == 1;
+        }
+
+        private Set<String> strictStringSet(JsonArray values) {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonElement value : values) {
+                if (!value.isJsonPrimitive()
+                        || !value.getAsJsonPrimitive().isString()
+                        || !result.add(value.getAsString())) {
+                    return null;
+                }
+            }
+            return result;
+        }
+
+        private void addVmIntrinsicPlaceholderIssues(
+                String origin, List<String> issues) {
+            for (String issue : issues) {
+                unsupported.add("VmIntrinsicPlaceholderBinding:" + origin
+                        + ":" + issue);
+            }
+        }
+
         private void validateEngineArrayValueExpression(
                 JsonObject row, String descriptor, String arrayId,
                 List<String> issues) {
@@ -2876,6 +3103,8 @@ public final class ConcolicSmtComposer {
             try {
                 registerEngineArrayInputBindings(summary,
                         "summary " + region);
+                registerVmIntrinsicPlaceholderBindings(summary,
+                        "summary " + region);
                 JsonObject relation = object(summary, "regionRelation");
                 if ("GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
                     guardedRegionRelation(region, relation,
@@ -2967,6 +3196,8 @@ public final class ConcolicSmtComposer {
                 currentCaseProjection = capture;
                 try {
                     registerEngineArrayInputBindings(item,
+                            "region " + region + " case " + index);
+                    registerVmIntrinsicPlaceholderBindings(item,
                             "region " + region + " case " + index);
                     List<String> conditionTerms = new ArrayList<>();
                     for (JsonElement expression : array(guardIr,

@@ -142,6 +142,56 @@ public class RegionSummaryMergerTest {
                 "engineArrayInputBindings").size());
     }
 
+    @Test
+    public void preservesFiniteMapAndVmCertificatesInsideSourceCase() {
+        JsonObject summary = summary("CERT", ">");
+        JsonObject snapshot = new JsonObject();
+        snapshot.addProperty("snapshotId", "FINITE.1");
+        JsonArray snapshots = new JsonArray();
+        snapshots.add(snapshot);
+        summary.add("finiteMapSnapshots", snapshots);
+
+        JsonObject binding = new JsonObject();
+        binding.addProperty("placeholderIdentity", "currentTimeMills#3");
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        summary.add("vmIntrinsicPlaceholderBindings", bindings);
+        JsonObject bindingAdmission = new JsonObject();
+        bindingAdmission.addProperty("complete", true);
+        bindingAdmission.add("bindings", bindings.deepCopy());
+        summary.add("vmIntrinsicPlaceholderBindingAdmission",
+                bindingAdmission);
+        JsonObject inputAdmission = new JsonObject();
+        inputAdmission.addProperty("complete", true);
+        summary.add("inputMaterializationAdmission", inputAdmission);
+        JsonObject requirement = new JsonObject();
+        requirement.addProperty("inputPort", "REGION.4.in.0");
+        JsonArray requirements = new JsonArray();
+        requirements.add(requirement);
+        summary.add("unforcedEnvironmentValidationRequirements",
+                requirements);
+
+        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
+                Arrays.asList(summary), closedManifest());
+
+        JsonObject merged = result.summaries.get(0);
+        JsonObject pathCase = merged.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject();
+        assertEquals(snapshots, pathCase.getAsJsonArray(
+                "finiteMapSnapshots"));
+        assertEquals(bindings, pathCase.getAsJsonArray(
+                "vmIntrinsicPlaceholderBindings"));
+        assertEquals(bindingAdmission, pathCase.getAsJsonObject(
+                "vmIntrinsicPlaceholderBindingAdmission"));
+        assertEquals(inputAdmission, pathCase.getAsJsonObject(
+                "inputMaterializationAdmission"));
+        assertEquals(requirements, pathCase.getAsJsonArray(
+                "unforcedEnvironmentValidationRequirements"));
+        assertEquals(0, merged.getAsJsonArray("finiteMapSnapshots").size());
+        assertEquals(0, merged.getAsJsonArray(
+                "vmIntrinsicPlaceholderBindings").size());
+    }
+
     private static void setLocalSymbol(JsonObject summary, String raw) {
         summary.getAsJsonArray("pathCondition").get(0).getAsJsonObject()
                 .getAsJsonObject("_left").addProperty("_exp", raw);
@@ -204,5 +254,12 @@ public class RegionSummaryMergerTest {
         JsonArray result = new JsonArray();
         result.add(binding);
         return result;
+    }
+
+    private static JsonObject closedManifest() {
+        JsonObject manifest = new JsonObject();
+        manifest.addProperty("complete", true);
+        manifest.addProperty("status", "COMPLETE_BOUNDED_PATH_CLOSURE");
+        return manifest;
     }
 }

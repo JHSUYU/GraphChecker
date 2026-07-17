@@ -2301,6 +2301,81 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void validatesFiniteMapSnapshotBesideItsExactFirstEntryRead()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String method = "<example.Store: void prune()>";
+            JsonObject map = mapInputExpression();
+            JsonObject key = constant("Y_I_7", "java/lang/Integer");
+            JsonObject read = runtimeMapEntryRead(map, key, method, 3,
+                    0, 1, 1);
+            JsonArray observations = new JsonArray();
+            observations.add(read);
+            observations.add(runtimeFiniteMapEntrySnapshot(map, key,
+                    method, 3, 1, 1));
+
+            MapFixture imported = importGuardedNoRemoveFixture(
+                    folder.getRoot().toPath(), observations,
+                    defaultReadSymbolize(), tokenFieldObservations(103));
+
+            assertTrue(imported.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            JsonObject admission = imported.summary.getAsJsonObject(
+                    "heapEffectModel").getAsJsonObject(
+                    "runtimeHeapObservationImport");
+            assertTrue(admission.get("complete").getAsBoolean());
+            assertEquals(2, admission.get("recordCount").getAsInt());
+            assertEquals(2, admission.get("validatedCount").getAsInt());
+            assertEquals(1, admission.get("mapEntryReadCount").getAsInt());
+            assertEquals(1, admission.get("finiteMapSnapshotCount")
+                    .getAsInt());
+            assertEquals(1, imported.summary.getAsJsonArray(
+                    "heapObservations").size());
+            assertFalse(imported.diagnostics.contains(
+                    "UNSUPPORTED_RUNTIME_HEAP_OBSERVATION_KIND"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void rejectsFiniteMapSnapshotWithoutStableExactCertificate()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String method = "<example.Store: void prune()>";
+            JsonObject map = mapInputExpression();
+            JsonObject key = constant("Y_I_7", "java/lang/Integer");
+            JsonObject read = runtimeMapEntryRead(map, key, method, 3,
+                    0, 1, 1);
+            JsonObject snapshot = runtimeFiniteMapEntrySnapshot(map, key,
+                    method, 3, 1, 1);
+            snapshot.addProperty("sizeStable", false);
+            JsonArray observations = new JsonArray();
+            observations.add(read);
+            observations.add(snapshot);
+
+            MapFixture imported = importGuardedNoRemoveFixture(
+                    folder.getRoot().toPath(), observations,
+                    defaultReadSymbolize(), tokenFieldObservations(103));
+
+            assertFalse(imported.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(imported.diagnostics.contains(
+                    "INCOMPLETE_RUNTIME_FINITE_MAP_SNAPSHOT"));
+            assertEquals(0, imported.summary.getAsJsonObject(
+                    "heapEffectModel").getAsJsonObject(
+                    "runtimeHeapObservationImport")
+                    .get("finiteMapSnapshotCount").getAsInt());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void importsIndependentDynamicFieldInstancesForTwoMapEntries()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -4037,6 +4112,94 @@ public class ConcolicSummaryImporterTest {
         observation.addProperty("runtimeProvenanceComplete", true);
         observation.addProperty("complete", true);
         return observation;
+    }
+
+    private static JsonObject runtimeFiniteMapEntrySnapshot(
+            JsonElement mapExpression, JsonElement keyExpression,
+            String originMethod, int originUnitIndex, int occurrence,
+            long eventSequence) {
+        String siteId = originMethod + "#u" + originUnitIndex;
+        JsonObject valueExpression = new JsonObject();
+        valueExpression.addProperty("_type", "SymbolExpression");
+        valueExpression.addProperty("_java_type", "L");
+        valueExpression.addProperty("_exp",
+                "CAUSYNTH_REF_WITNESS_V1_A10_4143542e50_T103");
+        JsonObject entry = new JsonObject();
+        entry.addProperty("index", 0);
+        entry.add("keyExpression", keyExpression.deepCopy());
+        entry.addProperty("keyObjectToken", 102L);
+        entry.add("valueExpression", valueExpression.deepCopy());
+        entry.addProperty("valueObjectToken", 103L);
+        entry.addProperty("valueWasNull", false);
+        entry.addProperty("valueExpressionAuthority",
+                "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1");
+
+        JsonObject snapshot = new JsonObject();
+        snapshot.addProperty("schemaVersion", 1);
+        snapshot.addProperty("kind", "FINITE_MAP_ENTRY_SNAPSHOT");
+        snapshot.addProperty("operation", "java.util.Map.entrySet");
+        snapshot.addProperty("observationId",
+                "FINITE_MAP_ENTRY_SNAPSHOT:" + siteId + "#" + occurrence);
+        snapshot.addProperty("eventSequence", eventSequence);
+        snapshot.addProperty("eventSequenceAuthority",
+                "SAME_ITERATOR_NEXT_AS_MAP_ENTRY_READ");
+        snapshot.addProperty("originMethod", originMethod);
+        snapshot.addProperty("originUnitIndex", originUnitIndex);
+        snapshot.addProperty("siteId", siteId);
+        snapshot.addProperty("viewKind", "ENTRY_SET");
+        snapshot.addProperty("viewOriginSiteId", originMethod + "#u1");
+        snapshot.addProperty("iteratorOriginSiteId", originMethod + "#u2");
+        snapshot.addProperty("mapImplementationClass",
+                "java.util.HashMap");
+        snapshot.addProperty("mapImplementationAuthority",
+                "EXACT_RUNTIME_CLASS_JAVA_UTIL_HASHMAP_OR_LINKEDHASHMAP_"
+                        + "JAVA_EQUALS_HASHCODE_EXTENSIONAL_V1");
+        snapshot.addProperty("mapObjectToken", 101L);
+        snapshot.addProperty("backingMapObjectToken", 101L);
+        snapshot.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        snapshot.addProperty("objectTokenScope", "ACT.P");
+        snapshot.add("mapExpression", mapExpression.deepCopy());
+        snapshot.addProperty("mapExpressionAuthority",
+                "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_FIRST_ENTRY_SET_NEXT");
+        snapshot.addProperty("entryCount", 1);
+        snapshot.addProperty("finiteEntryBound", 4096);
+        snapshot.addProperty("sizeBefore", 1);
+        snapshot.addProperty("entrySetSizeBefore", 1);
+        snapshot.addProperty("sizeAfter", 1);
+        snapshot.addProperty("entrySetSizeAfter", 1);
+        JsonArray keys = new JsonArray();
+        keys.add(keyExpression.deepCopy());
+        snapshot.add("keyExpressions", keys);
+        JsonArray keyTokens = new JsonArray();
+        keyTokens.add(102L);
+        snapshot.add("keyObjectTokens", keyTokens);
+        snapshot.addProperty("keyExpressionAuthority",
+                "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
+                        + "ENTRY_SET_SNAPSHOT");
+        JsonArray valueTokens = new JsonArray();
+        valueTokens.add(103L);
+        snapshot.add("valueObjectTokens", valueTokens);
+        JsonArray values = new JsonArray();
+        values.add(valueExpression.deepCopy());
+        snapshot.add("valueExpressions", values);
+        snapshot.addProperty("valueExpressionAuthority",
+                "PER_ENTRY_EXACT_RUNTIME_NULL_OR_ACTIVATION_LOCAL_OBJECT_"
+                        + "TOKEN_REF_WITNESS_V1");
+        JsonArray entries = new JsonArray();
+        entries.add(entry);
+        snapshot.add("entries", entries);
+        snapshot.addProperty("keysDistinct", true);
+        snapshot.addProperty("firstIteratorEntryMatched", true);
+        snapshot.addProperty("sizeStable", true);
+        snapshot.addProperty("entrySetStable", true);
+        snapshot.addProperty("preRemove", true);
+        snapshot.addProperty("authority",
+                "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT_EXACT_HASHMAP_OR_"
+                        + "LINKEDHASHMAP_SAME_EXECUTION_PRE_REMOVE_STABLE_SIZE_"
+                        + "AND_ENTRY_SET_DISTINCT_IMMUTABLE_KEYS_V1");
+        snapshot.addProperty("complete", true);
+        return snapshot;
     }
 
     private static JsonObject nativeIteratorRemove(

@@ -147,6 +147,8 @@ public final class RegionSummaryMerger {
                     "heapStateInitializers").deepCopy());
             item.add("heapObservations", array(summary,
                     "heapObservations").deepCopy());
+            item.add("finiteMapSnapshots", array(summary,
+                    "finiteMapSnapshots").deepCopy());
             // Occurrence-specific field symbols are scoped to this execution
             // case.  Preserve them inside the case and never union them at the
             // merged-summary root, where equal ids from separate JVM runs
@@ -155,6 +157,16 @@ public final class RegionSummaryMerger {
                     "dynamicFieldBindings").deepCopy());
             item.add("engineArrayInputBindings", array(summary,
                     "engineArrayInputBindings").deepCopy());
+            item.add("vmIntrinsicPlaceholderBindings", array(summary,
+                    "vmIntrinsicPlaceholderBindings").deepCopy());
+            item.add("unforcedEnvironmentValidationRequirements",
+                    array(summary,
+                            "unforcedEnvironmentValidationRequirements")
+                            .deepCopy());
+            copyIfPresent(summary, item,
+                    "inputMaterializationAdmission");
+            copyIfPresent(summary, item,
+                    "vmIntrinsicPlaceholderBindingAdmission");
             item.add("heapEffects", array(summary,
                     "heapEffects").deepCopy());
             item.add("heapEffectModel", object(summary,
@@ -248,14 +260,26 @@ public final class RegionSummaryMerger {
         merged.add("outputExpressions", new JsonObject());
         merged.add("heapStateInitializers", new JsonArray());
         merged.add("heapObservations", new JsonArray());
+        merged.add("finiteMapSnapshots", new JsonArray());
         merged.add("dynamicFieldBindings", new JsonArray());
         merged.add("engineArrayInputBindings", new JsonArray());
+        merged.add("vmIntrinsicPlaceholderBindings", new JsonArray());
+        merged.add("unforcedEnvironmentValidationRequirements",
+                new JsonArray());
         merged.add("heapEffects", new JsonArray());
         merged.add("regionRelation", relation);
         merged.addProperty("relationallyComplete", complete);
         merged.addProperty("valid", cases.size() > 0);
         merged.addProperty("confidence", "RUNTIME_CONCOLIC_MERGED");
         return merged;
+    }
+
+    private static void copyIfPresent(JsonObject source, JsonObject target,
+                                      String field) {
+        JsonElement value = source == null ? null : source.get(field);
+        if (value != null && !value.isJsonNull()) {
+            target.add(field, value.deepCopy());
+        }
     }
 
     private static JsonObject gap(String region, String reason) {
