@@ -2198,9 +2198,10 @@ public final class CausynthPipeline {
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
         beginTraceObservationIsolation(entryUnits, observationIsolation);
-        // Existing traps may be retargeted to the first inserted unit.  Give
-        // the synthetic long a verifier-visible value before any injected
-        // helper call can throw and flow into an original catch/finally path.
+        // Keep the initialization as a defensive verifier-visible value.  The
+        // whole entry probe is inserted without redirecting existing trap
+        // boundaries: an original catch/finally must not observe a partially
+        // executed probe or synthetic locals that did not exist in the input.
         entryUnits.add(Jimple.v().newAssignStmt(callId, LongConstant.v(0L)));
         entryUnits.add(Jimple.v().newAssignStmt(callId,
                 Jimple.v().newStaticInvokeExpr(refs.enterMethod,
@@ -2223,7 +2224,7 @@ public final class CausynthPipeline {
                     primitiveValue)));
         }
         endTraceObservationIsolation(entryUnits, observationIsolation);
-        insertBeforeOrAppend(body, insertionPoint, entryUnits);
+        insertBeforeOrAppendNoRedirect(body, insertionPoint, entryUnits);
 
         Set<Integer> callUnits = sites.units(sites.callUnits, method.getSignature());
         Set<Integer> branchUnits = sites.units(sites.branchUnits, method.getSignature());
@@ -2474,6 +2475,19 @@ public final class CausynthPipeline {
                                              List<Unit> units) {
         for (Unit unit : units) {
             body.getUnits().insertBefore(unit, anchor);
+        }
+    }
+
+    private static void insertBeforeOrAppendNoRedirect(Body body, Unit anchor,
+                                                        List<Unit> units) {
+        if (anchor == null) {
+            for (Unit unit : units) {
+                body.getUnits().add(unit);
+            }
+            return;
+        }
+        for (Unit unit : units) {
+            body.getUnits().insertBeforeNoRedirect(unit, anchor);
         }
     }
 
@@ -4046,11 +4060,10 @@ public final class CausynthPipeline {
                     System.getProperty("causynth.rpc.mapping.file"),
                     System.getenv("CAUSYNTH_RPC_MAPPING_FILE"),
                     config.get("rpc_mapping_file"),
-                    config.get("causynth_rpc_mapping_file"),
-                    "");
+                    config.get("causynth_rpc_mapping_file"));
             return new TargetContext(repo, module, output, specPath,
                     spec.seedVariables, spec.seedFunction, spec.seedException,
-                    scope, rpcMapping.isEmpty() ? null : Paths.get(rpcMapping)
+                    scope, rpcMapping == null ? null : Paths.get(rpcMapping)
                     .toAbsolutePath().normalize());
         }
 

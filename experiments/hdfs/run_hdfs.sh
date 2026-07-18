@@ -16,6 +16,36 @@ if [[ ! -f "${conf}" ]]; then
 fi
 source "${conf}"
 
+graphchecker_java_bin="${GRAPH_CHECKER_JAVA:-${graphchecker_java_bin:-java}}"
+hadoop_maven_bin="${GRAPH_CHECKER_MAVEN:-${hadoop_maven_bin:-mvn}}"
+container_runtime_bin="${GRAPH_CHECKER_CONTAINER_RUNTIME:-${container_runtime_bin:-docker}}"
+z3_bin="${CAUSYNTH_Z3:-${z3_bin:-z3}}"
+protoc_bin="${CAUSYNTH_PROTOC:-${protoc_bin:-protoc}}"
+causynth_workload_test="${CAUSYNTH_WORKLOAD_TEST:-${causynth_workload_test}}"
+
+configured_tool_path() {
+    local tool=$1
+    if [[ "${tool}" == */* ]]; then
+        # Preserve a configured symlink's basename and parent directory.
+        # Some tools (notably Hadoop's protoc plugin) invoke a fixed command
+        # name after inheriting PATH rather than executing this path directly.
+        printf '%s\n' "${tool}"
+    else
+        command -v "${tool}"
+    fi
+}
+
+with_configured_protoc() {
+    local protoc_path protoc_dir
+    protoc_path=$(configured_tool_path "${protoc_bin}")
+    if [[ ! -x "${protoc_path}" ]]; then
+        echo "[ERROR] Configured protoc is not executable: ${protoc_path}" >&2
+        return 1
+    fi
+    protoc_dir=$(dirname "${protoc_path}")
+    PATH="${protoc_dir}:${PATH}" "$@"
+}
+
 # Versioned experiments override active output/process locations explicitly;
 # the checked-in v4 defaults and all historical artifact directories remain
 # untouched.  The same overrides are inherited by campaign child executions.
@@ -248,14 +278,14 @@ timing() {
 }
 
 do_build() {
-    mvn -f "${gc_dir}/pom.xml" clean package -DskipTests
+    "${hadoop_maven_bin}" -f "${gc_dir}/pom.xml" clean package -DskipTests
 }
 
 do_build_hadoop() {
     verify_hadoop_source
     local hadoop_root
     hadoop_root=$(realpath "${hdfs_dir}/../..")
-    mvn -f "${hadoop_root}/pom.xml" install -DskipTests -Pdist \
+    with_configured_protoc "${hadoop_maven_bin}" -f "${hadoop_root}/pom.xml" install -DskipTests -Pdist \
         -pl hadoop-common-project/hadoop-common,\
 hadoop-common-project/hadoop-kms,\
 hadoop-hdfs-project/hadoop-hdfs-client,\
@@ -268,7 +298,7 @@ do_compile() {
     # Soot places selected hdfs-client classes in the HDFS output directory.
     # A non-clean incremental javac can then resolve the transformed outer
     # class instead of the dependency jar and lose nested-class metadata.
-    mvn -f "${hdfs_dir}/pom.xml" clean package -DskipTests
+    with_configured_protoc "${hadoop_maven_bin}" -f "${hdfs_dir}/pom.xml" clean package -DskipTests
     rm -rf "${system_classes_path}"
     mkdir -p "${system_classes_path}"
     rsync -a "${hdfs_dir}/target/classes/" "${system_classes_path}/"
@@ -296,6 +326,7 @@ do_process() {
     local properties=(
         -Dcausynth.instrument.trace=true
         -Dcausynth.output.dir="${causynth_output_dir}"
+        -Dcausynth.coverage.strict="${causynth_coverage_strict:-true}"
     )
     if [[ -n "${process_dirs}" ]]; then
         properties+=(-Dcausynth.process.dirs="${process_dirs}")
@@ -347,7 +378,7 @@ safe_test_name() {
 
 do_schedule_concolic() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local region_id="${2:-${CAUSYNTH_SCHEDULE_REGION_ID:-}}"
     local activation_id="${3:-${CAUSYNTH_SCHEDULE_ACTIVATION_ID:-}}"
     local safe_name trace_dir schedule_dir capture_dir region_suffix
@@ -685,7 +716,7 @@ do_replay_concolic() {
     verify_hadoop_source
     local activation_plan="${1:-}"
     local activation_id="${2:-${CAUSYNTH_REPLAY_ACTIVATION_ID:-}}"
-    local test_name="${3:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${3:-${causynth_workload_test}}"
     if [[ -z "${activation_plan}" || ! -f "${activation_plan}" ]]; then
         echo "[ERROR] Scheduled activation plan not found: ${activation_plan}"
         exit 1
@@ -877,7 +908,7 @@ do_replay_concolic() {
                 offline_status=1
             fi
             if [[ "${offline_status}" -eq 0 ]]; then
-                java -Xmx"${CAUSYNTH_CAMPAIGN_OFFLINE_AGGREGATION_HEAP:-6g}" \
+                "${graphchecker_java_bin}" -Xmx"${CAUSYNTH_CAMPAIGN_OFFLINE_AGGREGATION_HEAP:-${causynth_campaign_offline_aggregation_heap:-6g}}" \
                     -cp "${gc_jar}" \
                     edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
                     --trace-dir "${discovery_trace_dir}" \
@@ -1024,7 +1055,7 @@ do_import_concolic() {
 }
 
 do_campaign_capture() {
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local activation_plan="${CAUSYNTH_CAMPAIGN_ACTIVATION_PLAN:-}"
     local activation_id="${CAUSYNTH_CAMPAIGN_ACTIVATION_ID:-}"
     if [[ -z "${activation_plan}" || -z "${activation_id}" ]]; then
@@ -1052,7 +1083,7 @@ do_campaign_capture() {
 
 do_campaign_concolic() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local trace_dir schedule_dir campaign_dir campaign_summaries
     local campaign_state_manifest
     resolve_target_context "${test_name}"
@@ -1151,7 +1182,7 @@ do_campaign_concolic() {
 
 do_hdfs_port_map() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local trace_dir schedule_dir mapping_dir port_map contracts
     resolve_target_context "${test_name}"
     trace_dir="${target_trace_dir}"
@@ -2285,7 +2316,7 @@ publish_campaign_handoff() {
 
 do_publish_campaign_handoff() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local campaign_dir="${2:-${CAUSYNTH_CAMPAIGN_OUTPUT_DIR:-}}"
     if [[ -z "${campaign_dir}" ]]; then
         echo "[ERROR] publish-campaign-handoff requires campaign-dir or CAUSYNTH_CAMPAIGN_OUTPUT_DIR" >&2
@@ -2810,7 +2841,7 @@ ensure_schema2_producer_catalog() {
 
 do_derive_producer_groups() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     resolve_target_context "${test_name}"
     resolve_composition_paths
     derive_producer_groups_resolved
@@ -2910,7 +2941,7 @@ discover_composition_scope() {
 
 do_compose_smt() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local target_summary upstream_summaries region proof_status=0
     local bounded_regions_json
     local regions_file
@@ -3010,7 +3041,7 @@ do_compose_smt() {
 
 do_verify_relationships() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local proof_output proof_status=0
     resolve_target_context "${test_name}"
     resolve_composition_paths
@@ -3033,7 +3064,7 @@ do_verify_relationships() {
 
 do_project_composed_model() {
     verify_hadoop_source
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local projection_summaries static_graph z3_binary
     local -a producer_args=()
     resolve_target_context "${test_name}"
@@ -3117,7 +3148,7 @@ do_project_composed_model() {
 }
 
 do_validate_natural_replay() {
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     resolve_target_context "${test_name}"
     resolve_composition_paths
     resolve_natural_replay_paths
@@ -3139,7 +3170,7 @@ do_validate_natural_replay() {
 }
 
 do_run_natural_replay() {
-    local test_name="${1:-org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1}"
+    local test_name="${1:-${causynth_workload_test}}"
     local replay_classes replay_static replay_status=0
     do_project_composed_model "${test_name}"
     # do_project_composed_model resolved and created this turn's fresh natural
@@ -3189,7 +3220,7 @@ do_run_natural_replay() {
 
 do_test() {
     verify_hadoop_source
-    local test_name="${1:-}"
+    local test_name="${1:-${causynth_workload_test}}"
     local test_arg=""
     if [[ -n "${test_name}" ]]; then
         test_arg="-Dtest=${test_name}"
@@ -3269,7 +3300,7 @@ do_test() {
             echo "[ERROR] Native runtime trace did not close completely" >&2
             exit 1
         fi
-        java -Xmx"${CAUSYNTH_TRACE_OFFLINE_AGGREGATION_HEAP:-6g}" \
+        "${graphchecker_java_bin}" -Xmx"${CAUSYNTH_TRACE_OFFLINE_AGGREGATION_HEAP:-${causynth_trace_offline_aggregation_heap:-6g}}" \
             -cp "${gc_jar}" \
             edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
             --trace-dir "${trace_dir}" \

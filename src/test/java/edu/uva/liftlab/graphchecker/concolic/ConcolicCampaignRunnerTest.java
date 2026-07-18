@@ -205,10 +205,13 @@ public class ConcolicCampaignRunnerTest {
                 result.manifest.get("complete").getAsBoolean());
         assertEquals("COMPLETE_AUTOMATIC_REGION_CLOSURE",
                 result.manifest.get("status").getAsString());
-        assertEquals(3, backend.executions);
-        assertEquals(Arrays.asList("OUTPUT_SEED", "PATH_FLIP", "PATH_FLIP"),
+        // Once the opposite branch is admitted, its summary is exact evidence
+        // for the reverse frontier.  Do not execute that already-covered flip
+        // a second time.
+        assertEquals(2, backend.executions);
+        assertEquals(Arrays.asList("OUTPUT_SEED", "PATH_FLIP"),
                 backend.kinds);
-        assertEquals(2, result.state.pathRecords.size());
+        assertEquals(1, result.state.pathRecords.size());
         assertEquals(1, result.mergedSummaries.size());
         assertEquals(2, result.mergedSummaries.get(0)
                 .getAsJsonObject("regionRelation").get("caseCount")

@@ -20,17 +20,17 @@ Soot 和自定义 OpenJDK 修改都只用于在受控研究环境中观察和建
 
 | 项目 | 固定值 |
 | --- | --- |
-| Hadoop 仓库 | `/Users/lizhenyu/Desktop/study/hadoop` |
+| Hadoop 仓库 | `/opt/hadoop` |
 | Hadoop commit | `ece33208b89a6a06c1b362d10fab31343fe5df13` |
 | HDFS baseline 单测 | `org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1` |
-| fresh expiry controlled workload | `org.apache.hadoop.hdfs.server.balancer.CausynthControlledSecondKeyUpdateTestBalancerWithEncryptedTransfer#testEncryptedBalancer1`；本地派生 harness，只用于在同一 baseline 语义范围内稳定触发 second key update，不得称为上游原始单测 |
+| workload | 只使用 `org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1` |
 | 执行环境 | 本机、Docker 内的自定义 OpenJDK、`MiniDFSCluster` |
-| 实验补丁 | `CAUSYNTH_FIXED_MINIDFSCLUSTER_LOOP_FREE_V1` |
-| 补丁文件 SHA-256 | `352efc4dd9a3d4e0df4d0840754d63fce1a09509ad947f9c232e24f35372bb93` |
+| 源码模式 | `UPSTREAM_PRE_HDFS_11741`；循环仅允许由分析器有界/模糊处理，不修改 workload |
+| 固定源码 SHA-256 | `be9ce1a57980fdab5612abed1886362842099e1df657b0cdb8c95dbb0a480093` |
 | 禁止事项 | 扩展到第三方系统、真实网络目标、攻击或利用工作流 |
 
-任何后续检查点或新对话都必须继续注明上述仓库、commit、baseline 单测、受控派生
-workload 和执行边界。这里的“固定”是为了保证实验可复现和不越界，不是说分析框架
+任何后续检查点或新对话都必须继续注明上述仓库、commit、唯一 baseline 单测
+和执行边界。这里的“固定”是为了保证实验可复现和不越界，不是说分析框架
 只能用于 HDFS；核心 concolic/worklist/IR/composer 仍应保持项目无关。
 
 ## 当前参考工作负载

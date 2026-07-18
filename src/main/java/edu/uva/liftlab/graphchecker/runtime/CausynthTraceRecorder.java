@@ -168,6 +168,7 @@ public final class CausynthTraceRecorder {
             writeShutdownFailure(throwable);
             System.err.println("Failed to aggregate Causynth runtime trace: "
                     + throwable);
+            throwable.printStackTrace(System.err);
             System.exit(1);
         }
     }
@@ -1204,18 +1205,13 @@ public final class CausynthTraceRecorder {
                 "maxEvents", maxEvents,
                 "maxGraphEdges", maxGraphEdges,
                 "maxContextPairsPerEdge", maxContextPairsPerEdge);
-        String graph = "{"
-                + "\"summary\":" + summary
-                + ",\"nodes\":[" + join(nodeJson) + "]"
-                + ",\"edges\":[" + join(edgeJson) + "]"
-                + "}";
-        String roleGraph = "{"
-                + "\"summary\":" + summary
-                + ",\"nodes\":[" + join(roleNodeJson) + "]"
-                + ",\"edges\":[" + join(roleEdgeJson) + "]"
-                + "}";
-        writeFile(new File(outputDir, "unit_test_instantiated_graph.json"), graph);
-        writeFile(new File(outputDir, "unit_test_role_merged_graph.json"), roleGraph);
+        // HDFS traces can legitimately instantiate graphs beyond Java's
+        // maximum String/byte[] size.  Stream the already bounded collections
+        // instead of constructing one multi-gigabyte intermediate String.
+        writeGraphFile(new File(outputDir, "unit_test_instantiated_graph.json"),
+                summary, nodeJson, edgeJson);
+        writeGraphFile(new File(outputDir, "unit_test_role_merged_graph.json"),
+                summary, roleNodeJson, roleEdgeJson);
         writeFile(new File(outputDir, "summary.json"), summary);
         writeSymbolicGuidanceDag(emittedEdges, emittedRoleEdges,
                 contextsByMethod, truncated, roleTruncated);
@@ -2688,6 +2684,39 @@ public final class CausynthTraceRecorder {
             }
             Files.write(file.toPath(), value.getBytes(StandardCharsets.UTF_8));
         } catch (IOException ignored) {
+        }
+    }
+
+    private static void writeGraphFile(File file, String summary,
+                                       List<String> nodes,
+                                       List<String> edges) {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        try (BufferedWriter writer = Files.newBufferedWriter(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            writer.write("{\"summary\":");
+            writer.write(summary);
+            writer.write(",\"nodes\":[");
+            writeJsonElements(writer, nodes);
+            writer.write("],\"edges\":[");
+            writeJsonElements(writer, edges);
+            writer.write("]}");
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static void writeJsonElements(BufferedWriter writer,
+                                          List<String> elements)
+            throws IOException {
+        boolean first = true;
+        for (String element : elements) {
+            if (!first) {
+                writer.write(',');
+            }
+            writer.write(element);
+            first = false;
         }
     }
 
