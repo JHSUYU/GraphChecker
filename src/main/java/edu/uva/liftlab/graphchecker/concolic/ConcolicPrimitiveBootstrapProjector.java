@@ -137,7 +137,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
             String summaryId = string(selectedCase, "sourceSummaryId");
             String activationId = string(selectedCase,
                     "sourceActivationId");
-            validateCompositionSummaryMembership(composition, summaryId);
+            validateCompositionSummaryMembership(composition,
+                    selectedCase);
             JsonObject summary = summaries.get(summaryId);
             JsonObject source = activations.get(activationId);
             validateSource(region, summaryId, activationId, summary, source);
@@ -270,7 +271,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 || bool(composition,
                 "eligibleToReportAutomaticRelationship", true)
                 || !bool(composition, "caseProjectionCatalogComplete",
-                false)) {
+                false)
+                || integer(composition, "caseProjectionCatalogCount", -1)
+                != array(composition, "caseProjectionCatalog").size()) {
             throw gap("COMPOSITION_IS_NOT_A_MODEL_ELIGIBLE_BOOTSTRAP");
         }
         if (!"BOOLEAN_REACH_CONDITION_REPORT".equals(string(reach, "kind"))
@@ -378,9 +381,38 @@ public final class ConcolicPrimitiveBootstrapProjector {
     }
 
     private static void validateCompositionSummaryMembership(
-            JsonObject composition, String summaryId) throws IOException {
-        if (countString(array(composition, "includedSummaries"), summaryId)
-                != 1) {
+            JsonObject composition, JsonObject selectedCase)
+            throws IOException {
+        String summaryId = string(selectedCase, "sourceSummaryId");
+        String activationId = string(selectedCase, "sourceActivationId");
+        String regionId = string(selectedCase, "regionId");
+        String caseId = string(selectedCase, "caseId");
+        String pathKey = string(selectedCase, "pathKey");
+        String parent = string(selectedCase,
+                "compositionInputSummaryId");
+        JsonArray included = array(composition, "includedSummaries");
+        int catalogMatches = 0;
+        for (JsonElement element : array(composition,
+                "caseProjectionCatalog")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (parent.equals(string(candidate,
+                    "compositionInputSummaryId"))
+                    && regionId.equals(string(candidate, "regionId"))
+                    && caseId.equals(string(candidate, "caseId"))
+                    && pathKey.equals(string(candidate, "pathKey"))
+                    && summaryId.equals(string(candidate,
+                    "sourceSummaryId"))
+                    && activationId.equals(string(candidate,
+                    "sourceActivationId"))) {
+                catalogMatches++;
+            }
+        }
+        if (summaryId.isEmpty() || activationId.isEmpty()
+                || regionId.isEmpty() || caseId.isEmpty()
+                || pathKey.isEmpty() || parent.isEmpty()
+                || countString(included, parent) != 1
+                || catalogMatches != 1) {
             throw gap("SELECTED_SOURCE_SUMMARY_NOT_IN_COMPOSITION_INPUT:"
                     + summaryId);
         }

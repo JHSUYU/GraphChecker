@@ -3254,7 +3254,8 @@ public final class ConcolicSmtComposer {
                 JsonObject relation = object(summary, "regionRelation");
                 if ("GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
                     guardedRegionRelation(region, relation,
-                            object(summary, "requestedOutputSlice"));
+                            object(summary, "requestedOutputSlice"),
+                            string(summary, "summaryId"));
                     rejectNonRegionSemantics(region, summary);
                     return;
                 }
@@ -3292,7 +3293,8 @@ public final class ConcolicSmtComposer {
 
         private void guardedRegionRelation(String region,
                                            JsonObject relation,
-                                           JsonObject requestedOutputSlice) {
+                                           JsonObject requestedOutputSlice,
+                                           String compositionInputSummaryId) {
             JsonArray cases = array(relation, "cases");
             if (!bool(relation, "complete", false)) {
                 heapGap(region, "IncompleteGuardedPathMerge@" + region);
@@ -3331,7 +3333,8 @@ public final class ConcolicSmtComposer {
                                 String.valueOf(index)));
                 CaseProjectionCapture capture = new CaseProjectionCapture(
                         region, item, caseIdentity,
-                        validateCaseDynamicBindings(item));
+                        validateCaseDynamicBindings(item),
+                        compositionInputSummaryId);
                 String rawGuardShape = GSON.toJson(array(guardIr,
                         "conditions"));
                 if (!rawGuardShapes.add(rawGuardShape)) {
@@ -6891,6 +6894,7 @@ public final class ConcolicSmtComposer {
         private final String symbolScope;
         private final String sourceSummaryId;
         private final String sourceActivationId;
+        private final String compositionInputSummaryId;
         private final JsonArray dynamicBindings;
         private final Map<String, SymbolProjection> symbols =
                 new LinkedHashMap<>();
@@ -6900,13 +6904,16 @@ public final class ConcolicSmtComposer {
 
         private CaseProjectionCapture(String regionId, JsonObject item,
                                       String symbolScope,
-                                      CaseDynamicValidation validation) {
+                                      CaseDynamicValidation validation,
+                                      String compositionInputSummaryId) {
             this.regionId = regionId;
             this.caseId = firstNonBlank(string(item, "caseId"), symbolScope);
             this.pathKey = string(item, "pathKey");
             this.symbolScope = symbolScope;
             this.sourceSummaryId = string(item, "sourceSummaryId");
             this.sourceActivationId = string(item, "sourceActivationId");
+            this.compositionInputSummaryId = firstNonBlank(
+                    compositionInputSummaryId);
             this.dynamicBindings = validation.dynamicBindings.deepCopy();
             this.gaps.addAll(validation.gaps);
             if (this.pathKey.isEmpty()) gap("MISSING_CASE_PATH_KEY");
@@ -6915,6 +6922,9 @@ public final class ConcolicSmtComposer {
             }
             if (this.sourceActivationId.isEmpty()) {
                 gap("MISSING_CASE_SOURCE_ACTIVATION_ID");
+            }
+            if (this.compositionInputSummaryId.isEmpty()) {
+                gap("MISSING_CASE_COMPOSITION_INPUT_SUMMARY_ID");
             }
         }
 
@@ -7014,6 +7024,8 @@ public final class ConcolicSmtComposer {
             result.addProperty("symbolScope", symbolScope);
             result.addProperty("sourceSummaryId", sourceSummaryId);
             result.addProperty("sourceActivationId", sourceActivationId);
+            result.addProperty("compositionInputSummaryId",
+                    compositionInputSummaryId);
             result.addProperty("selectorSolverSymbol",
                     selectorSolverSymbol);
             result.addProperty("selectorGuardFormula", selectorGuardFormula);
