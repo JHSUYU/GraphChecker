@@ -296,8 +296,8 @@ public final class ConcolicProducerGroupPlanner {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
             if (!"READ_FROM".equals(string(binding, "relation"))
-                    || !"RUNTIME_CONFIRMED_READ_FROM".equals(string(binding,
-                    "selectionAuthority"))
+                    || !AutomaticRegionEdge
+                    .trustedRuntimeReadFromBinding(binding)
                     || !target.equals(string(binding, "toRegionInstance"))
                     || !lookup.receiverPort.equals(string(binding,
                     "toInputPort"))
@@ -515,8 +515,8 @@ public final class ConcolicProducerGroupPlanner {
                 for (JsonElement element : array(summary, "edgeBindings")) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
-                    if (!"RUNTIME_CONFIRMED_READ_FROM".equals(string(binding,
-                            "selectionAuthority"))) continue;
+                    if (!AutomaticRegionEdge
+                            .trustedRuntimeReadFromBinding(binding)) continue;
                     AdmittedEdge edge = runtime.validateSummaryBinding(
                             binding);
                     edge.admitSummary(pathCase, summary, binding);
@@ -1945,8 +1945,8 @@ public final class ConcolicProducerGroupPlanner {
                 throws IOException {
             String relation = string(binding, "relation");
             if (!"READ_FROM".equals(relation)
-                    || !"RUNTIME_CONFIRMED_READ_FROM".equals(string(binding,
-                    "selectionAuthority"))) {
+                    || !AutomaticRegionEdge
+                    .trustedRuntimeReadFromBinding(binding)) {
                 throw gap("STATIC_OR_UNTRUSTED_SUMMARY_EDGE:"
                         + string(binding, "edgeId"));
             }
@@ -2023,7 +2023,9 @@ public final class ConcolicProducerGroupPlanner {
                             "receiverObjectId", -2)
                             || longInteger(admittedBinding,
                             "valueObjectId", -1) != longInteger(raw,
-                            "valueObjectId", -2)) continue;
+                            "valueObjectId", -2)
+                            || !AutomaticRegionEdge
+                            .trustedReadFromEvidence(raw)) continue;
                 } else {
                     long writer = firstLong(admittedBinding,
                             "fromEndpointSeq", "writerEventSeq");

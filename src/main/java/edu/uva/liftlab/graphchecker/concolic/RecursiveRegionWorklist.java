@@ -565,6 +565,13 @@ public final class RecursiveRegionWorklist {
                         "STATIC_REQUESTED_OUTPUT_BACKWARD_SLICE");
             }
 
+            DependencyClosure transportIdentity =
+                    transportEndpointIdentityClosure(definition, output,
+                            edge);
+            if (transportIdentity.complete) {
+                return transportIdentity;
+            }
+
             List<DependencyClosure> activations = new ArrayList<>();
             for (JsonObject activation : selectActivations(region, edge,
                     downstreamInstance, output)) {
@@ -590,6 +597,54 @@ public final class RecursiveRegionWorklist {
                     "MISSING_OUTPUT_DEPENDENCY_CLOSURE",
                     "NO_COMPLETE_OUTPUT_SPECIFIC_SLICE_OR_SUMMARY",
                     "NONE");
+        }
+
+        /**
+         * A protocol sender may expose an outbound value at the same source
+         * cell as one of its symbolic inputs (for example the HDFS SASL
+         * username argument).  Such a boundary is an identity relation, not
+         * an unknown region output.  Admit it only after the cross-region
+         * equality itself has runtime evidence and the source endpoint names
+         * exactly one input declaration.
+         */
+        private DependencyClosure transportEndpointIdentityClosure(
+                JsonObject definition, OutputRef output, JsonObject edge) {
+            if (!AutomaticRegionEdge.composable(edge)
+                    || !"EQUALITY".equals(firstNonBlank(string(edge,
+                    "validatedRelation"), string(edge, "relation")))) {
+                return DependencyClosure.gap(
+                        "MISSING_OUTPUT_DEPENDENCY_CLOSURE",
+                        "NOT_A_RUNTIME_VALIDATED_TRANSPORT_EQUALITY", "NONE");
+            }
+            String kind = string(edge, "kind");
+            if (!(kind.contains("RPC") || kind.contains("SASL")
+                    || kind.contains("TRANSFER")
+                    || kind.contains("HEARTBEAT"))) {
+                return DependencyClosure.gap(
+                        "MISSING_OUTPUT_DEPENDENCY_CLOSURE",
+                        "NOT_A_PROTOCOL_TRANSPORT_EDGE", "NONE");
+            }
+            Set<String> matches = new TreeSet<>();
+            for (JsonElement element : array(definition, "symbolicInputs")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject input = element.getAsJsonObject();
+                if (output.matches(string(input, "portId"))
+                        || output.matches(string(input, "cell"))) {
+                    String port = firstNonBlank(string(input, "portId"),
+                            string(input, "cell"));
+                    if (!port.isEmpty()) matches.add(canonicalPort(port));
+                }
+            }
+            if (matches.size() != 1) {
+                return DependencyClosure.gap(
+                        "MISSING_OUTPUT_DEPENDENCY_CLOSURE",
+                        matches.isEmpty()
+                                ? "TRANSPORT_ENDPOINT_INPUT_NOT_FOUND"
+                                : "TRANSPORT_ENDPOINT_INPUT_AMBIGUOUS",
+                        "NONE");
+            }
+            return DependencyClosure.complete(matches,
+                    "STATIC_TRANSPORT_ENDPOINT_IDENTITY");
         }
 
         private DependencyClosure activationDependencies(

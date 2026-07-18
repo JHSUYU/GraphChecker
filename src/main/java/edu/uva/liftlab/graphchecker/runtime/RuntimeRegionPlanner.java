@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
@@ -40,8 +42,6 @@ final class RuntimeRegionPlanner {
             "#field:([^#@]+)");
     private static final Pattern GETTER_IN_GUARD = Pattern.compile(
             "\\b((?:get|is)[A-Z][A-Za-z0-9_]*)\\s*\\(");
-    private static final String VM_CURRENT_TIME_MILLIS_RETURN =
-            "<java.lang.System: long currentTimeMillis()>.return";
     private static final String VM_INTRINSIC_DEFERRED_AUTHORITY =
             "EXACT_VM_INTRINSIC_PLACEHOLDER_SCHEDULER_VALIDATION_V1";
     private static final String CALL_RETURN_DEFERRED_AUTHORITY =
@@ -63,6 +63,27 @@ final class RuntimeRegionPlanner {
     static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
             "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
                     + "CONTEXT_ORDINAL_V1";
+    static final String HDFS_DATAXCEIVER_CONTEXT_NORMALIZATION_AUTHORITY =
+            "HDFS_DATAXCEIVER_DYNAMIC_THREAD_NAME_OMITTED_"
+                    + "ROLE_RECORDED_V1";
+    static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
+            "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
+                    + "COMPLETED_MUTATION_BEFORE_READ_V1";
+    static final String CONTAINER_MUTATION_SEMANTIC_ASSUMPTION =
+            "DECLARED_CONTAINER_MUTATOR_CHANGES_RECEIVER_STATE_V1";
+    static final String CONTAINER_MUTATOR_CONTRACT_AUTHORITY =
+            "DECLARED_CALLEE_MUTATOR_METHOD_NAME_ALLOWLIST_V1";
+    static final String PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY =
+            "PROCESS_LOCAL_RECORDER_OBJECT_IDENTITY_TOKEN_V1";
+    static final String TRACE_ORDER_AUTHORITY =
+            "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1";
+    static final String CONTAINED_CALL_READ_FROM_AUTHORITY =
+            "RUNTIME_COMPLETE_CONTAINED_CALL_TREE_MEMBERSHIP_V1";
+    static final String TRUNCATED_PATH_READ_FROM_ASSUMPTION =
+            "TRUNCATED_BRANCH_PATH_SIGNATURE_DOES_NOT_INVALIDATE_EXACT_"
+                    + "CONTAINED_FIELD_AND_CALL_EVENT_ORDER_V1";
+    static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
+            "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1";
 
     private RuntimeRegionPlanner() {
     }
@@ -84,6 +105,8 @@ final class RuntimeRegionPlanner {
         List<MethodEvent> methodEvents = sortedMethods(methods);
         List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
         List<FieldAccessEvent> fields = sortedFields(fieldEvents);
+        RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes =
+                RootArgumentRuntimeTypeIndex.build(executions);
 
         Map<Long, MethodEvent> calls = new LinkedHashMap<>();
         Map<String, List<MethodEvent>> methodsBySignature = new LinkedHashMap<>();
@@ -102,6 +125,8 @@ final class RuntimeRegionPlanner {
         long skippedContainedCallCount = 0L;
         long skippedPathSignatureEventCount = 0L;
         Map<String, List<InstanceEvidence>> evidenceByRegion = new LinkedHashMap<>();
+        Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion =
+                new LinkedHashMap<>();
         Map<String, Integer> validationCounts = new LinkedHashMap<>();
 
         outer:
@@ -150,7 +175,7 @@ final class RuntimeRegionPlanner {
                         root, methodEvents);
                 Map<String, Object> rootArgumentSelector =
                         runtimeRootArgumentSelector(root, methodEvents,
-                                executions);
+                                rootArgumentRuntimeTypes);
                 String instanceId = region.regionId + "@" + safeToken(root.test)
                         + "#call" + root.callId;
 
@@ -315,13 +340,26 @@ final class RuntimeRegionPlanner {
                         "symbolizeActionsReady", symbolizeActionsReady,
                         "symbolicReady", symbolicReady);
                 result.regionValidations.add(validation);
+                InstanceEvidence instanceEvidence = new InstanceEvidence(
+                        instanceId, region, root, containedCalls,
+                        containedMethodEvents, containedRuntime,
+                        containedFields, observedMethods, validationStatus,
+                        runtimePathEvidenceComplete,
+                        !callSelection.truncated,
+                        !pathSelection.truncated);
+                if (!callSelection.truncated && !containedFields.isEmpty()) {
+                    // Exact shared-state event correlation does not consume
+                    // the bounded branch signature. Keep these instances in a
+                    // separate pool so a long-running outer loop cannot hide
+                    // a precise contained FIELD_READ -> mutator -> FIELD_READ
+                    // witness, while every other edge kind remains fail-closed
+                    // on complete runtime path evidence.
+                    add(sharedStateEvidenceByRegion, region.regionId,
+                            instanceEvidence);
+                }
                 if (runtimePathEvidenceComplete) {
                     add(evidenceByRegion, region.regionId,
-                            new InstanceEvidence(instanceId, region, root,
-                                    containedCalls, containedMethodEvents,
-                                    containedRuntime, containedFields,
-                                    observedMethods, validationStatus,
-                                    runtimePathEvidenceComplete));
+                            instanceEvidence);
                 }
 
                 Map<String, Object> activation = object(
@@ -377,8 +415,8 @@ final class RuntimeRegionPlanner {
         }
 
         List<UpstreamEdgeBinding> edgeBindings = new ArrayList<>();
-        validateRegionEdges(regionEdges, evidenceByRegion, result,
-                edgeBindings);
+        validateRegionEdges(regionEdges, evidenceByRegion,
+                sharedStateEvidenceByRegion, result, edgeBindings);
         int upstreamActivationCount = deriveUpstreamActivations(
                 edgeBindings, result);
         int mapValueElementProjectionCount =
@@ -581,16 +619,22 @@ final class RuntimeRegionPlanner {
      * ids are deliberately excluded because JVM-assigned ids change across
      * executions.  The receiver runtime class is mandatory for contexts
      * emitted by this planner; a non-empty thread name further separates
-     * same-class worker roles such as producer and consumer executors.
+     * same-class worker roles such as producer and consumer executors. HDFS
+     * DataXceiver names are execution-specific, so their selector omits the
+     * name and uses the receiver-class-wide ordinal while retaining a stable
+     * role as activation metadata.
      */
     private static int invocationOrdinalWithinContext(
             MethodEvent target, List<MethodEvent> methods) {
         int ordinal = 0;
+        String targetThreadContext = stableRootThreadContext(
+                target.threadName);
         for (MethodEvent event : methods) {
             if (!target.test.equals(event.test)
                     || !target.method.equals(event.method)
                     || !target.receiverType.equals(event.receiverType)
-                    || !target.threadName.equals(event.threadName)) {
+                    || !targetThreadContext.equals(stableRootThreadContext(
+                    event.threadName))) {
                 continue;
             }
             ordinal++;
@@ -605,9 +649,29 @@ final class RuntimeRegionPlanner {
         if (target == null || root == null || root.receiverType.isEmpty()) {
             return;
         }
+        String stableThreadContext = stableRootThreadContext(root.threadName);
         target.put("receiverRuntimeClass", root.receiverType);
-        if (!root.threadName.isEmpty()) {
-            target.put("threadName", root.threadName);
+        if (!stableThreadContext.isEmpty()) {
+            target.put("threadName", stableThreadContext);
+        } else if (hdfsDataXceiverDynamicThreadName(root.threadName)) {
+            // DataXceiver embeds an identity hash, ephemeral peer port and
+            // block id in its thread name. Requiring that observation to be
+            // byte-for-byte equal during replay makes an otherwise stable
+            // receiver-class/context ordinal impossible to match. The
+            // runtime already treats an omitted threadName as a wildcard;
+            // retain a normalized role for offline activation selection and
+            // keep the raw observation separately on instance rows.
+            Object observedThread = target.get("threadName");
+            if (observedThread != null) {
+                target.put("observedThreadName", observedThread);
+            }
+            if (target.containsKey("activationId")) {
+                target.remove("threadName");
+            }
+            target.put("rootContextThreadRole", threadRole(root.threadName));
+            target.put("rootContextThreadNameOmitted", true);
+            target.put("rootContextNormalizationAuthority",
+                    HDFS_DATAXCEIVER_CONTEXT_NORMALIZATION_AUTHORITY);
         }
         target.put("threadIdSelectionUsed", false);
         target.put("invocationOrdinalWithinContext",
@@ -626,14 +690,13 @@ final class RuntimeRegionPlanner {
      */
     private static Map<String, Object> runtimeRootArgumentSelector(
             MethodEvent target, List<MethodEvent> methods,
-            List<RuntimeEvent> runtimeEvents) {
+            RootArgumentRuntimeTypeIndex runtimeTypes) {
         List<String> parameterTypes = methodParameterTypes(target.method);
         if (parameterTypes.isEmpty()) {
             return Collections.emptyMap();
         }
 
-        Map<Integer, String> observed = rootArgumentRuntimeTypes(target,
-                runtimeEvents);
+        Map<Integer, String> observed = runtimeTypes.typesFor(target);
         List<Map<String, Object>> predicates = new ArrayList<>();
         for (int index = 0; index < parameterTypes.size(); index++) {
             if (primitiveType(parameterTypes.get(index))) {
@@ -663,7 +726,7 @@ final class RuntimeRegionPlanner {
                     || !target.method.equals(candidate.method)
                     || !sameStableRootContext(target, candidate)
                     || !matchesRootArgumentPredicates(candidate,
-                    runtimeEvents, predicates)) {
+                    runtimeTypes, predicates)) {
                 continue;
             }
             Integer candidateReceiverOrdinal = receiverOrdinals.get(
@@ -702,14 +765,14 @@ final class RuntimeRegionPlanner {
             return true;
         }
         return target.receiverType.equals(candidate.receiverType)
-                && target.threadName.equals(candidate.threadName);
+                && stableRootThreadContext(target.threadName).equals(
+                stableRootThreadContext(candidate.threadName));
     }
 
     private static boolean matchesRootArgumentPredicates(
-            MethodEvent candidate, List<RuntimeEvent> runtimeEvents,
+            MethodEvent candidate, RootArgumentRuntimeTypeIndex runtimeTypes,
             List<Map<String, Object>> predicates) {
-        Map<Integer, String> observed = rootArgumentRuntimeTypes(candidate,
-                runtimeEvents);
+        Map<Integer, String> observed = runtimeTypes.typesFor(candidate);
         for (Map<String, Object> predicate : predicates) {
             Object rawIndex = predicate.get("argumentIndex");
             int index = rawIndex instanceof Number
@@ -720,30 +783,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return true;
-    }
-
-    private static Map<Integer, String> rootArgumentRuntimeTypes(
-            MethodEvent method, List<RuntimeEvent> runtimeEvents) {
-        Map<Integer, String> result = new LinkedHashMap<>();
-        Set<Integer> ambiguous = new LinkedHashSet<>();
-        for (RuntimeEvent event : runtimeEvents) {
-            if (!"METHOD_ARGUMENT".equals(event.kind)
-                    || event.callId != method.callId
-                    || !method.method.equals(event.method)
-                    || event.argumentIndex < 0
-                    || event.runtimeType.isEmpty()) {
-                continue;
-            }
-            String previous = result.put(event.argumentIndex,
-                    event.runtimeType);
-            if (previous != null && !previous.equals(event.runtimeType)) {
-                ambiguous.add(event.argumentIndex);
-            }
-        }
-        for (Integer index : ambiguous) {
-            result.remove(index);
-        }
-        return result;
     }
 
     private static List<String> methodParameterTypes(String signature) {
@@ -888,6 +927,7 @@ final class RuntimeRegionPlanner {
             List<MethodEvent> methods) {
         List<Map<String, Object>> result = new ArrayList<>();
         for (StaticPort port : region.inputs) {
+            String fieldBindingGap = "";
             Map<String, Object> observation = object(
                     "portId", port.portId,
                     "cell", port.cell,
@@ -914,14 +954,47 @@ final class RuntimeRegionPlanner {
                 FieldAccessEvent field = matchingField(fields, port, root,
                         methods, events);
                 if (field != null) {
-                    observation.put("observed", true);
-                    observation.put("location",
-                            materializableFieldLocation(port));
-                    observation.put("field", field.field);
-                    observation.put("fieldReceiverObjectId", field.receiverObjectId);
-                    observation.put("valueObjectId", field.valueObjectId);
-                    observation.put("primitiveValue", field.primitiveValue);
-                    observation.put("accessKind", field.kind);
+                    boolean staticExactSite =
+                            authoritativeStaticFieldReadSite(port, field);
+                    boolean runtimeExactSite = !staticExactSite
+                            && uniqueExactContainedFieldRead(fields, port,
+                            root, field);
+                    boolean protocolFieldRequiresExactSite =
+                            "PROTOCOL_INPUT".equals(port.sourceKind);
+                    if (!protocolFieldRequiresExactSite || staticExactSite
+                            || runtimeExactSite) {
+                        observation.put("observed", true);
+                        observation.put("location",
+                                protocolFieldRequiresExactSite
+                                        ? "HEAP_OBJECT_FIELD"
+                                        : materializableFieldLocation(port));
+                        observation.put("field", field.field);
+                        observation.put("fieldReceiverObjectId",
+                                field.receiverObjectId);
+                        observation.put("valueObjectId", field.valueObjectId);
+                        observation.put("primitiveValue", field.primitiveValue);
+                        observation.put("accessKind", field.kind);
+                        if (protocolFieldRequiresExactSite) {
+                            observation.put("bindingMode", "FIELD_ACCESS");
+                        }
+                        if (runtimeExactSite) {
+                            observation.put("accessMethod", field.method);
+                            observation.put("accessUnitIndex", field.unitIndex);
+                            observation.put("accessSiteId", field.siteId);
+                            observation.put("accessSiteAuthority",
+                                    RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY);
+                            observation.put("observationAuthority",
+                                    RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY);
+                        }
+                    } else {
+                        // A concrete value was observed, but selecting an
+                        // arbitrary same-field access would let the runtime
+                        // hook symbolize a different protocol object. Keep
+                        // this as a live-in until an exact unique declared
+                        // read site is available.
+                        fieldBindingGap =
+                                "MISSING_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE";
+                    }
                 }
             }
             if (!Boolean.TRUE.equals(observation.get("observed"))) {
@@ -971,10 +1044,14 @@ final class RuntimeRegionPlanner {
                 // the first matching runtime value probe.
                 observation.put("location", "REGION_LIVE_IN");
                 observation.put("deferredResolution", true);
+                if (!fieldBindingGap.isEmpty()) {
+                    observation.put("fieldBindingGap", fieldBindingGap);
+                }
             }
             if (!Boolean.TRUE.equals(observation.get("observed"))
                     && "ENVIRONMENT".equals(port.sourceKind)
-                    && VM_CURRENT_TIME_MILLIS_RETURN.equals(port.cell)) {
+                    && SymbolicEnvironment.isCurrentTimeMillisReturn(
+                    port.cell)) {
                 // This is the sole environment value currently backed by a
                 // customized-VM symbolic placeholder.  It remains unforced
                 // during replay; the scheduler and importer validate that
@@ -1021,6 +1098,74 @@ final class RuntimeRegionPlanner {
             return "HEAP_OBJECT_FIELD";
         }
         return "FIELD";
+    }
+
+    private static boolean authoritativeStaticFieldReadSite(
+            StaticPort port, FieldAccessEvent field) {
+        if (port == null || field == null || !"FIELD_READ".equals(field.kind)) {
+            return false;
+        }
+        FieldCell expected = fieldCell(port.cell);
+        FieldCell actual = fieldCell(field.field);
+        String method = string(port.materializationMetadata.get(
+                "accessMethod"));
+        String site = string(port.materializationMetadata.get(
+                "accessSiteId"));
+        String authority = string(port.materializationMetadata.get(
+                "accessSiteAuthority"));
+        int unit = port.materializationMetadata.get("accessUnitIndex")
+                instanceof Number ? ((Number) port.materializationMetadata.get(
+                "accessUnitIndex")).intValue() : -1;
+        return "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1".equals(
+                authority)
+                && expected.declaredSignature
+                && actual.declaredSignature
+                && expected.signature().equals(actual.signature())
+                && unit >= 0
+                && method.equals(field.method)
+                && unit == field.unitIndex
+                && site.equals(method + "#u" + unit)
+                && site.equals(field.siteId);
+    }
+
+    /**
+     * Admits runtime-derived materialization metadata only when one contained
+     * non-root read has the complete declared owner/type/name and a canonical
+     * method/unit site. This is deliberately stricter than matchingField():
+     * its purpose is selecting a bytecode hook, not merely explaining where
+     * an input value was observed.
+     */
+    private static boolean uniqueExactContainedFieldRead(
+            List<FieldAccessEvent> fields, StaticPort port,
+            MethodEvent root, FieldAccessEvent selected) {
+        FieldCell expected = fieldCell(port == null ? "" : port.cell);
+        if (!expected.declaredSignature || selected == null
+                || !"FIELD_READ".equals(selected.kind)
+                || selected.callId == root.callId
+                || selected.receiverObjectId == 0
+                || selected.unitIndex < 0
+                || !selected.siteId.equals(selected.method + "#u"
+                + selected.unitIndex)) {
+            return false;
+        }
+        int exactReadCount = 0;
+        FieldAccessEvent only = null;
+        for (FieldAccessEvent field : values(fields)) {
+            FieldCell actual = fieldCell(field.field);
+            if (!"FIELD_READ".equals(field.kind)
+                    || field.callId == root.callId
+                    || field.receiverObjectId == 0
+                    || field.unitIndex < 0
+                    || !field.siteId.equals(field.method + "#u"
+                    + field.unitIndex)
+                    || !actual.declaredSignature
+                    || !expected.signature().equals(actual.signature())) {
+                continue;
+            }
+            exactReadCount++;
+            only = field;
+        }
+        return exactReadCount == 1 && only == selected;
     }
 
     private static RuntimeEvent methodArgument(List<RuntimeEvent> events,
@@ -1340,7 +1485,9 @@ final class RuntimeRegionPlanner {
                     "staticInputMethod", "runtimeInputMethod",
                     "rebaseAuthority", "crossMethodArgument",
                     "rebaseRejectedAuthority", "fieldBindingGap",
-                    "accessKind", "observationAuthority",
+                    "accessKind", "observationAuthority", "bindingMode",
+                    "accessMethod", "accessUnitIndex", "accessSiteId",
+                    "accessSiteAuthority",
                     "accessorInvocationId", "accessorRuntimeType");
             if ("HEAP_OBJECT_FIELD".equals(action.get("location"))) {
                 FieldCell observedField = fieldCell(
@@ -1969,17 +2116,25 @@ final class RuntimeRegionPlanner {
     private static void validateRegionEdges(
             List<StaticRegionEdge> staticEdges,
             Map<String, List<InstanceEvidence>> evidenceByRegion,
+            Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion,
             Result result, List<UpstreamEdgeBinding> edgeBindings) {
         for (StaticRegionEdge edge : staticEdges) {
+            Map<String, List<InstanceEvidence>> selectedEvidence =
+                    "SHARED_STATE".equals(edge.kind)
+                            ? sharedStateEvidenceByRegion : evidenceByRegion;
             List<InstanceEvidence> upstreamInstances = values(
-                    evidenceByRegion.get(edge.fromRegion));
+                    selectedEvidence.get(edge.fromRegion));
             List<InstanceEvidence> downstreamInstances = values(
-                    evidenceByRegion.get(edge.toRegion));
+                    selectedEvidence.get(edge.toRegion));
             int endpointPairs = 0;
             int orderedPairs = 0;
             int siteObservedPairs = 0;
             int readFromPairs = 0;
             int valueEqualityPairs = 0;
+            Set<String> readFromAuthorities = new LinkedHashSet<>();
+            Set<String> readFromAssociationAuthorities =
+                    new LinkedHashSet<>();
+            Set<String> readFromAssumptions = new LinkedHashSet<>();
             List<Map<String, Object>> evidence = new ArrayList<>();
             List<Map<String, Object>> validatedBindings = new ArrayList<>();
             String endpointCorrelationAuthority =
@@ -2031,6 +2186,14 @@ final class RuntimeRegionPlanner {
                     }
                     if (readFrom != null) {
                         readFromPairs++;
+                        addNonBlank(readFromAuthorities,
+                                readFrom.writeEvidence.authority);
+                        addNonBlank(readFromAssociationAuthorities,
+                                readFrom.writeEvidence.associationAuthority);
+                        addNonBlank(readFromAssumptions,
+                                readFrom.writeEvidence.semanticAssumption);
+                        addNonBlank(readFromAssumptions,
+                                readFrom.pathSignatureAssumption());
                         edgeBindings.add(new UpstreamEdgeBinding(edge,
                                 upstream, downstream, readFrom));
                     }
@@ -2071,15 +2234,61 @@ final class RuntimeRegionPlanner {
                         row.put("field", readFrom.write.field);
                         row.put("writeEvidenceKind",
                                 readFrom.writeEvidence.kind);
+                        row.put("writeEvidenceAuthority",
+                                readFrom.writeEvidence.authority);
+                        row.put("writerAssociationAuthority",
+                                readFrom.writeEvidence.associationAuthority);
+                        row.put("containerMutationSemanticAssumption",
+                                readFrom.writeEvidence.semanticAssumption);
+                        row.put("pathSignatureTruncationAssumption",
+                                readFrom.pathSignatureAssumption());
+                        row.put("writerPathSignatureComplete",
+                                readFrom.writerPathSignatureComplete);
+                        row.put("readerPathSignatureComplete",
+                                readFrom.readerPathSignatureComplete);
                         row.put("writerSiteId", readFrom.writerSiteId());
                         row.put("writerCallId", readFrom.writerCallId());
+                        row.put("mutatorEnterSeq",
+                                readFrom.writeEvidence.mutation == null ? 0L
+                                        : readFrom.writeEvidence.mutation.seq);
+                        row.put("mutationCompletionSeq",
+                                readFrom.writeEvidence.completion == null ? 0L
+                                        : readFrom.writeEvidence.completion.seq);
                         row.put("writerOccurrence",
                                 upstream.runtimeOccurrence(
                                         readFrom.writeEvidence.mutation));
+                        row.put("writerFieldReadSeq", readFrom.write.seq);
+                        row.put("mutationInvocationId",
+                                readFrom.writeEvidence.mutation == null ? 0L
+                                        : readFrom.writeEvidence.mutation
+                                        .invocationId);
+                        row.put("mutatorDeclaredCallee",
+                                readFrom.writeEvidence.mutation == null ? ""
+                                        : readFrom.writeEvidence.mutation
+                                        .declaredCallee);
+                        row.put("mutatorRuntimeType",
+                                readFrom.writeEvidence.mutation == null ? ""
+                                        : readFrom.writeEvidence.mutation
+                                        .runtimeType);
+                        row.put("mutationContractAuthority",
+                                readFrom.writeEvidence.mutation == null ? ""
+                                        : CONTAINER_MUTATOR_CONTRACT_AUTHORITY);
+                        row.put("orderAuthority", TRACE_ORDER_AUTHORITY);
                         row.put("receiverObjectId",
                                 readFrom.write.receiverObjectId);
                         row.put("valueObjectId",
                                 readFrom.write.valueObjectId);
+                        row.put("readerValueObjectId",
+                                readFrom.read.valueObjectId);
+                        row.put("fieldReceiverIdentityConfirmed", true);
+                        row.put("fieldReceiverIdentityAuthority",
+                                PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY);
+                        row.put("containerIdentityConfirmed",
+                                readFrom.containerIdentityConfirmed());
+                        row.put("containerIdentityAuthority",
+                                readFrom.containerIdentityConfirmed()
+                                        ? PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY
+                                        : "");
                     }
                     if (readFrom != null || valueMatch != null) {
                         validatedBindings.add(row);
@@ -2179,6 +2388,12 @@ final class RuntimeRegionPlanner {
                     "orderedPairCount", orderedPairs,
                     "siteObservedPairCount", siteObservedPairs,
                     "confirmedReadFromPairCount", readFromPairs,
+                    "readFromAuthorities",
+                    new ArrayList<>(readFromAuthorities),
+                    "readFromAssociationAuthorities",
+                    new ArrayList<>(readFromAssociationAuthorities),
+                    "readFromAssumptions",
+                    new ArrayList<>(readFromAssumptions),
                     "confirmedValueEqualityPairCount", valueEqualityPairs,
                     "valueEqualityObserved", equalityComposable,
                     "valueEqualityAuthority", equalityComposable
@@ -2254,6 +2469,8 @@ final class RuntimeRegionPlanner {
 
             Map<String, Object> activation = new LinkedHashMap<>(base);
             String derivedId = "ACT.UPSTREAM." + activationIndex++;
+            boolean writerPathReplayable =
+                    first.upstream.runtimePathEvidenceComplete;
             activation.put("activationId", derivedId);
             activation.put("derivedFromActivationId",
                     string(base.get("activationId")));
@@ -2264,12 +2481,22 @@ final class RuntimeRegionPlanner {
                     "authority", "RUNTIME_CONFIRMED_READ_FROM"));
             activation.put("upstreamSelectionAuthority",
                     "FIELD_RECEIVER_IDENTITY_AND_WRITE_BEFORE_READ");
+            activation.put("readFromWitnessAuthority",
+                    first.readFrom.writeEvidence.authority);
+            activation.put("writerAssociationAuthority",
+                    first.readFrom.writeEvidence.associationAuthority);
+            activation.put("containerMutationSemanticAssumption",
+                    first.readFrom.writeEvidence.semanticAssumption);
+            activation.put("pathSignatureTruncationAssumption",
+                    first.readFrom.pathSignatureAssumption());
             activation.put("anchorRequired", false);
             activation.put("upstreamEventRequired", true);
             activation.put("upstreamEventObserved", true);
-            activation.put("replayable", true);
+            activation.put("replayable", writerPathReplayable);
             activation.put("replayMode",
-                    "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
+                    writerPathReplayable
+                            ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
+                            : "RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED");
 
             List<Map<String, Object>> selectedOutputs = new ArrayList<>();
             selectedOutputs.add(outputAction(first.output));
@@ -2352,6 +2579,16 @@ final class RuntimeRegionPlanner {
                 }
                 activation.put("boundaryReady", sliceReady);
                 activation.put("symbolicReady", sliceReady);
+            }
+
+            if (!writerPathReplayable) {
+                // The concrete read-from relation is still exact, but a
+                // bounded branch signature cannot replay this long-running
+                // outer region. Preserve the witness without promoting the
+                // derived activation to symbolic execution readiness.
+                activation.put("boundaryReady", false);
+                activation.put("symbolicReady", false);
+                activation.put("readFromWitnessOnly", true);
             }
 
             List<Map<String, Object>> bindingRows = new ArrayList<>();
@@ -2952,7 +3189,8 @@ final class RuntimeRegionPlanner {
                     instanceof Collection<?> ? new ArrayList<>((Collection<
                     String>) declaration.get("fieldPath"))
                     : Collections.<String>emptyList();
-            if (path.size() != 1 || !field.name.equals(path.get(0))) {
+            if (path.isEmpty() || path.size() > 4
+                    || !field.name.equals(path.get(path.size() - 1))) {
                 return false;
             }
             baseAction.put("field", fieldSignature);
@@ -3197,7 +3435,7 @@ final class RuntimeRegionPlanner {
         String location = string(action.get("location"));
         if ("ENVIRONMENT_MODEL".equals(location)) {
             return "ENVIRONMENT".equals(string(action.get("sourceKind")))
-                    && VM_CURRENT_TIME_MILLIS_RETURN.equals(
+                    && SymbolicEnvironment.isCurrentTimeMillisReturn(
                     string(action.get("cell")))
                     && VM_INTRINSIC_DEFERRED_AUTHORITY.equals(
                     string(action.get("deferredResolutionAuthority")));
@@ -3369,7 +3607,16 @@ final class RuntimeRegionPlanner {
     private static List<EndpointFingerprint> endpointFingerprints(
             StaticRegionEdge edge, InstanceEvidence evidence,
             boolean source) {
-        String port = source ? edge.fromPort : edge.toPort;
+        // Runtime instance correlation intentionally keeps using the raw
+        // protocol endpoint (see endpointPairObserved).  A projected method
+        // local, however, does not carry a declared field owner and therefore
+        // cannot safely match a FIELD_READ/FIELD_WRITE fingerprint by itself.
+        // When the static edge supplies a complete exact alias proof, use the
+        // canonical producer output cell solely for source value capture.
+        // The consumer remains tied to its raw runtime endpoint.
+        String port = source
+                ? edge.sourceFingerprintEndpoint(evidence.region)
+                : edge.toPort;
         String method = methodInCell(port);
         int parameter = parameterIndex(port);
         boolean methodReturn = port.contains(">.return");
@@ -3516,52 +3763,113 @@ final class RuntimeRegionPlanner {
         if (!upstream.root.process.equals(downstream.root.process)) {
             return null;
         }
+        if (!upstream.containedCallTreeComplete
+                || !downstream.containedCallTreeComplete) {
+            return null;
+        }
         FieldCell fromField = fieldCell(edge.fromPort);
         FieldCell toField = fieldCell(edge.toPort);
         if (!fromField.materializable() || !toField.materializable()
                 || !sameField(fromField, toField)) {
             return null;
         }
+        SharedReadFrom selected = null;
         for (FieldAccessEvent write : upstream.fieldEvents) {
-            WriteEvidence writeEvidence = writeEvidence(write,
-                    upstream.runtimeEvents);
-            if (writeEvidence == null
-                    || !sameField(fromField, fieldCell(write.field))
+            if (!sameField(fromField, fieldCell(write.field))
                     || write.receiverObjectId == 0) {
                 continue;
             }
-            long writerSeq = writeEvidence.mutation == null
-                    ? write.seq : writeEvidence.mutation.seq;
             for (FieldAccessEvent read : downstream.fieldEvents) {
                 if (!"FIELD_READ".equals(read.kind)
                         || !sameField(toField, fieldCell(read.field))
                         || read.receiverObjectId == 0
-                        || write.receiverObjectId != read.receiverObjectId
-                        || writerSeq > read.seq) {
+                        || write.receiverObjectId != read.receiverObjectId) {
                     continue;
                 }
-                return new SharedReadFrom(write, read, writeEvidence);
+                WriteEvidence writeEvidence = writeEvidence(write, upstream,
+                        read.seq);
+                if (writeEvidence == null) {
+                    continue;
+                }
+                if (writeEvidence.mutation != null
+                        && (write.valueObjectId == 0
+                        || read.valueObjectId == 0
+                        || write.valueObjectId != read.valueObjectId)) {
+                    continue;
+                }
+                SharedReadFrom candidate = new SharedReadFrom(write, read,
+                        writeEvidence,
+                        upstream.pathSignatureComplete,
+                        downstream.pathSignatureComplete);
+                if (selected == null
+                        || candidate.writerEventSeq()
+                        > selected.writerEventSeq()) {
+                    selected = candidate;
+                }
             }
         }
-        return null;
+        return selected;
     }
 
     private static WriteEvidence writeEvidence(FieldAccessEvent field,
-                                               List<RuntimeEvent> events) {
+                                               InstanceEvidence instance,
+                                               long readSeq) {
         if ("FIELD_WRITE".equals(field.kind)) {
-            return new WriteEvidence("FIELD_ASSIGNMENT", null);
+            if (field.seq > readSeq) {
+                return null;
+            }
+            return new WriteEvidence("FIELD_ASSIGNMENT", null,
+                    null, "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1", "", "");
         }
         if (!"FIELD_READ".equals(field.kind) || field.valueObjectId == 0) {
             return null;
         }
-        for (RuntimeEvent event : events) {
-            if (event.seq < field.seq || event.callId != field.callId
+        WriteEvidence selected = null;
+        for (RuntimeEvent event : instance.runtimeEvents) {
+            if (event.seq <= field.seq
                     || !"CALL_SITE_ENTER".equals(event.kind)
                     || event.objectId != field.valueObjectId
                     || !isContainerMutator(event.declaredCallee)) {
                 continue;
             }
-            return new WriteEvidence("FIELD_CONTAINER_MUTATION", event);
+            RuntimeEvent completion = completedCall(event,
+                    instance.runtimeEvents);
+            if (completion == null || completion.seq > readSeq) {
+                continue;
+            }
+            String association = event.callId == field.callId
+                    ? "RUNTIME_SAME_CALL_FIELD_VALUE_TO_MUTATOR_RECEIVER_V1"
+                    : instance.calls.contains(event.callId)
+                    ? CONTAINED_CALL_READ_FROM_AUTHORITY : "";
+            if (association.isEmpty()) {
+                continue;
+            }
+            WriteEvidence candidate = new WriteEvidence(
+                    "FIELD_CONTAINER_MUTATION", event, completion,
+                    CONTAINER_MUTATION_READ_FROM_AUTHORITY, association,
+                    CONTAINER_MUTATION_SEMANTIC_ASSUMPTION);
+            if (selected == null
+                    || candidate.writerEventSeq()
+                    > selected.writerEventSeq()) {
+                selected = candidate;
+            }
+        }
+        return selected;
+    }
+
+    private static RuntimeEvent completedCall(RuntimeEvent enter,
+                                              List<RuntimeEvent> events) {
+        if (enter == null || enter.invocationId <= 0L) {
+            return null;
+        }
+        for (RuntimeEvent event : events) {
+            if (event.seq > enter.seq
+                    && "CALL_SITE_RETURN".equals(event.kind)
+                    && event.invocationId == enter.invocationId
+                    && event.callId == enter.callId
+                    && event.siteId.equals(enter.siteId)) {
+                return event;
+            }
         }
         return null;
     }
@@ -3590,6 +3898,13 @@ final class RuntimeRegionPlanner {
             }
         }
         return count;
+    }
+
+    private static void addNonBlank(Set<String> values, String value) {
+        String normalized = safe(value);
+        if (!normalized.isEmpty()) {
+            values.add(normalized);
+        }
     }
 
     private static void increment(Map<String, Integer> counts, String key) {
@@ -3686,6 +4001,107 @@ final class RuntimeRegionPlanner {
 
         String summaryJson() {
             return json(summary);
+        }
+    }
+
+    /**
+     * One-pass lookup table for exact root METHOD_ARGUMENT runtime types.
+     * The trace may contain hundreds of thousands of unrelated execution
+     * events, so selectors must not rediscover the same (method, callId)
+     * facts by scanning that trace once per candidate root.
+     */
+    static final class RootArgumentRuntimeTypeIndex {
+        private final Map<String, Map<Long, RootArgumentTypes>> byMethod =
+                new LinkedHashMap<>();
+        private int scannedEventCount;
+        private int indexedArgumentEventCount;
+        private int indexedCallCount;
+
+        static RootArgumentRuntimeTypeIndex build(
+                List<RuntimeEvent> runtimeEvents) {
+            RootArgumentRuntimeTypeIndex result =
+                    new RootArgumentRuntimeTypeIndex();
+            for (RuntimeEvent event : values(runtimeEvents)) {
+                result.scannedEventCount++;
+                if (!"METHOD_ARGUMENT".equals(event.kind)
+                        || event.argumentIndex < 0
+                        || event.runtimeType.isEmpty()) {
+                    continue;
+                }
+                result.indexedArgumentEventCount++;
+                Map<Long, RootArgumentTypes> byCall = result.byMethod.get(
+                        event.method);
+                if (byCall == null) {
+                    byCall = new LinkedHashMap<>();
+                    result.byMethod.put(event.method, byCall);
+                }
+                RootArgumentTypes types = byCall.get(event.callId);
+                if (types == null) {
+                    types = new RootArgumentTypes();
+                    byCall.put(event.callId, types);
+                    result.indexedCallCount++;
+                }
+                types.observe(event.argumentIndex, event.runtimeType);
+            }
+            for (Map<Long, RootArgumentTypes> byCall
+                    : result.byMethod.values()) {
+                for (RootArgumentTypes types : byCall.values()) {
+                    types.freeze();
+                }
+            }
+            return result;
+        }
+
+        Map<Integer, String> typesFor(MethodEvent method) {
+            if (method == null) {
+                return Collections.emptyMap();
+            }
+            Map<Long, RootArgumentTypes> byCall = byMethod.get(method.method);
+            if (byCall == null) {
+                return Collections.emptyMap();
+            }
+            RootArgumentTypes types = byCall.get(method.callId);
+            return types == null ? Collections.emptyMap() : types.values();
+        }
+
+        int scannedEventCount() {
+            return scannedEventCount;
+        }
+
+        int indexedArgumentEventCount() {
+            return indexedArgumentEventCount;
+        }
+
+        int indexedCallCount() {
+            return indexedCallCount;
+        }
+    }
+
+    private static final class RootArgumentTypes {
+        private final Map<Integer, String> observed = new LinkedHashMap<>();
+        private final Set<Integer> ambiguous = new LinkedHashSet<>();
+        private Map<Integer, String> frozen = Collections.emptyMap();
+
+        private void observe(int index, String runtimeType) {
+            if (ambiguous.contains(index)) {
+                return;
+            }
+            String previous = observed.get(index);
+            if (previous == null) {
+                observed.put(index, runtimeType);
+            } else if (!previous.equals(runtimeType)) {
+                observed.remove(index);
+                ambiguous.add(index);
+            }
+        }
+
+        private void freeze() {
+            frozen = Collections.unmodifiableMap(
+                    new LinkedHashMap<>(observed));
+        }
+
+        private Map<Integer, String> values() {
+            return frozen;
         }
     }
 
@@ -4080,10 +4496,11 @@ final class RuntimeRegionPlanner {
         }
 
         /**
-         * Runtime endpoint correlation keeps using {@link #fromPort}.  Only
-         * producer-output selection consumes a complete exact alias proof;
-         * an edge with no canonical schema keeps its exact raw endpoint, while
-         * any partially populated canonical schema fails closed.
+         * Runtime instance correlation keeps using {@link #fromPort}.
+         * Producer-output selection and source value capture may consume a
+         * complete exact alias proof; an edge with no canonical schema keeps
+         * its exact raw endpoint, while any partially populated canonical
+         * schema fails closed.
          */
         private String producerOutputEndpoint() {
             if (!canonicalMetadataPresent) {
@@ -4094,6 +4511,11 @@ final class RuntimeRegionPlanner {
 
         private boolean usesCanonicalOutput() {
             return canonicalAliasValid();
+        }
+
+        private String sourceFingerprintEndpoint(StaticRegion region) {
+            return usesCanonicalOutput() && producerOutputFor(region) != null
+                    ? fromOutputCell : fromPort;
         }
 
         private boolean canonicalAliasValid() {
@@ -4133,6 +4555,8 @@ final class RuntimeRegionPlanner {
         private final Set<String> observedMethods;
         private final String validationStatus;
         private final boolean runtimePathEvidenceComplete;
+        private final boolean containedCallTreeComplete;
+        private final boolean pathSignatureComplete;
 
         private InstanceEvidence(String instanceId, StaticRegion region,
                                  MethodEvent root, Set<Long> calls,
@@ -4141,7 +4565,9 @@ final class RuntimeRegionPlanner {
                                  List<FieldAccessEvent> fieldEvents,
                                  Set<String> observedMethods,
                                  String validationStatus,
-                                 boolean runtimePathEvidenceComplete) {
+                                 boolean runtimePathEvidenceComplete,
+                                 boolean containedCallTreeComplete,
+                                 boolean pathSignatureComplete) {
             this.instanceId = instanceId;
             this.region = region;
             this.root = root;
@@ -4152,6 +4578,8 @@ final class RuntimeRegionPlanner {
             this.observedMethods = new LinkedHashSet<>(observedMethods);
             this.validationStatus = validationStatus;
             this.runtimePathEvidenceComplete = runtimePathEvidenceComplete;
+            this.containedCallTreeComplete = containedCallTreeComplete;
+            this.pathSignatureComplete = pathSignatureComplete;
         }
 
         private long firstMethodSeq(String method) {
@@ -4294,17 +4722,23 @@ final class RuntimeRegionPlanner {
         private final FieldAccessEvent write;
         private final FieldAccessEvent read;
         private final WriteEvidence writeEvidence;
+        private final boolean writerPathSignatureComplete;
+        private final boolean readerPathSignatureComplete;
 
         private SharedReadFrom(FieldAccessEvent write, FieldAccessEvent read,
-                               WriteEvidence writeEvidence) {
+                               WriteEvidence writeEvidence,
+                               boolean writerPathSignatureComplete,
+                               boolean readerPathSignatureComplete) {
             this.write = write;
             this.read = read;
             this.writeEvidence = writeEvidence;
+            this.writerPathSignatureComplete = writerPathSignatureComplete;
+            this.readerPathSignatureComplete = readerPathSignatureComplete;
         }
 
         private long writerEventSeq() {
             return writeEvidence.mutation == null
-                    ? write.seq : writeEvidence.mutation.seq;
+                    ? write.seq : writeEvidence.writerEventSeq();
         }
 
         private long writerCallId() {
@@ -4315,6 +4749,17 @@ final class RuntimeRegionPlanner {
         private String writerSiteId() {
             return writeEvidence.mutation == null
                     ? "" : writeEvidence.mutation.siteId;
+        }
+
+        private String pathSignatureAssumption() {
+            return writerPathSignatureComplete && readerPathSignatureComplete
+                    ? "" : TRUNCATED_PATH_READ_FROM_ASSUMPTION;
+        }
+
+        private boolean containerIdentityConfirmed() {
+            return writeEvidence.mutation != null
+                    && write.valueObjectId != 0
+                    && write.valueObjectId == read.valueObjectId;
         }
     }
 
@@ -4348,10 +4793,27 @@ final class RuntimeRegionPlanner {
     private static final class WriteEvidence {
         private final String kind;
         private final RuntimeEvent mutation;
+        private final RuntimeEvent completion;
+        private final String authority;
+        private final String associationAuthority;
+        private final String semanticAssumption;
 
-        private WriteEvidence(String kind, RuntimeEvent mutation) {
+        private WriteEvidence(String kind, RuntimeEvent mutation,
+                              RuntimeEvent completion,
+                              String authority,
+                              String associationAuthority,
+                              String semanticAssumption) {
             this.kind = kind;
             this.mutation = mutation;
+            this.completion = completion;
+            this.authority = safe(authority);
+            this.associationAuthority = safe(associationAuthority);
+            this.semanticAssumption = safe(semanticAssumption);
+        }
+
+        private long writerEventSeq() {
+            return completion == null
+                    ? mutation == null ? 0L : mutation.seq : completion.seq;
         }
     }
 
@@ -4399,12 +4861,53 @@ final class RuntimeRegionPlanner {
                     "readerEventSeq", readFrom.read.seq,
                     "writerCallId", readFrom.writerCallId(),
                     "writerSiteId", readFrom.writerSiteId(),
+                    "mutatorEnterSeq",
+                    readFrom.writeEvidence.mutation == null ? 0L
+                            : readFrom.writeEvidence.mutation.seq,
+                    "mutationCompletionSeq",
+                    readFrom.writeEvidence.completion == null ? 0L
+                            : readFrom.writeEvidence.completion.seq,
+                    "writerFieldReadSeq", readFrom.write.seq,
+                    "mutationInvocationId",
+                    readFrom.writeEvidence.mutation == null ? 0L
+                            : readFrom.writeEvidence.mutation.invocationId,
+                    "mutatorDeclaredCallee",
+                    readFrom.writeEvidence.mutation == null ? ""
+                            : readFrom.writeEvidence.mutation.declaredCallee,
+                    "mutatorRuntimeType",
+                    readFrom.writeEvidence.mutation == null ? ""
+                            : readFrom.writeEvidence.mutation.runtimeType,
+                    "mutationContractAuthority",
+                    readFrom.writeEvidence.mutation == null ? ""
+                            : CONTAINER_MUTATOR_CONTRACT_AUTHORITY,
                     "writerOccurrence", upstream.runtimeOccurrence(
                             readFrom.writeEvidence.mutation),
                     "writeEvidenceKind", readFrom.writeEvidence.kind,
+                    "writeEvidenceAuthority",
+                    readFrom.writeEvidence.authority,
+                    "writerAssociationAuthority",
+                    readFrom.writeEvidence.associationAuthority,
+                    "containerMutationSemanticAssumption",
+                    readFrom.writeEvidence.semanticAssumption,
+                    "pathSignatureTruncationAssumption",
+                    readFrom.pathSignatureAssumption(),
+                    "writerPathSignatureComplete",
+                    readFrom.writerPathSignatureComplete,
+                    "readerPathSignatureComplete",
+                    readFrom.readerPathSignatureComplete,
                     "field", readFrom.write.field,
                     "receiverObjectId", readFrom.write.receiverObjectId,
                     "valueObjectId", readFrom.write.valueObjectId,
+                    "readerValueObjectId", readFrom.read.valueObjectId,
+                    "fieldReceiverIdentityConfirmed", true,
+                    "fieldReceiverIdentityAuthority",
+                    PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY,
+                    "containerIdentityConfirmed",
+                    readFrom.containerIdentityConfirmed(),
+                    "containerIdentityAuthority",
+                    readFrom.containerIdentityConfirmed()
+                            ? PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY : "",
+                    "orderAuthority", TRACE_ORDER_AUTHORITY,
                     "orderConfirmed", true,
                     "objectIdentityConfirmed",
                     readFrom.write.receiverObjectId
@@ -4427,11 +4930,48 @@ final class RuntimeRegionPlanner {
                     "writerCallId", readFrom.writerCallId(),
                     "writerEventSeq", readFrom.writerEventSeq(),
                     "writerSiteId", readFrom.writerSiteId(),
+                    "mutatorEnterSeq",
+                    readFrom.writeEvidence.mutation == null ? 0L
+                            : readFrom.writeEvidence.mutation.seq,
+                    "mutationCompletionSeq",
+                    readFrom.writeEvidence.completion == null ? 0L
+                            : readFrom.writeEvidence.completion.seq,
+                    "writerFieldReadSeq", readFrom.write.seq,
+                    "mutationInvocationId",
+                    readFrom.writeEvidence.mutation == null ? 0L
+                            : readFrom.writeEvidence.mutation.invocationId,
+                    "mutatorDeclaredCallee",
+                    readFrom.writeEvidence.mutation == null ? ""
+                            : readFrom.writeEvidence.mutation.declaredCallee,
+                    "mutatorRuntimeType",
+                    readFrom.writeEvidence.mutation == null ? ""
+                            : readFrom.writeEvidence.mutation.runtimeType,
+                    "mutationContractAuthority",
+                    readFrom.writeEvidence.mutation == null ? ""
+                            : CONTAINER_MUTATOR_CONTRACT_AUTHORITY,
                     "writerOccurrence", upstream.runtimeOccurrence(
                             readFrom.writeEvidence.mutation),
                     "writeEvidenceKind", readFrom.writeEvidence.kind,
+                    "writeEvidenceAuthority",
+                    readFrom.writeEvidence.authority,
+                    "writerAssociationAuthority",
+                    readFrom.writeEvidence.associationAuthority,
+                    "containerMutationSemanticAssumption",
+                    readFrom.writeEvidence.semanticAssumption,
+                    "pathSignatureTruncationAssumption",
+                    readFrom.pathSignatureAssumption(),
                     "receiverObjectId", readFrom.write.receiverObjectId,
                     "valueObjectId", readFrom.write.valueObjectId,
+                    "readerValueObjectId", readFrom.read.valueObjectId,
+                    "fieldReceiverIdentityConfirmed", true,
+                    "fieldReceiverIdentityAuthority",
+                    PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY,
+                    "containerIdentityConfirmed",
+                    readFrom.containerIdentityConfirmed(),
+                    "containerIdentityAuthority",
+                    readFrom.containerIdentityConfirmed()
+                            ? PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY : "",
+                    "orderAuthority", TRACE_ORDER_AUTHORITY,
                     "field", readFrom.write.field,
                     "authority", "RUNTIME_EVENT_TRACE");
         }
@@ -5084,6 +5624,8 @@ final class RuntimeRegionPlanner {
                     "declaredFieldType"),
                     "declaredFieldName", jsonString(json,
                     "declaredFieldName"),
+                    "materializationMode", jsonString(json,
+                    "materializationMode"),
                     "method", jsonString(json, "method"),
                     "fieldMaterializationSiteId", jsonString(json,
                     "fieldMaterializationSiteId"),
@@ -5099,7 +5641,7 @@ final class RuntimeRegionPlanner {
         private Map<String, Object> copyContainerElementFieldBinding(
                 Map<String, Object> declaration) {
             Map<String, Object> copy = new LinkedHashMap<>(declaration);
-            copy.put("fieldPath", new ArrayList<>(stringSet(
+            copy.put("fieldPath", new ArrayList<>(stringList(
                     declaration.get("fieldPath"))));
             Object proof = declaration.get("proofCausalEdgeIds");
             copy.put("proofCausalEdgeIds", proof instanceof Collection<?>
@@ -5129,10 +5671,30 @@ final class RuntimeRegionPlanner {
                     ? index >= 0 && occurrence > 0
                     : "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(selector)
                     && index == -1 && occurrence == -1;
-            Set<String> path = stringSet(declaration.get("fieldPath"));
+            List<String> path = stringList(declaration.get("fieldPath"));
             Set<String> proof = stringSet(declaration.get(
                     "proofCausalEdgeIds"));
-            return intValue(declaration.get("schemaVersion"), -1) == 1
+            int schemaVersion = intValue(declaration.get(
+                    "schemaVersion"), -1);
+            String materializationMode = string(declaration.get(
+                    "materializationMode"));
+            boolean direct = schemaVersion == 1
+                    && (materializationMode.isEmpty()
+                    || "FIELD_ACCESS_HOOK".equals(materializationMode))
+                    && path.equals(Collections.singletonList(field.name))
+                    && proof.size() == 4
+                    && "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
+                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(string(
+                    declaration.get("proofAuthority")));
+            boolean snapshot = schemaVersion == 2
+                    && "CONTAINER_SNAPSHOT".equals(materializationMode)
+                    && !path.isEmpty() && path.size() <= 4
+                    && field.name.equals(path.get(path.size() - 1))
+                    && proof.size() == 5
+                    && "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_AND_"
+                    .concat("DECLARED_FIELD_FIVE_EDGE_JOIN_V1").equals(
+                    string(declaration.get("proofAuthority")));
+            return (direct || snapshot)
                     && "ARRAY_ELEMENT_FIELD".equals(string(declaration.get(
                     "kind")))
                     && Boolean.TRUE.equals(declaration.get("complete"))
@@ -5151,7 +5713,6 @@ final class RuntimeRegionPlanner {
                     "declaredFieldType")))
                     && field.name.equals(string(declaration.get(
                     "declaredFieldName")))
-                    && path.equals(Collections.singleton(field.name))
                     && method.equals(string(declaration.get("method")))
                     && exactUnitSite(method, string(declaration.get(
                     "fieldMaterializationSiteId")))
@@ -5161,11 +5722,8 @@ final class RuntimeRegionPlanner {
                     "arrayLoadSiteId")))
                     && sites.contains(string(declaration.get(
                     "arrayLoadSiteId")))
-                    && proof.size() == 4 && !proof.contains("")
-                    && new LinkedHashSet<>(causalEdgeIds).containsAll(proof)
-                    && "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(string(
-                    declaration.get("proofAuthority")));
+                    && !proof.contains("")
+                    && new LinkedHashSet<>(causalEdgeIds).containsAll(proof);
         }
 
         private int intValue(Object value, int fallback) {
@@ -6371,6 +6929,18 @@ final class RuntimeRegionPlanner {
     private static String threadRole(String threadName) {
         String value = safe(threadName);
         String lower = value.toLowerCase(Locale.ROOT);
+        if (hdfsDataXceiverDynamicThreadName(value)) {
+            if (lower.contains("[replacing block ")) {
+                return "DataXceiver:ReplacingBlock";
+            }
+            if (lower.contains("[copying block ")) {
+                return "DataXceiver:CopyingBlock";
+            }
+            if (lower.contains("[receiving block ")) {
+                return "DataXceiver:ReceivingBlock";
+            }
+            return "DataXceiver";
+        }
         if (lower.contains("dataxceiver")) {
             return "DataXceiver";
         }
@@ -6384,6 +6954,26 @@ final class RuntimeRegionPlanner {
             return "Dispatcher";
         }
         return value.isEmpty() ? "unknown" : value;
+    }
+
+    /**
+     * Returns the replay-stable portion of a root thread context. Ordinary
+     * worker names remain exact. HDFS DataXceiver names are deliberately
+     * omitted because both formats used by HDFS are execution-specific:
+     * {@code DataXceiver@<identityHash>} before the operation is decoded and
+     * {@code DataXceiver for client <peer> [<operation/block>]} afterwards.
+     */
+    private static String stableRootThreadContext(String threadName) {
+        return hdfsDataXceiverDynamicThreadName(threadName)
+                ? "" : safe(threadName);
+    }
+
+    private static boolean hdfsDataXceiverDynamicThreadName(
+            String threadName) {
+        String lower = safe(threadName).toLowerCase(Locale.ROOT);
+        return lower.startsWith(
+                "org.apache.hadoop.hdfs.server.datanode.dataxceiver@")
+                || lower.startsWith("dataxceiver for client ");
     }
 
     private static List<MethodEvent> sortedMethods(List<MethodEvent> values) {

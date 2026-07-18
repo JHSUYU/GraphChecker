@@ -88,6 +88,8 @@ public final class ConcolicRegionRuntime {
     private static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
             "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
                     + "CONTEXT_ORDINAL_V1";
+    private static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
+            "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1";
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
@@ -6964,6 +6966,8 @@ public final class ConcolicRegionRuntime {
                 new IdentityHashMap<>();
         private final Map<String, ContainerInputObservation> containerInputs =
                 new LinkedHashMap<>();
+        private final Set<String> materializedContainerSnapshots =
+                new LinkedHashSet<>();
         private final Map<String, Object> logicalArrayRootsByPort =
                 new LinkedHashMap<>();
         private final Map<String, String> logicalArrayRootAuthoritiesByPort =
@@ -7487,6 +7491,131 @@ public final class ConcolicRegionRuntime {
                         + ": more than one concrete container instance was "
                         + "observed for one input port");
             }
+            materializeContainerSnapshotFields(action);
+        }
+
+        /**
+         * Materializes scalar leaves that flow through an array element into
+         * a Map value without an incidental getter in the producer.  The
+         * static declaration supplies the exact array port, Map.put value
+         * proof, declared leaf, and path; this runtime step supplies the
+         * activation-local array index and owner identity.  Object references
+         * remain selectors only and are never exposed as scalar symbols.
+         */
+        private void materializeContainerSnapshotFields(
+                SymbolizeAction containerAction) {
+            ContainerInputObservation container = containerInputs.get(
+                    containerAction.symbol);
+            if (container == null || container.ambiguous
+                    || container.container == null
+                    || !container.container.getClass().isArray()) {
+                return;
+            }
+            for (ContainerElementFieldBindingSpec spec
+                    : activation.containerBindingsForInput(
+                    containerAction.symbol)) {
+                if (!spec.materializeFromContainerSnapshot()) {
+                    continue;
+                }
+                String attempt = spec.bindingId + "\n"
+                        + container.objectToken;
+                if (!materializedContainerSnapshots.add(attempt)) {
+                    continue;
+                }
+                SymbolizeAction fieldAction = activation.uniqueAction(
+                        spec.baseInputSymbol);
+                if (fieldAction == null) {
+                    addUnresolvedOnce(spec.bindingId
+                            + ": container snapshot leaf action is not "
+                            + "unique");
+                    continue;
+                }
+                int length = Array.getLength(container.container);
+                int first = spec.exactIndex()
+                        ? spec.elementIndex : 0;
+                int end = spec.exactIndex()
+                        ? spec.elementIndex + 1 : length;
+                if (first < 0 || end > length || first >= end) {
+                    addUnresolvedOnce(spec.bindingId
+                            + ": container snapshot selector is outside the "
+                            + "observed array");
+                    continue;
+                }
+                IdentityHashMap<Object, Boolean> identities =
+                        new IdentityHashMap<>();
+                boolean failed = false;
+                for (int index = first; index < end; index++) {
+                    Object element = Array.get(container.container, index);
+                    if (element == null
+                            || identities.put(element, Boolean.TRUE) != null) {
+                        addUnresolvedOnce(spec.bindingId
+                                + ": container snapshot has null or repeated "
+                                + "element identity at index " + index);
+                        failed = true;
+                        break;
+                    }
+                    Object leafOwner = resolveFieldPathLeafOwner(element,
+                            spec.fieldPath);
+                    String structural = spec.structuralValidationError(
+                            activation, fieldAction, leafOwner,
+                            spec.declaredFieldSignature);
+                    ExactFieldObservation exact = observeExactField(
+                            leafOwner, spec.declaredFieldSignature);
+                    if (!structural.isEmpty() || !exact.ownerVerified
+                            || !exact.typeVerified || !exact.available
+                            || !uniqueNameResolvesExactDeclaredField(
+                            leafOwner, spec.declaredFieldSignature)) {
+                        addUnresolvedOnce(spec.bindingId
+                                + ": exact container snapshot leaf failed "
+                                + "validation at index " + index + ": "
+                                + firstNonBlank(structural, exact.error,
+                                "declared field name is ambiguous"));
+                        failed = true;
+                        break;
+                    }
+                    int occurrence = spec.exactIndex()
+                            ? spec.elementOccurrence : index + 1;
+                    String selectorProblem = spec.effectiveSelectorError(
+                            spec.fieldMaterializationSiteId, occurrence);
+                    if (!selectorProblem.isEmpty()) {
+                        addUnresolvedOnce(spec.bindingId + ": "
+                                + selectorProblem);
+                        failed = true;
+                        break;
+                    }
+                    Map<String, DynamicFieldBinding> byField =
+                            dynamicFieldsByOwner.computeIfAbsent(leafOwner,
+                            ignored -> new LinkedHashMap<>());
+                    String fieldKey = fieldAction.symbol + "\n"
+                            + spec.declaredFieldSignature + "\n"
+                            + joinFieldPath(fieldAction.fieldPath);
+                    if (byField.containsKey(fieldKey)) {
+                        addUnresolvedOnce(spec.bindingId
+                                + ": duplicate container snapshot leaf "
+                                + "binding at index " + index);
+                        failed = true;
+                        break;
+                    }
+                    DynamicFieldBinding binding = new DynamicFieldBinding(
+                            this, fieldAction, element, leafOwner,
+                            spec.declaredFieldSignature,
+                            spec.fieldMaterializationSiteId, occurrence,
+                            spec, container, index,
+                            "CONTAINER_SNAPSHOT:" + spec.bindingId,
+                            occurrence);
+                    byField.put(fieldKey, binding);
+                    dynamicFieldBindings.put(binding.dynamicBindingId,
+                            binding);
+                    materializeDynamicContainerElementField(this,
+                            fieldAction, element, leafOwner,
+                            new DynamicFieldSelection(binding, true));
+                }
+                if (failed) {
+                    addUnresolvedOnce(spec.bindingId
+                            + ": container snapshot materialization "
+                            + "incomplete");
+                }
+            }
         }
 
         private void observeContainerActionValue(SymbolizeAction action,
@@ -7547,6 +7676,12 @@ public final class ConcolicRegionRuntime {
                     new ArrayList<>();
             List<String> fatalProblems = new ArrayList<>();
             for (ContainerElementFieldBindingSpec spec : declared) {
+                if (spec.materializeFromContainerSnapshot()) {
+                    // This declaration is consumed eagerly when its exact
+                    // container input is observed.  A later owner-wide field
+                    // hook is an alias/readback, not a second selector.
+                    continue;
+                }
                 String structural = spec.structuralValidationError(
                         activation, action, leafOwner, fieldSignature);
                 if (!structural.isEmpty()) {
@@ -7566,12 +7701,12 @@ public final class ConcolicRegionRuntime {
                     continue;
                 }
                 int resolvedIndex = spec.resolveElementIndex(
-                        container.container, leafOwner);
+                        container.container, accessOwner);
                 if (resolvedIndex < 0) {
                     String resolution = spec.elementResolutionError(
-                            container.container, leafOwner);
+                            container.container, accessOwner);
                     if (!spec.unrelatedOwner(container.container,
-                            leafOwner)) {
+                            accessOwner)) {
                         fatalProblems.add(spec.bindingId + "="
                                 + resolution);
                     }
@@ -8029,12 +8164,12 @@ public final class ConcolicRegionRuntime {
             this.leafOwnerObjectToken = active.objectToken(leafOwner);
             this.objectTokenScope = active.activation.activationId;
             this.materializationSiteBridgeElementObjectToken =
-                    this.leafOwnerObjectToken;
+                    active.objectToken(accessOwner);
             this.materializationSiteBridgeObjectTokenScope =
                     this.objectTokenScope;
             this.entryReadObservationId = "";
             this.containerSelector = new ContainerElementSelector(active,
-                    spec, container, leafOwner, resolvedElementIndex,
+                    spec, container, accessOwner, resolvedElementIndex,
                     occurrence);
             this.keyExpression = null;
             this.keyExpressionAuthority = "";
@@ -8049,7 +8184,7 @@ public final class ConcolicRegionRuntime {
                     && this.actualHookOccurrence > 0
                     && !this.materializationSiteBridgeBindingId.isEmpty()
                     && this.materializationSiteBridgeElementObjectToken
-                    == leafOwnerObjectToken
+                    == this.containerSelector.elementObjectToken
                     && this.materializationSiteBridgeObjectTokenScope.equals(
                     objectTokenScope)
                     && containerSelector.complete;
@@ -8730,9 +8865,14 @@ public final class ConcolicRegionRuntime {
             boolean accessSiteConstrained = !accessMethod.isEmpty()
                     || !accessSiteId.isEmpty() || accessUnitIndex >= 0
                     || !accessSiteAuthority.isEmpty();
+            boolean staticExactSite =
+                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1".equals(
+                            accessSiteAuthority);
+            boolean runtimeExactSite =
+                    RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY.equals(
+                            accessSiteAuthority);
             if (accessSiteConstrained
-                    && (!("STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1"
-                    .equals(accessSiteAuthority))
+                    && (!(staticExactSite || runtimeExactSite)
                     || !accessMethod.equals(safe(actualMethod))
                     || accessUnitIndex != actualUnitIndex
                     || !accessSiteId.equals(siteId(actualMethod,
@@ -8773,6 +8913,12 @@ public final class ConcolicRegionRuntime {
             }
             if (!accessOwnerClass.isEmpty()
                     && !instanceOfName(owner.getClass(), accessOwnerClass)) {
+                return false;
+            }
+            if (runtimeExactSite
+                    && (accessOwnerClass.isEmpty()
+                    || accessFieldSignature.isEmpty()
+                    || !accessFieldSignature.equals(safe(signature)))) {
                 return false;
             }
             // A projection rooted at a method return/local may not carry a
@@ -9047,8 +9193,10 @@ public final class ConcolicRegionRuntime {
         private final String selectorAuthority;
         private final int elementIndex;
         private final int elementOccurrence;
+        private final String materializationMode;
         private final String fieldMaterializationSiteId;
         private final List<String> fieldPath = new ArrayList<>();
+        private final String declaredFieldSignature;
         private final String declaredFieldOwnerClass;
         private final String declaredFieldType;
 
@@ -9065,6 +9213,9 @@ public final class ConcolicRegionRuntime {
                     this.elementIndex >= 0 ? EXACT_ARRAY_INDEX : "");
             this.elementOccurrence = integer(json, "elementOccurrence",
                     integer(json, "occurrence", -1));
+            this.materializationMode = firstNonBlank(string(json,
+                    "materializationMode"), this.schemaVersion == 1
+                    ? "FIELD_ACCESS_HOOK" : "");
             this.fieldMaterializationSiteId = string(json,
                     "fieldMaterializationSiteId");
             for (JsonElement element : array(json, "fieldPath")) {
@@ -9072,6 +9223,8 @@ public final class ConcolicRegionRuntime {
                     fieldPath.add(element.getAsString());
                 }
             }
+            this.declaredFieldSignature = string(json,
+                    "declaredFieldSignature");
             this.declaredFieldOwnerClass = string(json,
                     "declaredFieldOwnerClass");
             this.declaredFieldType = normalizeFieldType(string(json,
@@ -9082,7 +9235,11 @@ public final class ConcolicRegionRuntime {
                                                  SymbolizeAction action,
                                                  Object leafOwner,
                                                  String fieldSignature) {
-            if (schemaVersion != 1 || !KIND.equals(kind)) {
+            boolean supported = schemaVersion == 1
+                    && "FIELD_ACCESS_HOOK".equals(materializationMode)
+                    || schemaVersion == 2
+                    && "CONTAINER_SNAPSHOT".equals(materializationMode);
+            if (!supported || !KIND.equals(kind)) {
                 return "unsupported generic binding schema/kind";
             }
             if (bindingId.isEmpty() || baseInputSymbol.isEmpty()
@@ -9125,7 +9282,8 @@ public final class ConcolicRegionRuntime {
                 return "base input or field path does not match action";
             }
             String[] declared = declaredField(fieldSignature);
-            if (declared == null
+            if (!declaredFieldSignature.equals(safe(fieldSignature))
+                    || declared == null
                     || !declaredFieldOwnerClass.equals(declared[0])
                     || !declaredFieldType.equals(
                     normalizeFieldType(declared[1]))
@@ -9147,6 +9305,15 @@ public final class ConcolicRegionRuntime {
             return "";
         }
 
+        private boolean materializeFromContainerSnapshot() {
+            return schemaVersion == 2
+                    && "CONTAINER_SNAPSHOT".equals(materializationMode);
+        }
+
+        private boolean exactIndex() {
+            return EXACT_ARRAY_INDEX.equals(selectorAuthority);
+        }
+
         private String effectiveSelectorError(String effectiveSite,
                                               int effectiveOccurrence) {
             if (!fieldMaterializationSiteId.equals(safe(effectiveSite))) {
@@ -9162,7 +9329,10 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean requiresExactCoverage() {
-            return schemaVersion == 1 && KIND.equals(kind)
+            return (schemaVersion == 1
+                    && "FIELD_ACCESS_HOOK".equals(materializationMode)
+                    || materializeFromContainerSnapshot())
+                    && KIND.equals(kind)
                     && EXACT_ARRAY_INDEX.equals(selectorAuthority)
                     && !bindingId.isEmpty() && !baseInputSymbol.isEmpty()
                     && elementIndex >= 0 && elementOccurrence > 0

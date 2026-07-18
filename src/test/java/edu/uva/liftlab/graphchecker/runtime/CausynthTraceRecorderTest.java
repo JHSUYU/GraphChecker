@@ -12,6 +12,7 @@ import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -329,6 +330,65 @@ public class CausynthTraceRecorderTest {
     }
 
     @Test
+    public void streamedGraphEdgesPreserveInsertionOrderIdsAndCounts()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path output = folder.getRoot().toPath().resolve("streamed-edges");
+        Files.createDirectories(output);
+        Path trace = output.resolve("runtime_trace.jsonl");
+        Path graph = output.resolve("static_dataflow_edges.jsonl");
+        String method = "<test.StreamedEdges: void run()>";
+        Files.write(trace, Collections.singletonList(
+                methodRow(1, method, "worker", 1, 11, 1)),
+                StandardCharsets.UTF_8);
+        Files.write(graph, java.util.Arrays.asList(
+                "{\"id\":\"DF.FIRST\","
+                        + "\"kind\":\"first_flow\","
+                        + "\"fromCell\":\"local:firstFrom\","
+                        + "\"toCell\":\"local:firstTo\","
+                        + "\"method\":\"" + method + "\","
+                        + "\"unitIndex\":1}",
+                "{\"id\":\"DF.SECOND\","
+                        + "\"kind\":\"second_flow\","
+                        + "\"fromCell\":\"local:secondFrom\","
+                        + "\"toCell\":\"local:secondTo\","
+                        + "\"method\":\"" + method + "\","
+                        + "\"unitIndex\":2}"),
+                StandardCharsets.UTF_8);
+
+        try {
+            aggregateExistingTrace(output, graph, 100, 100);
+            String instantiated = new String(Files.readAllBytes(output.resolve(
+                    "unit_test_instantiated_graph.json")),
+                    StandardCharsets.UTF_8);
+            int first = instantiated.indexOf("\"id\":\"DYN.0\"");
+            int second = instantiated.indexOf("\"id\":\"DYN.1\"");
+            assertTrue(first >= 0);
+            assertTrue(second > first);
+            assertTrue(instantiated.indexOf("\"staticEdgeId\":\"DF.FIRST\"",
+                    first) < second);
+            assertTrue(instantiated.indexOf("\"staticEdgeId\":\"DF.SECOND\"",
+                    second) > second);
+            assertFalse(instantiated.contains("\"id\":\"DYN.2\""));
+            assertTrue(instantiated.contains("\"instantiatedEdgeCount\":2"));
+
+            String roleMerged = new String(Files.readAllBytes(output.resolve(
+                    "unit_test_role_merged_graph.json")),
+                    StandardCharsets.UTF_8);
+            int roleFirst = roleMerged.indexOf("\"id\":\"ROLE.0\"");
+            int roleSecond = roleMerged.indexOf("\"id\":\"ROLE.1\"");
+            assertTrue(roleFirst >= 0);
+            assertTrue(roleSecond > roleFirst);
+            assertFalse(roleMerged.contains("\"id\":\"ROLE.2\""));
+            assertTrue(roleMerged.contains("\"roleMergedEdgeCount\":2"));
+        } finally {
+            resetRecorder();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void contextPairLimitIsReportedAsGraphTruncation()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -392,6 +452,81 @@ public class CausynthTraceRecorderTest {
             restoreProperty("causynth.trace.output.dir", previousOutput);
             folder.delete();
         }
+    }
+
+    @Test
+    public void boundedFingerprintPreservesMapArrayElementAndNestedFields()
+            throws Exception {
+        Map<Integer, KeySnapshot[]> left = new LinkedHashMap<>();
+        left.put(17, new KeySnapshot[]{
+                new KeySnapshot(17, 1000L, 1001L, new byte[]{1, 2, 3})});
+        left.put(9, new KeySnapshot[]{
+                new KeySnapshot(9, 800L, 801L, new byte[]{4, 5})});
+
+        // Reverse insertion order and use fresh instances: canonical map
+        // ordering must retain structural equality, not iteration order or
+        // host object identity.
+        Map<Integer, KeySnapshot[]> right = new LinkedHashMap<>();
+        right.put(9, new KeySnapshot[]{
+                new KeySnapshot(9, 800L, 801L, new byte[]{4, 5})});
+        right.put(17, new KeySnapshot[]{
+                new KeySnapshot(17, 1000L, 1001L, new byte[]{1, 2, 3})});
+
+        FingerprintView leftView = captureFingerprint(left);
+        FingerprintView rightView = captureFingerprint(right);
+        assertTrue(leftView.complete);
+        assertTrue(rightView.complete);
+        assertEquals(leftView.digest, rightView.digest);
+        assertTrue(leftView.nodes <= 256);
+
+        Map<Integer, KeySnapshot[]> changedExpiry = new LinkedHashMap<>();
+        changedExpiry.put(17, new KeySnapshot[]{
+                new KeySnapshot(17, 1000L, 1002L, new byte[]{1, 2, 3})});
+        changedExpiry.put(9, new KeySnapshot[]{
+                new KeySnapshot(9, 800L, 801L, new byte[]{4, 5})});
+        assertFalse(leftView.digest.equals(
+                captureFingerprint(changedExpiry).digest));
+    }
+
+    @Test
+    public void mapEntryFingerprintIsCycleSafe() throws Exception {
+        Map<Object, Object> self = new LinkedHashMap<>();
+        self.put("self", self);
+        FingerprintView view = captureFingerprint(self);
+        assertTrue(view.complete);
+        assertEquals("COMPLETE", view.reason);
+        assertTrue(view.nodes <= 3);
+    }
+
+    @Test(timeout = 2000L)
+    public void managerLikeContainerGraphStopsAtStrictBudget()
+            throws Exception {
+        ManagerLike manager = new ManagerLike();
+        for (int index = 0; index < 5000; index++) {
+            manager.keys.put(index, new KeySnapshot(index,
+                    100000L + index, 200000L + index,
+                    new byte[]{1, 2, 3, 4}));
+        }
+        Map<String, ManagerLike> pools = new LinkedHashMap<>();
+        pools.put("bp-1", manager);
+
+        FingerprintView view = captureFingerprint(pools);
+        assertFalse(view.complete);
+        assertTrue(view.reason.startsWith("MAX_"));
+        assertTrue(view.nodes <= 256);
+    }
+
+    @Test
+    public void canonicalFingerprintHasStrictUtf8ByteBudget()
+            throws Exception {
+        StringBuilder huge = new StringBuilder();
+        for (int index = 0; index < 100000; index++) {
+            huge.append('\u4e2d');
+        }
+        FingerprintView view = captureFingerprint(huge.toString());
+        assertFalse(view.complete);
+        assertEquals("MAX_CANONICAL_BYTES", view.reason);
+        assertEquals(1, view.nodes);
     }
 
     @Test
@@ -512,6 +647,70 @@ public class CausynthTraceRecorderTest {
         public Set<Map.Entry<Object, Object>> entrySet() {
             throw new ConcurrentModificationException("simulated race");
         }
+    }
+
+    private static final class KeySnapshot {
+        private final int keyId;
+        private final long expiry;
+        private final Epoch epoch;
+        private final byte[] encoded;
+
+        private KeySnapshot(int keyId, long expiry, long observedExpiry,
+                            byte[] encoded) {
+            this.keyId = keyId;
+            this.expiry = expiry;
+            this.epoch = new Epoch(observedExpiry);
+            this.encoded = encoded;
+        }
+    }
+
+    private static final class Epoch {
+        private final long observedExpiry;
+
+        private Epoch(long observedExpiry) {
+            this.observedExpiry = observedExpiry;
+        }
+    }
+
+    private static final class ManagerLike {
+        private final Map<Integer, KeySnapshot> keys =
+                new LinkedHashMap<>();
+    }
+
+    private static final class FingerprintView {
+        private final String digest;
+        private final boolean complete;
+        private final int nodes;
+        private final String reason;
+
+        private FingerprintView(String digest, boolean complete, int nodes,
+                                String reason) {
+            this.digest = digest;
+            this.complete = complete;
+            this.nodes = nodes;
+            this.reason = reason;
+        }
+    }
+
+    private static FingerprintView captureFingerprint(Object value)
+            throws Exception {
+        Class<?> type = Class.forName(CausynthTraceRecorder.class.getName()
+                + "$ValueFingerprint");
+        Method capture = type.getDeclaredMethod("capture", Object.class,
+                String.class);
+        capture.setAccessible(true);
+        Object result = capture.invoke(null, value, "");
+        Field digest = type.getDeclaredField("digest");
+        Field complete = type.getDeclaredField("complete");
+        Field nodes = type.getDeclaredField("nodes");
+        Field reason = type.getDeclaredField("reason");
+        digest.setAccessible(true);
+        complete.setAccessible(true);
+        nodes.setAccessible(true);
+        reason.setAccessible(true);
+        return new FingerprintView((String) digest.get(result),
+                complete.getBoolean(result), nodes.getInt(result),
+                (String) reason.get(result));
     }
 
     private static int retainedEventCount(String fieldName) throws Exception {

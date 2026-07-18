@@ -281,13 +281,15 @@ public class ConcolicSmtComposerTest {
         folder.create();
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            String hadoopTimeNow = hadoopTimeNowCell();
             addRegionPort(fixture, "REGION.P", "symbolicInputs",
-                    port("REGION.P.in.6", vmCurrentTimeCell()));
+                    port("REGION.P.in.6", hadoopTimeNow));
             JsonObject summary = producerSummary(singlePutEffect(), true);
             summary.getAsJsonArray("pathCondition").add(binaryCondition(
                     placeholderExpression("currentTimeMills", 3), ">",
                     constant("J", "Y_J_0")));
-            addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3);
+            addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3,
+                    hadoopTimeNow);
             writeSummary(fixture, summary);
 
             ConcolicSmtComposer.Result result =
@@ -2762,6 +2764,140 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void recursivelyComposesRuntimeValueEqualityWithoutObjectIdentity()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            String upstreamRegion = "{\"regionId\":\"REGION.U\","
+                    + "\"symbolicInputs\":[{\"portId\":\"REGION.U.in.0\","
+                    + "\"cell\":\"<example.Upstream: java.util.Map state>\"}],"
+                    + "\"outputs\":[{\"portId\":\"REGION.U.out.0\","
+                    + "\"cell\":\"<example.Upstream: java.util.Map state>\"}]}\n";
+            Files.write(fixture.regions, upstreamRegion.getBytes(
+                            StandardCharsets.UTF_8),
+                    java.nio.file.StandardOpenOption.APPEND);
+
+            JsonObject intermediate = producerSummary(singlePutEffect(), true);
+            intermediate.add("requestedOutput", requestedOutput(
+                    "REGION.P.out.0"));
+            intermediate.add("requestedOutputSlice", requestedSlice(
+                    "REGION.P.in.0"));
+
+            JsonObject upstream = JsonParser.parseString(
+                    producerSummary(singlePutEffect(), true).toString()
+                            .replace("REGION.P", "REGION.U")
+                            .replace("SUMMARY.P", "SUMMARY.U")
+                            .replace("ACT.P", "ACT.U")
+                            .replace("fixture#call1", "fixture#call0"))
+                    .getAsJsonObject();
+            upstream.add("requestedOutput", requestedOutput(
+                    "REGION.U.out.0"));
+            JsonArray bindings = new JsonArray();
+            bindings.add(runtimeValueEqualityBinding("REGION.U",
+                    "REGION.U@fixture#call0", "REGION.U.out.0",
+                    "REGION.P", "REGION.P@fixture#call1",
+                    "REGION.P.in.0", 5, 8));
+            upstream.add("edgeBindings", bindings);
+            Files.write(fixture.summaries,
+                    (intermediate + "\n" + upstream + "\n").getBytes(
+                            StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(
+                            ConcolicSmtComposer.Arguments.parse(new String[]{
+                                    "--fatal-query", fixture.fatal.toString(),
+                                    "--summaries", fixture.summaries.toString(),
+                                    "--regions", fixture.regions.toString(),
+                                    "--merge-plan", fixture.merge.toString(),
+                                    "--output", fixture.output.toString(),
+                                    "--manifest", fixture.manifest.toString(),
+                                    "--fatal-region", "REGION.F",
+                                    "--activation-id", "ACT.F",
+                                    "--bounded-upstream-region", "REGION.P",
+                                    "--bounded-upstream-region", "REGION.U"
+                            }));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(2, result.manifest.get(
+                    "resolvedProducerCount").getAsInt());
+            assertEquals(1, result.manifest.get(
+                    "resolvedRecursiveEdgeCount").getAsInt());
+            JsonObject recursive = result.manifest.getAsJsonArray(
+                    "resolvedEdgeBindings").get(0).getAsJsonObject();
+            assertEquals("RUNTIME_CONFIRMED_VALUE_EQUALITY", recursive.get(
+                    "selectionAuthority").getAsString());
+            assertTrue(recursive.get("recursive").getAsBoolean());
+            assertEquals(1, result.manifest.get(
+                    "edgeBindingConstraintCount").getAsInt());
+            assertEquals(1, result.manifest.get(
+                    "runtimeValueEqualityConstraintCount").getAsInt());
+            assertEquals(1, result.manifest.get(
+                    "readFromConstraintCount").getAsInt());
+            assertEquals(2, result.manifest.get(
+                    "orderConstraintCount").getAsInt());
+            assertEquals(0, result.manifest.get(
+                    "objectIdentityConstraintCount").getAsInt());
+            assertTrue(result.smtLib.contains(
+                    "port__REGION_U_out_0 port__REGION_P_in_0"));
+            assertFalse(result.smtLib.contains(
+                    "identity_edge_binding_REGION_U_to_REGION_P"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void contextReadFromDoesNotBecomeAmbiguousWithEndpointEquality()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            JsonObject producer = producerSummary(singlePutEffect(), true);
+            producer.add("requestedOutput", requestedOutput(
+                    "REGION.P.out.0"));
+            JsonObject readFrom = runtimeEdgeBinding("REGION.P",
+                    "REGION.P@fixture#call1", "REGION.P.out.0",
+                    "REGION.F", "REGION.F@fixture#call2",
+                    "REGION.F.in.0", 10, 20, 101);
+            readFrom.addProperty("edgeId", "EDGE.0");
+            JsonObject equality = runtimeValueEqualityBinding("REGION.P",
+                    "REGION.P@fixture#call1", "REGION.P.out.0",
+                    "REGION.F", "REGION.F@fixture#call2",
+                    "REGION.F.in.0", 5, 8);
+            // Deliberately share the context READ_FROM edge id and endpoints.
+            // The relation kind must still keep the two semantics disjoint.
+            equality.addProperty("edgeId", "EDGE.0");
+            JsonArray bindings = new JsonArray();
+            bindings.add(readFrom);
+            bindings.add(equality);
+            producer.add("edgeBindings", bindings);
+            Files.write(fixture.summaries,
+                    (producer + "\n").getBytes(StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertFalse(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "AmbiguousDirectEdgeBinding"));
+            assertEquals(2, result.manifest.get(
+                    "resolvedEdgeBindingCount").getAsInt());
+            assertEquals(1, result.manifest.get(
+                    "runtimeValueEqualityConstraintCount").getAsInt());
+            assertEquals(2, result.manifest.get(
+                    "readFromConstraintCount").getAsInt());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void oneExactRegionInstanceSummarySuppliesSixDemandedOutputsOnce()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -3420,6 +3556,37 @@ public class ConcolicSmtComposerTest {
         return binding;
     }
 
+    private static JsonObject runtimeValueEqualityBinding(
+            String fromRegion, String fromInstance, String fromOutput,
+            String toRegion, String toInstance, String toInput,
+            int writerSeq, int readerSeq) {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("edgeId", "EDGE." + fromRegion + ".TO."
+                + toRegion);
+        binding.addProperty("relation", "EQUALITY");
+        binding.addProperty("relationKind", "EQUALITY");
+        binding.addProperty("fromRegion", fromRegion);
+        binding.addProperty("toRegion", toRegion);
+        binding.addProperty("fromRegionInstance", fromInstance);
+        binding.addProperty("toRegionInstance", toInstance);
+        binding.addProperty("fromOutputPort", fromOutput);
+        binding.addProperty("toInputPort", toInput);
+        binding.addProperty("writerEventSeq", writerSeq);
+        binding.addProperty("readerEventSeq", readerSeq);
+        binding.addProperty("orderConfirmed", true);
+        binding.addProperty("valueEqualityObserved", true);
+        binding.addProperty("valueEqualityAuthority",
+                "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
+        binding.addProperty("endpointOrderAuthority",
+                "GLOBAL_TRACE_ENDPOINT_SEQUENCE");
+        binding.addProperty("valueFingerprint", "sha256:" + fromInstance
+                + ":" + toInstance + ":" + writerSeq + ":" + readerSeq);
+        binding.addProperty("selectionAuthority",
+                "RUNTIME_CONFIRMED_VALUE_EQUALITY");
+        binding.addProperty("objectIdentityRequired", false);
+        return binding;
+    }
+
     private static JsonObject scalarSummary(String region, String summaryId,
                                             String activationId,
                                             String instanceId,
@@ -3663,15 +3830,25 @@ public class ConcolicSmtComposerTest {
         return "<java.lang.System: long currentTimeMillis()>.return";
     }
 
+    private static String hadoopTimeNowCell() {
+        return "<org.apache.hadoop.util.Time: long now()>.return";
+    }
+
     private static void addVmPlaceholderCertificate(
             JsonObject container, String inputPort, int count) {
+        addVmPlaceholderCertificate(container, inputPort, count,
+                vmCurrentTimeCell());
+    }
+
+    private static void addVmPlaceholderCertificate(
+            JsonObject container, String inputPort, int count, String cell) {
         String identity = "currentTimeMills#" + count;
         JsonObject requirement = new JsonObject();
         requirement.addProperty("kind",
                 "UNFORCED_ENVIRONMENT_VALIDATION_REQUIREMENT");
         requirement.addProperty("required", true);
         requirement.addProperty("inputPort", inputPort);
-        requirement.addProperty("cell", vmCurrentTimeCell());
+        requirement.addProperty("cell", cell);
         requirement.addProperty("sourceKind", "ENVIRONMENT");
         requirement.addProperty("bindingMode",
                 "VM_INTRINSIC_PLACEHOLDER");
@@ -3717,7 +3894,7 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("placeholderFunction", "currentTimeMills");
         binding.addProperty("placeholderCount", count);
         binding.addProperty("inputPort", inputPort);
-        binding.addProperty("cell", vmCurrentTimeCell());
+        binding.addProperty("cell", cell);
         binding.addProperty("javaTypeDescriptor", "J");
         binding.addProperty("sourceKind", "ENVIRONMENT");
         binding.addProperty("bindingMode", "VM_INTRINSIC_PLACEHOLDER");

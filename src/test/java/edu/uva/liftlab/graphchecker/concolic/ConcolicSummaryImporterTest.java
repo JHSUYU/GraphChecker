@@ -2832,17 +2832,21 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void admitsExactVmCurrentTimePlaceholderAsUnforcedEnvironment()
+    public void admitsHadoopTimeNowAliasAsUnforcedVmEnvironment()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
+            String hadoopTimeNow =
+                    "<org.apache.hadoop.util.Time: long now()>.return";
             JsonObject placeholder = placeholderExpression(
                     "currentTimeMills", 3);
             PlaceholderFixture imported = importPlaceholderFixture(
                     folder.getRoot().toPath(),
-                    exactCurrentTimePlaceholderMaterialization(),
-                    placeholderCondition(placeholder));
+                    exactCurrentTimePlaceholderMaterialization(
+                            hadoopTimeNow),
+                    placeholderCondition(placeholder), false,
+                    hadoopTimeNow);
 
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
@@ -2864,6 +2868,8 @@ public class ConcolicSummaryImporterTest {
                     requirement.get("placeholderFunction").getAsString());
             assertEquals("CUSTOM_JDK_SYMBOLIC_ND_FUNC",
                     requirement.get("captureAuthority").getAsString());
+            assertEquals(hadoopTimeNow,
+                    requirement.get("cell").getAsString());
             assertFalse(requirement.get("modelControllable")
                     .getAsBoolean());
             assertEquals("UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION",
@@ -2882,6 +2888,8 @@ public class ConcolicSummaryImporterTest {
             assertEquals(3, binding.get("placeholderCount").getAsInt());
             assertEquals("REGION.TIME.in.0",
                     binding.get("inputPort").getAsString());
+            assertEquals(hadoopTimeNow,
+                    binding.get("cell").getAsString());
             assertEquals("UNIQUE_USED_PLACEHOLDER_IDENTITY_TO_EXACT_"
                             + "SLICE_INPUT",
                     binding.get("ownerAuthority").getAsString());
@@ -3650,6 +3658,15 @@ public class ConcolicSummaryImporterTest {
     private static PlaceholderFixture importPlaceholderFixture(
             Path root, JsonObject materialization, JsonElement evidence,
             boolean falselyReportSymbolized) throws Exception {
+        return importPlaceholderFixture(root, materialization, evidence,
+                falselyReportSymbolized,
+                "<java.lang.System: long currentTimeMillis()>.return");
+    }
+
+    private static PlaceholderFixture importPlaceholderFixture(
+            Path root, JsonObject materialization, JsonElement evidence,
+            boolean falselyReportSymbolized, String environmentCell)
+            throws Exception {
         Files.createDirectories(root);
         Path activations = root.resolve("activation.jsonl");
         Path regions = root.resolve("regions.jsonl");
@@ -3677,8 +3694,7 @@ public class ConcolicSummaryImporterTest {
         activation.add("requestedOutputSlice", slice);
         JsonObject declared = new JsonObject();
         declared.addProperty("symbol", inputPort);
-        declared.addProperty("cell",
-                "<java.lang.System: long currentTimeMillis()>.return");
+        declared.addProperty("cell", environmentCell);
         declared.addProperty("sourceKind", "ENVIRONMENT");
         declared.addProperty("location", "ENVIRONMENT_MODEL");
         JsonArray symbolize = new JsonArray();
@@ -3739,10 +3755,15 @@ public class ConcolicSummaryImporterTest {
     }
 
     private static JsonObject exactCurrentTimePlaceholderMaterialization() {
+        return exactCurrentTimePlaceholderMaterialization(
+                "<java.lang.System: long currentTimeMillis()>.return");
+    }
+
+    private static JsonObject exactCurrentTimePlaceholderMaterialization(
+            String environmentCell) {
         JsonObject result = new JsonObject();
         result.addProperty("symbol", "REGION.TIME.in.0");
-        result.addProperty("cell",
-                "<java.lang.System: long currentTimeMillis()>.return");
+        result.addProperty("cell", environmentCell);
         result.addProperty("sourceKind", "ENVIRONMENT");
         result.addProperty("location", "ENVIRONMENT_MODEL");
         result.addProperty("bindingMode", "VM_INTRINSIC_PLACEHOLDER");

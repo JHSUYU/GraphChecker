@@ -27,17 +27,6 @@ import java.util.Map;
 public final class HdfsRegionPortMapper {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
-    private static final String FIXED_REPOSITORY =
-            "/Users/lizhenyu/Desktop/study/hadoop";
-    private static final String FIXED_COMMIT =
-            "ece33208b89a6a06c1b362d10fab31343fe5df13";
-    private static final String FIXED_TEST =
-            "org.apache.hadoop.hdfs.server.balancer."
-                    + "TestBalancerWithEncryptedTransfer#testEncryptedBalancer1";
-    private static final String FIXED_EXPERIMENT_PATCH =
-            "CAUSYNTH_FIXED_MINIDFSCLUSTER_LOOP_FREE_V1";
-    private static final String FIXED_SOURCE_SHA256 =
-            "352efc4dd9a3d4e0df4d0840754d63fce1a09509ad947f9c232e24f35372bb93";
     private static final String DATANODE_ALL_KEYS_FIELD =
             "<org.apache.hadoop.hdfs.security.token.block."
                     + "BlockTokenSecretManager: java.util.Map allKeys>";
@@ -136,18 +125,7 @@ public final class HdfsRegionPortMapper {
                 ? "PORT_MAPPING_COMPLETE"
                 : "PORT_MAPPING_WITH_GAPS");
 
-        JsonObject scope = new JsonObject();
-        scope.addProperty("purpose",
-                "ACADEMIC_SOFTWARE_ENGINEERING_AND_PROGRAM_ANALYSIS");
-        scope.addProperty("repository", FIXED_REPOSITORY);
-        scope.addProperty("commit", FIXED_COMMIT);
-        scope.addProperty("test", FIXED_TEST);
-        scope.addProperty("experimentalSourcePatch",
-                FIXED_EXPERIMENT_PATCH);
-        scope.addProperty("experimentalSourceSha256", FIXED_SOURCE_SHA256);
-        scope.addProperty("executionBoundary", "LOCAL_MINIDFSCLUSTER_ONLY");
-        scope.addProperty("thirdPartySystemsProhibited", true);
-        result.add("researchScope", scope);
+        result.add("researchScope", arguments.scope.toJson());
         return result;
     }
 
@@ -315,6 +293,7 @@ public final class HdfsRegionPortMapper {
         private Path fatalQueries;
         private Path mergePlan;
         private Path output;
+        private ResearchScope scope;
 
         public static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -332,7 +311,12 @@ public final class HdfsRegionPortMapper {
             result.fatalQueries = required(values, "fatal-query");
             result.mergePlan = required(values, "merge-plan");
             result.output = required(values, "output");
+            result.scope = ResearchScope.parse(values);
             return result;
+        }
+
+        ResearchScope researchScope() {
+            return scope;
         }
 
         private static Path required(Map<String, String> values, String key) {
@@ -341,6 +325,58 @@ public final class HdfsRegionPortMapper {
                 throw new IllegalArgumentException("Missing --" + key);
             }
             return Paths.get(value);
+        }
+    }
+
+    /** Immutable provenance supplied by the experiment configuration. */
+    static final class ResearchScope {
+        private final String repository;
+        private final String commit;
+        private final String workload;
+        private final String patch;
+        private final String sourceSha256;
+
+        private ResearchScope(String repository, String commit,
+                              String workload, String patch,
+                              String sourceSha256) {
+            this.repository = repository;
+            this.commit = commit;
+            this.workload = workload;
+            this.patch = patch;
+            this.sourceSha256 = sourceSha256;
+        }
+
+        static ResearchScope parse(Map<String, String> values) {
+            return new ResearchScope(
+                    requiredValue(values, "scope-repository"),
+                    requiredValue(values, "scope-commit"),
+                    requiredValue(values, "scope-workload"),
+                    requiredValue(values, "scope-patch"),
+                    requiredValue(values, "scope-source-sha256"));
+        }
+
+        JsonObject toJson() {
+            JsonObject scope = new JsonObject();
+            scope.addProperty("purpose",
+                    "ACADEMIC_SOFTWARE_ENGINEERING_AND_PROGRAM_ANALYSIS");
+            scope.addProperty("repository", repository);
+            scope.addProperty("commit", commit);
+            scope.addProperty("test", workload);
+            scope.addProperty("experimentalSourcePatch", patch);
+            scope.addProperty("experimentalSourceSha256", sourceSha256);
+            scope.addProperty("executionBoundary",
+                    "LOCAL_MINIDFSCLUSTER_ONLY");
+            scope.addProperty("thirdPartySystemsProhibited", true);
+            return scope;
+        }
+
+        private static String requiredValue(Map<String, String> values,
+                                            String key) {
+            String value = values.get(key);
+            if (value == null || value.trim().isEmpty()) {
+                throw new IllegalArgumentException("Missing --" + key);
+            }
+            return value;
         }
     }
 }

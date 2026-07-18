@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Test;
 
@@ -87,6 +88,43 @@ public class AutomaticRegionEdgeTest {
         assertFalse(AutomaticRegionEdge.transitionDiscoveryCandidate(edge));
     }
 
+    @Test
+    public void containerMutationRequiresCompletionAndSameContainerIdentity() {
+        JsonObject complete = containerMutationBinding();
+        assertTrue(AutomaticRegionEdge
+                .trustedRuntimeReadFromBinding(complete));
+
+        JsonObject missingCompletion = complete.deepCopy();
+        missingCompletion.remove("mutationCompletionSeq");
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeReadFromBinding(missingCompletion));
+
+        JsonObject differentContainer = complete.deepCopy();
+        differentContainer.addProperty("readerValueObjectId", 45);
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeReadFromBinding(differentContainer));
+
+        JsonObject readBeforeCompletion = complete.deepCopy();
+        readBeforeCompletion.addProperty("readerEventSeq", 25);
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeReadFromBinding(readBeforeCompletion));
+
+        JsonObject edge = new JsonObject();
+        edge.addProperty("validatedRelation", "READ_FROM");
+        edge.addProperty("status", "CONFIRMED_READ_FROM");
+        edge.addProperty("composable", true);
+        edge.addProperty("confirmedReadFromPairCount", 1);
+        edge.addProperty("eligibleForAutomaticDerivation", true);
+        edge.addProperty("eligibleForAutomaticSmt", true);
+        JsonArray bindings = new JsonArray();
+        bindings.add(differentContainer);
+        edge.add("validatedBindings", bindings);
+        assertFalse(AutomaticRegionEdge.composable(edge));
+
+        bindings.set(0, complete);
+        assertTrue(AutomaticRegionEdge.composable(edge));
+    }
+
     private static JsonObject baseEquality() {
         JsonObject edge = new JsonObject();
         edge.addProperty("fromRegion", "REGION.UP");
@@ -96,5 +134,36 @@ public class AutomaticRegionEdgeTest {
         edge.addProperty("validatedRelation", "EQUALITY");
         edge.addProperty("composable", true);
         return edge;
+    }
+
+    private static JsonObject containerMutationBinding() {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("relation", "READ_FROM");
+        binding.addProperty("selectionAuthority",
+                "RUNTIME_CONFIRMED_READ_FROM");
+        binding.addProperty("writeEvidenceKind",
+                "FIELD_CONTAINER_MUTATION");
+        binding.addProperty("writeEvidenceAuthority",
+                AutomaticRegionEdge.CONTAINER_MUTATION_READ_FROM_AUTHORITY);
+        binding.addProperty("mutationContractAuthority",
+                AutomaticRegionEdge.CONTAINER_MUTATOR_CONTRACT_AUTHORITY);
+        binding.addProperty("orderAuthority",
+                AutomaticRegionEdge.TRACE_ORDER_AUTHORITY);
+        binding.addProperty("writerFieldReadSeq", 10);
+        binding.addProperty("mutatorEnterSeq", 20);
+        binding.addProperty("mutationCompletionSeq", 30);
+        binding.addProperty("writerEventSeq", 30);
+        binding.addProperty("readerEventSeq", 40);
+        binding.addProperty("mutationInvocationId", 20);
+        binding.addProperty("valueObjectId", 44);
+        binding.addProperty("readerValueObjectId", 44);
+        binding.addProperty("receiverObjectId", 55);
+        binding.addProperty("orderConfirmed", true);
+        binding.addProperty("containerIdentityConfirmed", true);
+        binding.addProperty("fieldReceiverIdentityConfirmed", true);
+        binding.addProperty("mutatorDeclaredCallee",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,"
+                        + "java.lang.Object)>");
+        return binding;
     }
 }

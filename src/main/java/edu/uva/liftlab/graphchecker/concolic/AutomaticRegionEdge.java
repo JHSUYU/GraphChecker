@@ -13,6 +13,16 @@ import com.google.gson.JsonObject;
  * endpoint order, and domain-specific mapping names never satisfy this gate.</p>
  */
 public final class AutomaticRegionEdge {
+    static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
+            "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
+                    + "COMPLETED_MUTATION_BEFORE_READ_V1";
+    static final String CONTAINER_MUTATOR_CONTRACT_AUTHORITY =
+            "DECLARED_CALLEE_MUTATOR_METHOD_NAME_ALLOWLIST_V1";
+    static final String TRACE_ORDER_AUTHORITY =
+            "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1";
+    static final String VALUE_EQUALITY_ORDER_AUTHORITY =
+            "GLOBAL_TRACE_ENDPOINT_SEQUENCE";
+
     private AutomaticRegionEdge() {
     }
 
@@ -26,8 +36,26 @@ public final class AutomaticRegionEdge {
         String relation = firstNonBlank(string(edge, "validatedRelation"),
                 string(edge, "relation"));
         if ("READ_FROM".equals(relation)) {
-            return "CONFIRMED_READ_FROM".equals(string(edge, "status"))
-                    && integer(edge, "confirmedReadFromPairCount", 0) > 0;
+            if (!"CONFIRMED_READ_FROM".equals(string(edge, "status"))
+                    || integer(edge, "confirmedReadFromPairCount", 0) <= 0) {
+                return false;
+            }
+            JsonElement bindings = edge.get("validatedBindings");
+            if (bindings == null || !bindings.isJsonArray()
+                    || bindings.getAsJsonArray().size() == 0) {
+                // Compatibility for discovery fixtures predating per-pair
+                // evidence. Production RuntimeRegionPlanner artifacts always
+                // carry validatedBindings and are checked below.
+                return true;
+            }
+            for (JsonElement element : bindings.getAsJsonArray()) {
+                if (!element.isJsonObject()
+                        || !trustedReadFromEvidence(
+                        element.getAsJsonObject())) {
+                    return false;
+                }
+            }
+            return true;
         }
         if ("EQUALITY".equals(relation)) {
             String authority = string(edge, "valueEqualityAuthority");
@@ -36,6 +64,109 @@ public final class AutomaticRegionEdge {
                     && authority.startsWith("RUNTIME_");
         }
         return false;
+    }
+
+    /**
+     * Validates one runtime summary binding before it is admitted downstream.
+     * Direct field assignments retain their original exact event contract;
+     * container mutations additionally require a completed mutator call and
+     * the same process-local container identity on both field reads.
+     */
+    public static boolean trustedRuntimeReadFromBinding(JsonObject binding) {
+        return binding != null
+                && "RUNTIME_CONFIRMED_READ_FROM".equals(string(binding,
+                "selectionAuthority"))
+                && trustedReadFromEvidence(binding);
+    }
+
+    /**
+     * Validates a value-equality summary edge independently of READ_FROM.
+     *
+     * <p>RPC and other serialization transports normally allocate a new
+     * receiver-side object, so process-local object identity is neither
+     * available nor required. Automatic composition instead requires the two
+     * exact region instances and canonical ports, a complete runtime
+     * fingerprint on both endpoints, and their concrete trace order.</p>
+     */
+    public static boolean trustedRuntimeValueEqualityBinding(
+            JsonObject binding) {
+        if (binding == null
+                || !"RUNTIME_CONFIRMED_VALUE_EQUALITY".equals(string(
+                binding, "selectionAuthority"))
+                || !"EQUALITY".equals(string(binding, "relationKind"))
+                || string(binding, "fromRegionInstance").isEmpty()
+                || string(binding, "toRegionInstance").isEmpty()
+                || string(binding, "fromOutputPort").isEmpty()
+                || string(binding, "toInputPort").isEmpty()
+                || !bool(binding, "valueEqualityObserved", false)
+                || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(string(
+                binding, "valueEqualityAuthority"))
+                || string(binding, "valueFingerprint").isEmpty()
+                || !VALUE_EQUALITY_ORDER_AUTHORITY.equals(string(binding,
+                "endpointOrderAuthority"))
+                || !bool(binding, "orderConfirmed", false)) {
+            return false;
+        }
+        long writer = firstLong(binding, "writerEventSeq", "writeSeq",
+                "fromEndpointSeq", "fromEventSeq");
+        long reader = firstLong(binding, "readerEventSeq", "readSeq",
+                "toEndpointSeq", "toEventSeq");
+        return writer >= 0L && reader > writer;
+    }
+
+    /** Runtime evidence admitted for recursive summary composition. */
+    public static boolean trustedRuntimeCompositionBinding(
+            JsonObject binding) {
+        return trustedRuntimeReadFromBinding(binding)
+                || trustedRuntimeValueEqualityBinding(binding);
+    }
+
+    public static boolean trustedReadFromEvidence(JsonObject evidence) {
+        if (evidence == null) return false;
+        String kind = string(evidence, "writeEvidenceKind");
+        if (kind.isEmpty()) {
+            // Compatibility for pre-V2 field-assignment artifacts. Any row
+            // that exposes container-mutation metadata must use the explicit
+            // V2 kind and pass the complete gate below.
+            return !evidence.has("mutatorEnterSeq")
+                    && !evidence.has("mutationCompletionSeq")
+                    && !evidence.has("containerIdentityConfirmed");
+        }
+        if ("FIELD_ASSIGNMENT".equals(kind)) {
+            String authority = string(evidence, "writeEvidenceAuthority");
+            return authority.isEmpty()
+                    || "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1".equals(authority);
+        }
+        if (!"FIELD_CONTAINER_MUTATION".equals(kind)
+                || !CONTAINER_MUTATION_READ_FROM_AUTHORITY.equals(string(
+                evidence, "writeEvidenceAuthority"))
+                || !CONTAINER_MUTATOR_CONTRACT_AUTHORITY.equals(string(
+                evidence, "mutationContractAuthority"))
+                || !TRACE_ORDER_AUTHORITY.equals(string(evidence,
+                "orderAuthority"))
+                || !bool(evidence, "orderConfirmed", false)
+                || !bool(evidence, "containerIdentityConfirmed", false)
+                || !bool(evidence, "fieldReceiverIdentityConfirmed", false)
+                || string(evidence, "mutatorDeclaredCallee").isEmpty()) {
+            return false;
+        }
+        long fieldRead = longInteger(evidence, "writerFieldReadSeq", -1L);
+        long enter = longInteger(evidence, "mutatorEnterSeq", -1L);
+        long completion = longInteger(evidence,
+                "mutationCompletionSeq", -1L);
+        long writer = firstLong(evidence, "writerEventSeq", "writeSeq");
+        long reader = firstLong(evidence, "readerEventSeq", "readSeq");
+        long fieldReceiver = longInteger(evidence,
+                "receiverObjectId", 0L);
+        long writerContainer = longInteger(evidence, "valueObjectId", 0L);
+        long readerContainer = longInteger(evidence,
+                "readerValueObjectId", 0L);
+        return fieldRead >= 0L && enter > fieldRead
+                && completion > enter && writer == completion
+                && reader > completion && fieldReceiver != 0L
+                && longInteger(evidence, "mutationInvocationId", 0L) > 0L
+                && writerContainer != 0L
+                && writerContainer == readerContainer;
     }
 
     public static boolean discoverable(JsonObject edge) {
@@ -142,6 +273,27 @@ public final class AutomaticRegionEdge {
         } catch (RuntimeException ignored) {
             return fallback;
         }
+    }
+
+    private static long longInteger(JsonObject object, String name,
+                                    long fallback) {
+        if (object == null) return fallback;
+        JsonElement value = object.get(name);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsLong();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static long firstLong(JsonObject object, String... names) {
+        for (String name : names) {
+            if (object != null && object.has(name)) {
+                return longInteger(object, name, -1L);
+            }
+        }
+        return -1L;
     }
 
     private static String firstNonBlank(String... values) {

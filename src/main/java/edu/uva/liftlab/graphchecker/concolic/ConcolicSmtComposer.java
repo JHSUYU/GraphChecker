@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -326,6 +328,8 @@ public final class ConcolicSmtComposer {
                 mergeStats.equalities);
         manifest.addProperty("readFromConstraintCount",
                 mergeStats.readFrom);
+        manifest.addProperty("runtimeValueEqualityConstraintCount",
+                mergeStats.runtimeValueEqualities);
         manifest.addProperty("orderConstraintCount", mergeStats.orders);
         manifest.addProperty("objectIdentityConstraintCount",
                 mergeStats.identities);
@@ -832,7 +836,9 @@ public final class ConcolicSmtComposer {
             for (JsonElement element : array(context, field)) {
                 if (!element.isJsonObject()) continue;
                 seedContextRelation(result, element.getAsJsonObject(),
-                        summaries, fatal, boundedRegions);
+                        summaries, fatal, boundedRegions,
+                        "equalityRelations".equals(field)
+                                ? "EQUALITY" : "READ_FROM");
             }
         }
         for (JsonElement element : array(context,
@@ -849,7 +855,7 @@ public final class ConcolicSmtComposer {
                     relation.addProperty("toEndpoint", consumer);
                 }
                 seedContextRelation(result, relation, summaries, fatal,
-                        boundedRegions);
+                        boundedRegions, "READ_FROM");
             }
         }
 
@@ -861,7 +867,7 @@ public final class ConcolicSmtComposer {
             for (JsonElement element : edgeBindings(summary)) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
-                if (!trustedRuntimeReadFrom(binding)) {
+                if (!trustedRuntimeComposition(binding)) {
                     continue;
                 }
                 if (!bindingTargets(binding, fatalRegion, fatalInstance, "")) {
@@ -895,7 +901,7 @@ public final class ConcolicSmtComposer {
                             consumer.instanceId, demandedInputs)) {
                         continue;
                     }
-                    if (!trustedRuntimeReadFrom(binding)) {
+                    if (!trustedRuntimeComposition(binding)) {
                         continue;
                     }
                     String sourceRegion = bindingSourceRegion(binding);
@@ -917,7 +923,8 @@ public final class ConcolicSmtComposer {
                                             JsonObject relation,
                                             List<JsonObject> summaries,
                                             JsonObject fatal,
-                                            Set<String> boundedRegions) {
+                                            Set<String> boundedRegions,
+                                            String expectedRelationKind) {
         String output = string(relation, "fromEndpoint");
         String input = string(relation, "toEndpoint");
         String sourceRegion = regionOf(output);
@@ -942,7 +949,8 @@ public final class ConcolicSmtComposer {
                     sourceRegion, sourceInstance, output);
             if (key != null) {
                 graph.addDirectBindingIfPresent(key, graph.fatalRegion,
-                        graph.fatalInstance, input);
+                        graph.fatalInstance, input, relation,
+                        binding, expectedRelationKind);
             }
         }
         if (!scopedBindingSeen) {
@@ -950,7 +958,8 @@ public final class ConcolicSmtComposer {
                     sourceRegion, "", output);
             if (key != null) {
                 graph.addDirectBindingIfPresent(key, graph.fatalRegion,
-                        graph.fatalInstance, input);
+                        graph.fatalInstance, input, relation,
+                        null, expectedRelationKind);
             }
         }
     }
@@ -962,7 +971,7 @@ public final class ConcolicSmtComposer {
                                                String targetRegion,
                                                String targetInstance,
                                                boolean recursive) {
-        if (!trustedRuntimeReadFrom(binding)) {
+        if (!trustedRuntimeComposition(binding)) {
             graph.gaps.add((recursive
                     ? "UntrustedRecursiveEdgeBinding:"
                     : "UntrustedDirectEdgeBinding:")
@@ -1158,7 +1167,9 @@ public final class ConcolicSmtComposer {
             JsonObject binding = element.getAsJsonObject();
             if (!source.instanceId.equals(bindingSourceInstance(binding))
                     || !source.outputPort.equals(bindingSourceOutput(binding))
-                    || !trustedRuntimeReadFrom(binding)
+                    || !trustedRuntimeComposition(binding)
+                    || !sameCompositionRelation(binding, preferred,
+                    bindingRelationKind(preferred))
                     || !bindingTargets(binding, targetRegion,
                     targetInstance, targetInput)) {
                 continue;
@@ -1180,8 +1191,91 @@ public final class ConcolicSmtComposer {
     }
 
     private static boolean trustedRuntimeReadFrom(JsonObject binding) {
-        return "RUNTIME_CONFIRMED_READ_FROM".equals(
-                string(binding, "selectionAuthority"));
+        return AutomaticRegionEdge.trustedRuntimeReadFromBinding(binding);
+    }
+
+    private static boolean trustedRuntimeValueEquality(JsonObject binding) {
+        return AutomaticRegionEdge.trustedRuntimeValueEqualityBinding(
+                binding);
+    }
+
+    private static boolean trustedRuntimeComposition(JsonObject binding) {
+        return AutomaticRegionEdge.trustedRuntimeCompositionBinding(binding);
+    }
+
+    /**
+     * Keeps a context relation tied to the exact runtime edge that justified
+     * it.  Matching ports and instances are not enough: an RPC equality and a
+     * heap READ_FROM can legitimately name the same canonical cells while
+     * carrying different identity semantics.
+     */
+    private static boolean sameCompositionRelation(JsonObject binding,
+                                                   JsonObject expected,
+                                                   String expectedKind) {
+        String kind = firstNonBlank(expectedKind,
+                bindingRelationKind(expected));
+        if (kind.isEmpty() || !kind.equals(bindingRelationKind(binding))) {
+            return false;
+        }
+        String edgeId = string(expected, "edgeId");
+        if (!edgeId.isEmpty() && !edgeId.equals(string(binding, "edgeId"))) {
+            return false;
+        }
+        String fromInstance = bindingSourceInstance(expected);
+        String toInstance = bindingTargetInstance(expected);
+        String fingerprint = string(expected, "valueFingerprint");
+        if (!fromInstance.isEmpty()
+                && !fromInstance.equals(bindingSourceInstance(binding))
+                || !toInstance.isEmpty()
+                && !toInstance.equals(bindingTargetInstance(binding))
+                || !fingerprint.isEmpty()
+                && !fingerprint.equals(string(binding, "valueFingerprint"))) {
+            return false;
+        }
+        if (hasAny(expected, "writerEventSeq", "writeSeq",
+                "fromEndpointSeq", "fromEventSeq")) {
+            long expectedWriter = firstLong(expected, "writerEventSeq",
+                    "writeSeq", "fromEndpointSeq", "fromEventSeq");
+            long actualWriter = firstLong(binding, "writerEventSeq",
+                    "writeSeq", "fromEndpointSeq", "fromEventSeq");
+            if (expectedWriter != actualWriter) return false;
+        }
+        if (hasAny(expected, "readerEventSeq", "readSeq",
+                "toEndpointSeq", "toEventSeq")) {
+            long expectedReader = firstLong(expected, "readerEventSeq",
+                    "readSeq", "toEndpointSeq", "toEventSeq");
+            long actualReader = firstLong(binding, "readerEventSeq",
+                    "readSeq", "toEndpointSeq", "toEventSeq");
+            if (expectedReader != actualReader) return false;
+        }
+        return true;
+    }
+
+    private static boolean hasAny(JsonObject object, String... fields) {
+        if (object == null) return false;
+        for (String field : fields) {
+            if (object.has(field)) return true;
+        }
+        return false;
+    }
+
+    private static String bindingRelationKind(JsonObject binding) {
+        String explicit = firstNonBlank(string(binding, "relationKind"),
+                string(binding, "relation"));
+        if ("EQUALITY".equals(explicit) || "READ_FROM".equals(explicit)) {
+            return explicit;
+        }
+        String kind = string(binding, "kind");
+        if ("SYMBOLIC_EQUALITY".equals(kind)) return "EQUALITY";
+        if ("VERSIONED_HEAP_READ_FROM".equals(kind)) return "READ_FROM";
+        String authority = string(binding, "selectionAuthority");
+        if ("RUNTIME_CONFIRMED_VALUE_EQUALITY".equals(authority)) {
+            return "EQUALITY";
+        }
+        if ("RUNTIME_CONFIRMED_READ_FROM".equals(authority)) {
+            return "READ_FROM";
+        }
+        return "";
     }
 
     private static boolean bindingTargets(JsonObject binding, String region,
@@ -1470,7 +1564,10 @@ public final class ConcolicSmtComposer {
         private void addDirectBindingIfPresent(ProducerKey source,
                                                String targetRegion,
                                                String targetInstance,
-                                               String targetInput) {
+                                               String targetInput,
+                                               JsonObject expectedRelation,
+                                               JsonObject expectedBinding,
+                                               String expectedRelationKind) {
             JsonObject summary = selectedSummaries.get(source);
             if (summary == null) return;
             List<JsonObject> matches = new ArrayList<>();
@@ -1481,7 +1578,12 @@ public final class ConcolicSmtComposer {
                 if (!source.instanceId.equals(bindingSourceInstance(binding))
                         || !source.outputPort.equals(
                         bindingSourceOutput(binding))
-                        || !trustedRuntimeReadFrom(binding)
+                        || !trustedRuntimeComposition(binding)
+                        || !sameCompositionRelation(binding,
+                        expectedRelation, expectedRelationKind)
+                        || expectedBinding != null
+                        && !sameCompositionRelation(binding,
+                        expectedBinding, expectedRelationKind)
                         || !bindingTargets(binding, targetRegion,
                         targetInstance, targetInput)) {
                     continue;
@@ -3005,8 +3107,7 @@ public final class ConcolicSmtComposer {
                         && count > 0
                         && identity.equals(function + "#" + count)
                         && "currentTimeMills".equals(function)
-                        && "<java.lang.System: long currentTimeMillis()>"
-                        .concat(".return").equals(cell)
+                        && SymbolicEnvironment.isCurrentTimeMillisReturn(cell)
                         && "J".equals(string(row, "javaTypeDescriptor"))
                         && "ENVIRONMENT".equals(string(row, "sourceKind"))
                         && "VM_INTRINSIC_PLACEHOLDER".equals(string(row,
@@ -5899,11 +6000,16 @@ public final class ConcolicSmtComposer {
                         || !relevantRegions.contains(regionOf(to))) {
                     continue;
                 }
+                JsonArray bindings = selectedBindings(relation);
+                if (!allTrustedReadFromEvidence(bindings)) {
+                    unsupported.add("UntrustedVersionedStateReadFrom:"
+                            + string(relation, "edgeId"));
+                    continue;
+                }
                 if (assertPortEquality(from, to,
                         "read_from_" + stats.readFrom)) {
                     stats.readFrom++;
                 }
-                JsonArray bindings = selectedBindings(relation);
                 for (int index = 0; index < bindings.size(); index++) {
                     JsonObject binding = bindings.get(index).getAsJsonObject();
                     if (!bool(binding, "orderConfirmed", false)) continue;
@@ -5952,6 +6058,12 @@ public final class ConcolicSmtComposer {
                             || !relevantRegions.contains(regionOf(to))) {
                         continue;
                     }
+                    if (!allTrustedReadFromEvidence(
+                            selectedBindings(relation))) {
+                        unsupported.add("UntrustedAlternativeWriterReadFrom:"
+                                + groupId + ":" + index);
+                        continue;
+                    }
                     String guard = firstNonBlank(string(relation,
                             "guardSymbol"), "writer_guard__"
                             + smtName(groupId + "_" + index));
@@ -5984,6 +6096,18 @@ public final class ConcolicSmtComposer {
                 stats.alternativeWriterGroups++;
             }
             return stats;
+        }
+
+        private boolean allTrustedReadFromEvidence(JsonArray bindings) {
+            if (bindings == null || bindings.size() == 0) return false;
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()
+                        || !AutomaticRegionEdge.trustedReadFromEvidence(
+                        element.getAsJsonObject())) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private boolean assertGuardedPortEquality(String left, String right,
@@ -6109,7 +6233,9 @@ public final class ConcolicSmtComposer {
                             + ":" + output + "->" + input);
                     continue;
                 }
-                if (!trustedRuntimeReadFrom(binding)) {
+                boolean valueEquality = trustedRuntimeValueEquality(binding);
+                boolean readFrom = trustedRuntimeReadFrom(binding);
+                if (!valueEquality && !readFrom) {
                     heapGap(region, "EdgeBindingAuthorityGap@" + region
                             + ":" + output + "->" + input);
                     continue;
@@ -6119,34 +6245,41 @@ public final class ConcolicSmtComposer {
                             + ":" + output + "->" + input);
                     continue;
                 }
-                if (!bool(binding, "objectIdentityConfirmed", false)) {
-                    heapGap(region, "EdgeBindingIdentityGap@" + region
-                            + ":" + output + "->" + input);
-                    continue;
-                }
-                int writeSeq = firstInteger(binding, "writerEventSeq",
-                        "writeSeq", Integer.MIN_VALUE);
-                int readSeq = firstInteger(binding, "readerEventSeq",
-                        "readSeq", Integer.MIN_VALUE);
-                int receiver = integer(binding, "receiverObjectId", 0);
-                if (writeSeq == Integer.MIN_VALUE
-                        || readSeq == Integer.MIN_VALUE
+                long writeSeq = firstLong(binding, "writerEventSeq",
+                        "writeSeq", "fromEndpointSeq", "fromEventSeq");
+                long readSeq = firstLong(binding, "readerEventSeq",
+                        "readSeq", "toEndpointSeq", "toEventSeq");
+                if (writeSeq < 0L || readSeq < 0L
                         || writeSeq >= readSeq) {
                     heapGap(region, "EdgeBindingSequenceGap@" + region
                             + ":" + output + "->" + input);
                     continue;
                 }
-                if (receiver == 0) {
-                    heapGap(region, "EdgeBindingIdentityGap@" + region
-                            + ":zero-receiver");
-                    continue;
+                int receiver = 0;
+                if (readFrom) {
+                    if (!bool(binding, "objectIdentityConfirmed", false)) {
+                        heapGap(region, "EdgeBindingIdentityGap@" + region
+                                + ":" + output + "->" + input);
+                        continue;
+                    }
+                    receiver = integer(binding, "receiverObjectId", 0);
+                    if (receiver == 0) {
+                        heapGap(region, "EdgeBindingIdentityGap@" + region
+                                + ":zero-receiver");
+                        continue;
+                    }
                 }
                 if (!assertPortEquality(output, input, label)) {
                     heapGap(region, "EdgeBindingEqualityGap@" + region
                             + ":" + output + "->" + input);
                     continue;
                 }
-                stats.readFrom++;
+                if (valueEquality) {
+                    stats.equalities++;
+                    stats.runtimeValueEqualities++;
+                } else {
+                    stats.readFrom++;
+                }
                 stats.edgeBindings++;
 
                 String write = "event_write_" + smtName(label);
@@ -6160,6 +6293,13 @@ public final class ConcolicSmtComposer {
                 assertNamed("order_" + label,
                         "(< " + write + " " + read + ")");
                 stats.orders++;
+
+                // A complete serialized value is sufficient for an RPC or
+                // SASL equality. The receiver-side object is normally a new
+                // allocation, so object identity would be a false constraint.
+                if (valueEquality) {
+                    continue;
+                }
 
                 String writerReceiver = "receiver_write_"
                         + smtName(label);
@@ -7151,6 +7291,7 @@ public final class ConcolicSmtComposer {
     private static final class MergeStats {
         private int equalities;
         private int readFrom;
+        private int runtimeValueEqualities;
         private int orders;
         private int identities;
         private int edgeBindings;
@@ -7160,6 +7301,7 @@ public final class ConcolicSmtComposer {
         private void add(MergeStats other) {
             equalities += other.equalities;
             readFrom += other.readFrom;
+            runtimeValueEqualities += other.runtimeValueEqualities;
             orders += other.orders;
             identities += other.identities;
             edgeBindings += other.edgeBindings;
@@ -7588,11 +7730,13 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static int firstInteger(JsonObject object, String first,
-                                    String second, int fallback) {
-        int value = integer(object, first, Integer.MIN_VALUE);
-        return value != Integer.MIN_VALUE
-                ? value : integer(object, second, fallback);
+    private static long firstLong(JsonObject object, String... fields) {
+        for (String field : fields) {
+            if (object != null && object.has(field)) {
+                return longInteger(object, field, -1L);
+            }
+        }
+        return -1L;
     }
 
     private static boolean bool(JsonObject object, String field,

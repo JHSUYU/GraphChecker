@@ -86,6 +86,163 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void hdfsDataXceiverDynamicNamesUseReceiverOrdinalAndStableRole()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<org.apache.hadoop.hdfs.security.token.block."
+                    + "BlockTokenSecretManager: byte[] retrievePassword("
+                    + "org.apache.hadoop.hdfs.security.token.block."
+                    + "BlockTokenIdentifier)>";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Files.write(regions, region("REGION.HDFS.TARGET", root).getBytes(
+                    StandardCharsets.UTF_8));
+            String firstName = "DataXceiver for client /127.0.0.1:47722 "
+                    + "[Replacing block BP-1:blk_1 from dn-1]";
+            String secondName = "DataXceiver for client /127.0.0.1:59381 "
+                    + "[Replacing block BP-2:blk_9 from dn-2]";
+            String manager = "org.apache.hadoop.hdfs.security.token.block."
+                    + "BlockTokenSecretManager";
+            String identifier =
+                    "org.apache.hadoop.hdfs.security.token.block."
+                            + "BlockTokenIdentifier";
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    rootContextMethod(1, root, 1, firstName, manager, 1307L),
+                    rootContextMethod(3, root, 2, secondName, manager, 1441L));
+            List<RuntimeRegionPlanner.RuntimeEvent> events = Arrays.asList(
+                    methodArgument(2, root, 1, 0, identifier),
+                    methodArgument(4, root, 2, 0, identifier));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), methods, events,
+                    Collections.emptyList());
+
+            Map<String, Object> second = result.activations.get(1);
+            assertFalse("ephemeral DataXceiver name must not enter replay "
+                    + "identity", second.containsKey("threadName"));
+            assertEquals("DataXceiver:ReplacingBlock",
+                    second.get("rootContextThreadRole"));
+            assertEquals(Boolean.TRUE,
+                    second.get("rootContextThreadNameOmitted"));
+            assertEquals(RuntimeRegionPlanner
+                            .HDFS_DATAXCEIVER_CONTEXT_NORMALIZATION_AUTHORITY,
+                    second.get("rootContextNormalizationAuthority"));
+            assertEquals("dynamic names share one receiver-class context",
+                    2, second.get("invocationOrdinalWithinContext"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> selector = (Map<String, Object>) second.get(
+                    "runtimeRootArgumentSelector");
+            assertEquals(2, selector.get("receiverOrdinal"));
+            assertEquals(1, selector.get("matchOrdinalWithinReceiver"));
+
+            Map<String, Object> instance = result.instances.get(1);
+            assertEquals("instance rows retain the raw observation",
+                    secondName, instance.get("threadName"));
+            assertEquals(secondName, instance.get("observedThreadName"));
+            assertEquals("DataXceiver:ReplacingBlock",
+                    instance.get("threadRole"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void rootArgumentParameterIndexAfterPrimitiveIsNotDropped()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.Actor: void process(int,example.Command)>";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Files.write(regions, region("REGION.PARAMETERS", root).getBytes(
+                    StandardCharsets.UTF_8));
+            RuntimeRegionPlanner.MethodEvent method = methodWithReceiver(
+                    1, root, 1, 101);
+            RuntimeRegionPlanner.RuntimeEvent command = methodArgument(
+                    2, root, 1, 1, "example.KeyUpdateCommand");
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), Collections.singletonList(method),
+                    Collections.singletonList(command),
+                    Collections.emptyList());
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> selector = (Map<String, Object>) result
+                    .activations.get(0).get("runtimeRootArgumentSelector");
+            assertTrue(selector != null);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> predicates =
+                    (List<Map<String, Object>>) selector.get("predicates");
+            assertEquals(1, predicates.size());
+            assertEquals(1, predicates.get(0).get("argumentIndex"));
+            assertEquals("example.KeyUpdateCommand",
+                    predicates.get(0).get("runtimeType"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void rootArgumentTypeIndexIsLinearAndPreservesAmbiguity() {
+        String root = "<example.Actor: void process(example.Command,"
+                + "example.Service)>";
+        String other = "<example.OtherActor: void process(example.Command)>";
+        List<RuntimeRegionPlanner.RuntimeEvent> events = new ArrayList<>();
+        for (int index = 0; index < 30000; index++) {
+            events.add(new RuntimeRegionPlanner.RuntimeEvent(index + 1L,
+                    "BRANCH", "<example.Noise: void run()>",
+                    1000L + index, 0L, 0L, "noise#u1", -1, "", 0,
+                    "", true, false));
+        }
+        events.add(methodArgument(30001, root, 41, 0,
+                "example.KeyUpdateCommand"));
+        events.add(methodArgument(30002, root, 41, 0,
+                "example.KeyUpdateCommand"));
+        events.add(methodArgument(30003, root, 41, 1,
+                "example.Service"));
+        events.add(methodArgument(30004, root, 42, 0,
+                "example.OtherCommand"));
+        events.add(methodArgument(30005, other, 41, 0,
+                "example.UnrelatedCommand"));
+        events.add(methodArgument(30006, root, 43, 0,
+                "example.FirstCommand"));
+        events.add(methodArgument(30007, root, 43, 0,
+                "example.SecondCommand"));
+        events.add(methodArgument(30008, root, 43, 0,
+                "example.FirstCommand"));
+        events.add(methodArgument(30009, root, 43, 1,
+                "example.Service"));
+
+        RuntimeRegionPlanner.RootArgumentRuntimeTypeIndex index =
+                RuntimeRegionPlanner.RootArgumentRuntimeTypeIndex.build(
+                        events);
+        RuntimeRegionPlanner.MethodEvent target = methodWithReceiver(
+                1, root, 41, 101);
+        Map<Integer, String> exact = index.typesFor(target);
+        assertEquals("example.KeyUpdateCommand", exact.get(0));
+        assertEquals("example.Service", exact.get(1));
+
+        Map<Integer, String> ambiguous = index.typesFor(methodWithReceiver(
+                2, root, 43, 102));
+        assertFalse("a conflicting argument index remains ambiguous even if "
+                + "a later row repeats the first type",
+                ambiguous.containsKey(0));
+        assertEquals("example.Service", ambiguous.get(1));
+        assertEquals(events.size(), index.scannedEventCount());
+        assertEquals(9, index.indexedArgumentEventCount());
+        assertEquals(4, index.indexedCallCount());
+
+        for (int lookup = 0; lookup < 10000; lookup++) {
+            assertEquals(exact, index.typesFor(target));
+        }
+        assertEquals("lookups do not rescan the large runtime event list",
+                events.size(), index.scannedEventCount());
+    }
+
+    @Test
     public void argumentSelectorOrdinalsAreRelativeToStableRootContext()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -306,6 +463,11 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         assertDeferredInputReady(
                 "<java.lang.System: long currentTimeMillis()>.return",
+                "ENVIRONMENT", "ENVIRONMENT_MODEL",
+                "EXACT_VM_INTRINSIC_PLACEHOLDER_"
+                        + "SCHEDULER_VALIDATION_V1");
+        assertDeferredInputReady(
+                "<org.apache.hadoop.util.Time: long now()>.return",
                 "ENVIRONMENT", "ENVIRONMENT_MODEL",
                 "EXACT_VM_INTRINSIC_PLACEHOLDER_"
                         + "SCHEDULER_VALIDATION_V1");
@@ -538,6 +700,122 @@ public class RuntimeRegionPlannerTest {
                     action.get("consumedFieldBindingComplete"));
             assertEquals(Boolean.FALSE,
                     result.activations.get(0).get("symbolicReady"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void uniqueContainedProtocolFieldReadMaterializesItsExactSite()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            String root = "<example.DataXceiver: void run()>";
+            String decoder = "<example.Protocol: void decode()>";
+            String field = "<example.Transport: example.Manager manager>";
+            String wrong = "<example.Unrelated: example.Manager manager>";
+            String row = "{\"regionId\":\"REGION.PROTOCOL\","
+                    + "\"rootMethod\":\"" + root + "\","
+                    + "\"anchorMethod\":\"" + decoder + "\","
+                    + "\"methods\":[\"" + root + "\",\""
+                    + decoder + "\"],\"symbolicInputs\":[{"
+                    + "\"portId\":\"REGION.PROTOCOL.in.0\","
+                    + "\"cell\":\"" + field + "#field:map\","
+                    + "\"sourceKind\":\"PROTOCOL_INPUT\","
+                    + "\"projection\":\"field:map\"}],"
+                    + "\"outputs\":[],\"branchPolicies\":[],"
+                    + "\"models\":[]}\n";
+            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.MethodEvent rootCall = methodContext(1,
+                    root, 1, "DATANODE", "DataXceiver", 55L);
+            RuntimeRegionPlanner.MethodEvent decoderCall =
+                    new RuntimeRegionPlanner.MethodEvent(2, "testHandle",
+                            "DATANODE", "DataXceiver", 55L, decoder, 73,
+                            "example.Protocol", 2, 1, 0, 200L);
+            RuntimeRegionPlanner.FieldAccessEvent wrongOwner = exactFieldRead(
+                    3, decoder, 2, 6, wrong, 901, 902);
+            RuntimeRegionPlanner.FieldAccessEvent exact = exactFieldRead(
+                    4, decoder, 2, 7, field, 273814159, 128017166);
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), Arrays.asList(rootCall, decoderCall),
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Arrays.asList(wrongOwner, exact));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> action = ((List<Map<String, Object>>)
+                    result.activations.get(0).get("symbolize")).get(0);
+
+            assertEquals(Boolean.TRUE, action.get("observed"));
+            assertEquals("HEAP_OBJECT_FIELD", action.get("location"));
+            assertEquals("FIELD_ACCESS", action.get("bindingMode"));
+            assertEquals("example.Transport", action.get("accessOwnerClass"));
+            assertEquals("example.Manager", action.get("accessFieldType"));
+            assertEquals("manager", action.get("accessField"));
+            assertEquals(field, action.get("accessFieldSignature"));
+            assertEquals(decoder, action.get("accessMethod"));
+            assertEquals(7, action.get("accessUnitIndex"));
+            assertEquals(decoder + "#u7", action.get("accessSiteId"));
+            assertEquals(RuntimeRegionPlanner
+                            .RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY,
+                    action.get("accessSiteAuthority"));
+            assertEquals(273814159,
+                    action.get("fieldReceiverObjectId"));
+            assertFalse(result.activationsJsonl().contains(wrong));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void repeatedContainedProtocolFieldReadRemainsDeferred()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            String root = "<example.DataXceiver: void run()>";
+            String decoder = "<example.Protocol: void decode()>";
+            String field = "<example.Transport: example.Manager manager>";
+            String row = "{\"regionId\":\"REGION.PROTOCOL\","
+                    + "\"rootMethod\":\"" + root + "\","
+                    + "\"anchorMethod\":\"" + decoder + "\","
+                    + "\"methods\":[\"" + root + "\",\""
+                    + decoder + "\"],\"symbolicInputs\":[{"
+                    + "\"portId\":\"REGION.PROTOCOL.in.0\","
+                    + "\"cell\":\"" + field + "#field:map\","
+                    + "\"sourceKind\":\"PROTOCOL_INPUT\","
+                    + "\"projection\":\"field:map\"}],"
+                    + "\"outputs\":[],\"branchPolicies\":[],"
+                    + "\"models\":[]}\n";
+            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            RuntimeRegionPlanner.MethodEvent rootCall = methodContext(1,
+                    root, 1, "DATANODE", "DataXceiver", 55L);
+            RuntimeRegionPlanner.MethodEvent decoderCall =
+                    new RuntimeRegionPlanner.MethodEvent(2, "testHandle",
+                            "DATANODE", "DataXceiver", 55L, decoder, 73,
+                            "example.Protocol", 2, 1, 0, 200L);
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), Arrays.asList(rootCall, decoderCall),
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Arrays.asList(exactFieldRead(3, decoder, 2, 7, field,
+                            91, 701), exactFieldRead(4, decoder, 2, 8,
+                            field, 92, 702)));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> action = ((List<Map<String, Object>>)
+                    result.activations.get(0).get("symbolize")).get(0);
+
+            assertEquals(Boolean.FALSE, action.get("observed"));
+            assertEquals("REGION_LIVE_IN", action.get("location"));
+            assertEquals(Boolean.TRUE, action.get("deferredResolution"));
+            assertEquals("MISSING_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE",
+                    action.get("fieldBindingGap"));
+            assertFalse(action.containsKey("accessSiteAuthority"));
         } finally {
             folder.delete();
         }
@@ -800,6 +1078,80 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
+    }
+
+    @Test
+    public void confirmsCompletedContainedMapMutationAcrossTruncatedLoopPath()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = containerMutationReadFromResult(
+                true, 128017166);
+        Map<String, Object> validation = result.edgeValidations.get(0);
+        assertEquals("CONFIRMED_READ_FROM", validation.get("status"));
+        assertEquals(1, validation.get("confirmedReadFromPairCount"));
+        assertTrue(String.valueOf(validation.get("readFromAuthorities"))
+                .contains(RuntimeRegionPlanner
+                        .CONTAINER_MUTATION_READ_FROM_AUTHORITY));
+        assertTrue(String.valueOf(validation.get("readFromAssumptions"))
+                .contains(RuntimeRegionPlanner
+                        .TRUNCATED_PATH_READ_FROM_ASSUMPTION));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> binding = ((List<Map<String, Object>>)
+                validation.get("validatedBindings")).get(0);
+        assertEquals("FIELD_CONTAINER_MUTATION",
+                binding.get("writeEvidenceKind"));
+        assertEquals(5197L, binding.get("writerFieldReadSeq"));
+        assertEquals(5207L, binding.get("mutatorEnterSeq"));
+        assertEquals(5211L, binding.get("mutationCompletionSeq"));
+        assertEquals(5211L, binding.get("writeSeq"));
+        assertEquals(5207L, binding.get("mutationInvocationId"));
+        assertEquals(128017166, binding.get("valueObjectId"));
+        assertEquals(128017166, binding.get("readerValueObjectId"));
+        assertEquals(Boolean.TRUE,
+                binding.get("fieldReceiverIdentityConfirmed"));
+        assertEquals(Boolean.TRUE,
+                binding.get("containerIdentityConfirmed"));
+        assertEquals(RuntimeRegionPlanner
+                        .CONTAINER_MUTATOR_CONTRACT_AUTHORITY,
+                binding.get("mutationContractAuthority"));
+        assertEquals(RuntimeRegionPlanner.TRACE_ORDER_AUTHORITY,
+                binding.get("orderAuthority"));
+        assertEquals(RuntimeRegionPlanner
+                        .CONTAINER_MUTATION_SEMANTIC_ASSUMPTION,
+                binding.get("containerMutationSemanticAssumption"));
+
+        Map<String, Object> derived = null;
+        for (Map<String, Object> activation : result.activations) {
+            if (String.valueOf(activation.get("activationId"))
+                    .startsWith("ACT.UPSTREAM.")) {
+                derived = activation;
+                break;
+            }
+        }
+        assertTrue(derived != null);
+        assertEquals(Boolean.FALSE, derived.get("replayable"));
+        assertEquals(Boolean.TRUE, derived.get("readFromWitnessOnly"));
+        assertEquals("RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED",
+                derived.get("replayMode"));
+        assertEquals(Boolean.FALSE, derived.get("symbolicReady"));
+    }
+
+    @Test
+    public void containerMutationReadFromRequiresReturnAndSameContainer()
+            throws Exception {
+        RuntimeRegionPlanner.Result missingReturn =
+                containerMutationReadFromResult(false, 128017166);
+        assertEquals(0, missingReturn.edgeValidations.get(0).get(
+                "confirmedReadFromPairCount"));
+        assertFalse("CONFIRMED_READ_FROM".equals(
+                missingReturn.edgeValidations.get(0).get("status")));
+
+        RuntimeRegionPlanner.Result differentContainer =
+                containerMutationReadFromResult(true, 128017167);
+        assertEquals(0, differentContainer.edgeValidations.get(0).get(
+                "confirmedReadFromPairCount"));
+        assertFalse("CONFIRMED_READ_FROM".equals(
+                differentContainer.edgeValidations.get(0).get("status")));
     }
 
     @Test
@@ -1462,12 +1814,16 @@ public class RuntimeRegionPlannerTest {
                             "FIELD_READ", updater, 11, state, 42, 88, "");
             RuntimeRegionPlanner.RuntimeEvent mutation =
                     new RuntimeRegionPlanner.RuntimeEvent(4,
-                            "CALL_SITE_ENTER", updater, 11, 0, 0,
+                            "CALL_SITE_ENTER", updater, 11, 40, 0,
                             updaterSite,
                             "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
                             -1, "java.util.Map", 88, "", false, false);
+            RuntimeRegionPlanner.RuntimeEvent mutationReturn =
+                    new RuntimeRegionPlanner.RuntimeEvent(5,
+                            "CALL_SITE_RETURN", updater, 11, 40, 0,
+                            updaterSite, -1, "", 0, "", false, false);
             RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH",
+                    new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH",
                             updater, 11, 0, 0, runtimeBranch, -1, "", 0,
                             "", true, true);
             RuntimeRegionPlanner.FieldAccessEvent downstreamRead =
@@ -1477,7 +1833,7 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), edges.toFile(),
                     Arrays.asList(updateRoot, readRoot),
-                    Arrays.asList(mutation, branch),
+                    Arrays.asList(mutation, mutationReturn, branch),
                     Arrays.asList(payloadRead, stateRead, downstreamRead));
 
             assertEquals(3, result.activations.size());
@@ -2734,6 +3090,115 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void canonicalProducerOutputCapturesProjectedLocalFingerprint()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            String producer =
+                    "<example.BlockManager: void addKeyUpdateCommand()>";
+            String consumer =
+                    "<example.OfferService: void processCommand()>";
+            String rawSource = producer + "::$r5#field:allKeys";
+            String rawTarget = consumer + "::$r59#field:allKeys";
+            String canonical =
+                    "<example.ExportedKeys: example.Key[] allKeys>";
+            String outputPort = "REGION.NN.out.keys";
+            String site = consumer
+                    + "#synthetic:projected_heartbeat_key_update";
+            String producerRegion = "{\"regionId\":\"REGION.NN\","
+                    + "\"rootMethod\":\"" + producer + "\","
+                    + "\"anchorMethod\":\"" + producer + "\","
+                    + "\"methods\":[\"" + producer + "\"],"
+                    + "\"symbolicInputs\":[],\"outputs\":[{"
+                    + "\"portId\":\"" + outputPort + "\","
+                    + "\"cell\":\"" + canonical + "\","
+                    + "\"kind\":\"HEAP_STATE\"}],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            Files.write(regions, (producerRegion
+                    + region("REGION.DN", consumer)).getBytes(
+                    StandardCharsets.UTF_8));
+            String edge = "{\"edgeId\":\"E.HEARTBEAT.KEYS\","
+                    + "\"fromRegion\":\"REGION.NN\","
+                    + "\"toRegion\":\"REGION.DN\","
+                    + "\"fromPort\":\"" + rawSource + "\","
+                    + "\"fromOutputPort\":\"" + outputPort + "\","
+                    + "\"fromOutputCell\":\"" + canonical + "\","
+                    + "\"aliasProofEdgeIds\":[\"DF.1\",\"DF.2\"],"
+                    + "\"aliasProofAuthority\":"
+                    + "\"STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
+                    + "AND_DECLARED_RETURN_FIELD\","
+                    + "\"aliasProofComplete\":true,"
+                    + "\"toPort\":\"" + rawTarget + "\","
+                    + "\"kind\":\"HEARTBEAT_TRANSFER\","
+                    + "\"candidateRelation\":\"EQUALITY\","
+                    + "\"requiresOrder\":true,"
+                    + "\"siteId\":\"" + site + "\"}\n";
+            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.MethodEvent send = methodContext(1,
+                    producer, 11, "NAMENODE", "IPC Server", 31L);
+            RuntimeRegionPlanner.MethodEvent receive = methodContext(4,
+                    consumer, 22, "DATANODE", "BPServiceActor", 32L);
+            String fingerprint = "sha256:heartbeat-all-keys";
+            RuntimeRegionPlanner.FieldAccessEvent capturedOutput =
+                    new RuntimeRegionPlanner.FieldAccessEvent(2,
+                            "FIELD_WRITE", producer, 11, canonical,
+                            71, 81, "", fingerprint, true, 3,
+                            "COMPLETE");
+            RuntimeRegionPlanner.RuntimeEvent received =
+                    new RuntimeRegionPlanner.RuntimeEvent(5,
+                            "CALL_SITE_RETURN", consumer, 22, 9, 0, site,
+                            "<example.Command: example.Key[] getAllKeys()>",
+                            -1, "example.Key[]", 82, "", false, false,
+                            fingerprint, true, 3, "COMPLETE");
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), edges.toFile(),
+                    Arrays.asList(send, receive),
+                    Collections.singletonList(received),
+                    Collections.singletonList(capturedOutput));
+
+            Map<String, Object> validation = result.edgeValidations.get(0);
+            assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
+                    validation.get("status"));
+            assertEquals(rawSource, validation.get("fromPort"));
+            assertEquals(rawTarget, validation.get("toPort"));
+            assertEquals(canonical, validation.get("fromOutputCell"));
+            assertEquals(1,
+                    validation.get("confirmedValueEqualityPairCount"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> binding = ((List<Map<String, Object>>)
+                    validation.get("validatedBindings")).get(0);
+            assertEquals("FIELD_VALUE",
+                    binding.get("fromFingerprintSource"));
+            assertEquals("MAPPED_CALL_RETURN_SITE",
+                    binding.get("toFingerprintSource"));
+
+            // Canonical capture is authorized only by the complete proof.
+            Files.write(edges, edge.replace(
+                    "\"aliasProofComplete\":true",
+                    "\"aliasProofComplete\":false").getBytes(
+                    StandardCharsets.UTF_8));
+            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
+                    regions.toFile(), edges.toFile(),
+                    Arrays.asList(send, receive),
+                    Collections.singletonList(received),
+                    Collections.singletonList(capturedOutput));
+            assertEquals(0, rejected.edgeValidations.get(0).get(
+                    "confirmedValueEqualityPairCount"));
+            assertFalse(Boolean.TRUE.equals(rejected.edgeValidations.get(0)
+                    .get("composable")));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void lowerRegionMethodCannotImpersonateProtocolPortEndpoint()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -3754,17 +4219,120 @@ public class RuntimeRegionPlannerTest {
                             "FIELD_READ", updater, 11, state, 42, 88, "");
             RuntimeRegionPlanner.RuntimeEvent mutation =
                     new RuntimeRegionPlanner.RuntimeEvent(3,
-                            "CALL_SITE_ENTER", updater, 11, 0, 0,
+                            "CALL_SITE_ENTER", updater, 11, 30, 0,
                             updaterSite,
                             "<java.util.Map: java.lang.Object put(java.lang.Object,java.lang.Object)>",
                             -1, "java.util.Map", 88, "", false, false);
+            RuntimeRegionPlanner.RuntimeEvent mutationReturn =
+                    new RuntimeRegionPlanner.RuntimeEvent(4,
+                            "CALL_SITE_RETURN", updater, 11, 30, 0,
+                            updaterSite, -1, "", 0, "", false, false);
             RuntimeRegionPlanner.FieldAccessEvent downstreamRead =
                     new RuntimeRegionPlanner.FieldAccessEvent(11,
                             "FIELD_READ", reader, 22, state, 42, 88, "");
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
                     Arrays.asList(writeRoot, readRoot),
-                    Collections.singletonList(mutation),
+                    Arrays.asList(mutation, mutationReturn),
                     Arrays.asList(stateRead, downstreamRead));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static RuntimeRegionPlanner.Result containerMutationReadFromResult(
+            boolean includeReturn, int readerContainerObjectId)
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            String writerRoot = "<example.KeyUpdater: void loop()>";
+            String addKeys = "<example.SecretManager: void addKeys()>";
+            String reader = "<example.SecretManager: void retrieve()>";
+            String field = "<example.SecretManager: java.util.Map allKeys>";
+            String writerRegion = "{\"regionId\":\"REGION.W\","
+                    + "\"rootMethod\":\"" + writerRoot + "\","
+                    + "\"anchorMethod\":\"" + addKeys + "\","
+                    + "\"methods\":[\"" + writerRoot + "\",\""
+                    + addKeys + "\"],\"symbolicInputs\":[],"
+                    + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
+                    + "\"cell\":\"" + field + "\","
+                    + "\"kind\":\"HEAP_STATE\"}],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            String readerRegion = "{\"regionId\":\"REGION.R\","
+                    + "\"rootMethod\":\"" + reader + "\","
+                    + "\"anchorMethod\":\"" + reader + "\","
+                    + "\"methods\":[\"" + reader + "\"],"
+                    + "\"symbolicInputs\":[{\"portId\":"
+                    + "\"REGION.R.in.0\",\"cell\":\"" + field + "\","
+                    + "\"sourceKind\":\"SHARED_HEAP\","
+                    + "\"projection\":\"field:allKeys\"}],"
+                    + "\"outputs\":[],\"branchPolicies\":[],"
+                    + "\"models\":[]}\n";
+            Files.write(regions, (writerRegion + readerRegion).getBytes(
+                    StandardCharsets.UTF_8));
+            Files.write(edges, ("{\"edgeId\":\"E.ALL_KEYS\","
+                    + "\"fromRegion\":\"REGION.W\","
+                    + "\"toRegion\":\"REGION.R\","
+                    + "\"fromPort\":\"" + field + "\","
+                    + "\"toPort\":\"" + field + "\","
+                    + "\"kind\":\"SHARED_STATE\","
+                    + "\"relation\":\"READ_FROM_CANDIDATE\","
+                    + "\"requiresOrder\":true,"
+                    + "\"requiresObjectIdentity\":true}\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.MethodEvent writer = methodContext(1,
+                    writerRoot, 1, "DATANODE", "KeyUpdater", 101L);
+            RuntimeRegionPlanner.MethodEvent contained =
+                    new RuntimeRegionPlanner.MethodEvent(5190, "testHandle",
+                            "DATANODE", "KeyUpdater", 101L, addKeys,
+                            273814159, "example.SecretManager", 2, 1, 0,
+                            519000L);
+            RuntimeRegionPlanner.MethodEvent read = methodContext(14000,
+                    reader, 3, "DATANODE", "DataXceiver", 202L);
+            List<RuntimeRegionPlanner.RuntimeEvent> runtime =
+                    new ArrayList<>();
+            for (int index = 0; index < 513; index++) {
+                runtime.add(new RuntimeRegionPlanner.RuntimeEvent(index + 2L,
+                        "BRANCH", writerRoot, 1, 0, 0,
+                        writerRoot + "#u" + index, -1, "", 0, "",
+                        true, (index & 1) == 0));
+            }
+            String put = "<java.util.Map: java.lang.Object put("
+                    + "java.lang.Object,java.lang.Object)>";
+            runtime.add(new RuntimeRegionPlanner.RuntimeEvent(5199,
+                    "CALL_SITE_ENTER", addKeys, 2, 5199, 0,
+                    addKeys + "#u22", put, -1, "java.util.HashMap",
+                    128017166, "", false, false));
+            runtime.add(new RuntimeRegionPlanner.RuntimeEvent(5207,
+                    "CALL_SITE_ENTER", addKeys, 2, 5207, 0,
+                    addKeys + "#u23", put, -1, "java.util.HashMap",
+                    128017166, "", false, false));
+            if (includeReturn) {
+                runtime.add(new RuntimeRegionPlanner.RuntimeEvent(5201,
+                        "CALL_SITE_RETURN", addKeys, 2, 5199, 0,
+                        addKeys + "#u22", -1, "", 0, "", false,
+                        false));
+                runtime.add(new RuntimeRegionPlanner.RuntimeEvent(5211,
+                        "CALL_SITE_RETURN", addKeys, 2, 5207, 0,
+                        addKeys + "#u23", -1, "", 0, "", false,
+                        false));
+            }
+            RuntimeRegionPlanner.FieldAccessEvent writerFieldRead =
+                    new RuntimeRegionPlanner.FieldAccessEvent(5197,
+                            "FIELD_READ", addKeys, 2, field, 273814159,
+                            128017166, "");
+            RuntimeRegionPlanner.FieldAccessEvent readerFieldRead =
+                    new RuntimeRegionPlanner.FieldAccessEvent(14261,
+                            "FIELD_READ", reader, 3, field, 273814159,
+                            readerContainerObjectId, "");
+            return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    Arrays.asList(writer, contained, read), runtime,
+                    Arrays.asList(writerFieldRead, readerFieldRead));
         } finally {
             folder.delete();
         }

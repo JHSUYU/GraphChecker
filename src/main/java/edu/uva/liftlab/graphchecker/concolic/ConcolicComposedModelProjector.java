@@ -2549,8 +2549,8 @@ public final class ConcolicComposedModelProjector {
                     ? "readSeq" : "";
             String producerPort = string(edge, "fromOutputPort");
             boolean exact = "READ_FROM".equals(relation)
-                    && "RUNTIME_CONFIRMED_READ_FROM".equals(string(edge,
-                    "selectionAuthority"))
+                    && AutomaticRegionEdge
+                    .trustedRuntimeReadFromBinding(edge)
                     && preMapInput.equals(string(edge, "toInputPort"))
                     && !consumerRegion.isEmpty()
                     && consumerRegion.equals(string(edge, "toRegion"))
