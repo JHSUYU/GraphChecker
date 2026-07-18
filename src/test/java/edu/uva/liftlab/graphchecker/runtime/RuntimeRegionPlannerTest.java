@@ -30,6 +30,44 @@ public class RuntimeRegionPlannerTest {
             "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>";
 
     @Test
+    public void hotPathRegexesArePrecompiledAndPreserveCellParsing()
+            throws Exception {
+        for (String name : Arrays.asList("PARAMETER_TYPE",
+                "PARAMETER_FIELD_PROJECTION", "UNIT_SITE_SUFFIX",
+                "UNSAFE_TOKEN_CHARACTERS", "JSON_QUOTED_STRING")) {
+            java.lang.reflect.Field field = RuntimeRegionPlanner.class
+                    .getDeclaredField(name);
+            int modifiers = field.getModifiers();
+            assertTrue(java.lang.reflect.Modifier.isStatic(modifiers));
+            assertTrue(java.lang.reflect.Modifier.isFinal(modifiers));
+            assertEquals(java.util.regex.Pattern.class, field.getType());
+        }
+
+        java.lang.reflect.Method declaredJavaType = RuntimeRegionPlanner.class
+                .getDeclaredMethod("declaredJavaType", String.class);
+        declaredJavaType.setAccessible(true);
+        String parameterProjection = HANDLE
+                + ".param0:example.Payload#field:entries";
+        assertEquals("example.Payload", declaredJavaType.invoke(null,
+                parameterProjection));
+        assertEquals("java.util.Map", declaredJavaType.invoke(null,
+                "<example.State: java.util.Map allKeys>"));
+
+        java.lang.reflect.Method fieldCell = RuntimeRegionPlanner.class
+                .getDeclaredMethod("fieldCell", String.class);
+        fieldCell.setAccessible(true);
+        Object parsed = fieldCell.invoke(null, parameterProjection);
+        java.lang.reflect.Field owner = parsed.getClass().getDeclaredField(
+                "owner");
+        java.lang.reflect.Field name = parsed.getClass().getDeclaredField(
+                "name");
+        owner.setAccessible(true);
+        name.setAccessible(true);
+        assertEquals("example.Payload", owner.get(parsed));
+        assertEquals("entries", name.get(parsed));
+    }
+
+    @Test
     public void activationCarriesStableReceiverAndThreadContextOrdinal()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

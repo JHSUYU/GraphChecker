@@ -33,6 +33,123 @@ Soot 和自定义 OpenJDK 修改都只用于在受控研究环境中观察和建
 和执行边界。这里的“固定”是为了保证实验可复现和不越界，不是说分析框架
 只能用于 HDFS；核心 concolic/worklist/IR/composer 仍应保持项目无关。
 
+### HDFS-11741 end-to-end checkpoint（2026-07-18）
+
+Hadoop worktree 保持 pre-fix commit，baseline test 未修改。v4 静态 catalog 和唯一一次
+baseline workload 的 runtime trace 已冻结；后续 composition/replay 只复用这些产物，不再
+重跑静态分析或 workload。配置指向：
+
+```text
+causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4
+experiments/hdfs/instrumented_classes.hdfs-11741-auto-smt-v4
+experiments/hdfs/concolic_classes.hdfs-11741-auto-smt-v4
+```
+
+已真实完成的证据链如下：
+
+- static graph 有 150,000 条边、64 个 region、8,728 条 region edge；SHA-256 分别为
+  `75ae3f56fe16c593edea3b39ee893bd15c3e9b3dd0666b9c10b055de8a8deb7b`、
+  `fcdf8dd9506fad7e6e17858f449a9ee13d1be98776ea06fb9427e725e77c151e`、
+  `34489ea70ad06f7c6627b3a56b2f6b23846f7d5b0ace5f618744caaf3245af30`；
+- 唯一 workload 运行 56.856 秒并通过，raw trace 有 839,101 行，streaming manifest
+  `CLOSED/complete`，没有 raw/call-tree/graph truncation；
+- offline aggregation 找到 430 个 region instance、499 个 activation、57 条 confirmed
+  read-from edge。12 个 `BPServiceActor.run` instance 只保留外部长期循环的有界 path
+  signature prefix（跳过 11,691 个重复 path event），authority 为
+  `CONFIGURED_BOUNDED_EXTERNAL_LOOP_PATH_PREFIX_V1`；
+- 自动选择 target `REGION.0`、NameNode `REGION.15`、DataNode `REGION.30` 和 Balancer
+  `REGION.2`。这些数字只是结果，policy 不含任何 `REGION.*`/`ACT.*` id；选择依据是 exact
+  root/anchor/method/cell selector。Balancer 静态 region 本身带 bounded/truncated 标记，
+  因此 manifest 另列 `STATIC_REGION_CATALOG_BOUNDED` approximation；
+- DN `ExportedBlockKeys.allKeys` 中的 `keyId` 与 `expiryDate` 分别绑定为 schema-1
+  `FIELD_ACCESS_HOOK` 和 schema-2 五边 `CONTAINER_SNAPSHOT`。内层 iterator 保留一个相关
+  symbolic entry：`expiry < Time.now() -> remove(keyId)`；
+- runtime 确认了 `REGION.30 allKeys -> REGION.0 allKeys` 的 shared-state read-from；没有
+  runtime SASL value equality。因此 PendingMove 的 decimal username round-trip 使用静态
+  codec template，并在 manifest 中明确标成 approximation，而不是伪装成 exact edge；
+- `Hdfs11741BootstrapComposer` 自动生成 24 条 SMT assertion，脚本真实调用配置的 Z3
+  4.8.12，返回 `sat`。模型给出一个 witness：symbolic key id `4`，key/DEK expiry `1`，
+  DN removal time `2`，Balancer send/observation time `3`，且
+  `exception_reached = true`。本次 composer fat JAR SHA-256 为
+  `20f3c1551f3afe21bc5766b7b1f82203522ddecf0fd67118aacf3d62f0484870`；
+- SMT SHA-256 为
+  `2acaabe4bd9c87b067961bb083fbae9b79242f34c75a41ee7e3fe9280d4a7642`；solver output
+  SHA-256 为
+  `699850679eec8454d6f6a353f83905ee354160bb6f69177290da7bb32923d47f`；
+- milestone 回归为 657 项 JUnit 全通过；`experiments/generic/test_workflow.sh`、
+  三线程 fixture 和 parallel HDFS concolic batch fixture 均通过。
+
+结果位于：
+
+```text
+causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4/hdfs-11741-bootstrap/
+  hdfs_11741_bootstrap.smt2
+  hdfs_11741_bootstrap_manifest.json
+  hdfs_11741_z3.out
+  hdfs_11741_z3_manifest.json
+```
+
+从冻结 artifacts 重现 composition 和求解：
+
+```bash
+mvn -q -DskipTests package
+experiments/hdfs/run_hdfs.sh hdfs-11741-bootstrap
+```
+
+输出目录是 immutable；若已存在，使用一个新的可配置目录：
+
+```bash
+CAUSYNTH_HDFS_BOOTSTRAP_OUTPUT_DIR=/path/to/fresh-output \
+  experiments/hdfs/run_hdfs.sh hdfs-11741-bootstrap
+```
+
+这个结果有意标记为 `complete=false`、`relationallyComplete=false`、
+`eligibleForApproximateBootstrapModel=true`。它证明在声明的一 DN、单相关 map entry、单个
+外层循环 witness 和显式 transport/cache approximation 下存在触发
+`allKeys.get(keyId) == null` 的模型；它不是 sound/complete 的全 HDFS 证明，也尚未经过
+自然 replay 验证。
+
+#### Activation-specific concolic 静态复用
+
+纯 concolic replay class generation 不再为每个 activation 重建同一份 150,000-edge
+静态图。`freeze-concolic-static` 会把 regions、coverage、static graph、region edges、
+target spec、原始 class tree 和 supplemental class tree 绑定到一个只读 manifest；loader
+再用同目录的 schema-2 `schedule_input_provenance.json` 校验 exact plan、regions 和 graph
+SHA。冻结前还会强制 static-process provenance 中的 Hadoop source revision、target-spec
+路径/SHA 和 class-tree 路径完全一致。每个 worker 只流式投影所选 region 的 `methods` 与
+`branchPolicies`，继续复用原有 root/materialization/replay/output-capture instrumentation。
+
+真实 `ACT.30 / REGION.0` 测量中，原先完整静态重建约需 1,428 秒；复用模式的
+GraphChecker pass 稳定在 30.9–31.2 秒，包含 runtime dependency 发布的完整
+`process-concolic` 为 34–35 秒。所选 1 个 root、9 个 branch policy 全部安装，报告记录
+`staticAnalysisSkipped=true`，约为 42 倍的端到端加速。固定 regex 也已在静态/运行时
+region planner 热路径预编译。`trace+concolic` campaign 和 `ALL` bundle 暂不使用 partial
+catalog，会明确回退完整分析。
+
+本次优化后完整回归为 675 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
+parallel HDFS concolic batch fixture 也全部通过。
+
+```bash
+mvn -q -DskipTests package
+experiments/hdfs/run_hdfs.sh freeze-concolic-static
+experiments/hdfs/run_hdfs.sh process-concolic \
+  /path/to/scheduled_activation_plan.jsonl ACT.id
+```
+
+成功的 fast process 只在 job-owned static output 中写
+`concolic_instrumentation_report.json` 和 `concolic_process_provenance.json`；不会调用
+partial `OutputWriter.writeAll()`，因此不会用空 graph/plan 覆盖冻结 catalog。manifest、
+artifact 文件名、输出目录和 Java/`jar` 命令均由 properties 或环境变量配置。process
+provenance 还绑定最终 replay class tree 的确定性 SHA-256 与 file count；batch runner 和
+exact reuse `replay-concolic` 会在启动 custom JDK 前重新计算 class tree，并复核 manifest、
+instrumentation report、GraphChecker JAR 的路径/SHA 和 authority，缺失 provenance 时直接
+拒绝运行。显式 full-static/legacy replay 可设置
+`CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE_REQUIRED=false`；也可单独运行
+`verify-concolic-process` 审计。实际 instrumentation root 必须属于所选 region 的 method
+catalog，并与 pipeline 安装的唯一 root 精确相等；supplemental process dirs 保留 Soot
+classpath 顺序并拒绝重复。可删除的 class output 只允许 checked-in exact path、专用
+replay root 的严格子目录，或 batch/campaign 已校验后显式授权的 exact job path。
+
 ## 当前参考工作负载
 
 三线程 fixture 位于
@@ -247,8 +364,11 @@ merged relation 内部的错误 case 拼在一起。核心规则是：选中的 
 composer 实际使用的 merged summary，同时其原始 summary 和 activation 必须唯一存在且
 身份一致。
 
-领域 adapter 只能提供候选映射，不能补写程序没有执行出来的 equality、cache、expiry、
-membership 或 codec 语义。缺失证据必须保留为 gap。
+领域 adapter 在 final relationship 中只能提供候选映射，不能把程序没有执行出来的
+equality、cache、expiry、membership 或 codec 语义冒充 runtime fact。研究用 bootstrap
+可以在 policy 明确授权后加入这些 contract，但必须逐项写入 approximation catalog，并保持
+`complete=false`、`relationallyComplete=false`；HDFS-11741 checkpoint 使用的正是后一种
+边界。
 
 ## 配置与命令
 
@@ -303,6 +423,8 @@ bootstrap composition、projection、natural replay、final composition。当前
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
 | `ConcolicNaturalReplayValidator` | 检查最终自然传播；当前三线程集成仍为 TODO |
+| `ConcolicStaticCatalogReuse` | 校验冻结 catalog/class-tree/schedule 哈希并加载一个 replay region |
+| `ConcolicStaticCatalogManifest` | 发布可复用静态 catalog 的 immutable manifest |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
 
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、
