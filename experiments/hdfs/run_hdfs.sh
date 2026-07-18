@@ -226,6 +226,8 @@ usage() {
     echo "  process                       Run the Causynth Soot transformer"
     echo "  verify-region-roots [catalog] Validate configured NN/DN maintenance roots"
     echo "  test [TestClass[#method]]     Run HDFS unit tests"
+    echo "  finalize-runtime [test]      Seal an existing complete native aggregation"
+    echo "  hdfs-11741-bootstrap [test] Generate the one-DN approximate SMT and run Z3"
     echo "  run [TestClass[#method]]      process + test"
     echo "  schedule-concolic [test] [region] [activation]"
     echo "                                Build a graph-directed concolic schedule"
@@ -4021,6 +4023,259 @@ do_run_natural_replay() {
     do_validate_natural_replay "${test_name}"
 }
 
+validate_native_runtime_region_catalog() {
+    local trace_dir=$1 static_region_lines=$2 static_region_edge_lines=$3
+    local region_summary="${trace_dir}/runtime_region_summary.json"
+    local region_instances="${trace_dir}/runtime_region_instances.jsonl"
+    local allowed_roots
+    allowed_roots="${CAUSYNTH_HDFS_OUTER_LOOP_PATH_TRUNCATION_ROOTS:-${causynth_hdfs_outer_loop_path_truncation_roots:-}}"
+
+    if [[ ! -s "${region_summary}" || ! -f "${region_instances}" ]]; then
+        echo "[ERROR] Native runtime region artifacts are missing from ${trace_dir}" >&2
+        return 1
+    fi
+    local truncated_instances runtime_instances skipped_path_events
+    truncated_instances=$(jq -r '.truncatedPathSignatureInstanceCount // 0' \
+        "${region_summary}")
+    skipped_path_events=$(jq -r '.skippedPathSignatureEventCount // 0' \
+        "${region_summary}")
+    runtime_instances=$(wc -l < "${region_instances}" | tr -d '[:space:]')
+    if jq -e --argjson regions "${static_region_lines}" \
+            --argjson edges "${static_region_edge_lines}" \
+            --argjson instances "${runtime_instances}" '
+            .truncated == false
+            and .staticRegionCount == $regions
+            and .staticRegionEdgeCount == $edges
+            and .runtimeRegionInstanceCount == $instances
+            and .truncatedCallTreeInstanceCount == 0
+            and .truncatedPathSignatureInstanceCount == 0
+            and .skippedContainedCallCount == 0
+            and .skippedPathSignatureEventCount == 0' \
+            "${region_summary}" >/dev/null; then
+        if ! jq -e -s --argjson expected "${runtime_instances}" '
+                length == $expected
+                and all(.[];
+                    .pathSignatureTruncated != true
+                    and .containedCallTreeTruncated != true
+                    and .runtimePathEvidenceComplete == true
+                    and ((.runtimeGaps // []) == []))' \
+                "${region_instances}" >/dev/null; then
+            echo "[ERROR] Exact runtime summary disagrees with its instance rows" >&2
+            return 1
+        fi
+        return 0
+    fi
+
+    if [[ "${CAUSYNTH_HDFS_ALLOW_OUTER_LOOP_PATH_SIGNATURE_TRUNCATION:-${causynth_hdfs_allow_outer_loop_path_signature_truncation:-false}}" \
+            != "true" || -z "${allowed_roots}" ]]; then
+        echo "[ERROR] Native offline aggregation did not consume the exact static region catalogs without truncation" >&2
+        return 1
+    fi
+
+    if ! jq -e --argjson regions "${static_region_lines}" \
+            --argjson edges "${static_region_edge_lines}" \
+            --argjson instances "${runtime_instances}" '
+            .truncated == true
+            and .staticRegionCount == $regions
+            and .staticRegionEdgeCount == $edges
+            and .runtimeRegionInstanceCount == $instances
+            and .runtimeRegionInstanceCount < 10000
+            and .truncatedCallTreeInstanceCount == 0
+            and .skippedContainedCallCount == 0
+            and .truncatedPathSignatureInstanceCount > 0
+            and .skippedPathSignatureEventCount > 0' \
+            "${region_summary}" >/dev/null; then
+        echo "[ERROR] Runtime truncation is not limited to bounded outer-loop path signatures" >&2
+        return 1
+    fi
+    if ! jq -e -s --arg roots "${allowed_roots}" \
+            --argjson expected "${truncated_instances}" \
+            --argjson expectedInstances "${runtime_instances}" \
+            --argjson expectedSkipped "${skipped_path_events}" '
+            ($roots | split("|") | map(select(length > 0))) as $allowed
+            | ([.[] | select(.pathSignatureTruncated == true)]) as $bounded
+            | ([$bounded[]
+                | (.pathSignatureEventCount - .pathSignatureLimit)]
+                | add // 0) as $skipped
+            | length == $expectedInstances
+              and ($bounded | length) == $expected
+              and $skipped == $expectedSkipped
+              and all(.[];
+                .containedCallTreeTruncated != true
+                and (if .pathSignatureTruncated == true then
+                    (.staticRootMethod as $root
+                      | ($allowed | index($root)) != null)
+                    and ((.runtimeGaps // []) ==
+                      ["PATH_SIGNATURE_LIMIT_EXCEEDED"])
+                    and .runtimePathEvidenceComplete == false
+                    and .pathSignatureEventCount > .pathSignatureLimit
+                    and (.pathSignature | length) == .pathSignatureLimit
+                  else
+                    .runtimePathEvidenceComplete == true
+                    and ((.runtimeGaps // []) == [])
+                  end))' \
+            "${region_instances}" >/dev/null; then
+        echo "[ERROR] A truncated runtime path is not owned by a configured outer-loop root" >&2
+        return 1
+    fi
+    echo "[Runtime] accepted ${truncated_instances} bounded path signatures for configured outer-loop roots"
+}
+
+finalize_native_runtime_artifacts() {
+    local test_name=$1 trace_dir=$2
+    local static_graph_file="${causynth_output_dir}/static_dataflow_edges.jsonl"
+    local regions_file="${causynth_output_dir}/symbolic_regions.jsonl"
+    local region_edges_file="${causynth_output_dir}/symbolic_region_edges.jsonl"
+    local raw_trace="${trace_dir}/runtime_trace.jsonl"
+    local streaming_manifest="${trace_dir}/streaming_trace_manifest.json"
+    local aggregation_provenance="${trace_dir}/offline_aggregation_provenance.json"
+    local required_file
+    for required_file in "${static_graph_file}" "${regions_file}" \
+            "${region_edges_file}" "${raw_trace}" "${streaming_manifest}" \
+            "${trace_dir}/summary.json" \
+            "${trace_dir}/runtime_region_summary.json"; do
+        if [[ ! -s "${required_file}" ]]; then
+            echo "[ERROR] Native runtime finalization input is missing: ${required_file}" >&2
+            return 1
+        fi
+    done
+    if [[ ! -f "${trace_dir}/runtime_region_instances.jsonl" ]]; then
+        echo "[ERROR] Native runtime instance catalog is missing: ${trace_dir}/runtime_region_instances.jsonl" >&2
+        return 1
+    fi
+    if [[ -e "${aggregation_provenance}" ]]; then
+        echo "[ERROR] Refusing to overwrite immutable runtime provenance: ${aggregation_provenance}" >&2
+        return 1
+    fi
+
+    local raw_lines static_graph_lines static_region_lines
+    local static_region_edge_lines raw_sha static_graph_sha
+    local static_regions_sha static_region_edges_sha graphchecker_jar_sha256
+    local region_summary_sha region_instances_sha approximation_applied
+    local truncated_instances skipped_path_events allowed_roots provenance_tmp
+    raw_lines=$(wc -l < "${raw_trace}" | tr -d '[:space:]')
+    static_graph_lines=$(wc -l < "${static_graph_file}" | tr -d '[:space:]')
+    static_region_lines=$(wc -l < "${regions_file}" | tr -d '[:space:]')
+    static_region_edge_lines=$(wc -l < "${region_edges_file}" | tr -d '[:space:]')
+    if ! jq -e --argjson rows "${raw_lines}" '
+            .status == "CLOSED" and .complete == true
+            and .truncated == false and .writeFailure == false
+            and .attemptedEventCount == $rows' \
+            "${streaming_manifest}" >/dev/null; then
+        echo "[ERROR] Native runtime trace did not close completely" >&2
+        return 1
+    fi
+    if ! jq -e --argjson rows "${raw_lines}" '
+            (.traceEventCount + .fieldEventCount
+              + .executionEventCount) == $rows
+            and .truncated == false and .roleTruncated == false' \
+            "${trace_dir}/summary.json" >/dev/null; then
+        echo "[ERROR] Native offline trace aggregation is incomplete" >&2
+        return 1
+    fi
+    validate_native_runtime_region_catalog "${trace_dir}" \
+        "${static_region_lines}" "${static_region_edge_lines}" || return 1
+
+    raw_sha=$(shasum -a 256 "${raw_trace}" | awk '{print $1}')
+    static_graph_sha=$(shasum -a 256 "${static_graph_file}" | awk '{print $1}')
+    static_regions_sha=$(shasum -a 256 "${regions_file}" | awk '{print $1}')
+    static_region_edges_sha=$(shasum -a 256 "${region_edges_file}" | awk '{print $1}')
+    graphchecker_jar_sha256=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
+    region_summary_sha=$(shasum -a 256 \
+        "${trace_dir}/runtime_region_summary.json" | awk '{print $1}')
+    region_instances_sha=$(shasum -a 256 \
+        "${trace_dir}/runtime_region_instances.jsonl" | awk '{print $1}')
+    approximation_applied=$(jq -r '.truncated == true' \
+        "${trace_dir}/runtime_region_summary.json")
+    truncated_instances=$(jq -r \
+        '.truncatedPathSignatureInstanceCount // 0' \
+        "${trace_dir}/runtime_region_summary.json")
+    skipped_path_events=$(jq -r '.skippedPathSignatureEventCount // 0' \
+        "${trace_dir}/runtime_region_summary.json")
+    allowed_roots="${CAUSYNTH_HDFS_OUTER_LOOP_PATH_TRUNCATION_ROOTS:-${causynth_hdfs_outer_loop_path_truncation_roots:-}}"
+    provenance_tmp=$(mktemp \
+        "${trace_dir}/.offline_aggregation_provenance.json.tmp.XXXXXX")
+
+    if ! jq -n \
+        --arg mode "FRESH_JVM_OFFLINE_AGGREGATION_OF_NATIVE_STREAM" \
+        --arg rawTrace "$(realpath "${raw_trace}")" \
+        --arg rawTraceSha256 "${raw_sha}" \
+        --argjson rawTraceLineCount "${raw_lines}" \
+        --arg graphCheckerJar "$(realpath "${gc_jar}")" \
+        --arg graphCheckerJarSha256 "${graphchecker_jar_sha256}" \
+        --arg staticGraph "$(realpath "${static_graph_file}")" \
+        --arg staticGraphSha256 "${static_graph_sha}" \
+        --argjson staticGraphLineCount "${static_graph_lines}" \
+        --arg symbolicRegions "$(realpath "${regions_file}")" \
+        --arg symbolicRegionsSha256 "${static_regions_sha}" \
+        --argjson symbolicRegionCount "${static_region_lines}" \
+        --arg symbolicRegionEdges "$(realpath "${region_edges_file}")" \
+        --arg symbolicRegionEdgesSha256 "${static_region_edges_sha}" \
+        --argjson symbolicRegionEdgeCount "${static_region_edge_lines}" \
+        --arg runtimeRegionSummary \
+            "$(realpath "${trace_dir}/runtime_region_summary.json")" \
+        --arg runtimeRegionSummarySha256 "${region_summary_sha}" \
+        --arg runtimeRegionInstances \
+            "$(realpath "${trace_dir}/runtime_region_instances.jsonl")" \
+        --arg runtimeRegionInstancesSha256 "${region_instances_sha}" \
+        --argjson outerLoopApproximation "${approximation_applied}" \
+        --arg allowedOuterLoopRoots "${allowed_roots}" \
+        --argjson truncatedPathSignatureInstanceCount \
+            "${truncated_instances}" \
+        --argjson skippedPathSignatureEventCount "${skipped_path_events}" \
+        --arg test "${test_name}" '
+        {schemaVersion:2, mode:$mode, test:$test,
+          rawTrace:$rawTrace, rawTraceSha256:$rawTraceSha256,
+          rawTraceLineCount:$rawTraceLineCount,
+          graphCheckerJar:$graphCheckerJar,
+          graphCheckerJarSha256:$graphCheckerJarSha256,
+          staticGraph:$staticGraph,
+          staticGraphSha256:$staticGraphSha256,
+          staticGraphLineCount:$staticGraphLineCount,
+          symbolicRegions:$symbolicRegions,
+          symbolicRegionsSha256:$symbolicRegionsSha256,
+          symbolicRegionCount:$symbolicRegionCount,
+          symbolicRegionEdges:$symbolicRegionEdges,
+          symbolicRegionEdgesSha256:$symbolicRegionEdgesSha256,
+          symbolicRegionEdgeCount:$symbolicRegionEdgeCount,
+          runtimeRegionSummary:$runtimeRegionSummary,
+          runtimeRegionSummarySha256:$runtimeRegionSummarySha256,
+          runtimeRegionInstances:$runtimeRegionInstances,
+          runtimeRegionInstancesSha256:$runtimeRegionInstancesSha256,
+          replayJvmAggregation:false,
+          runtimePathEvidenceComplete:($outerLoopApproximation | not),
+          outerLoopPathSignatureApproximation:{
+            applied:$outerLoopApproximation,
+            authority:(if $outerLoopApproximation then
+              "CONFIGURED_BOUNDED_EXTERNAL_LOOP_PATH_PREFIX_V1"
+              else "NOT_APPLIED" end),
+            allowedRootMethods:($allowedOuterLoopRoots
+              | split("|") | map(select(length > 0))),
+            truncatedInstanceCount:$truncatedPathSignatureInstanceCount,
+            skippedPathEventCount:$skippedPathSignatureEventCount},
+          aggregationComplete:true, complete:true}' \
+        > "${provenance_tmp}"; then
+        rm -f "${provenance_tmp}"
+        return 1
+    fi
+    if ! ln "${provenance_tmp}" "${aggregation_provenance}"; then
+        rm -f "${provenance_tmp}"
+        echo "[ERROR] Concurrent runtime finalizer already published provenance: ${aggregation_provenance}" >&2
+        return 1
+    fi
+    rm -f "${provenance_tmp}"
+    echo "[Runtime] immutable aggregation provenance: ${aggregation_provenance}"
+}
+
+do_finalize_runtime() {
+    verify_hadoop_source
+    local test_name="${1:-${causynth_workload_test}}"
+    local safe_name trace_dir
+    safe_name=$(safe_test_name "${test_name}")
+    trace_dir="${causynth_output_dir}/unit-test-graphs/${safe_name}"
+    finalize_native_runtime_artifacts "${test_name}" "${trace_dir}"
+}
+
 do_test() {
     verify_hadoop_source
     local test_name="${1:-${causynth_workload_test}}"
@@ -4058,16 +4313,6 @@ do_test() {
             exit 1
         fi
     done
-    local static_graph_lines static_region_lines static_region_edge_lines
-    local static_graph_sha static_regions_sha static_region_edges_sha
-    local graphchecker_jar_sha256
-    static_graph_lines=$(wc -l < "${static_graph_file}" | tr -d '[:space:]')
-    static_region_lines=$(wc -l < "${regions_file}" | tr -d '[:space:]')
-    static_region_edge_lines=$(wc -l < "${region_edges_file}" | tr -d '[:space:]')
-    static_graph_sha=$(shasum -a 256 "${static_graph_file}" | awk '{print $1}')
-    static_regions_sha=$(shasum -a 256 "${regions_file}" | awk '{print $1}')
-    static_region_edges_sha=$(shasum -a 256 "${region_edges_file}" | awk '{print $1}')
-    graphchecker_jar_sha256=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
     local max_events="${CAUSYNTH_TRACE_MAX_EVENTS:-${causynth_trace_max_events:-2000000}}"
     local max_graph_edges="${CAUSYNTH_TRACE_MAX_GRAPH_EDGES:-${causynth_trace_max_graph_edges:-200000}}"
     local max_context_pairs="${CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE:-${causynth_trace_max_context_pairs_per_edge:-2000}}"
@@ -4113,64 +4358,219 @@ do_test() {
             --test "${trace_test_name}" \
             --max-graph-edges "${max_graph_edges}" \
             --max-context-pairs-per-edge "${max_context_pairs}"
-        if ! jq -e --argjson rows "${raw_lines}" \
-                '(.traceEventCount + .fieldEventCount
-                  + .executionEventCount) == $rows
-                 and .truncated == false and .roleTruncated == false' \
-                "${trace_dir}/summary.json" >/dev/null; then
-            echo "[ERROR] Native offline trace aggregation is incomplete" >&2
-            exit 1
-        fi
-        if [[ ! -f "${trace_dir}/runtime_region_summary.json" ]] \
-                || ! jq -e --argjson regions "${static_region_lines}" \
-                    --argjson edges "${static_region_edge_lines}" \
-                    '.truncated == false
-                     and .staticRegionCount == $regions
-                     and .staticRegionEdgeCount == $edges' \
-                    "${trace_dir}/runtime_region_summary.json" >/dev/null; then
-            echo "[ERROR] Native offline aggregation did not consume the exact static region catalogs" >&2
-            exit 1
-        fi
-        local raw_sha
-        raw_sha=$(shasum -a 256 "${trace_dir}/runtime_trace.jsonl" \
-            | awk '{print $1}')
-        jq -n \
-            --arg mode "FRESH_JVM_OFFLINE_AGGREGATION_OF_NATIVE_STREAM" \
-            --arg rawTrace "$(realpath "${trace_dir}/runtime_trace.jsonl")" \
-            --arg rawTraceSha256 "${raw_sha}" \
-            --argjson rawTraceLineCount "${raw_lines}" \
-            --arg graphCheckerJar "$(realpath "${gc_jar}")" \
-            --arg graphCheckerJarSha256 "${graphchecker_jar_sha256}" \
-            --arg staticGraph "$(realpath "${static_graph_file}")" \
-            --arg staticGraphSha256 "${static_graph_sha}" \
-            --argjson staticGraphLineCount "${static_graph_lines}" \
-            --arg symbolicRegions "$(realpath "${regions_file}")" \
-            --arg symbolicRegionsSha256 "${static_regions_sha}" \
-            --argjson symbolicRegionCount "${static_region_lines}" \
-            --arg symbolicRegionEdges "$(realpath "${region_edges_file}")" \
-            --arg symbolicRegionEdgesSha256 "${static_region_edges_sha}" \
-            --argjson symbolicRegionEdgeCount "${static_region_edge_lines}" \
-            '{schemaVersion:1, mode:$mode, rawTrace:$rawTrace,
-              rawTraceSha256:$rawTraceSha256,
-              rawTraceLineCount:$rawTraceLineCount,
-              graphCheckerJar:$graphCheckerJar,
-              graphCheckerJarSha256:$graphCheckerJarSha256,
-              staticGraph:$staticGraph,
-              staticGraphSha256:$staticGraphSha256,
-              staticGraphLineCount:$staticGraphLineCount,
-              symbolicRegions:$symbolicRegions,
-              symbolicRegionsSha256:$symbolicRegionsSha256,
-              symbolicRegionCount:$symbolicRegionCount,
-              symbolicRegionEdges:$symbolicRegionEdges,
-              symbolicRegionEdgesSha256:$symbolicRegionEdgesSha256,
-              symbolicRegionEdgeCount:$symbolicRegionEdgeCount,
-              replayJvmAggregation:false, complete:true}' \
-            > "${trace_dir}/offline_aggregation_provenance.json"
+        finalize_native_runtime_artifacts "${test_name}" "${trace_dir}"
     else
         cat > "${trace_dir}/summary.json" <<EOF
 {"test":"${trace_test_name}","status":"no_runtime_trace","message":"No instrumented selected method executed; the requested test may not exist or may not touch the selected static graph."}
 EOF
     fi
+}
+
+do_hdfs_11741_bootstrap() {
+    verify_hadoop_source
+    local test_name="${1:-${causynth_workload_test}}"
+    local policy expected_workload safe_name trace_dir output_dir
+    policy="${CAUSYNTH_HDFS_BOOTSTRAP_POLICY:-${causynth_hdfs_bootstrap_policy}}"
+    if [[ ! -s "${policy}" ]]; then
+        echo "[ERROR] HDFS-11741 selector policy is missing: ${policy}" >&2
+        return 1
+    fi
+    expected_workload=$(jq -r '.workload // empty' "${policy}")
+    if [[ -z "${expected_workload}" || "${test_name}" != "${expected_workload}" ]]; then
+        echo "[ERROR] Bootstrap policy is pinned to ${expected_workload}; requested ${test_name}" >&2
+        return 1
+    fi
+    safe_name=$(safe_test_name "${test_name}")
+    trace_dir="${CAUSYNTH_HDFS_BOOTSTRAP_TRACE_DIR:-${causynth_output_dir}/unit-test-graphs/${safe_name}}"
+    output_dir="${CAUSYNTH_HDFS_BOOTSTRAP_OUTPUT_DIR:-${causynth_output_dir}/${causynth_hdfs_bootstrap_output_subdir}}"
+    local output_parent
+    output_parent=$(dirname "${output_dir}")
+    mkdir -p "${output_parent}"
+    if ! mkdir "${output_dir}"; then
+        echo "[ERROR] Bootstrap output must not already exist: ${output_dir}" >&2
+        echo "[ERROR] Set CAUSYNTH_HDFS_BOOTSTRAP_OUTPUT_DIR to a new path." >&2
+        return 1
+    fi
+
+    local regions static_graph region_edges runtime_edges runtime_summary
+    local activation_plan offline_provenance
+    regions="${CAUSYNTH_HDFS_BOOTSTRAP_REGIONS:-${causynth_output_dir}/${causynth_hdfs_bootstrap_regions_file}}"
+    static_graph="${CAUSYNTH_HDFS_BOOTSTRAP_STATIC_GRAPH:-${causynth_output_dir}/${causynth_hdfs_bootstrap_static_graph_file}}"
+    region_edges="${CAUSYNTH_HDFS_BOOTSTRAP_REGION_EDGES:-${causynth_output_dir}/${causynth_hdfs_bootstrap_region_edges_file}}"
+    runtime_edges="${CAUSYNTH_HDFS_BOOTSTRAP_RUNTIME_EDGES:-${trace_dir}/${causynth_hdfs_bootstrap_runtime_edges_file}}"
+    runtime_summary="${CAUSYNTH_HDFS_BOOTSTRAP_RUNTIME_SUMMARY:-${trace_dir}/${causynth_hdfs_bootstrap_runtime_summary_file}}"
+    activation_plan="${CAUSYNTH_HDFS_BOOTSTRAP_ACTIVATION_PLAN:-${trace_dir}/${causynth_hdfs_bootstrap_activation_plan_file}}"
+    offline_provenance="${CAUSYNTH_HDFS_BOOTSTRAP_OFFLINE_PROVENANCE:-${trace_dir}/${causynth_hdfs_bootstrap_offline_provenance_file}}"
+    local required_input
+    for required_input in "${regions}" "${static_graph}" "${region_edges}" \
+            "${runtime_edges}" "${runtime_summary}" "${activation_plan}" \
+            "${offline_provenance}"; do
+        if [[ ! -s "${required_input}" ]]; then
+            echo "[ERROR] Bootstrap input is missing or empty: ${required_input}" >&2
+            return 1
+        fi
+    done
+    if [[ ! -s "${gc_jar}" ]]; then
+        echo "[ERROR] GraphChecker jar is missing: ${gc_jar}" >&2
+        return 1
+    fi
+
+    local smt manifest composer_stdout solver_output solver_stderr
+    local solver_manifest composer_class
+    smt="${output_dir}/${causynth_hdfs_bootstrap_smt_file}"
+    manifest="${output_dir}/${causynth_hdfs_bootstrap_manifest_file}"
+    composer_stdout="${output_dir}/${causynth_hdfs_bootstrap_composer_stdout_file}"
+    solver_output="${output_dir}/${causynth_hdfs_bootstrap_solver_output_file}"
+    solver_stderr="${output_dir}/${causynth_hdfs_bootstrap_solver_stderr_file}"
+    solver_manifest="${output_dir}/${causynth_hdfs_bootstrap_solver_manifest_file}"
+    local output_root output_candidate resolved_output
+    output_root=$(realpath -m "${output_dir}")
+    for output_candidate in "${smt}" "${manifest}" "${composer_stdout}" \
+            "${solver_output}" "${solver_stderr}" "${solver_manifest}"; do
+        resolved_output=$(realpath -m "${output_candidate}")
+        case "${resolved_output}" in
+            "${output_root}"/*) ;;
+            *)
+                echo "[ERROR] Bootstrap output escapes configured directory: ${output_candidate}" >&2
+                return 1
+                ;;
+        esac
+    done
+    composer_class="${CAUSYNTH_HDFS_BOOTSTRAP_COMPOSER_CLASS:-${causynth_hdfs_bootstrap_composer_class}}"
+    local -a composer_args=(
+        --policy "${policy}"
+        --regions "${regions}"
+        --static-graph "${static_graph}"
+        --region-edges "${region_edges}"
+        --runtime-edge-validations "${runtime_edges}"
+        --runtime-summary "${runtime_summary}"
+        --activation-plan "${activation_plan}"
+        --offline-provenance "${offline_provenance}"
+        --output "${smt}"
+        --manifest "${manifest}"
+    )
+    local replay_raw replay_summary
+    local -a replay_summaries=()
+    replay_raw="${CAUSYNTH_HDFS_BOOTSTRAP_REPLAY_SUMMARIES:-${causynth_hdfs_bootstrap_replay_summaries:-}}"
+    if [[ -n "${replay_raw}" ]]; then
+        IFS=':' read -r -a replay_summaries <<< "${replay_raw}"
+        for replay_summary in "${replay_summaries[@]}"; do
+            [[ -n "${replay_summary}" ]] || continue
+            if [[ ! -s "${replay_summary}" ]]; then
+                echo "[ERROR] Configured replay summary is missing: ${replay_summary}" >&2
+                return 1
+            fi
+            composer_args+=(--replay-summary "${replay_summary}")
+        done
+    fi
+
+    "${graphchecker_java_bin}" -cp "${gc_jar}" "${composer_class}" \
+        "${composer_args[@]}" > "${composer_stdout}"
+    local smt_sha canonical_smt
+    smt_sha=$(shasum -a 256 "${smt}" | awk '{print $1}')
+    canonical_smt=$(realpath "${smt}")
+    if ! jq -e --arg workload "${test_name}" \
+            --arg smt "${canonical_smt}" --arg smtSha256 "${smt_sha}" '
+            .status == "APPROXIMATE_BOOTSTRAP_SMT_READY"
+            and .workload == $workload
+            and .complete == false
+            and .domainSemanticAdapterUsed == true
+            and .eligibleForApproximateBootstrapModel == true
+            and .assertionCount > 0
+            and .solverActuallyInvoked == false
+            and .smtArtifact.path == $smt
+            and .smtArtifact.sha256 == $smtSha256' \
+            "${manifest}" >/dev/null; then
+        echo "[ERROR] Composer did not publish an eligible approximate bootstrap model" >&2
+        return 1
+    fi
+    if ! grep -q '^(get-model)$' "${smt}" \
+            || ! grep -q '^(get-value (exception_reached' "${smt}"; then
+        echo "[ERROR] Bootstrap SMT does not request the expected model and target value" >&2
+        return 1
+    fi
+
+    local solver_path solver_version solver_sha solver_result gc_jar_sha
+    local manifest_sha solver_output_sha solver_stderr_sha
+    solver_path=$(configured_tool_path "${z3_bin}")
+    if [[ ! -x "${solver_path}" ]]; then
+        echo "[ERROR] Configured Z3 is not executable: ${solver_path}" >&2
+        return 1
+    fi
+    solver_version=$("${solver_path}" -version 2>&1 | head -1)
+    if [[ "${solver_version}" != Z3\ version* ]]; then
+        echo "[ERROR] Configured solver did not identify itself as Z3: ${solver_version}" >&2
+        return 1
+    fi
+    solver_sha=$(shasum -a 256 "${solver_path}" | awk '{print $1}')
+    gc_jar_sha=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
+    if ! "${solver_path}" -smt2 "${smt}" > "${solver_output}" \
+            2> "${solver_stderr}"; then
+        echo "[ERROR] Z3 exited unsuccessfully; see ${solver_stderr}" >&2
+        return 1
+    fi
+    solver_result=$(awk 'NF {print $1; exit}' "${solver_output}")
+    if [[ "${solver_result}" != "sat" ]] \
+            || [[ -s "${solver_stderr}" ]] \
+            || grep -q '(error' "${solver_output}" \
+            || ! grep -q '(define-fun exception_reached () Bool' \
+                "${solver_output}" \
+            || ! grep -q '((exception_reached true)' "${solver_output}"; then
+        echo "[ERROR] Z3 did not produce a clean sat model with exception_reached=true; see ${solver_output}" >&2
+        return 1
+    fi
+    manifest_sha=$(shasum -a 256 "${manifest}" | awk '{print $1}')
+    solver_output_sha=$(shasum -a 256 "${solver_output}" | awk '{print $1}')
+    solver_stderr_sha=$(shasum -a 256 "${solver_stderr}" | awk '{print $1}')
+    local solver_manifest_tmp
+    solver_manifest_tmp=$(mktemp \
+        "${output_dir}/.hdfs_11741_z3_manifest.json.tmp.XXXXXX")
+    jq -n \
+        --arg workload "${test_name}" \
+        --arg hadoopCommit "${causynth_expected_hadoop_commit}" \
+        --arg graphCheckerJar "$(realpath "${gc_jar}")" \
+        --arg graphCheckerJarSha256 "${gc_jar_sha}" \
+        --arg solver "$(realpath "${solver_path}")" \
+        --arg solverVersion "${solver_version}" \
+        --arg solverSha256 "${solver_sha}" \
+        --arg solverCommand "${solver_path} -smt2 ${smt}" \
+        --arg solverResult "${solver_result}" \
+        --arg smt "$(realpath "${smt}")" \
+        --arg smtSha256 "${smt_sha}" \
+        --arg compositionManifest "$(realpath "${manifest}")" \
+        --arg compositionManifestSha256 "${manifest_sha}" \
+        --arg solverOutput "$(realpath "${solver_output}")" \
+        --arg solverOutputSha256 "${solver_output_sha}" \
+        --arg solverStderr "$(realpath "${solver_stderr}")" \
+        --arg solverStderrSha256 "${solver_stderr_sha}" \
+        --arg derivedCondition "$(jq -r '.derivedConditionSmt' "${manifest}")" '
+        {schemaVersion:1,
+         kind:"HDFS_11741_APPROXIMATE_BOOTSTRAP_SOLVER_RUN",
+         status:"SAT_MODEL_PRODUCED",
+         workload:$workload,
+         hadoopCommit:$hadoopCommit,
+         complete:false,
+         relationallyComplete:false,
+         domainSemanticAdapterUsed:true,
+         eligibleForApproximateBootstrapModel:true,
+         solverActuallyInvoked:true,
+         solverResult:$solverResult,
+         modelRequested:true,
+         derivedConditionSmt:$derivedCondition,
+         graphCheckerJar:{path:$graphCheckerJar,
+                          sha256:$graphCheckerJarSha256},
+         solver:{path:$solver,version:$solverVersion,sha256:$solverSha256,
+                 command:$solverCommand},
+         smtArtifact:{path:$smt,sha256:$smtSha256},
+         compositionManifest:{path:$compositionManifest,
+                              sha256:$compositionManifestSha256},
+         solverOutput:{path:$solverOutput,sha256:$solverOutputSha256},
+         solverStderr:{path:$solverStderr,sha256:$solverStderrSha256}}' \
+        > "${solver_manifest_tmp}"
+    mv "${solver_manifest_tmp}" "${solver_manifest}"
+    echo "[HDFS-11741] Z3 result: ${solver_result}"
+    echo "[HDFS-11741] SMT: ${smt}"
+    echo "[HDFS-11741] solver manifest: ${solver_manifest}"
 }
 
 do_restore() {
@@ -4199,6 +4599,12 @@ case "${cmd}" in
         ;;
     test)
         timing "test" do_test "${1:-}"
+        ;;
+    finalize-runtime)
+        timing "finalize-runtime" do_finalize_runtime "${1:-}"
+        ;;
+    hdfs-11741-bootstrap)
+        timing "hdfs-11741-bootstrap" do_hdfs_11741_bootstrap "${1:-}"
         ;;
     run)
         timing "process" do_process

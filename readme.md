@@ -35,28 +35,9 @@ Soot 和自定义 OpenJDK 修改都只用于在受控研究环境中观察和建
 
 ### HDFS-11741 end-to-end checkpoint（2026-07-18）
 
-当前可恢复 milestone 是 GraphChecker commit `2bb90afc`（已 push 到
-`origin/main`），固定 fat JAR 为
-`target/GraphChecker-2bb90afc-hdfs-auto-smt.jar`，SHA-256 是
-`8f2a3362c7f083190dc17c08de705a452522266dba09d4455cfad61ec8019a3a`。
-Hadoop worktree 保持上述 pre-fix commit，未修改 baseline test。
-
-已经真实验证：
-
-- v3 static catalog 自动找到 fatal `Map.get(keyId) == null` guard、
-  `HeartbeatManager$Monitor.run` 和 `BPServiceActor.run` 两个长期 root，以及
-  `DataEncryptionKey.keyId -> SASL username -> DN keyId`；
-- 唯一 baseline workload 在 instrumented JVM 上 55.0 秒通过，完整 raw trace 为
-  833,447 events，`attempted == written`，未截断；
-- 流式 offline aggregation 在同一 trace 上生成 819,056 dynamic edges，object graph
-  约 2.35 GB，`truncated=false` 且 `contextPairTruncated=false`；
-- generic container snapshot 已覆盖
-  `array[i] -> Map.put(key, element) -> element.field.field`；RPC/SASL equality 与
-  shared-field READ_FROM 分开，并由 exact edge/kind/instance/runtime witness 选择；
-- milestone 全量 JUnit 652 项通过，`experiments/generic/test_workflow.sh` 与
-  三线程 fixture JUnit 继续通过。
-
-配置已指向 fresh v4：
+Hadoop worktree 保持 pre-fix commit，baseline test 未修改。v4 静态 catalog 和唯一一次
+baseline workload 的 runtime trace 已冻结；后续 composition/replay 只复用这些产物，不再
+重跑静态分析或 workload。配置指向：
 
 ```text
 causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4
@@ -64,13 +45,69 @@ experiments/hdfs/instrumented_classes.hdfs-11741-auto-smt-v4
 experiments/hdfs/concolic_classes.hdfs-11741-auto-smt-v4
 ```
 
-恢复时先检查 v4 static artifact 是否已经完整落盘；不要覆盖非空目录。随后只运行原始
-`testEncryptedBalancer1`，离线聚合 fresh trace，选择 fatal/NN/DN/Balancer activations，
-做 bounded concolic capture 并用 `ConcolicSmtComposer` 生成 bootstrap SMT。外层 heartbeat
-长期循环允许选择一个确定性有序 witness；`removeExpiredKeys` 的 map iterator 和
-`addKeys` 的 array element 仍保留 generic symbolic relation。telemetry 不完整不应阻止
-bootstrap SMT，未知量保留 concrete/approximation 并写入 manifest。终点是把生成的 SMT
-实际交给配置的 Z3，保存 `check-sat` 和 model；自然回放验证留待后续。
+已真实完成的证据链如下：
+
+- static graph 有 150,000 条边、64 个 region、8,728 条 region edge；SHA-256 分别为
+  `75ae3f56fe16c593edea3b39ee893bd15c3e9b3dd0666b9c10b055de8a8deb7b`、
+  `fcdf8dd9506fad7e6e17858f449a9ee13d1be98776ea06fb9427e725e77c151e`、
+  `34489ea70ad06f7c6627b3a56b2f6b23846f7d5b0ace5f618744caaf3245af30`；
+- 唯一 workload 运行 56.856 秒并通过，raw trace 有 839,101 行，streaming manifest
+  `CLOSED/complete`，没有 raw/call-tree/graph truncation；
+- offline aggregation 找到 430 个 region instance、499 个 activation、57 条 confirmed
+  read-from edge。12 个 `BPServiceActor.run` instance 只保留外部长期循环的有界 path
+  signature prefix（跳过 11,691 个重复 path event），authority 为
+  `CONFIGURED_BOUNDED_EXTERNAL_LOOP_PATH_PREFIX_V1`；
+- 自动选择 target `REGION.0`、NameNode `REGION.15`、DataNode `REGION.30` 和 Balancer
+  `REGION.2`。这些数字只是结果，policy 不含任何 `REGION.*`/`ACT.*` id；选择依据是 exact
+  root/anchor/method/cell selector。Balancer 静态 region 本身带 bounded/truncated 标记，
+  因此 manifest 另列 `STATIC_REGION_CATALOG_BOUNDED` approximation；
+- DN `ExportedBlockKeys.allKeys` 中的 `keyId` 与 `expiryDate` 分别绑定为 schema-1
+  `FIELD_ACCESS_HOOK` 和 schema-2 五边 `CONTAINER_SNAPSHOT`。内层 iterator 保留一个相关
+  symbolic entry：`expiry < Time.now() -> remove(keyId)`；
+- runtime 确认了 `REGION.30 allKeys -> REGION.0 allKeys` 的 shared-state read-from；没有
+  runtime SASL value equality。因此 PendingMove 的 decimal username round-trip 使用静态
+  codec template，并在 manifest 中明确标成 approximation，而不是伪装成 exact edge；
+- `Hdfs11741BootstrapComposer` 自动生成 24 条 SMT assertion，脚本真实调用配置的 Z3
+  4.8.12，返回 `sat`。模型给出一个 witness：symbolic key id `4`，key/DEK expiry `1`，
+  DN removal time `2`，Balancer send/observation time `3`，且
+  `exception_reached = true`。本次 composer fat JAR SHA-256 为
+  `20f3c1551f3afe21bc5766b7b1f82203522ddecf0fd67118aacf3d62f0484870`；
+- SMT SHA-256 为
+  `2acaabe4bd9c87b067961bb083fbae9b79242f34c75a41ee7e3fe9280d4a7642`；solver output
+  SHA-256 为
+  `699850679eec8454d6f6a353f83905ee354160bb6f69177290da7bb32923d47f`；
+- milestone 回归为 657 项 JUnit 全通过；`experiments/generic/test_workflow.sh`、
+  三线程 fixture 和 parallel HDFS concolic batch fixture 均通过。
+
+结果位于：
+
+```text
+causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4/hdfs-11741-bootstrap/
+  hdfs_11741_bootstrap.smt2
+  hdfs_11741_bootstrap_manifest.json
+  hdfs_11741_z3.out
+  hdfs_11741_z3_manifest.json
+```
+
+从冻结 artifacts 重现 composition 和求解：
+
+```bash
+mvn -q -DskipTests package
+experiments/hdfs/run_hdfs.sh hdfs-11741-bootstrap
+```
+
+输出目录是 immutable；若已存在，使用一个新的可配置目录：
+
+```bash
+CAUSYNTH_HDFS_BOOTSTRAP_OUTPUT_DIR=/path/to/fresh-output \
+  experiments/hdfs/run_hdfs.sh hdfs-11741-bootstrap
+```
+
+这个结果有意标记为 `complete=false`、`relationallyComplete=false`、
+`eligibleForApproximateBootstrapModel=true`。它证明在声明的一 DN、单相关 map entry、单个
+外层循环 witness 和显式 transport/cache approximation 下存在触发
+`allKeys.get(keyId) == null` 的模型；它不是 sound/complete 的全 HDFS 证明，也尚未经过
+自然 replay 验证。
 
 ## 当前参考工作负载
 
@@ -286,8 +323,11 @@ merged relation 内部的错误 case 拼在一起。核心规则是：选中的 
 composer 实际使用的 merged summary，同时其原始 summary 和 activation 必须唯一存在且
 身份一致。
 
-领域 adapter 只能提供候选映射，不能补写程序没有执行出来的 equality、cache、expiry、
-membership 或 codec 语义。缺失证据必须保留为 gap。
+领域 adapter 在 final relationship 中只能提供候选映射，不能把程序没有执行出来的
+equality、cache、expiry、membership 或 codec 语义冒充 runtime fact。研究用 bootstrap
+可以在 policy 明确授权后加入这些 contract，但必须逐项写入 approximation catalog，并保持
+`complete=false`、`relationallyComplete=false`；HDFS-11741 checkpoint 使用的正是后一种
+边界。
 
 ## 配置与命令
 
