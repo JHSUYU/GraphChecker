@@ -1230,6 +1230,9 @@ public final class ConcolicScheduler {
                     localBinding.add("definitionSites", oneSite);
                     localBinding.addProperty("definitionAuthority",
                             "STATIC_DATAFLOW_DEF_SITE");
+                    dischargeDeferredResolution(localBinding,
+                            "AUTHORITATIVE_STATIC_CALL_RETURN_DEFINITION_"
+                                    + "SITE_V1");
                     localBinding.addProperty("lazy", true);
                     finalizePendingLocalArrayRoot(localBinding,
                             definitions.authoritative);
@@ -1294,6 +1297,11 @@ public final class ConcolicScheduler {
                             definitions.authoritative
                                     ? "STATIC_DATAFLOW_DEF_SITE"
                                     : "LOCAL_NAME_FALLBACK");
+                    if (definitions.authoritative && sites.size() == 1) {
+                        dischargeDeferredResolution(binding,
+                                "AUTHORITATIVE_STATIC_LOCAL_DEFINITION_"
+                                        + "SITE_V1");
+                    }
                     finalizePendingLocalArrayRoot(binding,
                             definitions.authoritative);
                     if (definitions.authoritative && sites.size() == 0) {
@@ -1334,6 +1342,27 @@ public final class ConcolicScheduler {
         return new MaterializationPlan(result, ready, complete,
                 executableCount, deferredCount,
                 vmIntrinsicPlaceholderCount);
+    }
+
+    private static void dischargeDeferredResolution(JsonObject binding,
+                                                     String authority) {
+        String requestAuthority = string(binding,
+                "deferredResolutionAuthority");
+        boolean requested = bool(binding, "deferredResolution", false)
+                || bool(binding, "deferred", false)
+                || !requestAuthority.isEmpty();
+        binding.remove("deferredResolution");
+        binding.remove("deferredResolutionAuthority");
+        binding.remove("deferred");
+        if (requested) {
+            binding.addProperty("deferredResolutionDischarged", true);
+            binding.addProperty("deferredResolutionDischargeAuthority",
+                    authority);
+            if (!requestAuthority.isEmpty()) {
+                binding.addProperty("deferredResolutionRequestAuthority",
+                        requestAuthority);
+            }
+        }
     }
 
     private static boolean verifiedVmIntrinsicPlaceholder(

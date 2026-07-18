@@ -908,7 +908,11 @@ public class ConcolicSchedulerTest {
                     + "\"cell\":\"" + returned + "\","
                     + "\"sourceKind\":\"OPAQUE_CALL\","
                     + "\"location\":\"CALL_RETURN\","
-                    + "\"observed\":false}],"
+                    + "\"observed\":false,"
+                    + "\"deferredResolution\":true,"
+                    + "\"deferredResolutionAuthority\":"
+                    + "\"AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_"
+                    + "REQUIRED_V1\"}],"
                     + "\"outputs\":[],\"branches\":[]}\n";
             Files.write(fixture.activations,
                     activation.getBytes(StandardCharsets.UTF_8));
@@ -948,6 +952,14 @@ public class ConcolicSchedulerTest {
             assertEquals("$z0", binding.get("local").getAsString());
             assertEquals(3, binding.getAsJsonArray("definitionSites").get(0)
                     .getAsJsonObject().get("unitIndex").getAsInt());
+            assertFalse(binding.has("deferredResolution"));
+            assertFalse(binding.has("deferredResolutionAuthority"));
+            assertTrue(binding.get("deferredResolutionDischarged")
+                    .getAsBoolean());
+            assertEquals("AUTHORITATIVE_STATIC_CALL_RETURN_DEFINITION_"
+                            + "SITE_V1",
+                    binding.get("deferredResolutionDischargeAuthority")
+                            .getAsString());
         } finally {
             folder.delete();
         }
@@ -1141,6 +1153,9 @@ public class ConcolicSchedulerTest {
         JsonObject action = exactArrayFieldAction(root);
         action.addProperty("cell", localCell);
         action.addProperty("location", "REGION_LIVE_IN");
+        action.addProperty("deferredResolution", true);
+        action.addProperty("deferredResolutionAuthority",
+                "AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_REQUIRED_V1");
         action.add("fieldPath", JsonParser.parseString("[\"values\"]"));
         action.addProperty("consumedFieldBindingComplete", false);
         action.addProperty("consumedFieldSiteBindingComplete", true);
@@ -1166,6 +1181,10 @@ public class ConcolicSchedulerTest {
         JsonObject binding = prepared.getAsJsonArray("materializations")
                 .get(0).getAsJsonObject();
         assertTrue(prepared.get("schedulerReady").getAsBoolean());
+        assertFalse(binding.has("deferredResolution"));
+        assertEquals("AUTHORITATIVE_STATIC_LOCAL_DEFINITION_SITE_V1",
+                binding.get("deferredResolutionDischargeAuthority")
+                        .getAsString());
         assertEquals("LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_"
                         + "AND_LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY",
                 binding.get("consumedFieldRootAuthority").getAsString());

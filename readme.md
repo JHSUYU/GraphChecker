@@ -150,6 +150,31 @@ catalog，并与 pipeline 安装的唯一 root 精确相等；supplemental proce
 classpath 顺序并拒绝重复。可删除的 class output 只允许 checked-in exact path、专用
 replay root 的严格子目录，或 batch/campaign 已校验后显式授权的 exact job path。
 
+#### 三线程自然 replay milestone（2026-07-18）
+
+README 的三线程 RPC 工作流现已完整跑通，不再停在 bootstrap 候选模型。scheduler 在
+`CALL_RETURN` 或 `REGION_LIVE_IN` 由权威静态 DefinitionIndex 唯一解析到 primitive local
+定义点后，会解除早期 `deferredResolution` 状态并保留 discharge authority；零个或多个
+定义点仍保持 unresolved。projector 接受这两种来源的唯一
+`STATIC_DATAFLOW_DEF_SITE`，仍拒绝 deferred action、缺失 source binding 或不一致的
+method/local/site identity。
+
+Z3 选择 `b1=true, b2=true` 后，projector 生成 2 个 producer replay 和 1 个
+observation-only target replay 的三行 `ALL` bundle。custom JDK 自然产生 `a=1, b=0`，经
+RPC/shared field 传播后由 consumer 自然触发 `BugReachedException`；没有 forced branch、
+target model assignment 或 reference-result injection。最终 composition、relationship proof
+和 exhaustive Boolean projection 均通过，得到：
+
+```text
+(and (= sym__port__REGION_1_in_0__int 1)
+     (= sym__port__REGION_2_in_0__int 1))
+```
+
+bootstrap activation plan 也已改为严格 compact JSONL（一行一个 activation），避免 pretty
+JSON 被逐行 consumer 误读为截断输入。当前完整回归为 680 项 JUnit 零失败；从 clean
+work root 执行 `experiments/generic/three-thread-rpc/run.sh all` 会一直完成到
+`target/three-thread-rpc/final/boolean_reach_condition.json`。
+
 ## 当前参考工作负载
 
 三线程 fixture 位于
@@ -405,8 +430,9 @@ experiments/generic/three-thread-rpc/run.sh all
 ```
 
 `all` 串联 build、static analysis、trace、discovery、target seed、producer campaigns、
-bootstrap composition、projection、natural replay、final composition。当前实现会在下面的
-自然回放 TODO 完成前停止，不能期待已生成 `final/boolean_reach_condition.json`。
+bootstrap composition、projection、natural replay、bounded campaign、final composition、
+relationship proof 和 reach-condition extraction。成功时会生成
+`final/boolean_reach_condition.json`。
 
 ## 关键实现
 
@@ -422,7 +448,7 @@ bootstrap composition、projection、natural replay、final composition。当前
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
-| `ConcolicNaturalReplayValidator` | 检查最终自然传播；当前三线程集成仍为 TODO |
+| `ConcolicNaturalReplayValidator` | 检查最终自然传播、异常和无 branch override |
 | `ConcolicStaticCatalogReuse` | 校验冻结 catalog/class-tree/schedule 哈希并加载一个 replay region |
 | `ConcolicStaticCatalogManifest` | 发布可复用静态 catalog 的 immutable manifest |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
@@ -430,9 +456,9 @@ bootstrap composition、projection、natural replay、final composition。当前
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、
 配置和阶段脚本位于 `experiments/generic/three-thread-rpc`。
 
-## TODO：最终自然回放验证
+## 三线程最终自然回放验证
 
-当前唯一保留在主流程上的 TODO 是把 bootstrap 候选变成最终的自然传播证据：
+主流程通过以下闭环把 bootstrap 候选变成最终的自然传播证据：
 
 1. 将 Z3 选中的 `b1=true`、`b2=true` 精确绑定到 producer activation 的真实定义动作；
    instrumentation 已找到 definition site 时，必须把 deferred plan 解析并持久化为可 replay
@@ -444,8 +470,8 @@ custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端
    传播这两个值，consumer 自然观察到 `a > b` 和 `BugReachedException`。
 4. strict importer 与 natural replay validator 绑定同一 activation、region instance、branch
    site/occurrence 和异常证据。
-5. 只有上述验证通过后，重新生成 `VALIDATED_FINAL` SMT、relationship proof 和最终
+5. 上述验证通过后，重新生成 `VALIDATED_FINAL` SMT、relationship proof 和最终
    `target/three-thread-rpc/final/boolean_reach_condition.json`。
 
-在此 TODO 完成之前，可以准确声称“SMT 与候选条件已全自动生成并由 Z3 求解”，但不能
-声称最终 reach condition 已通过自然传播验证。
+这五步现已由 `experiments/generic/three-thread-rpc/run.sh all` 自动完成；最终 reach
+condition 已由同一组 producer/target activation 的自然传播与异常证据验证。

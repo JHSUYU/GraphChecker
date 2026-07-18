@@ -47,6 +47,8 @@ import java.util.regex.Pattern;
 public final class ConcolicPrimitiveBootstrapProjector {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
+    private static final Gson JSONL_GSON = new GsonBuilder()
+            .disableHtmlEscaping().create();
     private static final Pattern SAFE_SMT_ATOM = Pattern.compile(
             "[A-Za-z_~!@$%^&*+=<>.?/][A-Za-z0-9_~!@$%^&*+\\-=<>.?/]*");
 
@@ -643,10 +645,18 @@ public final class ConcolicPrimitiveBootstrapProjector {
     private static void validateLocalDefinitionIdentity(JsonObject action,
                                                         String port)
             throws IOException {
+        String location = string(action, "location");
+        boolean regionLiveIn = "REGION_LIVE_IN".equals(location);
+        boolean callReturnDefinition = "CALL_RETURN".equals(location)
+                && "CALL_RETURN_DEFINITION".equals(string(action,
+                "sourceBindingMode"))
+                && "OPAQUE_CALL".equals(string(action, "sourceKind"))
+                && "return".equals(string(action, "projection"))
+                && string(action, "cell").endsWith(">.return");
         String method = string(action, "method");
         String local = string(action, "local");
         JsonArray sites = array(action, "definitionSites");
-        if (!"REGION_LIVE_IN".equals(string(action, "location"))
+        if ((!regionLiveIn && !callReturnDefinition)
                 || method.isEmpty() || local.isEmpty()
                 || sites.size() != 1 || !sites.get(0).isJsonObject()
                 || !"STATIC_DATAFLOW_DEF_SITE".equals(string(action,
@@ -1097,7 +1107,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
     private static void writeJsonl(Path path, List<JsonObject> rows)
             throws IOException {
         StringBuilder result = new StringBuilder();
-        for (JsonObject row : rows) result.append(GSON.toJson(row)).append('\n');
+        for (JsonObject row : rows) {
+            result.append(JSONL_GSON.toJson(row)).append('\n');
+        }
         write(path, result.toString());
     }
 
