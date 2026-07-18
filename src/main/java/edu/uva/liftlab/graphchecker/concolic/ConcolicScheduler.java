@@ -1783,8 +1783,15 @@ public final class ConcolicScheduler {
                     string(edge, "relation"));
             String fromRegion = string(edge, "fromRegion");
             String toRegion = string(edge, "toRegion");
-            String fromCell = string(edge, "fromPort");
+            String fromCell = producerOutputCell(edge,
+                    regions.get(fromRegion));
             String toCell = string(edge, "toPort");
+            if (fromCell.isEmpty()) {
+                // Canonical producer metadata is atomic.  Once an edge
+                // declares it, a partial or mismatched proof must not fall
+                // back to the raw transport endpoint.
+                continue;
+            }
             Endpoint from = endpoint(regions.get(fromRegion), fromRegion,
                     fromCell);
             Endpoint to = endpoint(regions.get(toRegion), toRegion, toCell);
@@ -1930,6 +1937,37 @@ public final class ConcolicScheduler {
         return new Endpoint(regionId + "::" + cell, cell);
     }
 
+    private static String producerOutputCell(JsonObject edge,
+                                             Region region) {
+        if (!hasCanonicalOutputMetadata(edge)) {
+            return string(edge, "fromPort");
+        }
+        String authority = string(edge, "aliasProofAuthority");
+        boolean acceptedAuthority = ("STATIC_EXACT_PROJECTED_RETURN_VALUE_"
+                + "FLOW_AND_DECLARED_RETURN_FIELD").equals(authority)
+                || ("CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                + "PUBLISH_VALUE_FLOW_V1").equals(authority);
+        String outputPort = string(edge, "fromOutputPort");
+        String outputCell = string(edge, "fromOutputCell");
+        if (!bool(edge, "aliasProofComplete", false)
+                || !acceptedAuthority || outputPort.isEmpty()
+                || outputCell.isEmpty()
+                || array(edge, "aliasProofEdgeIds").size() == 0
+                || region == null
+                || !outputPort.equals(region.portByCell.get(outputCell))) {
+            return "";
+        }
+        return outputCell;
+    }
+
+    private static boolean hasCanonicalOutputMetadata(JsonObject edge) {
+        return edge != null && (edge.has("fromOutputPort")
+                || edge.has("fromOutputCell")
+                || edge.has("aliasProofEdgeIds")
+                || edge.has("aliasProofAuthority")
+                || edge.has("aliasProofComplete"));
+    }
+
     private static JsonObject branchQuery(Candidate candidate,
                                           JsonObject summary,
                                           MergePlan mergePlan,
@@ -1946,6 +1984,11 @@ public final class ConcolicScheduler {
                 candidate.target.observedOutcome);
         query.addProperty("desiredOutcome",
                 candidate.target.desiredOutcome);
+        // A seed query has not yet been validated by an unforced target
+        // replay.  Emit the state explicitly so shell/config consumers do
+        // not have to distinguish JSON false from a missing property.
+        query.addProperty("targetReplayValidated", false);
+        query.addProperty("replayAlreadyValidated", false);
         JsonArray path = array(summary, "pathCondition");
         JsonObject mapping = branchMapping(summary, candidate.target.siteId,
                 candidate.target.selectedOccurrence);

@@ -60,6 +60,9 @@ final class RuntimeRegionPlanner {
                     + "AND_WITHIN_RECEIVER_ORDINAL_V2";
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
+    static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
+            "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
+                    + "CONTEXT_ORDINAL_V1";
 
     private RuntimeRegionPlanner() {
     }
@@ -143,6 +146,8 @@ final class RuntimeRegionPlanner {
                 }
 
                 int ordinal = invocationOrdinal(root, methodEvents);
+                int ordinalWithinContext = invocationOrdinalWithinContext(
+                        root, methodEvents);
                 Map<String, Object> rootArgumentSelector =
                         runtimeRootArgumentSelector(root, methodEvents,
                                 executions);
@@ -264,6 +269,8 @@ final class RuntimeRegionPlanner {
                         "observed", true,
                         "precision", fullyObserved
                                 ? "RUNTIME_CALL_TREE" : "PARTIAL_RUNTIME_CALL_TREE");
+                addRootContextSelector(instance, root,
+                        ordinalWithinContext);
                 if (!rootArgumentSelector.isEmpty()) {
                     instance.put("runtimeRootArgumentSelector",
                             rootArgumentSelector);
@@ -358,6 +365,8 @@ final class RuntimeRegionPlanner {
                                 ? "RUNTIME_SELECTED_ROOT_REPLAY"
                                 : "NO_VALIDATED_RUNTIME_PATH",
                         "engine", "openjdk8-zero-concolic");
+                addRootContextSelector(activation, root,
+                        ordinalWithinContext);
                 if (!rootArgumentSelector.isEmpty()) {
                     activation.put("runtimeRootArgumentSelector",
                             rootArgumentSelector);
@@ -568,12 +577,52 @@ final class RuntimeRegionPlanner {
     }
 
     /**
+     * Stable replay ordinal for one exact runtime root context.  Trace thread
+     * ids are deliberately excluded because JVM-assigned ids change across
+     * executions.  The receiver runtime class is mandatory for contexts
+     * emitted by this planner; a non-empty thread name further separates
+     * same-class worker roles such as producer and consumer executors.
+     */
+    private static int invocationOrdinalWithinContext(
+            MethodEvent target, List<MethodEvent> methods) {
+        int ordinal = 0;
+        for (MethodEvent event : methods) {
+            if (!target.test.equals(event.test)
+                    || !target.method.equals(event.method)
+                    || !target.receiverType.equals(event.receiverType)
+                    || !target.threadName.equals(event.threadName)) {
+                continue;
+            }
+            ordinal++;
+            if (event.callId == target.callId) return ordinal;
+        }
+        return 1;
+    }
+
+    private static void addRootContextSelector(Map<String, Object> target,
+                                               MethodEvent root,
+                                               int ordinalWithinContext) {
+        if (target == null || root == null || root.receiverType.isEmpty()) {
+            return;
+        }
+        target.put("receiverRuntimeClass", root.receiverType);
+        if (!root.threadName.isEmpty()) {
+            target.put("threadName", root.threadName);
+        }
+        target.put("threadIdSelectionUsed", false);
+        target.put("invocationOrdinalWithinContext",
+                Math.max(1, ordinalWithinContext));
+        target.put("rootContextSelectionAuthority",
+                ROOT_CONTEXT_SELECTION_AUTHORITY);
+    }
+
+    /**
      * Builds a replay selector from the exact non-null reference arguments
-     * observed at the selected root invocation.  Selection first identifies
-     * the capture-time ordinal of the distinct receiver among predicate
-     * matches, then the matching invocation ordinal within that receiver.
-     * Unrelated invocations and same-typed calls on other instances therefore
-     * no longer shift the selected activation.
+     * observed at the selected root invocation.  Candidate occurrences are
+     * first restricted to the same stable receiver-class/thread context as
+     * the target, then selection identifies the distinct receiver and its
+     * matching invocation ordinal.  Other worker contexts and same-typed
+     * calls on unrelated instances therefore cannot shift the activation.
      */
     private static Map<String, Object> runtimeRootArgumentSelector(
             MethodEvent target, List<MethodEvent> methods,
@@ -612,6 +661,7 @@ final class RuntimeRegionPlanner {
         for (MethodEvent candidate : methods) {
             if (!target.test.equals(candidate.test)
                     || !target.method.equals(candidate.method)
+                    || !sameStableRootContext(target, candidate)
                     || !matchesRootArgumentPredicates(candidate,
                     runtimeEvents, predicates)) {
                 continue;
@@ -644,6 +694,15 @@ final class RuntimeRegionPlanner {
                 "predicates", predicates,
                 "receiverOrdinal", receiverOrdinal,
                 "matchOrdinalWithinReceiver", matchOrdinalWithinReceiver);
+    }
+
+    private static boolean sameStableRootContext(MethodEvent target,
+                                                 MethodEvent candidate) {
+        if (target.receiverType.isEmpty()) {
+            return true;
+        }
+        return target.receiverType.equals(candidate.receiverType)
+                && target.threadName.equals(candidate.threadName);
     }
 
     private static boolean matchesRootArgumentPredicates(
@@ -4040,9 +4099,12 @@ final class RuntimeRegionPlanner {
         private boolean canonicalAliasValid() {
             return canonicalMetadataPresent && aliasProofComplete
                     && !aliasProofEdgeIds.isEmpty()
-                    && ("STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
+                    && (("STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
                     + "AND_DECLARED_RETURN_FIELD").equals(
                     aliasProofAuthority)
+                    || "CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                    .concat("PUBLISH_VALUE_FLOW_V1").equals(
+                    aliasProofAuthority))
                     && !fromOutputPort.isEmpty()
                     && !fromOutputCell.isEmpty();
         }
@@ -4157,6 +4219,21 @@ final class RuntimeRegionPlanner {
                 }
             }
             return 0;
+        }
+
+        private List<RuntimeEvent> matchingMethodReturns(
+                Map<String, Object> binding) {
+            List<RuntimeEvent> result = new ArrayList<>();
+            String method = string(binding.get("method"));
+            if (method.isEmpty()) return result;
+            for (RuntimeEvent event : runtimeEvents) {
+                if ("METHOD_EXIT_NORMAL".equals(event.kind)
+                        && method.equals(event.method)) {
+                    result.add(event);
+                }
+            }
+            result.sort(Comparator.comparingLong(value -> value.seq));
+            return result;
         }
 
         /**
@@ -4720,6 +4797,8 @@ final class RuntimeRegionPlanner {
         private final Set<String> excludedInputPorts = new LinkedHashSet<>();
         private final Set<String> excludedMethods = new LinkedHashSet<>();
         private final Set<String> runtimeOnlyMethods = new LinkedHashSet<>();
+        private final Set<String> downstreamOnlyMethods =
+                new LinkedHashSet<>();
         private final Set<String> excludedSites = new LinkedHashSet<>();
         private final Set<String> excludedPathAlternativeSites =
                 new LinkedHashSet<>();
@@ -4960,6 +5039,9 @@ final class RuntimeRegionPlanner {
                     "rhsRelationComplete", false),
                     "rhsRelationAuthority", jsonString(json,
                     "rhsRelationAuthority"),
+                    "returnExpression", jsonString(json,
+                    "returnExpression"),
+                    "returnCell", jsonString(json, "returnCell"),
                     "calleeMethod", jsonString(json, "calleeMethod"),
                     "argumentIndex", jsonInt(json, "argumentIndex", -1),
                     "argumentCell", jsonString(json, "argumentCell"),
@@ -5282,6 +5364,12 @@ final class RuntimeRegionPlanner {
 
             Set<String> observed = new LinkedHashSet<>(
                     evidence.observedMethods);
+            Set<String> runtimeOnly = new LinkedHashSet<>(difference(
+                    observed, methods));
+            refined.downstreamOnlyMethods.addAll(
+                    downstreamOnlyAfterExactMethodReturn(evidence,
+                            runtimeOnly));
+            observed.removeAll(refined.downstreamOnlyMethods);
             refineUnresolvedInputs(observed, refined);
             refined.methods.addAll(sorted(observed));
             refined.excludedMethods.addAll(difference(methods, observed));
@@ -5597,6 +5685,41 @@ final class RuntimeRegionPlanner {
         }
 
         /**
+         * A canonical method-return output is fixed at the exact normal exit
+         * selected by its capture binding.  Region methods first entered
+         * strictly after that event (for example the RPC publisher carrying
+         * the already-computed value) cannot affect this output's backward
+         * relation.  Exclude only this narrowly proven downstream suffix;
+         * runtime-only helpers before the return remain a hard refinement
+         * gap because they may define an input or the returned value.
+         */
+        private Set<String> downstreamOnlyAfterExactMethodReturn(
+                InstanceEvidence evidence, Set<String> candidates) {
+            Set<String> result = new LinkedHashSet<>();
+            if (candidates.isEmpty() || captureBindings.size() != 1) {
+                return result;
+            }
+            Map<String, Object> binding = captureBindings.get(0);
+            if (!"METHOD_RETURN_VALUE".equals(firstNonBlank(string(
+                    binding.get("captureKind")), "CALL_ARGUMENT"))) {
+                return result;
+            }
+            List<RuntimeEvent> exits = evidence.matchingMethodReturns(
+                    binding);
+            if (exits.size() != 1) {
+                return result;
+            }
+            long boundary = exits.get(0).seq;
+            for (String method : candidates) {
+                long first = evidence.firstMethodSeq(method);
+                if (first > boundary) {
+                    result.add(method);
+                }
+            }
+            return result;
+        }
+
+        /**
          * Revalidates the exact transformer ledger after static alternatives
          * have been removed.  This validation intentionally does not read or
          * write {@link #runtimeRefinementComplete}; the final readiness gate
@@ -5704,6 +5827,7 @@ final class RuntimeRegionPlanner {
                 refined.captureBindings.clear();
                 int matchedCaptureCount = 0;
                 boolean fieldAssignmentRequested = false;
+                boolean methodReturnRequested = false;
                 for (Map<String, Object> binding : captureBindings) {
                     String captureKind = firstNonBlank(string(binding.get(
                             "captureKind")), "CALL_ARGUMENT");
@@ -5768,6 +5892,41 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
 
+                    if ("METHOD_RETURN_VALUE".equals(captureKind)) {
+                        methodReturnRequested = true;
+                        String method = string(binding.get("method"));
+                        if (!observed.contains(method)) {
+                            continue;
+                        }
+                        List<RuntimeEvent> returns = evidence
+                                .matchingMethodReturns(binding);
+                        // METHOD_EXIT_NORMAL has the exact method/call id but
+                        // intentionally no Jimple return-site id.  Refine only
+                        // a unique invocation; otherwise the static hook's
+                        // requested occurrence would be a guess.
+                        if (returns.size() != 1) {
+                            if (returns.size() > 1) {
+                                refined.captureBindingIssues.add(
+                                        "RUNTIME_METHOD_RETURN_"
+                                                + "OCCURRENCE_AMBIGUOUS:"
+                                                + method + ":"
+                                                + returns.size());
+                            }
+                            continue;
+                        }
+                        RuntimeEvent match = returns.get(0);
+                        Map<String, Object> exact =
+                                new LinkedHashMap<>(binding);
+                        exact.put("occurrence", 1);
+                        exact.put("occurrenceAuthority",
+                                "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE");
+                        exact.put("runtimeCallId", match.callId);
+                        exact.put("runtimeEventSeq", match.seq);
+                        refined.captureBindings.add(exact);
+                        matchedCaptureCount++;
+                        continue;
+                    }
+
                     String caller = string(binding.get("callerMethod"));
                     if (!observed.contains(caller)) {
                         continue;
@@ -5795,10 +5954,14 @@ final class RuntimeRegionPlanner {
                     if (matchedCaptureCount == 0) {
                         failure = fieldAssignmentRequested
                                 ? "NO_RUNTIME_EXACT_FIELD_ASSIGNMENT_MATCH"
+                                : methodReturnRequested
+                                ? "NO_RUNTIME_EXACT_METHOD_RETURN_MATCH"
                                 : "NO_RUNTIME_EXACT_CALL_ARGUMENT_MATCH";
                     } else {
                         failure = (fieldAssignmentRequested
                                 ? "AMBIGUOUS_RUNTIME_FIELD_ASSIGNMENT_MATCH:"
+                                : methodReturnRequested
+                                ? "AMBIGUOUS_RUNTIME_METHOD_RETURN_MATCH:"
                                 : "AMBIGUOUS_RUNTIME_CALL_ARGUMENT_MATCH:")
                                 + matchedCaptureCount;
                     }
@@ -6033,6 +6196,8 @@ final class RuntimeRegionPlanner {
                         new ArrayList<>(excludedMethods));
                 result.put("runtimeObservedMethodsOutsideStaticSlice",
                         new ArrayList<>(runtimeOnlyMethods));
+                result.put("runtimeObservedDownstreamMethodsExcluded",
+                        new ArrayList<>(downstreamOnlyMethods));
                 result.put("excludedAlternativeSites",
                         new ArrayList<>(excludedSites));
                 result.put("excludedPathAlternativeSites",

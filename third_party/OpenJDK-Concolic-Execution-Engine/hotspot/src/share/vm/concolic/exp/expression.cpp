@@ -189,7 +189,7 @@ ConExpression::ConExpression(jbyte b) {
 
 ConExpression::ConExpression(jchar b) {
   _type = type2char(T_CHAR);
-  int ret = sprintf(_str, "Y_C_%c", b);
+  int ret = sprintf(_str, "Y_C_%u", (unsigned int)b);
   assert(ret <= EXP_NAME_LENGTH, "SYM_NAME_LENGTH exceeded!");
 }
 
@@ -207,19 +207,19 @@ ConExpression::ConExpression(jshort s) {
 
 ConExpression::ConExpression(jlong l) {
   _type = type2char(T_LONG);
-  int ret = sprintf(_str, "Y_J_%ld", l);
+  int ret = sprintf(_str, "Y_J_" JLONG_FORMAT, l);
   assert(ret <= EXP_NAME_LENGTH, "SYM_NAME_LENGTH exceeded!");
 }
 
 ConExpression::ConExpression(jfloat f) {
   _type = type2char(T_FLOAT);
-  int ret = sprintf(_str, "Y_F_%e", f);
+  int ret = sprintf(_str, "Y_F_%.9e", f);
   assert(ret <= EXP_NAME_LENGTH, "SYM_NAME_LENGTH exceeded!");
 }
 
 ConExpression::ConExpression(jdouble d) {
   _type = type2char(T_DOUBLE);
-  int ret = sprintf(_str, "Y_D_%le", d);
+  int ret = sprintf(_str, "Y_D_%.17e", d);
   assert(ret <= EXP_NAME_LENGTH, "SYM_NAME_LENGTH exceeded!");
 }
 

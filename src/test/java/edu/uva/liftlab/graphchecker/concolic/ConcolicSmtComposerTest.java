@@ -17,6 +17,51 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicSmtComposerTest {
     @Test
+    public void cliBindsExactInputsAndOutputsWithoutDigestCycle()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            Path relationshipsPath = folder.getRoot().toPath().resolve(
+                    "relationships.json");
+            ConcolicSmtComposer.main(new String[]{
+                    "--fatal-query", fixture.fatal.toString(),
+                    "--summaries", fixture.summaries.toString(),
+                    "--regions", fixture.regions.toString(),
+                    "--merge-plan", fixture.merge.toString(),
+                    "--output", fixture.output.toString(),
+                    "--manifest", fixture.manifest.toString(),
+                    "--relationships", relationshipsPath.toString(),
+                    "--fatal-region", "REGION.F",
+                    "--activation-id", "ACT.F"
+            });
+            JsonObject manifest = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.manifest),
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject relationships = JsonParser.parseString(new String(
+                    Files.readAllBytes(relationshipsPath),
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+
+            assertTrue(manifest.get("compositionBindingId").getAsString()
+                    .matches("[0-9a-f]{64}"));
+            assertEquals(manifest.get("compositionBindingId").getAsString(),
+                    relationships.get("compositionBindingId").getAsString());
+            assertTrue(manifest.has("fatalRegionInstanceId"));
+            assertTrue(manifest.has("fatalOccurrence"));
+            assertTrue(manifest.has("fatalDesiredOutcome"));
+            assertTrue(manifest.has("validatedSummaryId"));
+            assertEquals(1, manifest.getAsJsonArray(
+                    "summaryInputArtifacts").size());
+            BooleanReachConditionExtractor.validateArtifactBindings(
+                    fixture.output, fixture.regions, relationshipsPath,
+                    manifest, relationships);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void tokenValueRefWitnessRequiresImporterCertification() {
         JsonObject record = new JsonObject();
         record.addProperty("valueExpressionAuthority",
@@ -103,8 +148,21 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
-            assertEquals("COMPLETE_BOUNDED_COMPOSITION",
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertFalse(result.manifest.get("fatalReplayValidated")
+                    .getAsBoolean());
+            assertEquals("BOOTSTRAP", result.manifest.get(
+                    "compositionStage").getAsString());
+            assertTrue(result.manifest.get("eligibleForBootstrapModel")
+                    .getAsBoolean());
+            assertFalse(result.manifest.get(
+                    "eligibleToReportAutomaticRelationship").getAsBoolean());
+            assertTrue(result.relationships.get("eligibleForBootstrapModel")
+                    .getAsBoolean());
+            assertFalse(result.relationships.get(
+                    "eligibleForAutomaticVerification").getAsBoolean());
+            assertEquals("STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION",
                     result.manifest.get("status").getAsString());
             assertEquals(1, result.manifest.get(
                     "readFromConstraintCount").getAsInt());
@@ -203,7 +261,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertFalse(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString().contains(
                     "PlaceholderExpression"));
@@ -235,7 +293,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertFalse(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString().contains(
                     "PlaceholderExpression"));
@@ -294,7 +352,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(2, result.manifest.get(
                     "guardedPathCaseCount").getAsInt());
             assertFalse(result.manifest.getAsJsonArray(
@@ -389,7 +447,7 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertEquals(0, result.manifest.getAsJsonArray(
                     "unsupportedExpressions").size());
             String solverKey = declaredSymbolContaining(result.smtLib,
@@ -524,6 +582,10 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(arguments(fixture));
             assertTrue(admitted.manifest.get("complete").getAsBoolean());
             assertTrue(admitted.manifest.get("fatalReplayValidated")
+                    .getAsBoolean());
+            assertEquals("VALIDATED_FINAL", admitted.manifest.get(
+                    "compositionStage").getAsString());
+            assertFalse(admitted.manifest.get("eligibleForBootstrapModel")
                     .getAsBoolean());
             assertEquals("SUMMARY.F.REPLAY", admitted.manifest.get(
                     "validatedFatalReplaySummary").getAsString());
@@ -774,7 +836,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(0, result.manifest.getAsJsonArray(
                     "incompleteSummaryRegions").size());
             assertTrue(result.smtLib.contains("(map_put "));
@@ -821,7 +883,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(1, result.manifest.get(
                     "guardedRegionRelationCount").getAsInt());
             assertEquals(2, result.manifest.get(
@@ -964,7 +1026,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains(
                     "(finite_array_elements port__REGION_P_in_4)"));
             assertTrue(result.smtLib.contains(
@@ -1080,7 +1142,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains("array__fatal_ACT_F"));
             assertTrue(result.smtLib.contains(
                     "(= (finite_array_length port__REGION_F_in_8) 1)"));
@@ -1118,7 +1180,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains(
                     "(= (finite_array_length port__REGION_F_in_8) 1)"));
             assertTrue(result.smtLib.contains(
@@ -1297,7 +1359,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(2, result.manifest.get("heapObservationCount")
                     .getAsInt());
             assertEquals(2, result.manifest.get(
@@ -1386,7 +1448,7 @@ public class ConcolicSmtComposerTest {
 
             assertTrue(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString(),
-                    result.manifest.get("complete").getAsBoolean());
+                    result.manifest.get("structurallyComplete").getAsBoolean());
             JsonArray catalog = result.manifest.getAsJsonArray(
                     "caseProjectionCatalog");
             JsonObject removeProjection = projectionBySource(catalog,
@@ -1466,7 +1528,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             JsonObject projection = projectionBySource(result.manifest
                     .getAsJsonArray("caseProjectionCatalog"), "SUMMARY.P");
             JsonObject projected = projection.getAsJsonArray(
@@ -1519,7 +1581,7 @@ public class ConcolicSmtComposerTest {
                     continue;
                 }
                 assertTrue(result.manifest.toString(),
-                        result.manifest.get("complete").getAsBoolean());
+                        result.manifest.get("structurallyComplete").getAsBoolean());
                 assertTrue(result.smtLib.contains(
                         "(forall ((q Value)) (= (map_has "));
                 assertTrue(result.smtLib.contains(
@@ -1583,7 +1645,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains("(VMapInteger 1)"));
             assertTrue(result.smtLib.contains("(VMapLong 1)"));
             assertTrue(result.smtLib.contains(
@@ -1742,7 +1804,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             for (String constructor : new String[]{"VMapBoolean",
                     "VMapByte", "VMapChar", "VMapShort", "VMapInteger",
                     "VMapLong", "VMapString"}) {
@@ -1913,7 +1975,7 @@ public class ConcolicSmtComposerTest {
 
             assertTrue(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString(),
-                    result.manifest.get("complete").getAsBoolean());
+                    result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(2, result.manifest.get("heapObservationCount")
                     .getAsInt());
             assertEquals(2, result.manifest.get(
@@ -2040,7 +2102,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains(
                     "(declare-const emptyMapState MapState)"));
             assertTrue(result.smtLib.contains(
@@ -2133,7 +2195,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains(
                     "(declare-const port__REGION_P_out_2 FiniteArrayValue)"));
             assertTrue(result.smtLib.contains(
@@ -2253,7 +2315,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains(
                     "(< 1 (finite_array_length port__REGION_P_in_4))"));
             assertTrue(result.smtLib.contains(
@@ -2282,7 +2344,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(result.smtLib.contains(
                     "(< 2 (finite_array_length port__REGION_P_in_4))"));
             assertTrue(result.smtLib.contains(
@@ -2363,7 +2425,7 @@ public class ConcolicSmtComposerTest {
                     arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertEquals(1, countLines(result.smtLib,
                     "(declare-fun exact_field__"));
             assertFalse(result.smtLib.contains("(declare-fun heap_field__"));
@@ -2492,7 +2554,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(1, result.manifest.get(
                     "alternativeWriterGroupCount").getAsInt());
             assertEquals(2, result.manifest.get(
@@ -2528,7 +2590,7 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(boundedArguments);
 
             assertTrue(bounded.manifest.toString(), bounded.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertTrue(bounded.manifest.get("boundedComposition")
                     .getAsBoolean());
             assertEquals("EXPLICIT_BOUNDED_UPSTREAM_REGIONS",
@@ -2592,7 +2654,7 @@ public class ConcolicSmtComposerTest {
             ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments);
 
-            assertTrue(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.get("structurallyComplete").getAsBoolean());
             assertEquals(1, result.manifest.get(
                     "edgeBindingConstraintCount").getAsInt());
             assertEquals(2, result.manifest.get(
@@ -2664,11 +2726,22 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(bounded);
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertEquals(2, result.manifest.get(
                     "resolvedProducerCount").getAsInt());
             assertEquals(1, result.manifest.get(
                     "resolvedRecursiveEdgeCount").getAsInt());
+            JsonArray resolvedEdges = result.manifest.getAsJsonArray(
+                    "resolvedEdgeBindings");
+            assertEquals(1, resolvedEdges.size());
+            JsonObject recursive = resolvedEdges.get(0).getAsJsonObject();
+            assertEquals("REGION.U.out.0", recursive.get(
+                    "sourceOutput").getAsString());
+            assertEquals("REGION.P.in.0", recursive.get(
+                    "targetInput").getAsString());
+            assertTrue(recursive.get("recursive").getAsBoolean());
+            assertEquals("RUNTIME_CONFIRMED_READ_FROM", recursive.get(
+                    "selectionAuthority").getAsString());
             assertEquals(1, result.manifest.get(
                     "edgeBindingConstraintCount").getAsInt());
             assertEquals(2, result.manifest.get(
@@ -2735,7 +2808,7 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertEquals(1, result.manifest.get(
                     "resolvedProducerCount").getAsInt());
             assertEquals(6, result.manifest.get(
@@ -2935,13 +3008,24 @@ public class ConcolicSmtComposerTest {
                     ConcolicSmtComposer.compose(arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
-                    "complete").getAsBoolean());
+                    "structurallyComplete").getAsBoolean());
             assertEquals(4, result.manifest.get(
                     "resolvedProducerCount").getAsInt());
             assertEquals(2, result.manifest.get(
                     "resolvedRecursiveEdgeCount").getAsInt());
             assertEquals(4, result.manifest.get(
                     "resolvedEdgeBindingCount").getAsInt());
+            JsonArray resolvedEdges = result.manifest.getAsJsonArray(
+                    "resolvedEdgeBindings");
+            assertEquals(4, resolvedEdges.size());
+            assertTrue(resolvedEdges.toString().contains(
+                    "\"sourceOutput\":\"REGION.P.out.0\""));
+            assertTrue(resolvedEdges.toString().contains(
+                    "\"targetInput\":\"REGION.F.in.0\""));
+            assertTrue(resolvedEdges.toString().contains(
+                    "\"sourceOutput\":\"REGION.U2.out.0\""));
+            assertTrue(resolvedEdges.toString().contains(
+                    "\"targetInput\":\"REGION.Q.in.0\""));
             // These chains feed different fatal inputs (the map-valued state
             // and the scalar lookup key).  They are simultaneous dependencies
             // of one query, not competing writers for one input port.

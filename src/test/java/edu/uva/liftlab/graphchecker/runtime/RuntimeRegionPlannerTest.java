@@ -30,6 +30,106 @@ public class RuntimeRegionPlannerTest {
             "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>";
 
     @Test
+    public void activationCarriesStableReceiverAndThreadContextOrdinal()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.WorkerThread: void run()>";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Files.write(regions, region("REGION.WORKER", root).getBytes(
+                    StandardCharsets.UTF_8));
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    rootContextMethod(1, root, 1, "producer-a",
+                            "example.ProducerAThread", 21L),
+                    rootContextMethod(2, root, 2, "consumer",
+                            "example.ConsumerThread", 99L),
+                    rootContextMethod(3, root, 3, "producer-b",
+                            "example.ProducerBThread", 22L),
+                    rootContextMethod(4, root, 4, "consumer",
+                            "example.ConsumerThread", 1234L));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), methods, Collections.emptyList(),
+                    Collections.emptyList());
+
+            Map<String, Object> firstConsumer = null;
+            Map<String, Object> secondConsumer = null;
+            for (Map<String, Object> activation : result.activations) {
+                if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
+                    firstConsumer = activation;
+                } else if (Long.valueOf(4L).equals(
+                        activation.get("rootCallId"))) {
+                    secondConsumer = activation;
+                }
+            }
+            assertTrue(firstConsumer != null);
+            assertTrue(secondConsumer != null);
+            assertEquals("example.ConsumerThread",
+                    firstConsumer.get("receiverRuntimeClass"));
+            assertEquals("consumer", firstConsumer.get("threadName"));
+            assertEquals(1,
+                    firstConsumer.get("invocationOrdinalWithinContext"));
+            assertEquals(2,
+                    secondConsumer.get("invocationOrdinalWithinContext"));
+            assertEquals(RuntimeRegionPlanner
+                            .ROOT_CONTEXT_SELECTION_AUTHORITY,
+                    firstConsumer.get("rootContextSelectionAuthority"));
+            assertEquals(Boolean.FALSE,
+                    firstConsumer.get("threadIdSelectionUsed"));
+            assertFalse("unstable tid must not enter the activation selector",
+                    firstConsumer.containsKey("threadId"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void argumentSelectorOrdinalsAreRelativeToStableRootContext()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.WorkerThread: void run(java.lang.Object)>";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Files.write(regions, region("REGION.WORKER.ARG", root).getBytes(
+                    StandardCharsets.UTF_8));
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    rootContextMethod(1, root, 1, "producer",
+                            "example.ProducerThread", 31L),
+                    rootContextMethod(3, root, 2, "consumer",
+                            "example.ConsumerThread", 32L));
+            List<RuntimeRegionPlanner.RuntimeEvent> events = Arrays.asList(
+                    methodArgument(2, root, 1, 0, "example.Command"),
+                    methodArgument(4, root, 2, 0, "example.Command"));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), methods, events,
+                    Collections.emptyList());
+            Map<String, Object> consumer = null;
+            for (Map<String, Object> activation : result.activations) {
+                if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
+                    consumer = activation;
+                }
+            }
+            assertTrue(consumer != null);
+            assertEquals(1, consumer.get(
+                    "invocationOrdinalWithinContext"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> selector = (Map<String, Object>) consumer.get(
+                    "runtimeRootArgumentSelector");
+            assertEquals("other receiver/thread contexts must not shift the "
+                            + "argument selector",
+                    1, selector.get("receiverOrdinal"));
+            assertEquals(1, selector.get("matchOrdinalWithinReceiver"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void rootArgumentSelectorUsesExactTypesAndReceiverRelativeOrdinal()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -841,6 +941,102 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
+    }
+
+    @Test
+    public void refinesUniqueMethodReturnCaptureToExactRuntimeOccurrence()
+            throws Exception {
+        String method =
+                "<example.Producer: int compute(java.lang.Boolean)>";
+        String publisher = "<example.RpcBus: void publish(int)>";
+        String returnCell = method + "::$i0";
+        String returnExpression = "$i0";
+        RuntimeRegionPlanner.Result result =
+                methodReturnCaptureRefinementResult(1);
+
+        assertEquals("CONFIRMED_READ_FROM",
+                result.edgeValidations.get(0).get("status"));
+        Map<String, Object> upstream = requestedOutputActivation(result);
+        assertEquals(Boolean.TRUE,
+                upstream.get("requestedOutputCaptureRequired"));
+        assertEquals(Boolean.TRUE,
+                upstream.get("requestedOutputCaptureComplete"));
+        assertEquals(String.valueOf(upstream.get("requestedOutputSlice")),
+                Boolean.TRUE,
+                upstream.get("requestedOutputSliceRefinementComplete"));
+        assertEquals(Boolean.TRUE,
+                upstream.get("requestedOutputSliceComplete"));
+        assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> refinedSlice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        assertEquals(Collections.singletonList(publisher), refinedSlice.get(
+                "runtimeObservedDownstreamMethodsExcluded"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> captures =
+                (List<Map<String, Object>>) upstream.get(
+                        "requestedOutputCapture");
+        assertEquals(1, captures.size());
+        Map<String, Object> capture = captures.get(0);
+        assertEquals("METHOD_RETURN_VALUE", capture.get("captureKind"));
+        assertEquals(method, capture.get("method"));
+        assertEquals(method + "#u8", capture.get("siteId"));
+        assertEquals(8, capture.get("unitIndex"));
+        assertEquals(1, capture.get("occurrence"));
+        assertEquals("RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE",
+                capture.get("occurrenceAuthority"));
+        assertEquals(12L, capture.get("runtimeCallId"));
+        assertEquals(4L, capture.get("runtimeEventSeq"));
+        assertEquals(returnExpression, capture.get("returnExpression"));
+        assertEquals(returnCell, capture.get("returnCell"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> retained =
+                (List<Map<String, Object>>) slice.get("captureBindings");
+        assertEquals(1, retained.size());
+        assertEquals(returnExpression,
+                retained.get(0).get("returnExpression"));
+        assertEquals(returnCell, retained.get(0).get("returnCell"));
+    }
+
+    @Test
+    public void multipleNormalExitsForMethodReturnCaptureFailClosed()
+            throws Exception {
+        String method =
+                "<example.Producer: int compute(java.lang.Boolean)>";
+        RuntimeRegionPlanner.Result result =
+                methodReturnCaptureRefinementResult(2);
+
+        assertEquals("CONFIRMED_READ_FROM",
+                result.edgeValidations.get(0).get("status"));
+        Map<String, Object> upstream = requestedOutputActivation(result);
+        assertEquals(Boolean.TRUE,
+                upstream.get("requestedOutputCaptureRequired"));
+        assertEquals(Boolean.FALSE,
+                upstream.get("requestedOutputCaptureComplete"));
+        assertEquals(Boolean.FALSE,
+                upstream.get("requestedOutputSliceRefinementComplete"));
+        assertEquals(Boolean.FALSE,
+                upstream.get("requestedOutputSliceComplete"));
+        assertEquals(Boolean.FALSE, upstream.get("boundaryReady"));
+        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
+        assertTrue(((List<?>) upstream.get("requestedOutputCapture"))
+                .isEmpty());
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        assertTrue(((List<?>) slice.get("captureBindings")).isEmpty());
+        String issues = String.valueOf(slice.get("captureBindingIssues"));
+        assertTrue(issues, issues.contains(
+                "RUNTIME_METHOD_RETURN_OCCURRENCE_AMBIGUOUS:"
+                        + method + ":2"));
+        assertTrue(issues, issues.contains(
+                "NO_RUNTIME_EXACT_METHOD_RETURN_MATCH"));
     }
 
     @Test
@@ -3570,16 +3766,158 @@ public class RuntimeRegionPlannerTest {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> requestedOutputSlice(
+    private static RuntimeRegionPlanner.Result
+    methodReturnCaptureRefinementResult(int normalExitCount)
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            String worker = "<example.ProducerThread: void run()>";
+            String method =
+                    "<example.Producer: int compute(java.lang.Boolean)>";
+            String publisher = "<example.RpcBus: void publish(int)>";
+            String reader = "<example.Consumer: void consume()>";
+            String rawField = "<example.RpcBus: int value>";
+            String outputPort = "REGION.W.out.rpc";
+            String outputCell = method + ".return";
+            String returnExpression = "$i0";
+            String returnCell = method + "::$i0";
+            String returnSite = method + "#u8";
+            String writerRegion = "{\"regionId\":\"REGION.W\","
+                    + "\"rootMethod\":\"" + worker + "\","
+                    + "\"anchorMethod\":\"" + method + "\","
+                    + "\"methods\":[\"" + worker + "\",\""
+                    + method + "\",\"" + publisher
+                    + "\"],\"symbolicInputs\":[],"
+                    + "\"outputs\":[{\"portId\":\"" + outputPort
+                    + "\",\"cell\":\"" + outputCell + "\","
+                    + "\"kind\":\"RETURN_VALUE\"}],"
+                    + "\"outputSlices\":[{\"outputPort\":\""
+                    + outputPort + "\",\"outputCell\":\""
+                    + outputCell + "\",\"inputPorts\":[],"
+                    + "\"inputBindings\":[],\"methods\":[\""
+                    + worker + "\",\"" + method
+                    + "\"],\"sites\":[\"" + returnSite
+                    + "\"],\"causalEdgeIds\":[\"DF.RETURN\"],"
+                    + "\"causalEdges\":[{\"edgeId\":\"DF.RETURN\","
+                    + "\"method\":\"" + method + "\",\"siteId\":\""
+                    + returnSite + "\",\"fromCell\":\""
+                    + returnCell + "\",\"toCell\":\""
+                    + outputCell + "\",\"transferKind\":"
+                    + "\"VALUE_PASS\",\"kind\":\"local_def_use\"}],"
+                    + "\"structuralComplete\":true,"
+                    + "\"captureBindingsRequired\":true,"
+                    + "\"captureBindingsComplete\":true,"
+                    + "\"captureBindings\":[{\"captureKind\":"
+                    + "\"METHOD_RETURN_VALUE\",\"captureBindingId\":"
+                    + "\"REGION.W.out.rpc.capture.0\",\"outputPort\":\""
+                    + outputPort + "\",\"outputCell\":\"" + outputCell
+                    + "\",\"method\":\"" + method + "\","
+                    + "\"siteId\":\"" + returnSite + "\","
+                    + "\"unitIndex\":8,\"unit\":\"return $i0\","
+                    + "\"returnExpression\":\"" + returnExpression
+                    + "\",\"returnCell\":\"" + returnCell + "\","
+                    + "\"causalEdgeId\":\"DF.RETURN\","
+                    + "\"transferKind\":\"VALUE_PASS\","
+                    + "\"bindingKind\":\"method_return\","
+                    + "\"bindingAuthority\":"
+                    + "\"STATIC_EXACT_METHOD_RETURN_VALUE\","
+                    + "\"occurrence\":0,\"occurrenceAuthority\":"
+                    + "\"RUNTIME_INSTANCE_REFINEMENT_REQUIRED\"}],"
+                    + "\"captureBindingIssues\":[],\"complete\":true,"
+                    + "\"selection\":"
+                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            String readerRegion = "{\"regionId\":\"REGION.R\","
+                    + "\"rootMethod\":\"" + reader + "\","
+                    + "\"anchorMethod\":\"" + reader + "\","
+                    + "\"methods\":[\"" + reader + "\"],"
+                    + "\"symbolicInputs\":[{\"portId\":"
+                    + "\"REGION.R.in.rpc\",\"cell\":\"" + rawField
+                    + "\",\"sourceKind\":\"SHARED_HEAP\","
+                    + "\"projection\":\"value\"}],\"outputs\":[],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            Files.write(regions, (writerRegion + readerRegion).getBytes(
+                    StandardCharsets.UTF_8));
+            String edge = "{\"edgeId\":\"E.RPC.RETURN\","
+                    + "\"fromRegion\":\"REGION.W\","
+                    + "\"toRegion\":\"REGION.R\",\"fromPort\":\""
+                    + rawField + "\",\"fromOutputPort\":\"" + outputPort
+                    + "\",\"fromOutputCell\":\"" + outputCell + "\","
+                    + "\"aliasProofEdgeIds\":[\"DF.RETURN\","
+                    + "\"DF.PUBLISH\"],\"aliasProofAuthority\":"
+                    + "\"CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                    + "PUBLISH_VALUE_FLOW_V1\",\"aliasProofComplete\":true,"
+                    + "\"toPort\":\"" + rawField + "\","
+                    + "\"kind\":\"SHARED_STATE\","
+                    + "\"relation\":\"READ_FROM_CANDIDATE\","
+                    + "\"requiresOrder\":true,"
+                    + "\"requiresObjectIdentity\":true}\n";
+            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
+
+            List<RuntimeRegionPlanner.MethodEvent> methods =
+                    new ArrayList<>();
+            methods.add(methodContext(1, worker, 11, "PROCESS", "writer",
+                    101L));
+            List<RuntimeRegionPlanner.RuntimeEvent> runtime =
+                    new ArrayList<>();
+            for (int index = 0; index < normalExitCount; index++) {
+                long callId = 12L + index;
+                long enterSeq = 2L + 3L * index;
+                methods.add(new RuntimeRegionPlanner.MethodEvent(enterSeq,
+                        "testHandle", "PROCESS", "writer", 101L, method,
+                        43 + index, "example.Producer", callId, 11L, 0L,
+                        enterSeq * 100L));
+                long exitSeq = 4L + 3L * index;
+                runtime.add(new RuntimeRegionPlanner.RuntimeEvent(exitSeq,
+                        "METHOD_EXIT_NORMAL", method, callId, 0L, 0L,
+                        method + "#exit", "", -1, "int", 0,
+                        String.valueOf(index + 1), false, false));
+            }
+            long publisherSeq = 3L * normalExitCount + 3L;
+            long publisherCallId = 30L;
+            methods.add(new RuntimeRegionPlanner.MethodEvent(publisherSeq,
+                    "testHandle", "PROCESS", "writer", 101L, publisher,
+                    55, "example.RpcBus", publisherCallId, 11L, 0L,
+                    publisherSeq * 100L));
+            long readerSeq = publisherSeq + 3L;
+            methods.add(methodContext(readerSeq, reader, 22, "PROCESS",
+                    "reader", 202L));
+            RuntimeRegionPlanner.FieldAccessEvent write =
+                    new RuntimeRegionPlanner.FieldAccessEvent(
+                            publisherSeq + 1L,
+                            "FIELD_WRITE", publisher, 11, rawField,
+                            77, 88, "1");
+            RuntimeRegionPlanner.FieldAccessEvent read =
+                    new RuntimeRegionPlanner.FieldAccessEvent(readerSeq + 1L,
+                            "FIELD_READ", reader, 22, rawField,
+                            77, 88, "1");
+            return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    methods, runtime, Arrays.asList(write, read));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static Map<String, Object> requestedOutputActivation(
             RuntimeRegionPlanner.Result result) {
         for (Map<String, Object> activation : result.activations) {
             if (activation.containsKey("requestedOutputSlice")) {
-                return (Map<String, Object>) activation.get(
-                        "requestedOutputSlice");
+                return activation;
             }
         }
         throw new AssertionError("missing requested-output activation");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> requestedOutputSlice(
+            RuntimeRegionPlanner.Result result) {
+        return (Map<String, Object>) requestedOutputActivation(result).get(
+                "requestedOutputSlice");
     }
 
     private static String carrierBinding(String dependencyCell) {
@@ -3707,6 +4045,14 @@ public class RuntimeRegionPlannerTest {
                 "DATANODE", "DataXceiver-1", 27L, method,
                 receiverObjectId, "example.Actor", callId, 0, 0,
                 seq * 100L);
+    }
+
+    private static RuntimeRegionPlanner.MethodEvent rootContextMethod(
+            long seq, String method, long callId, String threadName,
+            String receiverRuntimeClass, long tid) {
+        return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle",
+                "WORKER", threadName, tid, method, (int) (100 + callId),
+                receiverRuntimeClass, callId, 0, 0, seq * 100L);
     }
 
     private static RuntimeRegionPlanner.MethodEvent methodContext(

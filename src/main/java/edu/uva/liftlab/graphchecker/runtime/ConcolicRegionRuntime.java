@@ -24,9 +24,11 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -83,6 +85,9 @@ public final class ConcolicRegionRuntime {
                     + "AND_WITHIN_RECEIVER_ORDINAL_V2";
     private static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
+    private static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
+            "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
+                    + "CONTEXT_ORDINAL_V1";
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
@@ -103,6 +108,20 @@ public final class ConcolicRegionRuntime {
     private static int concreteReplayActiveCount;
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
+    /**
+     * Dynamic root-invocation ownership used only by injected entry/exit
+     * hooks.  Every injected root invocation owns a frame once its wrapper
+     * begins, including failed or unselected entries whose token stays zero.
+     * Keeping this separate from {@link #CURRENT_TOKEN} prevents any nested
+     * invocation from closing its selected caller.
+     */
+    private static final ThreadLocal<Deque<RootInvocationFrame>>
+            ROOT_INVOCATION_FRAMES = new ThreadLocal<Deque<RootInvocationFrame>>() {
+        @Override
+        protected Deque<RootInvocationFrame> initialValue() {
+            return new ArrayDeque<>();
+        }
+    };
     private static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
     private static final Map<String, Integer> ORDINALS = new LinkedHashMap<>();
@@ -269,6 +288,7 @@ public final class ConcolicRegionRuntime {
         }
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
+        ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
         synchronized (EXECUTION_MODE_LOCK) {
             ENGINE_BUSY.set(false);
@@ -402,6 +422,25 @@ public final class ConcolicRegionRuntime {
             writeSkipped(activation, "engine start failed: " + rootCause(throwable));
             return 0L;
         }
+    }
+
+    /**
+     * Instrumentation-facing root entry.  A zero-token placeholder is pushed
+     * before {@link #enterRegion(String, Object, Object[])} starts the engine,
+     * then filled without another allocation.  If entry fails, that exact
+     * placeholder remains for the injected exceptional or original-handler
+     * cleanup path; this prevents a caught same-root entry failure from
+     * exposing an enclosing frame.  Token zero is likewise retained after a
+     * successful unselected entry as its exact ownership marker.
+     */
+    public static long enterRegionFrame(String rootMethod, Object receiver,
+                                        Object[] rootArguments) {
+        Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
+        RootInvocationFrame frame = new RootInvocationFrame(rootMethod, 0L);
+        frames.push(frame);
+        long token = enterRegion(rootMethod, receiver, rootArguments);
+        frame.token = token;
+        return token;
     }
 
     private static long enterConcreteReplay(Activation activation,
@@ -2735,16 +2774,72 @@ public final class ConcolicRegionRuntime {
      * rather than string- or project-specific.
      */
     static JsonElement canonicalEngineExpression(String serialized) {
+        return engineExpressionCapture(serialized).expression;
+    }
+
+    private static EngineExpressionCapture engineExpressionCapture(
+            String serialized) {
         JsonElement parsed = parseJson(serialized);
         if (parsed.isJsonObject()) {
             JsonObject envelope = parsed.getAsJsonObject();
-            if (envelope.has("expression")) {
-                JsonElement expression = envelope.get("expression");
-                return expression == null || expression.isJsonNull()
-                        ? null : expression;
+            // A VM envelope can legitimately omit expression (for example
+            // CONCOLIC_DISABLED and NULL).  Recognize the envelope from its
+            // schema fields so it can never be mistaken for a legacy bare
+            // expression tree.
+            if (envelope.has("expression")
+                    || envelope.has("schemaVersion")
+                    && envelope.has("kind")
+                    && envelope.has("active")
+                    && envelope.has("symbolic")) {
+                JsonElement expression = envelope.has("expression")
+                        ? envelope.get("expression") : null;
+                return new EngineExpressionCapture(expression == null
+                        || expression.isJsonNull() ? null : expression,
+                        integer(envelope, "schemaVersion", -1),
+                        bool(envelope, "active", false),
+                        jsonString(envelope, "kind"),
+                        bool(envelope, "symbolic", false),
+                        jsonString(envelope, "expressionAuthority"),
+                        jsonString(envelope, "javaTypeDescriptor"));
             }
         }
-        return parsed;
+        return new EngineExpressionCapture(parsed, -1, false, "", false,
+                "", "");
+    }
+
+    private static final class EngineExpressionCapture {
+        private final JsonElement expression;
+        private final int schemaVersion;
+        private final boolean active;
+        private final String kind;
+        private final boolean symbolic;
+        private final String authority;
+        private final String javaTypeDescriptor;
+
+        private EngineExpressionCapture(JsonElement expression,
+                                        int schemaVersion, boolean active,
+                                        String kind, boolean symbolic,
+                                        String authority,
+                                        String javaTypeDescriptor) {
+            this.expression = expression;
+            this.schemaVersion = schemaVersion;
+            this.active = active;
+            this.kind = safe(kind);
+            this.symbolic = symbolic;
+            this.authority = safe(authority);
+            this.javaTypeDescriptor = safe(javaTypeDescriptor);
+        }
+
+        private void addEvidence(JsonObject row) {
+            row.addProperty("expressionEnvelopeSchemaVersion",
+                    schemaVersion);
+            row.addProperty("expressionEnvelopeActive", active);
+            row.addProperty("expressionEnvelopeKind", kind);
+            row.addProperty("expressionEnvelopeSymbolic", symbolic);
+            row.addProperty("expressionEnvelopeAuthority", authority);
+            row.addProperty("expressionEnvelopeJavaTypeDescriptor",
+                    javaTypeDescriptor);
+        }
     }
 
     /** Returns every exact native remove match in the selected raw suffix. */
@@ -2998,8 +3093,18 @@ public final class ConcolicRegionRuntime {
 
     /** Returns the activation token owned by the current thread, or zero. */
     public static long activeToken() {
-        Long token = CURRENT_TOKEN.get();
-        return token != null && ownerRegion(token) != null ? token : 0L;
+        try {
+            RootInvocationFrame frame = ROOT_INVOCATION_FRAMES.get().peek();
+            if (frame != null) {
+                return frame.token != 0L && ownerRegion(frame.token) != null
+                        ? frame.token : 0L;
+            }
+            Long token = CURRENT_TOKEN.get();
+            return token != null && ownerRegion(token) != null ? token : 0L;
+        } catch (Throwable ignored) {
+            // Instrumentation token lookup must never perturb the workload.
+            return 0L;
+        }
     }
 
     /**
@@ -3036,14 +3141,16 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            JsonElement expression = canonicalEngineExpression(
+            EngineExpressionCapture captured = engineExpressionCapture(
                     api.expression(value));
+            JsonElement expression = captured.expression;
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException("custom VM returned no "
                         + "expression for captured output value "
                         + row.get("concreteValueClass").getAsString());
             }
             row.add("expression", expression);
+            captured.addEvidence(row);
             row.addProperty("expressionCaptured", true);
             JsonArray projectionVerifications =
                     active.verifyMapProjectionOutput(outputPort, outputCell,
@@ -3062,6 +3169,88 @@ public final class ConcolicRegionRuntime {
         } finally {
             active.outputCaptures.add(row);
             if (paused) resumePathCondition(active, api);
+        }
+    }
+
+    /**
+     * Observes one activation-authorized scalar method return while its
+     * custom-VM expression is still live.  Both the current region token and
+     * the complete static capture tuple must match.  A zero-token nested root
+     * frame therefore cannot attach its helper return to an enclosing active
+     * region.  This hook is deliberately no-throw because it executes on the
+     * original method's return path.
+     */
+    public static void recordMethodReturnOutput(
+            long token, String method, int unitIndex, String siteId,
+            String captureBindingId, String outputPort, String outputCell,
+            int requestedOccurrence, Object value, String primitiveValue) {
+        try {
+            Long current = CURRENT_TOKEN.get();
+            if (token == 0L || current == null
+                    || current.longValue() != token) {
+                return;
+            }
+            RootInvocationFrame frame =
+                    ROOT_INVOCATION_FRAMES.get().peek();
+            if (frame != null && frame.token != token) return;
+
+            ActiveRegion active = ownerRegion(token);
+            if (active == null || !active.engineBacked) return;
+            OutputCaptureRequest request =
+                    active.activation.methodReturnCapture(
+                            method, unitIndex, siteId, outputPort, outputCell,
+                            captureBindingId, requestedOccurrence);
+            if (request == null) return;
+            int occurrence = active.nextOutputCaptureOccurrence(
+                    request.captureBindingId);
+            if (request.occurrence != occurrence) return;
+
+            JsonObject row = request.toJson();
+            row.addProperty("occurrence", occurrence);
+            row.addProperty("captureAuthority",
+                    "ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE");
+            EngineApi api = engine();
+            boolean paused = false;
+            try {
+                api.pausePathCondition();
+                paused = true;
+                row.addProperty("concreteValueClass", value == null
+                        ? "null" : value.getClass().getName());
+                row.addProperty("concretePrimitiveValue",
+                        safe(primitiveValue));
+                EngineExpressionCapture captured = engineExpressionCapture(
+                        api.expression(value));
+                JsonElement expression = captured.expression;
+                if (expression == null || expression.isJsonNull()) {
+                    throw new IllegalStateException("custom VM returned no "
+                            + "expression for captured method return value "
+                            + row.get("concreteValueClass").getAsString());
+                }
+                row.add("expression", expression);
+                captured.addEvidence(row);
+                row.addProperty("expressionCaptured", true);
+            } catch (Throwable throwable) {
+                try {
+                    row.addProperty("expressionCaptured", false);
+                    row.addProperty("expressionError",
+                            rootCause(throwable));
+                    active.unresolved.add(request.captureBindingId
+                            + ": method-return expression capture failed: "
+                            + rootCause(throwable));
+                } catch (Throwable ignored) {
+                    // Preserve the original method return even if diagnostic
+                    // construction itself fails.
+                }
+            } finally {
+                if (paused) resumePathCondition(active, api);
+                try {
+                    active.outputCaptures.add(row);
+                } catch (Throwable ignored) {
+                    // Runtime observation is fail-closed and best-effort.
+                }
+            }
+        } catch (Throwable ignored) {
+            // Instrumentation bookkeeping must not replace a normal return.
         }
     }
 
@@ -3171,14 +3360,16 @@ public final class ConcolicRegionRuntime {
                         + "failed" + (observation.error.isEmpty() ? ""
                         : ": " + observation.error));
             }
-            JsonElement expression = canonicalEngineExpression(
+            EngineExpressionCapture captured = engineExpressionCapture(
                     api.expression(assignedValue));
+            JsonElement expression = captured.expression;
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException("custom VM returned no "
                         + "expression for captured field assignment value "
                         + row.get("assignedValueClass").getAsString());
             }
             row.add("expression", expression);
+            captured.addEvidence(row);
             row.addProperty("expressionCaptured", true);
         } catch (Throwable throwable) {
             row.addProperty("expressionCaptured", false);
@@ -3198,6 +3389,24 @@ public final class ConcolicRegionRuntime {
         finish(token, "NORMAL", "", returnValue, primitiveValue);
     }
 
+    /**
+     * Invocation-exact normal cleanup used by injected roots.  This method is
+     * intentionally no-throw: instrumentation bookkeeping must never turn a
+     * normal program return into an exception (or let the synthetic catch-all
+     * pop an enclosing frame a second time).
+     */
+    public static void exitRegionFrame(String rootMethod, Object returnValue,
+                                       String primitiveValue) {
+        try {
+            RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            if (frame != null && frame.token != 0L) {
+                exitRegion(frame.token, returnValue, primitiveValue);
+            }
+        } catch (Throwable ignored) {
+            // Runtime observation is fail-closed and cannot alter the return.
+        }
+    }
+
     /** Normal exit resolved from the current concolic thread. */
     public static void exitActiveRegion(Object returnValue,
                                         String primitiveValue) {
@@ -3214,11 +3423,65 @@ public final class ConcolicRegionRuntime {
                 throwable, "");
     }
 
+    /**
+     * Invocation-exact exceptional cleanup used by the synthetic catch-all.
+     * The original throwable is rethrown by injected bytecode; consequently
+     * every runtime failure is swallowed here so it cannot replace it.
+     */
+    public static void throwRegionFrame(String rootMethod,
+                                        Throwable throwable) {
+        try {
+            RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            if (frame != null && frame.token != 0L) {
+                throwRegion(frame.token, throwable);
+            }
+        } catch (Throwable ignored) {
+            // Preserve the program's original throwable identity.
+        }
+    }
+
     /** Exceptional exit resolved from the current concolic thread. */
     public static void throwActiveRegion(Throwable throwable) {
         Long token = CURRENT_TOKEN.get();
         if (token != null) {
             throwRegion(token, throwable);
+        }
+    }
+
+    private static RootInvocationFrame popRootInvocationFrame(
+            String rootMethod) {
+        Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
+        RootInvocationFrame frame = frames.peek();
+        if (frame == null) {
+            ROOT_INVOCATION_FRAMES.remove();
+            return null;
+        }
+        boolean matches = rootMethod == null
+                ? frame.rootMethod == null
+                : rootMethod.equals(frame.rootMethod);
+        if (!matches) {
+            // Never guess ownership.  In particular, do not expose or close
+            // an outer selected frame when instrumentation is malformed.
+            return null;
+        }
+        frames.pop();
+        if (frames.isEmpty()) {
+            ROOT_INVOCATION_FRAMES.remove();
+        }
+        return frame;
+    }
+
+    static int regionFrameDepthForTests() {
+        return ROOT_INVOCATION_FRAMES.get().size();
+    }
+
+    private static final class RootInvocationFrame {
+        private final String rootMethod;
+        private long token;
+
+        private RootInvocationFrame(String rootMethod, long token) {
+            this.rootMethod = rootMethod;
+            this.token = token;
         }
     }
 
@@ -4939,9 +5202,11 @@ public final class ConcolicRegionRuntime {
 
     private static SelectorOccurrence nextSelectorOccurrence(
             String test, String rootMethod, RootArgumentSelector selector,
-            Object receiver) {
+            RootContextSelector contextSelector, Object receiver) {
         String key = safe(test) + "\n" + safe(rootMethod) + "\n"
-                + selector.identity();
+                + (contextSelector == null
+                ? "LEGACY_NO_STABLE_ROOT_CONTEXT"
+                : contextSelector.identity()) + "\n" + selector.identity();
         synchronized (ORDINALS) {
             if (!selector.receiverScoped) {
                 Integer previous = ORDINALS.get(key);
@@ -4956,6 +5221,12 @@ public final class ConcolicRegionRuntime {
             }
             return state.next(receiver);
         }
+    }
+
+    private static int nextRootContextOccurrence(
+            String test, String rootMethod, RootContextSelector selector) {
+        return nextOrdinal("stable-root-context\n" + safe(test) + "\n"
+                + safe(rootMethod) + "\n" + selector.identity());
     }
 
     private static void writeSkipped(Activation activation, String reason) {
@@ -9785,6 +10056,8 @@ public final class ConcolicRegionRuntime {
 
     private static final class OutputCaptureRequest {
         private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
+        private static final String METHOD_RETURN_VALUE =
+                "METHOD_RETURN_VALUE";
         private static final String FIELD_ASSIGNMENT_RHS =
                 "FIELD_ASSIGNMENT_RHS";
 
@@ -9800,6 +10073,7 @@ public final class ConcolicRegionRuntime {
         private final int argumentIndex;
         private final String fieldSignature;
         private final int occurrence;
+        private final String occurrenceAuthority;
 
         private OutputCaptureRequest(JsonObject json) {
             this.captureKind = firstNonBlank(
@@ -9817,6 +10091,8 @@ public final class ConcolicRegionRuntime {
             this.fieldSignature = firstNonBlank(
                     string(json, "fieldSignature"), string(json, "field"));
             this.occurrence = integer(json, "occurrence", 0);
+            this.occurrenceAuthority = string(json,
+                    "occurrenceAuthority");
         }
 
         private boolean valid() {
@@ -9828,6 +10104,9 @@ public final class ConcolicRegionRuntime {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 return !method.isEmpty() && !fieldSignature.isEmpty()
                         && declaredField(fieldSignature) != null;
+            }
+            if (METHOD_RETURN_VALUE.equals(captureKind)) {
+                return !method.isEmpty();
             }
             return CALL_ARGUMENT.equals(captureKind)
                     && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
@@ -9845,6 +10124,20 @@ public final class ConcolicRegionRuntime {
                     && siteId.equals(safe(actualSite))
                     && calleeMethod.equals(safe(actualCallee))
                     && argumentIndex == actualArgument
+                    && outputPort.equals(safe(actualPort))
+                    && outputCell.equals(safe(actualCell))
+                    && captureBindingId.equals(safe(actualBinding))
+                    && occurrence == actualRequestedOccurrence;
+        }
+
+        private boolean matchesMethodReturn(
+                String actualMethod, int actualUnit, String actualSite,
+                String actualPort, String actualCell, String actualBinding,
+                int actualRequestedOccurrence) {
+            return METHOD_RETURN_VALUE.equals(captureKind)
+                    && method.equals(safe(actualMethod))
+                    && unitIndex == actualUnit
+                    && siteId.equals(safe(actualSite))
                     && outputPort.equals(safe(actualPort))
                     && outputCell.equals(safe(actualCell))
                     && captureBindingId.equals(safe(actualBinding))
@@ -9878,13 +10171,120 @@ public final class ConcolicRegionRuntime {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 result.addProperty("method", method);
                 result.addProperty("fieldSignature", fieldSignature);
+            } else if (METHOD_RETURN_VALUE.equals(captureKind)) {
+                result.addProperty("method", method);
             } else {
                 result.addProperty("callerMethod", callerMethod);
                 result.addProperty("calleeMethod", calleeMethod);
                 result.addProperty("argumentIndex", argumentIndex);
             }
             result.addProperty("requestedOccurrence", occurrence);
+            if (!occurrenceAuthority.isEmpty()) {
+                result.addProperty("occurrenceAuthority",
+                        occurrenceAuthority);
+            }
             return result;
+        }
+    }
+
+    /** Stable plan selector that deliberately excludes JVM-assigned tid. */
+    private static final class RootContextSelector {
+        private final boolean present;
+        private final boolean valid;
+        private final String error;
+        private final String receiverRuntimeClass;
+        private final String threadName;
+        private final int invocationOrdinalWithinContext;
+
+        private RootContextSelector(boolean present, boolean valid,
+                                    String error,
+                                    String receiverRuntimeClass,
+                                    String threadName,
+                                    int invocationOrdinalWithinContext) {
+            this.present = present;
+            this.valid = valid;
+            this.error = safe(error);
+            this.receiverRuntimeClass = safe(receiverRuntimeClass);
+            this.threadName = safe(threadName);
+            this.invocationOrdinalWithinContext =
+                    invocationOrdinalWithinContext;
+        }
+
+        private static RootContextSelector from(JsonObject activation) {
+            boolean present = activation.has("receiverRuntimeClass")
+                    || activation.has("invocationOrdinalWithinContext")
+                    || activation.has("rootContextSelectionAuthority")
+                    || activation.has("threadIdSelectionUsed");
+            if (!present) {
+                return new RootContextSelector(false, true, "", "", "",
+                        -1);
+            }
+            String receiverClass = strictString(activation,
+                    "receiverRuntimeClass");
+            String thread = activation.has("threadName")
+                    ? strictString(activation, "threadName") : "";
+            Integer ordinal = strictInteger(activation,
+                    "invocationOrdinalWithinContext", 1);
+            String authority = strictString(activation,
+                    "rootContextSelectionAuthority");
+            JsonElement rawThreadIdUsed = activation.get(
+                    "threadIdSelectionUsed");
+            boolean explicitNoThreadId = rawThreadIdUsed != null
+                    && rawThreadIdUsed.isJsonPrimitive()
+                    && rawThreadIdUsed.getAsJsonPrimitive().isBoolean()
+                    && !rawThreadIdUsed.getAsBoolean();
+            if (receiverClass.isEmpty()
+                    || !receiverClass.equals(receiverClass.trim())
+                    || activation.has("threadName") && (thread.isEmpty()
+                    || !thread.equals(thread.trim()))
+                    || ordinal == null
+                    || !ROOT_CONTEXT_SELECTION_AUTHORITY.equals(authority)
+                    || !explicitNoThreadId || activation.has("threadId")) {
+                return new RootContextSelector(true, false,
+                        "stable root context requires an exact receiver "
+                                + "runtime class, optional non-blank thread "
+                                + "name, positive context ordinal, canonical "
+                                + "authority, and no thread id",
+                        receiverClass, thread,
+                        ordinal == null ? -1 : ordinal);
+            }
+            String legacyReceiver = string(activation, "receiverType");
+            if (!legacyReceiver.isEmpty()
+                    && !receiverClass.equals(legacyReceiver)) {
+                return new RootContextSelector(true, false,
+                        "receiverRuntimeClass disagrees with receiverType",
+                        receiverClass, thread, ordinal);
+            }
+            return new RootContextSelector(true, true, "", receiverClass,
+                    thread, ordinal);
+        }
+
+        private boolean matches(Object receiver, String actualThreadName) {
+            if (!present || !valid || receiver == null
+                    || !receiverRuntimeClass.equals(
+                    receiver.getClass().getName())) {
+                return false;
+            }
+            return threadName.isEmpty()
+                    || threadName.equals(safe(actualThreadName));
+        }
+
+        private String identity() {
+            if (!present) return "LEGACY_NO_STABLE_ROOT_CONTEXT";
+            return ROOT_CONTEXT_SELECTION_AUTHORITY + '|'
+                    + receiverRuntimeClass.length() + ':'
+                    + receiverRuntimeClass + '|'
+                    + threadName.length() + ':' + threadName;
+        }
+
+        private boolean selects(Integer occurrence) {
+            return occurrence != null
+                    && invocationOrdinalWithinContext == occurrence;
+        }
+
+        private String selectionIdentity() {
+            return present ? "contextOrdinal="
+                    + invocationOrdinalWithinContext : "legacyContext";
         }
     }
 
@@ -10107,6 +10507,7 @@ public final class ConcolicRegionRuntime {
         private final String rootMethod;
         private final String observedRootMethod;
         private final int invocationOrdinal;
+        private final RootContextSelector rootContextSelector;
         private final RootArgumentSelector rootArgumentSelector;
         private final boolean replayable;
         private final boolean requiresAllSelection;
@@ -10131,6 +10532,7 @@ public final class ConcolicRegionRuntime {
             this.rootMethod = string(json, "rootMethod");
             this.observedRootMethod = string(json, "observedRootMethod");
             this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
+            this.rootContextSelector = RootContextSelector.from(json);
             this.rootArgumentSelector = RootArgumentSelector.from(json);
             this.replayable = bool(json, "replayable", true);
             this.requiresAllSelection = "ALL".equals(string(json,
@@ -10363,6 +10765,23 @@ public final class ConcolicRegionRuntime {
             }
             return match;
         }
+
+        private OutputCaptureRequest methodReturnCapture(
+                String method, int unitIndex, String siteId,
+                String outputPort, String outputCell,
+                String captureBindingId, int requestedOccurrence) {
+            OutputCaptureRequest match = null;
+            for (OutputCaptureRequest request : outputCaptures) {
+                if (!request.matchesMethodReturn(method, unitIndex, siteId,
+                        outputPort, outputCell, captureBindingId,
+                        requestedOccurrence)) {
+                    continue;
+                }
+                if (match != null) return null;
+                match = request;
+            }
+            return match;
+        }
     }
 
     private static final class Configuration {
@@ -10403,6 +10822,24 @@ public final class ConcolicRegionRuntime {
                 candidates.add(activation);
             }
 
+            String actualThreadName = Thread.currentThread().getName();
+            Map<String, Integer> contextOccurrences =
+                    new LinkedHashMap<>();
+            for (Activation activation : candidates) {
+                RootContextSelector selector =
+                        activation.rootContextSelector;
+                if (!selector.present
+                        || !selector.matches(receiver, actualThreadName)) {
+                    continue;
+                }
+                String identity = selector.identity();
+                if (!contextOccurrences.containsKey(identity)) {
+                    contextOccurrences.put(identity,
+                            nextRootContextOccurrence(test, rootMethod,
+                                    selector));
+                }
+            }
+
             // Advance every matching predicate family before selecting a
             // plan row.  Returning as soon as one activation matched used to
             // leave later, overlapping selector families one occurrence
@@ -10410,27 +10847,43 @@ public final class ConcolicRegionRuntime {
             Map<String, SelectorOccurrence> occurrences =
                     new LinkedHashMap<>();
             for (Activation activation : candidates) {
+                RootContextSelector contextSelector =
+                        activation.rootContextSelector;
+                if (contextSelector.present
+                        && !contextSelector.matches(receiver,
+                        actualThreadName)) {
+                    continue;
+                }
                 RootArgumentSelector selector =
                         activation.rootArgumentSelector;
                 if (!selector.present || !selector.matches(rootArguments)) {
                     continue;
                 }
-                String selectorIdentity = selector.identity();
+                String selectorIdentity = contextSelector.identity() + "\n"
+                        + selector.identity();
                 if (!occurrences.containsKey(selectorIdentity)) {
                     occurrences.put(selectorIdentity,
                             nextSelectorOccurrence(test, rootMethod,
-                                    selector, receiver));
+                                    selector, contextSelector, receiver));
                 }
             }
 
             Activation selected = null;
             for (Activation activation : candidates) {
+                RootContextSelector contextSelector =
+                        activation.rootContextSelector;
+                boolean contextMatches = !contextSelector.present
+                        || contextSelector.selects(contextOccurrences.get(
+                        contextSelector.identity()));
+                if (!contextMatches) continue;
                 RootArgumentSelector selector =
                         activation.rootArgumentSelector;
                 boolean matches = selector.present
                         ? selector.selects(occurrences.get(
-                        selector.identity()))
-                        : activation.invocationOrdinal == ordinal;
+                        contextSelector.identity() + "\n"
+                                + selector.identity()))
+                        : contextSelector.present
+                        || activation.invocationOrdinal == ordinal;
                 if (!matches) continue;
                 if (selected != null) {
                     throw new IllegalStateException("Ambiguous runtime root "
@@ -10510,6 +10963,13 @@ public final class ConcolicRegionRuntime {
                             + activation.rootArgumentSelector.error
                             + " in " + plan);
                 }
+                if (!activation.rootContextSelector.valid) {
+                    throw new IllegalStateException("Malformed stable runtime "
+                            + "root context for activation "
+                            + activation.activationId + ": "
+                            + activation.rootContextSelector.error
+                            + " in " + plan);
+                }
                 if (!activationIds.add(activation.activationId)) {
                     throw new IllegalStateException("Duplicate effective "
                             + "activationId " + activation.activationId
@@ -10517,23 +10977,27 @@ public final class ConcolicRegionRuntime {
                 }
                 String root = firstNonBlank(activation.rootMethod,
                         activation.observedRootMethod);
+                RootContextSelector contextSelector =
+                        activation.rootContextSelector;
                 RootArgumentSelector selector =
                         activation.rootArgumentSelector;
                 String selectorIdentity = selector.identity();
-                String key = root + "\n" + selectorIdentity + "\n"
-                        + (selector.present
+                String selectionIdentity = selector.present
                         ? selector.selectionIdentity()
-                        : "globalInvocation="
-                        + activation.invocationOrdinal);
+                        : contextSelector.present
+                        ? contextSelector.selectionIdentity()
+                        : "globalInvocation=" + activation.invocationOrdinal;
+                String key = root + "\n" + contextSelector.identity()
+                        + "\n" + contextSelector.selectionIdentity() + "\n"
+                        + selectorIdentity + "\n" + selectionIdentity;
                 String previous = runtimeKeys.put(key,
                         activation.activationId);
                 if (previous != null) {
                     throw new IllegalStateException("Ambiguous effective "
                             + "activation runtime key root=" + root
+                            + " context=" + contextSelector.identity()
                             + " selector=" + selectorIdentity
-                            + " selection=" + (selector.present
-                            ? selector.selectionIdentity()
-                            : activation.invocationOrdinal)
+                            + " selection=" + selectionIdentity
                             + " activations=" + previous + ","
                             + activation.activationId + " in " + plan);
                 }

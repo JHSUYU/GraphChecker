@@ -12,6 +12,7 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -106,7 +107,16 @@ public class ConcolicRegionRuntimeTest {
         for (int index = 0; index < pending.size(); index++) {
             final Class<?> type = pending.get(index);
             pending.addAll(Arrays.asList(type.getDeclaredClasses()));
-            ClassReader reader = new ClassReader(type.getName());
+            String resource = "/" + type.getName().replace('.', '/')
+                    + ".class";
+            ClassReader reader;
+            try (InputStream bytecode = type.getResourceAsStream(resource)) {
+                if (bytecode == null) {
+                    throw new IllegalStateException(
+                            "Missing runtime bytecode resource " + resource);
+                }
+                reader = new ClassReader(bytecode);
+            }
             reader.accept(new ClassVisitor(Opcodes.ASM9) {
                 @Override
                 public MethodVisitor visitMethod(int access, String name,
@@ -162,22 +172,197 @@ public class ConcolicRegionRuntimeTest {
         String[] old = installPlan(plan, results, "bundle-test");
         try {
             try {
-                ConcolicRegionRuntime.enterRegion(root, new Object());
+                ConcolicRegionRuntime.enterRegionFrame(root, new Object(),
+                        new Object[0]);
                 throw new AssertionError("ambiguous ALL bundle must fail");
             } catch (IllegalStateException expected) {
                 assertTrue(expected.getMessage().contains(
                         "Ambiguous effective activation runtime key"));
                 assertTrue(expected.getMessage().contains("ACT.FIRST"));
                 assertTrue(expected.getMessage().contains("ACT.SECOND"));
+                assertEquals("failed entry retains one placeholder until "
+                                + "the injected catch-all runs", 1,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
+                ConcolicRegionRuntime.throwRegionFrame(root, expected);
+                assertEquals(0,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
             }
 
             System.setProperty("causynth.concolic.activation.id",
                     "ACT.SECOND");
             ConcolicRegionRuntime.resetForTests();
-            long selectedToken = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+            long selectedToken = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
             assertTrue(selectedToken > 0L);
-            ConcolicRegionRuntime.exitRegion(selectedToken, null, "");
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void invocationFramesKeepNestedNormalThrowAndMismatchesExact()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.RecursiveOwner: void run()>";
+        String differentRoot = "<example.OtherOwner: void run()>";
+        JsonObject activation = concreteActivation(
+                "ACT.RECURSIVE.OUTER", root, 1);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "concrete-overlap-test");
+        try {
+            long outerToken = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertTrue(outerToken > 0L);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            // Recursive ordinal two is unselected but still owns an exact
+            // zero-token frame.  Its normal cleanup cannot expose the caller.
+            long nestedNormal = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertEquals(0L, nestedNormal);
+            assertEquals(2,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            long nestedThrow = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertEquals(0L, nestedThrow);
+            IllegalStateException nestedFailure =
+                    new IllegalStateException("nested failure");
+            ConcolicRegionRuntime.throwRegionFrame(root, nestedFailure);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            long differentToken = ConcolicRegionRuntime.enterRegionFrame(
+                    differentRoot, new Object(), new Object[0]);
+            assertEquals(0L, differentToken);
+            assertEquals(2,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            // A malformed cleanup must validate the exact top root before
+            // popping.  The different-root frame and selected outer survive.
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(2,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertTrue(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            ConcolicRegionRuntime.throwRegionFrame(differentRoot,
+                    nestedFailure);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            assertTrue("nested cleanup must not finish the selected caller",
+                    ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            assertEquals(1, ConcolicRegionRuntime
+                    .concreteReplayActiveCountForTests());
+            assertFalse(Files.exists(results));
+
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertFalse(ConcolicRegionRuntime
+                    .activeTokenForTests(outerToken));
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertEquals(1, resultRows(results).size());
+
+            // Empty-stack cleanup is also a no-throw no-op.
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            ConcolicRegionRuntime.throwRegionFrame(root, nestedFailure);
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void caughtSameRootEntryFailureKeepsSelectedOuterFrame()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.RecursiveOwner: void run()>";
+        JsonObject outerActivation = concreteActivation(
+                "ACT.RECURSIVE.OUTER", root, 1);
+        Files.write(plan, (outerActivation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "concrete-overlap-test");
+        try {
+            long outerToken = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertTrue(outerToken > 0L);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            JsonObject duplicateFirst = concreteActivation(
+                    "ACT.FAIL.FIRST", root, 2);
+            JsonObject duplicateSecond = concreteActivation(
+                    "ACT.FAIL.SECOND", root, 2);
+            Files.write(plan, (duplicateFirst + "\n" + duplicateSecond
+                    + "\n").getBytes(StandardCharsets.UTF_8));
+            java.lang.reflect.Field configuration =
+                    ConcolicRegionRuntime.class.getDeclaredField(
+                            "configuration");
+            configuration.setAccessible(true);
+            configuration.set(null, null);
+
+            try {
+                ConcolicRegionRuntime.enterRegionFrame(root, new Object(),
+                        new Object[0]);
+                throw new AssertionError("nested entry must reject ambiguity");
+            } catch (IllegalStateException expected) {
+                assertEquals(2,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
+                // Simulate an original same-root handler catching the entry
+                // failure and returning normally.
+                ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            }
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertTrue(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+
+            try {
+                ConcolicRegionRuntime.enterRegionFrame(root, new Object(),
+                        new Object[0]);
+                throw new AssertionError("nested entry must reject ambiguity");
+            } catch (IllegalStateException expected) {
+                assertEquals(2,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
+                // Simulate the same original handler rethrowing instead.
+                ConcolicRegionRuntime.throwRegionFrame(root, expected);
+            }
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertTrue(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            assertFalse(Files.exists(results));
+
+            Files.write(plan, (outerActivation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            configuration.set(null, null);
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertFalse(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            assertEquals(1, resultRows(results).size());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -769,6 +954,11 @@ public class ConcolicRegionRuntimeTest {
                         + "\"symbolic\":false,"
                         + "\"kind\":\"CONCRETE_OBJECT\","
                         + "\"expression\":null}"));
+        assertEquals("an inactive VM envelope is not a bare expression",
+                null, ConcolicRegionRuntime.canonicalEngineExpression(
+                        "{\"schemaVersion\":1,\"active\":false,"
+                                + "\"symbolic\":false,"
+                                + "\"kind\":\"CONCOLIC_DISABLED\"}"));
     }
 
     @Test
@@ -2180,6 +2370,285 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
                     observed.getAsJsonObject("expression").get("_exp")
                             .getAsString());
+            assertEquals(1, observed.get(
+                    "expressionEnvelopeSchemaVersion").getAsInt());
+            assertTrue(observed.get("expressionEnvelopeActive")
+                    .getAsBoolean());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void capturesExactRequestedMethodReturnOccurrence()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.Root: void run()>";
+        String method =
+                "<example.Producer: int compute(java.lang.Boolean)>";
+        String cell = method + ".return";
+        String binding = "REGION.TEST.out.return.capture.0";
+        String port = "REGION.TEST.out.return";
+        JsonObject activation = concreteActivation(
+                "ACT.METHOD.RETURN.EXACT", root, 1);
+        activation.addProperty("test", "method-return-capture-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.add("requestedOutputCapture", singleton(
+                methodReturnCapture(method, 13, binding, port, cell, 2)));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "method-return-capture-test");
+        try {
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertTrue(token > 0L);
+            DelayedExpressionEngine.integerOutputExpressions = true;
+
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    13, method + "#u13", binding, port, cell, 2,
+                    Integer.valueOf(11), "11");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    13, method + "#u13", binding, port, cell, 2,
+                    Integer.valueOf(23), "23");
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonObject row = resultRows(results).get(0);
+            assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
+            JsonArray captures = row.getAsJsonArray("outputCaptures");
+            assertEquals(1, captures.size());
+            JsonObject observed = captures.get(0).getAsJsonObject();
+            assertEquals("METHOD_RETURN_VALUE",
+                    observed.get("captureKind").getAsString());
+            assertEquals(method, observed.get("method").getAsString());
+            assertEquals(13, observed.get("unitIndex").getAsInt());
+            assertEquals(method + "#u13",
+                    observed.get("siteId").getAsString());
+            assertEquals(binding,
+                    observed.get("captureBindingId").getAsString());
+            assertEquals(port, observed.get("outputPort").getAsString());
+            assertEquals(cell, observed.get("outputCell").getAsString());
+            assertEquals(2,
+                    observed.get("requestedOccurrence").getAsInt());
+            assertEquals(2, observed.get("occurrence").getAsInt());
+            assertEquals("RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE",
+                    observed.get("occurrenceAuthority").getAsString());
+            assertEquals("ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE",
+                    observed.get("captureAuthority").getAsString());
+            assertEquals(Integer.class.getName(),
+                    observed.get("concreteValueClass").getAsString());
+            assertEquals("23",
+                    observed.get("concretePrimitiveValue").getAsString());
+            assertTrue(observed.get("expressionCaptured").getAsBoolean());
+            JsonObject expression = observed.getAsJsonObject("expression");
+            assertEquals("ConstExpr",
+                    expression.get("_type").getAsString());
+            assertEquals("I", expression.get("_java_type").getAsString());
+            assertEquals("Y_I_23", expression.get("_exp").getAsString());
+            assertEquals(1, observed.get(
+                    "expressionEnvelopeSchemaVersion").getAsInt());
+            assertTrue(observed.get("expressionEnvelopeActive")
+                    .getAsBoolean());
+            assertEquals("I", observed.get(
+                    "expressionEnvelopeJavaTypeDescriptor").getAsString());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void methodReturnCaptureRejectsZeroTokenWithoutConsumingOccurrence()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.Root: void run()>";
+        String method = "<example.Producer: java.lang.String compute()>";
+        String cell = method + ".return";
+        String binding = "REGION.TEST.out.return.capture.zero";
+        String port = "REGION.TEST.out.return";
+        JsonObject activation = concreteActivation(
+                "ACT.METHOD.RETURN.ZERO", root, 1);
+        activation.addProperty("test", "method-return-zero-token-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.add("requestedOutputCapture", singleton(
+                methodReturnCapture(method, 5, binding, port, cell, 1)));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "method-return-zero-token-test");
+        try {
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertTrue(token > 0L);
+
+            ConcolicRegionRuntime.recordMethodReturnOutput(0L, method, 5,
+                    method + "#u5", binding, port, cell, 1,
+                    "rejected", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method, 5,
+                    method + "#u5", binding, port, cell, 1,
+                    "accepted", "");
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonArray captures = resultRows(results).get(0)
+                    .getAsJsonArray("outputCaptures");
+            assertEquals(1, captures.size());
+            JsonObject observed = captures.get(0).getAsJsonObject();
+            assertEquals(1, observed.get("occurrence").getAsInt());
+            assertEquals("ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE",
+                    observed.get("captureAuthority").getAsString());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void methodReturnCaptureRejectsEveryWrongTupleComponent()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.Root: void run()>";
+        String method = "<example.Producer: java.lang.String compute()>";
+        String cell = method + ".return";
+        String binding = "REGION.TEST.out.return.capture.tuple";
+        String port = "REGION.TEST.out.return";
+        JsonObject activation = concreteActivation(
+                "ACT.METHOD.RETURN.TUPLE", root, 1);
+        activation.addProperty("test", "method-return-tuple-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.add("requestedOutputCapture", singleton(
+                methodReturnCapture(method, 17, binding, port, cell, 1)));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "method-return-tuple-test");
+        try {
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertTrue(token > 0L);
+
+            ConcolicRegionRuntime.recordMethodReturnOutput(token,
+                    method + ".wrong", 17, method + "#u17", binding,
+                    port, cell, 1, "wrong-method", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    18, method + "#u17", binding, port, cell, 1,
+                    "wrong-unit", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    17, method + "#wrong", binding, port, cell, 1,
+                    "wrong-site", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    17, method + "#u17", binding + ".wrong", port, cell,
+                    1, "wrong-binding", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    17, method + "#u17", binding, port + ".wrong", cell,
+                    1, "wrong-port", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    17, method + "#u17", binding, port, cell + ".wrong",
+                    1, "wrong-cell", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    17, method + "#u17", binding, port, cell, 2,
+                    "wrong-requested-occurrence", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(token, method,
+                    17, method + "#u17", binding, port, cell, 1,
+                    "accepted", "");
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonArray captures = resultRows(results).get(0)
+                    .getAsJsonArray("outputCaptures");
+            assertEquals(1, captures.size());
+            JsonObject observed = captures.get(0).getAsJsonObject();
+            assertEquals(1, observed.get("occurrence").getAsInt());
+            assertEquals(method, observed.get("method").getAsString());
+            assertEquals(binding,
+                    observed.get("captureBindingId").getAsString());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void nestedZeroTokenFrameCannotCaptureForSelectedOuterFrame()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.RecursiveRoot: void run()>";
+        String method = "<example.Producer: java.lang.String compute()>";
+        String cell = method + ".return";
+        String binding = "REGION.TEST.out.return.capture.nested";
+        String port = "REGION.TEST.out.return";
+        JsonObject activation = concreteActivation(
+                "ACT.METHOD.RETURN.NESTED", root, 1);
+        activation.addProperty("test", "method-return-nested-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.add("requestedOutputCapture", singleton(
+                methodReturnCapture(method, 9, binding, port, cell, 1)));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "method-return-nested-test");
+        try {
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            long outer = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertTrue(outer > 0L);
+            assertEquals(outer, ConcolicRegionRuntime.activeToken());
+
+            long nested = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertEquals(0L, nested);
+            assertEquals("the zero-token nested frame must hide the selected "
+                    + "outer token from return hooks", 0L,
+                    ConcolicRegionRuntime.activeToken());
+            ConcolicRegionRuntime.recordMethodReturnOutput(
+                    ConcolicRegionRuntime.activeToken(), method, 9,
+                    method + "#u9", binding, port, cell, 1,
+                    "nested-zero-token", "");
+            ConcolicRegionRuntime.recordMethodReturnOutput(outer, method, 9,
+                    method + "#u9", binding, port, cell, 1,
+                    "nested-explicit-outer-token", "");
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+
+            assertEquals(outer, ConcolicRegionRuntime.activeToken());
+            ConcolicRegionRuntime.recordMethodReturnOutput(outer, method, 9,
+                    method + "#u9", binding, port, cell, 1,
+                    "outer", "");
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+
+            JsonArray captures = resultRows(results).get(0)
+                    .getAsJsonArray("outputCaptures");
+            assertEquals(1, captures.size());
+            JsonObject observed = captures.get(0).getAsJsonObject();
+            assertEquals(1, observed.get("occurrence").getAsInt());
+            assertEquals("ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE",
+                    observed.get("captureAuthority").getAsString());
+            assertEquals(0, ConcolicRegionRuntime.regionFrameDepthForTests());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -2281,6 +2750,10 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
                     observed.getAsJsonObject("expression").get("_exp")
                             .getAsString());
+            assertEquals(1, observed.get(
+                    "expressionEnvelopeSchemaVersion").getAsInt());
+            assertTrue(observed.get("expressionEnvelopeActive")
+                    .getAsBoolean());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -2329,6 +2802,92 @@ public class ConcolicRegionRuntimeTest {
             restore("causynth.concolic.activation.id", oldActivation);
             restore("causynth.concolic.results", oldResults);
             restore("causynth.trace.test", oldTest);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void stableRootContextFiltersBeforeContextRelativeArgumentOrdinal()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.WorkerThread: void run(java.lang.Object)>";
+        JsonObject activation = concreteActivation("ACT.CONTEXT", root, 99);
+        activation.addProperty("test", "stable-context-test");
+        addStableRootContext(activation, ConsumerWorker.class.getName(),
+                "consumer-thread", 1);
+        addRootArgumentSelector(activation, 1, 1,
+                KeyUpdateCommand.class.getName());
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "stable-context-test");
+        String oldThreadName = Thread.currentThread().getName();
+        try {
+            // Exact class and exact thread name are independent parts of the
+            // stable context; neither partial match may advance its ordinal.
+            Thread.currentThread().setName("consumer-thread");
+            assertEquals(0L, ConcolicRegionRuntime.enterRegion(root,
+                    new ProducerWorker(),
+                    new Object[]{new KeyUpdateCommand()}));
+            Thread.currentThread().setName("producer-thread");
+            assertEquals(0L, ConcolicRegionRuntime.enterRegion(root,
+                    new ConsumerWorker(),
+                    new Object[]{new KeyUpdateCommand()}));
+            Thread.currentThread().setName("consumer-thread");
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new ConsumerWorker(),
+                    new Object[]{new KeyUpdateCommand()});
+            assertTrue("legacy global ordinal must not control a stable plan",
+                    token > 0L);
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+            String output = new String(Files.readAllBytes(results),
+                    StandardCharsets.UTF_8);
+            assertTrue(output.contains("ACT.CONTEXT"));
+        } finally {
+            Thread.currentThread().setName(oldThreadName);
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void stableRootContextRejectsJvmAssignedThreadId()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.WorkerThread: void run()>";
+        JsonObject activation = concreteActivation("ACT.UNSTABLE.TID", root,
+                1);
+        activation.addProperty("test", "unstable-thread-id-test");
+        addStableRootContext(activation, ConsumerWorker.class.getName(),
+                "consumer-thread", 1);
+        activation.addProperty("threadId", 41L);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "unstable-thread-id-test");
+        try {
+            try {
+                ConcolicRegionRuntime.enterRegion(root,
+                        new ConsumerWorker());
+                throw new AssertionError("JVM thread id selector must fail");
+            } catch (IllegalStateException expected) {
+                assertTrue(expected.getMessage().contains(
+                        "Malformed stable runtime root context"));
+                assertTrue(expected.getMessage().contains(
+                        "ACT.UNSTABLE.TID"));
+            }
+            assertFalse(Files.exists(results));
+        } finally {
+            restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
             folder.delete();
         }
@@ -4283,6 +4842,23 @@ public class ConcolicRegionRuntimeTest {
         return activation;
     }
 
+    private static JsonObject methodReturnCapture(
+            String method, int unitIndex, String binding, String port,
+            String cell, int occurrence) {
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureKind", "METHOD_RETURN_VALUE");
+        capture.addProperty("captureBindingId", binding);
+        capture.addProperty("outputPort", port);
+        capture.addProperty("outputCell", cell);
+        capture.addProperty("method", method);
+        capture.addProperty("unitIndex", unitIndex);
+        capture.addProperty("siteId", method + "#u" + unitIndex);
+        capture.addProperty("occurrence", occurrence);
+        capture.addProperty("occurrenceAuthority",
+                "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE");
+        return capture;
+    }
+
     private static void addRootArgumentSelector(
             JsonObject activation, int matchOrdinalWithinReceiver,
             String... runtimeTypes) {
@@ -4314,6 +4890,19 @@ public class ConcolicRegionRuntimeTest {
         activation.add("runtimeRootArgumentSelector", selector);
     }
 
+    private static void addStableRootContext(
+            JsonObject activation, String receiverRuntimeClass,
+            String threadName, int ordinalWithinContext) {
+        activation.addProperty("receiverRuntimeClass",
+                receiverRuntimeClass);
+        activation.addProperty("threadName", threadName);
+        activation.addProperty("threadIdSelectionUsed", false);
+        activation.addProperty("invocationOrdinalWithinContext",
+                ordinalWithinContext);
+        activation.addProperty("rootContextSelectionAuthority",
+                RuntimeRegionPlanner.ROOT_CONTEXT_SELECTION_AUTHORITY);
+    }
+
     private static void addLegacyRootArgumentSelector(
             JsonObject activation, int matchOrdinal,
             String... runtimeTypes) {
@@ -4343,6 +4932,12 @@ public class ConcolicRegionRuntimeTest {
     }
 
     private static final class BPServiceActor {
+    }
+
+    private static final class ProducerWorker {
+    }
+
+    private static final class ConsumerWorker {
     }
 
     private static String expiryFieldSignature() {
@@ -4875,6 +5470,7 @@ public class ConcolicRegionRuntimeTest {
         private static Object arrayFieldMutationOwner;
         private static String arrayFieldMutationName = "";
         private static Object arrayFieldMutationReplacement;
+        private static boolean integerOutputExpressions;
 
         private static void reset() {
             SYMBOLIC_FIELD_OWNERS.clear();
@@ -4889,6 +5485,7 @@ public class ConcolicRegionRuntimeTest {
             arrayFieldMutationOwner = null;
             arrayFieldMutationName = "";
             arrayFieldMutationReplacement = null;
+            integerOutputExpressions = false;
         }
 
         @SuppressWarnings("unused")
@@ -4950,6 +5547,9 @@ public class ConcolicRegionRuntimeTest {
             if (value instanceof java.util.Map) {
                 return envelope("java/util/HashMap", "entryMap");
             }
+            if (value instanceof Integer && integerOutputExpressions) {
+                return integerEnvelope(((Integer) value).intValue());
+            }
             if (value instanceof ExpiringValue) {
                 valueExpressionCalls++;
                 return SYMBOLIC_FIELD_OWNERS.containsKey(value)
@@ -4974,6 +5574,16 @@ public class ConcolicRegionRuntimeTest {
         private static String emptyEnvelope() {
             return "{\"schemaVersion\":1,\"active\":true,"
                     + "\"symbolic\":false,\"expression\":null}";
+        }
+
+        private static String integerEnvelope(int value) {
+            return "{\"schemaVersion\":1,\"kind\":\"CONCRETE_VALUE\","
+                    + "\"active\":true,\"symbolic\":false,"
+                    + "\"expressionAuthority\":"
+                    + "\"TEST_EXACT_BOXED_PRIMITIVE_VALUE\","
+                    + "\"javaTypeDescriptor\":\"I\",\"expression\":{"
+                    + "\"_type\":\"ConstExpr\",\"_java_type\":\"I\","
+                    + "\"_exp\":\"Y_I_" + value + "\"}}";
         }
 
         private static void symbolizeArray(Object value) {

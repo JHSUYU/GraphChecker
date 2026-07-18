@@ -1470,10 +1470,24 @@ public class ConcolicCampaignRunnerTest {
         support.addProperty("activationId", "ACT.SUPPORT.FLIP");
         support.addProperty("regionId", "REGION.U");
         support.addProperty("rootMethod", "<example.U: void replay()>");
+        support.addProperty("receiverRuntimeClass", "example.ProducerWorker");
+        support.addProperty("threadName", "rpc-producer");
+        support.addProperty("threadIdSelectionUsed", false);
+        support.addProperty("invocationOrdinalWithinContext", 1);
+        support.addProperty("rootContextSelectionAuthority",
+                "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                        + "THREAD_NAME_CONTEXT_ORDINAL_V1");
         JsonObject primary = new JsonObject();
         primary.addProperty("activationId", "ACT.CONSUMER.CAPTURE");
         primary.addProperty("regionId", "REGION.V");
         primary.addProperty("rootMethod", "<example.V: void capture()>");
+        primary.addProperty("receiverRuntimeClass", "example.ConsumerWorker");
+        primary.addProperty("threadName", "rpc-consumer");
+        primary.addProperty("threadIdSelectionUsed", false);
+        primary.addProperty("invocationOrdinalWithinContext", 1);
+        primary.addProperty("rootContextSelectionAuthority",
+                "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                        + "THREAD_NAME_CONTEXT_ORDINAL_V1");
         JsonArray supportBundle = new JsonArray();
         supportBundle.add(support);
         primary.add("reachabilitySupportActivations",
@@ -1515,6 +1529,18 @@ public class ConcolicCampaignRunnerTest {
                 .getAsJsonObject(), "activationSelectionRequired"));
         assertEquals("ALL", text(JsonParser.parseString(rows.get(1))
                 .getAsJsonObject(), "activationSelectionRequired"));
+        assertEquals("example.ProducerWorker", text(JsonParser.parseString(
+                rows.get(0)).getAsJsonObject(), "receiverRuntimeClass"));
+        assertEquals("rpc-producer", text(JsonParser.parseString(rows.get(0))
+                .getAsJsonObject(), "threadName"));
+        assertEquals("example.ConsumerWorker", text(JsonParser.parseString(
+                rows.get(1)).getAsJsonObject(), "receiverRuntimeClass"));
+        assertEquals("rpc-consumer", text(JsonParser.parseString(rows.get(1))
+                .getAsJsonObject(), "threadName"));
+        assertEquals(1, JsonParser.parseString(rows.get(1)).getAsJsonObject()
+                .get("invocationOrdinalWithinContext").getAsInt());
+        assertFalse(JsonParser.parseString(rows.get(1)).getAsJsonObject()
+                .get("threadIdSelectionUsed").getAsBoolean());
         assertFalse(rows.get(0).contains(
                 "reachabilitySupportActivations"));
         assertFalse(rows.get(1).contains(

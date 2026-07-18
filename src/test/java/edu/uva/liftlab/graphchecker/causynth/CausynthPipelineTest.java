@@ -24,17 +24,23 @@ import soot.Trap;
 import soot.Unit;
 import soot.Value;
 import soot.VoidType;
+import soot.baf.BafASMBackend;
 import soot.jimple.AssignStmt;
 import soot.jimple.ArrayRef;
+import soot.jimple.CaughtExceptionRef;
 import soot.jimple.GotoStmt;
+import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
 import soot.jimple.NewArrayExpr;
+import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
+import soot.options.Options;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -1237,6 +1243,112 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void instrumentsExactMethodReturnBeforeReturnExecutes()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            G.reset();
+            Scene.v().addClass(new SootClass("java.lang.String",
+                    Modifier.PUBLIC));
+            Scene.v().addClass(new SootClass("java.lang.Integer",
+                    Modifier.PUBLIC));
+            SootClass owner = new SootClass("example.ReturnCaptureRegion",
+                    Modifier.PUBLIC);
+            Scene.v().addClass(owner);
+            owner.setApplicationClass();
+            SootMethod compute = new SootMethod("compute",
+                    Collections.singletonList(IntType.v()), IntType.v(),
+                    Modifier.PUBLIC | Modifier.STATIC);
+            owner.addMethod(compute);
+            Body body = Jimple.v().newBody(compute);
+            compute.setActiveBody(body);
+            Local result = Jimple.v().newLocal("result", IntType.v());
+            body.getLocals().add(result);
+            body.getUnits().add(Jimple.v().newIdentityStmt(result,
+                    Jimple.v().newParameterRef(IntType.v(), 0)));
+            ReturnStmt returned = Jimple.v().newReturnStmt(result);
+            body.getUnits().add(returned);
+
+            Path plan = folder.getRoot().toPath().resolve(
+                    "return-activation.jsonl");
+            JsonObject activation = new JsonObject();
+            activation.addProperty("activationId", "ACT.RETURN.CAPTURE");
+            activation.addProperty("rootMethod", compute.getSignature());
+            activation.addProperty("replayable", true);
+            JsonObject capture = new JsonObject();
+            capture.addProperty("captureKind", "METHOD_RETURN_VALUE");
+            capture.addProperty("captureBindingId",
+                    "REGION.RETURN.out.0.capture.0");
+            capture.addProperty("outputPort", "REGION.RETURN.out.0");
+            capture.addProperty("outputCell", compute.getSignature()
+                    + ".return");
+            capture.addProperty("method", compute.getSignature());
+            capture.addProperty("unitIndex", 1);
+            capture.addProperty("siteId", compute.getSignature() + "#u1");
+            capture.addProperty("occurrence", 1);
+            JsonArray captures = new JsonArray();
+            captures.add(capture);
+            activation.add("requestedOutputCapture", captures);
+            Files.write(plan, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            Class<?> selectionClass = Class.forName(
+                    CausynthPipeline.class.getName()
+                            + "$ConcolicOutputCaptureSelection");
+            Method from = selectionClass.getDeclaredMethod("from",
+                    Path.class, String.class);
+            from.setAccessible(true);
+            Object selection = from.invoke(null, plan,
+                    "ACT.RETURN.CAPTURE");
+            Class<?> refsClass = Class.forName(
+                    CausynthPipeline.class.getName()
+                            + "$ConcolicRegionRefs");
+            Method create = refsClass.getDeclaredMethod("create");
+            create.setAccessible(true);
+            Object refs = create.invoke(null);
+            Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                    "instrumentConcolicOutputCaptures", selectionClass,
+                    refsClass);
+            instrument.setAccessible(true);
+            assertEquals(1, instrument.invoke(
+                    new CausynthPipeline(null, 0, 0), selection, refs));
+
+            List<Unit> units = new ArrayList<>();
+            for (Unit unit : body.getUnits()) units.add(unit);
+            int returnIndex = units.indexOf(returned);
+            int activeTokenIndex = -1;
+            int hookIndex = -1;
+            InvokeExpr hook = null;
+            for (int index = 0; index < units.size(); index++) {
+                Unit unit = units.get(index);
+                if (!(unit instanceof Stmt)
+                        || !((Stmt) unit).containsInvokeExpr()) continue;
+                InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
+                if ("activeToken".equals(invoke.getMethodRef().name())) {
+                    activeTokenIndex = index;
+                } else if ("recordMethodReturnOutput".equals(
+                        invoke.getMethodRef().name())) {
+                    hookIndex = index;
+                    hook = invoke;
+                }
+            }
+            assertTrue(activeTokenIndex >= 0);
+            assertTrue(hookIndex > activeTokenIndex);
+            assertTrue(returnIndex > hookIndex);
+            assertNotNull(hook);
+            assertEquals(compute.getSignature(), hook.getArg(1).toString()
+                    .replace("\"", ""));
+            assertEquals(1, ((IntConstant) hook.getArg(2)).value);
+            assertEquals("REGION.RETURN.out.0", hook.getArg(5).toString()
+                    .replace("\"", ""));
+            assertEquals(1, ((IntConstant) hook.getArg(7)).value);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void accessorContextInstrumentationWrapsOnlyExactCallAndCleansExceptionalExit()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -1383,18 +1495,22 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void regionExitAndThrowHooksUseTokenReturnedByEntry()
+    public void regionThrowHandlerUsesInvocationFrameWithoutEntryLocals()
             throws Exception {
         G.reset();
         System.setProperty("causynth.instrument.concolic", "true");
         System.clearProperty("causynth.concolic.activation.plan");
         System.clearProperty("causynth.concolic.activation.id");
 
-        Scene.v().addClass(new SootClass("java.lang.Throwable",
-                Modifier.PUBLIC));
+        Options.v().set_allow_phantom_refs(true);
+        Options.v().set_prepend_classpath(true);
+        Options.v().set_soot_classpath(System.getProperty("java.class.path"));
+        Scene.v().loadNecessaryClasses();
+        SootClass objectClass = Scene.v().getSootClass("java.lang.Object");
         SootClass owner = new SootClass("example.TokenRegion",
                 Modifier.PUBLIC);
         Scene.v().addClass(owner);
+        owner.setSuperclass(objectClass);
         owner.setApplicationClass();
         SootMethod root = new SootMethod("run", Collections.emptyList(),
                 VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
@@ -1409,82 +1525,298 @@ public class CausynthPipelineTest {
         instrument.invoke(new CausynthPipeline(null, 0, 0), result);
 
         Local entryToken = null;
-        Unit tokenInitialization = null;
         Unit entryCall = null;
-        InvokeExpr exit = null;
-        InvokeExpr thrown = null;
-        boolean calledActiveVariant = false;
+        InvokeExpr exitFrame = null;
+        InvokeExpr throwFrame = null;
+        boolean calledLegacyCleanup = false;
         for (Unit unit : root.getActiveBody().getUnits()) {
             if (unit instanceof AssignStmt
-                    && ((AssignStmt) unit).getRightOp() instanceof InvokeExpr) {
-                InvokeExpr invoke = (InvokeExpr) ((AssignStmt) unit).getRightOp();
-                if ("enterRegion".equals(invoke.getMethodRef().name())) {
-                    assertTrue(((AssignStmt) unit).getLeftOp() instanceof Local);
-                    entryToken = (Local) ((AssignStmt) unit).getLeftOp();
-                    entryCall = unit;
+                    && ((AssignStmt) unit).getLeftOp() instanceof Local
+                    && ((AssignStmt) unit).getRightOp()
+                    instanceof NewArrayExpr) {
+                NewArrayExpr allocation = (NewArrayExpr) ((AssignStmt) unit)
+                        .getRightOp();
+                if (LongType.v().equals(allocation.getBaseType())) {
+                    throw new AssertionError("root instrumentation must not "
+                            + "allocate a handler-visible long[] holder");
                 }
             }
             if (unit instanceof AssignStmt
-                    && ((AssignStmt) unit).getLeftOp() == entryToken
-                    && ((AssignStmt) unit).getRightOp() instanceof LongConstant
-                    && ((LongConstant) ((AssignStmt) unit).getRightOp()).value
-                    == 0L) {
-                tokenInitialization = unit;
+                    && ((AssignStmt) unit).getRightOp() instanceof InvokeExpr) {
+                InvokeExpr invoke = (InvokeExpr) ((AssignStmt) unit).getRightOp();
+                if ("enterRegionFrame".equals(invoke.getMethodRef().name())) {
+                    assertTrue(((AssignStmt) unit).getLeftOp() instanceof Local);
+                    entryToken = (Local) ((AssignStmt) unit).getLeftOp();
+                    entryCall = unit;
+                    assertEquals(3, invoke.getArgCount());
+                    assertEquals(root.getSignature(), invoke.getArg(0)
+                            .toString().replace("\"", ""));
+                }
             }
             if (!(unit instanceof Stmt) || !((Stmt) unit).containsInvokeExpr()) {
                 continue;
             }
             InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
             String name = invoke.getMethodRef().name();
-            if ("exitRegion".equals(name)) {
-                exit = invoke;
-            } else if ("throwRegion".equals(name)) {
-                thrown = invoke;
-            } else if ("exitActiveRegion".equals(name)
+            if ("exitRegionFrame".equals(name)) {
+                exitFrame = invoke;
+            } else if ("throwRegionFrame".equals(name)) {
+                throwFrame = invoke;
+            } else if ("exitRegion".equals(name)
+                    || "throwRegion".equals(name)
+                    || "exitActiveRegion".equals(name)
                     || "throwActiveRegion".equals(name)) {
-                calledActiveVariant = true;
+                calledLegacyCleanup = true;
             }
         }
 
         assertNotNull("entry hook must store its token in a local", entryToken);
-        // entryToken is learned while visiting the following enterRegion
-        // assignment, so locate its preceding zero initialization explicitly.
-        if (tokenInitialization == null) {
-            for (Unit unit : root.getActiveBody().getUnits()) {
-                if (unit instanceof AssignStmt
-                        && ((AssignStmt) unit).getLeftOp() == entryToken
-                        && ((AssignStmt) unit).getRightOp()
-                        instanceof LongConstant
-                        && ((LongConstant) ((AssignStmt) unit).getRightOp()).value
-                        == 0L) {
-                    tokenInitialization = unit;
-                    break;
-                }
-            }
-        }
-        assertNotNull("region token must be initialized before the trap",
-                tokenInitialization);
-        assertNotNull("normal return must call exitRegion(long,...)", exit);
-        assertNotNull("exception handler must call throwRegion(long,...)",
-                thrown);
-        assertEquals("long", exit.getMethodRef().parameterType(0).toString());
-        assertEquals("long", thrown.getMethodRef().parameterType(0).toString());
-        assertSame("exitRegion must use this root's entry token",
-                entryToken, exit.getArg(0));
-        assertSame("throwRegion must use this root's entry token",
-                entryToken, thrown.getArg(0));
-        assertFalse("region instrumentation must not use ambient active hooks",
-                calledActiveVariant);
-        assertEquals("one token-specific cleanup trap is expected", 1,
+        assertNotNull(entryCall);
+        assertNotNull("normal return must use token-local-free cleanup",
+                exitFrame);
+        assertNotNull("exception handler must use token-local-free cleanup",
+                throwFrame);
+        assertEquals(3, exitFrame.getArgCount());
+        assertEquals(root.getSignature(), exitFrame.getArg(0)
+                .toString().replace("\"", ""));
+        assertEquals(2, throwFrame.getArgCount());
+        assertEquals(root.getSignature(), throwFrame.getArg(0)
+                .toString().replace("\"", ""));
+        assertFalse("instrumented roots must not use legacy or ambient cleanup",
+                calledLegacyCleanup);
+        assertEquals("one invocation-exact cleanup trap is expected", 1,
                 root.getActiveBody().getTraps().size());
         Trap cleanup = root.getActiveBody().getTraps().getFirst();
+        assertEquals("java.lang.Throwable",
+                cleanup.getException().getName());
+        assertSame("handler must be excluded from its own catch-all range",
+                cleanup.getHandlerUnit(), cleanup.getEndUnit());
+        assertTrue(cleanup.getHandlerUnit() instanceof IdentityStmt);
+        IdentityStmt handler = (IdentityStmt) cleanup.getHandlerUnit();
+        assertTrue(handler.getRightOp() instanceof CaughtExceptionRef);
+        assertTrue(handler.getLeftOp() instanceof Local);
         List<Unit> units = new ArrayList<>();
         for (Unit unit : root.getActiveBody().getUnits()) units.add(unit);
-        assertSame("cleanup trap must begin at enterRegion, after the long "
-                        + "token has a verifier-visible zero value",
+        int handlerIndex = units.indexOf(handler);
+        assertTrue(handlerIndex >= 0 && handlerIndex + 1 < units.size());
+        Local caught = (Local) handler.getLeftOp();
+        boolean reachedRethrow = false;
+        for (int index = handlerIndex + 1; index < units.size(); index++) {
+            Unit unit = units.get(index);
+            for (soot.ValueBox box : unit.getUseBoxes()) {
+                if (box.getValue() instanceof Local) {
+                    assertSame("handler must read only its caught throwable",
+                            caught, box.getValue());
+                }
+            }
+            if (unit instanceof soot.jimple.ThrowStmt
+                    && ((soot.jimple.ThrowStmt) unit).getOp() == caught) {
+                reachedRethrow = true;
+                break;
+            }
+        }
+        assertTrue("handler must rethrow the original throwable",
+                reachedRethrow);
+        assertSame("throw cleanup must receive the caught throwable",
+                caught, throwFrame.getArg(1));
+        assertSame("entry failures must close their zero placeholder frame",
                 entryCall, cleanup.getBeginUnit());
-        assertTrue("token initialization must precede the protected entry hook",
-                units.indexOf(tokenInitialization) < units.indexOf(entryCall));
+        root.getActiveBody().validate();
+
+        ByteArrayOutputStream classFile = new ByteArrayOutputStream();
+        new BafASMBackend(owner, Options.java_version_8)
+                .generateClassFile(classFile);
+        final byte[] bytecode = classFile.toByteArray();
+        class VerificationLoader extends ClassLoader {
+            VerificationLoader() {
+                super(CausynthPipelineTest.class.getClassLoader());
+            }
+
+            Class<?> define() {
+                return defineClass(owner.getName(), bytecode, 0,
+                        bytecode.length);
+            }
+        }
+        Class<?> verified = new VerificationLoader().define();
+        verified.getDeclaredMethod("run").invoke(null);
+    }
+
+    @Test
+    public void existingInterruptedHandlerDoesNotExposeEntryLocalToCleanupFrame()
+            throws Exception {
+        G.reset();
+        System.setProperty("causynth.instrument.concolic", "true");
+        System.clearProperty("causynth.concolic.activation.plan");
+        System.clearProperty("causynth.concolic.activation.id");
+
+        Options.v().set_allow_phantom_refs(true);
+        Options.v().set_prepend_classpath(true);
+        Options.v().set_soot_classpath(System.getProperty("java.class.path"));
+        Scene.v().addBasicClass("java.lang.Thread", SootClass.SIGNATURES);
+        Scene.v().addBasicClass("java.lang.InterruptedException",
+                SootClass.SIGNATURES);
+        Scene.v().loadNecessaryClasses();
+        SootClass owner = new SootClass(
+                "example.InterruptedHandlerRegion", Modifier.PUBLIC);
+        owner.setSuperclass(Scene.v().getSootClass("java.lang.Object"));
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod root = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(root);
+        Body body = Jimple.v().newBody(root);
+        root.setActiveBody(body);
+        Local caught = Jimple.v().newLocal("caught",
+                RefType.v("java.lang.InterruptedException"));
+        body.getLocals().add(caught);
+        Unit mayInterrupt = Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(Scene.v().getMethod(
+                        "<java.lang.Thread: void sleep(long)>").makeRef(),
+                        LongConstant.v(0L)));
+        Unit normalReturn = Jimple.v().newReturnVoidStmt();
+        Unit originalHandler = Jimple.v().newIdentityStmt(caught,
+                Jimple.v().newCaughtExceptionRef());
+        Unit handledRethrow = Jimple.v().newThrowStmt(caught);
+        Unit chooseRethrow = Jimple.v().newIfStmt(Jimple.v().newNeExpr(
+                caught, soot.jimple.NullConstant.v()), handledRethrow);
+        Unit handledReturn = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(mayInterrupt);
+        body.getUnits().add(normalReturn);
+        body.getUnits().add(originalHandler);
+        body.getUnits().add(chooseRethrow);
+        body.getUnits().add(handledReturn);
+        body.getUnits().add(handledRethrow);
+        body.getTraps().add(Jimple.v().newTrap(Scene.v().getSootClass(
+                "java.lang.InterruptedException"), mayInterrupt,
+                normalReturn, originalHandler));
+        body.validate();
+
+        Object result = newAnalysisResultWithRoot(root.getSignature());
+        Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                "instrumentConcolicRegions", result.getClass());
+        instrument.setAccessible(true);
+        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        body.validate();
+
+        ByteArrayOutputStream classFile = new ByteArrayOutputStream();
+        new BafASMBackend(owner, Options.java_version_8)
+                .generateClassFile(classFile);
+        final byte[] bytecode = classFile.toByteArray();
+        class VerificationLoader extends ClassLoader {
+            VerificationLoader() {
+                super(CausynthPipelineTest.class.getClassLoader());
+            }
+
+            Class<?> define() {
+                return defineClass(owner.getName(), bytecode, 0,
+                        bytecode.length);
+            }
+        }
+
+        // Verification is deliberately exercised before structural checks:
+        // the old long[] holder scheme emitted aload from a Top handler slot.
+        Class<?> verified = new VerificationLoader().define();
+        verified.getDeclaredMethod("run").invoke(null);
+
+        Trap cleanup = null;
+        Unit enterFrame = null;
+        boolean exitFrameCalled = false;
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof AssignStmt
+                    && ((AssignStmt) unit).getRightOp()
+                    instanceof NewArrayExpr
+                    && LongType.v().equals(((NewArrayExpr) ((AssignStmt) unit)
+                    .getRightOp()).getBaseType())) {
+                throw new AssertionError("region entry must not allocate a "
+                        + "handler-visible long[] holder");
+            }
+            InvokeExpr invoke = invokeExpression(unit);
+            if (invoke == null) continue;
+            if ("enterRegionFrame".equals(
+                    invoke.getMethodRef().name())) {
+                enterFrame = unit;
+                assertTrue(unit instanceof AssignStmt);
+                assertEquals(LongType.v(), ((AssignStmt) unit).getLeftOp()
+                        .getType());
+                assertEquals(root.getSignature(), invoke.getArg(0)
+                        .toString().replace("\"", ""));
+            } else if ("exitRegionFrame".equals(
+                    invoke.getMethodRef().name())) {
+                exitFrameCalled = true;
+                assertEquals(3, invoke.getArgCount());
+                assertEquals(root.getSignature(), invoke.getArg(0)
+                        .toString().replace("\"", ""));
+            }
+        }
+        assertNotNull("entry must use the frame wrapper", enterFrame);
+        assertTrue("returns must use the frame wrapper", exitFrameCalled);
+        for (Trap trap : body.getTraps()) {
+            if ("java.lang.Throwable".equals(
+                    trap.getException().getName())) {
+                cleanup = trap;
+            }
+        }
+        assertNotNull("instrumentation must add one catch-all cleanup",
+                cleanup);
+        assertSame("entry failures must retain and close their zero frame",
+                enterFrame, cleanup.getBeginUnit());
+        assertTrue(cleanup.getHandlerUnit() instanceof IdentityStmt);
+        Local cleanupCaught = (Local) ((IdentityStmt)
+                cleanup.getHandlerUnit()).getLeftOp();
+        List<Unit> units = new ArrayList<>();
+        for (Unit unit : body.getUnits()) units.add(unit);
+        int handlerIndex = units.indexOf(cleanup.getHandlerUnit());
+        assertTrue(handlerIndex >= 0);
+        boolean throwFrameCalled = false;
+        boolean rethrown = false;
+        for (int index = handlerIndex + 1; index < units.size(); index++) {
+            Unit unit = units.get(index);
+            for (soot.ValueBox box : unit.getUseBoxes()) {
+                if (!(box.getValue() instanceof Local)) continue;
+                Local used = (Local) box.getValue();
+                assertFalse("cleanup handler must not read entry synthetic "
+                                + "local " + used.getName(),
+                        used != cleanupCaught
+                                && used.getName().startsWith("$causynth"));
+            }
+            InvokeExpr invoke = invokeExpression(unit);
+            if (invoke != null && "throwRegionFrame".equals(
+                    invoke.getMethodRef().name())) {
+                throwFrameCalled = true;
+                assertEquals(2, invoke.getArgCount());
+                assertEquals(root.getSignature(), invoke.getArg(0)
+                        .toString().replace("\"", ""));
+                assertSame(cleanupCaught, invoke.getArg(1));
+            }
+            if (unit instanceof soot.jimple.ThrowStmt
+                    && ((soot.jimple.ThrowStmt) unit).getOp()
+                    == cleanupCaught) {
+                rethrown = true;
+                break;
+            }
+        }
+        assertTrue("cleanup must call root-exact throwable frame hook",
+                throwFrameCalled);
+        assertTrue("cleanup must rethrow the same throwable", rethrown);
+
+        int originalHandlerIndex = units.indexOf(originalHandler);
+        assertTrue(originalHandlerIndex >= 0);
+        for (int index = originalHandlerIndex + 1;
+             index < units.size(); index++) {
+            Unit unit = units.get(index);
+            for (soot.ValueBox box : unit.getUseBoxes()) {
+                if (!(box.getValue() instanceof Local)) continue;
+                Local used = (Local) box.getValue();
+                assertFalse("existing handler must not read entry synthetic "
+                                + "local " + used.getName(),
+                        used != caught
+                                && used.getName().startsWith("$causynth"));
+            }
+            if (unit instanceof soot.jimple.ReturnVoidStmt
+                    || unit instanceof soot.jimple.ThrowStmt) {
+                break;
+            }
+        }
     }
 
     @Test
@@ -1507,10 +1839,9 @@ public class CausynthPipelineTest {
         SootClass integer = new SootClass("java.lang.Integer",
                 Modifier.PUBLIC);
         Scene.v().addClass(integer);
-        integer.addMethod(new SootMethod("valueOf",
+        integer.addMethod(new SootMethod("<init>",
                 Collections.<soot.Type>singletonList(IntType.v()),
-                RefType.v("java.lang.Integer"),
-                Modifier.PUBLIC | Modifier.STATIC | Modifier.NATIVE));
+                VoidType.v(), Modifier.PUBLIC));
 
         SootClass owner = new SootClass("example.PrimitiveReturnRegion",
                 Modifier.PUBLIC);
@@ -1531,41 +1862,108 @@ public class CausynthPipelineTest {
 
         List<Unit> units = new ArrayList<>();
         Unit wrapperCall = null;
+        Unit wrapperAllocation = null;
         Unit exitCall = null;
         Unit primitiveStringCall = null;
         for (Unit unit : body.getUnits()) {
             units.add(unit);
             InvokeExpr invoke = invokeExpression(unit);
+            if (unit instanceof AssignStmt
+                    && ((AssignStmt) unit).getRightOp()
+                    instanceof soot.jimple.NewExpr
+                    && "java.lang.Integer".equals(((AssignStmt) unit)
+                    .getRightOp().getType().toString())) {
+                wrapperAllocation = unit;
+            }
             if (invoke == null) continue;
             String method = invoke.getMethodRef().name();
             String declaring = invoke.getMethodRef().declaringClass()
                     .getName();
-            if ("valueOf".equals(method)
+            if ("<init>".equals(method)
                     && "java.lang.Integer".equals(declaring)) {
                 wrapperCall = unit;
             } else if ("valueOf".equals(method)
                     && "java.lang.String".equals(declaring)) {
                 primitiveStringCall = unit;
-            } else if ("exitRegion".equals(method)) {
+            } else if ("exitRegionFrame".equals(method)) {
                 exitCall = unit;
             }
         }
+        assertNotNull(wrapperAllocation);
         assertNotNull(wrapperCall);
         assertNotNull(primitiveStringCall);
         assertNotNull(exitCall);
+        int wrapperAllocationIndex = units.indexOf(wrapperAllocation);
         int wrapperIndex = units.indexOf(wrapperCall);
         int stringIndex = units.indexOf(primitiveStringCall);
         int exitIndex = units.indexOf(exitCall);
-        assertTrue(wrapperIndex < stringIndex && stringIndex < exitIndex);
+        assertTrue(wrapperAllocationIndex < wrapperIndex
+                && wrapperIndex < stringIndex && stringIndex < exitIndex);
         Unit pause = units.get(wrapperIndex + 1);
         assertRuntimeInvoke(pause,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
                 "pauseObservation");
         InvokeExpr exit = invokeExpression(exitCall);
-        assertTrue(wrapperCall instanceof AssignStmt);
-        assertSame(((AssignStmt) wrapperCall).getLeftOp(), exit.getArg(1));
+        assertTrue(invokeExpression(wrapperCall)
+                instanceof soot.jimple.SpecialInvokeExpr);
+        assertSame(((soot.jimple.SpecialInvokeExpr) invokeExpression(
+                wrapperCall)).getBase(), exit.getArg(1));
         assertFalse("primitive return must not be serialized as null",
                 exit.getArg(1) instanceof soot.jimple.NullConstant);
+    }
+
+    @Test
+    public void smallIntegralConcreteCaptureUsesNumericStringEncoding()
+            throws Exception {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+        SootClass string = new SootClass("java.lang.String",
+                Modifier.PUBLIC);
+        Scene.v().addClass(string);
+        string.setSuperclass(object);
+        string.addMethod(new SootMethod("valueOf",
+                Collections.<soot.Type>singletonList(IntType.v()),
+                RefType.v("java.lang.String"),
+                Modifier.PUBLIC | Modifier.STATIC | Modifier.NATIVE));
+        SootClass owner = new SootClass("example.SmallIntegralCapture",
+                Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setSuperclass(object);
+        SootMethod host = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(host);
+        Body body = Jimple.v().newBody(host);
+        host.setActiveBody(body);
+
+        Method encode = CausynthPipeline.class.getDeclaredMethod(
+                "primitiveValueString", Body.class, Value.class, List.class);
+        encode.setAccessible(true);
+        soot.Type[] types = {soot.ByteType.v(), soot.ShortType.v(),
+                soot.CharType.v()};
+        for (int index = 0; index < types.length; index++) {
+            Local value = Jimple.v().newLocal("v" + index, types[index]);
+            body.getLocals().add(value);
+            body.getUnits().add(Jimple.v().newAssignStmt(value,
+                    IntConstant.v(index + 1)));
+            List<Unit> units = new ArrayList<>();
+            Value result = (Value) encode.invoke(null, body, value, units);
+            for (Unit unit : units) body.getUnits().add(unit);
+
+            assertEquals(2, units.size());
+            assertTrue(((AssignStmt) units.get(0)).getRightOp()
+                    instanceof soot.jimple.CastExpr);
+            assertEquals(IntType.v(), ((soot.jimple.CastExpr)
+                    ((AssignStmt) units.get(0)).getRightOp()).getCastType());
+            InvokeExpr stringValueOf = invokeExpression(units.get(1));
+            assertNotNull(stringValueOf);
+            assertEquals(IntType.v(), stringValueOf.getMethodRef()
+                    .parameterType(0));
+            assertEquals(RefType.v("java.lang.String"), result.getType());
+        }
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        body.validate();
     }
 
     @Test
@@ -1628,7 +2026,7 @@ public class CausynthPipelineTest {
                 argumentArray = (Local) assignment.getLeftOp();
             }
             if (assignment.getRightOp() instanceof InvokeExpr
-                    && "enterRegion".equals(((InvokeExpr)
+                    && "enterRegionFrame".equals(((InvokeExpr)
                     assignment.getRightOp()).getMethodRef().name())) {
                 entry = (InvokeExpr) assignment.getRightOp();
             }
@@ -2939,6 +3337,97 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void configuredRpcTopologyResolvesExactMethodsInScopedAnalysis()
+            throws Exception {
+        RpcTopologyFixture fixture = rpcTopologyFixture();
+        JsonObject row = rpcTopologyRow(fixture);
+        Path mapping = Files.createTempFile("causynth-rpc-topology-",
+                ".jsonl");
+        try {
+            Files.write(mapping, (row + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            Object analyzer = newStaticAnalyzer("hdfs_block_key", mapping);
+            Field mappingsField = analyzer.getClass().getDeclaredField(
+                    "staticPortMappings");
+            mappingsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            List<Object> mappings = (List<Object>) mappingsField.get(analyzer);
+            assertEquals(1, mappings.size());
+            Object portMapping = mappings.get(0);
+            assertEquals("configured_rpc_return_mapping",
+                    privateString(portMapping, "kind"));
+            assertEquals(fixture.producer.getSignature(),
+                    privateString(portMapping, "sourceMethod"));
+            assertEquals(fixture.producer.getSignature() + ".return",
+                    privateString(portMapping, "sourceCell"));
+            assertEquals(fixture.consumer.getSignature(),
+                    privateString(portMapping, "targetMethod"));
+            assertEquals(fixture.consumer.getSignature() + ".return",
+                    privateString(portMapping, "targetCell"));
+            String evidence = privateString(portMapping, "evidence");
+            assertTrue(evidence, evidence.contains("channel orders"));
+            assertTrue(evidence, evidence.contains(
+                    fixture.publisher.getSignature()));
+            assertTrue(evidence, evidence.contains(
+                    fixture.transport.getSignature()));
+            assertTrue(evidence, evidence.contains("mapping only"));
+        } finally {
+            Files.deleteIfExists(mapping);
+        }
+    }
+
+    @Test
+    public void regionPortRpcEqualityIsRecognizedButNotAssertedByStaticPass()
+            throws Exception {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "DECLARED_RPC_EQUALITY");
+        row.addProperty("authority", "FIXTURE_DECLARATION_ONLY");
+        row.addProperty("fromEndpoint", "REGION.A.out.0");
+        row.addProperty("toEndpoint", "REGION.C.in.0");
+        Path mapping = Files.createTempFile("causynth-rpc-declared-",
+                ".jsonl");
+        try {
+            Files.write(mapping, (row + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Object analyzer = newStaticAnalyzer("", mapping);
+            Field mappingsField = analyzer.getClass().getDeclaredField(
+                    "staticPortMappings");
+            mappingsField.setAccessible(true);
+            assertTrue(((List<?>) mappingsField.get(analyzer)).isEmpty());
+        } finally {
+            Files.deleteIfExists(mapping);
+        }
+    }
+
+    @Test
+    public void configuredRpcTopologyRejectsEndpointDeclarationDrift()
+            throws Exception {
+        RpcTopologyFixture fixture = rpcTopologyFixture();
+        JsonObject row = rpcTopologyRow(fixture);
+        row.addProperty("fromCell", fixture.producer.getSignature()
+                + ".param0:java.lang.Boolean");
+        Path mapping = Files.createTempFile("causynth-rpc-invalid-",
+                ".jsonl");
+        try {
+            Files.write(mapping, (row + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Throwable failure = null;
+            try {
+                newStaticAnalyzer("", mapping);
+            } catch (InvocationTargetException exception) {
+                failure = exception;
+            }
+            assertNotNull("topology drift must fail closed", failure);
+            assertTrue(deepMessage(failure), deepMessage(failure).contains(
+                    "fromCell does not name the resolved producer return"));
+        } finally {
+            Files.deleteIfExists(mapping);
+        }
+    }
+
+    @Test
     public void hdfsScopedIndexRecursesThroughConstantSetterAndCallerGuard()
             throws Exception {
         RecursiveFieldWriterFixture fixture = recursiveFieldWriterFixture();
@@ -3128,6 +3617,92 @@ public class CausynthPipelineTest {
         return value instanceof Number ? ((Number) value).intValue() : -1;
     }
 
+    private static RpcTopologyFixture rpcTopologyFixture() {
+        SootClass producerOwner = new SootClass("example.rpc.Producer",
+                Modifier.PUBLIC);
+        Scene.v().addClass(producerOwner);
+        producerOwner.setApplicationClass();
+        SootMethod producer = new SootMethod("compute",
+                Collections.<soot.Type>singletonList(
+                        RefType.v("java.lang.Boolean")), IntType.v(),
+                Modifier.PUBLIC);
+        producerOwner.addMethod(producer);
+
+        SootClass bus = new SootClass("example.rpc.Bus", Modifier.PUBLIC);
+        Scene.v().addClass(bus);
+        bus.setApplicationClass();
+        SootField transport = new SootField("wire", IntType.v(),
+                Modifier.PRIVATE);
+        bus.addField(transport);
+        SootMethod publisher = new SootMethod("publish",
+                Arrays.<soot.Type>asList(RefType.v("java.lang.String"),
+                        IntType.v()), VoidType.v(), Modifier.PUBLIC);
+        bus.addMethod(publisher);
+        SootMethod consumer = new SootMethod("receive",
+                Collections.<soot.Type>emptyList(), IntType.v(),
+                Modifier.PUBLIC);
+        bus.addMethod(consumer);
+        return new RpcTopologyFixture(producer, publisher, consumer,
+                transport);
+    }
+
+    private static JsonObject rpcTopologyRow(RpcTopologyFixture fixture) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "RPC_TOPOLOGY");
+        row.addProperty("authority", "TEST_RUNTIME_GATED_TOPOLOGY");
+        row.addProperty("channel", "orders");
+        row.addProperty("fromCell", fixture.producer.getSignature()
+                + ".return");
+        row.addProperty("toCell", fixture.transport.getSignature());
+
+        JsonObject producer = new JsonObject();
+        producer.addProperty("owner", fixture.producer.getDeclaringClass()
+                .getName());
+        producer.addProperty("name", fixture.producer.getName());
+        producer.addProperty("parameter", "java.lang.Boolean");
+        producer.addProperty("role", "RETURN_VALUE");
+        row.add("producer", producer);
+
+        JsonObject publisher = new JsonObject();
+        publisher.addProperty("owner", fixture.publisher.getDeclaringClass()
+                .getName());
+        publisher.addProperty("name", fixture.publisher.getName());
+        JsonArray publisherParameters = new JsonArray();
+        publisherParameters.add("java.lang.String");
+        publisherParameters.add("int");
+        publisher.add("parameters", publisherParameters);
+        publisher.addProperty("payloadParameterIndex", 1);
+        row.add("publisher", publisher);
+
+        JsonObject consumer = new JsonObject();
+        consumer.addProperty("owner", fixture.consumer.getDeclaringClass()
+                .getName());
+        consumer.addProperty("name", fixture.consumer.getName());
+        consumer.addProperty("role", "RETURN_VALUE");
+        row.add("consumer", consumer);
+        return row;
+    }
+
+    private static String privateString(Object owner, String fieldName)
+            throws Exception {
+        Field field = owner.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return String.valueOf(field.get(owner));
+    }
+
+    private static String deepMessage(Throwable failure) {
+        StringBuilder result = new StringBuilder();
+        Throwable current = failure;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                result.append(current.getMessage()).append('\n');
+            }
+            current = current.getCause();
+        }
+        return result.toString();
+    }
+
     private static void registerStaticPortMapping(Object analyzer,
                                                   String kind,
                                                   String method,
@@ -3186,21 +3761,27 @@ public class CausynthPipelineTest {
     }
 
     private static Object newStaticAnalyzer() throws Exception {
-        return newStaticAnalyzer("");
+        return newStaticAnalyzer("", null);
     }
 
     private static Object newStaticAnalyzer(String analysisScope)
+            throws Exception {
+        return newStaticAnalyzer(analysisScope, null);
+    }
+
+    private static Object newStaticAnalyzer(String analysisScope,
+                                            Path rpcMappingFile)
             throws Exception {
         Class<?> targetClass = Class.forName(
                 CausynthPipeline.class.getName() + "$TargetContext");
         Constructor<?> targetConstructor = targetClass.getDeclaredConstructor(
                 Path.class, Path.class, Path.class, Path.class, List.class,
-                String.class, String.class, String.class);
+                String.class, String.class, String.class, Path.class);
         targetConstructor.setAccessible(true);
         Path current = Paths.get(".").toAbsolutePath().normalize();
         Object target = targetConstructor.newInstance(current, current,
                 current, current, Collections.emptyList(), null, null,
-                analysisScope);
+                analysisScope, rpcMappingFile);
         Class<?> analyzerClass = Class.forName(
                 CausynthPipeline.class.getName()
                         + "$SeedBackwardStaticAnalyzer");
@@ -4182,6 +4763,9 @@ public class CausynthPipelineTest {
         fixture.staticMethod(concolic, "enterRegion",
                 Arrays.asList(fixture.string, fixture.object,
                         ArrayType.v(fixture.object, 1)), LongType.v());
+        fixture.staticMethod(concolic, "enterRegionFrame",
+                Arrays.asList(fixture.string, fixture.object,
+                        ArrayType.v(fixture.object, 1)), LongType.v());
         fixture.staticMethod(concolic, "pauseObservation",
                 Collections.emptyList(), VoidType.v());
         fixture.staticMethod(concolic, "resumeObservation",
@@ -4198,6 +4782,12 @@ public class CausynthPipelineTest {
                 VoidType.v());
         fixture.staticMethod(concolic, "throwRegion",
                 Arrays.asList(LongType.v(), fixture.throwable), VoidType.v());
+        fixture.staticMethod(concolic, "exitRegionFrame",
+                Arrays.asList(fixture.string, fixture.object,
+                        fixture.string), VoidType.v());
+        fixture.staticMethod(concolic, "throwRegionFrame",
+                Arrays.asList(fixture.string, fixture.throwable),
+                VoidType.v());
         SootClass system = Scene.v().getSootClassUnsafe("java.lang.System");
         if (system == null) {
             system = fixture.runtimeClass("java.lang.System");
@@ -4208,6 +4798,23 @@ public class CausynthPipelineTest {
                 Collections.emptyList(), VoidType.v());
         fixture.staticMethod(system, "markConcolicBranch",
                 Arrays.asList(fixture.string, IntType.v()), LongType.v());
+    }
+
+    private static final class RpcTopologyFixture {
+        private final SootMethod producer;
+        private final SootMethod publisher;
+        private final SootMethod consumer;
+        private final SootField transport;
+
+        private RpcTopologyFixture(SootMethod producer,
+                                   SootMethod publisher,
+                                   SootMethod consumer,
+                                   SootField transport) {
+            this.producer = producer;
+            this.publisher = publisher;
+            this.consumer = consumer;
+            this.transport = transport;
+        }
     }
 
     private static final class TypeFixture {

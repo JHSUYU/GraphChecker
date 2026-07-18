@@ -58,6 +58,18 @@ public class ConcolicSchedulerTest {
             assertEquals(1, target.get("occurrence").getAsInt());
 
             JsonObject scheduled = result.scheduledActivations.get(0);
+            assertEquals("example.Server", scheduled.get(
+                    "receiverRuntimeClass").getAsString());
+            assertEquals("rpc-handler",
+                    scheduled.get("threadName").getAsString());
+            assertEquals(1, scheduled.get(
+                    "invocationOrdinalWithinContext").getAsInt());
+            assertFalse(scheduled.get("threadIdSelectionUsed")
+                    .getAsBoolean());
+            assertEquals("TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                            + "THREAD_NAME_CONTEXT_ORDINAL_V1",
+                    scheduled.get("rootContextSelectionAuthority")
+                            .getAsString());
             assertFalse(scheduled.get("discoverySymbolicReady").getAsBoolean());
             assertTrue(scheduled.get("schedulerReady").getAsBoolean());
             assertTrue(scheduled.get("symbolicReady").getAsBoolean());
@@ -94,6 +106,82 @@ public class ConcolicSchedulerTest {
                     "scheduled_activation_plan.jsonl")));
             assertTrue(Files.isRegularFile(fixture.output.resolve(
                     "symbolic_merge_plan.json")));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void mergePlanUsesProvenCanonicalProducerOutputInsteadOfTransport()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            String returnCell =
+                    "<example.Client: java.lang.String compute()>#return";
+            String regions = new String(Files.readAllBytes(fixture.regions),
+                    StandardCharsets.UTF_8);
+            String oldOutput = "\"outputs\":[{\"portId\":"
+                    + "\"REGION.1.out.0\",\"cell\":"
+                    + "\"client.userName\"}]";
+            assertTrue(regions.contains(oldOutput));
+            regions = regions.replace(oldOutput, "\"outputs\":["
+                    + "{\"portId\":\"REGION.1.out.0\","
+                    + "\"cell\":\"client.userName\"},"
+                    + "{\"portId\":\"REGION.1.out.1\","
+                    + "\"cell\":\"" + returnCell + "\"}]");
+            Files.write(fixture.regions,
+                    regions.getBytes(StandardCharsets.UTF_8));
+
+            String edges = new String(Files.readAllBytes(fixture.edges),
+                    StandardCharsets.UTF_8);
+            String rawEndpoints = "\"fromPort\":\"client.userName\","
+                    + "\"toPort\":\"" + USERNAME + "\",";
+            assertTrue(edges.contains(rawEndpoints));
+            edges = edges.replace(rawEndpoints, rawEndpoints
+                    + "\"fromOutputPort\":\"REGION.1.out.1\","
+                    + "\"fromOutputCell\":\"" + returnCell + "\","
+                    + "\"aliasProofEdgeIds\":[\"DF.RETURN_TO_RPC\"],"
+                    + "\"aliasProofComplete\":true,"
+                    + "\"aliasProofAuthority\":"
+                    + "\"CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                    + "PUBLISH_VALUE_FLOW_V1\",");
+            Files.write(fixture.edges,
+                    edges.getBytes(StandardCharsets.UTF_8));
+
+            ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan", fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--output-dir", fixture.output.toString(),
+                            "--region-id", "REGION.0",
+                            "--force-branch-validation", "true"}));
+
+            JsonObject equality = result.mergePlan.getAsJsonArray(
+                    "equalityRelations").get(0).getAsJsonObject();
+            assertEquals("REGION.1.out.1",
+                    equality.get("fromEndpoint").getAsString());
+            assertEquals(returnCell, equality.get("fromCell").getAsString());
+
+            Files.write(fixture.edges, edges.replace(
+                    "\"aliasProofComplete\":true",
+                    "\"aliasProofComplete\":false").getBytes(
+                    StandardCharsets.UTF_8));
+            ConcolicScheduler.Result invalid = ConcolicScheduler.schedule(
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan", fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--output-dir", folder.getRoot().toPath()
+                            .resolve("invalid-canonical").toString(),
+                            "--region-id", "REGION.0",
+                            "--force-branch-validation", "true"}));
+            assertEquals(0, invalid.mergePlan.getAsJsonArray(
+                    "equalityRelations").size());
         } finally {
             folder.delete();
         }
@@ -200,6 +288,8 @@ public class ConcolicSchedulerTest {
             JsonObject query = result.queries.get(0);
             assertTrue(query.get("readyForSolver").getAsBoolean());
             assertTrue(query.get("readyForReplay").getAsBoolean());
+            assertFalse(query.get("targetReplayValidated").getAsBoolean());
+            assertFalse(query.get("replayAlreadyValidated").getAsBoolean());
             assertEquals(2, query.get("conditionIndex").getAsInt());
             JsonArray constraints = query.getAsJsonArray("constraints");
             assertEquals(3, constraints.size());
@@ -1685,6 +1775,14 @@ public class ConcolicSchedulerTest {
                 + "\"regionInstanceId\":\"REGION.0@testMiniDfs#call7\","
                 + "\"rootCallId\":7,\"test\":\"testMiniDfs\","
                 + "\"rootMethod\":\"" + ROOT + "\","
+                + "\"receiverType\":\"example.Server\","
+                + "\"receiverRuntimeClass\":\"example.Server\","
+                + "\"threadName\":\"rpc-handler\","
+                + "\"threadIdSelectionUsed\":false,"
+                + "\"invocationOrdinalWithinContext\":1,"
+                + "\"rootContextSelectionAuthority\":"
+                + "\"TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                + "THREAD_NAME_CONTEXT_ORDINAL_V1\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
                 + "\"symbolicReady\":false,\"symbolize\":["
                 + "{\"symbol\":\"REGION.0.in.0\",\"cell\":\""
