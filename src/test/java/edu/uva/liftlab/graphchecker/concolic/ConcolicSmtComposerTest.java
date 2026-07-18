@@ -895,6 +895,8 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.smtLib.contains("(=>"));
             JsonArray catalog = result.manifest.getAsJsonArray(
                     "caseProjectionCatalog");
+            String mergedSummaryId = merged.summaries.get(0).get(
+                    "summaryId").getAsString();
             assertEquals(2, catalog.size());
             assertTrue(result.manifest.get(
                     "caseProjectionCatalogComplete").getAsBoolean());
@@ -908,6 +910,8 @@ public class ConcolicSmtComposerTest {
                 assertFalse(pathCase.get("symbolScope").getAsString().isEmpty());
                 assertFalse(pathCase.get(
                         "sourceSummaryId").getAsString().isEmpty());
+                assertEquals(mergedSummaryId, pathCase.get(
+                        "compositionInputSummaryId").getAsString());
                 String selector = pathCase.get(
                         "selectorSolverSymbol").getAsString();
                 assertTrue(result.smtLib.contains(

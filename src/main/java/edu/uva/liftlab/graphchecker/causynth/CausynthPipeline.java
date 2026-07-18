@@ -1640,7 +1640,15 @@ public final class CausynthPipeline {
                 "$causynthActiveToken");
         before.add(Jimple.v().newAssignStmt(activeToken,
                 Jimple.v().newStaticInvokeExpr(refs.activeToken)));
-        Value boxed = boxedCaptureValue(body, value, before);
+        // Soot may infer a narrower local type from the values carried by an
+        // int-returning method (for example byte for a local that is only
+        // ever -1 or 1).  At an actual JVM return boundary the method
+        // descriptor is the semantic type authority.  Box with that declared
+        // type so the concrete wrapper and the custom-VM expression envelope
+        // both describe the canonical method return rather than an incidental
+        // Jimple local type.
+        Value boxed = boxedCaptureValue(body, value,
+                body.getMethod().getReturnType(), before);
         before.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
         Value primitiveValue = primitiveValueString(body, value, before);
@@ -2647,6 +2655,20 @@ public final class CausynthPipeline {
     /** Returns the exact assigned value as an Object, boxing primitives. */
     private static Value boxedCaptureValue(Body body, Value value,
                                            List<Unit> prefixUnits) {
+        return boxedCaptureValue(body, value,
+                value == null ? null : value.getType(), prefixUnits);
+    }
+
+    /**
+     * Returns the exact value as an Object using {@code declaredType} as the
+     * primitive boxing authority.  JVM int-like locals share the same operand
+     * representation, so a Soot-narrowed byte/short/char local can be passed
+     * directly to an {@code Integer(int)} constructor without introducing a
+     * second value computation or losing its VM shadow.
+     */
+    private static Value boxedCaptureValue(Body body, Value value,
+                                           Type declaredType,
+                                           List<Unit> prefixUnits) {
         if (value == null || value instanceof NullConstant) {
             return NullConstant.v();
         }
@@ -2654,7 +2676,9 @@ public final class CausynthPipeline {
                 || value.getType() instanceof ArrayType) {
             return immediateValue(body, value, prefixUnits);
         }
-        PrimitiveWrapper wrapper = PrimitiveWrapper.forType(value.getType());
+        Type boxingType = declaredType == null
+                ? value.getType() : declaredType;
+        PrimitiveWrapper wrapper = PrimitiveWrapper.forType(boxingType);
         if (wrapper == null) return NullConstant.v();
         SootClass wrapperClass = Scene.v().getSootClass(wrapper.className);
         RefType wrapperType = RefType.v(wrapper.className);
@@ -2664,7 +2688,7 @@ public final class CausynthPipeline {
         prefixUnits.add(Jimple.v().newAssignStmt(boxed,
                 Jimple.v().newNewExpr(wrapperType)));
         SootMethodRef constructor = Scene.v().makeMethodRef(wrapperClass,
-                "<init>", Collections.singletonList(value.getType()),
+                "<init>", Collections.singletonList(boxingType),
                 VoidType.v(), false);
         prefixUnits.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newSpecialInvokeExpr(boxed, constructor,

@@ -10,6 +10,7 @@ import org.junit.rules.TemporaryFolder;
 import soot.ArrayType;
 import soot.Body;
 import soot.BooleanType;
+import soot.ByteType;
 import soot.LongType;
 import soot.G;
 import soot.IntType;
@@ -1258,15 +1259,18 @@ public class CausynthPipelineTest {
             Scene.v().addClass(owner);
             owner.setApplicationClass();
             SootMethod compute = new SootMethod("compute",
-                    Collections.singletonList(IntType.v()), IntType.v(),
+                    Collections.emptyList(), IntType.v(),
                     Modifier.PUBLIC | Modifier.STATIC);
             owner.addMethod(compute);
             Body body = Jimple.v().newBody(compute);
             compute.setActiveBody(body);
-            Local result = Jimple.v().newLocal("result", IntType.v());
+            // Soot commonly narrows an int method's local when all concrete
+            // definitions fit in a byte.  The return descriptor must still
+            // control capture boxing.
+            Local result = Jimple.v().newLocal("result", ByteType.v());
             body.getLocals().add(result);
-            body.getUnits().add(Jimple.v().newIdentityStmt(result,
-                    Jimple.v().newParameterRef(IntType.v(), 0)));
+            body.getUnits().add(Jimple.v().newAssignStmt(result,
+                    IntConstant.v(-1)));
             ReturnStmt returned = Jimple.v().newReturnStmt(result);
             body.getUnits().add(returned);
 
@@ -1343,6 +1347,23 @@ public class CausynthPipelineTest {
             assertEquals("REGION.RETURN.out.0", hook.getArg(5).toString()
                     .replace("\"", ""));
             assertEquals(1, ((IntConstant) hook.getArg(7)).value);
+            assertEquals(RefType.v("java.lang.Integer"),
+                    hook.getArg(8).getType());
+
+            boolean integerConstructorObserved = false;
+            for (Unit unit : units) {
+                if (!(unit instanceof Stmt)
+                        || !((Stmt) unit).containsInvokeExpr()) continue;
+                InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
+                if ("<init>".equals(invoke.getMethodRef().name())
+                        && "java.lang.Integer".equals(invoke.getMethodRef()
+                        .declaringClass().getName())) {
+                    integerConstructorObserved = true;
+                    assertEquals(Collections.singletonList(IntType.v()),
+                            invoke.getMethodRef().parameterTypes());
+                }
+            }
+            assertTrue(integerConstructorObserved);
         } finally {
             folder.delete();
         }

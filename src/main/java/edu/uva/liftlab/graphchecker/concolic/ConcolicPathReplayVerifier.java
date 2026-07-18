@@ -120,6 +120,11 @@ public final class ConcolicPathReplayVerifier {
                 ? matchingRaw.get(0) : new JsonObject();
         JsonObject summary = matchingSummaries.size() == 1
                 ? matchingSummaries.get(0) : new JsonObject();
+        if (matchingSummaries.size() == 1) {
+            report.addProperty("observedPathKey",
+                    RegionPathWorklist.stablePathKey(summary));
+            report.addProperty("summaryId", string(summary, "summaryId"));
+        }
         if (matchingRaw.size() == 1) {
             require(failures, "RAW_RESULT_REGION_ID_MISMATCH",
                     regionId.equals(string(raw, "regionId")));

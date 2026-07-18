@@ -163,6 +163,29 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     }
 
     @Test
+    public void selectedCaseMustBelongToIncludedCompositionInput()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject composition = JsonParser.parseString(new String(
+                Files.readAllBytes(fixture.composition),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        composition.getAsJsonArray("caseProjectionCatalog").get(1)
+                .getAsJsonObject().addProperty("compositionInputSummaryId",
+                "SUMMARY.A.NOT_INCLUDED");
+        Files.write(fixture.composition, composition.toString().getBytes(
+                StandardCharsets.UTF_8));
+        JsonObject report = fixture.reach.deepCopy();
+        report.add("compositionManifestArtifact",
+                artifact(fixture.composition));
+        Files.write(fixture.reachPath, report.toString().getBytes(
+                StandardCharsets.UTF_8));
+
+        expectFailure(fixture.arguments(),
+                "SELECTED_SOURCE_SUMMARY_NOT_IN_COMPOSITION_INPUT");
+    }
+
+    @Test
     public void targetActivationMustMatchFatalBranchIdentity()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -331,13 +354,17 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         cases.add(pathCase("REGION.B", "CASE.B.1", "cb1",
                 "SUMMARY.B.1", "ACT.B.1", "REGION.B.in.0", "xb",
                 "M_Z_field_REGION.B.in.0_java/lang/Boolean"));
+        for (com.google.gson.JsonElement element : cases) {
+            JsonObject pathCase = element.getAsJsonObject();
+            pathCase.addProperty("compositionInputSummaryId",
+                    "REGION.A".equals(pathCase.get("regionId").getAsString())
+                            ? "SUMMARY.A.MERGED" : "SUMMARY.B.MERGED");
+        }
         compositionJson.add("caseProjectionCatalog", cases);
         compositionJson.addProperty("caseProjectionCatalogCount", 4);
         JsonArray included = new JsonArray();
-        included.add("SUMMARY.A.0");
-        included.add("SUMMARY.A.1");
-        included.add("SUMMARY.B.0");
-        included.add("SUMMARY.B.1");
+        included.add("SUMMARY.A.MERGED");
+        included.add("SUMMARY.B.MERGED");
         compositionJson.add("includedSummaries", included);
         Files.write(composition, compositionJson.toString().getBytes(
                 StandardCharsets.UTF_8));
@@ -431,6 +458,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         result.addProperty("kind", "GUARDED_CASE_PROJECTION_CATALOG");
         result.addProperty("regionId", region);
         result.addProperty("caseId", caseId);
+        result.addProperty("pathKey", "PATH." + caseId);
         result.addProperty("sourceSummaryId", summary);
         result.addProperty("sourceActivationId", activation);
         result.addProperty("selectorSolverSymbol", selector);

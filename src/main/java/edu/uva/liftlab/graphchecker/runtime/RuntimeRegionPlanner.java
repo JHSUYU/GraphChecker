@@ -4796,9 +4796,6 @@ final class RuntimeRegionPlanner {
         private final List<String> staticCausalEdgeIds = new ArrayList<>();
         private final Set<String> excludedInputPorts = new LinkedHashSet<>();
         private final Set<String> excludedMethods = new LinkedHashSet<>();
-        private final Set<String> runtimeOnlyMethods = new LinkedHashSet<>();
-        private final Set<String> downstreamOnlyMethods =
-                new LinkedHashSet<>();
         private final Set<String> excludedSites = new LinkedHashSet<>();
         private final Set<String> excludedPathAlternativeSites =
                 new LinkedHashSet<>();
@@ -5362,32 +5359,16 @@ final class RuntimeRegionPlanner {
             refined.requestedStateTransformerContractAuthority =
                     requestedStateTransformerContractAuthority;
 
+            // The semantic backward slice is the region boundary authority.
+            // Runtime evidence selects one path through that declared slice;
+            // it must neither grow the slice with incidental callees nor
+            // reject an otherwise complete region because such callees ran.
             Set<String> observed = new LinkedHashSet<>(
                     evidence.observedMethods);
-            Set<String> runtimeOnly = new LinkedHashSet<>(difference(
-                    observed, methods));
-            refined.downstreamOnlyMethods.addAll(
-                    downstreamOnlyAfterExactMethodReturn(evidence,
-                            runtimeOnly));
-            observed.removeAll(refined.downstreamOnlyMethods);
+            observed.retainAll(methods);
             refineUnresolvedInputs(observed, refined);
             refined.methods.addAll(sorted(observed));
             refined.excludedMethods.addAll(difference(methods, observed));
-            refined.runtimeOnlyMethods.addAll(difference(observed, methods));
-            if (!refined.runtimeOnlyMethods.isEmpty()) {
-                // Runtime call-tree membership proves that these helpers ran,
-                // but it cannot invent their static input/field dependency
-                // closure.  Keep them for diagnostics and branch capture,
-                // while forcing a fresh static refinement before the summary
-                // is admitted to SMT composition.
-                refined.runtimeRefinementComplete = false;
-                for (String method : refined.runtimeOnlyMethods) {
-                    refined.unresolvedInputs.add(
-                            "RUNTIME_OBSERVED_METHOD_OUTSIDE_STATIC_OUTPUT_"
-                                    + "SLICE:" + method);
-                }
-                refined.unresolvedInputProvenanceComplete = false;
-            }
             boolean filtersAlternatives = !refined.excludedMethods.isEmpty();
 
             Set<String> retainedTransformerSites = new LinkedHashSet<>();
@@ -5685,41 +5666,6 @@ final class RuntimeRegionPlanner {
         }
 
         /**
-         * A canonical method-return output is fixed at the exact normal exit
-         * selected by its capture binding.  Region methods first entered
-         * strictly after that event (for example the RPC publisher carrying
-         * the already-computed value) cannot affect this output's backward
-         * relation.  Exclude only this narrowly proven downstream suffix;
-         * runtime-only helpers before the return remain a hard refinement
-         * gap because they may define an input or the returned value.
-         */
-        private Set<String> downstreamOnlyAfterExactMethodReturn(
-                InstanceEvidence evidence, Set<String> candidates) {
-            Set<String> result = new LinkedHashSet<>();
-            if (candidates.isEmpty() || captureBindings.size() != 1) {
-                return result;
-            }
-            Map<String, Object> binding = captureBindings.get(0);
-            if (!"METHOD_RETURN_VALUE".equals(firstNonBlank(string(
-                    binding.get("captureKind")), "CALL_ARGUMENT"))) {
-                return result;
-            }
-            List<RuntimeEvent> exits = evidence.matchingMethodReturns(
-                    binding);
-            if (exits.size() != 1) {
-                return result;
-            }
-            long boundary = exits.get(0).seq;
-            for (String method : candidates) {
-                long first = evidence.firstMethodSeq(method);
-                if (first > boundary) {
-                    result.add(method);
-                }
-            }
-            return result;
-        }
-
-        /**
          * Revalidates the exact transformer ledger after static alternatives
          * have been removed.  This validation intentionally does not read or
          * write {@link #runtimeRefinementComplete}; the final readiness gate
@@ -5980,7 +5926,6 @@ final class RuntimeRegionPlanner {
                     || !evidence.runtimePathEvidenceComplete
                     || !refined.structuralComplete
                     || !refined.runtimeRefinementComplete
-                    || !refined.runtimeOnlyMethods.isEmpty()
                     || !refined.unresolvedInputs.isEmpty()
                     || !refined.unresolvedInputProvenanceComplete
                     || !refined.requestedStateTransformerContractComplete) {
@@ -6194,10 +6139,6 @@ final class RuntimeRegionPlanner {
                         new ArrayList<>(excludedInputPorts));
                 result.put("excludedAlternativeMethods",
                         new ArrayList<>(excludedMethods));
-                result.put("runtimeObservedMethodsOutsideStaticSlice",
-                        new ArrayList<>(runtimeOnlyMethods));
-                result.put("runtimeObservedDownstreamMethodsExcluded",
-                        new ArrayList<>(downstreamOnlyMethods));
                 result.put("excludedAlternativeSites",
                         new ArrayList<>(excludedSites));
                 result.put("excludedPathAlternativeSites",

@@ -970,8 +970,12 @@ public class RuntimeRegionPlannerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> refinedSlice = (Map<String, Object>) upstream.get(
                 "requestedOutputSlice");
-        assertEquals(Collections.singletonList(publisher), refinedSlice.get(
+        assertFalse(refinedSlice.containsKey(
+                "runtimeObservedMethodsOutsideStaticSlice"));
+        assertFalse(refinedSlice.containsKey(
                 "runtimeObservedDownstreamMethodsExcluded"));
+        assertFalse(((List<?>) refinedSlice.get("methods"))
+                .contains(publisher));
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> captures =
