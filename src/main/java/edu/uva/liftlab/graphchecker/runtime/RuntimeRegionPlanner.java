@@ -34,6 +34,10 @@ final class RuntimeRegionPlanner {
     private static final int MAX_CALLS_PER_INSTANCE = 10000;
     private static final int MAX_PATH_SIGNATURE_EVENTS = 512;
     private static final Pattern PARAMETER = Pattern.compile("\\.param(\\d+):");
+    private static final Pattern PARAMETER_TYPE = Pattern.compile(
+            "\\.param\\d+:([^#]+)");
+    private static final Pattern PARAMETER_FIELD_PROJECTION = Pattern.compile(
+            "\\.param\\d+:([^#]+)#field:");
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
@@ -42,6 +46,12 @@ final class RuntimeRegionPlanner {
             "#field:([^#@]+)");
     private static final Pattern GETTER_IN_GUARD = Pattern.compile(
             "\\b((?:get|is)[A-Z][A-Za-z0-9_]*)\\s*\\(");
+    private static final Pattern UNIT_SITE_SUFFIX = Pattern.compile(
+            "#u[0-9]+");
+    private static final Pattern UNSAFE_TOKEN_CHARACTERS = Pattern.compile(
+            "[^A-Za-z0-9_.-]+");
+    private static final Pattern JSON_QUOTED_STRING = Pattern.compile(
+            "\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
     private static final String VM_INTRINSIC_DEFERRED_AUTHORITY =
             "EXACT_VM_INTRINSIC_PLACEHOLDER_SCHEDULER_VALIDATION_V1";
     private static final String CALL_RETURN_DEFERRED_AUTHORITY =
@@ -5732,8 +5742,13 @@ final class RuntimeRegionPlanner {
         }
 
         private boolean exactUnitSite(String method, String site) {
-            return !method.isEmpty() && safe(site).matches(
-                    Pattern.quote(method) + "#u[0-9]+");
+            String candidate = safe(site);
+            if (method.isEmpty() || !candidate.startsWith(method)) {
+                return false;
+            }
+            Matcher suffix = UNIT_SITE_SUFFIX.matcher(candidate);
+            suffix.region(method.length(), candidate.length());
+            return suffix.matches();
         }
 
         private static Map<String, Object> causalEdgeReference(String json) {
@@ -6861,8 +6876,7 @@ final class RuntimeRegionPlanner {
         if (field.declaredSignature && !field.type.isEmpty()) {
             return field.type;
         }
-        Matcher parameter = Pattern.compile(
-                "\\.param\\d+:([^#]+)").matcher(safe(cell));
+        Matcher parameter = PARAMETER_TYPE.matcher(safe(cell));
         return parameter.find() ? parameter.group(1).trim() : "";
     }
 
@@ -6885,8 +6899,7 @@ final class RuntimeRegionPlanner {
                     projectionAt), "", name, false);
         }
 
-        Matcher parameter = Pattern.compile(
-                "\\.param\\d+:([^#]+)#field:").matcher(cell);
+        Matcher parameter = PARAMETER_FIELD_PROJECTION.matcher(cell);
         if (parameter.find()) {
             return new FieldCell(parameter.group(1), "", name, false);
         }
@@ -7102,7 +7115,7 @@ final class RuntimeRegionPlanner {
     }
 
     private static String safeToken(String value) {
-        return safe(value).replaceAll("[^A-Za-z0-9_.-]+", "_");
+        return UNSAFE_TOKEN_CHARACTERS.matcher(safe(value)).replaceAll("_");
     }
 
     private static String string(Object value) {
@@ -7245,8 +7258,7 @@ final class RuntimeRegionPlanner {
             return Collections.emptyList();
         }
         List<String> result = new ArrayList<>();
-        Matcher matcher = Pattern.compile("\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"")
-                .matcher(raw);
+        Matcher matcher = JSON_QUOTED_STRING.matcher(raw);
         while (matcher.find()) {
             result.add(unescape(matcher.group(1)));
         }

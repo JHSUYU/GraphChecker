@@ -52,6 +52,47 @@ final class SymbolicRegionPlanner {
     private static final int MAX_INPUT_PORTS_WITH_OUTPUT_SLICE_PROMOTIONS =
             512;
 
+    /*
+     * These patterns are used while scanning edges/cells, often once per
+     * candidate in several independent region passes.  Pattern is immutable
+     * and thread-safe; callers still create an activation-local Matcher.
+     */
+    private static final Pattern FIELD_PATH_SEGMENT_PATTERN =
+            Pattern.compile("#field:([^#]+)");
+    private static final Pattern DECLARED_FIELD_PATTERN = Pattern.compile(
+            "^<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>$");
+    private static final Pattern PROJECTED_RETURN_FIELD_PATTERN =
+            Pattern.compile("^<[^:]+:\\s+([^\\s]+)\\s+[^\\s(]+"
+                    + "\\([^)]*\\)>\\.return#field:([^#]+)$");
+    private static final Pattern PROJECTED_PARAMETER_FIELD_PATTERN =
+            Pattern.compile("^<.+>\\.param\\d+:([^#]+)#field:([^#]+)$");
+    private static final Pattern GLOBAL_FIELD_OWNER_PATTERN =
+            Pattern.compile("^<([^:]+):\\s+[^()<>]+\\s+[^\\s()>]+>"
+                    + "(?:#field:.*)?$");
+    private static final Pattern PARAMETER_TYPE_PATTERN = Pattern.compile(
+            "\\.param\\d+:([^#]+)(?:#field:.*)?$");
+    private static final Pattern CAST_LOCAL_PATTERN = Pattern.compile(
+            "^\\([^)]*\\)\\s*([$]?[A-Za-z_][A-Za-z0-9_]*)$");
+    private static final Pattern GLOBAL_FIELD_LEAF_PATTERN = Pattern.compile(
+            "^<[^:]+:\\s+[^()<>]+\\s+([^\\s()>]+)>$");
+    private static final Pattern EMBEDDED_FIELD_PATTERN = Pattern.compile(
+            ".*\\.<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>.*");
+    private static final Pattern SEMANTIC_GLOBAL_FIELD_PATTERN =
+            Pattern.compile("^<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>"
+                    + "(.*)$");
+    private static final Pattern FORMAL_PARAMETER_PATTERN = Pattern.compile(
+            "^<.+>\\.param\\d+:([^#]+)$");
+    private static final Pattern FIELD_SIGNATURE_PATTERN = Pattern.compile(
+            "<([^:]+):\\s+.+\\s+([^\\s()>]+)>");
+    private static final Pattern METHOD_OWNER_PATTERN = Pattern.compile(
+            "<([^:]+):");
+    private static final Pattern REQUIRED_OUTCOME_PATTERN = Pattern.compile(
+            "requires Jimple outcome (true|false)");
+    private static final Pattern SCALAR_FIELD_PATTERN = Pattern.compile(
+            "^<[^:]+:\\s+([^()<>]+)\\s+[^\\s()>]+>$");
+    private static final Pattern PARAMETER_INDEX_PATTERN = Pattern.compile(
+            "\\.param(\\d+):");
+
     private SymbolicRegionPlanner() {
     }
 
@@ -2131,8 +2172,8 @@ final class SymbolicRegionPlanner {
                 return Collections.emptyList();
             }
             List<String> result = new ArrayList<>();
-            Matcher matcher = Pattern.compile("#field:([^#]+)").matcher(
-                    string(projection.get("fieldPath")));
+            Matcher matcher = FIELD_PATH_SEGMENT_PATTERN.matcher(string(
+                    projection.get("fieldPath")));
             while (matcher.find()) {
                 result.add(matcher.group(1));
             }
@@ -2448,9 +2489,7 @@ final class SymbolicRegionPlanner {
         }
 
         private DeclaredFieldIdentity declaredField(String value) {
-            Matcher matcher = Pattern.compile(
-                    "^<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>$")
-                    .matcher(string(value));
+            Matcher matcher = DECLARED_FIELD_PATTERN.matcher(string(value));
             if (!matcher.matches()) {
                 return null;
             }
@@ -4654,17 +4693,13 @@ final class SymbolicRegionPlanner {
             if (countOccurrences(value, "#field:") != 1) {
                 return null;
             }
-            Matcher returned = Pattern.compile(
-                    "^<[^:]+:\\s+([^\\s]+)\\s+[^\\s(]+\\([^)]*\\)>"
-                            + "\\.return#field:([^#]+)$")
-                    .matcher(value);
+            Matcher returned = PROJECTED_RETURN_FIELD_PATTERN.matcher(value);
             if (returned.matches()) {
                 return new FieldSignature(returned.group(1).trim(),
                         returned.group(2).trim());
             }
-            Matcher parameter = Pattern.compile(
-                    "^<.+>\\.param\\d+:([^#]+)#field:([^#]+)$")
-                    .matcher(value);
+            Matcher parameter = PROJECTED_PARAMETER_FIELD_PATTERN.matcher(
+                    value);
             if (parameter.matches()) {
                 return new FieldSignature(parameter.group(1).trim(),
                         parameter.group(2).trim());
@@ -4682,16 +4717,12 @@ final class SymbolicRegionPlanner {
         }
 
         private String globalFieldOwner(String cell) {
-            Matcher field = Pattern.compile(
-                    "^<([^:]+):\\s+[^()<>]+\\s+[^\\s()>]+>(?:#field:.*)?$")
-                    .matcher(string(cell));
+            Matcher field = GLOBAL_FIELD_OWNER_PATTERN.matcher(string(cell));
             return field.matches() ? field.group(1) : "";
         }
 
         private String parameterType(String cell) {
-            Matcher parameter = Pattern.compile(
-                    "\\.param\\d+:([^#]+)(?:#field:.*)?$")
-                    .matcher(string(cell));
+            Matcher parameter = PARAMETER_TYPE_PATTERN.matcher(string(cell));
             return parameter.find() ? parameter.group(1).trim() : "";
         }
 
@@ -5161,9 +5192,7 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> edge,
                 List<Map<String, Object>> definitions) {
             String source = string(edge.get("fromCell"));
-            Matcher cast = Pattern.compile(
-                    "^\\([^)]*\\)\\s*([$]?[A-Za-z_][A-Za-z0-9_]*)$")
-                    .matcher(source);
+            Matcher cast = CAST_LOCAL_PATTERN.matcher(source);
             if (!cast.matches()) {
                 return false;
             }
@@ -5195,9 +5224,7 @@ final class SymbolicRegionPlanner {
             if (projection >= 0) {
                 return value.substring(projection + "#field:".length());
             }
-            Matcher global = Pattern.compile(
-                    "^<[^:]+:\\s+[^()<>]+\\s+([^\\s()>]+)>$")
-                    .matcher(value);
+            Matcher global = GLOBAL_FIELD_LEAF_PATTERN.matcher(value);
             return global.matches() ? global.group(1) : "";
         }
 
@@ -5694,9 +5721,8 @@ final class SymbolicRegionPlanner {
         }
 
         private boolean immutableStaticConstant(String value) {
-            Matcher field = Pattern.compile(
-                    "^<[^:]+:\\s+[^()<>]+\\s+([^\\s()>]+)>$")
-                    .matcher(value == null ? "" : value.trim());
+            Matcher field = GLOBAL_FIELD_LEAF_PATTERN.matcher(
+                    value == null ? "" : value.trim());
             return field.matches()
                     && field.group(1).matches("[A-Z][A-Z0-9_]*");
         }
@@ -5715,9 +5741,7 @@ final class SymbolicRegionPlanner {
                 String target = string(edge.get("toCell"));
                 String targetKey = semanticFieldKey(target, rootMethod);
                 if (targetKey.isEmpty()) {
-                    Matcher embedded = Pattern.compile(
-                            ".*\\.<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>.*")
-                            .matcher(target);
+                    Matcher embedded = EMBEDDED_FIELD_PATTERN.matcher(target);
                     if (embedded.matches()) {
                         targetKey = embedded.group(1) + "#" + embedded.group(2);
                     }
@@ -5943,9 +5967,7 @@ final class SymbolicRegionPlanner {
         private String semanticFieldKey(String value, String rootMethod) {
             String cell = string(value);
             int projection = cell.indexOf("#field:");
-            Matcher global = Pattern.compile(
-                    "^<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>(.*)$")
-                    .matcher(cell);
+            Matcher global = SEMANTIC_GLOBAL_FIELD_PATTERN.matcher(cell);
             if (global.matches()) {
                 String suffix = global.group(3);
                 return global.group(1) + "#" + global.group(2)
@@ -6220,8 +6242,7 @@ final class SymbolicRegionPlanner {
 
         private boolean outboundProtocolScalarCell(
                 RegionDraft region, String outputCell) {
-            Matcher formal = Pattern.compile(
-                    "^<.+>\\.param\\d+:([^#]+)$").matcher(outputCell);
+            Matcher formal = FORMAL_PARAMETER_PATTERN.matcher(outputCell);
             if (!formal.matches()
                     || !closedProtocolScalarType(formal.group(1).trim())) {
                 return false;
@@ -6848,8 +6869,8 @@ final class SymbolicRegionPlanner {
         }
 
         private FieldSignature fieldSignature(String field) {
-            Matcher matcher = Pattern.compile("<([^:]+):\\s+.+\\s+([^\\s()>]+)>")
-                    .matcher(field == null ? "" : field);
+            Matcher matcher = FIELD_SIGNATURE_PATTERN.matcher(
+                    field == null ? "" : field);
             if (!matcher.matches()) {
                 return null;
             }
@@ -6857,7 +6878,7 @@ final class SymbolicRegionPlanner {
         }
 
         private String ownerOfMethod(String method) {
-            Matcher matcher = Pattern.compile("<([^:]+):").matcher(method);
+            Matcher matcher = METHOD_OWNER_PATTERN.matcher(method);
             return matcher.find() ? matcher.group(1) : "";
         }
 
@@ -6920,9 +6941,8 @@ final class SymbolicRegionPlanner {
             if (explicit instanceof Boolean) {
                 return (Boolean) explicit;
             }
-            Matcher matcher = Pattern.compile(
-                    "requires Jimple outcome (true|false)")
-                    .matcher(string(edge.get("evidence")));
+            Matcher matcher = REQUIRED_OUTCOME_PATTERN.matcher(string(
+                    edge.get("evidence")));
             return matcher.find()
                     ? Boolean.valueOf(matcher.group(1)) : null;
         }
@@ -7001,15 +7021,11 @@ final class SymbolicRegionPlanner {
             if (isEnvironmentCell(cell)) {
                 return true;
             }
-            Matcher field = Pattern.compile(
-                    "^<[^:]+:\\s+([^()<>]+)\\s+[^\\s()>]+>$")
-                    .matcher(string(cell));
+            Matcher field = SCALAR_FIELD_PATTERN.matcher(string(cell));
             if (field.matches()) {
                 return scalarType(field.group(1));
             }
-            Matcher parameter = Pattern.compile(
-                    "\\.param\\d+:([^#]+)(?:#field:.*)?$")
-                    .matcher(string(cell));
+            Matcher parameter = PARAMETER_TYPE_PATTERN.matcher(string(cell));
             return parameter.find() && scalarType(parameter.group(1));
         }
 
@@ -7398,7 +7414,7 @@ final class SymbolicRegionPlanner {
         if (cell.endsWith(".return")) {
             return "return";
         }
-        Matcher param = Pattern.compile("\\.param(\\d+):").matcher(cell);
+        Matcher param = PARAMETER_INDEX_PATTERN.matcher(cell);
         if (param.find()) {
             return "argument[" + param.group(1) + "]";
         }
@@ -7406,8 +7422,7 @@ final class SymbolicRegionPlanner {
     }
 
     private static int parameterIndex(String cell) {
-        Matcher parameter = Pattern.compile("\\.param(\\d+):")
-                .matcher(string(cell));
+        Matcher parameter = PARAMETER_INDEX_PATTERN.matcher(string(cell));
         if (!parameter.find()) {
             return -1;
         }
