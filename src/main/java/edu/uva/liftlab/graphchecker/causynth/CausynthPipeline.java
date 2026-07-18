@@ -303,16 +303,10 @@ public final class CausynthPipeline {
                 }
                 Local token = newTraceLocal(body, LongType.v(),
                         "$causynthRegionToken");
-                Local tokenHolder = newTraceLocal(body,
-                        ArrayType.v(LongType.v(), 1),
-                        "$causynthRegionTokenHolder");
                 List<Unit> entry = new ArrayList<>();
                 Unit tokenInitialization = Jimple.v().newAssignStmt(token,
                         LongConstant.v(0L));
                 entry.add(tokenInitialization);
-                entry.add(Jimple.v().newAssignStmt(tokenHolder,
-                        Jimple.v().newNewArrayExpr(LongType.v(),
-                                IntConstant.v(1))));
                 ArrayType objectArrayType = ArrayType.v(
                         RefType.v("java.lang.Object"), 1);
                 Local rootArguments = newTraceLocal(body, objectArrayType,
@@ -341,18 +335,16 @@ public final class CausynthPipeline {
                             objectArg(body, parameter, entry)));
                 }
                 Unit enterRegion = Jimple.v().newAssignStmt(token,
-                        Jimple.v().newStaticInvokeExpr(refs.enterRegion,
+                        Jimple.v().newStaticInvokeExpr(refs.enterRegionFrame,
                                 StringConstant.v(signature), receiver,
                                 rootArguments));
                 entry.add(enterRegion);
-                entry.add(Jimple.v().newAssignStmt(
-                        Jimple.v().newArrayRef(tokenHolder, IntConstant.v(0)),
-                        token));
-                // A trap observes local state before its begin instruction.
-                // Begin at a nop after the holder store so the verifier frame
-                // always contains the category-1 holder reference.
-                Unit regionStart = Jimple.v().newNopStmt();
-                entry.add(regionStart);
+                // The wrapper pushes a zero placeholder before legacy entry.
+                // Include the call itself so either this catch-all or an
+                // existing handler closes that exact frame if entry fails.
+                // The cleanup handler reads no incoming entry local, so this
+                // is also verifier-safe at the call's exceptional edge.
+                Unit regionStart = enterRegion;
                 for (int index = 0; index < method.getParameterCount(); index++) {
                     Value parameter;
                     try {
@@ -413,19 +405,21 @@ public final class CausynthPipeline {
                     Stmt stmt = (Stmt) unit;
                     if (stmt instanceof ReturnStmt) {
                         insertRegionExit(body, stmt, ((ReturnStmt) stmt).getOp(),
-                                token, refs.exitRegion, refs.pauseObservation,
+                                signature, refs.exitRegionFrame,
+                                refs.pauseObservation,
                                 refs.resumeObservation);
                     } else if (stmt instanceof ReturnVoidStmt) {
                         insertRegionExit(body, stmt, NullConstant.v(),
-                                token, refs.exitRegion, refs.pauseObservation,
+                                signature, refs.exitRegionFrame,
+                                refs.pauseObservation,
                                 refs.resumeObservation);
                     }
                 }
-                // enterRegion is internally fail-closed.  From the first
-                // argument hook onward, the cleanup trap uses this invocation's
-                // exact token without requiring it in the handler StackMapFrame.
-                addRegionThrowHandler(body, regionStart, tokenHolder,
-                        refs.throwRegion,
+                // Cleanup resolves the exact dynamic invocation frame from
+                // the root signature constant.  The catch handler therefore
+                // reads no entry local from its incoming StackMapFrame.
+                addRegionThrowHandler(body, regionStart, signature,
+                        refs.throwRegionFrame,
                         refs.pauseObservation, refs.resumeObservation);
                 instrumented++;
             } catch (RuntimeException exception) {
@@ -2077,7 +2071,7 @@ public final class CausynthPipeline {
     }
 
     private void insertRegionExit(Body body, Stmt returnUnit, Value returnValue,
-                                  Local token,
+                                  String rootMethod,
                                   SootMethodRef exitRef,
                                   SootMethodRef pauseObservation,
                                   SootMethodRef resumeObservation) {
@@ -2090,7 +2084,8 @@ public final class CausynthPipeline {
                 Jimple.v().newStaticInvokeExpr(pauseObservation)));
         Value primitiveValue = primitiveValueString(body, returnValue, units);
         units.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                exitRef, token, objectValue, primitiveValue)));
+                exitRef, StringConstant.v(rootMethod), objectValue,
+                primitiveValue)));
         units.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(resumeObservation)));
         insertBeforeSequence(body, returnUnit, units);
@@ -2378,12 +2373,12 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Adds an invocation-exact catch-all whose incoming verifier frame only
-     * needs a category-1 array reference.  The long token is loaded inside the
-     * handler block after that frame has been established.
+     * Adds an invocation-exact catch-all whose incoming verifier frame reads
+     * only the caught throwable.  Root ownership is resolved by the runtime's
+     * frame stack from a verifier-independent string constant.
      */
     private void addRegionThrowHandler(Body body, Unit start,
-                                       Local tokenHolder,
+                                       String rootMethod,
                                        SootMethodRef throwRef,
                                        SootMethodRef pauseObservation,
                                        SootMethodRef resumeObservation) {
@@ -2393,21 +2388,16 @@ public final class CausynthPipeline {
         SootClass throwableClass = Scene.v().getSootClass("java.lang.Throwable");
         Local caught = newTraceLocal(body, RefType.v("java.lang.Throwable"),
                 "$causynthRegionThrown");
-        Local handlerToken = newTraceLocal(body, LongType.v(),
-                "$causynthRegionHandlerToken");
         Unit handler = Jimple.v().newIdentityStmt(caught,
                 Jimple.v().newCaughtExceptionRef());
-        Unit loadToken = Jimple.v().newAssignStmt(handlerToken,
-                Jimple.v().newArrayRef(tokenHolder, IntConstant.v(0)));
         Unit pause = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 pauseObservation));
         Unit record = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                throwRef, handlerToken, caught));
+                throwRef, StringConstant.v(rootMethod), caught));
         Unit resume = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 resumeObservation));
         Unit rethrow = Jimple.v().newThrowStmt(caught);
         body.getUnits().add(handler);
-        body.getUnits().add(loadToken);
         body.getUnits().add(pause);
         body.getUnits().add(record);
         body.getUnits().add(resume);
@@ -2821,7 +2811,7 @@ public final class CausynthPipeline {
     }
 
     private static final class ConcolicRegionRefs {
-        private final SootMethodRef enterRegion;
+        private final SootMethodRef enterRegionFrame;
         private final SootMethodRef enterAccessorCallContext;
         private final SootMethodRef exitAccessorCallContext;
         private final SootMethodRef materializeArgument;
@@ -2846,10 +2836,10 @@ public final class CausynthPipeline {
         private final SootMethodRef prepareBranch;
         private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
-        private final SootMethodRef exitRegion;
-        private final SootMethodRef throwRegion;
+        private final SootMethodRef exitRegionFrame;
+        private final SootMethodRef throwRegionFrame;
 
-        private ConcolicRegionRefs(SootMethodRef enterRegion,
+        private ConcolicRegionRefs(SootMethodRef enterRegionFrame,
                                    SootMethodRef enterAccessorCallContext,
                                    SootMethodRef exitAccessorCallContext,
                                    SootMethodRef materializeArgument,
@@ -2874,9 +2864,9 @@ public final class CausynthPipeline {
                                    SootMethodRef prepareBranch,
                                    SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
-                                   SootMethodRef exitRegion,
-                                   SootMethodRef throwRegion) {
-            this.enterRegion = enterRegion;
+                                   SootMethodRef exitRegionFrame,
+                                   SootMethodRef throwRegionFrame) {
+            this.enterRegionFrame = enterRegionFrame;
             this.enterAccessorCallContext = enterAccessorCallContext;
             this.exitAccessorCallContext = exitAccessorCallContext;
             this.materializeArgument = materializeArgument;
@@ -2903,8 +2893,8 @@ public final class CausynthPipeline {
             this.prepareBranch = prepareBranch;
             this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
-            this.exitRegion = exitRegion;
-            this.throwRegion = throwRegion;
+            this.exitRegionFrame = exitRegionFrame;
+            this.throwRegionFrame = throwRegionFrame;
         }
 
         private static ConcolicRegionRefs create() {
@@ -2926,7 +2916,7 @@ public final class CausynthPipeline {
                 Scene.v().addClass(system);
             }
             return new ConcolicRegionRefs(
-                    Scene.v().makeMethodRef(runtime, "enterRegion",
+                    Scene.v().makeMethodRef(runtime, "enterRegionFrame",
                             Arrays.asList(string, object,
                                     ArrayType.v(object, 1)),
                             LongType.v(), true),
@@ -3014,11 +3004,11 @@ public final class CausynthPipeline {
                             Arrays.asList(LongType.v(), LongType.v(), string,
                                     IntType.v(), string,
                                     BooleanType.v()), BooleanType.v(), true),
-                    Scene.v().makeMethodRef(runtime, "exitRegion",
-                            Arrays.asList(LongType.v(), object, string),
+                    Scene.v().makeMethodRef(runtime, "exitRegionFrame",
+                            Arrays.asList(string, object, string),
                             VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime, "throwRegion",
-                            Arrays.asList(LongType.v(),
+                    Scene.v().makeMethodRef(runtime, "throwRegionFrame",
+                            Arrays.asList(string,
                                     RefType.v("java.lang.Throwable")),
                             VoidType.v(), true));
         }

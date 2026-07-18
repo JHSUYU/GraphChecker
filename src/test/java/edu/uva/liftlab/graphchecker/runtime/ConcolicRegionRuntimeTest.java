@@ -172,22 +172,33 @@ public class ConcolicRegionRuntimeTest {
         String[] old = installPlan(plan, results, "bundle-test");
         try {
             try {
-                ConcolicRegionRuntime.enterRegion(root, new Object());
+                ConcolicRegionRuntime.enterRegionFrame(root, new Object(),
+                        new Object[0]);
                 throw new AssertionError("ambiguous ALL bundle must fail");
             } catch (IllegalStateException expected) {
                 assertTrue(expected.getMessage().contains(
                         "Ambiguous effective activation runtime key"));
                 assertTrue(expected.getMessage().contains("ACT.FIRST"));
                 assertTrue(expected.getMessage().contains("ACT.SECOND"));
+                assertEquals("failed entry retains one placeholder until "
+                                + "the injected catch-all runs", 1,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
+                ConcolicRegionRuntime.throwRegionFrame(root, expected);
+                assertEquals(0,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
             }
 
             System.setProperty("causynth.concolic.activation.id",
                     "ACT.SECOND");
             ConcolicRegionRuntime.resetForTests();
-            long selectedToken = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+            long selectedToken = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
             assertTrue(selectedToken > 0L);
-            ConcolicRegionRuntime.exitRegion(selectedToken, null, "");
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -196,13 +207,14 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void unselectedNestedThrowCannotFinishSelectedCallerRegion()
+    public void invocationFramesKeepNestedNormalThrowAndMismatchesExact()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = "<example.RecursiveOwner: void run()>";
+        String differentRoot = "<example.OtherOwner: void run()>";
         JsonObject activation = concreteActivation(
                 "ACT.RECURSIVE.OUTER", root, 1);
         Files.write(plan, (activation + "\n").getBytes(
@@ -211,18 +223,48 @@ public class ConcolicRegionRuntimeTest {
         String[] old = installPlan(plan, results,
                 "concrete-overlap-test");
         try {
-            long outerToken = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+            long outerToken = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
             assertTrue(outerToken > 0L);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
 
-            // The recursive invocation has no ordinal-2 activation. Its
-            // verifier-safe holder therefore contains zero, not the caller's
-            // ambient ThreadLocal token.
-            long nestedToken = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
-            assertEquals(0L, nestedToken);
-            ConcolicRegionRuntime.throwRegion(nestedToken,
-                    new IllegalStateException("nested failure"));
+            // Recursive ordinal two is unselected but still owns an exact
+            // zero-token frame.  Its normal cleanup cannot expose the caller.
+            long nestedNormal = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertEquals(0L, nestedNormal);
+            assertEquals(2,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            long nestedThrow = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertEquals(0L, nestedThrow);
+            IllegalStateException nestedFailure =
+                    new IllegalStateException("nested failure");
+            ConcolicRegionRuntime.throwRegionFrame(root, nestedFailure);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            long differentToken = ConcolicRegionRuntime.enterRegionFrame(
+                    differentRoot, new Object(), new Object[0]);
+            assertEquals(0L, differentToken);
+            assertEquals(2,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            // A malformed cleanup must validate the exact top root before
+            // popping.  The different-root frame and selected outer survive.
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(2,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertTrue(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            ConcolicRegionRuntime.throwRegionFrame(differentRoot,
+                    nestedFailure);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
 
             assertTrue("nested cleanup must not finish the selected caller",
                     ConcolicRegionRuntime.activeTokenForTests(outerToken));
@@ -230,9 +272,96 @@ public class ConcolicRegionRuntimeTest {
                     .concreteReplayActiveCountForTests());
             assertFalse(Files.exists(results));
 
-            ConcolicRegionRuntime.exitRegion(outerToken, null, "");
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
             assertFalse(ConcolicRegionRuntime
                     .activeTokenForTests(outerToken));
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertEquals(1, resultRows(results).size());
+
+            // Empty-stack cleanup is also a no-throw no-op.
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            ConcolicRegionRuntime.throwRegionFrame(root, nestedFailure);
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void caughtSameRootEntryFailureKeepsSelectedOuterFrame()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.RecursiveOwner: void run()>";
+        JsonObject outerActivation = concreteActivation(
+                "ACT.RECURSIVE.OUTER", root, 1);
+        Files.write(plan, (outerActivation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "concrete-overlap-test");
+        try {
+            long outerToken = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertTrue(outerToken > 0L);
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+
+            JsonObject duplicateFirst = concreteActivation(
+                    "ACT.FAIL.FIRST", root, 2);
+            JsonObject duplicateSecond = concreteActivation(
+                    "ACT.FAIL.SECOND", root, 2);
+            Files.write(plan, (duplicateFirst + "\n" + duplicateSecond
+                    + "\n").getBytes(StandardCharsets.UTF_8));
+            java.lang.reflect.Field configuration =
+                    ConcolicRegionRuntime.class.getDeclaredField(
+                            "configuration");
+            configuration.setAccessible(true);
+            configuration.set(null, null);
+
+            try {
+                ConcolicRegionRuntime.enterRegionFrame(root, new Object(),
+                        new Object[0]);
+                throw new AssertionError("nested entry must reject ambiguity");
+            } catch (IllegalStateException expected) {
+                assertEquals(2,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
+                // Simulate an original same-root handler catching the entry
+                // failure and returning normally.
+                ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            }
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertTrue(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+
+            try {
+                ConcolicRegionRuntime.enterRegionFrame(root, new Object(),
+                        new Object[0]);
+                throw new AssertionError("nested entry must reject ambiguity");
+            } catch (IllegalStateException expected) {
+                assertEquals(2,
+                        ConcolicRegionRuntime.regionFrameDepthForTests());
+                // Simulate the same original handler rethrowing instead.
+                ConcolicRegionRuntime.throwRegionFrame(root, expected);
+            }
+            assertEquals(1,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertTrue(ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            assertFalse(Files.exists(results));
+
+            Files.write(plan, (outerActivation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            configuration.set(null, null);
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            assertEquals(0,
+                    ConcolicRegionRuntime.regionFrameDepthForTests());
+            assertFalse(ConcolicRegionRuntime.activeTokenForTests(outerToken));
             assertEquals(1, resultRows(results).size());
         } finally {
             restorePlan(old);

@@ -1946,6 +1946,11 @@ public final class ConcolicScheduler {
                 candidate.target.observedOutcome);
         query.addProperty("desiredOutcome",
                 candidate.target.desiredOutcome);
+        // A seed query has not yet been validated by an unforced target
+        // replay.  Emit the state explicitly so shell/config consumers do
+        // not have to distinguish JSON false from a missing property.
+        query.addProperty("targetReplayValidated", false);
+        query.addProperty("replayAlreadyValidated", false);
         JsonArray path = array(summary, "pathCondition");
         JsonObject mapping = branchMapping(summary, candidate.target.siteId,
                 candidate.target.selectedOccurrence);

@@ -24,9 +24,11 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -106,6 +108,20 @@ public final class ConcolicRegionRuntime {
     private static int concreteReplayActiveCount;
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
+    /**
+     * Dynamic root-invocation ownership used only by injected entry/exit
+     * hooks.  Every injected root invocation owns a frame once its wrapper
+     * begins, including failed or unselected entries whose token stays zero.
+     * Keeping this separate from {@link #CURRENT_TOKEN} prevents any nested
+     * invocation from closing its selected caller.
+     */
+    private static final ThreadLocal<Deque<RootInvocationFrame>>
+            ROOT_INVOCATION_FRAMES = new ThreadLocal<Deque<RootInvocationFrame>>() {
+        @Override
+        protected Deque<RootInvocationFrame> initialValue() {
+            return new ArrayDeque<>();
+        }
+    };
     private static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
     private static final Map<String, Integer> ORDINALS = new LinkedHashMap<>();
@@ -272,6 +288,7 @@ public final class ConcolicRegionRuntime {
         }
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
+        ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
         synchronized (EXECUTION_MODE_LOCK) {
             ENGINE_BUSY.set(false);
@@ -405,6 +422,25 @@ public final class ConcolicRegionRuntime {
             writeSkipped(activation, "engine start failed: " + rootCause(throwable));
             return 0L;
         }
+    }
+
+    /**
+     * Instrumentation-facing root entry.  A zero-token placeholder is pushed
+     * before {@link #enterRegion(String, Object, Object[])} starts the engine,
+     * then filled without another allocation.  If entry fails, that exact
+     * placeholder remains for the injected exceptional or original-handler
+     * cleanup path; this prevents a caught same-root entry failure from
+     * exposing an enclosing frame.  Token zero is likewise retained after a
+     * successful unselected entry as its exact ownership marker.
+     */
+    public static long enterRegionFrame(String rootMethod, Object receiver,
+                                        Object[] rootArguments) {
+        Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
+        RootInvocationFrame frame = new RootInvocationFrame(rootMethod, 0L);
+        frames.push(frame);
+        long token = enterRegion(rootMethod, receiver, rootArguments);
+        frame.token = token;
+        return token;
     }
 
     private static long enterConcreteReplay(Activation activation,
@@ -3261,6 +3297,24 @@ public final class ConcolicRegionRuntime {
         finish(token, "NORMAL", "", returnValue, primitiveValue);
     }
 
+    /**
+     * Invocation-exact normal cleanup used by injected roots.  This method is
+     * intentionally no-throw: instrumentation bookkeeping must never turn a
+     * normal program return into an exception (or let the synthetic catch-all
+     * pop an enclosing frame a second time).
+     */
+    public static void exitRegionFrame(String rootMethod, Object returnValue,
+                                       String primitiveValue) {
+        try {
+            RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            if (frame != null && frame.token != 0L) {
+                exitRegion(frame.token, returnValue, primitiveValue);
+            }
+        } catch (Throwable ignored) {
+            // Runtime observation is fail-closed and cannot alter the return.
+        }
+    }
+
     /** Normal exit resolved from the current concolic thread. */
     public static void exitActiveRegion(Object returnValue,
                                         String primitiveValue) {
@@ -3277,11 +3331,65 @@ public final class ConcolicRegionRuntime {
                 throwable, "");
     }
 
+    /**
+     * Invocation-exact exceptional cleanup used by the synthetic catch-all.
+     * The original throwable is rethrown by injected bytecode; consequently
+     * every runtime failure is swallowed here so it cannot replace it.
+     */
+    public static void throwRegionFrame(String rootMethod,
+                                        Throwable throwable) {
+        try {
+            RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            if (frame != null && frame.token != 0L) {
+                throwRegion(frame.token, throwable);
+            }
+        } catch (Throwable ignored) {
+            // Preserve the program's original throwable identity.
+        }
+    }
+
     /** Exceptional exit resolved from the current concolic thread. */
     public static void throwActiveRegion(Throwable throwable) {
         Long token = CURRENT_TOKEN.get();
         if (token != null) {
             throwRegion(token, throwable);
+        }
+    }
+
+    private static RootInvocationFrame popRootInvocationFrame(
+            String rootMethod) {
+        Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
+        RootInvocationFrame frame = frames.peek();
+        if (frame == null) {
+            ROOT_INVOCATION_FRAMES.remove();
+            return null;
+        }
+        boolean matches = rootMethod == null
+                ? frame.rootMethod == null
+                : rootMethod.equals(frame.rootMethod);
+        if (!matches) {
+            // Never guess ownership.  In particular, do not expose or close
+            // an outer selected frame when instrumentation is malformed.
+            return null;
+        }
+        frames.pop();
+        if (frames.isEmpty()) {
+            ROOT_INVOCATION_FRAMES.remove();
+        }
+        return frame;
+    }
+
+    static int regionFrameDepthForTests() {
+        return ROOT_INVOCATION_FRAMES.get().size();
+    }
+
+    private static final class RootInvocationFrame {
+        private final String rootMethod;
+        private long token;
+
+        private RootInvocationFrame(String rootMethod, long token) {
+            this.rootMethod = rootMethod;
+            this.token = token;
         }
     }
 

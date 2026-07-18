@@ -212,6 +212,8 @@ public class ConcolicSchedulerTest {
             JsonObject query = result.queries.get(0);
             assertTrue(query.get("readyForSolver").getAsBoolean());
             assertTrue(query.get("readyForReplay").getAsBoolean());
+            assertFalse(query.get("targetReplayValidated").getAsBoolean());
+            assertFalse(query.get("replayAlreadyValidated").getAsBoolean());
             assertEquals(2, query.get("conditionIndex").getAsInt());
             JsonArray constraints = query.getAsJsonArray("constraints");
             assertEquals(3, constraints.size());
