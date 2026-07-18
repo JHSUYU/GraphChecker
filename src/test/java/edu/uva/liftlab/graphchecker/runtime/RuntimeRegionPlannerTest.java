@@ -948,6 +948,7 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         String method =
                 "<example.Producer: int compute(java.lang.Boolean)>";
+        String publisher = "<example.RpcBus: void publish(int)>";
         String returnCell = method + "::$i0";
         String returnExpression = "$i0";
         RuntimeRegionPlanner.Result result =
@@ -966,6 +967,11 @@ public class RuntimeRegionPlannerTest {
         assertEquals(Boolean.TRUE,
                 upstream.get("requestedOutputSliceComplete"));
         assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> refinedSlice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        assertEquals(Collections.singletonList(publisher), refinedSlice.get(
+                "runtimeObservedDownstreamMethodsExcluded"));
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> captures =
@@ -3773,6 +3779,7 @@ public class RuntimeRegionPlannerTest {
             String worker = "<example.ProducerThread: void run()>";
             String method =
                     "<example.Producer: int compute(java.lang.Boolean)>";
+            String publisher = "<example.RpcBus: void publish(int)>";
             String reader = "<example.Consumer: void consume()>";
             String rawField = "<example.RpcBus: int value>";
             String outputPort = "REGION.W.out.rpc";
@@ -3784,7 +3791,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"rootMethod\":\"" + worker + "\","
                     + "\"anchorMethod\":\"" + method + "\","
                     + "\"methods\":[\"" + worker + "\",\""
-                    + method + "\"],\"symbolicInputs\":[],"
+                    + method + "\",\"" + publisher
+                    + "\"],\"symbolicInputs\":[],"
                     + "\"outputs\":[{\"portId\":\"" + outputPort
                     + "\",\"cell\":\"" + outputCell + "\","
                     + "\"kind\":\"RETURN_VALUE\"}],"
@@ -3870,14 +3878,22 @@ public class RuntimeRegionPlannerTest {
                         method + "#exit", "", -1, "int", 0,
                         String.valueOf(index + 1), false, false));
             }
-            methods.add(methodContext(10, reader, 22, "PROCESS", "reader",
-                    202L));
+            long publisherSeq = 3L * normalExitCount + 3L;
+            long publisherCallId = 30L;
+            methods.add(new RuntimeRegionPlanner.MethodEvent(publisherSeq,
+                    "testHandle", "PROCESS", "writer", 101L, publisher,
+                    55, "example.RpcBus", publisherCallId, 11L, 0L,
+                    publisherSeq * 100L));
+            long readerSeq = publisherSeq + 3L;
+            methods.add(methodContext(readerSeq, reader, 22, "PROCESS",
+                    "reader", 202L));
             RuntimeRegionPlanner.FieldAccessEvent write =
-                    new RuntimeRegionPlanner.FieldAccessEvent(8,
-                            "FIELD_WRITE", worker, 11, rawField,
+                    new RuntimeRegionPlanner.FieldAccessEvent(
+                            publisherSeq + 1L,
+                            "FIELD_WRITE", publisher, 11, rawField,
                             77, 88, "1");
             RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(11,
+                    new RuntimeRegionPlanner.FieldAccessEvent(readerSeq + 1L,
                             "FIELD_READ", reader, 22, rawField,
                             77, 88, "1");
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),

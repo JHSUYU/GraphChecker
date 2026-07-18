@@ -4797,6 +4797,8 @@ final class RuntimeRegionPlanner {
         private final Set<String> excludedInputPorts = new LinkedHashSet<>();
         private final Set<String> excludedMethods = new LinkedHashSet<>();
         private final Set<String> runtimeOnlyMethods = new LinkedHashSet<>();
+        private final Set<String> downstreamOnlyMethods =
+                new LinkedHashSet<>();
         private final Set<String> excludedSites = new LinkedHashSet<>();
         private final Set<String> excludedPathAlternativeSites =
                 new LinkedHashSet<>();
@@ -5362,6 +5364,12 @@ final class RuntimeRegionPlanner {
 
             Set<String> observed = new LinkedHashSet<>(
                     evidence.observedMethods);
+            Set<String> runtimeOnly = new LinkedHashSet<>(difference(
+                    observed, methods));
+            refined.downstreamOnlyMethods.addAll(
+                    downstreamOnlyAfterExactMethodReturn(evidence,
+                            runtimeOnly));
+            observed.removeAll(refined.downstreamOnlyMethods);
             refineUnresolvedInputs(observed, refined);
             refined.methods.addAll(sorted(observed));
             refined.excludedMethods.addAll(difference(methods, observed));
@@ -5674,6 +5682,41 @@ final class RuntimeRegionPlanner {
                     && transformerContractReady
                     && refined.captureBindingsComplete;
             return refined;
+        }
+
+        /**
+         * A canonical method-return output is fixed at the exact normal exit
+         * selected by its capture binding.  Region methods first entered
+         * strictly after that event (for example the RPC publisher carrying
+         * the already-computed value) cannot affect this output's backward
+         * relation.  Exclude only this narrowly proven downstream suffix;
+         * runtime-only helpers before the return remain a hard refinement
+         * gap because they may define an input or the returned value.
+         */
+        private Set<String> downstreamOnlyAfterExactMethodReturn(
+                InstanceEvidence evidence, Set<String> candidates) {
+            Set<String> result = new LinkedHashSet<>();
+            if (candidates.isEmpty() || captureBindings.size() != 1) {
+                return result;
+            }
+            Map<String, Object> binding = captureBindings.get(0);
+            if (!"METHOD_RETURN_VALUE".equals(firstNonBlank(string(
+                    binding.get("captureKind")), "CALL_ARGUMENT"))) {
+                return result;
+            }
+            List<RuntimeEvent> exits = evidence.matchingMethodReturns(
+                    binding);
+            if (exits.size() != 1) {
+                return result;
+            }
+            long boundary = exits.get(0).seq;
+            for (String method : candidates) {
+                long first = evidence.firstMethodSeq(method);
+                if (first > boundary) {
+                    result.add(method);
+                }
+            }
+            return result;
         }
 
         /**
@@ -6153,6 +6196,8 @@ final class RuntimeRegionPlanner {
                         new ArrayList<>(excludedMethods));
                 result.put("runtimeObservedMethodsOutsideStaticSlice",
                         new ArrayList<>(runtimeOnlyMethods));
+                result.put("runtimeObservedDownstreamMethodsExcluded",
+                        new ArrayList<>(downstreamOnlyMethods));
                 result.put("excludedAlternativeSites",
                         new ArrayList<>(excludedSites));
                 result.put("excludedPathAlternativeSites",
