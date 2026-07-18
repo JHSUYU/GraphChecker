@@ -109,6 +109,47 @@ CAUSYNTH_HDFS_BOOTSTRAP_OUTPUT_DIR=/path/to/fresh-output \
 `allKeys.get(keyId) == null` 的模型；它不是 sound/complete 的全 HDFS 证明，也尚未经过
 自然 replay 验证。
 
+#### Activation-specific concolic 静态复用
+
+纯 concolic replay class generation 不再为每个 activation 重建同一份 150,000-edge
+静态图。`freeze-concolic-static` 会把 regions、coverage、static graph、region edges、
+target spec、原始 class tree 和 supplemental class tree 绑定到一个只读 manifest；loader
+再用同目录的 schema-2 `schedule_input_provenance.json` 校验 exact plan、regions 和 graph
+SHA。冻结前还会强制 static-process provenance 中的 Hadoop source revision、target-spec
+路径/SHA 和 class-tree 路径完全一致。每个 worker 只流式投影所选 region 的 `methods` 与
+`branchPolicies`，继续复用原有 root/materialization/replay/output-capture instrumentation。
+
+真实 `ACT.30 / REGION.0` 测量中，原先完整静态重建约需 1,428 秒；复用模式的
+GraphChecker pass 稳定在 30.9–31.2 秒，包含 runtime dependency 发布的完整
+`process-concolic` 为 34–35 秒。所选 1 个 root、9 个 branch policy 全部安装，报告记录
+`staticAnalysisSkipped=true`，约为 42 倍的端到端加速。固定 regex 也已在静态/运行时
+region planner 热路径预编译。`trace+concolic` campaign 和 `ALL` bundle 暂不使用 partial
+catalog，会明确回退完整分析。
+
+本次优化后完整回归为 675 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
+parallel HDFS concolic batch fixture 也全部通过。
+
+```bash
+mvn -q -DskipTests package
+experiments/hdfs/run_hdfs.sh freeze-concolic-static
+experiments/hdfs/run_hdfs.sh process-concolic \
+  /path/to/scheduled_activation_plan.jsonl ACT.id
+```
+
+成功的 fast process 只在 job-owned static output 中写
+`concolic_instrumentation_report.json` 和 `concolic_process_provenance.json`；不会调用
+partial `OutputWriter.writeAll()`，因此不会用空 graph/plan 覆盖冻结 catalog。manifest、
+artifact 文件名、输出目录和 Java/`jar` 命令均由 properties 或环境变量配置。process
+provenance 还绑定最终 replay class tree 的确定性 SHA-256 与 file count；batch runner 和
+exact reuse `replay-concolic` 会在启动 custom JDK 前重新计算 class tree，并复核 manifest、
+instrumentation report、GraphChecker JAR 的路径/SHA 和 authority，缺失 provenance 时直接
+拒绝运行。显式 full-static/legacy replay 可设置
+`CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE_REQUIRED=false`；也可单独运行
+`verify-concolic-process` 审计。实际 instrumentation root 必须属于所选 region 的 method
+catalog，并与 pipeline 安装的唯一 root 精确相等；supplemental process dirs 保留 Soot
+classpath 顺序并拒绝重复。可删除的 class output 只允许 checked-in exact path、专用
+replay root 的严格子目录，或 batch/campaign 已校验后显式授权的 exact job path。
+
 ## 当前参考工作负载
 
 三线程 fixture 位于
@@ -382,6 +423,8 @@ bootstrap composition、projection、natural replay、final composition。当前
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
 | `ConcolicNaturalReplayValidator` | 检查最终自然传播；当前三线程集成仍为 TODO |
+| `ConcolicStaticCatalogReuse` | 校验冻结 catalog/class-tree/schedule 哈希并加载一个 replay region |
+| `ConcolicStaticCatalogManifest` | 发布可复用静态 catalog 的 immutable manifest |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
 
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、

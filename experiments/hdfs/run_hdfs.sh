@@ -21,6 +21,7 @@ hadoop_maven_bin="${GRAPH_CHECKER_MAVEN:-${hadoop_maven_bin:-mvn}}"
 container_runtime_bin="${GRAPH_CHECKER_CONTAINER_RUNTIME:-${container_runtime_bin:-docker}}"
 z3_bin="${CAUSYNTH_Z3:-${z3_bin:-z3}}"
 protoc_bin="${CAUSYNTH_PROTOC:-${protoc_bin:-protoc}}"
+java_archive_bin="${GRAPH_CHECKER_JAR_BIN:-${java_archive_bin:-jar}}"
 configured_causynth_workload_test="${causynth_workload_test}"
 causynth_workload_test="${CAUSYNTH_WORKLOAD_TEST:-${causynth_workload_test}}"
 
@@ -68,6 +69,7 @@ concolic_openjdk_dir="${CAUSYNTH_CONCOLIC_OPENJDK_DIR:-${concolic_openjdk_dir}}"
 # Allow one-off audits to reuse a dedicated instrumented-class snapshot
 # without editing the pinned experiment configuration or overwriting earlier
 # replay classes.
+configured_concolic_classes_path="${concolic_classes_path}"
 concolic_classes_path="${CAUSYNTH_CONCOLIC_CLASSES_PATH:-${concolic_classes_path}}"
 
 verify_hadoop_source() {
@@ -224,6 +226,7 @@ usage() {
     echo "  build-hadoop                  Build required Hadoop modules"
     echo "  compile                       Compile HDFS and snapshot original classes"
     echo "  process                       Run the Causynth Soot transformer"
+    echo "  freeze-concolic-static        Hash-bind the completed static catalog/classes"
     echo "  verify-region-roots [catalog] Validate configured NN/DN maintenance roots"
     echo "  test [TestClass[#method]]     Run HDFS unit tests"
     echo "  finalize-runtime [test]      Seal an existing complete native aggregation"
@@ -235,6 +238,8 @@ usage() {
     echo "                                Build a clean capture plan with no replay action"
     echo "  process-concolic <plan> [activation]"
     echo "                                Generate activation-specific replay classes"
+    echo "  verify-concolic-process <provenance> <plan> <activation> [classes]"
+    echo "                                Rehash replay bytecode before custom-JDK use"
     echo "  replay-concolic <plan> [activation] [test]"
     echo "                                Run one HDFS-owned test on the custom JDK"
     echo "  replay-concolic-batch <JSONL manifest>"
@@ -407,6 +412,250 @@ verify_hdfs_region_roots() {
         "${nn_root}" "${nn_methods}"
 }
 
+freeze_concolic_static_catalog() {
+    local manifest_class manifest regions coverage static_graph region_edges
+    local static_provenance process_dirs source_revision entry artifact
+    manifest_class="${CAUSYNTH_CONCOLIC_STATIC_REUSE_MANIFEST_CLASS:-${causynth_hdfs_concolic_static_reuse_manifest_class}}"
+    manifest="${CAUSYNTH_CONCOLIC_STATIC_REUSE_MANIFEST:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_manifest_file}}"
+    regions="${CAUSYNTH_CONCOLIC_STATIC_REUSE_REGIONS:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_regions_file}}"
+    coverage="${CAUSYNTH_CONCOLIC_STATIC_REUSE_COVERAGE:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_coverage_file}}"
+    static_graph="${CAUSYNTH_CONCOLIC_STATIC_REUSE_GRAPH:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_graph_file}}"
+    region_edges="${CAUSYNTH_CONCOLIC_STATIC_REUSE_REGION_EDGES:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_region_edges_file}}"
+    static_provenance="${CAUSYNTH_CONCOLIC_STATIC_REUSE_STATIC_PROVENANCE:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_static_provenance_file}}"
+    for artifact in "${regions}" "${coverage}" "${static_graph}" \
+            "${region_edges}" "${causynth_target_spec}" \
+            "${static_provenance}"; do
+        if [[ ! -s "${artifact}" ]]; then
+            echo "[ERROR] Static reuse manifest input is missing or empty: ${artifact}" >&2
+            return 1
+        fi
+    done
+    if [[ ! -d "${system_classes_path}" ]]; then
+        echo "[ERROR] Static reuse primary class tree is missing: ${system_classes_path}" >&2
+        return 1
+    fi
+    process_dirs=$(resolved_process_dirs)
+    source_revision=$(git -C "${causynth_repo}" rev-parse HEAD)
+    local -a manifest_args=(
+        --output "${manifest}"
+        --regions "${regions}"
+        --coverage "${coverage}"
+        --static-graph "${static_graph}"
+        --region-edges "${region_edges}"
+        --target-spec "${causynth_target_spec}"
+        --original-classes "${system_classes_path}"
+        --static-process-provenance "${static_provenance}"
+        --source-revision "${source_revision}"
+    )
+    if [[ -n "${process_dirs}" ]]; then
+        while IFS= read -r entry; do
+            [[ -n "${entry}" ]] || continue
+            manifest_args+=(--supplemental-tree "${entry}")
+        done < <(printf '%s\n' "${process_dirs}" | tr ':' '\n')
+    fi
+    "${graphchecker_java_bin}" -cp "${gc_jar}" "${manifest_class}" \
+        "${manifest_args[@]}"
+    jq -e --arg authority \
+        "HASHED_STATIC_CATALOG_CLASS_TREES_AND_SCHEDULE_INPUTS_V1" \
+        '.schemaVersion == 1
+          and .kind == "CONCOLIC_FROZEN_STATIC_CATALOG"
+          and .authority == $authority
+          and .complete == true' "${manifest}" >/dev/null
+    echo "[Concolic static reuse] frozen manifest: ${manifest}"
+}
+
+do_freeze_concolic_static_catalog() {
+    verify_hadoop_source
+    if [[ ! -f "${gc_jar}" ]]; then
+        echo "[ERROR] GraphChecker jar not found: ${gc_jar}" >&2
+        return 1
+    fi
+    freeze_concolic_static_catalog
+}
+
+extract_causynth_runtime_dependencies() {
+    local destination=$1
+    local -a runtime_classes=()
+    mapfile -t runtime_classes < <("${java_archive_bin}" tf "${gc_jar}" \
+        | grep -E '^edu/uva/liftlab/graphchecker/(runtime/(ConcolicRegionRuntime|CausynthTraceRecorder|RuntimeRegionPlanner)|concolic/ConcolicCodePosition)')
+    if [[ "${#runtime_classes[@]}" -eq 0 ]]; then
+        echo "[ERROR] GraphChecker jar contains no Causynth runtime dependencies: ${gc_jar}" >&2
+        return 1
+    fi
+    (cd "${destination}" \
+        && "${java_archive_bin}" xf "${gc_jar}" "${runtime_classes[@]}")
+}
+
+concolic_class_tree_digest() {
+    local tree=$1
+    local digest_class
+    digest_class="${CAUSYNTH_CONCOLIC_TREE_DIGEST_CLASS:-${causynth_hdfs_concolic_tree_digest_class}}"
+    "${graphchecker_java_bin}" -cp "${gc_jar}" "${digest_class}" \
+        --tree "${tree}"
+}
+
+verify_concolic_process_provenance() {
+    local provenance=$1 activation_plan=$2 activation_id=$3 classes=$4
+    local actual_plan_sha actual_jar_sha digest_json actual_tree_sha
+    local actual_file_count manifest report actual_manifest_sha actual_report_sha
+    local canonical_manifest canonical_report canonical_plan canonical_jar
+    local canonical_classes
+    if [[ ! -s "${provenance}" || -L "${provenance}" ]]; then
+        echo "[ERROR] Concolic process provenance is missing: ${provenance}" >&2
+        return 1
+    fi
+    if ! jq -e '
+          .schemaVersion == 1
+          and .kind == "CONCOLIC_PROCESS_PROVENANCE"
+          and .authority ==
+            "SUCCESSFUL_SOOT_CLASS_WRITE_PLUS_HASHED_REUSE_REPORT_V1"
+          and .replayClassesTreeHashAuthority ==
+            "SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+          and .complete == true' "${provenance}" >/dev/null; then
+        echo "[ERROR] Concolic process provenance has no accepted authority: ${provenance}" >&2
+        return 1
+    fi
+    if ! manifest=$(jq -er '.staticReuseManifest
+            | select(type == "string" and length > 0)' "${provenance}"); then
+        echo "[ERROR] Concolic process provenance has no manifest path" >&2
+        return 1
+    fi
+    if ! report=$(jq -er '.instrumentationReport
+            | select(type == "string" and length > 0)' "${provenance}"); then
+        echo "[ERROR] Concolic process provenance has no report path" >&2
+        return 1
+    fi
+    if [[ ! -s "${manifest}" || -L "${manifest}" \
+            || ! -s "${report}" || -L "${report}" ]]; then
+        echo "[ERROR] Concolic process manifest/report binding is missing" >&2
+        return 1
+    fi
+    if ! canonical_manifest=$(realpath "${manifest}") \
+            || ! canonical_report=$(realpath "${report}") \
+            || ! canonical_plan=$(realpath "${activation_plan}") \
+            || ! canonical_jar=$(realpath "${gc_jar}") \
+            || ! canonical_classes=$(realpath "${classes}"); then
+        echo "[ERROR] Concolic process provenance contains an unresolved path" >&2
+        return 1
+    fi
+    if ! actual_manifest_sha=$(sha256_file "${manifest}") \
+            || ! actual_report_sha=$(sha256_file "${report}"); then
+        echo "[ERROR] Cannot hash concolic manifest/report" >&2
+        return 1
+    fi
+    if ! jq -e '
+          .schemaVersion == 1
+          and .kind == "CONCOLIC_FROZEN_STATIC_CATALOG"
+          and .authority ==
+            "HASHED_STATIC_CATALOG_CLASS_TREES_AND_SCHEDULE_INPUTS_V1"
+          and .complete == true' "${manifest}" >/dev/null; then
+        echo "[ERROR] Frozen concolic manifest has no accepted authority: ${manifest}" >&2
+        return 1
+    fi
+    if ! jq -e --arg activationId "${activation_id}" \
+            --arg manifest "${canonical_manifest}" \
+            --arg manifestSha256 "${actual_manifest_sha}" '
+          .schemaVersion == 1
+          and .kind == "CONCOLIC_STATIC_CATALOG_REUSE"
+          and .authority ==
+            "HASHED_STATIC_CATALOG_CLASS_TREES_AND_SCHEDULE_INPUTS_V1"
+          and .selectedActivationId == $activationId
+          and .manifest.path == $manifest
+          and .manifest.sha256 == $manifestSha256
+          and .instrumentation.staticAnalysisSkipped == true
+          and .instrumentation.concolicRegionInstrumentedRootCount == 1
+          and .instrumentation.concolicRegionSkippedRootCount == 0
+          and .instrumentation.concolicMappedBranchCount ==
+            .loadedBranchPolicyCount
+          and .complete == true' "${report}" >/dev/null; then
+        echo "[ERROR] Concolic instrumentation report binding is invalid: ${report}" >&2
+        return 1
+    fi
+    if ! actual_plan_sha=$(sha256_file "${activation_plan}") \
+            || ! actual_jar_sha=$(sha256_file "${gc_jar}"); then
+        echo "[ERROR] Cannot hash activation plan or GraphChecker JAR" >&2
+        return 1
+    fi
+    if ! digest_json=$(concolic_class_tree_digest "${classes}"); then
+        echo "[ERROR] Cannot digest concolic replay class tree" >&2
+        return 1
+    fi
+    if ! actual_tree_sha=$(jq -er --arg path "${canonical_classes}" '
+          select(.schemaVersion == 1
+            and .kind == "CONCOLIC_CLASS_TREE_DIGEST"
+            and .authority ==
+              "SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+            and .path == $path
+            and .complete == true)
+          | .treeSha256
+          | select(type == "string" and test("^[0-9a-f]{64}$"))' \
+            <<< "${digest_json}"); then
+        echo "[ERROR] Concolic class-tree digest has no accepted authority" >&2
+        return 1
+    fi
+    if ! actual_file_count=$(jq -er --arg path "${canonical_classes}" '
+          select(.schemaVersion == 1
+            and .kind == "CONCOLIC_CLASS_TREE_DIGEST"
+            and .authority ==
+              "SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+            and .path == $path
+            and .complete == true)
+          | .fileCount | select(type == "number" and . >= 1)' \
+            <<< "${digest_json}"); then
+        echo "[ERROR] Concolic class-tree digest has no valid file count" >&2
+        return 1
+    fi
+    if ! jq -e \
+        --arg activationId "${activation_id}" \
+        --arg activationPlan "${canonical_plan}" \
+        --arg activationPlanSha256 "${actual_plan_sha}" \
+        --arg graphCheckerJar "${canonical_jar}" \
+        --arg graphCheckerJarSha256 "${actual_jar_sha}" \
+        --arg replayClasses "${canonical_classes}" \
+        --arg replayClassesTreeSha256 "${actual_tree_sha}" \
+        --arg staticReuseManifest "${canonical_manifest}" \
+        --arg staticReuseManifestSha256 "${actual_manifest_sha}" \
+        --arg instrumentationReport "${canonical_report}" \
+        --arg instrumentationReportSha256 "${actual_report_sha}" \
+        --argjson replayClassesFileCount "${actual_file_count}" '
+          .schemaVersion == 1
+          and .kind == "CONCOLIC_PROCESS_PROVENANCE"
+          and .authority ==
+            "SUCCESSFUL_SOOT_CLASS_WRITE_PLUS_HASHED_REUSE_REPORT_V1"
+          and .activationId == $activationId
+          and .activationPlan == $activationPlan
+          and .activationPlanSha256 == $activationPlanSha256
+          and .staticReuseManifest == $staticReuseManifest
+          and .staticReuseManifestSha256 == $staticReuseManifestSha256
+          and .instrumentationReport == $instrumentationReport
+          and .instrumentationReportSha256 ==
+            $instrumentationReportSha256
+          and .graphCheckerJar == $graphCheckerJar
+          and .graphCheckerJarSha256 == $graphCheckerJarSha256
+          and .replayClasses == $replayClasses
+          and .replayClassesTreeSha256 == $replayClassesTreeSha256
+          and .replayClassesFileCount == $replayClassesFileCount
+          and .replayClassesTreeHashAuthority ==
+            "SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+          and .complete == true' "${provenance}" >/dev/null; then
+        echo "[ERROR] Concolic process provenance binding verification failed: ${provenance}" >&2
+        return 1
+    fi
+    echo "[Concolic process provenance] replay classes verified: ${actual_tree_sha}"
+}
+
+do_verify_concolic_process_provenance() {
+    local provenance=${1:-} activation_plan=${2:-}
+    local activation_id=${3:-} classes=${4:-${concolic_classes_path}}
+    if [[ -z "${provenance}" || -z "${activation_plan}" \
+            || -z "${activation_id}" ]]; then
+        echo "[ERROR] verify-concolic-process requires provenance, plan, and activation" >&2
+        return 1
+    fi
+    verify_concolic_process_provenance "${provenance}" \
+        "${activation_plan}" "${activation_id}" "${classes}"
+}
+
 do_process() {
     verify_hadoop_source
     if [[ ! -f "${gc_jar}" ]]; then
@@ -449,19 +698,27 @@ do_process() {
     # long-running heartbeat actors before this process output is accepted.
     verify_hdfs_region_roots
 
-    local graphchecker_jar_sha256
+    local graphchecker_jar_sha256 source_revision target_spec_sha256
     graphchecker_jar_sha256=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
+    source_revision=$(git -C "${causynth_repo}" rev-parse HEAD)
+    target_spec_sha256=$(sha256_file "${causynth_target_spec}")
     jq -n \
         --arg mode "PINNED_STATIC_PROCESS_INPUTS" \
         --arg graphCheckerJar "$(realpath "${gc_jar}")" \
         --arg graphCheckerJarSha256 "${graphchecker_jar_sha256}" \
         --arg originalClasses "$(realpath "${system_classes_path}")" \
         --arg supplementalProcessDirs "${process_dirs}" \
+        --arg sourceRevision "${source_revision}" \
+        --arg targetSpec "$(realpath "${causynth_target_spec}")" \
+        --arg targetSpecSha256 "${target_spec_sha256}" \
         --arg requireHdfsAnalysisSupport \
             "${CAUSYNTH_REQUIRE_HDFS_ANALYSIS_SUPPORT:-false}" \
         '{schemaVersion:1, mode:$mode,
           graphCheckerJar:$graphCheckerJar,
           graphCheckerJarSha256:$graphCheckerJarSha256,
+          sourceRevision:$sourceRevision,
+          targetSpec:$targetSpec,
+          targetSpecSha256:$targetSpecSha256,
           originalClasses:$originalClasses,
           supplementalProcessDirs:($supplementalProcessDirs
             | split(":") | map(select(length > 0))),
@@ -469,14 +726,16 @@ do_process() {
             ($requireHdfsAnalysisSupport == "true"), complete:true}' \
         > "${causynth_output_dir}/static_process_provenance.json"
 
+    # Publish the class-tree and artifact hashes only after the complete
+    # static process and its own provenance have succeeded.  Concolic-only
+    # workers consume this manifest read-only.
+    freeze_concolic_static_catalog
+
     # Rich field/map tracing shares the exact code-position and region runtime
     # helpers used by concolic replay.  Keep the complete runtime dependency
     # family beside normally instrumented Hadoop classes as well; extracting
     # only CausynthTraceRecorder leaves a fresh process output unloadable.
-    while IFS= read -r runtime_class; do
-        (cd "${instrumented_classes_path}" && jar xf "${gc_jar}" "${runtime_class}")
-    done < <(jar tf "${gc_jar}" | grep -E \
-        '^edu/uva/liftlab/graphchecker/(runtime/(ConcolicRegionRuntime|CausynthTraceRecorder|RuntimeRegionPlanner)|concolic/ConcolicCodePosition)')
+    extract_causynth_runtime_dependencies "${instrumented_classes_path}"
 
     find "${hdfs_dir}/target/classes" -name "*.class" -delete
     cp -r "${instrumented_classes_path}/." "${hdfs_dir}/target/classes/"
@@ -768,15 +1027,21 @@ do_process_concolic() {
         exit 1
     fi
 
-    rm -rf "${concolic_classes_path}"
-    mkdir -p "${concolic_classes_path}"
-    local process_dirs
+    require_scoped_concolic_class_output "${concolic_classes_path}" \
+        || return $?
+    rm -rf -- "${concolic_classes_path}" || return $?
+    mkdir -p "${concolic_classes_path}" || return $?
+    local process_dirs static_output_dir reuse_enabled reuse_manifest
+    local reuse_applied=false trace_campaign=false
     process_dirs=$(resolved_process_dirs)
     verify_required_analysis_support "${process_dirs}"
+    static_output_dir="${CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR:-${causynth_output_dir}/concolic-replay-static}"
+    reuse_enabled="${CAUSYNTH_CONCOLIC_STATIC_REUSE_ENABLED:-${causynth_hdfs_concolic_static_reuse_enabled:-false}}"
+    reuse_manifest="${CAUSYNTH_CONCOLIC_STATIC_REUSE_MANIFEST:-${causynth_output_dir}/${causynth_hdfs_concolic_static_reuse_manifest_file}}"
     local properties=(
         -Dcausynth.instrument.concolic=true
         -Dcausynth.concolic.activation.plan="$(realpath "${activation_plan}")"
-        -Dcausynth.output.dir="${CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR:-${causynth_output_dir}/concolic-replay-static}"
+        -Dcausynth.output.dir="${static_output_dir}"
         -Dcausynth.coverage.strict="${causynth_coverage_strict:-true}"
         -Dcausynth.static.max.methods="${causynth_static_max_methods:-1000}"
         -Dcausynth.static.max.edges="${causynth_static_max_edges:-50000}"
@@ -795,9 +1060,24 @@ do_process_concolic() {
         # and richly traced.  Dynamic activations discovered after a branch
         # flip are otherwise invisible to the next campaign iteration.
         properties+=(-Dcausynth.instrument.trace=true)
+        trace_campaign=true
     fi
     if [[ -n "${activation_id}" ]]; then
         properties+=(-Dcausynth.concolic.activation.id="${activation_id}")
+    fi
+    if [[ "${reuse_enabled}" == "true" \
+            && "${trace_campaign}" == "false" \
+            && -n "${activation_id}" ]]; then
+        if [[ ! -s "${reuse_manifest}" ]]; then
+            echo "[ERROR] Frozen concolic static reuse manifest is missing: ${reuse_manifest}" >&2
+            echo "[ERROR] Run './run_hdfs.sh freeze-concolic-static' after a completed static process." >&2
+            return 1
+        fi
+        properties+=(-Dcausynth.concolic.static.reuse.manifest="$(realpath "${reuse_manifest}")")
+        reuse_applied=true
+        echo "[Concolic static reuse] activation=${activation_id} manifest=${reuse_manifest}"
+    elif [[ "${reuse_enabled}" == "true" ]]; then
+        echo "[Concolic static reuse] full static fallback (trace campaign or ALL bundle)"
     fi
     "${graphchecker_java_bin}" -Xmx4g "${properties[@]}" \
         -cp "${gc_jar}:${java_class_path}" \
@@ -805,15 +1085,123 @@ do_process_concolic() {
         -i "${system_classes_path}" \
         -x "${java_class_path}" \
         -C "${conf}" \
-        -o "${concolic_classes_path}"
+        -o "${concolic_classes_path}" || return $?
 
     # Keep runtime-only dependencies beside the instrumented Hadoop classes.
     # ConcolicRegionRuntime intentionally shares code-position normalization
     # with the offline importer, so both class families are required at replay.
-    while IFS= read -r runtime_class; do
-        (cd "${concolic_classes_path}" && jar xf "${gc_jar}" "${runtime_class}")
-    done < <(jar tf "${gc_jar}" | grep -E \
-        '^edu/uva/liftlab/graphchecker/(runtime/(ConcolicRegionRuntime|CausynthTraceRecorder|RuntimeRegionPlanner)|concolic/ConcolicCodePosition)')
+    extract_causynth_runtime_dependencies "${concolic_classes_path}" \
+        || return $?
+    if [[ "${reuse_applied}" == "true" ]]; then
+        local report process_provenance temporary_provenance
+        local report_sha manifest_sha plan_sha jar_sha class_digest_json
+        local replay_classes_tree_sha tree_hash_authority
+        local replay_classes_file_count canonical_replay_classes
+        report="${static_output_dir}/${causynth_hdfs_concolic_static_reuse_report_file}"
+        process_provenance="${static_output_dir}/${causynth_hdfs_concolic_process_provenance_file}"
+        if ! manifest_sha=$(sha256_file "${reuse_manifest}"); then
+            echo "[ERROR] Cannot hash frozen static reuse manifest" >&2
+            return 1
+        fi
+        if [[ ! -s "${report}" ]] || ! jq -e \
+                --arg activation "${activation_id}" \
+                --arg manifest "$(realpath "${reuse_manifest}")" \
+                --arg manifestSha256 "${manifest_sha}" '
+              .schemaVersion == 1
+              and .kind == "CONCOLIC_STATIC_CATALOG_REUSE"
+              and .authority ==
+                "HASHED_STATIC_CATALOG_CLASS_TREES_AND_SCHEDULE_INPUTS_V1"
+              and .selectedActivationId == $activation
+              and .manifest.path == $manifest
+              and .manifest.sha256 == $manifestSha256
+              and .instrumentation.staticAnalysisSkipped == true
+              and .instrumentation.concolicRegionInstrumentedRootCount == 1
+              and .instrumentation.concolicRegionSkippedRootCount == 0
+              and .instrumentation.concolicMappedBranchCount ==
+                .loadedBranchPolicyCount
+              and .complete == true' "${report}" >/dev/null; then
+            echo "[ERROR] Frozen static reuse instrumentation report is incomplete: ${report}" >&2
+            return 1
+        fi
+        if ! report_sha=$(sha256_file "${report}") \
+                || ! plan_sha=$(sha256_file "${activation_plan}") \
+                || ! jar_sha=$(sha256_file "${gc_jar}") \
+                || ! canonical_replay_classes=$(realpath \
+                    "${concolic_classes_path}"); then
+            echo "[ERROR] Cannot bind concolic process artifacts" >&2
+            return 1
+        fi
+        if ! class_digest_json=$(concolic_class_tree_digest \
+                "${concolic_classes_path}"); then
+            echo "[ERROR] Cannot digest generated replay class tree" >&2
+            return 1
+        fi
+        if ! replay_classes_tree_sha=$(jq -er \
+                --arg path "${canonical_replay_classes}" '
+              select(.schemaVersion == 1
+                and .kind == "CONCOLIC_CLASS_TREE_DIGEST"
+                and .authority ==
+                  "SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+                and .path == $path
+                and .complete == true)
+              | .treeSha256
+              | select(type == "string" and test("^[0-9a-f]{64}$"))' \
+                <<< "${class_digest_json}") \
+                || ! replay_classes_file_count=$(jq -er \
+                --arg path "${canonical_replay_classes}" '
+              select(.schemaVersion == 1
+                and .kind == "CONCOLIC_CLASS_TREE_DIGEST"
+                and .authority ==
+                  "SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+                and .path == $path
+                and .complete == true)
+              | .fileCount | select(type == "number" and . >= 1)' \
+                <<< "${class_digest_json}"); then
+            echo "[ERROR] Generated class-tree digest has no accepted authority" >&2
+            return 1
+        fi
+        tree_hash_authority="SORTED_RELATIVE_PATH_NUL_CONTENT_SHA256_NEWLINE_V1"
+        temporary_provenance="${process_provenance}.tmp.$$"
+        if ! jq -n \
+            --arg authority "SUCCESSFUL_SOOT_CLASS_WRITE_PLUS_HASHED_REUSE_REPORT_V1" \
+            --arg activationId "${activation_id}" \
+            --arg activationPlan "$(realpath "${activation_plan}")" \
+            --arg activationPlanSha256 "${plan_sha}" \
+            --arg manifest "$(realpath "${reuse_manifest}")" \
+            --arg manifestSha256 "${manifest_sha}" \
+            --arg report "$(realpath "${report}")" \
+            --arg reportSha256 "${report_sha}" \
+            --arg graphCheckerJar "$(realpath "${gc_jar}")" \
+            --arg graphCheckerJarSha256 "${jar_sha}" \
+            --arg replayClasses "$(realpath "${concolic_classes_path}")" \
+            --arg replayClassesTreeSha256 "${replay_classes_tree_sha}" \
+            --argjson replayClassesFileCount \
+                "${replay_classes_file_count}" \
+            --arg replayClassesTreeHashAuthority \
+                "${tree_hash_authority}" \
+            '{schemaVersion:1, kind:"CONCOLIC_PROCESS_PROVENANCE",
+              authority:$authority, activationId:$activationId,
+              activationPlan:$activationPlan,
+              activationPlanSha256:$activationPlanSha256,
+              staticReuseManifest:$manifest,
+              staticReuseManifestSha256:$manifestSha256,
+              instrumentationReport:$report,
+              instrumentationReportSha256:$reportSha256,
+              graphCheckerJar:$graphCheckerJar,
+              graphCheckerJarSha256:$graphCheckerJarSha256,
+              replayClasses:$replayClasses,
+              replayClassesTreeSha256:$replayClassesTreeSha256,
+              replayClassesFileCount:$replayClassesFileCount,
+              replayClassesTreeHashAuthority:
+                $replayClassesTreeHashAuthority,
+              complete:true}' \
+            > "${temporary_provenance}"; then
+            rm -f -- "${temporary_provenance}"
+            return 1
+        fi
+        mv "${temporary_provenance}" "${process_provenance}" || return $?
+        echo "[Concolic static reuse] process provenance: ${process_provenance}"
+    fi
     echo "[Concolic] replay classes: ${concolic_classes_path}"
 }
 
@@ -852,7 +1240,51 @@ do_replay_concolic() {
         echo "[ERROR] Replay classes not found. Run process-concolic first."
         exit 1
     fi
-    verify_concolic_openjdk
+    local process_provenance provenance_policy provenance_required
+    local replay_reuse_enabled
+    process_provenance="${CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE:-}"
+    provenance_policy="${CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE_REQUIRED:-${causynth_hdfs_concolic_process_provenance_required:-auto}}"
+    provenance_required=false
+    case "${provenance_policy}" in
+        true)
+            provenance_required=true
+            ;;
+        false)
+            ;;
+        auto)
+            replay_reuse_enabled="${CAUSYNTH_CONCOLIC_STATIC_REUSE_ENABLED:-${causynth_hdfs_concolic_static_reuse_enabled:-false}}"
+            if [[ "${replay_reuse_enabled}" == "true" \
+                    && -n "${activation_id}" \
+                    && -z "${CAUSYNTH_CAMPAIGN_DISCOVERED_ACTIVATIONS:-}" \
+                    && -z "${CAUSYNTH_CAMPAIGN_DISCOVERED_EDGES:-}" ]]; then
+                provenance_required=true
+            fi
+            ;;
+        *)
+            echo "[ERROR] Invalid concolic process provenance policy: ${provenance_policy}" >&2
+            return 1
+            ;;
+    esac
+    if [[ -z "${process_provenance}" \
+            && "${provenance_required}" == "true" ]]; then
+        local default_static_output
+        default_static_output="${CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR:-${causynth_output_dir}/concolic-replay-static}"
+        if [[ -s "${default_static_output}/${causynth_hdfs_concolic_process_provenance_file}" ]]; then
+            process_provenance="${default_static_output}/${causynth_hdfs_concolic_process_provenance_file}"
+        fi
+    fi
+    if [[ "${provenance_required}" == "true" \
+            && -z "${process_provenance}" ]]; then
+        echo "[ERROR] Exact frozen-catalog replay requires concolic process provenance" >&2
+        echo "[ERROR] Re-run process-concolic, or set CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE_REQUIRED=false only for an intentional full-static/legacy replay." >&2
+        return 1
+    fi
+    if [[ -n "${process_provenance}" ]]; then
+        verify_concolic_process_provenance "${process_provenance}" \
+            "${activation_plan}" "${activation_id}" \
+            "${concolic_classes_path}" || return $?
+    fi
+    verify_concolic_openjdk || return $?
     local graphchecker_jar_sha256
     graphchecker_jar_sha256=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
     if [[ ! -x "${concolic_maven_dir}/bin/mvn" ]]; then
@@ -1470,6 +1902,7 @@ run_concolic_batch_job() {
     CAUSYNTH_SUREFIRE_TEST_SELECTOR= \
     CAUSYNTH_TEST_CLASSES_OVERLAY= \
     CAUSYNTH_CONCOLIC_CLASSES_PATH="${classes_dir}" \
+    CAUSYNTH_CONCOLIC_CLASSES_ALLOWED_EXACT="${classes_dir}" \
     CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR="${static_dir}" \
         "${script_dir}/run_hdfs.sh" process-concolic \
             "${plan}" "${activation}" \
@@ -1481,6 +1914,7 @@ run_concolic_batch_job() {
     CAUSYNTH_SUREFIRE_TEST_SELECTOR= \
     CAUSYNTH_TEST_CLASSES_OVERLAY= \
     CAUSYNTH_CONCOLIC_CLASSES_PATH="${classes_dir}" \
+    CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE="${static_dir}/${causynth_hdfs_concolic_process_provenance_file}" \
     CAUSYNTH_REPLAY_HDFS_TARGET_DIR="${target_dir}" \
     CAUSYNTH_REPLAY_WORK_DIR="${work_dir}" \
         "${script_dir}/run_hdfs.sh" replay-concolic \
@@ -1864,6 +2298,7 @@ do_campaign_capture() {
     execution_dir=$(dirname "$(realpath "${activation_plan}")")
     concolic_classes_path="${execution_dir}/concolic_classes"
     execution_static_output="${execution_dir}/concolic-replay-static"
+    CAUSYNTH_CONCOLIC_CLASSES_ALLOWED_EXACT="${concolic_classes_path}" \
     CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR="${execution_static_output}" \
         do_process_concolic "${activation_plan}" "${activation_id}"
     do_replay_concolic "${activation_plan}" "${activation_id}" "${test_name}"
@@ -2049,6 +2484,83 @@ require_workspace_output_path() {
             return 1
             ;;
     esac
+}
+
+require_scoped_concolic_class_output() {
+    local path=$1 output protected allowed_root allowed_exact allowed=false
+    require_workspace_output_path "concolic replay class output" "${path}" \
+        || return $?
+    if ! output=$(realpath -m "${path}"); then
+        return 1
+    fi
+    if [[ -e "${output}" && ! -d "${output}" ]]; then
+        echo "[ERROR] Concolic replay class output is not a directory: ${output}" >&2
+        return 1
+    fi
+    if [[ "${output}" == "$(realpath -m \
+            "${configured_concolic_classes_path}")" ]]; then
+        allowed=true
+    fi
+    while IFS= read -r allowed_exact; do
+        [[ -n "${allowed_exact}" ]] || continue
+        if ! allowed_exact=$(realpath -m "${allowed_exact}"); then
+            return 1
+        fi
+        require_workspace_output_path "exact concolic replay output" \
+            "${allowed_exact}" || return $?
+        if [[ "${output}" == "${allowed_exact}" ]]; then
+            allowed=true
+            break
+        fi
+    done < <(printf '%s\n' \
+        "${CAUSYNTH_CONCOLIC_CLASSES_ALLOWED_EXACT:-}" | tr ':' '\n')
+    while IFS= read -r allowed_root; do
+        [[ -n "${allowed_root}" ]] || continue
+        if ! allowed_root=$(realpath -m "${allowed_root}"); then
+            return 1
+        fi
+        require_workspace_output_path "concolic replay allowed root" \
+            "${allowed_root}" || return $?
+        if [[ "${output}" == "${allowed_root}/"* ]]; then
+            allowed=true
+            break
+        fi
+    done < <(printf '%s\n' \
+        "${CAUSYNTH_CONCOLIC_CLASSES_ALLOWED_ROOTS:-${causynth_hdfs_concolic_classes_allowed_roots:-}}" \
+        | tr ':' '\n')
+    if [[ "${allowed}" != "true" ]]; then
+        echo "[ERROR] Concolic replay class output is outside configured replay-owned roots: ${output}" >&2
+        return 1
+    fi
+    # The output may legitimately live below the configured experiment or
+    # batch directory, but it must never own either directory itself.
+    for protected in "${script_dir}" "${causynth_output_dir}"; do
+        protected=$(realpath -m "${protected}")
+        if [[ "${protected}" == "${output}" \
+                || "${protected}" == "${output}/"* ]]; then
+            echo "[ERROR] Concolic replay class output would erase protected directory: ${protected}" >&2
+            return 1
+        fi
+    done
+    # Original bytecode is an immutable input.  Reject either overlap
+    # direction, including a nested override under that tree.
+    protected=$(realpath -m "${system_classes_path}")
+    if [[ "${output}" == "${protected}" \
+            || "${output}" == "${protected}/"* \
+            || "${protected}" == "${output}/"* ]]; then
+        echo "[ERROR] Concolic replay class output overlaps original classes: ${protected}" >&2
+        return 1
+    fi
+    # A broad output such as workspace/target or workspace/experiments could
+    # otherwise delete the executable/configuration that defines this run.
+    for protected in "${gc_jar}" "${conf}" "${causynth_target_spec}"; do
+        protected=$(realpath -m "${protected}")
+        if [[ "${protected}" == "${output}" \
+                || "${protected}" == "${output}/"* ]]; then
+            echo "[ERROR] Concolic replay class output would erase protected input: ${protected}" >&2
+            return 1
+        fi
+    done
 }
 
 prepare_fresh_output_directory() {
@@ -4010,6 +4522,7 @@ do_run_natural_replay() {
     require_absent_output "natural replay static output" "${replay_static}"
     require_absent_output "natural replay results" "${natural_results}"
     concolic_classes_path="${replay_classes}"
+    CAUSYNTH_CONCOLIC_CLASSES_ALLOWED_EXACT="${replay_classes}" \
     CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR="${replay_static}" \
         do_process_concolic "${natural_plan}" ALL
     # A target exception can make Surefire exit non-zero.  Validation, not the
@@ -4594,6 +5107,9 @@ case "${cmd}" in
     process|instrument)
         timing "process" do_process
         ;;
+    freeze-concolic-static)
+        timing "freeze-concolic-static" do_freeze_concolic_static_catalog
+        ;;
     verify-region-roots)
         timing "verify-region-roots" verify_hdfs_region_roots "${1:-}"
         ;;
@@ -4621,6 +5137,11 @@ case "${cmd}" in
     process-concolic)
         timing "process-concolic" do_process_concolic \
             "${1:-}" "${2:-}"
+        ;;
+    verify-concolic-process)
+        timing "verify-concolic-process" \
+            do_verify_concolic_process_provenance \
+            "${1:-}" "${2:-}" "${3:-}" "${4:-}"
         ;;
     replay-concolic)
         timing "replay-concolic" do_replay_concolic \
