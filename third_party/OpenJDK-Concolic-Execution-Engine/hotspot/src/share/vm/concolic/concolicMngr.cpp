@@ -1,5 +1,6 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/symbolExpression.hpp"
+#include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/threadContext.hpp"
 #include "concolic/utils.hpp"
 #include "memory/resourceArea.hpp"
@@ -36,6 +37,36 @@ void serialize_temporary_expression(ArrayValueWriter &writer,
   expression->inc_ref();
   expression->serialize(writer);
   Expression::gc(expression);
+}
+
+Expression *concrete_boxed_primitive_expression(oop value) {
+  if (value == NULL || value->klass() == NULL
+      || value->klass()->name() == NULL) {
+    return NULL;
+  }
+  ResourceMark rm;
+  BasicType type = primitive_target(
+      std::string(value->klass()->name()->as_C_string()));
+  switch (type) {
+    case T_BOOLEAN:
+      return SymPrimitive<jboolean>::get_exp_of_helper(value);
+    case T_BYTE:
+      return SymPrimitive<jbyte>::get_exp_of_helper(value);
+    case T_CHAR:
+      return SymPrimitive<jchar>::get_exp_of_helper(value);
+    case T_SHORT:
+      return SymPrimitive<jshort>::get_exp_of_helper(value);
+    case T_INT:
+      return SymPrimitive<jint>::get_exp_of_helper(value);
+    case T_LONG:
+      return SymPrimitive<jlong>::get_exp_of_helper(value);
+    case T_FLOAT:
+      return SymPrimitive<jfloat>::get_exp_of_helper(value);
+    case T_DOUBLE:
+      return SymPrimitive<jdouble>::get_exp_of_helper(value);
+    default:
+      return NULL;
+  }
 }
 
 void serialize_concrete_primitive(ArrayValueWriter &writer,
@@ -292,6 +323,7 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   writer.Key("symbolic");
   writer.Bool(symbolic);
   Expression *expression = NULL;
+  bool temporary_expression = false;
   if (obj->is_array()) {
     writer.Key("kind");
     writer.String("ARRAY_VALUE");
@@ -303,8 +335,11 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
       expression = instance->get_ref_exp();
     }
   } else {
+    expression = concrete_boxed_primitive_expression(obj);
+    temporary_expression = expression != NULL;
     writer.Key("kind");
-    writer.String("CONCRETE_OBJECT");
+    writer.String(temporary_expression
+        ? "CONCRETE_PRIMITIVE" : "CONCRETE_OBJECT");
   }
 
   writer.Key("expression");
@@ -312,6 +347,8 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
     serialize_array_value(writer, arrayOop(obj));
   } else if (expression == NULL) {
     writer.Null();
+  } else if (temporary_expression) {
+    serialize_temporary_expression(writer, expression);
   } else {
     expression->serialize(writer);
   }

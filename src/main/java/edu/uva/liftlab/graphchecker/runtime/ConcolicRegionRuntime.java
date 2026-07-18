@@ -3036,8 +3036,14 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            row.add("expression", canonicalEngineExpression(
-                    api.expression(value)));
+            JsonElement expression = canonicalEngineExpression(
+                    api.expression(value));
+            if (expression == null || expression.isJsonNull()) {
+                throw new IllegalStateException("custom VM returned no "
+                        + "expression for captured output value "
+                        + row.get("concreteValueClass").getAsString());
+            }
+            row.add("expression", expression);
             row.addProperty("expressionCaptured", true);
             JsonArray projectionVerifications =
                     active.verifyMapProjectionOutput(outputPort, outputCell,
@@ -3165,8 +3171,14 @@ public final class ConcolicRegionRuntime {
                         + "failed" + (observation.error.isEmpty() ? ""
                         : ": " + observation.error));
             }
-            row.add("expression", canonicalEngineExpression(
-                    api.expression(assignedValue)));
+            JsonElement expression = canonicalEngineExpression(
+                    api.expression(assignedValue));
+            if (expression == null || expression.isJsonNull()) {
+                throw new IllegalStateException("custom VM returned no "
+                        + "expression for captured field assignment value "
+                        + row.get("assignedValueClass").getAsString());
+            }
+            row.add("expression", expression);
             row.addProperty("expressionCaptured", true);
         } catch (Throwable throwable) {
             row.addProperty("expressionCaptured", false);

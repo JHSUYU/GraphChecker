@@ -2984,6 +2984,34 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void importsVmAttestedGuardedConstantFieldAssignment()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importExactFieldAssignmentCaptureFixture(
+                    folder.getRoot().toPath(), "NORMAL", true, true,
+                    "<example.State: java.lang.String value>",
+                    constant("Y_L_NULL", "L"), true);
+
+            assertTrue(imported.diagnostics, imported.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals("Y_L_NULL", imported.summary.getAsJsonObject(
+                    "outputExpressions").getAsJsonObject(
+                    "REGION.FIELD.out.0").get("_exp").getAsString());
+            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                            + "PATH_GUARD",
+                    imported.summary.getAsJsonObject(
+                            "outputExpressionAdmission")
+                            .get("authority").getAsString());
+            assertEquals(1, imported.summary.getAsJsonArray(
+                    "pathCondition").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void arrayFieldOutputRequiresCompleteTypedArrayValueExpression()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -5342,6 +5370,15 @@ public class ConcolicSummaryImporterTest {
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, String field,
             JsonElement expression) throws Exception {
+        return importExactFieldAssignmentCaptureFixture(root, exitKind,
+                identityVerified, rhsRelationComplete, field, expression,
+                false);
+    }
+
+    private static MapFixture importExactFieldAssignmentCaptureFixture(
+            Path root, String exitKind, boolean identityVerified,
+            boolean rhsRelationComplete, String field,
+            JsonElement expression, boolean exactVmGuard) throws Exception {
         Files.createDirectories(root);
         Path activations = root.resolve("activation.jsonl");
         Path regions = root.resolve("regions.jsonl");
@@ -5491,11 +5528,59 @@ public class ConcolicSummaryImporterTest {
                 singletonString("REGION.FIELD.in.0"));
         raw.add("rootOutputExpression", constant("Y_L_NULL", "L"));
         raw.add("outputCaptures", singletonObject(observed));
+        if (exactVmGuard) {
+            raw.add("runtimeHeapEffects", new JsonArray());
+            raw.add("runtimeHeapObservations", new JsonArray());
+        }
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
         engine.addProperty("regionId", "REGION.FIELD");
         engine.addProperty("activationId", "ACT.FIELD");
-        engine.add("pathCondition", new JsonArray());
+        JsonArray pathCondition = new JsonArray();
+        if (exactVmGuard) {
+            JsonObject condition = binaryCondition(
+                    "virtual void example.Heartbeat.install(jobject):12",
+                    "!=",
+                    symbol("M_L_field_REGION.FIELD.in.0_java/lang/String",
+                            "L"), constant("Y_L_NULL", "L"));
+            pathCondition.add(condition);
+            JsonObject mapping = new JsonObject();
+            mapping.addProperty("siteId", method + "#u2");
+            mapping.addProperty("method", method);
+            mapping.addProperty("unitIndex", 2);
+            mapping.addProperty("occurrence", 1);
+            mapping.addProperty("vmOccurrence", 1);
+            mapping.addProperty("outcome", true);
+            mapping.addProperty("observedOutcome", true);
+            mapping.addProperty("effectiveOutcome", true);
+            mapping.addProperty("overrideApplied", false);
+            mapping.addProperty("overrideMode", "NONE");
+            mapping.addProperty("conditionIndex", 0);
+            mapping.addProperty("rawConditionIndex", 0);
+            mapping.addProperty("rawPathConditionBaseline", 0);
+            mapping.addProperty("enginePathConditionBaseline", 0);
+            mapping.addProperty("rawPathConditionSize", 1);
+            mapping.addProperty("enginePathConditionSize", 1);
+            mapping.addProperty("mappingPolicy",
+                    "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
+            mapping.addProperty("conditionAuthority",
+                    "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
+            mapping.addProperty("vmBranchEventExpected", true);
+            mapping.addProperty("vmBranchEventValidated", true);
+            mapping.addProperty("vmBranchEventId", 1);
+            mapping.addProperty("vmBranchEventAuthority",
+                    "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+            mapping.addProperty("vmThreadContextId", 2);
+            mapping.addProperty("vmOwnerJavaThreadId", 3);
+            mapping.addProperty("vmOwnerOsThreadId", 4);
+            JsonArray vmConditionIndices = new JsonArray();
+            vmConditionIndices.add(0);
+            mapping.add("vmConditionIndices", vmConditionIndices);
+            mapping.add("rawCondition", condition.deepCopy());
+            mapping.add("condition", condition.deepCopy());
+            raw.add("branchMappings", singletonObject(mapping));
+        }
+        engine.add("pathCondition", pathCondition);
         raw.add("engineSummary", engine);
         write(results, raw + "\n");
 

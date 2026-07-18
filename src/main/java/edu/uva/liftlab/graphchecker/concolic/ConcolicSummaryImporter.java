@@ -1014,6 +1014,12 @@ public final class ConcolicSummaryImporter {
         }
         Set<String> expressionSymbols = new LinkedHashSet<>();
         collectSymbolicExpressionSymbols(expression, expressionSymbols);
+        ExactPathGuardDependency pathGuardDependency =
+                fieldAssignment && isConstantExpression(expression)
+                        ? exactVmPathGuardDependency(raw, activation,
+                        sliceInputs)
+                        : ExactPathGuardDependency.notApplicable();
+        boolean guardedConstant = pathGuardDependency.complete;
         boolean dependsOnSliceInput = false;
         boolean everySymbolHasExactSliceInput = true;
         for (String rawSymbol : expressionSymbols) {
@@ -1029,11 +1035,17 @@ public final class ConcolicSummaryImporter {
                 everySymbolHasExactSliceInput = false;
             }
         }
-        if (expression == null || expression.isJsonNull()
-                || expressionSymbols.isEmpty()) {
+        if (expression == null || expression.isJsonNull()) {
             issues.add("NON_SYMBOLIC_OUTPUT_EXPRESSION");
+        } else if (expressionSymbols.isEmpty() && !guardedConstant) {
+            issues.add("NON_SYMBOLIC_OUTPUT_EXPRESSION");
+            if (fieldAssignment && isConstantExpression(expression)) {
+                issues.addAll(pathGuardDependency.issues);
+            }
         } else if (!dependsOnSliceInput) {
-            issues.add("OUTPUT_EXPRESSION_HAS_NO_SLICE_INPUT_DEPENDENCY");
+            if (!guardedConstant) {
+                issues.add("OUTPUT_EXPRESSION_HAS_NO_SLICE_INPUT_DEPENDENCY");
+            }
         }
         if (fieldAssignment && !expressionSymbols.isEmpty()
                 && !everySymbolHasExactSliceInput) {
@@ -1058,8 +1070,157 @@ public final class ConcolicSummaryImporter {
         }
         return new OutputExpressionExtraction(expressions,
                 issues.isEmpty(), issues, fieldAssignment
-                ? "EXACT_FIELD_ASSIGNMENT_RHS"
+                ? guardedConstant
+                ? "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD"
+                : "EXACT_FIELD_ASSIGNMENT_RHS"
                 : "EXACT_CALL_ARGUMENT");
+    }
+
+    private static boolean isConstantExpression(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                && "ConstExpr".equals(string(
+                expression.getAsJsonObject(), "_type"))
+                && !string(expression.getAsJsonObject(), "_java_type")
+                .isEmpty()
+                && !string(expression.getAsJsonObject(), "_exp").isEmpty();
+    }
+
+    /**
+     * A per-path constant is a relational output when the path guard itself
+     * carries the input dependency.  Accept that case only from the exact VM
+     * thread-context event contract; a textual branch mapping, an overridden
+     * outcome, or an unowned PC index cannot turn a concrete value into a
+     * summary relation.
+     */
+    private static ExactPathGuardDependency exactVmPathGuardDependency(
+            JsonObject raw, JsonObject activation, Set<String> sliceInputs) {
+        List<String> issues = new ArrayList<>();
+        if (bool(raw, "branchOverrideUsed", false)) {
+            issues.add("CONSTANT_OUTPUT_PATH_GUARD_USED_BRANCH_OVERRIDE");
+            return new ExactPathGuardDependency(false, issues);
+        }
+        JsonArray enginePath = array(object(raw, "engineSummary"),
+                "pathCondition");
+        Set<String> sliceMethods = new LinkedHashSet<>();
+        for (JsonElement method : array(object(activation,
+                "requestedOutputSlice"), "methods")) {
+            if (method.isJsonPrimitive()) {
+                sliceMethods.add(method.getAsString());
+            }
+        }
+        int mappedCount = 0;
+        boolean dependsOnSliceInput = false;
+        for (JsonElement element : array(raw, "branchMappings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mapping = element.getAsJsonObject();
+            int index = integer(mapping, "rawConditionIndex",
+                    integer(mapping, "engineConditionIndex",
+                            integer(mapping, "conditionIndex", -1)));
+            if (index < 0) continue;
+            mappedCount++;
+            int occurrence = integer(mapping, "occurrence", -1);
+            int baseline = integer(mapping, "rawPathConditionBaseline",
+                    integer(mapping, "enginePathConditionBaseline", -1));
+            int boundary = integer(mapping, "rawPathConditionSize",
+                    integer(mapping, "enginePathConditionSize", -1));
+            JsonElement rawCondition = mapping.get("rawCondition");
+            JsonElement condition = mapping.get("condition");
+            boolean exact = index < enginePath.size()
+                    && occurrence > 0
+                    && occurrence == integer(mapping, "vmOccurrence", -1)
+                    && integer(mapping, "vmBranchEventId", 0) > 0
+                    && longInteger(mapping, "vmThreadContextId", 0L) > 0L
+                    && longInteger(mapping, "vmOwnerJavaThreadId", 0L) > 0L
+                    && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
+                    && bool(mapping, "vmBranchEventExpected", false)
+                    && bool(mapping, "vmBranchEventValidated", false)
+                    && !bool(mapping, "overrideApplied", false)
+                    && "NONE".equals(string(mapping, "overrideMode"))
+                    && bool(mapping, "outcome", false)
+                    == bool(mapping, "observedOutcome", !bool(mapping,
+                    "outcome", false))
+                    && bool(mapping, "outcome", false)
+                    == bool(mapping, "effectiveOutcome", !bool(mapping,
+                    "outcome", false))
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
+                    string(mapping, "vmBranchEventAuthority"))
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
+                    .equals(string(mapping, "mappingPolicy"))
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
+                    .equals(string(mapping, "conditionAuthority"))
+                    && baseline >= 0 && boundary > baseline
+                    && index >= baseline && index < boundary
+                    && containsInteger(array(mapping,
+                    "vmConditionIndices"), index)
+                    && rawCondition != null && condition != null
+                    && GSON.toJson(enginePath.get(index)).equals(
+                    GSON.toJson(rawCondition))
+                    && (sliceMethods.isEmpty() || sliceMethods.contains(
+                    string(mapping, "method")));
+            if (!exact) {
+                issues.add("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_EVENT");
+                continue;
+            }
+            Set<String> symbols = new LinkedHashSet<>();
+            collectSymbolicExpressionSymbols(condition, symbols);
+            if (symbols.isEmpty()) {
+                issues.add("CONSTANT_OUTPUT_PATH_GUARD_HAS_NO_SYMBOL");
+                continue;
+            }
+            boolean closed = true;
+            for (String rawSymbol : symbols) {
+                int matchingInputs = 0;
+                for (String input : sliceInputs) {
+                    if (HeapPortResolver.containsSymbolReference(rawSymbol,
+                            input)) {
+                        matchingInputs++;
+                    }
+                }
+                if (matchingInputs != 1) {
+                    closed = false;
+                } else {
+                    dependsOnSliceInput = true;
+                }
+            }
+            if (!closed) {
+                issues.add("CONSTANT_OUTPUT_PATH_GUARD_NOT_CLOSED_OVER_"
+                        + "SLICE_INPUTS");
+            }
+        }
+        if (mappedCount == 0) {
+            issues.add("CONSTANT_OUTPUT_MISSING_EXACT_PATH_GUARD");
+        }
+        if (!dependsOnSliceInput) {
+            issues.add("CONSTANT_OUTPUT_PATH_GUARD_HAS_NO_SLICE_INPUT_"
+                    + "DEPENDENCY");
+        }
+        return new ExactPathGuardDependency(issues.isEmpty(), issues);
+    }
+
+    private static boolean containsInteger(JsonArray values, int expected) {
+        for (JsonElement value : values) {
+            if (value.isJsonPrimitive() && value.getAsJsonPrimitive()
+                    .isNumber() && value.getAsInt() == expected) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final class ExactPathGuardDependency {
+        private final boolean complete;
+        private final List<String> issues;
+
+        private ExactPathGuardDependency(boolean complete,
+                                         List<String> issues) {
+            this.complete = complete;
+            this.issues = new ArrayList<>(issues);
+        }
+
+        private static ExactPathGuardDependency notApplicable() {
+            return new ExactPathGuardDependency(false,
+                    Collections.<String>emptyList());
+        }
     }
 
     /**
@@ -5804,6 +5965,11 @@ public final class ConcolicSummaryImporter {
             Map<String, HeapOutputBinding> outputBindings,
             HeapPortResolver ports, JsonObject activation, String regionId,
             int effectOrdinal, List<HeapEffectIssue> issues) {
+        String requestedCell = string(object(activation,
+                "requestedOutput"), "cell");
+        if (!supportedMapStateField(requestedCell)) {
+            return 0;
+        }
         if (!mutations.isEmpty()) {
             return 0;
         }

@@ -24,6 +24,34 @@ public final class RegionBranchEventApiSmoke {
         long status = System.startConcolicRegion(
                 "REGION.BRANCH.SMOKE", "ACT.BRANCH.SMOKE");
         check(status == 0L, "region start rejected");
+
+        String concreteInt = System.getSymbolicExpression(
+                Integer.valueOf(10));
+        String concreteBoolean = System.getSymbolicExpression(Boolean.FALSE);
+        String concreteLong = System.getSymbolicExpression(
+                Long.valueOf(1234567890123L));
+        check(concreteInt.contains("\"kind\":\"CONCRETE_PRIMITIVE\"")
+                        && concreteInt.contains("\"_type\":\"ConstExpr\"")
+                        && concreteInt.contains("\"_java_type\":\"I\"")
+                        && concreteInt.contains("Y_I_10"),
+                "concrete Integer was not serialized as a typed constant: "
+                        + concreteInt);
+        check(concreteBoolean.contains(
+                        "\"kind\":\"CONCRETE_PRIMITIVE\"")
+                        && concreteBoolean.contains(
+                        "\"_type\":\"ConstExpr\"")
+                        && concreteBoolean.contains(
+                        "\"_java_type\":\"Z\"")
+                        && concreteBoolean.contains("Y_Z_0"),
+                "concrete Boolean was not serialized as a typed constant: "
+                        + concreteBoolean);
+        check(concreteLong.contains("\"kind\":\"CONCRETE_PRIMITIVE\"")
+                        && concreteLong.contains("\"_type\":\"ConstExpr\"")
+                        && concreteLong.contains("\"_java_type\":\"J\"")
+                        && concreteLong.contains("Y_J_1234567890123"),
+                "concrete Long was not serialized as a typed constant: "
+                        + concreteLong);
+
         System.symbolizeField(input, "value", "branch_value");
         System.symbolizeField(input, "wide", "branch_wide");
         System.symbolizeField(input, "flag", "branch_flag");
