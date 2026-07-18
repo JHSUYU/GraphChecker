@@ -77,6 +77,7 @@ template <class T> Expression *SymPrimitive<T>::get_exp_of(oop obj) {
     SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
     exp = sym_inst->get_ref_exp();
     assert(exp != NULL, "NOT NULL");
+    return exp;
   } else {
     return get_exp_of_helper(obj);
   }

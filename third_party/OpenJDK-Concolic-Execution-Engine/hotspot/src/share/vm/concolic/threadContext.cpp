@@ -17,6 +17,8 @@
 #include "utilities/vmError.hpp"
 #include "utilities/exceptions.hpp"
 #include "concolic/reference/symbolicNDFunc.hpp"
+#include "classfile/javaClasses.hpp"
+#include "runtime/osThread.hpp"
 #include "runtime/safepoint.hpp"
 #include "runtime/vm_operations.hpp"
 #include "runtime/vmThread.hpp"
@@ -49,14 +51,148 @@ public:
   }
 };
 
-ThreadContext::ThreadContext(JavaThread *jt) : _thread(jt), _s_stack(jt), _sym_rid_counter(), _sym_tmp_id_counter(),
-                                               _path_condition_enabled(true),
-                                               _path_condition_pause_depth(0) {
+ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
+    : _thread(jt), _s_stack(jt), _sym_rid_counter(), _sym_tmp_id_counter(),
+      _path_condition_enabled(true), _path_condition_pause_depth(0),
+      _context_id(context_id),
+      _owner_java_thread_id(jt == NULL || jt->threadObj() == NULL
+          ? 0 : java_lang_Thread::thread_id(jt->threadObj())),
+      _owner_os_thread_id(jt == NULL || jt->osthread() == NULL
+          ? 0 : (jlong) jt->osthread()->thread_id()),
+      _branch_sequence(0), _pending_branch_active(false),
+      _pending_branch_event_id(0), _pending_branch_occurrence(0),
+      _pending_compare_condition_index(-1) {
   init_sym_rid_counter();
   init_sym_tmp_id_counter();
 
   Expression::init_gc_helper();
   SymbolExpression::init_single_instances();
+}
+
+jlong ThreadContext::mark_branch(const char *site_id, int occurrence) {
+  // A malformed/missed after-hook must not let an old marker authorize a
+  // later branch.  Replacing the single pending slot is deterministic and
+  // fail-closed: only the newly returned id can be claimed by Java.
+  _pending_branch_event_id = ++_branch_sequence;
+  _pending_branch_site_id = site_id == NULL ? "" : site_id;
+  _pending_branch_occurrence = occurrence;
+  _pending_branch_active = true;
+  return _pending_branch_event_id;
+}
+
+void ThreadContext::record_compare_witness(Expression *expression) {
+  if (!_path_condition_enabled || _path_condition_pause_depth > 0
+      || expression == NULL) {
+    return;
+  }
+  // lcmp/fcmp/dcmp materialize their symbolic trichotomy before the following
+  // if bytecode.  Retain the exact index until that conditional executes.
+  _pending_compare_condition_index = _path_condition.add(expression);
+}
+
+void ThreadContext::record_branch_condition(Expression *expression,
+                                             bool outcome, int opcode) {
+  if (!_path_condition_enabled || _path_condition_pause_depth > 0) {
+    return;
+  }
+
+  int direct_index = -1;
+  if (expression != NULL) {
+    direct_index = _path_condition.add(expression);
+  }
+
+  if (_pending_branch_active) {
+    BranchEvent event;
+    event.event_id = _pending_branch_event_id;
+    event.context_id = _context_id;
+    event.owner_java_thread_id = _owner_java_thread_id;
+    event.owner_os_thread_id = _owner_os_thread_id;
+    event.region_id = _region_id;
+    event.activation_id = _activation_id;
+    event.site_id = _pending_branch_site_id;
+    event.occurrence = _pending_branch_occurrence;
+    event.outcome = outcome;
+    event.opcode = opcode;
+    event.code_position = get_current_code_pos();
+    if (direct_index >= 0) {
+      event.condition_indices.push_back(direct_index);
+    } else if (_pending_compare_condition_index >= 0) {
+      event.condition_indices.push_back(_pending_compare_condition_index);
+    }
+    _branch_events.push_back(event);
+    _pending_branch_active = false;
+    _pending_branch_event_id = 0;
+    _pending_branch_site_id.clear();
+    _pending_branch_occurrence = 0;
+  }
+
+  // A compare witness belongs only to the immediately following conditional,
+  // whether or not that branch had a Soot marker.
+  _pending_compare_condition_index = -1;
+}
+
+std::string ThreadContext::get_branch_events() const {
+  using namespace rapidjson;
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
+  writer.Key("contextId");
+  writer.Int64(_context_id);
+  writer.Key("ownerJavaThreadId");
+  writer.Int64(_owner_java_thread_id);
+  writer.Key("ownerOsThreadId");
+  writer.Int64(_owner_os_thread_id);
+  writer.Key("regionId");
+  writer.String(_region_id.c_str());
+  writer.Key("activationId");
+  writer.String(_activation_id.c_str());
+  writer.Key("events");
+  writer.StartArray();
+  for (size_t index = 0; index < _branch_events.size(); ++index) {
+    const BranchEvent &event = _branch_events[index];
+    writer.StartObject();
+    writer.Key("eventId");
+    writer.Int64(event.event_id);
+    writer.Key("contextId");
+    writer.Int64(event.context_id);
+    writer.Key("ownerJavaThreadId");
+    writer.Int64(event.owner_java_thread_id);
+    writer.Key("ownerOsThreadId");
+    writer.Int64(event.owner_os_thread_id);
+    writer.Key("regionId");
+    writer.String(event.region_id.c_str());
+    writer.Key("activationId");
+    writer.String(event.activation_id.c_str());
+    writer.Key("siteId");
+    writer.String(event.site_id.c_str());
+    writer.Key("occurrence");
+    writer.Int(event.occurrence);
+    writer.Key("outcome");
+    writer.Bool(event.outcome);
+    writer.Key("opcode");
+    writer.Int(event.opcode);
+    writer.Key("codePosition");
+    writer.String(event.code_position.c_str());
+    writer.Key("conditionIndices");
+    writer.StartArray();
+    for (size_t condition = 0;
+         condition < event.condition_indices.size(); ++condition) {
+      writer.Int(event.condition_indices[condition]);
+    }
+    writer.EndArray();
+    writer.Key("conditionCount");
+    writer.Int((int) event.condition_indices.size());
+    writer.Key("authority");
+    writer.String("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+    writer.EndObject();
+  }
+  writer.EndArray();
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetLength());
 }
 
 ThreadContext::~ThreadContext() {

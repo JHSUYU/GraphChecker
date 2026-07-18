@@ -1439,7 +1439,7 @@ run:
       } else {                                                                 \
         new_exp = new OpSymExpression(left, right, op_lt);                     \
       }                                                                        \
-      ConcolicMngr::ctx->record_path_condition(new_exp);                       \
+      ConcolicMngr::record_compare_witness(new_exp);                           \
       ConcolicMngr::ctx->set_stack_slot(stack_offset + res_off, NULL);         \
     }                                                                          \
   }
@@ -1863,13 +1863,14 @@ run:
       }
 
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_OPC_BINARY_CMP(l_off, r_off, l_value, r_value, op)            \
+#define CONCOLIC_OPC_BINARY_CMP(l_off, r_off, l_value, r_value, op, outcome)   \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *left =                                                         \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + l_off);               \
     Expression *right =                                                        \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + r_off);               \
+    Expression *new_exp = NULL;                                                \
     if (left || right) {                                                       \
       if (!left) {                                                             \
         left = new ConExpression(l_value);                                     \
@@ -1877,32 +1878,41 @@ run:
       if (!right) {                                                            \
         right = new ConExpression(r_value);                                    \
       }                                                                        \
-      Expression *new_exp = new OpSymExpression(left, right, op, cmp);         \
-      ConcolicMngr::record_path_condition(new_exp);                            \
+      new_exp = new OpSymExpression(left, right, op, outcome);                 \
     }                                                                          \
+    ConcolicMngr::record_branch_condition(new_exp, outcome, (int) opcode);     \
   }
 #else
-#define CONCOLIC_OPC_BINARY_CMP(l_off, r_off, l_value, r_value, op)
+#define CONCOLIC_OPC_BINARY_CMP(l_off, r_off, l_value, r_value, op, outcome)
 #endif
 
 /**
  * TODO: too costly for allocating one ConExpression for each constant value
 */
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_OPC_UNARY_CMP(off, value, op)                                 \
+#define CONCOLIC_OPC_UNARY_CMP(off, value, op, outcome)                        \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *left_exp =                                                     \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + off);                 \
+    Expression *right_exp = NULL;                                              \
     if (left_exp) {                                                            \
       Expression *const_exp = new ConExpression(value);                        \
-      Expression *right_exp =                                                  \
-                new OpSymExpression(left_exp, const_exp, op, cmp);             \
-      ConcolicMngr::record_path_condition(right_exp);                          \
+      right_exp = new OpSymExpression(left_exp, const_exp, op, outcome);       \
     }                                                                          \
+    ConcolicMngr::record_branch_condition(right_exp, outcome, (int) opcode);   \
   }
 #else
-#define CONCOLIC_OPC_UNARY_CMP(off, value, op)
+#define CONCOLIC_OPC_UNARY_CMP(off, value, op, outcome)
+#endif
+
+#ifdef ENABLE_CONCOLIC
+#define CONCOLIC_RECORD_UNMODELED_BRANCH(outcome)                              \
+  if (ConcolicMngr::can_do_concolic()) {                                       \
+    ConcolicMngr::record_branch_condition(NULL, outcome, (int) opcode);        \
+  }
+#else
+#define CONCOLIC_RECORD_UNMODELED_BRANCH(outcome)
 #endif
       /* comparison operators */
 
@@ -1912,7 +1922,8 @@ run:
     int skip = cmp ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;                  \
     address branch_pc = pc;                                                    \
                                                                                \
-    CONCOLIC_OPC_BINARY_CMP(-2, -1, STACK_INT(-2), STACK_INT(-1), op_##name);  \
+    CONCOLIC_OPC_BINARY_CMP(-2, -1, STACK_INT(-2), STACK_INT(-1),             \
+                            op_##name, cmp);                                   \
                                                                                \
     /* Profile branch. */                                                      \
     BI_PROFILE_UPDATE_BRANCH(/*is_taken=*/cmp);                                \
@@ -1925,7 +1936,7 @@ run:
     int skip = cmp ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;                  \
     address branch_pc = pc;                                                    \
                                                                                \
-    CONCOLIC_OPC_UNARY_CMP(-1, 0, op_##name);                                  \
+    CONCOLIC_OPC_UNARY_CMP(-1, 0, op_##name, cmp);                             \
                                                                                \
     /* Profile branch. */                                                      \
     BI_PROFILE_UPDATE_BRANCH(/*is_taken=*/cmp);                                \
@@ -1941,6 +1952,7 @@ run:
           int skip = cmp                                                     \
                        ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;            \
           address branch_pc = pc;                                            \
+          CONCOLIC_RECORD_UNMODELED_BRANCH(cmp);                              \
           /* Profile branch. */                                              \
           BI_PROFILE_UPDATE_BRANCH(/*is_taken=*/cmp);                        \
           UPDATE_PC_AND_TOS(skip, -2);                                       \
@@ -1954,10 +1966,13 @@ run:
         int stack_offset = GET_STACK_OFFSET;                                 \
         Expression *left =                                                   \
             ConcolicMngr::ctx->get_stack_slot(stack_offset + off);           \
+        Expression *condition = NULL;                                        \
         if (left) {                                                          \
-          ConcolicMngr::record_path_condition(new OpSymExpression(           \
-              left, SymbolExpression::get(Sym_NULL), op, cmp));              \
+          condition = new OpSymExpression(                                   \
+              left, SymbolExpression::get(Sym_NULL), op, cmp);               \
         }                                                                    \
+        ConcolicMngr::record_branch_condition(                               \
+            condition, cmp, (int) opcode);                                   \
       }
 #else
 #define CONCOLIC_OPC_NULL_CMP(off, op, cmp)

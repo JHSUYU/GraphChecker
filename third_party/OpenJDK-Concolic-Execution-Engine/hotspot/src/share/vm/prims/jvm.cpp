@@ -633,6 +633,37 @@ JVM_ENTRY(void, JVM_ResumeConcolicPathCondition(JNIEnv *env, jclass ignored))
 #endif
 JVM_END
 
+JVM_ENTRY(jlong, JVM_MarkConcolicBranch(JNIEnv *env, jclass ignored,
+                                        jstring site_id, jint occurrence))
+  JVMWrapper("JVM_MarkConcolicBranch");
+#ifdef ENABLE_CONCOLIC
+  ResourceMark rm(THREAD);
+  const char *site = "";
+  if (site_id != NULL) {
+    oop value = JNIHandles::resolve_non_null(site_id);
+    site = java_lang_String::as_utf8_string(value);
+  }
+  return ConcolicMngr::markBranch(site, occurrence);
+#else
+  return 0;
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetConcolicBranchEvents(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_GetConcolicBranchEvents");
+#ifdef ENABLE_CONCOLIC
+  std::string serialized = ConcolicMngr::getBranchEvents();
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_THREAD_BRANCH_EVENTS\","
+      "\"active\":false,\"events\":[]}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
 JVM_ENTRY(jstring, JVM_GetSymbolicExpression(JNIEnv *env, jclass ignored,
                                               jobject obj))
   JVMWrapper("JVM_GetSymbolicExpression");

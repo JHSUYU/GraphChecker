@@ -13,6 +13,7 @@ class ConcolicMngr {
 #ifdef ENABLE_CONCOLIC
 public:
   static volatile int _num_threads_in_concolic;
+  static jlong _next_context_id;
   static pthread_mutex_t mutex;
   static __thread ThreadContext *ctx;
 
@@ -22,6 +23,8 @@ public:
   static jlong endConcolic();
   static void pausePathConditionRecording();
   static void resumePathConditionRecording();
+  static jlong markBranch(const char *site_id, int occurrence);
+  static std::string getBranchEvents();
   static std::string getSymbolicExpression(Handle handle);
   static std::string getRegionSummary();
   static void symbolize(Handle handle);
@@ -85,6 +88,16 @@ public:
   inline static void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
     ctx->record_path_condition(sym_exp);
 
+  }
+
+  inline static void __attribute__((optimize("O0"))) record_branch_condition(
+      Expression *sym_exp, bool outcome, int opcode) {
+    ctx->record_branch_condition(sym_exp, outcome, opcode);
+  }
+
+  inline static void __attribute__((optimize("O0"))) record_compare_witness(
+      Expression *sym_exp) {
+    ctx->record_compare_witness(sym_exp);
   }
 
   static void method_enter_callback(ZeroFrame *caller_frame, ZeroFrame *callee_frame) {

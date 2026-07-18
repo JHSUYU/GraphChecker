@@ -11,6 +11,7 @@ mkdir -p "$OUT"
   test/causynth/RegionArrayCopyExceptionApiSmoke.java \
   test/causynth/RegionArrayValueApiSmoke.java \
   test/causynth/RegionArrayValueMapProjectionApiSmoke.java \
+  test/causynth/RegionBranchEventApiSmoke.java \
   test/causynth/RegionFieldApiSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
@@ -25,6 +26,7 @@ for smoke in \
   RegionArrayCopyExceptionApiSmoke \
   RegionArrayValueApiSmoke \
   RegionArrayValueMapProjectionApiSmoke \
+  RegionBranchEventApiSmoke \
   RegionFieldApiSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \

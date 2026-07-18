@@ -441,6 +441,17 @@ public final class System {
     public static native void resumeConcolicPathCondition();
 
     /**
+     * Reserves an exact branch event in the current VM thread context.  The
+     * next symbolic conditional bytecode binds this event to its real path
+     * condition index.  A zero result means there is no eligible context.
+     */
+    public static native long markConcolicBranch(String siteId,
+                                                  int occurrence);
+
+    /** Returns the branch events owned by the current concolic thread. */
+    public static native String getConcolicBranchEvents();
+
+    /**
      * Serializes the current symbolic expression associated with {@code obj}.
      * The returned value is a JSON envelope and never exposes VM pointers.
      */

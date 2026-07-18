@@ -15,6 +15,7 @@
 #ifdef ENABLE_CONCOLIC
 
 volatile int ConcolicMngr::_num_threads_in_concolic = 0;
+jlong ConcolicMngr::_next_context_id = 0;
 pthread_mutex_t ConcolicMngr::mutex = PTHREAD_MUTEX_INITIALIZER;
 __thread ThreadContext *ConcolicMngr::ctx = NULL;
 
@@ -245,7 +246,7 @@ jlong ConcolicMngr::startConcolic(JavaThread *thread) {
 
   ++_num_threads_in_concolic;
 
-  ctx = new ThreadContext(thread);
+  ctx = new ThreadContext(thread, ++_next_context_id);
   tty->print_cr("Starting concolic execution");
   return 0;
 }
@@ -333,6 +334,8 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.String(ctx == NULL ? "" : ctx->get_region_id().c_str());
   writer.Key("activationId");
   writer.String(ctx == NULL ? "" : ctx->get_activation_id().c_str());
+  writer.Key("threadContextId");
+  writer.Int64(ctx == NULL ? 0 : ctx->get_context_id());
   writer.Key("pathConditionRecordingPaused");
   writer.Bool(ctx != NULL && ctx->path_condition_pause_depth() > 0);
   writer.Key("pathConditionPauseDepth");
@@ -345,8 +348,40 @@ std::string ConcolicMngr::getRegionSummary() {
     writer.StartArray();
     writer.EndArray();
   }
+  writer.Key("branchEvents");
+  if (has_active_context()) {
+    std::string branch_events = ctx->get_branch_events();
+    writer.RawValue(branch_events.c_str(), branch_events.length(),
+                    kObjectType);
+  } else {
+    writer.StartObject();
+    writer.Key("schemaVersion");
+    writer.Int(1);
+    writer.Key("kind");
+    writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
+    writer.Key("events");
+    writer.StartArray();
+    writer.EndArray();
+    writer.EndObject();
+  }
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
+}
+
+jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
+  if (ctx == NULL || ctx->path_condition_pause_depth() > 0) {
+    return 0;
+  }
+  return ctx->mark_branch(site_id, occurrence);
+}
+
+std::string ConcolicMngr::getBranchEvents() {
+  if (ctx != NULL) {
+    return ctx->get_branch_events();
+  }
+  return std::string("{\"schemaVersion\":1,\"kind\":"
+                     "\"CONCOLIC_THREAD_BRANCH_EVENTS\","
+                     "\"active\":false,\"events\":[]}");
 }
 
 void ConcolicMngr::pausePathConditionRecording() {

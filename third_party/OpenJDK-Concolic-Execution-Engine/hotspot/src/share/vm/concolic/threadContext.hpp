@@ -29,6 +29,21 @@ class ThreadContext {
   // cannot safely back concrete-array shadows.
   typedef std::map<jobject, ArrayInternal *> ArrayStore;
 
+  struct BranchEvent {
+    jlong event_id;
+    jlong context_id;
+    jlong owner_java_thread_id;
+    jlong owner_os_thread_id;
+    std::string region_id;
+    std::string activation_id;
+    std::string site_id;
+    int occurrence;
+    bool outcome;
+    int opcode;
+    std::string code_position;
+    std::vector<int> condition_indices;
+  };
+
 private:
   JavaThread *_thread;
   ShadowStack _s_stack;
@@ -46,9 +61,19 @@ private:
   int _path_condition_pause_depth;
   std::string _region_id;
   std::string _activation_id;
+  jlong _context_id;
+  jlong _owner_java_thread_id;
+  jlong _owner_os_thread_id;
+  jlong _branch_sequence;
+  bool _pending_branch_active;
+  jlong _pending_branch_event_id;
+  std::string _pending_branch_site_id;
+  int _pending_branch_occurrence;
+  int _pending_compare_condition_index;
+  std::vector<BranchEvent> _branch_events;
 //  std::set<oop> _allocated_objs;
 public:
-  ThreadContext(JavaThread *jt);
+  ThreadContext(JavaThread *jt, jlong context_id);
   ~ThreadContext();
 
   inline JavaThread *get_thread() { return _thread; }
@@ -80,6 +105,18 @@ public:
   inline const std::string &get_activation_id() const {
     return _activation_id;
   }
+
+  inline jlong get_context_id() const { return _context_id; }
+
+  // The Soot hook reserves an activation-local event immediately before the
+  // original conditional bytecode.  The Zero interpreter finalizes that
+  // exact event when the bytecode executes, so Java never has to guess from
+  // method names or expression shape.
+  jlong mark_branch(const char *site_id, int occurrence);
+  void record_branch_condition(Expression *expression, bool outcome,
+                               int opcode);
+  void record_compare_witness(Expression *expression);
+  std::string get_branch_events() const;
 
   void set_pc_enabled(bool pathConditionEnabled);
   int pause_path_condition_recording();

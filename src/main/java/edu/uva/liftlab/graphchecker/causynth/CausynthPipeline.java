@@ -1578,7 +1578,14 @@ public final class CausynthPipeline {
                 }
                 Value argument = invoke.getArg(target.argumentIndex);
                 List<Unit> before = new ArrayList<>();
-                Value objectValue = objectArg(body, argument, before);
+                // Box while symbolic propagation is still enabled.  The
+                // custom JDK models Wrapper.valueOf and transfers the exact
+                // primitive shadow expression to the wrapper object consumed
+                // by the runtime expression API.
+                Value objectValue = boxedCaptureValue(body, argument, before);
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.pauseObservation)));
                 Value primitiveValue = primitiveValueString(body, argument,
                         before);
                 before.add(Jimple.v().newInvokeStmt(
@@ -1594,6 +1601,9 @@ public final class CausynthPipeline {
                                 StringConstant.v(target.captureBindingId),
                                 IntConstant.v(target.occurrence),
                                 objectValue, primitiveValue)));
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.resumeObservation)));
                 insertBeforeSequence(body, stmt, before);
                 count++;
             } catch (RuntimeException exception) {
@@ -1643,6 +1653,8 @@ public final class CausynthPipeline {
                 Jimple.v().newStaticInvokeExpr(refs.activeToken)));
         Value owner = objectArg(body, field.getBase(), after);
         Value assignedValue = boxedCaptureValue(body, rhs, after);
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
         Value primitiveValue = primitiveValueString(body, rhs, after);
         after.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(
@@ -1657,6 +1669,8 @@ public final class CausynthPipeline {
                         StringConstant.v(target.outputCell),
                         IntConstant.v(target.occurrence),
                         owner, assignedValue, primitiveValue)));
+        after.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
         insertAfterSequence(body, assignment, after);
         return 1;
     }
@@ -1929,11 +1943,61 @@ public final class CausynthPipeline {
 
         Local decision = newTraceLocal(body, BooleanType.v(),
                 "$causynthBranchDecision");
+        Local prepared = newTraceLocal(body, LongType.v(),
+                "$causynthPreparedBranch");
+        Local vmEvent = newTraceLocal(body, LongType.v(),
+                "$causynthVmBranchEvent");
+        Local vmOccurrence = newTraceLocal(body, IntType.v(),
+                "$causynthVmBranchOccurrence");
+
+        // Prepare Java-side occurrence state while observation is paused, but
+        // invoke the native marker directly from the transformed method.  On
+        // the exact path that native call is the final invocation before the
+        // original IfStmt, so runtime bookkeeping bytecodes cannot consume
+        // its pending VM event.  A zero handle means no symbolic activation
+        // is active, or the required exact-event API was rejected; in either
+        // case the runtime records concrete replay or fails closed.
+        Unit noMarkerPath = Jimple.v().newNopStmt();
+        List<Unit> beforeBranch = new ArrayList<>();
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
+        beforeBranch.add(Jimple.v().newAssignStmt(prepared,
+                Jimple.v().newStaticInvokeExpr(refs.prepareBranch,
+                        StringConstant.v(method.getSignature()),
+                        IntConstant.v(unitIndex),
+                        StringConstant.v(expression))));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
+                LongConstant.v(0L)));
+        beforeBranch.add(Jimple.v().newIfStmt(
+                Jimple.v().newLeExpr(prepared, LongConstant.v(0L)),
+                noMarkerPath));
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
+                Jimple.v().newCastExpr(prepared, IntType.v())));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
+                Jimple.v().newStaticInvokeExpr(refs.markConcolicBranch,
+                                StringConstant.v(method.getSignature() + "#u"
+                                + unitIndex),
+                        vmOccurrence)));
+        Unit exactTransfer = Jimple.v().newGotoStmt(branch);
+        beforeBranch.add(exactTransfer);
+        beforeBranch.add(noMarkerPath);
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
+        insertBeforeSequence(body, branch, beforeBranch);
+        // UnitPatchingChain redirects pre-existing targets whenever another
+        // unit is inserted before their anchor.  Restore this internal edge
+        // after the full prefix exists; otherwise the exact path jumps back
+        // to prepareBranch and can never execute the original condition.
+        ((soot.jimple.GotoStmt) exactTransfer).setTarget(branch);
+
         List<Unit> falsePath = new ArrayList<>();
         falsePath.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
         falsePath.add(Jimple.v().newAssignStmt(decision,
                 Jimple.v().newStaticInvokeExpr(refs.resolveBranch,
+                        prepared, vmEvent,
                         StringConstant.v(method.getSignature()),
                         IntConstant.v(unitIndex), StringConstant.v(expression),
                         IntConstant.v(0))));
@@ -1949,6 +2013,7 @@ public final class CausynthPipeline {
                 Jimple.v().newStaticInvokeExpr(refs.pauseObservation));
         Unit trueResolve = Jimple.v().newAssignStmt(decision,
                 Jimple.v().newStaticInvokeExpr(refs.resolveBranch,
+                        prepared, vmEvent,
                         StringConstant.v(method.getSignature()),
                         IntConstant.v(unitIndex), StringConstant.v(expression),
                         IntConstant.v(1)));
@@ -1999,9 +2064,13 @@ public final class CausynthPipeline {
                                   SootMethodRef pauseObservation,
                                   SootMethodRef resumeObservation) {
         List<Unit> units = new ArrayList<>();
+        // Wrapper.valueOf must execute before observation is paused so the
+        // custom VM can attach the primitive shadow expression.  The wrapper
+        // is then stable while serialization and concrete string formatting
+        // execute with path-condition recording disabled.
+        Value objectValue = boxedCaptureValue(body, returnValue, units);
         units.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(pauseObservation)));
-        Value objectValue = objectArg(body, returnValue, units);
         Value primitiveValue = primitiveValueString(body, returnValue, units);
         units.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 exitRef, token, objectValue, primitiveValue)));
@@ -2741,6 +2810,8 @@ public final class CausynthPipeline {
         private final SootMethodRef recordFieldAssignmentOutput;
         private final SootMethodRef pauseObservation;
         private final SootMethodRef resumeObservation;
+        private final SootMethodRef prepareBranch;
+        private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
         private final SootMethodRef exitRegion;
         private final SootMethodRef throwRegion;
@@ -2765,6 +2836,8 @@ public final class CausynthPipeline {
                                    SootMethodRef recordFieldAssignmentOutput,
                                    SootMethodRef pauseObservation,
                                    SootMethodRef resumeObservation,
+                                   SootMethodRef prepareBranch,
+                                   SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
                                    SootMethodRef exitRegion,
                                    SootMethodRef throwRegion) {
@@ -2790,6 +2863,8 @@ public final class CausynthPipeline {
                     recordFieldAssignmentOutput;
             this.pauseObservation = pauseObservation;
             this.resumeObservation = resumeObservation;
+            this.prepareBranch = prepareBranch;
+            this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
             this.exitRegion = exitRegion;
             this.throwRegion = throwRegion;
@@ -2806,6 +2881,13 @@ public final class CausynthPipeline {
             }
             Type string = RefType.v("java.lang.String");
             Type object = RefType.v("java.lang.Object");
+            SootClass system = Scene.v().getSootClassUnsafe(
+                    "java.lang.System");
+            if (system == null) {
+                system = new SootClass("java.lang.System", Modifier.PUBLIC);
+                system.setPhantomClass();
+                Scene.v().addClass(system);
+            }
             return new ConcolicRegionRefs(
                     Scene.v().makeMethodRef(runtime, "enterRegion",
                             Arrays.asList(string, object,
@@ -2879,8 +2961,15 @@ public final class CausynthPipeline {
                             Collections.<Type>emptyList(), VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "resumeObservation",
                             Collections.<Type>emptyList(), VoidType.v(), true),
+                    Scene.v().makeMethodRef(runtime, "prepareBranch",
+                            Arrays.asList(string, IntType.v(), string),
+                            LongType.v(), true),
+                    Scene.v().makeMethodRef(system, "markConcolicBranch",
+                            Arrays.asList(string, IntType.v()),
+                            LongType.v(), true),
                     Scene.v().makeMethodRef(runtime, "resolveBranch",
-                            Arrays.asList(string, IntType.v(), string,
+                            Arrays.asList(LongType.v(), LongType.v(), string,
+                                    IntType.v(), string,
                                     BooleanType.v()), BooleanType.v(), true),
                     Scene.v().makeMethodRef(runtime, "exitRegion",
                             Arrays.asList(LongType.v(), object, string),

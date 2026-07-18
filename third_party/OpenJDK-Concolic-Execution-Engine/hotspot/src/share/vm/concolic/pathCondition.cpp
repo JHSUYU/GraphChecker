@@ -5,7 +5,7 @@
 #include "utilities/ostream.hpp"
 #include "webridge/utils/rapidjson/document.h"
 
-void __attribute__((optimize("O0"))) PathCondition::add(Expression *exp) {
+int __attribute__((optimize("O0"))) PathCondition::add(Expression *exp) {
   // getPathCondition() may be queried repeatedly by Java branch hooks while
   // the region is still running.  The old implementation cached the first
   // serialized prefix forever, so every later query (and the final summary)
@@ -22,6 +22,7 @@ void __attribute__((optimize("O0"))) PathCondition::add(Expression *exp) {
   exp->set_java_code_position(code_pos);
   Condition *cond = new Condition(code_pos, exp);
   _conds.push_back(cond);
+  return (int) _conds.size() - 1;
 }
 
 void PathCondition::gc() {

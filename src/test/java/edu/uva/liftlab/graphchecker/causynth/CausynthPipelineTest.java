@@ -1488,6 +1488,87 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void primitiveRegionReturnIsBoxedBeforeObservationPause()
+            throws Exception {
+        G.reset();
+        System.setProperty("causynth.instrument.concolic", "true");
+        System.clearProperty("causynth.concolic.activation.plan");
+        System.clearProperty("causynth.concolic.activation.id");
+
+        Scene.v().addClass(new SootClass("java.lang.Throwable",
+                Modifier.PUBLIC));
+        SootClass string = new SootClass("java.lang.String",
+                Modifier.PUBLIC);
+        Scene.v().addClass(string);
+        string.addMethod(new SootMethod("valueOf",
+                Collections.<soot.Type>singletonList(IntType.v()),
+                RefType.v("java.lang.String"),
+                Modifier.PUBLIC | Modifier.STATIC | Modifier.NATIVE));
+        SootClass integer = new SootClass("java.lang.Integer",
+                Modifier.PUBLIC);
+        Scene.v().addClass(integer);
+        integer.addMethod(new SootMethod("valueOf",
+                Collections.<soot.Type>singletonList(IntType.v()),
+                RefType.v("java.lang.Integer"),
+                Modifier.PUBLIC | Modifier.STATIC | Modifier.NATIVE));
+
+        SootClass owner = new SootClass("example.PrimitiveReturnRegion",
+                Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootMethod root = new SootMethod("run", Collections.emptyList(),
+                IntType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(root);
+        Body body = Jimple.v().newBody(root);
+        root.setActiveBody(body);
+        body.getUnits().add(Jimple.v().newReturnStmt(IntConstant.v(1)));
+
+        Object result = newAnalysisResultWithRoot(root.getSignature());
+        Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                "instrumentConcolicRegions", result.getClass());
+        instrument.setAccessible(true);
+        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+
+        List<Unit> units = new ArrayList<>();
+        Unit wrapperCall = null;
+        Unit exitCall = null;
+        Unit primitiveStringCall = null;
+        for (Unit unit : body.getUnits()) {
+            units.add(unit);
+            InvokeExpr invoke = invokeExpression(unit);
+            if (invoke == null) continue;
+            String method = invoke.getMethodRef().name();
+            String declaring = invoke.getMethodRef().declaringClass()
+                    .getName();
+            if ("valueOf".equals(method)
+                    && "java.lang.Integer".equals(declaring)) {
+                wrapperCall = unit;
+            } else if ("valueOf".equals(method)
+                    && "java.lang.String".equals(declaring)) {
+                primitiveStringCall = unit;
+            } else if ("exitRegion".equals(method)) {
+                exitCall = unit;
+            }
+        }
+        assertNotNull(wrapperCall);
+        assertNotNull(primitiveStringCall);
+        assertNotNull(exitCall);
+        int wrapperIndex = units.indexOf(wrapperCall);
+        int stringIndex = units.indexOf(primitiveStringCall);
+        int exitIndex = units.indexOf(exitCall);
+        assertTrue(wrapperIndex < stringIndex && stringIndex < exitIndex);
+        Unit pause = units.get(wrapperIndex + 1);
+        assertRuntimeInvoke(pause,
+                "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
+                "pauseObservation");
+        InvokeExpr exit = invokeExpression(exitCall);
+        assertTrue(wrapperCall instanceof AssignStmt);
+        assertSame(((AssignStmt) wrapperCall).getLeftOp(), exit.getArg(1));
+        assertFalse("primitive return must not be serialized as null",
+                exit.getArg(1) instanceof soot.jimple.NullConstant);
+    }
+
+    @Test
     public void regionEntryPassesExactReferenceArgumentsAndNullPrimitiveSlots()
             throws Exception {
         G.reset();
@@ -1753,6 +1834,32 @@ public class CausynthPipelineTest {
 
         body.validate();
 
+        Unit prepareHook = null;
+        Unit nativeMarker = null;
+        for (Unit unit : body.getUnits()) {
+            InvokeExpr invoke = invokeExpression(unit);
+            if (invoke == null) continue;
+            if ("prepareBranch".equals(invoke.getMethodRef().name())) {
+                prepareHook = unit;
+            } else if ("markConcolicBranch".equals(
+                    invoke.getMethodRef().name())) {
+                nativeMarker = unit;
+            }
+        }
+        assertNotNull(prepareHook);
+        assertNotNull(nativeMarker);
+        assertRuntimeInvoke(prepareHook,
+                "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
+                "prepareBranch");
+        assertRuntimeInvoke(nativeMarker, "java.lang.System",
+                "markConcolicBranch");
+        Unit afterNativeMarker = body.getUnits().getSuccOf(nativeMarker);
+        assertTrue("the native marker may be followed only by an unconditional "
+                        + "transfer to the original condition",
+                afterNativeMarker instanceof GotoStmt);
+        assertSame(originalBranch,
+                ((GotoStmt) afterNativeMarker).getTarget());
+
         Method originalUnitIndex = CausynthPipeline.class.getDeclaredMethod(
                 "originalUnitIndex", Unit.class);
         originalUnitIndex.setAccessible(true);
@@ -1777,7 +1884,7 @@ public class CausynthPipelineTest {
                 "pauseObservation");
         assertRuntimeBooleanInvoke(trueResolve,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
-                "resolveBranch", 3, 1);
+                "resolveBranch", 5, 1);
         assertRuntimeInvoke(trueResume,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
                 "resumeObservation");
@@ -1809,7 +1916,7 @@ public class CausynthPipelineTest {
                 "pauseObservation");
         assertRuntimeBooleanInvoke(falseResolve,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
-                "resolveBranch", 3, 0);
+                "resolveBranch", 5, 0);
         assertRuntimeInvoke(falseResume,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
                 "resumeObservation");
@@ -4072,14 +4179,24 @@ public class CausynthPipelineTest {
                 Collections.emptyList(), VoidType.v());
         fixture.staticMethod(concolic, "resumeObservation",
                 Collections.emptyList(), VoidType.v());
+        fixture.staticMethod(concolic, "prepareBranch",
+                Arrays.asList(fixture.string, IntType.v(), fixture.string),
+                LongType.v());
         fixture.staticMethod(concolic, "resolveBranch",
-                Arrays.asList(fixture.string, IntType.v(), fixture.string,
+                Arrays.asList(LongType.v(), LongType.v(), fixture.string,
+                        IntType.v(), fixture.string,
                         BooleanType.v()), BooleanType.v());
         fixture.staticMethod(concolic, "exitRegion",
                 Arrays.asList(LongType.v(), fixture.object, fixture.string),
                 VoidType.v());
         fixture.staticMethod(concolic, "throwRegion",
                 Arrays.asList(LongType.v(), fixture.throwable), VoidType.v());
+        SootClass system = Scene.v().getSootClassUnsafe("java.lang.System");
+        if (system == null) {
+            system = fixture.runtimeClass("java.lang.System");
+        }
+        fixture.staticMethod(system, "markConcolicBranch",
+                Arrays.asList(fixture.string, IntType.v()), LongType.v());
     }
 
     private static final class TypeFixture {

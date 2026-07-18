@@ -273,57 +273,84 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void mapsOnlyNewConditionsFromTheTargetMethod() {
-        String method = "<example.Target: java.lang.Object lookup(int)>";
-        JsonArray conditions = JsonParser.parseString("["
-                + condition("virtual jobject example.Target.lookup(jint):41")
-                + "," + condition("static jobject "
-                + "edu.uva.liftlab.graphchecker.runtime."
-                + "ConcolicRegionRuntime.safe(jobject):840")
-                + "," + condition("virtual jobject "
-                + "com.google.gson.JsonObject.createJsonElement(jobject):122")
-                + "]").getAsJsonArray();
+    public void exactVmEventSelectsOneOfTwoSameShapeBranchConditions()
+            throws Exception {
+        JsonObject mapping = runExactBranchEvent(false);
 
-        assertEquals(0, ConcolicRegionRuntime.findBranchConditionIndex(
-                method, "result != null", true, conditions, 0));
-        assertEquals(-1, ConcolicRegionRuntime.findBranchConditionIndex(
-                method, "result != null", true, conditions, 1));
-        assertTrue(ConcolicRegionRuntime.conditionBelongsToMethod(
-                method, conditions.get(0)));
-        assertFalse(ConcolicRegionRuntime.conditionBelongsToMethod(
-                method, conditions.get(1)));
+        assertTrue(mapping.get("vmBranchEventValidated").getAsBoolean());
+        assertEquals(1, mapping.get("conditionIndex").getAsInt());
+        assertEquals(1, mapping.get("branchConditionCandidateCount")
+                .getAsInt());
+        assertEquals("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX",
+                mapping.get("mappingPolicy").getAsString());
+        assertEquals("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX",
+                mapping.get("conditionAuthority").getAsString());
+        assertEquals(77L, mapping.get("vmThreadContextId").getAsLong());
+        assertEquals(Thread.currentThread().getId(), mapping.get(
+                "vmOwnerJavaThreadId").getAsLong());
+        assertEquals(1, mapping.getAsJsonArray("vmConditionIndices")
+                .get(0).getAsInt());
     }
 
     @Test
-    public void branchJoinRejectsTwoSameMethodSameShapeCandidates() {
-        String method = "<example.Target: java.lang.Object lookup(int)>";
-        JsonArray conditions = JsonParser.parseString("["
-                + condition("virtual jobject example.Target.lookup(jint):41")
-                + "," + condition(
-                "virtual jobject example.Target.lookup(jint):42")
-                + "]").getAsJsonArray();
+    public void exactVmEventWithForeignThreadOwnerFailsClosed()
+            throws Exception {
+        JsonObject mapping = runExactBranchEvent(true);
 
-        assertEquals(2, ConcolicRegionRuntime
-                .countBranchConditionCandidates(method,
-                        "result != null", true, conditions, 0));
-        assertEquals(-1, ConcolicRegionRuntime.findBranchConditionIndex(
-                method, "result != null", true, conditions, 0));
+        assertFalse(mapping.get("vmBranchEventValidated").getAsBoolean());
+        assertEquals(-1, mapping.get("conditionIndex").getAsInt());
+        assertEquals(0, mapping.get("branchConditionCandidateCount")
+                .getAsInt());
+        assertEquals("UNRESOLVED_VM_EXACT_BRANCH_EVENT",
+                mapping.get("conditionAuthority").getAsString());
+        assertTrue(mapping.get("mappingWarning").getAsString().contains(
+                "belongs to Java thread"));
+        assertEquals("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX",
+                mapping.get("mappingPolicy").getAsString());
     }
 
-    @Test
-    public void branchJoinUsesBaselineToSeparateRepeatedBranchOccurrences() {
+    private static JsonObject runExactBranchEvent(boolean foreignOwner)
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String method = "<example.Target: java.lang.Object lookup(int)>";
-        JsonArray conditions = JsonParser.parseString("["
-                + condition("virtual jobject example.Target.lookup(jint):41")
-                + "," + condition(
-                "virtual jobject example.Target.lookup(jint):41")
-                + "]").getAsJsonArray();
+        JsonObject activation = concreteActivation("ACT.EXACT.BRANCH",
+                method, 1);
+        activation.addProperty("regionId", "REGION.EXACT.BRANCH");
+        activation.addProperty("test", "exact-branch-test");
+        activation.addProperty("concreteReplayOnly", false);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
 
-        assertEquals(1, ConcolicRegionRuntime
-                .countBranchConditionCandidates(method,
-                        "result != null", true, conditions, 1));
-        assertEquals(1, ConcolicRegionRuntime.findBranchConditionIndex(
-                method, "result != null", true, conditions, 1));
+        String[] old = installPlan(plan, results, "exact-branch-test");
+        try {
+            ExactBranchEngine.reset();
+            ExactBranchEngine.foreignOwner = foreignOwner;
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    ExactBranchEngine.class);
+            long token = ConcolicRegionRuntime.enterRegion(method,
+                    new Object());
+            assertTrue(token > 0L);
+            long handle = ConcolicRegionRuntime.prepareBranch(method, 7,
+                    "result != null");
+            assertTrue(handle > 0L);
+            long eventId = ExactBranchEngine.markBranch(method + "#u7",
+                    (int) handle);
+            assertTrue(ConcolicRegionRuntime.resolveBranch(handle, eventId,
+                    method, 7, "result != null", true));
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonObject row = resultRows(results).get(0);
+            assertEquals(1, row.getAsJsonArray("branchMappings").size());
+            return row.getAsJsonArray("branchMappings").get(0)
+                    .getAsJsonObject();
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
     }
 
     @Test
@@ -948,7 +975,7 @@ public class ConcolicRegionRuntimeTest {
                     entry);
             ConcolicRegionRuntime.materializeField(root, 6, value,
                     expiryField, "expiry");
-            assertTrue(ConcolicRegionRuntime.resolveBranch(root, 7,
+            assertTrue(ConcolicRegionRuntime.resolveBranch(0L, 0L, root, 7,
                     "expiry >= now", true));
             // Deliberately retain the entry: Iterator.remove is never called.
             ConcolicRegionRuntime.exitRegion(token, null, "");
@@ -4202,7 +4229,7 @@ public class ConcolicRegionRuntimeTest {
             try {
                 release.await(5, TimeUnit.SECONDS);
                 if (value > 0L) {
-                    assertFalse(ConcolicRegionRuntime.resolveBranch(
+                    assertFalse(ConcolicRegionRuntime.resolveBranch(0L, 0L,
                             branchMethod, 8, "result != null", false));
                     ConcolicRegionRuntime.exitRegion(value, null, "");
                 }
@@ -4709,6 +4736,124 @@ public class ConcolicRegionRuntimeTest {
 
         private ExpiringValue(long expiry) {
             this.expiry = expiry;
+        }
+    }
+
+    /** Exact-event stand-in with an intentionally ambiguous PC suffix. */
+    private static final class ExactBranchEngine {
+        private static String regionId;
+        private static String activationId;
+        private static String siteId;
+        private static int markerSequence;
+        private static long ownerThreadId;
+        private static boolean foreignOwner;
+        private static final long EVENT_ID = 41L;
+        private static final long CONTEXT_ID = 77L;
+        private static final long OS_THREAD_ID = 9001L;
+
+        private static void reset() {
+            regionId = "";
+            activationId = "";
+            siteId = "";
+            markerSequence = 0;
+            ownerThreadId = 0L;
+            foreignOwner = false;
+        }
+
+        @SuppressWarnings("unused")
+        private static long startRegion(String region, String activation) {
+            regionId = region;
+            activationId = activation;
+            ownerThreadId = Thread.currentThread().getId();
+            return 0L;
+        }
+
+        @SuppressWarnings("unused")
+        private static void symbolize(Object value, String prefix) {
+        }
+
+        @SuppressWarnings("unused")
+        private static void symbolizeField(Object owner, String field,
+                                           String prefix) {
+        }
+
+        @SuppressWarnings("unused")
+        private static String expression(Object value) {
+            return "{\"schemaVersion\":1,\"active\":true,"
+                    + "\"symbolic\":false,\"expression\":null}";
+        }
+
+        @SuppressWarnings("unused")
+        private static String finishRegion() {
+            return "{\"schemaVersion\":1,\"engine\":\"exact-mock\","
+                    + "\"active\":true,\"pathCondition\":"
+                    + pathCondition() + "}";
+        }
+
+        @SuppressWarnings("unused")
+        private static String pathCondition() {
+            return "[" + condition(
+                    "virtual jobject example.Target.lookup(jint):41")
+                    + "," + condition(
+                    "virtual jobject example.Target.lookup(jint):42")
+                    + "]";
+        }
+
+        @SuppressWarnings("unused")
+        private static void pausePathCondition() {
+        }
+
+        @SuppressWarnings("unused")
+        private static void resumePathCondition() {
+        }
+
+        @SuppressWarnings("unused")
+        private static long markBranch(String site, int sequence) {
+            siteId = site;
+            markerSequence = sequence;
+            return EVENT_ID;
+        }
+
+        @SuppressWarnings("unused")
+        private static String branchEvents() {
+            long claimedOwner = ownerThreadId + (foreignOwner ? 1L : 0L);
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", EVENT_ID);
+            event.addProperty("contextId", CONTEXT_ID);
+            event.addProperty("ownerJavaThreadId", claimedOwner);
+            event.addProperty("ownerOsThreadId", OS_THREAD_ID);
+            event.addProperty("regionId", regionId);
+            event.addProperty("activationId", activationId);
+            event.addProperty("siteId", siteId);
+            event.addProperty("occurrence", markerSequence);
+            event.addProperty("outcome", true);
+            event.addProperty("opcode", 199);
+            event.addProperty("codePosition",
+                    "virtual jobject example.Target.lookup(jint):42");
+            JsonArray indices = new JsonArray();
+            indices.add(1);
+            event.add("conditionIndices", indices);
+            event.addProperty("conditionCount", 1);
+            event.addProperty("authority",
+                    "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+
+            JsonObject envelope = new JsonObject();
+            envelope.addProperty("schemaVersion", 1);
+            envelope.addProperty("kind",
+                    "CONCOLIC_THREAD_BRANCH_EVENTS");
+            envelope.addProperty("contextId", CONTEXT_ID);
+            envelope.addProperty("ownerJavaThreadId", claimedOwner);
+            envelope.addProperty("ownerOsThreadId", OS_THREAD_ID);
+            envelope.addProperty("regionId", regionId);
+            envelope.addProperty("activationId", activationId);
+            JsonArray events = new JsonArray();
+            events.add(event);
+            envelope.add("events", events);
+            return envelope.toString();
+        }
+
+        @SuppressWarnings("unused")
+        private static void endRegion() {
         }
     }
 

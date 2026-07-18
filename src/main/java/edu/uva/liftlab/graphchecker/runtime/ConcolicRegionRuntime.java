@@ -292,7 +292,19 @@ public final class ConcolicRegionRuntime {
                 testEngineMethod(owner, "pathCondition"),
                 testEngineMethod(owner, "pausePathCondition"),
                 testEngineMethod(owner, "resumePathCondition"),
+                optionalTestEngineMethod(owner, "markBranch",
+                        String.class, int.class),
+                optionalTestEngineMethod(owner, "branchEvents"),
                 testEngineMethod(owner, "endRegion"));
+    }
+
+    private static Method optionalTestEngineMethod(
+            Class<?> owner, String name, Class<?>... parameters) {
+        try {
+            return testEngineMethod(owner, name, parameters);
+        } catch (NoSuchMethodException ignored) {
+            return null;
+        }
     }
 
     private static Method testEngineMethod(Class<?> owner, String name,
@@ -3199,81 +3211,70 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Called immediately after a selected Jimple branch.  It binds the stable
-     * Soot site id to the last path-condition element emitted by the VM.  The
-     * later scheduler can therefore keep the prefix, negate this element, and
-     * discard the old suffix.
+     * Reserves a VM-attested branch event immediately before the original
+     * conditional executes.  The returned handle is activation-local and is
+     * consumed by the matching post-branch resolve hook.
      */
-    public static void recordBranch(String method, int unitIndex,
-                                    String expression, boolean outcome) {
+    public static long prepareBranch(String method, int unitIndex,
+                                     String expression) {
         ActiveRegion active = activeRegion();
-        if (active == null) {
-            return;
-        }
-        if (!active.engineBacked) {
-            recordConcreteBranch(active, method, unitIndex, expression,
-                    outcome);
-            return;
-        }
-        EngineApi api = engine();
-        boolean paused = false;
+        if (active == null) return 0L;
+        if (!active.engineBacked) return 0L;
         try {
-            api.pausePathCondition();
-            paused = true;
-            String siteId = safe(method) + "#u" + unitIndex;
-            int occurrence = active.nextBranchOccurrence(siteId);
-            recordBranchPaused(active, api, method, unitIndex, expression,
-                    occurrence, outcome, outcome, false);
+            PreparedBranch prepared = active.prepareBranch(method, unitIndex,
+                    expression, engine());
+            return prepared == null ? 0L : prepared.handle;
         } catch (Throwable throwable) {
-            active.unresolved.add("branch/PC observation failed: "
+            active.addUnresolvedOnce("branch event preparation failed: "
                     + rootCause(throwable));
-        } finally {
-            if (paused) {
-                resumePathCondition(active, api);
-            }
+            return 0L;
         }
     }
 
     /**
-     * Records the concrete branch and optionally applies a scheduler-selected
-     * Soot control-flow override.  The VM path condition remains associated
-     * with {@code observedOutcome}; {@code effectiveOutcome} is only a
-     * reachability validation aid and is never presented as a solver result.
+     * Exact-event overload carrying the id returned by the native marker that
+     * the instrumented class executes immediately before its original if.
      */
-    public static boolean resolveBranch(String method, int unitIndex,
+    public static boolean resolveBranch(long preparedHandle, long vmEventId,
+                                        String method, int unitIndex,
                                         String expression,
                                         boolean observedOutcome) {
         ActiveRegion active = activeRegion();
-        if (active == null) {
-            return observedOutcome;
-        }
+        if (active == null) return observedOutcome;
         if (!active.engineBacked) {
             recordConcreteBranch(active, method, unitIndex, expression,
                     observedOutcome);
             return observedOutcome;
         }
+        PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
+        if (prepared == null || !prepared.matches(method, unitIndex,
+                expression)) {
+            active.addUnresolvedOnce("missing or mismatched prepared branch "
+                    + preparedHandle + " for " + safe(method) + "#u"
+                    + unitIndex);
+            // No unverified VM event may be rebound heuristically on a JDK
+            // that advertised the exact API.
+            return observedOutcome;
+        }
         EngineApi api = engine();
         boolean paused = false;
         try {
             api.pausePathCondition();
             paused = true;
-            String siteId = safe(method) + "#u" + unitIndex;
-            int occurrence = active.nextBranchOccurrence(siteId);
-            ForcedBranch force = active.activation.force(siteId, occurrence);
+            ForcedBranch force = active.activation.force(prepared.siteId,
+                    prepared.occurrence);
             boolean effectiveOutcome = force == null
                     ? observedOutcome : force.desiredOutcome;
             recordBranchPaused(active, api, method, unitIndex, expression,
-                    occurrence, observedOutcome, effectiveOutcome,
-                    force != null);
+                    prepared.occurrence, observedOutcome, effectiveOutcome,
+                    force != null, vmEventId);
             return effectiveOutcome;
         } catch (Throwable throwable) {
-            active.unresolved.add("branch/PC observation failed: "
-                    + rootCause(throwable));
+            active.addUnresolvedOnce("branch/PC exact-event observation "
+                    + "failed: " + rootCause(throwable));
             return observedOutcome;
         } finally {
-            if (paused) {
-                resumePathCondition(active, api);
-            }
+            if (paused) resumePathCondition(active, api);
         }
     }
 
@@ -3282,6 +3283,14 @@ public final class ConcolicRegionRuntime {
             String expression, boolean observedOutcome) {
         String siteId = safe(method) + "#u" + unitIndex;
         int occurrence = active.nextBranchOccurrence(siteId);
+        recordConcreteBranch(active, method, unitIndex, expression,
+                observedOutcome, occurrence);
+    }
+
+    private static void recordConcreteBranch(
+            ActiveRegion active, String method, int unitIndex,
+            String expression, boolean observedOutcome, int occurrence) {
+        String siteId = safe(method) + "#u" + unitIndex;
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", siteId);
         mapping.addProperty("method", safe(method));
@@ -3330,23 +3339,22 @@ public final class ConcolicRegionRuntime {
     private static void recordBranchPaused(
             ActiveRegion active, EngineApi api, String method, int unitIndex,
             String expression, int occurrence, boolean observedOutcome,
-            boolean effectiveOutcome, boolean overrideApplied) throws Exception {
+            boolean effectiveOutcome, boolean overrideApplied,
+            long vmEventId) throws Exception {
         String siteId = safe(method) + "#u" + unitIndex;
         JsonElement parsed = parseJson(api.pathCondition());
         JsonArray conditions = parsed.isJsonArray()
                 ? parsed.getAsJsonArray() : new JsonArray();
         int baseline = active.lastPathConditionSize;
         int added = Math.max(0, conditions.size() - baseline);
-        int targetMethodConditions = countMethodConditions(
-                method, conditions, baseline);
-        // Search only the suffix recorded since the previous hook and only
-        // conditions whose VM code position identifies this Soot method.
-        // Observational code can therefore never win merely by being the last
-        // condition with a compatible operator.
-        int conditionCandidates = countBranchConditionCandidates(method,
-                expression, observedOutcome, conditions, baseline);
-        int conditionIndex = findBranchConditionIndex(method, expression,
-                observedOutcome, conditions, baseline);
+        VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
+                active, siteId, expression, observedOutcome, vmEventId,
+                occurrence, conditions, baseline);
+        int conditionCandidates = vmAttestation.valid
+                && vmAttestation.conditionIndex >= 0 ? 1 : 0;
+        int conditionIndex = vmAttestation.valid
+                ? vmAttestation.conditionIndex : -1;
+        int targetMethodConditions = conditionCandidates;
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", siteId);
         mapping.addProperty("method", safe(method));
@@ -3372,7 +3380,29 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("conditionIndex", conditionIndex);
         mapping.addProperty("rawConditionIndex", conditionIndex);
         mapping.addProperty("mappingPolicy",
-                "UNIQUE_NEW_SUFFIX_TARGET_METHOD_AND_BRANCH_SHAPE");
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
+        mapping.addProperty("vmBranchEventExpected", true);
+        mapping.addProperty("vmBranchEventId", vmEventId);
+        mapping.addProperty("vmOccurrence", occurrence);
+        mapping.addProperty("vmBranchEventValidated", vmAttestation.valid);
+        mapping.addProperty("vmBranchEventAuthority",
+                vmAttestation.authority);
+        if (vmAttestation.event != null) {
+            mapping.addProperty("vmThreadContextId",
+                    longInteger(vmAttestation.event, "contextId", 0L));
+            mapping.addProperty("vmOwnerJavaThreadId",
+                    longInteger(vmAttestation.event,
+                            "ownerJavaThreadId", 0L));
+            mapping.addProperty("vmOwnerOsThreadId",
+                    longInteger(vmAttestation.event,
+                            "ownerOsThreadId", 0L));
+            mapping.addProperty("vmOpcode",
+                    integer(vmAttestation.event, "opcode", -1));
+            mapping.addProperty("vmCodePosition",
+                    string(vmAttestation.event, "codePosition"));
+            mapping.add("vmConditionIndices",
+                    array(vmAttestation.event, "conditionIndices"));
+        }
         mapping.addProperty("policy", active.activation.policy(siteId));
         ScheduledTarget scheduledTarget = active.activation.target(
                 siteId, occurrence);
@@ -3408,15 +3438,24 @@ public final class ConcolicRegionRuntime {
                 mapping.addProperty("conditionNormalization",
                         "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
             }
+            if (vmAttestation.valid) {
+                mapping.addProperty("conditionAuthority",
+                        "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
+            }
+        } else if (vmAttestation.valid) {
+            mapping.addProperty("conditionAuthority",
+                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT");
         }
         boolean pathConditionShrank = conditions.size() < baseline;
         if (pathConditionShrank) {
             mapping.addProperty("mappingWarning",
                     "path condition shrank between branch hooks");
-        } else if (conditionCandidates > 1) {
+        } else if (!vmAttestation.valid) {
             mapping.addProperty("mappingWarning",
-                    "ambiguous newly added target-method conditions match "
-                            + "selected branch; no condition was joined");
+                    "VM exact branch event rejected: "
+                            + vmAttestation.error);
+            mapping.addProperty("conditionAuthority",
+                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT");
         } else if (conditionIndex < 0 && conditionCandidates == 0
                 && replayValidated) {
             mapping.addProperty("conditionAuthority",
@@ -3430,6 +3469,134 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = conditions.size();
         active.branchMappings.add(mapping);
+    }
+
+    private static VmBranchEventAttestation attestVmBranchEvent(
+            EngineApi api, ActiveRegion active, String siteId,
+            String expression, boolean observedOutcome, long eventId,
+            int occurrence, JsonArray conditions, int baseline) {
+        if (eventId <= 0L) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "marker returned a non-positive event id");
+        }
+        final JsonElement parsed;
+        try {
+            parsed = parseJson(api.branchEvents());
+        } catch (Throwable throwable) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "event stream is not readable: " + rootCause(throwable));
+        }
+        if (!parsed.isJsonObject()) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "event stream is not a JSON object");
+        }
+        JsonObject envelope = parsed.getAsJsonObject();
+        if (integer(envelope, "schemaVersion", -1) != 1
+                || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
+                string(envelope, "kind"))) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "unexpected event stream kind");
+        }
+        long envelopeContext = longInteger(envelope, "contextId", 0L);
+        long envelopeOwner = longInteger(envelope,
+                "ownerJavaThreadId", 0L);
+        long envelopeOsOwner = longInteger(envelope,
+                "ownerOsThreadId", 0L);
+        if (envelopeContext <= 0L) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "missing positive VM thread context id");
+        }
+        if (envelopeOwner != active.thread.getId()) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "event stream belongs to Java thread " + envelopeOwner
+                            + " instead of " + active.thread.getId());
+        }
+        if (!safe(active.activation.regionId).equals(
+                string(envelope, "regionId"))
+                || !safe(active.activation.activationId).equals(
+                string(envelope, "activationId"))) {
+            return VmBranchEventAttestation.invalid(null, "",
+                    "event stream region/activation does not match owner");
+        }
+
+        JsonObject selected = null;
+        int matches = 0;
+        for (JsonElement candidate : array(envelope, "events")) {
+            if (!candidate.isJsonObject()) continue;
+            JsonObject event = candidate.getAsJsonObject();
+            if (longInteger(event, "eventId", -1L) == eventId) {
+                selected = event;
+                matches++;
+            }
+        }
+        if (matches != 1 || selected == null) {
+            return VmBranchEventAttestation.invalid(selected, "",
+                    "event id " + eventId + " matched " + matches
+                            + " records");
+        }
+        String authority = string(selected, "authority");
+        if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "unsupported event authority " + authority);
+        }
+        if (longInteger(selected, "contextId", 0L) != envelopeContext
+                || longInteger(selected, "ownerJavaThreadId", 0L)
+                != envelopeOwner
+                || longInteger(selected, "ownerOsThreadId", 0L)
+                != envelopeOsOwner) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "event owner/context differs from its thread envelope");
+        }
+        if (!safe(active.activation.regionId).equals(
+                string(selected, "regionId"))
+                || !safe(active.activation.activationId).equals(
+                string(selected, "activationId"))) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "event region/activation differs from its owner");
+        }
+        if (!safe(siteId).equals(string(selected, "siteId"))
+                || integer(selected, "occurrence", -1) != occurrence) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "event site/occurrence does not match prepared branch");
+        }
+        if (bool(selected, "outcome", !observedOutcome)
+                != observedOutcome) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "event outcome differs from observed branch");
+        }
+        JsonArray indices = array(selected, "conditionIndices");
+        if (integer(selected, "conditionCount", -1) != indices.size()) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "event condition count differs from its index vector");
+        }
+        if (indices.size() > 1) {
+            return VmBranchEventAttestation.invalid(selected, authority,
+                    "instrumented IfStmt emitted multiple condition indices");
+        }
+        int conditionIndex = -1;
+        if (indices.size() == 1) {
+            try {
+                conditionIndex = indices.get(0).getAsInt();
+            } catch (RuntimeException exception) {
+                return VmBranchEventAttestation.invalid(selected, authority,
+                        "condition index is not an integer");
+            }
+            if (conditionIndex < baseline
+                    || conditionIndex >= conditions.size()) {
+                return VmBranchEventAttestation.invalid(selected, authority,
+                        "condition index " + conditionIndex
+                                + " is outside new path-condition suffix ["
+                                + baseline + "," + conditions.size() + ")");
+            }
+            if (!branchConditionMatches(expression, observedOutcome,
+                    conditions.get(conditionIndex))) {
+                return VmBranchEventAttestation.invalid(selected, authority,
+                        "selected VM condition does not match the original "
+                                + "branch predicate");
+            }
+        }
+        return VmBranchEventAttestation.valid(selected, authority,
+                conditionIndex);
     }
 
     private static void finish(long token, String exitKind, String exceptionType,
@@ -4596,71 +4763,6 @@ public final class ConcolicRegionRuntime {
         String candidate = firstNonBlank(field, cell);
         String parsed = fieldName(candidate);
         return parsed.isEmpty() ? safe(candidate) : parsed;
-    }
-
-    static int findBranchConditionIndex(String method, String expression,
-                                        boolean outcome, JsonArray conditions,
-                                        int rawBaseline) {
-        if (conditions == null) {
-            return -1;
-        }
-        int first = Math.max(0, Math.min(rawBaseline, conditions.size()));
-        int match = -1;
-        for (int index = first; index < conditions.size(); index++) {
-            JsonElement condition = conditions.get(index);
-            if (conditionBelongsToMethod(method, condition)
-                    && branchConditionMatches(expression, outcome, condition)) {
-                if (match >= 0) {
-                    // A Soot unit index cannot currently be recovered from the
-                    // VM code position.  Picking the newest of two same-method,
-                    // same-shape conditions would therefore be heuristic and
-                    // could join this branch to an earlier bytecode decision.
-                    return -1;
-                }
-                match = index;
-            }
-        }
-        return match;
-    }
-
-    static int countBranchConditionCandidates(String method,
-                                               String expression,
-                                               boolean outcome,
-                                               JsonArray conditions,
-                                               int rawBaseline) {
-        if (conditions == null) {
-            return 0;
-        }
-        int count = 0;
-        int first = Math.max(0, Math.min(rawBaseline, conditions.size()));
-        for (int index = first; index < conditions.size(); index++) {
-            JsonElement condition = conditions.get(index);
-            if (conditionBelongsToMethod(method, condition)
-                    && branchConditionMatches(expression, outcome,
-                    condition)) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    private static int countMethodConditions(String method,
-                                             JsonArray conditions,
-                                             int rawBaseline) {
-        int count = 0;
-        int first = Math.max(0, Math.min(rawBaseline, conditions.size()));
-        for (int index = first; index < conditions.size(); index++) {
-            if (conditionBelongsToMethod(method, conditions.get(index))) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    static boolean conditionBelongsToMethod(String method,
-                                            JsonElement condition) {
-        return ConcolicCodePosition.matches(method,
-                conditionCodePosition(condition));
     }
 
     private static String conditionCodePosition(JsonElement condition) {
@@ -6446,6 +6548,63 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    private static final class VmBranchEventAttestation {
+        private final JsonObject event;
+        private final String authority;
+        private final int conditionIndex;
+        private final boolean valid;
+        private final String error;
+
+        private VmBranchEventAttestation(JsonObject event, String authority,
+                                         int conditionIndex, boolean valid,
+                                         String error) {
+            this.event = event;
+            this.authority = safe(authority);
+            this.conditionIndex = conditionIndex;
+            this.valid = valid;
+            this.error = safe(error);
+        }
+
+        private static VmBranchEventAttestation valid(
+                JsonObject event, String authority, int conditionIndex) {
+            return new VmBranchEventAttestation(event, authority,
+                    conditionIndex, true, "");
+        }
+
+        private static VmBranchEventAttestation invalid(
+                JsonObject event, String authority, String error) {
+            return new VmBranchEventAttestation(event, authority,
+                    -1, false, error);
+        }
+    }
+
+    private static final class PreparedBranch {
+        private final long handle;
+        private final String method;
+        private final int unitIndex;
+        private final String expression;
+        private final String siteId;
+        private final int occurrence;
+
+        private PreparedBranch(long handle, String method, int unitIndex,
+                               String expression, String siteId,
+                               int occurrence) {
+            this.handle = handle;
+            this.method = safe(method);
+            this.unitIndex = unitIndex;
+            this.expression = safe(expression);
+            this.siteId = safe(siteId);
+            this.occurrence = occurrence;
+        }
+
+        private boolean matches(String actualMethod, int actualUnitIndex,
+                                String actualExpression) {
+            return method.equals(safe(actualMethod))
+                    && unitIndex == actualUnitIndex
+                    && expression.equals(safe(actualExpression));
+        }
+    }
+
     private static final class ActiveRegion {
         private final long token;
         private final Activation activation;
@@ -6499,6 +6658,8 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
+        private final Map<Long, PreparedBranch> preparedBranches =
+                new LinkedHashMap<>();
         private final Map<String, Integer> replayOccurrences =
                 new LinkedHashMap<>();
         private final Map<String, Integer> heapEffectOccurrences =
@@ -6527,6 +6688,7 @@ public final class ConcolicRegionRuntime {
                 new IdentityHashMap<>();
         private long nextObjectToken = 1L;
         private long runtimeEventSequence;
+        private long preparedBranchSequence;
         private int lastPathConditionSize;
         private PendingArrayFieldMaterialization
                 pendingArrayFieldMaterialization;
@@ -6610,6 +6772,38 @@ public final class ConcolicRegionRuntime {
             int occurrence = previous == null ? 1 : previous + 1;
             branchOccurrences.put(siteId, occurrence);
             return occurrence;
+        }
+
+        private PreparedBranch prepareBranch(
+                String method, int unitIndex, String expression,
+                EngineApi api) throws Exception {
+            String siteId = safe(method) + "#u" + unitIndex;
+            if (!api.exactBranchEventsAvailable()) {
+                addUnresolvedOnce(siteId
+                        + ": custom JDK exact branch-event API is required");
+                return null;
+            }
+            int occurrence = nextBranchOccurrence(siteId);
+            long sequence = ++preparedBranchSequence;
+            if (sequence > Integer.MAX_VALUE) {
+                addUnresolvedOnce(siteId + "#" + occurrence
+                        + ": prepared branch sequence overflow");
+                return null;
+            }
+            // The complete value is an activation-local unique handle.  Its
+            // low 32 bits deliberately carry the real per-site occurrence so
+            // transformed bytecode can pass that value to the native marker
+            // with a single long-to-int cast and no intervening Java call.
+            long handle = (sequence << 32)
+                    | (occurrence & 0xffffffffL);
+            PreparedBranch prepared = new PreparedBranch(handle, method,
+                    unitIndex, expression, siteId, occurrence);
+            preparedBranches.put(handle, prepared);
+            return prepared;
+        }
+
+        private PreparedBranch takePreparedBranch(long handle) {
+            return handle <= 0L ? null : preparedBranches.remove(handle);
         }
 
         private int nextReplayOccurrence(String siteId) {
@@ -10351,6 +10545,8 @@ public final class ConcolicRegionRuntime {
         private final Method getPathCondition;
         private final Method pausePathCondition;
         private final Method resumePathCondition;
+        private final Method markBranch;
+        private final Method getBranchEvents;
         private final Method endLegacy;
 
         private EngineApi(Method startRegion, Method startLegacy,
@@ -10360,6 +10556,7 @@ public final class ConcolicRegionRuntime {
                           Method finishRegion, Method getPathCondition,
                           Method pausePathCondition,
                           Method resumePathCondition,
+                          Method markBranch, Method getBranchEvents,
                           Method endLegacy) {
             this.startRegion = startRegion;
             this.startLegacy = startLegacy;
@@ -10372,6 +10569,8 @@ public final class ConcolicRegionRuntime {
             this.getPathCondition = getPathCondition;
             this.pausePathCondition = pausePathCondition;
             this.resumePathCondition = resumePathCondition;
+            this.markBranch = markBranch;
+            this.getBranchEvents = getBranchEvents;
             this.endLegacy = endLegacy;
         }
 
@@ -10459,6 +10658,18 @@ public final class ConcolicRegionRuntime {
             resumePathCondition.invoke(null);
         }
 
+        private boolean exactBranchEventsAvailable() {
+            return markBranch != null && getBranchEvents != null;
+        }
+
+        private String branchEvents() throws Exception {
+            if (getBranchEvents == null) {
+                return "{\"schemaVersion\":1,\"active\":false,"
+                        + "\"events\":[]}";
+            }
+            return String.valueOf(getBranchEvents.invoke(null));
+        }
+
         private void forceEnd() {
             if (endLegacy != null) {
                 try {
@@ -10483,6 +10694,9 @@ public final class ConcolicRegionRuntime {
                     method(system, "getPathCondition"),
                     method(system, "pauseConcolicPathCondition"),
                     method(system, "resumeConcolicPathCondition"),
+                    method(system, "markConcolicBranch",
+                            String.class, int.class),
+                    method(system, "getConcolicBranchEvents"),
                     method(system, "endConcolic"));
         }
 
