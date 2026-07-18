@@ -30,6 +30,106 @@ public class RuntimeRegionPlannerTest {
             "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>";
 
     @Test
+    public void activationCarriesStableReceiverAndThreadContextOrdinal()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.WorkerThread: void run()>";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Files.write(regions, region("REGION.WORKER", root).getBytes(
+                    StandardCharsets.UTF_8));
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    rootContextMethod(1, root, 1, "producer-a",
+                            "example.ProducerAThread", 21L),
+                    rootContextMethod(2, root, 2, "consumer",
+                            "example.ConsumerThread", 99L),
+                    rootContextMethod(3, root, 3, "producer-b",
+                            "example.ProducerBThread", 22L),
+                    rootContextMethod(4, root, 4, "consumer",
+                            "example.ConsumerThread", 1234L));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), methods, Collections.emptyList(),
+                    Collections.emptyList());
+
+            Map<String, Object> firstConsumer = null;
+            Map<String, Object> secondConsumer = null;
+            for (Map<String, Object> activation : result.activations) {
+                if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
+                    firstConsumer = activation;
+                } else if (Long.valueOf(4L).equals(
+                        activation.get("rootCallId"))) {
+                    secondConsumer = activation;
+                }
+            }
+            assertTrue(firstConsumer != null);
+            assertTrue(secondConsumer != null);
+            assertEquals("example.ConsumerThread",
+                    firstConsumer.get("receiverRuntimeClass"));
+            assertEquals("consumer", firstConsumer.get("threadName"));
+            assertEquals(1,
+                    firstConsumer.get("invocationOrdinalWithinContext"));
+            assertEquals(2,
+                    secondConsumer.get("invocationOrdinalWithinContext"));
+            assertEquals(RuntimeRegionPlanner
+                            .ROOT_CONTEXT_SELECTION_AUTHORITY,
+                    firstConsumer.get("rootContextSelectionAuthority"));
+            assertEquals(Boolean.FALSE,
+                    firstConsumer.get("threadIdSelectionUsed"));
+            assertFalse("unstable tid must not enter the activation selector",
+                    firstConsumer.containsKey("threadId"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void argumentSelectorOrdinalsAreRelativeToStableRootContext()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.WorkerThread: void run(java.lang.Object)>";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Files.write(regions, region("REGION.WORKER.ARG", root).getBytes(
+                    StandardCharsets.UTF_8));
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    rootContextMethod(1, root, 1, "producer",
+                            "example.ProducerThread", 31L),
+                    rootContextMethod(3, root, 2, "consumer",
+                            "example.ConsumerThread", 32L));
+            List<RuntimeRegionPlanner.RuntimeEvent> events = Arrays.asList(
+                    methodArgument(2, root, 1, 0, "example.Command"),
+                    methodArgument(4, root, 2, 0, "example.Command"));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), methods, events,
+                    Collections.emptyList());
+            Map<String, Object> consumer = null;
+            for (Map<String, Object> activation : result.activations) {
+                if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
+                    consumer = activation;
+                }
+            }
+            assertTrue(consumer != null);
+            assertEquals(1, consumer.get(
+                    "invocationOrdinalWithinContext"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> selector = (Map<String, Object>) consumer.get(
+                    "runtimeRootArgumentSelector");
+            assertEquals("other receiver/thread contexts must not shift the "
+                            + "argument selector",
+                    1, selector.get("receiverOrdinal"));
+            assertEquals(1, selector.get("matchOrdinalWithinReceiver"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void rootArgumentSelectorUsesExactTypesAndReceiverRelativeOrdinal()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -3707,6 +3807,14 @@ public class RuntimeRegionPlannerTest {
                 "DATANODE", "DataXceiver-1", 27L, method,
                 receiverObjectId, "example.Actor", callId, 0, 0,
                 seq * 100L);
+    }
+
+    private static RuntimeRegionPlanner.MethodEvent rootContextMethod(
+            long seq, String method, long callId, String threadName,
+            String receiverRuntimeClass, long tid) {
+        return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle",
+                "WORKER", threadName, tid, method, (int) (100 + callId),
+                receiverRuntimeClass, callId, 0, 0, seq * 100L);
     }
 
     private static RuntimeRegionPlanner.MethodEvent methodContext(

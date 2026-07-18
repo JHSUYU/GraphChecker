@@ -8,10 +8,21 @@ Every execution creates exactly three application worker threads:
 - the consumer calls `getRPCFromA()` and `getRPCFromB()`, then throws
   `BugReachedException` on the target comparison edge.
 
+The producer workers rendezvous inside their worker frames, proving that both
+are concurrently live before either computation proceeds. The harness joins
+both producer threads to `TERMINATED` while the consumer is still `NEW`, and
+only then starts the consumer. Thus the two concrete producer-support methods
+cannot overlap the sole engine-backed consumer target. Each RPC getter records
+the value and receiving thread at the actual call boundary; the fixture test
+checks those observations against the two real publisher threads and the one
+real consumer thread.
+
 The topology file hardcodes only the two allowed RPC channels. It contains no
 region identifiers, Boolean valuation, reachability condition, or SMT text.
 Concrete thread identities, region instances, producer/consumer bindings, and
 branch observations all come from the trace and custom-JDK executions.
+The JUnit truth-table sweep is only a concrete workload contract; it does not
+provide a reach formula to the composer or extractor.
 
 ## Automatic workflow
 

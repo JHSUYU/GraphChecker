@@ -34,18 +34,23 @@ public class ThreeThreadRpcWorkloadTest {
 
                 assertEquals(b1, result.getB1());
                 assertEquals(b2, result.getB2());
+                assertEquals(b1.booleanValue() ? 1 : -1, result.getA());
+                assertEquals(b2.booleanValue() ? 0 : 10, result.getB());
                 assertEquals(result.getA() > result.getB(),
                         result.isBugReached());
-                assertTrue("consumer entered its RPC/bug method before both "
-                                + "producer methods returned",
-                        result.isConsumerEnteredAfterProducerMethodsReturned());
+                assertTrue("producer worker frames did not overlap",
+                        result.isProducerConcurrencyObserved());
+                assertTrue("consumer started before both producer threads "
+                                + "terminated",
+                        result.isConsumerStartedAfterProducerThreadsTerminated());
                 Set<Long> workers = new HashSet<>();
                 for (long threadId : result.getWorkerThreadIds()) {
                     assertTrue(threadId > 0L);
                     workers.add(threadId);
                 }
                 assertEquals(3, workers.size());
-                assertRpcObservations(result.getRpcObservations(), workers);
+                assertRpcObservations(result.getRpcObservations(),
+                        result.getWorkerThreadIds(), workers);
 
                 if (result.isBugReached()) {
                     reachingExecutions++;
@@ -88,8 +93,35 @@ public class ThreeThreadRpcWorkloadTest {
         assertTrue(channels.contains("B"));
     }
 
+    @Test
+    public void producerSupportMethodsAndConsumerTargetAreDisjoint()
+            throws Exception {
+        Method producerA = ThreeThreadRpcWorkload.ProducerA.class
+                .getDeclaredMethod("compute", Boolean.class);
+        Method producerB = ThreeThreadRpcWorkload.ProducerB.class
+                .getDeclaredMethod("compute", Boolean.class);
+        Class<?> targetOwner = Class.forName(ThreeThreadRpcWorkload.class
+                .getName() + "$ConsumerThread");
+        Method target = targetOwner.getDeclaredMethod("executeWorker");
+
+        assertFalse(producerA.equals(producerB));
+        assertFalse(producerA.getDeclaringClass().equals(
+                target.getDeclaringClass()));
+        assertFalse(producerB.getDeclaringClass().equals(
+                target.getDeclaringClass()));
+        int directedTargetMethods = 0;
+        for (Method method : targetOwner.getDeclaredMethods()) {
+            if ("executeWorker".equals(method.getName())) {
+                directedTargetMethods++;
+            }
+        }
+        assertEquals("fixture must expose one engine target method", 1,
+                directedTargetMethods);
+    }
+
     private static void assertRpcObservations(
             List<ThreeThreadRpcWorkload.RpcObservation> observations,
+            long[] workerIds,
             Set<Long> workers) {
         assertEquals(2, observations.size());
         Set<String> channels = new HashSet<>();
@@ -101,6 +133,17 @@ public class ThreeThreadRpcWorkloadTest {
             assertTrue(observation.isRuntimeValueEqualityObserved());
             assertTrue(workers.contains(observation.getPublisherThreadId()));
             assertTrue(workers.contains(observation.getConsumerThreadId()));
+            assertEquals("RPC must be received by the real consumer thread",
+                    workerIds[2], observation.getConsumerThreadId());
+            if ("A".equals(observation.getChannel())) {
+                assertEquals(workerIds[0],
+                        observation.getPublisherThreadId());
+            } else if ("B".equals(observation.getChannel())) {
+                assertEquals(workerIds[1],
+                        observation.getPublisherThreadId());
+            }
+            assertFalse(observation.getPublisherThreadId()
+                    == observation.getConsumerThreadId());
             assertTrue(observation.getValueFingerprint()
                     .matches("sha256:[0-9a-f]{64}"));
         }

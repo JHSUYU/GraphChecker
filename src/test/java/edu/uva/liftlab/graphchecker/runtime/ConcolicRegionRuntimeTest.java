@@ -196,6 +196,52 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void unselectedNestedThrowCannotFinishSelectedCallerRegion()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.RecursiveOwner: void run()>";
+        JsonObject activation = concreteActivation(
+                "ACT.RECURSIVE.OUTER", root, 1);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "concrete-overlap-test");
+        try {
+            long outerToken = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertTrue(outerToken > 0L);
+
+            // The recursive invocation has no ordinal-2 activation. Its
+            // verifier-safe holder therefore contains zero, not the caller's
+            // ambient ThreadLocal token.
+            long nestedToken = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertEquals(0L, nestedToken);
+            ConcolicRegionRuntime.throwRegion(nestedToken,
+                    new IllegalStateException("nested failure"));
+
+            assertTrue("nested cleanup must not finish the selected caller",
+                    ConcolicRegionRuntime.activeTokenForTests(outerToken));
+            assertEquals(1, ConcolicRegionRuntime
+                    .concreteReplayActiveCountForTests());
+            assertFalse(Files.exists(results));
+
+            ConcolicRegionRuntime.exitRegion(outerToken, null, "");
+            assertFalse(ConcolicRegionRuntime
+                    .activeTokenForTests(outerToken));
+            assertEquals(1, resultRows(results).size());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void dynamicEngineSymbolRequiresExactVmFieldBoundary() {
         String dynamic = "REGION.0.in.5.field.0123456789ab.occ.2";
         assertTrue(ConcolicRegionRuntime.dynamicEngineSymbolMatchesForTests(
@@ -2358,6 +2404,92 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void stableRootContextFiltersBeforeContextRelativeArgumentOrdinal()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.WorkerThread: void run(java.lang.Object)>";
+        JsonObject activation = concreteActivation("ACT.CONTEXT", root, 99);
+        activation.addProperty("test", "stable-context-test");
+        addStableRootContext(activation, ConsumerWorker.class.getName(),
+                "consumer-thread", 1);
+        addRootArgumentSelector(activation, 1, 1,
+                KeyUpdateCommand.class.getName());
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "stable-context-test");
+        String oldThreadName = Thread.currentThread().getName();
+        try {
+            // Exact class and exact thread name are independent parts of the
+            // stable context; neither partial match may advance its ordinal.
+            Thread.currentThread().setName("consumer-thread");
+            assertEquals(0L, ConcolicRegionRuntime.enterRegion(root,
+                    new ProducerWorker(),
+                    new Object[]{new KeyUpdateCommand()}));
+            Thread.currentThread().setName("producer-thread");
+            assertEquals(0L, ConcolicRegionRuntime.enterRegion(root,
+                    new ConsumerWorker(),
+                    new Object[]{new KeyUpdateCommand()}));
+            Thread.currentThread().setName("consumer-thread");
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new ConsumerWorker(),
+                    new Object[]{new KeyUpdateCommand()});
+            assertTrue("legacy global ordinal must not control a stable plan",
+                    token > 0L);
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+            String output = new String(Files.readAllBytes(results),
+                    StandardCharsets.UTF_8);
+            assertTrue(output.contains("ACT.CONTEXT"));
+        } finally {
+            Thread.currentThread().setName(oldThreadName);
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void stableRootContextRejectsJvmAssignedThreadId()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.WorkerThread: void run()>";
+        JsonObject activation = concreteActivation("ACT.UNSTABLE.TID", root,
+                1);
+        activation.addProperty("test", "unstable-thread-id-test");
+        addStableRootContext(activation, ConsumerWorker.class.getName(),
+                "consumer-thread", 1);
+        activation.addProperty("threadId", 41L);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "unstable-thread-id-test");
+        try {
+            try {
+                ConcolicRegionRuntime.enterRegion(root,
+                        new ConsumerWorker());
+                throw new AssertionError("JVM thread id selector must fail");
+            } catch (IllegalStateException expected) {
+                assertTrue(expected.getMessage().contains(
+                        "Malformed stable runtime root context"));
+                assertTrue(expected.getMessage().contains(
+                        "ACT.UNSTABLE.TID"));
+            }
+            assertFalse(Files.exists(results));
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void exactRootArgumentTypesUseWithinReceiverOrdinal()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -4337,6 +4469,19 @@ public class ConcolicRegionRuntimeTest {
         activation.add("runtimeRootArgumentSelector", selector);
     }
 
+    private static void addStableRootContext(
+            JsonObject activation, String receiverRuntimeClass,
+            String threadName, int ordinalWithinContext) {
+        activation.addProperty("receiverRuntimeClass",
+                receiverRuntimeClass);
+        activation.addProperty("threadName", threadName);
+        activation.addProperty("threadIdSelectionUsed", false);
+        activation.addProperty("invocationOrdinalWithinContext",
+                ordinalWithinContext);
+        activation.addProperty("rootContextSelectionAuthority",
+                RuntimeRegionPlanner.ROOT_CONTEXT_SELECTION_AUTHORITY);
+    }
+
     private static void addLegacyRootArgumentSelector(
             JsonObject activation, int matchOrdinal,
             String... runtimeTypes) {
@@ -4366,6 +4511,12 @@ public class ConcolicRegionRuntimeTest {
     }
 
     private static final class BPServiceActor {
+    }
+
+    private static final class ProducerWorker {
+    }
+
+    private static final class ConsumerWorker {
     }
 
     private static String expiryFieldSignature() {

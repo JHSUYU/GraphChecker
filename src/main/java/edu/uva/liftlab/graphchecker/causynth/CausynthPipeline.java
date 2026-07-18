@@ -303,10 +303,16 @@ public final class CausynthPipeline {
                 }
                 Local token = newTraceLocal(body, LongType.v(),
                         "$causynthRegionToken");
+                Local tokenHolder = newTraceLocal(body,
+                        ArrayType.v(LongType.v(), 1),
+                        "$causynthRegionTokenHolder");
                 List<Unit> entry = new ArrayList<>();
                 Unit tokenInitialization = Jimple.v().newAssignStmt(token,
                         LongConstant.v(0L));
                 entry.add(tokenInitialization);
+                entry.add(Jimple.v().newAssignStmt(tokenHolder,
+                        Jimple.v().newNewArrayExpr(LongType.v(),
+                                IntConstant.v(1))));
                 ArrayType objectArrayType = ArrayType.v(
                         RefType.v("java.lang.Object"), 1);
                 Local rootArguments = newTraceLocal(body, objectArrayType,
@@ -339,6 +345,14 @@ public final class CausynthPipeline {
                                 StringConstant.v(signature), receiver,
                                 rootArguments));
                 entry.add(enterRegion);
+                entry.add(Jimple.v().newAssignStmt(
+                        Jimple.v().newArrayRef(tokenHolder, IntConstant.v(0)),
+                        token));
+                // A trap observes local state before its begin instruction.
+                // Begin at a nop after the holder store so the verifier frame
+                // always contains the category-1 holder reference.
+                Unit regionStart = Jimple.v().newNopStmt();
+                entry.add(regionStart);
                 for (int index = 0; index < method.getParameterCount(); index++) {
                     Value parameter;
                     try {
@@ -390,14 +404,6 @@ public final class CausynthPipeline {
                                         refs.resumeObservation)));
                     }
                 }
-                // A JVM exception handler observes the locals state *before*
-                // its protected instruction executes.  Starting the trap at
-                // tokenInitialization therefore makes the category-2 token
-                // Top at the handler and produces unverifiable bytecode when
-                // throwRegion performs lload.  Start at enterRegion instead:
-                // the zero token is then definitely assigned, while failures
-                // in enterRegion and all later argument hooks remain covered.
-                Unit regionStart = enterRegion;
                 insertBeforeOrAppend(body, insertionPoint, entry);
 
                 for (Unit unit : originalUnits) {
@@ -415,11 +421,10 @@ public final class CausynthPipeline {
                                 refs.resumeObservation);
                     }
                 }
-                // The cleanup trap must also cover enter/argument hooks.  If
-                // a paused bookkeeping hook throws before the original first
-                // statement, the token-specific handler still finishes the
-                // context and releases the JVM-wide region owner.
-                addRegionThrowHandler(body, regionStart, token,
+                // enterRegion is internally fail-closed.  From the first
+                // argument hook onward, the cleanup trap uses this invocation's
+                // exact token without requiring it in the handler StackMapFrame.
+                addRegionThrowHandler(body, regionStart, tokenHolder,
                         refs.throwRegion,
                         refs.pauseObservation, refs.resumeObservation);
                 instrumented++;
@@ -2373,11 +2378,12 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Region roots own the token returned by their own entry hook.  Using the
-     * ambient ThreadLocal token here lets an unselected nested/recursive root
-     * accidentally finish its selected caller's region.
+     * Adds an invocation-exact catch-all whose incoming verifier frame only
+     * needs a category-1 array reference.  The long token is loaded inside the
+     * handler block after that frame has been established.
      */
-    private void addRegionThrowHandler(Body body, Unit start, Local token,
+    private void addRegionThrowHandler(Body body, Unit start,
+                                       Local tokenHolder,
                                        SootMethodRef throwRef,
                                        SootMethodRef pauseObservation,
                                        SootMethodRef resumeObservation) {
@@ -2387,16 +2393,21 @@ public final class CausynthPipeline {
         SootClass throwableClass = Scene.v().getSootClass("java.lang.Throwable");
         Local caught = newTraceLocal(body, RefType.v("java.lang.Throwable"),
                 "$causynthRegionThrown");
+        Local handlerToken = newTraceLocal(body, LongType.v(),
+                "$causynthRegionHandlerToken");
         Unit handler = Jimple.v().newIdentityStmt(caught,
                 Jimple.v().newCaughtExceptionRef());
+        Unit loadToken = Jimple.v().newAssignStmt(handlerToken,
+                Jimple.v().newArrayRef(tokenHolder, IntConstant.v(0)));
         Unit pause = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 pauseObservation));
         Unit record = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                throwRef, token, caught));
+                throwRef, handlerToken, caught));
         Unit resume = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 resumeObservation));
         Unit rethrow = Jimple.v().newThrowStmt(caught);
         body.getUnits().add(handler);
+        body.getUnits().add(loadToken);
         body.getUnits().add(pause);
         body.getUnits().add(record);
         body.getUnits().add(resume);

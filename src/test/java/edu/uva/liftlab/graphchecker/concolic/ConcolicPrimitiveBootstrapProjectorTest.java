@@ -66,6 +66,12 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
             JsonObject producer = result.activations.get(index);
             assertEquals("ALL", producer.get(
                     "activationSelectionRequired").getAsString());
+            assertTrue(producer.get("receiverRuntimeClass").getAsString()
+                    .startsWith("fixture.REGION."));
+            assertEquals(1, producer.get(
+                    "invocationOrdinalWithinContext").getAsInt());
+            assertFalse(producer.get("threadIdSelectionUsed")
+                    .getAsBoolean());
             assertTrue(producer.get("concreteReplayOnly").getAsBoolean());
             JsonArray assignments = producer.getAsJsonArray(
                     "modelAssignments");
@@ -88,6 +94,16 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertEquals(0, target.getAsJsonArray("forcedBranches").size());
         assertEquals(0, target.getAsJsonArray(
                 "replayMaterializations").size());
+        assertEquals("fixture.ConsumerThread", target.get(
+                "receiverRuntimeClass").getAsString());
+        assertEquals("rpc-consumer", target.get("threadName")
+                .getAsString());
+        assertEquals(1, target.get("invocationOrdinalWithinContext")
+                .getAsInt());
+        assertFalse(target.get("threadIdSelectionUsed").getAsBoolean());
+        assertEquals("TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                        + "THREAD_NAME_CONTEXT_ORDINAL_V1",
+                target.get("rootContextSelectionAuthority").getAsString());
         assertEquals("ACT.T", target.getAsJsonObject(
                 "directedTargetQuery").get("activationId").getAsString());
     }
@@ -377,6 +393,16 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         targetActivation.addProperty("regionId", "REGION.T");
         targetActivation.addProperty("regionInstanceId", "INSTANCE.T");
         targetActivation.addProperty("rootMethod", "<fixture.T: void run()>");
+        targetActivation.addProperty("receiverType",
+                "fixture.ConsumerThread");
+        targetActivation.addProperty("receiverRuntimeClass",
+                "fixture.ConsumerThread");
+        targetActivation.addProperty("threadName", "rpc-consumer");
+        targetActivation.addProperty("threadIdSelectionUsed", false);
+        targetActivation.addProperty("invocationOrdinalWithinContext", 1);
+        targetActivation.addProperty("rootContextSelectionAuthority",
+                "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                        + "THREAD_NAME_CONTEXT_ORDINAL_V1");
         targetActivation.addProperty("replayable", true);
         targetActivation.addProperty("symbolicReady", true);
         targetActivation.addProperty("schedulerReady", true);
@@ -477,6 +503,16 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         result.addProperty("regionInstanceId", "INSTANCE." + region);
         result.addProperty("rootMethod", "<fixture." + region
                 + ": void run()>");
+        result.addProperty("receiverType", "fixture." + region
+                + ".Worker");
+        result.addProperty("receiverRuntimeClass", "fixture." + region
+                + ".Worker");
+        result.addProperty("threadName", "rpc-producer-" + region);
+        result.addProperty("threadIdSelectionUsed", false);
+        result.addProperty("invocationOrdinalWithinContext", 1);
+        result.addProperty("rootContextSelectionAuthority",
+                "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                        + "THREAD_NAME_CONTEXT_ORDINAL_V1");
         result.addProperty("replayable", true);
         result.addProperty("symbolicReady", true);
         JsonObject action = new JsonObject();

@@ -83,6 +83,9 @@ public final class ConcolicRegionRuntime {
                     + "AND_WITHIN_RECEIVER_ORDINAL_V2";
     private static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
+    private static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
+            "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
+                    + "CONTEXT_ORDINAL_V1";
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
@@ -4999,9 +5002,11 @@ public final class ConcolicRegionRuntime {
 
     private static SelectorOccurrence nextSelectorOccurrence(
             String test, String rootMethod, RootArgumentSelector selector,
-            Object receiver) {
+            RootContextSelector contextSelector, Object receiver) {
         String key = safe(test) + "\n" + safe(rootMethod) + "\n"
-                + selector.identity();
+                + (contextSelector == null
+                ? "LEGACY_NO_STABLE_ROOT_CONTEXT"
+                : contextSelector.identity()) + "\n" + selector.identity();
         synchronized (ORDINALS) {
             if (!selector.receiverScoped) {
                 Integer previous = ORDINALS.get(key);
@@ -5016,6 +5021,12 @@ public final class ConcolicRegionRuntime {
             }
             return state.next(receiver);
         }
+    }
+
+    private static int nextRootContextOccurrence(
+            String test, String rootMethod, RootContextSelector selector) {
+        return nextOrdinal("stable-root-context\n" + safe(test) + "\n"
+                + safe(rootMethod) + "\n" + selector.identity());
     }
 
     private static void writeSkipped(Activation activation, String reason) {
@@ -9948,6 +9959,107 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /** Stable plan selector that deliberately excludes JVM-assigned tid. */
+    private static final class RootContextSelector {
+        private final boolean present;
+        private final boolean valid;
+        private final String error;
+        private final String receiverRuntimeClass;
+        private final String threadName;
+        private final int invocationOrdinalWithinContext;
+
+        private RootContextSelector(boolean present, boolean valid,
+                                    String error,
+                                    String receiverRuntimeClass,
+                                    String threadName,
+                                    int invocationOrdinalWithinContext) {
+            this.present = present;
+            this.valid = valid;
+            this.error = safe(error);
+            this.receiverRuntimeClass = safe(receiverRuntimeClass);
+            this.threadName = safe(threadName);
+            this.invocationOrdinalWithinContext =
+                    invocationOrdinalWithinContext;
+        }
+
+        private static RootContextSelector from(JsonObject activation) {
+            boolean present = activation.has("receiverRuntimeClass")
+                    || activation.has("invocationOrdinalWithinContext")
+                    || activation.has("rootContextSelectionAuthority")
+                    || activation.has("threadIdSelectionUsed");
+            if (!present) {
+                return new RootContextSelector(false, true, "", "", "",
+                        -1);
+            }
+            String receiverClass = strictString(activation,
+                    "receiverRuntimeClass");
+            String thread = activation.has("threadName")
+                    ? strictString(activation, "threadName") : "";
+            Integer ordinal = strictInteger(activation,
+                    "invocationOrdinalWithinContext", 1);
+            String authority = strictString(activation,
+                    "rootContextSelectionAuthority");
+            JsonElement rawThreadIdUsed = activation.get(
+                    "threadIdSelectionUsed");
+            boolean explicitNoThreadId = rawThreadIdUsed != null
+                    && rawThreadIdUsed.isJsonPrimitive()
+                    && rawThreadIdUsed.getAsJsonPrimitive().isBoolean()
+                    && !rawThreadIdUsed.getAsBoolean();
+            if (receiverClass.isEmpty()
+                    || !receiverClass.equals(receiverClass.trim())
+                    || activation.has("threadName") && (thread.isEmpty()
+                    || !thread.equals(thread.trim()))
+                    || ordinal == null
+                    || !ROOT_CONTEXT_SELECTION_AUTHORITY.equals(authority)
+                    || !explicitNoThreadId || activation.has("threadId")) {
+                return new RootContextSelector(true, false,
+                        "stable root context requires an exact receiver "
+                                + "runtime class, optional non-blank thread "
+                                + "name, positive context ordinal, canonical "
+                                + "authority, and no thread id",
+                        receiverClass, thread,
+                        ordinal == null ? -1 : ordinal);
+            }
+            String legacyReceiver = string(activation, "receiverType");
+            if (!legacyReceiver.isEmpty()
+                    && !receiverClass.equals(legacyReceiver)) {
+                return new RootContextSelector(true, false,
+                        "receiverRuntimeClass disagrees with receiverType",
+                        receiverClass, thread, ordinal);
+            }
+            return new RootContextSelector(true, true, "", receiverClass,
+                    thread, ordinal);
+        }
+
+        private boolean matches(Object receiver, String actualThreadName) {
+            if (!present || !valid || receiver == null
+                    || !receiverRuntimeClass.equals(
+                    receiver.getClass().getName())) {
+                return false;
+            }
+            return threadName.isEmpty()
+                    || threadName.equals(safe(actualThreadName));
+        }
+
+        private String identity() {
+            if (!present) return "LEGACY_NO_STABLE_ROOT_CONTEXT";
+            return ROOT_CONTEXT_SELECTION_AUTHORITY + '|'
+                    + receiverRuntimeClass.length() + ':'
+                    + receiverRuntimeClass + '|'
+                    + threadName.length() + ':' + threadName;
+        }
+
+        private boolean selects(Integer occurrence) {
+            return occurrence != null
+                    && invocationOrdinalWithinContext == occurrence;
+        }
+
+        private String selectionIdentity() {
+            return present ? "contextOrdinal="
+                    + invocationOrdinalWithinContext : "legacyContext";
+        }
+    }
+
     private static final class RootArgumentSelector {
         private final boolean present;
         private final boolean valid;
@@ -10167,6 +10279,7 @@ public final class ConcolicRegionRuntime {
         private final String rootMethod;
         private final String observedRootMethod;
         private final int invocationOrdinal;
+        private final RootContextSelector rootContextSelector;
         private final RootArgumentSelector rootArgumentSelector;
         private final boolean replayable;
         private final boolean requiresAllSelection;
@@ -10191,6 +10304,7 @@ public final class ConcolicRegionRuntime {
             this.rootMethod = string(json, "rootMethod");
             this.observedRootMethod = string(json, "observedRootMethod");
             this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
+            this.rootContextSelector = RootContextSelector.from(json);
             this.rootArgumentSelector = RootArgumentSelector.from(json);
             this.replayable = bool(json, "replayable", true);
             this.requiresAllSelection = "ALL".equals(string(json,
@@ -10463,6 +10577,24 @@ public final class ConcolicRegionRuntime {
                 candidates.add(activation);
             }
 
+            String actualThreadName = Thread.currentThread().getName();
+            Map<String, Integer> contextOccurrences =
+                    new LinkedHashMap<>();
+            for (Activation activation : candidates) {
+                RootContextSelector selector =
+                        activation.rootContextSelector;
+                if (!selector.present
+                        || !selector.matches(receiver, actualThreadName)) {
+                    continue;
+                }
+                String identity = selector.identity();
+                if (!contextOccurrences.containsKey(identity)) {
+                    contextOccurrences.put(identity,
+                            nextRootContextOccurrence(test, rootMethod,
+                                    selector));
+                }
+            }
+
             // Advance every matching predicate family before selecting a
             // plan row.  Returning as soon as one activation matched used to
             // leave later, overlapping selector families one occurrence
@@ -10470,27 +10602,43 @@ public final class ConcolicRegionRuntime {
             Map<String, SelectorOccurrence> occurrences =
                     new LinkedHashMap<>();
             for (Activation activation : candidates) {
+                RootContextSelector contextSelector =
+                        activation.rootContextSelector;
+                if (contextSelector.present
+                        && !contextSelector.matches(receiver,
+                        actualThreadName)) {
+                    continue;
+                }
                 RootArgumentSelector selector =
                         activation.rootArgumentSelector;
                 if (!selector.present || !selector.matches(rootArguments)) {
                     continue;
                 }
-                String selectorIdentity = selector.identity();
+                String selectorIdentity = contextSelector.identity() + "\n"
+                        + selector.identity();
                 if (!occurrences.containsKey(selectorIdentity)) {
                     occurrences.put(selectorIdentity,
                             nextSelectorOccurrence(test, rootMethod,
-                                    selector, receiver));
+                                    selector, contextSelector, receiver));
                 }
             }
 
             Activation selected = null;
             for (Activation activation : candidates) {
+                RootContextSelector contextSelector =
+                        activation.rootContextSelector;
+                boolean contextMatches = !contextSelector.present
+                        || contextSelector.selects(contextOccurrences.get(
+                        contextSelector.identity()));
+                if (!contextMatches) continue;
                 RootArgumentSelector selector =
                         activation.rootArgumentSelector;
                 boolean matches = selector.present
                         ? selector.selects(occurrences.get(
-                        selector.identity()))
-                        : activation.invocationOrdinal == ordinal;
+                        contextSelector.identity() + "\n"
+                                + selector.identity()))
+                        : contextSelector.present
+                        || activation.invocationOrdinal == ordinal;
                 if (!matches) continue;
                 if (selected != null) {
                     throw new IllegalStateException("Ambiguous runtime root "
@@ -10570,6 +10718,13 @@ public final class ConcolicRegionRuntime {
                             + activation.rootArgumentSelector.error
                             + " in " + plan);
                 }
+                if (!activation.rootContextSelector.valid) {
+                    throw new IllegalStateException("Malformed stable runtime "
+                            + "root context for activation "
+                            + activation.activationId + ": "
+                            + activation.rootContextSelector.error
+                            + " in " + plan);
+                }
                 if (!activationIds.add(activation.activationId)) {
                     throw new IllegalStateException("Duplicate effective "
                             + "activationId " + activation.activationId
@@ -10577,23 +10732,27 @@ public final class ConcolicRegionRuntime {
                 }
                 String root = firstNonBlank(activation.rootMethod,
                         activation.observedRootMethod);
+                RootContextSelector contextSelector =
+                        activation.rootContextSelector;
                 RootArgumentSelector selector =
                         activation.rootArgumentSelector;
                 String selectorIdentity = selector.identity();
-                String key = root + "\n" + selectorIdentity + "\n"
-                        + (selector.present
+                String selectionIdentity = selector.present
                         ? selector.selectionIdentity()
-                        : "globalInvocation="
-                        + activation.invocationOrdinal);
+                        : contextSelector.present
+                        ? contextSelector.selectionIdentity()
+                        : "globalInvocation=" + activation.invocationOrdinal;
+                String key = root + "\n" + contextSelector.identity()
+                        + "\n" + contextSelector.selectionIdentity() + "\n"
+                        + selectorIdentity + "\n" + selectionIdentity;
                 String previous = runtimeKeys.put(key,
                         activation.activationId);
                 if (previous != null) {
                     throw new IllegalStateException("Ambiguous effective "
                             + "activation runtime key root=" + root
+                            + " context=" + contextSelector.identity()
                             + " selector=" + selectorIdentity
-                            + " selection=" + (selector.present
-                            ? selector.selectionIdentity()
-                            : activation.invocationOrdinal)
+                            + " selection=" + selectionIdentity
                             + " activations=" + previous + ","
                             + activation.activationId + " in " + plan);
                 }

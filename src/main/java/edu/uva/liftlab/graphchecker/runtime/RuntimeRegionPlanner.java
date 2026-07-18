@@ -60,6 +60,9 @@ final class RuntimeRegionPlanner {
                     + "AND_WITHIN_RECEIVER_ORDINAL_V2";
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
+    static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
+            "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
+                    + "CONTEXT_ORDINAL_V1";
 
     private RuntimeRegionPlanner() {
     }
@@ -143,6 +146,8 @@ final class RuntimeRegionPlanner {
                 }
 
                 int ordinal = invocationOrdinal(root, methodEvents);
+                int ordinalWithinContext = invocationOrdinalWithinContext(
+                        root, methodEvents);
                 Map<String, Object> rootArgumentSelector =
                         runtimeRootArgumentSelector(root, methodEvents,
                                 executions);
@@ -264,6 +269,8 @@ final class RuntimeRegionPlanner {
                         "observed", true,
                         "precision", fullyObserved
                                 ? "RUNTIME_CALL_TREE" : "PARTIAL_RUNTIME_CALL_TREE");
+                addRootContextSelector(instance, root,
+                        ordinalWithinContext);
                 if (!rootArgumentSelector.isEmpty()) {
                     instance.put("runtimeRootArgumentSelector",
                             rootArgumentSelector);
@@ -358,6 +365,8 @@ final class RuntimeRegionPlanner {
                                 ? "RUNTIME_SELECTED_ROOT_REPLAY"
                                 : "NO_VALIDATED_RUNTIME_PATH",
                         "engine", "openjdk8-zero-concolic");
+                addRootContextSelector(activation, root,
+                        ordinalWithinContext);
                 if (!rootArgumentSelector.isEmpty()) {
                     activation.put("runtimeRootArgumentSelector",
                             rootArgumentSelector);
@@ -568,12 +577,52 @@ final class RuntimeRegionPlanner {
     }
 
     /**
+     * Stable replay ordinal for one exact runtime root context.  Trace thread
+     * ids are deliberately excluded because JVM-assigned ids change across
+     * executions.  The receiver runtime class is mandatory for contexts
+     * emitted by this planner; a non-empty thread name further separates
+     * same-class worker roles such as producer and consumer executors.
+     */
+    private static int invocationOrdinalWithinContext(
+            MethodEvent target, List<MethodEvent> methods) {
+        int ordinal = 0;
+        for (MethodEvent event : methods) {
+            if (!target.test.equals(event.test)
+                    || !target.method.equals(event.method)
+                    || !target.receiverType.equals(event.receiverType)
+                    || !target.threadName.equals(event.threadName)) {
+                continue;
+            }
+            ordinal++;
+            if (event.callId == target.callId) return ordinal;
+        }
+        return 1;
+    }
+
+    private static void addRootContextSelector(Map<String, Object> target,
+                                               MethodEvent root,
+                                               int ordinalWithinContext) {
+        if (target == null || root == null || root.receiverType.isEmpty()) {
+            return;
+        }
+        target.put("receiverRuntimeClass", root.receiverType);
+        if (!root.threadName.isEmpty()) {
+            target.put("threadName", root.threadName);
+        }
+        target.put("threadIdSelectionUsed", false);
+        target.put("invocationOrdinalWithinContext",
+                Math.max(1, ordinalWithinContext));
+        target.put("rootContextSelectionAuthority",
+                ROOT_CONTEXT_SELECTION_AUTHORITY);
+    }
+
+    /**
      * Builds a replay selector from the exact non-null reference arguments
-     * observed at the selected root invocation.  Selection first identifies
-     * the capture-time ordinal of the distinct receiver among predicate
-     * matches, then the matching invocation ordinal within that receiver.
-     * Unrelated invocations and same-typed calls on other instances therefore
-     * no longer shift the selected activation.
+     * observed at the selected root invocation.  Candidate occurrences are
+     * first restricted to the same stable receiver-class/thread context as
+     * the target, then selection identifies the distinct receiver and its
+     * matching invocation ordinal.  Other worker contexts and same-typed
+     * calls on unrelated instances therefore cannot shift the activation.
      */
     private static Map<String, Object> runtimeRootArgumentSelector(
             MethodEvent target, List<MethodEvent> methods,
@@ -612,6 +661,7 @@ final class RuntimeRegionPlanner {
         for (MethodEvent candidate : methods) {
             if (!target.test.equals(candidate.test)
                     || !target.method.equals(candidate.method)
+                    || !sameStableRootContext(target, candidate)
                     || !matchesRootArgumentPredicates(candidate,
                     runtimeEvents, predicates)) {
                 continue;
@@ -644,6 +694,15 @@ final class RuntimeRegionPlanner {
                 "predicates", predicates,
                 "receiverOrdinal", receiverOrdinal,
                 "matchOrdinalWithinReceiver", matchOrdinalWithinReceiver);
+    }
+
+    private static boolean sameStableRootContext(MethodEvent target,
+                                                 MethodEvent candidate) {
+        if (target.receiverType.isEmpty()) {
+            return true;
+        }
+        return target.receiverType.equals(candidate.receiverType)
+                && target.threadName.equals(candidate.threadName);
     }
 
     private static boolean matchesRootArgumentPredicates(

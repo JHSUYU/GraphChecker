@@ -58,6 +58,18 @@ public class ConcolicSchedulerTest {
             assertEquals(1, target.get("occurrence").getAsInt());
 
             JsonObject scheduled = result.scheduledActivations.get(0);
+            assertEquals("example.Server", scheduled.get(
+                    "receiverRuntimeClass").getAsString());
+            assertEquals("rpc-handler",
+                    scheduled.get("threadName").getAsString());
+            assertEquals(1, scheduled.get(
+                    "invocationOrdinalWithinContext").getAsInt());
+            assertFalse(scheduled.get("threadIdSelectionUsed")
+                    .getAsBoolean());
+            assertEquals("TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                            + "THREAD_NAME_CONTEXT_ORDINAL_V1",
+                    scheduled.get("rootContextSelectionAuthority")
+                            .getAsString());
             assertFalse(scheduled.get("discoverySymbolicReady").getAsBoolean());
             assertTrue(scheduled.get("schedulerReady").getAsBoolean());
             assertTrue(scheduled.get("symbolicReady").getAsBoolean());
@@ -1685,6 +1697,14 @@ public class ConcolicSchedulerTest {
                 + "\"regionInstanceId\":\"REGION.0@testMiniDfs#call7\","
                 + "\"rootCallId\":7,\"test\":\"testMiniDfs\","
                 + "\"rootMethod\":\"" + ROOT + "\","
+                + "\"receiverType\":\"example.Server\","
+                + "\"receiverRuntimeClass\":\"example.Server\","
+                + "\"threadName\":\"rpc-handler\","
+                + "\"threadIdSelectionUsed\":false,"
+                + "\"invocationOrdinalWithinContext\":1,"
+                + "\"rootContextSelectionAuthority\":"
+                + "\"TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
+                + "THREAD_NAME_CONTEXT_ORDINAL_V1\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
                 + "\"symbolicReady\":false,\"symbolize\":["
                 + "{\"symbol\":\"REGION.0.in.0\",\"cell\":\""

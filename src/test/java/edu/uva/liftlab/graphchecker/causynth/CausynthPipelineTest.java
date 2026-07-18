@@ -24,9 +24,12 @@ import soot.Trap;
 import soot.Unit;
 import soot.Value;
 import soot.VoidType;
+import soot.baf.BafASMBackend;
 import soot.jimple.AssignStmt;
 import soot.jimple.ArrayRef;
+import soot.jimple.CaughtExceptionRef;
 import soot.jimple.GotoStmt;
+import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
@@ -34,7 +37,9 @@ import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
 import soot.jimple.NewArrayExpr;
 import soot.jimple.Stmt;
+import soot.options.Options;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -1383,18 +1388,22 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void regionExitAndThrowHooksUseTokenReturnedByEntry()
+    public void regionThrowHandlerUsesInvocationHolderWithoutIncomingLong()
             throws Exception {
         G.reset();
         System.setProperty("causynth.instrument.concolic", "true");
         System.clearProperty("causynth.concolic.activation.plan");
         System.clearProperty("causynth.concolic.activation.id");
 
-        Scene.v().addClass(new SootClass("java.lang.Throwable",
-                Modifier.PUBLIC));
+        Options.v().set_allow_phantom_refs(true);
+        Options.v().set_prepend_classpath(true);
+        Options.v().set_soot_classpath(System.getProperty("java.class.path"));
+        Scene.v().loadNecessaryClasses();
+        SootClass objectClass = Scene.v().getSootClass("java.lang.Object");
         SootClass owner = new SootClass("example.TokenRegion",
                 Modifier.PUBLIC);
         Scene.v().addClass(owner);
+        owner.setSuperclass(objectClass);
         owner.setApplicationClass();
         SootMethod root = new SootMethod("run", Collections.emptyList(),
                 VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
@@ -1409,12 +1418,25 @@ public class CausynthPipelineTest {
         instrument.invoke(new CausynthPipeline(null, 0, 0), result);
 
         Local entryToken = null;
+        Local tokenHolder = null;
         Unit tokenInitialization = null;
+        Unit holderInitialization = null;
         Unit entryCall = null;
         InvokeExpr exit = null;
         InvokeExpr thrown = null;
-        boolean calledActiveVariant = false;
+        boolean calledAmbientExceptionalVariant = false;
         for (Unit unit : root.getActiveBody().getUnits()) {
+            if (unit instanceof AssignStmt
+                    && ((AssignStmt) unit).getLeftOp() instanceof Local
+                    && ((AssignStmt) unit).getRightOp()
+                    instanceof NewArrayExpr) {
+                NewArrayExpr allocation = (NewArrayExpr) ((AssignStmt) unit)
+                        .getRightOp();
+                if (LongType.v().equals(allocation.getBaseType())) {
+                    tokenHolder = (Local) ((AssignStmt) unit).getLeftOp();
+                    holderInitialization = unit;
+                }
+            }
             if (unit instanceof AssignStmt
                     && ((AssignStmt) unit).getRightOp() instanceof InvokeExpr) {
                 InvokeExpr invoke = (InvokeExpr) ((AssignStmt) unit).getRightOp();
@@ -1440,13 +1462,16 @@ public class CausynthPipelineTest {
                 exit = invoke;
             } else if ("throwRegion".equals(name)) {
                 thrown = invoke;
-            } else if ("exitActiveRegion".equals(name)
+            } else if ("throwCurrentRegion".equals(name)
                     || "throwActiveRegion".equals(name)) {
-                calledActiveVariant = true;
+                calledAmbientExceptionalVariant = true;
             }
         }
 
         assertNotNull("entry hook must store its token in a local", entryToken);
+        assertNotNull("entry must allocate a category-1 token holder",
+                tokenHolder);
+        assertNotNull(holderInitialization);
         // entryToken is learned while visiting the following enterRegion
         // assignment, so locate its preceding zero initialization explicitly.
         if (tokenInitialization == null) {
@@ -1471,20 +1496,76 @@ public class CausynthPipelineTest {
         assertEquals("long", thrown.getMethodRef().parameterType(0).toString());
         assertSame("exitRegion must use this root's entry token",
                 entryToken, exit.getArg(0));
-        assertSame("throwRegion must use this root's entry token",
-                entryToken, thrown.getArg(0));
-        assertFalse("region instrumentation must not use ambient active hooks",
-                calledActiveVariant);
-        assertEquals("one token-specific cleanup trap is expected", 1,
+        assertFalse("handler must not use ambient ThreadLocal ownership",
+                calledAmbientExceptionalVariant);
+        assertEquals("one invocation-exact cleanup trap is expected", 1,
                 root.getActiveBody().getTraps().size());
         Trap cleanup = root.getActiveBody().getTraps().getFirst();
+        assertEquals("java.lang.Throwable",
+                cleanup.getException().getName());
+        assertSame("handler must be excluded from its own catch-all range",
+                cleanup.getHandlerUnit(), cleanup.getEndUnit());
+        assertTrue(cleanup.getHandlerUnit() instanceof IdentityStmt);
+        IdentityStmt handler = (IdentityStmt) cleanup.getHandlerUnit();
+        assertTrue(handler.getRightOp() instanceof CaughtExceptionRef);
+        assertTrue(handler.getLeftOp() instanceof Local);
         List<Unit> units = new ArrayList<>();
         for (Unit unit : root.getActiveBody().getUnits()) units.add(unit);
-        assertSame("cleanup trap must begin at enterRegion, after the long "
-                        + "token has a verifier-visible zero value",
-                entryCall, cleanup.getBeginUnit());
-        assertTrue("token initialization must precede the protected entry hook",
+        int handlerIndex = units.indexOf(handler);
+        assertTrue(handlerIndex >= 0 && handlerIndex + 1 < units.size());
+        assertTrue("handler must load its long only after the StackMapFrame",
+                units.get(handlerIndex + 1) instanceof AssignStmt);
+        AssignStmt loadToken = (AssignStmt) units.get(handlerIndex + 1);
+        assertTrue(loadToken.getLeftOp() instanceof Local);
+        assertEquals(LongType.v(), loadToken.getLeftOp().getType());
+        assertTrue(loadToken.getRightOp() instanceof ArrayRef);
+        assertSame(tokenHolder,
+                ((ArrayRef) loadToken.getRightOp()).getBase());
+        assertSame("throwRegion must receive the handler-local token",
+                loadToken.getLeftOp(), thrown.getArg(0));
+        assertSame("throwRegion must receive the caught exception",
+                handler.getLeftOp(), thrown.getArg(1));
+
+        Unit holderStore = null;
+        for (Unit unit : units) {
+            if (!(unit instanceof AssignStmt)) continue;
+            AssignStmt assign = (AssignStmt) unit;
+            if (assign.getLeftOp() instanceof ArrayRef
+                    && ((ArrayRef) assign.getLeftOp()).getBase() == tokenHolder
+                    && assign.getRightOp() == entryToken) {
+                holderStore = unit;
+                break;
+            }
+        }
+        assertNotNull("entry token must be stored in the exact holder",
+                holderStore);
+        assertTrue("holder must be allocated before enterRegion",
+                units.indexOf(holderInitialization) < units.indexOf(entryCall));
+        assertTrue("trap must begin only after the holder contains the token",
+                units.indexOf(holderStore)
+                        < units.indexOf(cleanup.getBeginUnit()));
+        assertTrue("trap begin must be a verifier boundary nop",
+                cleanup.getBeginUnit() instanceof soot.jimple.NopStmt);
+        assertTrue("token initialization must precede enterRegion",
                 units.indexOf(tokenInitialization) < units.indexOf(entryCall));
+        root.getActiveBody().validate();
+
+        ByteArrayOutputStream classFile = new ByteArrayOutputStream();
+        new BafASMBackend(owner, Options.java_version_8)
+                .generateClassFile(classFile);
+        final byte[] bytecode = classFile.toByteArray();
+        class VerificationLoader extends ClassLoader {
+            VerificationLoader() {
+                super(CausynthPipelineTest.class.getClassLoader());
+            }
+
+            Class<?> define() {
+                return defineClass(owner.getName(), bytecode, 0,
+                        bytecode.length);
+            }
+        }
+        Class<?> verified = new VerificationLoader().define();
+        verified.getDeclaredMethod("run").invoke(null);
     }
 
     @Test
