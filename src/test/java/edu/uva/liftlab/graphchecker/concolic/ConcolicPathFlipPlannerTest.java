@@ -64,6 +64,10 @@ public class ConcolicPathFlipPlannerTest {
         assertEquals("Z3_PATH_FLIP_MODEL", replay.getAsJsonArray(
                 "modelAssignments").get(0).getAsJsonObject().get(
                 "authority").getAsString());
+        // observationOnlyReplay is reserved for a downstream target with no
+        // input assignments.  A path flip injects only its solver model and
+        // then validates the branch without overriding it.
+        assertFalse(replay.has("observationOnlyReplay"));
         assertTrue(replay.getAsJsonObject("targetBranch").get(
                 "validationOnly").getAsBoolean());
         assertFalse(replay.getAsJsonObject("targetBranch").get(

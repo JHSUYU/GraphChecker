@@ -734,16 +734,28 @@ do_explore_producer() {
     [[ -z "${seen_queries[${query_key}]+present}" ]] \
       || die "producer path worklist repeated query ${query_key}"
     seen_queries[${query_key}]=present
-    mapfile -t _replay_activations < <(jq -r --arg region "${region}" '
+    replay_manifest_id=$(jq -er '.replayActivationId' \
+      "${planner_dir}/path_flip_plan_manifest.json") \
+      || die "producer path flip has no replay activation identity"
+    mapfile -t _replay_activations < <(jq -r \
+      --arg region "${region}" --arg replay "${replay_manifest_id}" '
       select(
-        .regionId == $region
+        .activationId == $replay
+        and .regionId == $region
         and .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .observationOnlyReplay == true
-        and ((.forcedBranches // []) | length) == 0)
+        and .executionPhase == "REPLAY_OUTPUT_PATH_FLIP"
+        and .replayMode == "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
+        and .branchOverrideProhibited == true
+        and .targetBranch.validationOnly == true
+        and .targetBranch.branchOverrideAllowed == false
+        and ((.modelAssignments // []) | length) > 0
+        and ((.forcedBranches // []) | length) == 0
+        and ((.replayMaterializations // []) | length) == 0
+      )
       | .activationId
     ' "${planner_dir}/activation_plan.jsonl")
     [[ ${#_replay_activations[@]} -eq 1 ]] \
-      || die "producer planner did not emit one observation-only activation"
+      || die "producer planner did not emit one unforced input-model replay"
     replay_activation=${_replay_activations[0]}
     raw="${planner_dir}/concolic_region_results.jsonl"
     imported="${planner_dir}/concolic_region_summaries.jsonl"
