@@ -3269,10 +3269,21 @@ public final class CausynthTraceRecorder {
      * relationship.</p>
      */
     private static final class ValueFingerprint {
-        private static final int MAX_DEPTH = 10;
-        private static final int MAX_NODES = 2048;
-        private static final int MAX_COLLECTION_ELEMENTS = 256;
-        private static final int MAX_TEXT_LENGTH = 1 << 20;
+        /*
+         * These are deliberately small, hard ceilings rather than hints.
+         * Fingerprinting runs in the instrumented VM (and, for HDFS, often
+         * in the interpreted custom VM), so walking a service/manager object
+         * graph here can otherwise dominate the workload.  The useful
+         * evidence is the bounded value-shaped prefix: container shape and
+         * entries, array elements, and scalar fields such as keyId/expiry.
+         */
+        private static final int MAX_DEPTH = 5;
+        private static final int MAX_NODES = 256;
+        private static final int MAX_COLLECTION_ELEMENTS = 64;
+        private static final int MAX_TOTAL_ELEMENTS = 128;
+        private static final int MAX_FIELDS_PER_OBJECT = 32;
+        private static final int MAX_TOTAL_FIELDS = 128;
+        private static final int MAX_TEXT_BYTES = 64 * 1024;
 
         private final String digest;
         private final boolean complete;
@@ -3315,13 +3326,10 @@ public final class CausynthTraceRecorder {
             StringBuilder canonical = new StringBuilder();
             if (value == null && primitiveValue != null
                     && !primitiveValue.isEmpty()) {
-                appendToken(canonical, "PRIMITIVE", primitiveValue);
                 state.nodes = 1;
+                appendToken(canonical, state, "PRIMITIVE", primitiveValue);
             } else {
                 appendValue(value, canonical, state, 0);
-            }
-            if (canonical.length() > MAX_TEXT_LENGTH) {
-                state.fail("MAX_CANONICAL_TEXT");
             }
             return new ValueFingerprint(sha256(canonical.toString()),
                     state.complete, state.nodes, state.reason);
@@ -3334,33 +3342,34 @@ public final class CausynthTraceRecorder {
                 state.fail("MAX_DEPTH");
                 return;
             }
-            if (++state.nodes > MAX_NODES) {
+            if (++state.nodes > state.nodeBudget) {
                 state.fail("MAX_NODES");
                 return;
             }
             if (value == null) {
-                appendToken(out, "NULL", "");
+                appendToken(out, state, "NULL", "");
                 return;
             }
             Class<?> type = value.getClass();
             if (value instanceof CharSequence || value instanceof Number
                     || value instanceof Boolean || value instanceof Character
                     || value instanceof Enum<?>) {
-                appendToken(out, type.getName(), String.valueOf(value));
+                appendToken(out, state, type.getName(), String.valueOf(value));
                 return;
             }
             Integer previous = state.seen.get(value);
             if (previous != null) {
-                appendToken(out, "REF", String.valueOf(previous));
+                appendToken(out, state, "REF", String.valueOf(previous));
                 return;
             }
             state.seen.put(value, state.seen.size());
             if (type.isArray()) {
                 int length = Array.getLength(value);
-                appendToken(out, "ARRAY", type.getName() + ":" + length);
+                appendToken(out, state, "ARRAY", type.getName() + ":" + length);
                 int limit = Math.min(length, MAX_COLLECTION_ELEMENTS);
                 for (int index = 0; index < limit; index++) {
-                    appendToken(out, "INDEX", String.valueOf(index));
+                    if (!state.takeElement()) return;
+                    appendToken(out, state, "INDEX", String.valueOf(index));
                     appendValue(Array.get(value, index), out, state,
                             depth + 1);
                 }
@@ -3369,7 +3378,7 @@ public final class CausynthTraceRecorder {
             }
             if (value instanceof Map<?, ?>) {
                 Map<?, ?> map = (Map<?, ?>) value;
-                appendToken(out, "MAP", type.getName() + ":" + map.size());
+                appendToken(out, state, "MAP", type.getName() + ":" + map.size());
                 List<String> entries = new ArrayList<>();
                 int count = 0;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -3377,28 +3386,36 @@ public final class CausynthTraceRecorder {
                         state.fail("MAX_MAP_ENTRIES");
                         break;
                     }
-                    FingerprintState entryState = new FingerprintState();
+                    if (!state.takeElement()) break;
+                    FingerprintState entryState = state.childForMapEntry();
                     StringBuilder item = new StringBuilder();
+                    appendToken(item, entryState, "KEY", "");
                     appendValue(entry.getKey(), item, entryState, depth + 1);
+                    appendToken(item, entryState, "VALUE", "");
                     appendValue(entry.getValue(), item, entryState, depth + 1);
                     if (!entryState.complete) {
                         state.fail(entryState.reason);
                         break;
                     }
                     state.nodes += entryState.nodes;
-                    if (state.nodes > MAX_NODES) {
+                    state.elements += entryState.elements;
+                    state.fields += entryState.fields;
+                    if (state.nodes > state.nodeBudget) {
                         state.fail("MAX_NODES");
                         break;
                     }
                     entries.add(item.toString());
                 }
                 Collections.sort(entries);
-                for (String entry : entries) appendToken(out, "ENTRY", entry);
+                for (String entry : entries) {
+                    appendToken(out, state, "ENTRY", entry);
+                    if (!state.complete) break;
+                }
                 return;
             }
             if (value instanceof Collection<?>) {
                 Collection<?> collection = (Collection<?>) value;
-                appendToken(out, "COLLECTION",
+                appendToken(out, state, "COLLECTION",
                         type.getName() + ":" + collection.size());
                 int index = 0;
                 for (Object item : collection) {
@@ -3406,7 +3423,8 @@ public final class CausynthTraceRecorder {
                         state.fail("MAX_COLLECTION_ELEMENTS");
                         break;
                     }
-                    appendToken(out, "INDEX", String.valueOf(index++));
+                    if (!state.takeElement()) break;
+                    appendToken(out, state, "INDEX", String.valueOf(index++));
                     appendValue(item, out, state, depth + 1);
                 }
                 return;
@@ -3414,15 +3432,35 @@ public final class CausynthTraceRecorder {
             if (value instanceof Class<?> || value instanceof ClassLoader
                     || value instanceof Thread
                     || type.getName().startsWith("java.lang.reflect.")) {
+                appendToken(out, state, "OPAQUE_ID", type.getName() + ":"
+                        + System.identityHashCode(value));
                 state.fail("UNSUPPORTED_RUNTIME_OBJECT:" + type.getName());
                 return;
             }
-            appendToken(out, "OBJECT", type.getName());
+            /*
+             * JDK implementation objects are usually service graphs (random
+             * providers, executors, class metadata, ...), not serialized data
+             * values.  Reflection through them is both unstable across JDKs
+             * and extremely expensive under the custom interpreter.  Arrays,
+             * collections, strings and boxed primitives were handled above.
+             */
+            if (isOpaquePlatformObject(type)) {
+                appendToken(out, state, "OPAQUE_ID", type.getName() + ":"
+                        + System.identityHashCode(value));
+                state.fail("OPAQUE_PLATFORM_OBJECT:" + type.getName());
+                return;
+            }
+            appendToken(out, state, "OBJECT", type.getName());
             List<Field> fields = instanceFields(type);
+            if (fields.size() > MAX_FIELDS_PER_OBJECT) {
+                state.fail("MAX_OBJECT_FIELDS");
+                return;
+            }
             for (Field field : fields) {
+                if (!state.takeField()) return;
                 try {
                     if (!field.isAccessible()) field.setAccessible(true);
-                    appendToken(out, "FIELD", field.getDeclaringClass()
+                    appendToken(out, state, "FIELD", field.getDeclaringClass()
                             .getName() + "#" + field.getName());
                     appendValue(field.get(value), out, state, depth + 1);
                 } catch (Throwable failure) {
@@ -3432,6 +3470,14 @@ public final class CausynthTraceRecorder {
                     return;
                 }
             }
+        }
+
+        private static boolean isOpaquePlatformObject(Class<?> type) {
+            String name = type == null ? "" : type.getName();
+            return name.startsWith("java.") || name.startsWith("javax.")
+                    || name.startsWith("sun.")
+                    || name.startsWith("com.sun.")
+                    || name.startsWith("jdk.");
         }
 
         private static List<Field> instanceFields(Class<?> type) {
@@ -3459,12 +3505,70 @@ public final class CausynthTraceRecorder {
             return result;
         }
 
-        private static void appendToken(StringBuilder out, String type,
-                                        String value) {
+        private static void appendToken(StringBuilder out,
+                                        FingerprintState state,
+                                        String type, String value) {
+            if (!state.complete) return;
             String safeType = safe(type);
             String safeValue = safe(value);
+            int remaining = state.byteBudget - state.bytes;
+            int typeBytes = utf8LengthCapped(safeType, remaining);
+            if (typeBytes > remaining) {
+                state.fail("MAX_CANONICAL_BYTES");
+                return;
+            }
+            remaining -= typeBytes;
+            int valueBytes = utf8LengthCapped(safeValue, remaining);
+            int headerBytes = decimalLength(safeType.length())
+                    + decimalLength(safeValue.length()) + 2;
+            long tokenBytes = (long) headerBytes + typeBytes + valueBytes;
+            if (valueBytes > remaining
+                    || tokenBytes > state.byteBudget - state.bytes) {
+                state.fail("MAX_CANONICAL_BYTES");
+                return;
+            }
             out.append(safeType.length()).append(':').append(safeType)
                     .append(safeValue.length()).append(':').append(safeValue);
+            state.bytes += (int) tokenBytes;
+        }
+
+        private static int decimalLength(int value) {
+            if (value < 10) return 1;
+            if (value < 100) return 2;
+            if (value < 1000) return 3;
+            if (value < 10000) return 4;
+            if (value < 100000) return 5;
+            if (value < 1000000) return 6;
+            if (value < 10000000) return 7;
+            if (value < 100000000) return 8;
+            if (value < 1000000000) return 9;
+            return 10;
+        }
+
+        /** Returns {@code limit + 1} as soon as the UTF-8 budget is exceeded. */
+        private static int utf8LengthCapped(String value, int limit) {
+            if (limit < 0) return 0;
+            int bytes = 0;
+            for (int index = 0; index < value.length(); index++) {
+                char item = value.charAt(index);
+                if (item <= 0x7f) {
+                    bytes++;
+                } else if (item <= 0x7ff) {
+                    bytes += 2;
+                } else if (Character.isHighSurrogate(item)
+                        && index + 1 < value.length()
+                        && Character.isLowSurrogate(value.charAt(index + 1))) {
+                    bytes += 4;
+                    index++;
+                } else {
+                    // Conservatively budget malformed surrogates as a full
+                    // three-byte code unit.  The final canonical text can
+                    // therefore never exceed this ceiling when encoded.
+                    bytes += 3;
+                }
+                if (bytes > limit) return limit + 1;
+            }
+            return bytes;
         }
 
         private static String sha256(String value) {
@@ -3487,9 +3591,61 @@ public final class CausynthTraceRecorder {
     private static final class FingerprintState {
         private final IdentityHashMap<Object, Integer> seen =
                 new IdentityHashMap<>();
+        private final int byteBudget;
+        private final int nodeBudget;
+        private final int elementBudget;
+        private final int fieldBudget;
         private boolean complete = true;
         private int nodes;
+        private int elements;
+        private int fields;
+        private int bytes;
         private String reason = "COMPLETE";
+
+        private FingerprintState() {
+            this(ValueFingerprint.MAX_TEXT_BYTES,
+                    ValueFingerprint.MAX_NODES,
+                    ValueFingerprint.MAX_TOTAL_ELEMENTS,
+                    ValueFingerprint.MAX_TOTAL_FIELDS);
+        }
+
+        private FingerprintState(int byteBudget, int nodeBudget,
+                                 int elementBudget, int fieldBudget) {
+            this.byteBudget = Math.max(0, byteBudget);
+            this.nodeBudget = Math.max(0, nodeBudget);
+            this.elementBudget = Math.max(0, elementBudget);
+            this.fieldBudget = Math.max(0, fieldBudget);
+        }
+
+        private FingerprintState childForMapEntry() {
+            FingerprintState child = new FingerprintState(
+                    Math.max(0, byteBudget - bytes),
+                    Math.max(0, nodeBudget - nodes),
+                    Math.max(0, elementBudget - elements),
+                    Math.max(0, fieldBudget - fields));
+            // Map entries are canonicalized independently so their texts can
+            // be sorted, but seed the ancestor identities.  This makes a map
+            // that contains itself terminate as REF instead of recursively
+            // constructing fresh per-entry states.
+            child.seen.putAll(seen);
+            return child;
+        }
+
+        private boolean takeElement() {
+            if (++elements > elementBudget) {
+                fail("MAX_TOTAL_ELEMENTS");
+                return false;
+            }
+            return true;
+        }
+
+        private boolean takeField() {
+            if (++fields > fieldBudget) {
+                fail("MAX_TOTAL_FIELDS");
+                return false;
+            }
+            return true;
+        }
 
         private void fail(String why) {
             if (!complete) return;

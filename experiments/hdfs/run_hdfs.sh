@@ -3832,6 +3832,7 @@ do_compose_smt() {
         --smt "${composed_smt}" \
         --candidates "${relationship_candidates}" \
         --output "${relationship_proofs}" \
+        --z3 "$(configured_tool_path "${z3_bin}")" \
         --timeout-ms "${CAUSYNTH_RELATIONSHIP_TIMEOUT_MS:-20000}" \
         || proof_status=$?
     echo "[Concolic] composed SMT: ${composed_smt}"
@@ -3857,6 +3858,7 @@ do_verify_relationships() {
         --smt "${composed_smt}" \
         --candidates "${relationship_candidates}" \
         --output "${proof_output}" \
+        --z3 "$(configured_tool_path "${z3_bin}")" \
         --timeout-ms "${CAUSYNTH_RELATIONSHIP_TIMEOUT_MS:-20000}" \
         || proof_status=$?
     echo "[Concolic] relationship proofs: ${proof_output}"

@@ -52,6 +52,7 @@ import soot.jimple.ReturnVoidStmt;
 import soot.jimple.StaticFieldRef;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
+import soot.jimple.ThisRef;
 import soot.jimple.ThrowStmt;
 import soot.tagkit.LineNumberTag;
 import soot.tagkit.SourceLineNumberTag;
@@ -5228,6 +5229,13 @@ public final class CausynthPipeline {
             if (isHdfsKeyPropagationFastPathTarget()) {
                 Set<String> candidateClasses = hdfsPropagationClasses();
                 loadScopedHdfsPropagationMethods(candidateClasses);
+                // Seed the exact scalar component used to build the encrypted
+                // SASL user name before the exception worklist opens broad
+                // shared-field writer frontiers.  This is a data-dependency
+                // seed, not a value-equality assertion: the enclosing method
+                // still has to be captured as a normal symbolic region to
+                // learn the integer-to-string encoding.
+                initializeHdfsSaslUsernameKeyIdProducer();
                 initializeConfiguredSeedAnchors();
                 runWorklist();
                 finishSeedDiscovery(result);
@@ -5390,6 +5398,105 @@ public final class CausynthPipeline {
             }
             initializeSeedAnchors();
             initializeHdfsDirectLookupSeedAnchors();
+        }
+
+        /**
+         * Adds the exact leaf dependency that Jimple's mutable StringBuilder
+         * lowering otherwise discovers only after walking every append state.
+         *
+         * <p>The edge says only that {@code DataEncryptionKey.keyId}
+         * contributes to the returned username.  It intentionally does not
+         * claim equality: concolic execution of the ordinary method region is
+         * responsible for its decimal-string/compound-username semantics.
+         * The source is the scalar leaf owned by parameter zero, never the
+         * {@code DataEncryptionKey} object reference.</p>
+         */
+        private void initializeHdfsSaslUsernameKeyIdProducer() {
+            SootMethod method = findMethod(HDFS_SASL_CLIENT,
+                    "getUserNameFromEncryptionKey", 1);
+            MethodSig signature = method == null ? null
+                    : parseMethodSig(method.getSignature());
+            if (signature == null
+                    || signature.params.size() != 1
+                    || !"org.apache.hadoop.hdfs.security.token.block."
+                    .concat("DataEncryptionKey").equals(
+                    erasedTypeName(signature.params.get(0)))
+                    || !"java.lang.String".equals(signature.returnType)) {
+                return;
+            }
+            SootField keyId = resolveDeclaredField(signature.params.get(0),
+                    "keyId");
+            if (keyId == null || !"int".equals(keyId.getType().toString())) {
+                return;
+            }
+            List<Fact> facts = factsByMethod.get(method.getSignature());
+            if (facts == null) {
+                facts = factsFromMethod(method);
+            }
+            if (!hdfsUsernameMethodEncodesKeyId(method.getSignature(), facts,
+                    keyId.getSignature())) {
+                return;
+            }
+
+            String source = formalParam(signature, 0) + "#field:keyId";
+            String output = method.getSignature() + ".return";
+            addEdge("structured_scalar_encoding_dependency", source, output,
+                    method.getSignature(), null,
+                    "HDFS encrypted SASL username decimal-encodes DataEncryptionKey.keyId as its first component");
+            Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
+                    "structured_scalar_encoding_dependency", source, output,
+                    method.getSignature()));
+            if (edge != null) {
+                edge.put("sourceFieldSignature", keyId.getSignature());
+                edge.put("structuredEncoding", "DECIMAL_KEY_ID_PREFIX");
+                edge.put("componentDelimiter", " ");
+                edge.put("dependencyAuthority",
+                        "SOOT_HDFS_USERNAME_KEYID_FIELD_READ_V1");
+                edge.put("valueEqualityAsserted", false);
+                edge.put("objectReferenceIsSymbolicScalar", false);
+            }
+            relevant(method.getSignature()).add(source);
+            relevant(method.getSignature()).add(output);
+            selectedMethods.add(method.getSignature());
+        }
+
+        private boolean hdfsUsernameMethodEncodesKeyId(
+                String method, List<Fact> facts, String keyIdField) {
+            if (facts == null || facts.isEmpty()) {
+                return false;
+            }
+            Set<String> parameterAliases = new LinkedHashSet<>();
+            boolean returnsString = false;
+            for (Fact fact : facts) {
+                if (fact.unit instanceof IdentityStmt) {
+                    IdentityStmt identity = (IdentityStmt) fact.unit;
+                    if (identity.getRightOp() instanceof ParameterRef
+                            && ((ParameterRef) identity.getRightOp()).getIndex()
+                            == 0) {
+                        parameterAliases.add(canonical(method,
+                                identity.getLeftOp().toString()));
+                    }
+                }
+                returnsString |= fact.isReturn;
+            }
+            parameterAliases = closeLocalAliases(method, facts,
+                    parameterAliases);
+
+            boolean readsKeyId = false;
+            for (Fact fact : facts) {
+                for (InstanceFieldAccess access : fact.instanceFieldUses) {
+                    if (keyIdField.equals(access.field)
+                            && parameterAliases.contains(canonical(method,
+                            access.base))) {
+                        readsKeyId = true;
+                    }
+                }
+            }
+            // The method/parameter/field tuple is HDFS-specific and the edge
+            // asserts dependency only (never equality).  A direct Soot field
+            // read plus a returned String is therefore sufficient authority;
+            // the concolic region records the concrete StringBuilder encoding.
+            return returnsString && readsKeyId;
         }
 
         private void finishSeedDiscovery(AnalysisResult result) {
@@ -7866,11 +7973,18 @@ public final class CausynthPipeline {
                 return false;
             }
             String callerReceiver = canonical(callerMethod, receiver);
-            if (!callerRelevant.contains(callerReceiver)
-                    || containsProjection(callerRelevant, callerReceiver)) {
+            boolean exactReceiverDemand = callerRelevant.contains(callerReceiver);
+            boolean projectedReceiverDemand = containsProjection(callerRelevant,
+                    callerReceiver);
+            if (!exactReceiverDemand && !projectedReceiverDemand) {
                 return false;
             }
-            boolean changed = false;
+            boolean changed = projectedReceiverDemand
+                    && processConstructorLeafFieldInitializers(callerMethod,
+                    fact, callee, actuals, callerReceiver, callerRelevant);
+            if (!exactReceiverDemand) {
+                return changed;
+            }
             for (String actual : actuals) {
                 if (ignoreNode(actual)) {
                     continue;
@@ -7883,6 +7997,207 @@ public final class CausynthPipeline {
                 changed |= callerRelevant.add(actual);
             }
             return changed;
+        }
+
+        /**
+         * Projects a demanded scalar leaf of a newly initialized object back
+         * to the constructor parameter that initializes the first field in the
+         * path.
+         *
+         * <p>This is deliberately narrower than treating the constructed
+         * object reference as symbolic.  For {@code new Product(id, key)} and
+         * a demand on {@code product.currentKey.keyId}, the emitted source is
+         * {@code key.keyId}; for {@code product.keyId}, it is {@code id}.  The
+         * binding is admitted only when Soot proves an intraprocedural
+         * parameter-to-{@code this.field} assignment in that exact constructor
+         * and the resulting leaf types agree.</p>
+         */
+        private boolean processConstructorLeafFieldInitializers(
+                String callerMethod, Fact fact, MethodSig constructor,
+                List<String> actuals, String callerReceiver,
+                Set<String> callerRelevant) {
+            Set<String> suffixes = projectionSuffixesForBase(callerMethod,
+                    callerReceiver);
+            if (suffixes.isEmpty()) {
+                return false;
+            }
+            Map<String, Set<Integer>> parametersByField =
+                    constructorParametersByInitializedField(constructor.raw);
+            if (parametersByField.isEmpty()) {
+                return false;
+            }
+
+            boolean changed = false;
+            for (String suffix : suffixes) {
+                if (!callerRelevant.contains(callerReceiver + suffix)
+                        || !isAllowedFieldPathSuffix(suffix)
+                        || !isScalarLeafProjection(callerReceiver + suffix)) {
+                    continue;
+                }
+                List<String> fields = fieldPathNames(suffix);
+                if (fields.isEmpty()) {
+                    continue;
+                }
+                Set<Integer> parameters = parametersByField.get(fields.get(0));
+                if (parameters == null || parameters.size() != 1) {
+                    // A union of constructor parameters is a dependency, but
+                    // it is not the exact leaf-owner relation required for an
+                    // automatic SMT port.  Leave it concrete at runtime.
+                    continue;
+                }
+                int parameter = parameters.iterator().next();
+                if (parameter < 0 || parameter >= actuals.size()) {
+                    continue;
+                }
+                String actual = actuals.get(parameter);
+                if (ignoreNode(actual)) {
+                    continue;
+                }
+                String remaining = fieldPathSuffix(fields, 1, fields.size());
+                String source = actual + remaining;
+                String target = callerReceiver + suffix;
+                String sourceType = cellValueType(source);
+                String targetType = cellValueType(target);
+                if (sourceType.isEmpty() || targetType.isEmpty()
+                        || !erasedTypeName(sourceType).equals(
+                        erasedTypeName(targetType))) {
+                    continue;
+                }
+                if (addEdge("constructor_field_initialization", source, target,
+                        callerMethod, fact,
+                        "Soot-proven constructor parameter initializes demanded scalar leaf field")) {
+                    changed = true;
+                }
+                Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
+                        "constructor_field_initialization", source, target,
+                        callerMethod));
+                if (edge != null) {
+                    edge.put("constructorMethod", constructor.raw);
+                    edge.put("constructorParameterIndex", parameter);
+                    edge.put("initializedField", fields.get(0));
+                    edge.put("projectedLeafPath", suffix);
+                    edge.put("leafOwnerPath", remaining);
+                    edge.put("constructorBindingAuthority",
+                            "SOOT_PARAMETER_TO_THIS_FIELD_ASSIGNMENT_V1");
+                    edge.put("objectReferenceIsSymbolicScalar", false);
+                }
+                changed |= callerRelevant.add(source);
+            }
+            return changed;
+        }
+
+        private boolean isScalarLeafProjection(String projection) {
+            String type = cellValueType(projection);
+            return isPrimitiveType(type) || "java.lang.String".equals(type);
+        }
+
+        /** Returns exact constructor parameters that may initialize each this field. */
+        private Map<String, Set<Integer>> constructorParametersByInitializedField(
+                String constructorSignature) {
+            SootMethod constructor = methodsBySignature.get(constructorSignature);
+            if (constructor == null || !constructor.isConcrete()) {
+                return Collections.emptyMap();
+            }
+            Body body;
+            try {
+                body = constructor.retrieveActiveBody();
+            } catch (RuntimeException exception) {
+                return Collections.emptyMap();
+            }
+
+            Map<Local, Set<Integer>> origins = new LinkedHashMap<>();
+            Set<Local> thisAliases = new LinkedHashSet<>();
+            for (Unit unit : body.getUnits()) {
+                if (!(unit instanceof IdentityStmt)) {
+                    continue;
+                }
+                IdentityStmt identity = (IdentityStmt) unit;
+                if (!(identity.getLeftOp() instanceof Local)) {
+                    continue;
+                }
+                Local left = (Local) identity.getLeftOp();
+                if (identity.getRightOp() instanceof ParameterRef) {
+                    origins.computeIfAbsent(left, ignored -> new LinkedHashSet<>())
+                            .add(((ParameterRef) identity.getRightOp()).getIndex());
+                } else if (identity.getRightOp() instanceof ThisRef) {
+                    thisAliases.add(left);
+                }
+            }
+
+            boolean changed = true;
+            while (changed) {
+                changed = false;
+                for (Unit unit : body.getUnits()) {
+                    if (!(unit instanceof AssignStmt)) {
+                        continue;
+                    }
+                    AssignStmt assignment = (AssignStmt) unit;
+                    Value left = assignment.getLeftOp();
+                    Value right = assignment.getRightOp();
+                    if (left instanceof Local) {
+                        Set<Integer> rightOrigins = parameterOrigins(right,
+                                origins);
+                        if (!rightOrigins.isEmpty()) {
+                            changed |= origins.computeIfAbsent((Local) left,
+                                    ignored -> new LinkedHashSet<>())
+                                    .addAll(rightOrigins);
+                        }
+                        if (right instanceof Local
+                                && thisAliases.contains((Local) right)) {
+                            changed |= thisAliases.add((Local) left);
+                        } else if (right instanceof CastExpr
+                                && ((CastExpr) right).getOp() instanceof Local
+                                && thisAliases.contains((Local) ((CastExpr) right)
+                                .getOp())) {
+                            changed |= thisAliases.add((Local) left);
+                        }
+                    }
+                }
+            }
+
+            Map<String, Set<Integer>> result = new LinkedHashMap<>();
+            for (Unit unit : body.getUnits()) {
+                if (!(unit instanceof AssignStmt)
+                        || !(((AssignStmt) unit).getLeftOp()
+                        instanceof InstanceFieldRef)) {
+                    continue;
+                }
+                AssignStmt assignment = (AssignStmt) unit;
+                InstanceFieldRef field = (InstanceFieldRef) assignment.getLeftOp();
+                if (!(field.getBase() instanceof Local)
+                        || !thisAliases.contains((Local) field.getBase())) {
+                    continue;
+                }
+                Set<Integer> fieldOrigins = parameterOrigins(
+                        assignment.getRightOp(), origins);
+                if (!fieldOrigins.isEmpty()) {
+                    result.computeIfAbsent(field.getFieldRef().name(),
+                            ignored -> new LinkedHashSet<>())
+                            .addAll(fieldOrigins);
+                }
+            }
+            return result;
+        }
+
+        private Set<Integer> parameterOrigins(Value value,
+                                              Map<Local, Set<Integer>> origins) {
+            if (value instanceof Local) {
+                Set<Integer> found = origins.get((Local) value);
+                return found == null ? Collections.emptySet() : found;
+            }
+            if (value instanceof CastExpr) {
+                return parameterOrigins(((CastExpr) value).getOp(), origins);
+            }
+            Set<Integer> result = new LinkedHashSet<>();
+            for (ValueBox box : value.getUseBoxes()) {
+                if (box.getValue() instanceof Local) {
+                    Set<Integer> found = origins.get((Local) box.getValue());
+                    if (found != null) {
+                        result.addAll(found);
+                    }
+                }
+            }
+            return result;
         }
 
         private boolean processReceiverSideEffectInvoke(String callerMethod, Fact fact,

@@ -105,6 +105,8 @@ final class RuntimeRegionPlanner {
         List<MethodEvent> methodEvents = sortedMethods(methods);
         List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
         List<FieldAccessEvent> fields = sortedFields(fieldEvents);
+        RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes =
+                RootArgumentRuntimeTypeIndex.build(executions);
 
         Map<Long, MethodEvent> calls = new LinkedHashMap<>();
         Map<String, List<MethodEvent>> methodsBySignature = new LinkedHashMap<>();
@@ -173,7 +175,7 @@ final class RuntimeRegionPlanner {
                         root, methodEvents);
                 Map<String, Object> rootArgumentSelector =
                         runtimeRootArgumentSelector(root, methodEvents,
-                                executions);
+                                rootArgumentRuntimeTypes);
                 String instanceId = region.regionId + "@" + safeToken(root.test)
                         + "#call" + root.callId;
 
@@ -688,14 +690,13 @@ final class RuntimeRegionPlanner {
      */
     private static Map<String, Object> runtimeRootArgumentSelector(
             MethodEvent target, List<MethodEvent> methods,
-            List<RuntimeEvent> runtimeEvents) {
+            RootArgumentRuntimeTypeIndex runtimeTypes) {
         List<String> parameterTypes = methodParameterTypes(target.method);
         if (parameterTypes.isEmpty()) {
             return Collections.emptyMap();
         }
 
-        Map<Integer, String> observed = rootArgumentRuntimeTypes(target,
-                runtimeEvents);
+        Map<Integer, String> observed = runtimeTypes.typesFor(target);
         List<Map<String, Object>> predicates = new ArrayList<>();
         for (int index = 0; index < parameterTypes.size(); index++) {
             if (primitiveType(parameterTypes.get(index))) {
@@ -725,7 +726,7 @@ final class RuntimeRegionPlanner {
                     || !target.method.equals(candidate.method)
                     || !sameStableRootContext(target, candidate)
                     || !matchesRootArgumentPredicates(candidate,
-                    runtimeEvents, predicates)) {
+                    runtimeTypes, predicates)) {
                 continue;
             }
             Integer candidateReceiverOrdinal = receiverOrdinals.get(
@@ -769,10 +770,9 @@ final class RuntimeRegionPlanner {
     }
 
     private static boolean matchesRootArgumentPredicates(
-            MethodEvent candidate, List<RuntimeEvent> runtimeEvents,
+            MethodEvent candidate, RootArgumentRuntimeTypeIndex runtimeTypes,
             List<Map<String, Object>> predicates) {
-        Map<Integer, String> observed = rootArgumentRuntimeTypes(candidate,
-                runtimeEvents);
+        Map<Integer, String> observed = runtimeTypes.typesFor(candidate);
         for (Map<String, Object> predicate : predicates) {
             Object rawIndex = predicate.get("argumentIndex");
             int index = rawIndex instanceof Number
@@ -783,30 +783,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return true;
-    }
-
-    private static Map<Integer, String> rootArgumentRuntimeTypes(
-            MethodEvent method, List<RuntimeEvent> runtimeEvents) {
-        Map<Integer, String> result = new LinkedHashMap<>();
-        Set<Integer> ambiguous = new LinkedHashSet<>();
-        for (RuntimeEvent event : runtimeEvents) {
-            if (!"METHOD_ARGUMENT".equals(event.kind)
-                    || event.callId != method.callId
-                    || !method.method.equals(event.method)
-                    || event.argumentIndex < 0
-                    || event.runtimeType.isEmpty()) {
-                continue;
-            }
-            String previous = result.put(event.argumentIndex,
-                    event.runtimeType);
-            if (previous != null && !previous.equals(event.runtimeType)) {
-                ambiguous.add(event.argumentIndex);
-            }
-        }
-        for (Integer index : ambiguous) {
-            result.remove(index);
-        }
-        return result;
     }
 
     private static List<String> methodParameterTypes(String signature) {
@@ -3630,7 +3606,16 @@ final class RuntimeRegionPlanner {
     private static List<EndpointFingerprint> endpointFingerprints(
             StaticRegionEdge edge, InstanceEvidence evidence,
             boolean source) {
-        String port = source ? edge.fromPort : edge.toPort;
+        // Runtime instance correlation intentionally keeps using the raw
+        // protocol endpoint (see endpointPairObserved).  A projected method
+        // local, however, does not carry a declared field owner and therefore
+        // cannot safely match a FIELD_READ/FIELD_WRITE fingerprint by itself.
+        // When the static edge supplies a complete exact alias proof, use the
+        // canonical producer output cell solely for source value capture.
+        // The consumer remains tied to its raw runtime endpoint.
+        String port = source
+                ? edge.sourceFingerprintEndpoint(evidence.region)
+                : edge.toPort;
         String method = methodInCell(port);
         int parameter = parameterIndex(port);
         boolean methodReturn = port.contains(">.return");
@@ -4015,6 +4000,107 @@ final class RuntimeRegionPlanner {
 
         String summaryJson() {
             return json(summary);
+        }
+    }
+
+    /**
+     * One-pass lookup table for exact root METHOD_ARGUMENT runtime types.
+     * The trace may contain hundreds of thousands of unrelated execution
+     * events, so selectors must not rediscover the same (method, callId)
+     * facts by scanning that trace once per candidate root.
+     */
+    static final class RootArgumentRuntimeTypeIndex {
+        private final Map<String, Map<Long, RootArgumentTypes>> byMethod =
+                new LinkedHashMap<>();
+        private int scannedEventCount;
+        private int indexedArgumentEventCount;
+        private int indexedCallCount;
+
+        static RootArgumentRuntimeTypeIndex build(
+                List<RuntimeEvent> runtimeEvents) {
+            RootArgumentRuntimeTypeIndex result =
+                    new RootArgumentRuntimeTypeIndex();
+            for (RuntimeEvent event : values(runtimeEvents)) {
+                result.scannedEventCount++;
+                if (!"METHOD_ARGUMENT".equals(event.kind)
+                        || event.argumentIndex < 0
+                        || event.runtimeType.isEmpty()) {
+                    continue;
+                }
+                result.indexedArgumentEventCount++;
+                Map<Long, RootArgumentTypes> byCall = result.byMethod.get(
+                        event.method);
+                if (byCall == null) {
+                    byCall = new LinkedHashMap<>();
+                    result.byMethod.put(event.method, byCall);
+                }
+                RootArgumentTypes types = byCall.get(event.callId);
+                if (types == null) {
+                    types = new RootArgumentTypes();
+                    byCall.put(event.callId, types);
+                    result.indexedCallCount++;
+                }
+                types.observe(event.argumentIndex, event.runtimeType);
+            }
+            for (Map<Long, RootArgumentTypes> byCall
+                    : result.byMethod.values()) {
+                for (RootArgumentTypes types : byCall.values()) {
+                    types.freeze();
+                }
+            }
+            return result;
+        }
+
+        Map<Integer, String> typesFor(MethodEvent method) {
+            if (method == null) {
+                return Collections.emptyMap();
+            }
+            Map<Long, RootArgumentTypes> byCall = byMethod.get(method.method);
+            if (byCall == null) {
+                return Collections.emptyMap();
+            }
+            RootArgumentTypes types = byCall.get(method.callId);
+            return types == null ? Collections.emptyMap() : types.values();
+        }
+
+        int scannedEventCount() {
+            return scannedEventCount;
+        }
+
+        int indexedArgumentEventCount() {
+            return indexedArgumentEventCount;
+        }
+
+        int indexedCallCount() {
+            return indexedCallCount;
+        }
+    }
+
+    private static final class RootArgumentTypes {
+        private final Map<Integer, String> observed = new LinkedHashMap<>();
+        private final Set<Integer> ambiguous = new LinkedHashSet<>();
+        private Map<Integer, String> frozen = Collections.emptyMap();
+
+        private void observe(int index, String runtimeType) {
+            if (ambiguous.contains(index)) {
+                return;
+            }
+            String previous = observed.get(index);
+            if (previous == null) {
+                observed.put(index, runtimeType);
+            } else if (!previous.equals(runtimeType)) {
+                observed.remove(index);
+                ambiguous.add(index);
+            }
+        }
+
+        private void freeze() {
+            frozen = Collections.unmodifiableMap(
+                    new LinkedHashMap<>(observed));
+        }
+
+        private Map<Integer, String> values() {
+            return frozen;
         }
     }
 
@@ -4409,10 +4495,11 @@ final class RuntimeRegionPlanner {
         }
 
         /**
-         * Runtime endpoint correlation keeps using {@link #fromPort}.  Only
-         * producer-output selection consumes a complete exact alias proof;
-         * an edge with no canonical schema keeps its exact raw endpoint, while
-         * any partially populated canonical schema fails closed.
+         * Runtime instance correlation keeps using {@link #fromPort}.
+         * Producer-output selection and source value capture may consume a
+         * complete exact alias proof; an edge with no canonical schema keeps
+         * its exact raw endpoint, while any partially populated canonical
+         * schema fails closed.
          */
         private String producerOutputEndpoint() {
             if (!canonicalMetadataPresent) {
@@ -4423,6 +4510,11 @@ final class RuntimeRegionPlanner {
 
         private boolean usesCanonicalOutput() {
             return canonicalAliasValid();
+        }
+
+        private String sourceFingerprintEndpoint(StaticRegion region) {
+            return usesCanonicalOutput() && producerOutputFor(region) != null
+                    ? fromOutputCell : fromPort;
         }
 
         private boolean canonicalAliasValid() {

@@ -186,6 +186,63 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void rootArgumentTypeIndexIsLinearAndPreservesAmbiguity() {
+        String root = "<example.Actor: void process(example.Command,"
+                + "example.Service)>";
+        String other = "<example.OtherActor: void process(example.Command)>";
+        List<RuntimeRegionPlanner.RuntimeEvent> events = new ArrayList<>();
+        for (int index = 0; index < 30000; index++) {
+            events.add(new RuntimeRegionPlanner.RuntimeEvent(index + 1L,
+                    "BRANCH", "<example.Noise: void run()>",
+                    1000L + index, 0L, 0L, "noise#u1", -1, "", 0,
+                    "", true, false));
+        }
+        events.add(methodArgument(30001, root, 41, 0,
+                "example.KeyUpdateCommand"));
+        events.add(methodArgument(30002, root, 41, 0,
+                "example.KeyUpdateCommand"));
+        events.add(methodArgument(30003, root, 41, 1,
+                "example.Service"));
+        events.add(methodArgument(30004, root, 42, 0,
+                "example.OtherCommand"));
+        events.add(methodArgument(30005, other, 41, 0,
+                "example.UnrelatedCommand"));
+        events.add(methodArgument(30006, root, 43, 0,
+                "example.FirstCommand"));
+        events.add(methodArgument(30007, root, 43, 0,
+                "example.SecondCommand"));
+        events.add(methodArgument(30008, root, 43, 0,
+                "example.FirstCommand"));
+        events.add(methodArgument(30009, root, 43, 1,
+                "example.Service"));
+
+        RuntimeRegionPlanner.RootArgumentRuntimeTypeIndex index =
+                RuntimeRegionPlanner.RootArgumentRuntimeTypeIndex.build(
+                        events);
+        RuntimeRegionPlanner.MethodEvent target = methodWithReceiver(
+                1, root, 41, 101);
+        Map<Integer, String> exact = index.typesFor(target);
+        assertEquals("example.KeyUpdateCommand", exact.get(0));
+        assertEquals("example.Service", exact.get(1));
+
+        Map<Integer, String> ambiguous = index.typesFor(methodWithReceiver(
+                2, root, 43, 102));
+        assertFalse("a conflicting argument index remains ambiguous even if "
+                + "a later row repeats the first type",
+                ambiguous.containsKey(0));
+        assertEquals("example.Service", ambiguous.get(1));
+        assertEquals(events.size(), index.scannedEventCount());
+        assertEquals(9, index.indexedArgumentEventCount());
+        assertEquals(4, index.indexedCallCount());
+
+        for (int lookup = 0; lookup < 10000; lookup++) {
+            assertEquals(exact, index.typesFor(target));
+        }
+        assertEquals("lookups do not rescan the large runtime event list",
+                events.size(), index.scannedEventCount());
+    }
+
+    @Test
     public void argumentSelectorOrdinalsAreRelativeToStableRootContext()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -3027,6 +3084,115 @@ public class RuntimeRegionPlannerTest {
                     validation.get("valueEqualityAuthority"));
             assertEquals(1, validation.get(
                     "confirmedValueEqualityPairCount"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void canonicalProducerOutputCapturesProjectedLocalFingerprint()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            String producer =
+                    "<example.BlockManager: void addKeyUpdateCommand()>";
+            String consumer =
+                    "<example.OfferService: void processCommand()>";
+            String rawSource = producer + "::$r5#field:allKeys";
+            String rawTarget = consumer + "::$r59#field:allKeys";
+            String canonical =
+                    "<example.ExportedKeys: example.Key[] allKeys>";
+            String outputPort = "REGION.NN.out.keys";
+            String site = consumer
+                    + "#synthetic:projected_heartbeat_key_update";
+            String producerRegion = "{\"regionId\":\"REGION.NN\","
+                    + "\"rootMethod\":\"" + producer + "\","
+                    + "\"anchorMethod\":\"" + producer + "\","
+                    + "\"methods\":[\"" + producer + "\"],"
+                    + "\"symbolicInputs\":[],\"outputs\":[{"
+                    + "\"portId\":\"" + outputPort + "\","
+                    + "\"cell\":\"" + canonical + "\","
+                    + "\"kind\":\"HEAP_STATE\"}],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            Files.write(regions, (producerRegion
+                    + region("REGION.DN", consumer)).getBytes(
+                    StandardCharsets.UTF_8));
+            String edge = "{\"edgeId\":\"E.HEARTBEAT.KEYS\","
+                    + "\"fromRegion\":\"REGION.NN\","
+                    + "\"toRegion\":\"REGION.DN\","
+                    + "\"fromPort\":\"" + rawSource + "\","
+                    + "\"fromOutputPort\":\"" + outputPort + "\","
+                    + "\"fromOutputCell\":\"" + canonical + "\","
+                    + "\"aliasProofEdgeIds\":[\"DF.1\",\"DF.2\"],"
+                    + "\"aliasProofAuthority\":"
+                    + "\"STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
+                    + "AND_DECLARED_RETURN_FIELD\","
+                    + "\"aliasProofComplete\":true,"
+                    + "\"toPort\":\"" + rawTarget + "\","
+                    + "\"kind\":\"HEARTBEAT_TRANSFER\","
+                    + "\"candidateRelation\":\"EQUALITY\","
+                    + "\"requiresOrder\":true,"
+                    + "\"siteId\":\"" + site + "\"}\n";
+            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.MethodEvent send = methodContext(1,
+                    producer, 11, "NAMENODE", "IPC Server", 31L);
+            RuntimeRegionPlanner.MethodEvent receive = methodContext(4,
+                    consumer, 22, "DATANODE", "BPServiceActor", 32L);
+            String fingerprint = "sha256:heartbeat-all-keys";
+            RuntimeRegionPlanner.FieldAccessEvent capturedOutput =
+                    new RuntimeRegionPlanner.FieldAccessEvent(2,
+                            "FIELD_WRITE", producer, 11, canonical,
+                            71, 81, "", fingerprint, true, 3,
+                            "COMPLETE");
+            RuntimeRegionPlanner.RuntimeEvent received =
+                    new RuntimeRegionPlanner.RuntimeEvent(5,
+                            "CALL_SITE_RETURN", consumer, 22, 9, 0, site,
+                            "<example.Command: example.Key[] getAllKeys()>",
+                            -1, "example.Key[]", 82, "", false, false,
+                            fingerprint, true, 3, "COMPLETE");
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), edges.toFile(),
+                    Arrays.asList(send, receive),
+                    Collections.singletonList(received),
+                    Collections.singletonList(capturedOutput));
+
+            Map<String, Object> validation = result.edgeValidations.get(0);
+            assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
+                    validation.get("status"));
+            assertEquals(rawSource, validation.get("fromPort"));
+            assertEquals(rawTarget, validation.get("toPort"));
+            assertEquals(canonical, validation.get("fromOutputCell"));
+            assertEquals(1,
+                    validation.get("confirmedValueEqualityPairCount"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> binding = ((List<Map<String, Object>>)
+                    validation.get("validatedBindings")).get(0);
+            assertEquals("FIELD_VALUE",
+                    binding.get("fromFingerprintSource"));
+            assertEquals("MAPPED_CALL_RETURN_SITE",
+                    binding.get("toFingerprintSource"));
+
+            // Canonical capture is authorized only by the complete proof.
+            Files.write(edges, edge.replace(
+                    "\"aliasProofComplete\":true",
+                    "\"aliasProofComplete\":false").getBytes(
+                    StandardCharsets.UTF_8));
+            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
+                    regions.toFile(), edges.toFile(),
+                    Arrays.asList(send, receive),
+                    Collections.singletonList(received),
+                    Collections.singletonList(capturedOutput));
+            assertEquals(0, rejected.edgeValidations.get(0).get(
+                    "confirmedValueEqualityPairCount"));
+            assertFalse(Boolean.TRUE.equals(rejected.edgeValidations.get(0)
+                    .get("composable")));
         } finally {
             folder.delete();
         }

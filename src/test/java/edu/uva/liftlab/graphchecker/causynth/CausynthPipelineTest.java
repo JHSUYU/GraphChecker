@@ -3330,6 +3330,249 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void constructorProjectsOnlyTheDemandedScalarLeafFromItsOwner()
+            throws Exception {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+
+        SootClass key = new SootClass("example.ConstructorLeafKey",
+                Modifier.PUBLIC);
+        key.setSuperclass(object);
+        key.setApplicationClass();
+        SootField nestedKeyId = new SootField("keyId", IntType.v(),
+                Modifier.PUBLIC);
+        key.addField(nestedKeyId);
+        Scene.v().addClass(key);
+
+        SootClass product = new SootClass("example.ConstructorLeafProduct",
+                Modifier.PUBLIC);
+        product.setSuperclass(object);
+        product.setApplicationClass();
+        SootField directKeyId = new SootField("keyId", IntType.v(),
+                Modifier.PUBLIC);
+        SootField currentKey = new SootField("currentKey", key.getType(),
+                Modifier.PUBLIC);
+        product.addField(directKeyId);
+        product.addField(currentKey);
+        Scene.v().addClass(product);
+
+        SootMethod constructor = new SootMethod("<init>", Arrays.asList(
+                IntType.v(), key.getType()), VoidType.v(), Modifier.PUBLIC);
+        product.addMethod(constructor);
+        Body constructorBody = Jimple.v().newBody(constructor);
+        constructor.setActiveBody(constructorBody);
+        Local constructorThis = Jimple.v().newLocal("self", product.getType());
+        Local constructorId = Jimple.v().newLocal("id", IntType.v());
+        Local constructorKey = Jimple.v().newLocal("key", key.getType());
+        constructorBody.getLocals().addAll(Arrays.asList(constructorThis,
+                constructorId, constructorKey));
+        constructorBody.getUnits().add(Jimple.v().newIdentityStmt(
+                constructorThis, Jimple.v().newThisRef(product.getType())));
+        constructorBody.getUnits().add(Jimple.v().newIdentityStmt(
+                constructorId, Jimple.v().newParameterRef(IntType.v(), 0)));
+        constructorBody.getUnits().add(Jimple.v().newIdentityStmt(
+                constructorKey, Jimple.v().newParameterRef(key.getType(), 1)));
+        constructorBody.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(constructorThis,
+                        directKeyId.makeRef()), constructorId));
+        constructorBody.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(constructorThis,
+                        currentKey.makeRef()), constructorKey));
+        constructorBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        SootClass factory = new SootClass("example.ConstructorLeafFactory",
+                Modifier.PUBLIC);
+        factory.setSuperclass(object);
+        factory.setApplicationClass();
+        Scene.v().addClass(factory);
+        SootMethod make = new SootMethod("make", Arrays.asList(IntType.v(),
+                key.getType()), product.getType(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        factory.addMethod(make);
+        Body makeBody = Jimple.v().newBody(make);
+        make.setActiveBody(makeBody);
+        Local id = Jimple.v().newLocal("id", IntType.v());
+        Local owner = Jimple.v().newLocal("owner", key.getType());
+        Local created = Jimple.v().newLocal("created", product.getType());
+        makeBody.getLocals().addAll(Arrays.asList(id, owner, created));
+        makeBody.getUnits().add(Jimple.v().newIdentityStmt(id,
+                Jimple.v().newParameterRef(IntType.v(), 0)));
+        makeBody.getUnits().add(Jimple.v().newIdentityStmt(owner,
+                Jimple.v().newParameterRef(key.getType(), 1)));
+        makeBody.getUnits().add(Jimple.v().newAssignStmt(created,
+                Jimple.v().newNewExpr(product.getType())));
+        makeBody.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(created,
+                        constructor.makeRef(), id, owner)));
+        makeBody.getUnits().add(Jimple.v().newReturnStmt(created));
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, constructor);
+        loadFacts(analyzer, make);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> demanded = (Set<String>) relevant.invoke(analyzer,
+                make.getSignature());
+        demanded.add(make.getSignature() + ".return#field:keyId");
+        demanded.add(make.getSignature()
+                + ".return#field:currentKey#field:keyId");
+
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 6; round++) {
+            processMethod.invoke(analyzer, make.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String receiver = make.getSignature() + "::created";
+        Map<String, Object> direct = edges.stream().filter(edge ->
+                "constructor_field_initialization".equals(edge.get("kind"))
+                        && (make.getSignature() + "::id").equals(
+                        edge.get("fromCell"))
+                        && (receiver + "#field:keyId").equals(
+                        edge.get("toCell"))).findFirst().orElseThrow(
+                () -> new AssertionError("missing direct scalar constructor binding"));
+        assertEquals("SOOT_PARAMETER_TO_THIS_FIELD_ASSIGNMENT_V1",
+                direct.get("constructorBindingAuthority"));
+        assertEquals(Boolean.FALSE,
+                direct.get("objectReferenceIsSymbolicScalar"));
+        assertEquals(Boolean.FALSE, direct.get("mappingOnly"));
+        assertEquals(Boolean.TRUE, direct.get("eligibleForAutomaticSmt"));
+
+        Map<String, Object> nested = edges.stream().filter(edge ->
+                "constructor_field_initialization".equals(edge.get("kind"))
+                        && (make.getSignature()
+                        + "::owner#field:keyId").equals(edge.get("fromCell"))
+                        && (receiver + "#field:currentKey#field:keyId").equals(
+                        edge.get("toCell"))).findFirst().orElseThrow(
+                () -> new AssertionError("missing leaf-owner constructor binding"));
+        assertEquals("#field:keyId", nested.get("leafOwnerPath"));
+        assertFalse("the owner object itself must not become the scalar input",
+                edges.stream().anyMatch(edge ->
+                        "constructor_field_initialization".equals(
+                                edge.get("kind"))
+                                && (make.getSignature() + "::owner").equals(
+                                edge.get("fromCell"))
+                                && (receiver
+                                + "#field:currentKey#field:keyId").equals(
+                                edge.get("toCell"))));
+    }
+
+    @Test
+    public void hdfsSaslUsernameProducerSeedsDataEncryptionKeyIdLeaf()
+            throws Exception {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+        SootClass string = new SootClass("java.lang.String",
+                Modifier.PUBLIC);
+        string.setSuperclass(object);
+        Scene.v().addClass(string);
+        SootClass builder = new SootClass("java.lang.StringBuilder",
+                Modifier.PUBLIC);
+        builder.setSuperclass(object);
+        Scene.v().addClass(builder);
+        SootMethod builderConstructor = new SootMethod("<init>",
+                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
+        SootMethod appendInt = new SootMethod("append",
+                Collections.singletonList(IntType.v()), builder.getType(),
+                Modifier.PUBLIC);
+        SootMethod toString = new SootMethod("toString",
+                Collections.emptyList(), string.getType(), Modifier.PUBLIC);
+        builder.addMethod(builderConstructor);
+        builder.addMethod(appendInt);
+        builder.addMethod(toString);
+
+        SootClass encryptionKey = new SootClass(
+                "org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey",
+                Modifier.PUBLIC);
+        encryptionKey.setSuperclass(object);
+        SootField keyId = new SootField("keyId", IntType.v(),
+                Modifier.PUBLIC);
+        encryptionKey.addField(keyId);
+        Scene.v().addClass(encryptionKey);
+        encryptionKey.setApplicationClass();
+
+        SootClass client = new SootClass(
+                "org.apache.hadoop.hdfs.protocol.datatransfer.sasl."
+                        + "SaslDataTransferClient", Modifier.PUBLIC);
+        client.setSuperclass(object);
+        Scene.v().addClass(client);
+        client.setApplicationClass();
+        SootMethod encode = new SootMethod("getUserNameFromEncryptionKey",
+                Collections.singletonList(encryptionKey.getType()),
+                string.getType(), Modifier.PRIVATE | Modifier.STATIC);
+        client.addMethod(encode);
+        Body body = Jimple.v().newBody(encode);
+        encode.setActiveBody(body);
+        Local dek = Jimple.v().newLocal("dek", encryptionKey.getType());
+        Local id = Jimple.v().newLocal("id", IntType.v());
+        Local buffer = Jimple.v().newLocal("buffer", builder.getType());
+        Local appended = Jimple.v().newLocal("appended", builder.getType());
+        Local encoded = Jimple.v().newLocal("encoded", string.getType());
+        body.getLocals().addAll(Arrays.asList(dek, id, buffer, appended,
+                encoded));
+        body.getUnits().add(Jimple.v().newIdentityStmt(dek,
+                Jimple.v().newParameterRef(encryptionKey.getType(), 0)));
+        body.getUnits().add(Jimple.v().newAssignStmt(id,
+                Jimple.v().newInstanceFieldRef(dek, keyId.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(buffer,
+                Jimple.v().newNewExpr(builder.getType())));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(buffer,
+                        builderConstructor.makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(appended,
+                Jimple.v().newVirtualInvokeExpr(buffer, appendInt.makeRef(),
+                        id)));
+        body.getUnits().add(Jimple.v().newAssignStmt(encoded,
+                Jimple.v().newVirtualInvokeExpr(appended,
+                        toString.makeRef())));
+        body.getUnits().add(Jimple.v().newReturnStmt(encoded));
+
+        Object analyzer = newStaticAnalyzer("hdfs_block_key");
+        Method initialize = analyzer.getClass().getDeclaredMethod(
+                "initializeHdfsSaslUsernameKeyIdProducer");
+        initialize.setAccessible(true);
+        initialize.invoke(analyzer);
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String source = encode.getSignature()
+                + ".param0:" + encryptionKey.getName() + "#field:keyId";
+        Map<String, Object> dependency = edges.stream().filter(edge ->
+                "structured_scalar_encoding_dependency".equals(
+                        edge.get("kind"))
+                        && source.equals(edge.get("fromCell"))
+                        && (encode.getSignature() + ".return").equals(
+                        edge.get("toCell"))).findFirst().orElseThrow(
+                () -> new AssertionError("missing HDFS keyId username dependency; "
+                        + "source=" + source + "; edges=" + edges));
+        assertEquals(Boolean.FALSE, dependency.get("mappingOnly"));
+        assertEquals(Boolean.TRUE,
+                dependency.get("eligibleForAutomaticDerivation"));
+        assertEquals(Boolean.TRUE, dependency.get("eligibleForAutomaticSmt"));
+        assertEquals(Boolean.FALSE,
+                dependency.get("valueEqualityAsserted"));
+        assertEquals(Boolean.FALSE,
+                dependency.get("objectReferenceIsSymbolicScalar"));
+        assertEquals(keyId.getSignature(),
+                dependency.get("sourceFieldSignature"));
+    }
+
+    @Test
     public void containerProjectionWhitelistCoversExactMapViewsAndToArray()
             throws Exception {
         CollectionProjectionFixture fixture = collectionProjectionFixture();
