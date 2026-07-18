@@ -36,6 +36,7 @@ import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
 import soot.jimple.NewArrayExpr;
+import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
 import soot.options.Options;
 
@@ -1236,6 +1237,112 @@ public class CausynthPipelineTest {
                     .replace("\"", ""));
             assertSame(holder, hook.getArg(9));
             assertSame(write.getRightOp(), hook.getArg(10));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void instrumentsExactMethodReturnBeforeReturnExecutes()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            G.reset();
+            Scene.v().addClass(new SootClass("java.lang.String",
+                    Modifier.PUBLIC));
+            Scene.v().addClass(new SootClass("java.lang.Integer",
+                    Modifier.PUBLIC));
+            SootClass owner = new SootClass("example.ReturnCaptureRegion",
+                    Modifier.PUBLIC);
+            Scene.v().addClass(owner);
+            owner.setApplicationClass();
+            SootMethod compute = new SootMethod("compute",
+                    Collections.singletonList(IntType.v()), IntType.v(),
+                    Modifier.PUBLIC | Modifier.STATIC);
+            owner.addMethod(compute);
+            Body body = Jimple.v().newBody(compute);
+            compute.setActiveBody(body);
+            Local result = Jimple.v().newLocal("result", IntType.v());
+            body.getLocals().add(result);
+            body.getUnits().add(Jimple.v().newIdentityStmt(result,
+                    Jimple.v().newParameterRef(IntType.v(), 0)));
+            ReturnStmt returned = Jimple.v().newReturnStmt(result);
+            body.getUnits().add(returned);
+
+            Path plan = folder.getRoot().toPath().resolve(
+                    "return-activation.jsonl");
+            JsonObject activation = new JsonObject();
+            activation.addProperty("activationId", "ACT.RETURN.CAPTURE");
+            activation.addProperty("rootMethod", compute.getSignature());
+            activation.addProperty("replayable", true);
+            JsonObject capture = new JsonObject();
+            capture.addProperty("captureKind", "METHOD_RETURN_VALUE");
+            capture.addProperty("captureBindingId",
+                    "REGION.RETURN.out.0.capture.0");
+            capture.addProperty("outputPort", "REGION.RETURN.out.0");
+            capture.addProperty("outputCell", compute.getSignature()
+                    + ".return");
+            capture.addProperty("method", compute.getSignature());
+            capture.addProperty("unitIndex", 1);
+            capture.addProperty("siteId", compute.getSignature() + "#u1");
+            capture.addProperty("occurrence", 1);
+            JsonArray captures = new JsonArray();
+            captures.add(capture);
+            activation.add("requestedOutputCapture", captures);
+            Files.write(plan, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            Class<?> selectionClass = Class.forName(
+                    CausynthPipeline.class.getName()
+                            + "$ConcolicOutputCaptureSelection");
+            Method from = selectionClass.getDeclaredMethod("from",
+                    Path.class, String.class);
+            from.setAccessible(true);
+            Object selection = from.invoke(null, plan,
+                    "ACT.RETURN.CAPTURE");
+            Class<?> refsClass = Class.forName(
+                    CausynthPipeline.class.getName()
+                            + "$ConcolicRegionRefs");
+            Method create = refsClass.getDeclaredMethod("create");
+            create.setAccessible(true);
+            Object refs = create.invoke(null);
+            Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                    "instrumentConcolicOutputCaptures", selectionClass,
+                    refsClass);
+            instrument.setAccessible(true);
+            assertEquals(1, instrument.invoke(
+                    new CausynthPipeline(null, 0, 0), selection, refs));
+
+            List<Unit> units = new ArrayList<>();
+            for (Unit unit : body.getUnits()) units.add(unit);
+            int returnIndex = units.indexOf(returned);
+            int activeTokenIndex = -1;
+            int hookIndex = -1;
+            InvokeExpr hook = null;
+            for (int index = 0; index < units.size(); index++) {
+                Unit unit = units.get(index);
+                if (!(unit instanceof Stmt)
+                        || !((Stmt) unit).containsInvokeExpr()) continue;
+                InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
+                if ("activeToken".equals(invoke.getMethodRef().name())) {
+                    activeTokenIndex = index;
+                } else if ("recordMethodReturnOutput".equals(
+                        invoke.getMethodRef().name())) {
+                    hookIndex = index;
+                    hook = invoke;
+                }
+            }
+            assertTrue(activeTokenIndex >= 0);
+            assertTrue(hookIndex > activeTokenIndex);
+            assertTrue(returnIndex > hookIndex);
+            assertNotNull(hook);
+            assertEquals(compute.getSignature(), hook.getArg(1).toString()
+                    .replace("\"", ""));
+            assertEquals(1, ((IntConstant) hook.getArg(2)).value);
+            assertEquals("REGION.RETURN.out.0", hook.getArg(5).toString()
+                    .replace("\"", ""));
+            assertEquals(1, ((IntConstant) hook.getArg(7)).value);
         } finally {
             folder.delete();
         }

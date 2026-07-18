@@ -1130,10 +1130,14 @@ public final class RecursiveRegionWorklist {
             if (!hasCanonicalOutputMetadata(edge)) {
                 return resolveOutput(regionId, string(edge, "fromPort"));
             }
+            String authority = string(edge, "aliasProofAuthority");
+            boolean acceptedAuthority = ("STATIC_EXACT_PROJECTED_RETURN_"
+                    + "VALUE_FLOW_AND_DECLARED_RETURN_FIELD").equals(
+                    authority)
+                    || ("CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                    + "PUBLISH_VALUE_FLOW_V1").equals(authority);
             if (!bool(edge, "aliasProofComplete", false)
-                    || !("STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
-                    + "AND_DECLARED_RETURN_FIELD").equals(string(edge,
-                    "aliasProofAuthority"))
+                    || !acceptedAuthority
                     || string(edge, "fromOutputPort").isEmpty()
                     || string(edge, "fromOutputCell").isEmpty()
                     || !nonEmptyProofIds(edge)) {

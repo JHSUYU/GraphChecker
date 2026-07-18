@@ -5,13 +5,79 @@ set -euo pipefail
 fixture_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker_dir=$(cd "${fixture_dir}/../../.." && pwd -P)
 runner="${graphchecker_dir}/run_engine.sh"
-config="${fixture_dir}/workflow.properties"
-work_root="${graphchecker_dir}/target/three-thread-rpc"
-fixture_package="edu/uva/liftlab/graphchecker/fixtures"
-fixture_class="edu.uva.liftlab.graphchecker.fixtures.ThreeThreadRpcWorkload"
-topology_file="${fixture_dir}/rpc-topology.jsonl"
-activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
-target_schedule="${work_root}/schedule"
+config=${CAUSYNTH_WORKFLOW_CONFIG:-"${fixture_dir}/workflow.properties"}
+if [[ "${config}" != /* ]]; then
+  config="${PWD}/${config}"
+fi
+config=$(realpath -m -- "${config}")
+
+die() {
+  echo "[three-thread-rpc] $*" >&2
+  exit 1
+}
+
+trim_value() {
+  local value=$1
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+workflow_property() {
+  local requested=$1
+  local raw key value="" found=false
+  while IFS= read -r raw || [[ -n "${raw}" ]]; do
+    raw=$(trim_value "${raw}")
+    [[ -z "${raw}" || "${raw}" == \#* || "${raw}" != *=* ]] \
+      && continue
+    key=$(trim_value "${raw%%=*}")
+    [[ "${key}" == "${requested}" ]] || continue
+    value=$(trim_value "${raw#*=}")
+    if [[ ${#value} -ge 2 ]]; then
+      if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] \
+          || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+        value=${value:1:${#value}-2}
+      fi
+    fi
+    found=true
+  done < "${config}"
+  [[ "${found}" == "true" && -n "${value}" ]] \
+    || die "workflow configuration has no ${requested}"
+  printf '%s\n' "${value}"
+}
+
+[[ -f "${config}" ]] || die "workflow configuration not found: ${config}"
+normalized_config=$("${runner}" --config "${config}" config)
+
+configured_value() {
+  local key=$1
+  local value
+  value=$(sed -n "s/^${key}=//p" <<< "${normalized_config}")
+  [[ -n "${value}" ]] || die "workflow configuration has no ${key}"
+  printf '%s\n' "${value}"
+}
+
+work_root=$(configured_value causynth_output_dir)
+work_root=$(dirname "${work_root}")
+project_repo=$(configured_value project_repo)
+project_test_classes=$(configured_value project_test_classes_dir)
+original_classes=$(configured_value project_classes_dir)
+instrumented_classes=$(configured_value analysis_classes_dir)
+static_regions=$(configured_value static_regions)
+static_graph=$(configured_value static_graph)
+runtime_edge_validations=$(configured_value runtime_edge_validations)
+graphchecker_jar=$(configured_value graphchecker_jar)
+maven_bin=$(configured_value maven_bin)
+fixture_class=$(workflow_property fixture_class)
+fixture_test_class=$(workflow_property fixture_test_class)
+trace_test=$(workflow_property trace_test)
+custom_jdk_docker_image=$(workflow_property custom_jdk_docker_image)
+fixture_package=${fixture_class%.*}
+fixture_package=${fixture_package//./\/}
+fixture_simple_class=${fixture_class##*.}
+topology_file=$(configured_value rpc_mapping_file)
+activation_plan=$(configured_value runtime_activation_plan)
+target_schedule=$(configured_value schedule_output_dir)
 target_classes="${work_root}/concolic-target-classes"
 producer_campaign_root="${work_root}/producer-campaign"
 bootstrap_root="${work_root}/bootstrap"
@@ -49,18 +115,13 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   final                   Final compose + relationship proof + reach report
   smoke                   test + prepare + analyze + trace + discovery + target
   all                     Run the complete clean-worktree workflow above
-  clean                   Remove only target/three-thread-rpc build products
+  clean                   Remove only the configured fixture work products
 
 No command writes SMT text or a reachability formula. RPC topology is declared
-in rpc-topology.jsonl; runtime read-from evidence still comes from the trace.
+by rpc_mapping_file; runtime read-from evidence still comes from the trace.
 Only the validated final composition is allowed to publish the reach report;
 the bootstrap Boolean report is explicitly replay-only.
 EOF
-}
-
-die() {
-  echo "[three-thread-rpc] $*" >&2
-  exit 1
 }
 
 require_file() {
@@ -142,12 +203,13 @@ producer_binding() {
     . as $activation
     | select(
         .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .requestedOutput.cell == $toCell
-        and any(.requestedOutputSlice.causalEdges[]?;
-          .fromCell == $fromCell or .toCell == $fromCell)
+        and .requestedOutput.cell == $fromCell
         and any(.edgeBindings[]?;
           .fromRegion == $activation.regionId
-          and .fromOutputCell == $toCell))
+          and .fromOutputCell == $fromCell
+          and .rawFromPort == $toCell
+          and .canonicalOutputAliasUsed == true
+          and .aliasProofComplete == true))
     | [.regionId, .activationId] | @tsv
   ' "${activation_plan}")
   [[ ${#matches[@]} -eq 1 ]] || die \
@@ -156,7 +218,7 @@ producer_binding() {
 }
 
 target_binding() {
-  local channel producer_region producer_activation to_cell
+  local channel producer_region producer_activation from_cell to_cell
   local target_region target_activation
   local binding
   local -a channels downstream_regions target_regions target_activations
@@ -167,14 +229,20 @@ target_binding() {
     binding=$(producer_binding "${channel}") || return $?
     IFS=$'\t' read -r producer_region producer_activation \
       <<< "${binding}"
+    from_cell=$(topology_value "${channel}" fromCell) || return $?
     to_cell=$(topology_value "${channel}" toCell) || return $?
     mapfile -t downstream_regions < <(jq -r \
       --arg activation "${producer_activation}" \
       --arg producerRegion "${producer_region}" \
+      --arg fromCell "${from_cell}" \
       --arg toCell "${to_cell}" '
       select(.activationId == $activation and .regionId == $producerRegion)
       | .edgeBindings[]?
-      | select(.fromRegion == $producerRegion and .fromOutputCell == $toCell)
+      | select(.fromRegion == $producerRegion
+          and .fromOutputCell == $fromCell
+          and .rawFromPort == $toCell
+          and .canonicalOutputAliasUsed == true
+          and .aliasProofComplete == true)
       | .toRegion
     ' "${activation_plan}")
     [[ ${#downstream_regions[@]} -eq 1 ]] || die \
@@ -211,25 +279,25 @@ channel_classes() {
 
 scheduled_activation() {
   local requested=$1
-  local channel region source_activation to_cell schedule binding
+  local channel region source_activation from_cell schedule binding
   local -a matches
   channel=$(declared_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region source_activation \
     <<< "${binding}"
-  to_cell=$(topology_value "${channel}" toCell) || return $?
+  from_cell=$(topology_value "${channel}" fromCell) || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   require_file "scheduled producer activation" \
     "${schedule}/scheduled_activation_plan.jsonl"
   mapfile -t matches < <(jq -r \
     --arg region "${region}" --arg sourceActivation "${source_activation}" \
-    --arg toCell "${to_cell}" '
+    --arg fromCell "${from_cell}" '
     select(
       .activationBundleMemberRole == "PRIMARY"
       and .activationId == $sourceActivation
       and .regionId == $region
       and .captureGoal.kind == "OUTPUT_CLOSURE"
-      and .requestedOutput.cell == $toCell)
+      and .requestedOutput.cell == $fromCell)
     | .activationId
   ' "${schedule}/scheduled_activation_plan.jsonl")
   [[ ${#matches[@]} -eq 1 ]] || die \
@@ -259,41 +327,39 @@ scheduled_target_activation() {
 }
 
 do_test() {
-  (cd "${graphchecker_dir}" && mvn -q \
-    -Dtest=edu.uva.liftlab.graphchecker.fixtures.ThreeThreadRpcWorkloadTest \
+  (cd "${graphchecker_dir}" && "${maven_bin}" -q \
+    -Dtest="${fixture_test_class}" \
     test)
 }
 
 do_prepare() {
-  (cd "${graphchecker_dir}" && mvn -q -DskipTests package)
-  local source_dir="${graphchecker_dir}/target/test-classes/${fixture_package}"
-  local destination="${work_root}/original-classes/${fixture_package}"
+  (cd "${graphchecker_dir}" && "${maven_bin}" -q -DskipTests package)
+  local source_dir="${project_test_classes}/${fixture_package}"
+  local destination="${original_classes}/${fixture_package}"
   require_directory "compiled fixture package" "${source_dir}"
   mkdir -p "${destination}"
   # This directory is a reproducible build product dedicated to this fixture.
   find "${destination}" -maxdepth 1 -type f -name '*.class' -delete
   find "${source_dir}" -maxdepth 1 -type f \
-    -name 'ThreeThreadRpcWorkload*.class' ! -name '*Test*.class' \
+    -name "${fixture_simple_class}*.class" ! -name '*Test*.class' \
     -exec cp -f {} "${destination}/" \;
-  [[ -f "${destination}/ThreeThreadRpcWorkload.class" ]] \
+  [[ -f "${destination}/${fixture_simple_class}.class" ]] \
     || die "fixture class isolation failed"
 }
 
 do_analyze() {
   require_directory "isolated fixture classes" \
-    "${work_root}/original-classes"
+    "${original_classes}"
   (cd "${graphchecker_dir}" && CAUSYNTH_INSTRUMENT_TRACE=true \
     "${runner}" --config "${config}" analyze)
 }
 
 do_trace() {
   require_directory "trace-instrumented classes" \
-    "${work_root}/instrumented-classes"
+    "${instrumented_classes}"
   (cd "${graphchecker_dir}" && "${runner}" --config "${config}" workload)
-  require_file "runtime activations" \
-    "${work_root}/runtime/concolic_activation_plan.jsonl"
-  require_file "runtime edge validations" \
-    "${work_root}/runtime/runtime_region_edge_validation.jsonl"
+  require_file "runtime activations" "${activation_plan}"
+  require_file "runtime edge validations" "${runtime_edge_validations}"
 }
 
 do_discover() {
@@ -410,15 +476,13 @@ run_custom_plan() {
   local b1=$5
   local b2=$6
   local accept_nonzero=$7
-  local jdk java_path jar selected replay_status select_all=false
+  local jdk java_path selected replay_status select_all=false
   require_file "concolic activation plan" "${plan}"
   require_directory "concolic fixture classes" "${classes}"
   [[ ! -e "${results}" ]] || die "capture output already exists: ${results}"
   mkdir -p "$(dirname "${results}")"
-  jdk=$("${runner}" --config "${config}" config \
-    | sed -n 's/^custom_jdk_home=//p')
+  jdk=$(configured_value custom_jdk_home) || return $?
   java_path="${jdk}/bin/java"
-  jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
   [[ -x "${java_path}" ]] || die "custom JDK is not built: ${java_path}"
   selected="${selection}"
   if plan_requires_all "${plan}"; then
@@ -433,10 +497,10 @@ run_custom_plan() {
   local -a java_args
   java_args=(
     -Xint
-    -Dcausynth.trace.test=ThreeThreadRpcWorkload
+    -Dcausynth.trace.test="${trace_test}"
     -Dcausynth.concolic.activation.plan="${plan}"
     -Dcausynth.concolic.results="${results}"
-    -cp "${classes}:${jar}"
+    -cp "${classes}:${graphchecker_jar}"
     "${fixture_class}" "${b1}" "${b2}"
   )
   if [[ "${select_all}" != "true" ]]; then
@@ -463,7 +527,7 @@ run_custom_plan() {
       container_args[index]=${container_args[index]//${graphchecker_dir}/\/graphchecker}
     done
     if docker run --rm -v "${graphchecker_dir}:/graphchecker" \
-        -w /graphchecker causynth-openjdk8-build:ubuntu18 \
+        -w /graphchecker "${custom_jdk_docker_image}" \
         "/graphchecker/${java_path#${graphchecker_dir}/}" \
         "${container_args[@]}"; then
       replay_status=0
@@ -534,15 +598,6 @@ import_plan() {
     CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/concolic_import_diagnostics.jsonl" \
     CAUSYNTH_SUMMARY_CACHE_DIR="${output_dir}/concolic-summary-cache" \
     "${runner}" --config "${config}" import)
-}
-
-configured_value() {
-  local key=$1
-  local value
-  value=$("${runner}" --config "${config}" config \
-    | sed -n "s/^${key}=//p")
-  [[ -n "${value}" ]] || die "workflow configuration has no ${key}"
-  printf '%s\n' "${value}"
 }
 
 run_graphchecker_main() {
@@ -1021,11 +1076,11 @@ do_campaign() {
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
   args=(
-    --regions "${work_root}/analysis/symbolic_regions.jsonl"
+    --regions "${static_regions}"
     --activations "${activation_plan}"
-    --edges "${work_root}/runtime/runtime_region_edge_validation.jsonl"
+    --edges "${runtime_edge_validations}"
     --roots "${roots}"
-    --static-graph "${work_root}/analysis/static_dataflow_edges.jsonl"
+    --static-graph "${static_graph}"
     --output-dir "${campaign_root}"
     --z3 "${z3}"
     --runtime-discovery-mode FIXED_VALIDATED_GRAPH
@@ -1364,9 +1419,11 @@ do_seed_target() {
 }
 
 do_clean() {
-  local expected_root="${graphchecker_dir}/target/three-thread-rpc"
-  [[ "${work_root}" == "${expected_root}" ]] \
-    || die "refusing to clean unexpected work root: ${work_root}"
+  local allowed_root="${project_repo}/target"
+  [[ "${work_root}" == "${allowed_root}/"* ]] \
+    || die "refusing to clean work root outside ${allowed_root}: ${work_root}"
+  [[ "${work_root}" != "${allowed_root}" ]] \
+    || die "refusing to clean the complete project target directory"
   [[ ! -L "${work_root}" ]] \
     || die "refusing to clean symlinked work root: ${work_root}"
   if [[ -e "${work_root}" && ! -d "${work_root}" ]]; then

@@ -27,8 +27,8 @@ provide a reach formula to the composer or extractor.
 ## Automatic workflow
 
 Build the custom JDK first and make Z3 available. If the custom JDK cannot run
-on the host because it needs `libffi.so.6`, the script uses the existing
-`causynth-openjdk8-build:ubuntu18` container.
+on the host because it needs `libffi.so.6`, the script uses the Docker image
+configured by `custom_jdk_docker_image`.
 
 Run the full workflow from an empty fixture output directory:
 
@@ -37,9 +37,26 @@ experiments/generic/three-thread-rpc/run.sh clean
 experiments/generic/three-thread-rpc/run.sh all
 ```
 
-`clean` is guarded to remove only files below `target/three-thread-rpc`. It
-does not clean Maven output, the repository, or the custom JDK. `all` refuses
-to start when that fixture directory is non-empty.
+To use a different fixture/workflow configuration, point the script at a
+properties file explicitly (a relative override is resolved from the calling
+directory):
+
+```bash
+CAUSYNTH_WORKFLOW_CONFIG=/path/to/workflow.properties \
+  experiments/generic/three-thread-rpc/run.sh all
+```
+
+The script reads the fixture main/test classes, trace-test name, replay Docker
+image, GraphChecker JAR, class directories, topology, runtime evidence, and
+schedule paths from that properties file. Standard workflow paths follow
+`workflow_path_base`; the fixture work root is the parent of
+`causynth_output_dir`. Keep `workload_command` consistent with the same
+fixture metadata when supplying a custom configuration.
+
+`clean` is guarded to remove only the configured fixture work root below the
+project's `target` directory (`target/three-thread-rpc` by default). It does
+not clean Maven output, the repository, or the custom JDK. `all` refuses to
+start when that fixture directory is non-empty.
 
 The automatic command performs these evidence-gated stages:
 

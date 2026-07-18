@@ -180,6 +180,42 @@ final class SymbolicRegionPlanner {
         }
     }
 
+    /**
+     * One configured scalar producer return and the complete static proof
+     * that its value reaches a shared transport field.  The configured
+     * mapping names the canonical protocol endpoint; only the non-boundary,
+     * SMT-eligible value-flow path proves that the published field carries
+     * that endpoint's value.
+     */
+    private static final class ConfiguredProducerValueFlow {
+        private final String returnCell;
+        private final List<String> proofEdgeIds;
+
+        private ConfiguredProducerValueFlow(
+                String returnCell, Collection<String> proofEdgeIds) {
+            this.returnCell = returnCell;
+            this.proofEdgeIds = new ArrayList<>(proofEdgeIds);
+            Collections.sort(this.proofEdgeIds);
+        }
+    }
+
+    /** One equivalence class of parallel graph rows for one exact site. */
+    private static final class ExactValueFlowStep {
+        private final String fromCell;
+        private final String toCell;
+        private final String identity;
+        private final Set<String> proofEdgeIds = new LinkedHashSet<>();
+        private boolean heapWrite;
+        private boolean nonHeapWrite;
+
+        private ExactValueFlowStep(String fromCell, String toCell,
+                                   String identity) {
+            this.fromCell = fromCell;
+            this.toCell = toCell;
+            this.identity = identity;
+        }
+    }
+
     private static final class RequestedStateTransformerContract {
         private final String outputPort;
         private final String outputCell;
@@ -1196,6 +1232,7 @@ final class SymbolicRegionPlanner {
                     selectedExternalInputCount > broadInputPortCount;
 
             addSeedOutputs(draft.methods, outputCandidates);
+            addConfiguredProducerReturnOutputs(draft, outputCandidates);
             List<Map<String, Object>> outputPorts = new ArrayList<>();
             int outputIndex = 0;
             for (String output : sorted(outputCandidates)) {
@@ -1203,7 +1240,7 @@ final class SymbolicRegionPlanner {
                         || draft.exceptionDirected
                         && (!causalCandidate(output, draft)
                         || !exceptionRegionOutput(output, draft))
-                        || !relevantOutput(output, draft)) {
+                        || !semanticOutput(output, draft)) {
                     continue;
                 }
                 outputPorts.add(object(
@@ -1342,6 +1379,9 @@ final class SymbolicRegionPlanner {
                         region, output, outputCell);
                 boolean protocolReturnOutput = outboundProtocolReturnValue(
                         region, outputCell);
+                boolean configuredReturnOutput = protocolReturnOutput
+                        && hasExactConfiguredRpcReturnMapping(region,
+                        outputCell);
                 if (!heapStateOutput && !protocolScalarOutput
                         && !protocolReturnOutput) {
                     continue;
@@ -1597,10 +1637,13 @@ final class SymbolicRegionPlanner {
                         : protocolScalarOutput
                         ? outputCaptureBindings(slice,
                         string(output.get("portId")), outputCell)
-                        // The root return is captured by exitRegion.  Its
-                        // projected cells are interpreted relative to that
-                        // same returned object, so no call-argument hook is
-                        // either necessary or authoritative here.
+                        : configuredReturnOutput
+                        ? methodReturnOutputCaptureBindings(slice,
+                        string(output.get("portId")), outputCell)
+                        // An ordinary root return is captured by exitRegion.
+                        // Its projected cells are interpreted relative to
+                        // that same returned object, so no call-argument hook
+                        // is either necessary or authoritative here.
                         : protocolReturnOutput
                         ? OutputCaptureSelection.notRequired()
                         : OutputCaptureSelection.notRequired();
@@ -2283,6 +2326,94 @@ final class SymbolicRegionPlanner {
         }
 
         /**
+         * Resolves an interior configured scalar return to its exact original
+         * ReturnStmt.  Multiple return sites are runtime alternatives and get
+         * separate bindings; multiple canonical rows for one site or any
+         * incomplete endpoint metadata fail closed.
+         */
+        private OutputCaptureSelection methodReturnOutputCaptureBindings(
+                RegionDraft slice, String outputPort, String outputCell) {
+            String method = methodForCell(outputCell);
+            List<String> issues = new ArrayList<>();
+            Map<String, List<Map<String, Object>>> bySite =
+                    new LinkedHashMap<>();
+            if (method.isEmpty() || !outputCell.equals(method + ".return")
+                    || !slice.methods.contains(method)
+                    || !closedProtocolScalarType(
+                    declaredReturnType(method))) {
+                issues.add("METHOD_RETURN_VALUE_IS_NOT_EXACT_SCALAR_OUTPUT");
+            }
+            for (Map<String, Object> edge : slice.causalEdges) {
+                if (!outputCell.equals(string(edge.get("toCell")))
+                        || !method.equals(string(edge.get("method")))) {
+                    continue;
+                }
+                String site = string(edge.get("siteId"));
+                int unitIndex = integer(edge.get("unitIndex"), -1);
+                String unit = string(edge.get("unit")).trim();
+                String expression = unit.startsWith("return ")
+                        ? unit.substring("return ".length()).trim() : "";
+                boolean exact = "VALUE_PASS".equals(string(edge.get(
+                        "transferKind")))
+                        && "local_def_use".equals(string(edge.get("kind")))
+                        && exactStaticValueFlow(edge)
+                        && unitIndex >= 0
+                        && site.equals(method + "#u" + unitIndex)
+                        && !expression.isEmpty()
+                        && exactAssignmentRhsCell(string(edge.get(
+                        "fromCell")), expression);
+                if (!exact) {
+                    issues.add("INCOMPLETE_EXACT_METHOD_RETURN_VALUE:"
+                            + firstNonEmpty(string(edge.get("id")), site));
+                    continue;
+                }
+                bySite.computeIfAbsent(site,
+                        ignored -> new ArrayList<>()).add(edge);
+            }
+
+            List<Map<String, Object>> bindings = new ArrayList<>();
+            int captureIndex = 0;
+            for (String site : sorted(bySite.keySet())) {
+                List<Map<String, Object>> candidates = bySite.get(site);
+                if (candidates.size() != 1) {
+                    issues.add("AMBIGUOUS_EXACT_METHOD_RETURN_VALUE:"
+                            + site + ":" + candidates.size());
+                    continue;
+                }
+                Map<String, Object> edge = candidates.get(0);
+                String unit = string(edge.get("unit")).trim();
+                String expression = unit.substring("return ".length())
+                        .trim();
+                bindings.add(object(
+                        "captureKind", "METHOD_RETURN_VALUE",
+                        "captureBindingId", outputPort + ".capture."
+                                + captureIndex++,
+                        "outputPort", outputPort,
+                        "outputCell", outputCell,
+                        "method", method,
+                        "siteId", site,
+                        "unitIndex", integer(edge.get("unitIndex"), -1),
+                        "unit", unit,
+                        "returnExpression", expression,
+                        "returnCell", string(edge.get("fromCell")),
+                        "causalEdgeId", string(edge.get("id")),
+                        "transferKind", "VALUE_PASS",
+                        "bindingKind", "method_return",
+                        "bindingAuthority",
+                        "STATIC_EXACT_METHOD_RETURN_VALUE",
+                        "occurrence", 0,
+                        "occurrenceAuthority",
+                        "RUNTIME_INSTANCE_REFINEMENT_REQUIRED"));
+            }
+            if (bindings.isEmpty()) {
+                issues.add("NO_EXACT_METHOD_RETURN_VALUE_CAPTURE_BINDING");
+            }
+            Collections.sort(issues);
+            return new OutputCaptureSelection(bindings, true,
+                    !bindings.isEmpty() && issues.isEmpty(), issues);
+        }
+
+        /**
          * Resolves a non-heap output formal back to the exact original call
          * argument that carries it.  The analysis graph intentionally has
          * several equivalent identity rows for one Java argument
@@ -2739,40 +2870,14 @@ final class SymbolicRegionPlanner {
             if (!"SINK_STATE".equals(string(output.get("kind")))) {
                 return false;
             }
-            Matcher formal = Pattern.compile(
-                    "^<.+>\\.param\\d+:([^#]+)$").matcher(outputCell);
-            if (!formal.matches()
-                    || !closedProtocolScalarType(formal.group(1).trim())) {
-                return false;
-            }
-            String sourceMethod = methodForCell(outputCell);
-            if (sourceMethod.isEmpty()
-                    || !region.methods.contains(sourceMethod)) {
-                return false;
-            }
-            for (Map<String, Object> edge : edges) {
-                if (!isBoundary(edge)
-                        || !outputCell.equals(string(edge.get("fromCell")))) {
-                    continue;
-                }
-                String targetMethod = methodForCell(
-                        string(edge.get("toCell")));
-                if (targetMethod.isEmpty()) {
-                    targetMethod = string(edge.get("method"));
-                }
-                if (!targetMethod.isEmpty()
-                        && !region.methods.contains(targetMethod)) {
-                    return true;
-                }
-            }
-            return false;
+            return outboundProtocolScalarCell(region, outputCell);
         }
 
         /**
-         * Recognizes an exact protocol value returned by the region root.
-         * Root ownership is essential: {@code exitRegion} captures that return
-         * directly, whereas a helper return would require a separate capture
-         * hook that this proof does not claim to provide.
+         * Recognizes an exact protocol value returned by the region root or a
+         * configured scalar producer helper.  A root return is captured by
+         * {@code exitRegion}; an interior configured return receives its own
+         * exact ReturnStmt capture binding.
          *
          * <p>A scalar return needs only an exact authoritative boundary row.
          * A reference/array return also needs at least one authoritative
@@ -2785,7 +2890,7 @@ final class SymbolicRegionPlanner {
                 RegionDraft region, String outputCell) {
             String sourceMethod = methodForCell(outputCell);
             if (sourceMethod.isEmpty()
-                    || !sourceMethod.equals(region.rootMethod)) {
+                    || !region.methods.contains(sourceMethod)) {
                 return false;
             }
             String base = sourceMethod + ".return";
@@ -2795,6 +2900,19 @@ final class SymbolicRegionPlanner {
             }
             String returnType = declaredReturnType(sourceMethod);
             if (returnType.isEmpty() || "void".equals(returnType)) {
+                return false;
+            }
+
+            boolean configuredScalar = outputCell.equals(base)
+                    && closedProtocolScalarType(returnType)
+                    && hasExactConfiguredRpcReturnMapping(region,
+                    outputCell);
+            if (configuredScalar) {
+                return true;
+            }
+            // Ordinary protocol return capture still relies on exitRegion.
+            // Do not generalize that authority to an unconfigured helper.
+            if (!sourceMethod.equals(region.rootMethod)) {
                 return false;
             }
 
@@ -2816,6 +2934,71 @@ final class SymbolicRegionPlanner {
                 return true;
             }
             return hasExactProjectedOutboundBoundary(region, base);
+        }
+
+        private boolean hasExactConfiguredRpcReturnMapping(
+                RegionDraft region, String outputCell) {
+            boolean matched = false;
+            for (Map<String, Object> edge : edges) {
+                if (!"configured_rpc_return_mapping".equals(
+                        string(edge.get("kind")))
+                        || !outputCell.equals(string(edge.get(
+                        "fromCell")))) {
+                    continue;
+                }
+                if (!exactConfiguredRpcReturnMapping(edge, region.methods,
+                        outputCell)) {
+                    return false;
+                }
+                matched = true;
+            }
+            return matched;
+        }
+
+        private boolean exactConfiguredRpcReturnMapping(
+                Map<String, Object> edge, Collection<String> regionMethods,
+                String expectedSource) {
+            if (!"configured_rpc_return_mapping".equals(
+                    string(edge.get("kind")))
+                    || !"PROTOCOL_TRANSFER".equals(string(edge.get(
+                    "transferKind")))
+                    || !Boolean.TRUE.equals(edge.get("mappingOnly"))
+                    || !"STATIC_FORMAT_AND_PORT_MAPPING".equals(
+                    string(edge.get("mappingAuthority")))
+                    || Boolean.TRUE.equals(edge.get(
+                    "semanticAssertionsAllowed"))
+                    || Boolean.TRUE.equals(edge.get(
+                    "eligibleForAutomaticDerivation"))
+                    || Boolean.TRUE.equals(edge.get(
+                    "eligibleForAutomaticSmt"))
+                    || !"backward_provenance".equals(string(edge.get(
+                    "direction")))
+                    || string(edge.get("id")).isEmpty()
+                    || string(edge.get("siteId")).isEmpty()) {
+                return false;
+            }
+            String candidateRelation = string(edge.get(
+                    "candidateRelation"));
+            if (!("value_flow".equals(candidateRelation)
+                    || "EQUALITY".equals(candidateRelation))) {
+                return false;
+            }
+            String source = string(edge.get("fromCell"));
+            String target = string(edge.get("toCell"));
+            String sourceMethod = methodForCell(source);
+            String targetMethod = methodForCell(target);
+            if (!source.equals(expectedSource)
+                    || sourceMethod.isEmpty() || targetMethod.isEmpty()
+                    || !source.equals(sourceMethod + ".return")
+                    || !target.equals(targetMethod + ".return")
+                    || !regionMethods.contains(sourceMethod)
+                    || regionMethods.contains(targetMethod)
+                    || !targetMethod.equals(string(edge.get("method")))) {
+                return false;
+            }
+            String sourceType = declaredReturnType(sourceMethod);
+            return closedProtocolScalarType(sourceType)
+                    && sourceType.equals(declaredReturnType(targetMethod));
         }
 
         private List<Map<String, Object>> exactOutboundBoundaryRows(
@@ -5056,6 +5239,188 @@ final class SymbolicRegionPlanner {
             }
         }
 
+        private void addConfiguredProducerReturnOutputs(
+                RegionDraft region, Set<String> outputs) {
+            for (Map<String, Object> edge : edges) {
+                String source = string(edge.get("fromCell"));
+                if (exactConfiguredRpcReturnMapping(edge, region.methods,
+                        source)) {
+                    outputs.add(source);
+                }
+            }
+        }
+
+        /**
+         * Region outputs are semantic interfaces, not a dump of every method
+         * plan definition.  Keep directed bug predicates, canonical global
+         * state, and exact scalar boundary sources.  Compiler locals, branch
+         * units, and local/return projections remain in relevantStates and
+         * requested-output causal diagnostics but do not receive ports.
+         */
+        private boolean semanticOutput(String output, RegionDraft region) {
+            if (bugPredicateOutput(output)) {
+                return true;
+            }
+            if (output.contains("#field:")) {
+                // A projection is an interface only when the exact projected
+                // return itself is the proven outbound boundary source.
+                return output.contains(".return#field:")
+                        && outboundProtocolReturnValue(region, output);
+            }
+            if (globalFieldCell(output)) {
+                // A configured RPC publish field retains its raw shared-state
+                // endpoint, but the producer's helper return is the canonical
+                // summary interface whenever one unique exact publish path is
+                // available.
+                return configuredProducerValueFlow(region.methods, output)
+                        == null && sharedFieldBoundarySource(region, output);
+            }
+            if (output.endsWith(".return")) {
+                return outboundProtocolReturnValue(region, output);
+            }
+            return outboundProtocolScalarCell(region, output);
+        }
+
+        private boolean sharedFieldBoundarySource(
+                RegionDraft region, String field) {
+            boolean exactDefinition = false;
+            for (Map<String, Object> edge : edges) {
+                if (region.methods.contains(string(edge.get("method")))
+                        && field.equals(string(edge.get("toCell")))
+                        && exactSharedFieldDefinition(edge)) {
+                    exactDefinition = true;
+                    break;
+                }
+            }
+            if (!exactDefinition) {
+                return false;
+            }
+            for (Map<String, Object> edge : edges) {
+                String method = string(edge.get("method"));
+                if (!region.methods.contains(method)
+                        && "HEAP_READ".equals(string(edge.get(
+                        "transferKind")))
+                        && field.equals(string(edge.get("fromCell")))) {
+                    return true;
+                }
+                if (isBoundary(edge)
+                        && field.equals(string(edge.get("fromCell")))) {
+                    String targetMethod = methodForCell(string(edge.get(
+                            "toCell")));
+                    if (!targetMethod.isEmpty()
+                            && !region.methods.contains(targetMethod)) {
+                        return true;
+                    }
+                }
+            }
+            if (fieldBacksProjectedBoundary(region, field)) {
+                return true;
+            }
+            // A method plan can expose the downstream live-in even when the
+            // compact test/static slice has not retained a separate HEAP_READ
+            // row.  Exact cell identity plus a method outside the producer
+            // region is still a cross-region def-to-live-in boundary.
+            for (Map.Entry<String, Map<String, Object>> entry
+                    : plansByMethod.entrySet()) {
+                if (!region.methods.contains(entry.getKey())
+                        && strings(entry.getValue().get("symbolicInputs"))
+                        .contains(field)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean exactSharedFieldDefinition(
+                Map<String, Object> edge) {
+            String kind = string(edge.get("kind"));
+            return "HEAP_WRITE".equals(string(edge.get("transferKind")))
+                    && ("field_write".equals(kind)
+                    || "field_mutation".equals(kind))
+                    && !Boolean.TRUE.equals(edge.get("mappingOnly"))
+                    && !string(edge.get("id")).isEmpty()
+                    && !string(edge.get("siteId")).isEmpty()
+                    && (exactStaticValueFlow(edge)
+                    // Legacy compact rows predate explicit value-flow flags,
+                    // but their exact HEAP_WRITE kind/cell/site tuple still
+                    // names one concrete producer definition.
+                    || string(edge.get("relation")).isEmpty()
+                    || "value_flow".equals(string(edge.get("relation")))
+                    && Boolean.TRUE.equals(edge.get(
+                    "semanticAssertionsAllowed"))
+                    && Boolean.TRUE.equals(edge.get(
+                    "eligibleForAutomaticSmt")));
+        }
+
+        private boolean fieldBacksProjectedBoundary(
+                RegionDraft region, String fieldCell) {
+            FieldSignature field = fieldSignature(fieldCell);
+            if (field == null) {
+                return false;
+            }
+            for (Map<String, Object> boundary : edges) {
+                if (!isBoundary(boundary)) {
+                    continue;
+                }
+                String raw = string(boundary.get("fromCell"));
+                String targetMethod = methodForCell(string(boundary.get(
+                        "toCell")));
+                if (targetMethod.isEmpty()
+                        || region.methods.contains(targetMethod)) {
+                    continue;
+                }
+                for (Map<String, Object> proof : edges) {
+                    if (!raw.equals(string(proof.get("toCell")))
+                            || !eligibleProjectedReturnAlias(proof,
+                            region.methods)) {
+                        continue;
+                    }
+                    String source = string(proof.get("fromCell"));
+                    String sourceMethod = methodForCell(source);
+                    String base = sourceMethod + ".return#field:";
+                    if (source.startsWith(base)
+                            && field.owner.equals(declaredReturnType(
+                            sourceMethod))
+                            && field.name.equals(source.substring(
+                            base.length()))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private boolean outboundProtocolScalarCell(
+                RegionDraft region, String outputCell) {
+            Matcher formal = Pattern.compile(
+                    "^<.+>\\.param\\d+:([^#]+)$").matcher(outputCell);
+            if (!formal.matches()
+                    || !closedProtocolScalarType(formal.group(1).trim())) {
+                return false;
+            }
+            String sourceMethod = methodForCell(outputCell);
+            if (sourceMethod.isEmpty()
+                    || !region.methods.contains(sourceMethod)) {
+                return false;
+            }
+            for (Map<String, Object> edge : edges) {
+                if (!isBoundary(edge)
+                        || !outputCell.equals(string(edge.get("fromCell")))) {
+                    continue;
+                }
+                String targetMethod = methodForCell(
+                        string(edge.get("toCell")));
+                if (targetMethod.isEmpty()) {
+                    targetMethod = string(edge.get("method"));
+                }
+                if (!targetMethod.isEmpty()
+                        && !region.methods.contains(targetMethod)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private void buildRegionEdges(Result result) {
             Map<String, List<Map<String, Object>>> regionsByMethod = new LinkedHashMap<>();
             Map<String, Map<String, Object>> regionsById = new LinkedHashMap<>();
@@ -5206,7 +5571,7 @@ final class SymbolicRegionPlanner {
                         if (!emitted.add(key)) {
                             continue;
                         }
-                        result.regionEdges.add(object(
+                        Map<String, Object> sharedEdge = object(
                                 "edgeId", "REGION_EDGE." + index++,
                                 "fromRegion", producer,
                                 "fromPort", field,
@@ -5217,7 +5582,23 @@ final class SymbolicRegionPlanner {
                                 "requiresOrder", true,
                                 "requiresObjectIdentity", true,
                                 "rootValidation", "RUNTIME_REQUIRED",
-                                "evidence", Collections.singletonList("STATIC_FIELD")));
+                                "evidence", Collections.singletonList(
+                                        "STATIC_FIELD"));
+                        CanonicalOutputResolution canonical =
+                                configuredCanonicalProducerOutput(
+                                        regionsById.get(producer), field);
+                        if (canonical != null) {
+                            sharedEdge.put("fromOutputPort", canonical.port);
+                            sharedEdge.put("fromOutputCell", canonical.cell);
+                            sharedEdge.put("aliasProofEdgeIds",
+                                    canonical.proofEdgeIds);
+                            sharedEdge.put("aliasProofAuthority",
+                                    "CONFIGURED_RPC_PRODUCER_RETURN_AND_"
+                                            + "STATIC_EXACT_PUBLISH_"
+                                            + "VALUE_FLOW_V1");
+                            sharedEdge.put("aliasProofComplete", true);
+                        }
+                        result.regionEdges.add(sharedEdge);
                     }
                 }
             }
@@ -5282,6 +5663,170 @@ final class SymbolicRegionPlanner {
             return new CanonicalOutputResolution(
                     string(output.get("portId")),
                     string(output.get("cell")), only.getValue());
+        }
+
+        /**
+         * Finds one configured scalar return whose value reaches the exact
+         * shared field through one unique producer-internal value-flow path.
+         * Parallel analysis rows for the same endpoint/site tuple are one
+         * proof step; different sites or endpoint paths are alternatives and
+         * therefore make the result ambiguous.
+         */
+        private ConfiguredProducerValueFlow configuredProducerValueFlow(
+                Collection<String> regionMethodValues, String field) {
+            if (!globalFieldCell(field)) {
+                return null;
+            }
+            Set<String> regionMethods = new LinkedHashSet<>(
+                    regionMethodValues);
+            Map<String, Set<String>> mappingIdsByReturn =
+                    new LinkedHashMap<>();
+            boolean rejectedMapping = false;
+            for (Map<String, Object> edge : edges) {
+                if (!"configured_rpc_return_mapping".equals(
+                        string(edge.get("kind")))) {
+                    continue;
+                }
+                String source = string(edge.get("fromCell"));
+                String sourceMethod = methodForCell(source);
+                if (!regionMethods.contains(sourceMethod)) {
+                    continue;
+                }
+                if (!exactConfiguredRpcReturnMapping(edge, regionMethods,
+                        source)) {
+                    rejectedMapping = true;
+                    continue;
+                }
+                mappingIdsByReturn.computeIfAbsent(source,
+                        ignored -> new LinkedHashSet<>()).add(
+                        string(edge.get("id")));
+            }
+            if (rejectedMapping || mappingIdsByReturn.isEmpty()) {
+                return null;
+            }
+
+            ConfiguredProducerValueFlow match = null;
+            for (Map.Entry<String, Set<String>> candidate
+                    : mappingIdsByReturn.entrySet()) {
+                List<Set<String>> paths = exactProducerValueFlowPaths(
+                        regionMethods, candidate.getKey(), field);
+                if (paths.size() > 1) {
+                    return null;
+                }
+                if (paths.isEmpty()) {
+                    continue;
+                }
+                if (match != null) {
+                    return null;
+                }
+                Set<String> proofIds = new LinkedHashSet<>(
+                        candidate.getValue());
+                proofIds.addAll(paths.get(0));
+                match = new ConfiguredProducerValueFlow(
+                        candidate.getKey(), proofIds);
+            }
+            return match;
+        }
+
+        private CanonicalOutputResolution configuredCanonicalProducerOutput(
+                Map<String, Object> region, String field) {
+            if (region == null) {
+                return null;
+            }
+            ConfiguredProducerValueFlow flow = configuredProducerValueFlow(
+                    strings(region.get("methods")), field);
+            if (flow == null) {
+                return null;
+            }
+            Map<String, Object> output = exactCompleteOutput(region,
+                    flow.returnCell);
+            return output == null ? null : new CanonicalOutputResolution(
+                    string(output.get("portId")), flow.returnCell,
+                    flow.proofEdgeIds);
+        }
+
+        private List<Set<String>> exactProducerValueFlowPaths(
+                Set<String> regionMethods, String start, String target) {
+            Map<String, ExactValueFlowStep> stepsByIdentity =
+                    new LinkedHashMap<>();
+            for (Map<String, Object> edge : edges) {
+                String method = string(edge.get("method"));
+                String from = string(edge.get("fromCell"));
+                String to = string(edge.get("toCell"));
+                if (!regionMethods.contains(method) || isBoundary(edge)
+                        || !exactStaticValueFlow(edge)
+                        || from.isEmpty() || to.isEmpty()
+                        || from.equals(to)) {
+                    continue;
+                }
+                String identity = from + "\n" + to + "\n" + method
+                        + "\n" + string(edge.get("siteId")) + "\n"
+                        + integer(edge.get("unitIndex"), -1);
+                ExactValueFlowStep step = stepsByIdentity.computeIfAbsent(
+                        identity, ignored -> new ExactValueFlowStep(from, to,
+                                identity));
+                step.proofEdgeIds.add(string(edge.get("id")));
+                if ("HEAP_WRITE".equals(string(edge.get(
+                        "transferKind")))) {
+                    step.heapWrite = true;
+                } else {
+                    step.nonHeapWrite = true;
+                }
+            }
+            Map<String, List<ExactValueFlowStep>> outgoing =
+                    new LinkedHashMap<>();
+            for (ExactValueFlowStep step : stepsByIdentity.values()) {
+                outgoing.computeIfAbsent(step.fromCell,
+                        ignored -> new ArrayList<>()).add(step);
+            }
+            for (List<ExactValueFlowStep> steps : outgoing.values()) {
+                steps.sort(Comparator.comparing(step -> step.identity));
+            }
+            List<Set<String>> paths = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            seen.add(start);
+            collectExactProducerValueFlowPaths(start, target, outgoing,
+                    seen, new LinkedHashSet<String>(), paths);
+            return paths;
+        }
+
+        private void collectExactProducerValueFlowPaths(
+                String current, String target,
+                Map<String, List<ExactValueFlowStep>> outgoing,
+                Set<String> seen, Set<String> proofIds,
+                List<Set<String>> paths) {
+            if (paths.size() > 1 || seen.size() >= 4096) {
+                return;
+            }
+            List<ExactValueFlowStep> candidates = outgoing.get(current);
+            if (candidates == null) {
+                return;
+            }
+            for (ExactValueFlowStep step : candidates) {
+                if (paths.size() > 1 || seen.contains(step.toCell)) {
+                    continue;
+                }
+                // The transport field must be the unique terminal heap
+                // assignment.  Crossing a different write would conflate a
+                // later read-from relation with this same-thread proof.
+                if (target.equals(step.toCell)) {
+                    if (step.heapWrite && !step.nonHeapWrite) {
+                        Set<String> path = new LinkedHashSet<>(proofIds);
+                        path.addAll(step.proofEdgeIds);
+                        paths.add(path);
+                    }
+                    continue;
+                }
+                if (step.heapWrite) {
+                    continue;
+                }
+                seen.add(step.toCell);
+                Set<String> nextProof = new LinkedHashSet<>(proofIds);
+                nextProof.addAll(step.proofEdgeIds);
+                collectExactProducerValueFlowPaths(step.toCell, target,
+                        outgoing, seen, nextProof, paths);
+                seen.remove(step.toCell);
+            }
         }
 
         private boolean eligibleProjectedReturnAlias(
@@ -5561,16 +6106,21 @@ final class SymbolicRegionPlanner {
          * static control dependence proves a concrete required outcome, walk
          * that guard's backward dependencies.  A scalar declared heap field
          * or environment source makes the branch a solver-controlled effect
-         * branch; structural loop gates backed only by opaque iterator calls
-         * remain path assumptions.
+         * branch.  An output-relevant path guard may additionally close at a
+         * scalar method return (for example {@code Boolean.booleanValue()});
+         * structural loop gates backed by iterator calls remain path
+         * assumptions.
          */
         private boolean exploreGuard(Map<String, Object> edge,
                                      RegionDraft draft, String guard) {
             if (SymbolicRegionPlanner.exploreGuard(guard)) {
                 return true;
             }
-            if (!"heap_mutation_path_guard".equals(
-                    string(edge.get("kind")))
+            String kind = string(edge.get("kind"));
+            boolean outputRelevantPathGuard =
+                    "path_guard_dependency".equals(kind);
+            if (!(outputRelevantPathGuard
+                    || "heap_mutation_path_guard".equals(kind))
                     || requiredOutcome(edge) == null) {
                 return false;
             }
@@ -5601,6 +6151,10 @@ final class SymbolicRegionPlanner {
                         && solverControlledScalarFrontier(current)) {
                     return true;
                 }
+                if (!current.equals(start) && outputRelevantPathGuard
+                        && scalarMethodReturnFrontier(current)) {
+                    return true;
+                }
                 List<Map<String, Object>> dependencies = incoming.get(current);
                 if (dependencies == null) {
                     continue;
@@ -5629,6 +6183,27 @@ final class SymbolicRegionPlanner {
                     "\\.param\\d+:([^#]+)(?:#field:.*)?$")
                     .matcher(string(cell));
             return parameter.find() && scalarType(parameter.group(1));
+        }
+
+        private boolean scalarMethodReturnFrontier(String cell) {
+            String value = string(cell);
+            if (!value.endsWith(">.return")) {
+                return false;
+            }
+            String method = methodForCell(value);
+            return !method.isEmpty()
+                    && scalarType(declaredReturnType(method))
+                    && !structuralMethodReturn(method);
+        }
+
+        private boolean structuralMethodReturn(String method) {
+            String declaringType = lower(owner(method));
+            String name = methodName(method);
+            return declaringType.contains("iterator")
+                    || declaringType.endsWith(".enumeration")
+                    || declaringType.endsWith(".spliterator")
+                    || "hasNext".equals(name)
+                    || "hasMoreElements".equals(name);
         }
 
         private boolean scalarType(String type) {
@@ -5896,19 +6471,16 @@ final class SymbolicRegionPlanner {
                 || value.contains("<org.apache.hadoop.util.time:"));
     }
 
-    private static boolean relevantOutput(String output, RegionDraft draft) {
+    private static boolean bugPredicateOutput(String output) {
         if (output == null || output.isEmpty()) {
             return false;
         }
-        String lower = lower(output);
-        return output.contains(".return")
-                || output.contains("#field:")
-                || looksLikeField(output)
-                || methodForCell(output).equals(draft.anchorMethod)
-                || lower.contains("exception")
-                || lower.contains("invalid")
-                || lower.contains(" == null")
-                || lower.contains("failure");
+        String normalized = lower(output);
+        return normalized.contains("exception")
+                || normalized.contains("invalid")
+                || normalized.contains(" == null")
+                || normalized.contains("#failure:")
+                || normalized.contains("#bug:");
     }
 
     private static String outputKind(String output, String anchorMethod) {

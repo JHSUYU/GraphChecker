@@ -983,8 +983,8 @@ public class RecursiveRegionWorklistTest {
         proofs.add("DF.PROOF.2");
         edge.add("aliasProofEdgeIds", proofs);
         edge.addProperty("aliasProofAuthority",
-                "STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
-                        + "AND_DECLARED_RETURN_FIELD");
+                "CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                        + "PUBLISH_VALUE_FLOW_V1");
         edge.addProperty("aliasProofComplete", true);
     }
 }

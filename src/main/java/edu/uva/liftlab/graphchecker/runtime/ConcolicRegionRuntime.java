@@ -3093,8 +3093,18 @@ public final class ConcolicRegionRuntime {
 
     /** Returns the activation token owned by the current thread, or zero. */
     public static long activeToken() {
-        Long token = CURRENT_TOKEN.get();
-        return token != null && ownerRegion(token) != null ? token : 0L;
+        try {
+            RootInvocationFrame frame = ROOT_INVOCATION_FRAMES.get().peek();
+            if (frame != null) {
+                return frame.token != 0L && ownerRegion(frame.token) != null
+                        ? frame.token : 0L;
+            }
+            Long token = CURRENT_TOKEN.get();
+            return token != null && ownerRegion(token) != null ? token : 0L;
+        } catch (Throwable ignored) {
+            // Instrumentation token lookup must never perturb the workload.
+            return 0L;
+        }
     }
 
     /**
@@ -3159,6 +3169,88 @@ public final class ConcolicRegionRuntime {
         } finally {
             active.outputCaptures.add(row);
             if (paused) resumePathCondition(active, api);
+        }
+    }
+
+    /**
+     * Observes one activation-authorized scalar method return while its
+     * custom-VM expression is still live.  Both the current region token and
+     * the complete static capture tuple must match.  A zero-token nested root
+     * frame therefore cannot attach its helper return to an enclosing active
+     * region.  This hook is deliberately no-throw because it executes on the
+     * original method's return path.
+     */
+    public static void recordMethodReturnOutput(
+            long token, String method, int unitIndex, String siteId,
+            String captureBindingId, String outputPort, String outputCell,
+            int requestedOccurrence, Object value, String primitiveValue) {
+        try {
+            Long current = CURRENT_TOKEN.get();
+            if (token == 0L || current == null
+                    || current.longValue() != token) {
+                return;
+            }
+            RootInvocationFrame frame =
+                    ROOT_INVOCATION_FRAMES.get().peek();
+            if (frame != null && frame.token != token) return;
+
+            ActiveRegion active = ownerRegion(token);
+            if (active == null || !active.engineBacked) return;
+            OutputCaptureRequest request =
+                    active.activation.methodReturnCapture(
+                            method, unitIndex, siteId, outputPort, outputCell,
+                            captureBindingId, requestedOccurrence);
+            if (request == null) return;
+            int occurrence = active.nextOutputCaptureOccurrence(
+                    request.captureBindingId);
+            if (request.occurrence != occurrence) return;
+
+            JsonObject row = request.toJson();
+            row.addProperty("occurrence", occurrence);
+            row.addProperty("captureAuthority",
+                    "ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE");
+            EngineApi api = engine();
+            boolean paused = false;
+            try {
+                api.pausePathCondition();
+                paused = true;
+                row.addProperty("concreteValueClass", value == null
+                        ? "null" : value.getClass().getName());
+                row.addProperty("concretePrimitiveValue",
+                        safe(primitiveValue));
+                EngineExpressionCapture captured = engineExpressionCapture(
+                        api.expression(value));
+                JsonElement expression = captured.expression;
+                if (expression == null || expression.isJsonNull()) {
+                    throw new IllegalStateException("custom VM returned no "
+                            + "expression for captured method return value "
+                            + row.get("concreteValueClass").getAsString());
+                }
+                row.add("expression", expression);
+                captured.addEvidence(row);
+                row.addProperty("expressionCaptured", true);
+            } catch (Throwable throwable) {
+                try {
+                    row.addProperty("expressionCaptured", false);
+                    row.addProperty("expressionError",
+                            rootCause(throwable));
+                    active.unresolved.add(request.captureBindingId
+                            + ": method-return expression capture failed: "
+                            + rootCause(throwable));
+                } catch (Throwable ignored) {
+                    // Preserve the original method return even if diagnostic
+                    // construction itself fails.
+                }
+            } finally {
+                if (paused) resumePathCondition(active, api);
+                try {
+                    active.outputCaptures.add(row);
+                } catch (Throwable ignored) {
+                    // Runtime observation is fail-closed and best-effort.
+                }
+            }
+        } catch (Throwable ignored) {
+            // Instrumentation bookkeeping must not replace a normal return.
         }
     }
 
@@ -9964,6 +10056,8 @@ public final class ConcolicRegionRuntime {
 
     private static final class OutputCaptureRequest {
         private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
+        private static final String METHOD_RETURN_VALUE =
+                "METHOD_RETURN_VALUE";
         private static final String FIELD_ASSIGNMENT_RHS =
                 "FIELD_ASSIGNMENT_RHS";
 
@@ -9979,6 +10073,7 @@ public final class ConcolicRegionRuntime {
         private final int argumentIndex;
         private final String fieldSignature;
         private final int occurrence;
+        private final String occurrenceAuthority;
 
         private OutputCaptureRequest(JsonObject json) {
             this.captureKind = firstNonBlank(
@@ -9996,6 +10091,8 @@ public final class ConcolicRegionRuntime {
             this.fieldSignature = firstNonBlank(
                     string(json, "fieldSignature"), string(json, "field"));
             this.occurrence = integer(json, "occurrence", 0);
+            this.occurrenceAuthority = string(json,
+                    "occurrenceAuthority");
         }
 
         private boolean valid() {
@@ -10007,6 +10104,9 @@ public final class ConcolicRegionRuntime {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 return !method.isEmpty() && !fieldSignature.isEmpty()
                         && declaredField(fieldSignature) != null;
+            }
+            if (METHOD_RETURN_VALUE.equals(captureKind)) {
+                return !method.isEmpty();
             }
             return CALL_ARGUMENT.equals(captureKind)
                     && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
@@ -10024,6 +10124,20 @@ public final class ConcolicRegionRuntime {
                     && siteId.equals(safe(actualSite))
                     && calleeMethod.equals(safe(actualCallee))
                     && argumentIndex == actualArgument
+                    && outputPort.equals(safe(actualPort))
+                    && outputCell.equals(safe(actualCell))
+                    && captureBindingId.equals(safe(actualBinding))
+                    && occurrence == actualRequestedOccurrence;
+        }
+
+        private boolean matchesMethodReturn(
+                String actualMethod, int actualUnit, String actualSite,
+                String actualPort, String actualCell, String actualBinding,
+                int actualRequestedOccurrence) {
+            return METHOD_RETURN_VALUE.equals(captureKind)
+                    && method.equals(safe(actualMethod))
+                    && unitIndex == actualUnit
+                    && siteId.equals(safe(actualSite))
                     && outputPort.equals(safe(actualPort))
                     && outputCell.equals(safe(actualCell))
                     && captureBindingId.equals(safe(actualBinding))
@@ -10057,12 +10171,18 @@ public final class ConcolicRegionRuntime {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 result.addProperty("method", method);
                 result.addProperty("fieldSignature", fieldSignature);
+            } else if (METHOD_RETURN_VALUE.equals(captureKind)) {
+                result.addProperty("method", method);
             } else {
                 result.addProperty("callerMethod", callerMethod);
                 result.addProperty("calleeMethod", calleeMethod);
                 result.addProperty("argumentIndex", argumentIndex);
             }
             result.addProperty("requestedOccurrence", occurrence);
+            if (!occurrenceAuthority.isEmpty()) {
+                result.addProperty("occurrenceAuthority",
+                        occurrenceAuthority);
+            }
             return result;
         }
     }
@@ -10638,6 +10758,23 @@ public final class ConcolicRegionRuntime {
                 if (!request.matchesFieldAssignment(method, unitIndex,
                         siteId, fieldSignature, outputPort, outputCell,
                         captureBindingId, requestedOccurrence)) {
+                    continue;
+                }
+                if (match != null) return null;
+                match = request;
+            }
+            return match;
+        }
+
+        private OutputCaptureRequest methodReturnCapture(
+                String method, int unitIndex, String siteId,
+                String outputPort, String outputCell,
+                String captureBindingId, int requestedOccurrence) {
+            OutputCaptureRequest match = null;
+            for (OutputCaptureRequest request : outputCaptures) {
+                if (!request.matchesMethodReturn(method, unitIndex, siteId,
+                        outputPort, outputCell, captureBindingId,
+                        requestedOccurrence)) {
                     continue;
                 }
                 if (match != null) return null;

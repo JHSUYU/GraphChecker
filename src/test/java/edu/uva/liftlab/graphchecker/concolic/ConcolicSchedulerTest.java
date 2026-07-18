@@ -112,6 +112,82 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void mergePlanUsesProvenCanonicalProducerOutputInsteadOfTransport()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            String returnCell =
+                    "<example.Client: java.lang.String compute()>#return";
+            String regions = new String(Files.readAllBytes(fixture.regions),
+                    StandardCharsets.UTF_8);
+            String oldOutput = "\"outputs\":[{\"portId\":"
+                    + "\"REGION.1.out.0\",\"cell\":"
+                    + "\"client.userName\"}]";
+            assertTrue(regions.contains(oldOutput));
+            regions = regions.replace(oldOutput, "\"outputs\":["
+                    + "{\"portId\":\"REGION.1.out.0\","
+                    + "\"cell\":\"client.userName\"},"
+                    + "{\"portId\":\"REGION.1.out.1\","
+                    + "\"cell\":\"" + returnCell + "\"}]");
+            Files.write(fixture.regions,
+                    regions.getBytes(StandardCharsets.UTF_8));
+
+            String edges = new String(Files.readAllBytes(fixture.edges),
+                    StandardCharsets.UTF_8);
+            String rawEndpoints = "\"fromPort\":\"client.userName\","
+                    + "\"toPort\":\"" + USERNAME + "\",";
+            assertTrue(edges.contains(rawEndpoints));
+            edges = edges.replace(rawEndpoints, rawEndpoints
+                    + "\"fromOutputPort\":\"REGION.1.out.1\","
+                    + "\"fromOutputCell\":\"" + returnCell + "\","
+                    + "\"aliasProofEdgeIds\":[\"DF.RETURN_TO_RPC\"],"
+                    + "\"aliasProofComplete\":true,"
+                    + "\"aliasProofAuthority\":"
+                    + "\"CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
+                    + "PUBLISH_VALUE_FLOW_V1\",");
+            Files.write(fixture.edges,
+                    edges.getBytes(StandardCharsets.UTF_8));
+
+            ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan", fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--output-dir", fixture.output.toString(),
+                            "--region-id", "REGION.0",
+                            "--force-branch-validation", "true"}));
+
+            JsonObject equality = result.mergePlan.getAsJsonArray(
+                    "equalityRelations").get(0).getAsJsonObject();
+            assertEquals("REGION.1.out.1",
+                    equality.get("fromEndpoint").getAsString());
+            assertEquals(returnCell, equality.get("fromCell").getAsString());
+
+            Files.write(fixture.edges, edges.replace(
+                    "\"aliasProofComplete\":true",
+                    "\"aliasProofComplete\":false").getBytes(
+                    StandardCharsets.UTF_8));
+            ConcolicScheduler.Result invalid = ConcolicScheduler.schedule(
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan", fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--output-dir", folder.getRoot().toPath()
+                            .resolve("invalid-canonical").toString(),
+                            "--region-id", "REGION.0",
+                            "--force-branch-validation", "true"}));
+            assertEquals(0, invalid.mergePlan.getAsJsonArray(
+                    "equalityRelations").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void differentTargetInputPortsRemainIndependentStateMerges()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

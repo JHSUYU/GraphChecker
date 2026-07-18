@@ -1567,6 +1567,11 @@ public final class CausynthPipeline {
                 }
                 Body body = method.retrieveActiveBody();
                 Unit unit = originalUnit(body, target.unitIndex);
+                if (target.isMethodReturnValue()) {
+                    count += instrumentMethodReturnOutputCapture(body,
+                            unit, target, refs);
+                    continue;
+                }
                 if (target.isFieldAssignmentRhs()) {
                     count += instrumentFieldAssignmentOutputCapture(body,
                             unit, target, refs);
@@ -1621,6 +1626,40 @@ public final class CausynthPipeline {
             }
         }
         return count;
+    }
+
+    /** Captures an exact helper-method return while its VM shadow is live. */
+    private int instrumentMethodReturnOutputCapture(
+            Body body, Unit unit, OutputCaptureTarget target,
+            ConcolicRegionRefs refs) {
+        if (!(unit instanceof ReturnStmt)) return 0;
+        ReturnStmt returned = (ReturnStmt) unit;
+        Value value = returned.getOp();
+        List<Unit> before = new ArrayList<>();
+        Local activeToken = newTraceLocal(body, LongType.v(),
+                "$causynthActiveToken");
+        before.add(Jimple.v().newAssignStmt(activeToken,
+                Jimple.v().newStaticInvokeExpr(refs.activeToken)));
+        Value boxed = boxedCaptureValue(body, value, before);
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
+        Value primitiveValue = primitiveValueString(body, value, before);
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        refs.recordMethodReturnOutput,
+                        activeToken,
+                        StringConstant.v(target.method),
+                        IntConstant.v(target.unitIndex),
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.captureBindingId),
+                        StringConstant.v(target.outputPort),
+                        StringConstant.v(target.outputCell),
+                        IntConstant.v(target.occurrence),
+                        boxed, primitiveValue)));
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
+        insertBeforeSequence(body, returned, before);
+        return 1;
     }
 
     /**
@@ -2828,6 +2867,7 @@ public final class CausynthPipeline {
         private final SootMethodRef recordMapIteratorRemove;
         private final SootMethodRef recordOutputCapture;
         private final SootMethodRef activeToken;
+        private final SootMethodRef recordMethodReturnOutput;
         private final SootMethodRef recordFieldAssignmentOutput;
         private final SootMethodRef pauseObservation;
         private final SootMethodRef resumeObservation;
@@ -2856,6 +2896,7 @@ public final class CausynthPipeline {
                                    SootMethodRef recordMapIteratorRemove,
                                    SootMethodRef recordOutputCapture,
                                    SootMethodRef activeToken,
+                                   SootMethodRef recordMethodReturnOutput,
                                    SootMethodRef recordFieldAssignmentOutput,
                                    SootMethodRef pauseObservation,
                                    SootMethodRef resumeObservation,
@@ -2884,6 +2925,7 @@ public final class CausynthPipeline {
             this.recordMapIteratorRemove = recordMapIteratorRemove;
             this.recordOutputCapture = recordOutputCapture;
             this.activeToken = activeToken;
+            this.recordMethodReturnOutput = recordMethodReturnOutput;
             this.recordFieldAssignmentOutput =
                     recordFieldAssignmentOutput;
             this.pauseObservation = pauseObservation;
@@ -2978,6 +3020,12 @@ public final class CausynthPipeline {
                             VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "activeToken",
                             Collections.<Type>emptyList(), LongType.v(), true),
+                    Scene.v().makeMethodRef(runtime,
+                            "recordMethodReturnOutput",
+                            Arrays.asList(LongType.v(), string, IntType.v(),
+                                    string, string, string, string,
+                                    IntType.v(), object, string),
+                            VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime,
                             "recordFieldAssignmentOutput",
                             Arrays.asList(LongType.v(), string, IntType.v(),
@@ -3703,6 +3751,8 @@ public final class CausynthPipeline {
 
     private static final class OutputCaptureTarget {
         private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
+        private static final String METHOD_RETURN_VALUE =
+                "METHOD_RETURN_VALUE";
         private static final String FIELD_ASSIGNMENT_RHS =
                 "FIELD_ASSIGNMENT_RHS";
 
@@ -3750,6 +3800,9 @@ public final class CausynthPipeline {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 return !method.isEmpty() && !fieldSignature.isEmpty();
             }
+            if (METHOD_RETURN_VALUE.equals(captureKind)) {
+                return !method.isEmpty();
+            }
             return CALL_ARGUMENT.equals(captureKind)
                     && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
                     && argumentIndex >= 0;
@@ -3767,8 +3820,13 @@ public final class CausynthPipeline {
             return FIELD_ASSIGNMENT_RHS.equals(captureKind);
         }
 
+        private boolean isMethodReturnValue() {
+            return METHOD_RETURN_VALUE.equals(captureKind);
+        }
+
         private String instrumentedMethod() {
-            return isFieldAssignmentRhs() ? method : callerMethod;
+            return isFieldAssignmentRhs() || isMethodReturnValue()
+                    ? method : callerMethod;
         }
     }
 
@@ -9920,9 +9978,13 @@ public final class CausynthPipeline {
                 }
                 if (exactDirectCopy) {
                     edge.put("valueFlowAuthority",
-                            "SOOT_EXACT_LOCAL_DIRECT_COPY_V1");
+                            fact.unit instanceof IdentityStmt
+                                    ? "SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1"
+                                    : "SOOT_EXACT_LOCAL_DIRECT_COPY_V1");
                     edge.put("directCopyKind",
-                            fact.unit instanceof ReturnStmt
+                            fact.unit instanceof IdentityStmt
+                                    ? "PARAMETER_IDENTITY"
+                                    : fact.unit instanceof ReturnStmt
                                     ? "RETURN_LOCAL" : "LOCAL_ASSIGN_LOCAL");
                 } else if (projectedDirectCopy) {
                     edge.put("valueFlowAuthority",
@@ -9985,6 +10047,16 @@ public final class CausynthPipeline {
                         && canonical(method, operand.toString()).equals(
                         fromText)
                         && (method + ".return").equals(toText);
+            }
+            if (fact.unit instanceof IdentityStmt) {
+                IdentityStmt identity = (IdentityStmt) fact.unit;
+                Value left = identity.getLeftOp();
+                Value right = identity.getRightOp();
+                return left instanceof Local && right instanceof ParameterRef
+                        && (method + ".param"
+                        + ((ParameterRef) right).getIndex() + ":"
+                        + right.getType()).equals(fromText)
+                        && canonical(method, left.toString()).equals(toText);
             }
             if (fact.unit instanceof AssignStmt) {
                 AssignStmt assignment = (AssignStmt) fact.unit;

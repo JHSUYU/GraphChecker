@@ -888,10 +888,12 @@ public final class ConcolicSummaryImporter {
         // selected root itself may return void.
         boolean fieldAssignmentCapture = hasOutputCaptureKind(activation,
                 "FIELD_ASSIGNMENT_RHS");
+        boolean methodReturnCapture = hasOutputCaptureKind(activation,
+                "METHOD_RETURN_VALUE");
         boolean exactRequestedCapture = captureGoal.isOutputClosure()
                 && (bool(activation, "requestedOutputCaptureRequired", false)
                 || "SINK_STATE".equals(string(requested, "kind"))
-                || fieldAssignmentCapture);
+                || fieldAssignmentCapture || methodReturnCapture);
         if (exactRequestedCapture) {
             return exactOutputCaptureExpressions(raw, activation,
                     requestedPort, normalization);
@@ -972,12 +974,27 @@ public final class ConcolicSummaryImporter {
         boolean fieldAssignment = requests.size() == 1
                 && "FIELD_ASSIGNMENT_RHS".equals(outputCaptureKind(
                 requests.get(0)));
+        boolean methodReturn = requests.size() == 1
+                && "METHOD_RETURN_VALUE".equals(outputCaptureKind(
+                requests.get(0)));
+        boolean callArgument = requests.size() == 1
+                && "CALL_ARGUMENT".equals(outputCaptureKind(
+                requests.get(0)));
         if (fieldAssignment) {
             validateExactFieldAssignmentRequest(requests.get(0), activation,
                     requestedPort, issues);
             if (!"NORMAL".equals(string(raw, "exitKind"))) {
                 issues.add("FIELD_ASSIGNMENT_RHS_REQUIRES_NORMAL_EXIT");
             }
+        } else if (methodReturn) {
+            validateExactMethodReturnRequest(requests.get(0), activation,
+                    requestedPort, issues);
+            if (!"NORMAL".equals(string(raw, "exitKind"))) {
+                issues.add("METHOD_RETURN_VALUE_REQUIRES_NORMAL_EXIT");
+            }
+        } else if (requests.size() == 1 && !callArgument) {
+            issues.add("UNSUPPORTED_EXACT_OUTPUT_CAPTURE_KIND:"
+                    + outputCaptureKind(requests.get(0)));
         }
 
         List<JsonObject> matches = new ArrayList<>();
@@ -1009,6 +1026,14 @@ public final class ConcolicSummaryImporter {
                 validateExactPrimitiveConstantCapture(requests.get(0),
                         matches.get(0), expression.getAsJsonObject(), issues);
             }
+        } else if (methodReturn && matches.size() == 1) {
+            validateExactMethodReturnCapture(requests.get(0), matches.get(0),
+                    issues);
+            if (isConstantExpression(expression)) {
+                validateExactMethodReturnPrimitiveConstantCapture(
+                        requests.get(0), matches.get(0),
+                        expression.getAsJsonObject(), issues);
+            }
         }
         if (requests.size() == 1) {
             validateExactArrayOutputExpression(requests.get(0), expression,
@@ -1022,7 +1047,8 @@ public final class ConcolicSummaryImporter {
         Set<String> expressionSymbols = new LinkedHashSet<>();
         collectSymbolicExpressionSymbols(expression, expressionSymbols);
         ExactPathGuardDependency pathGuardDependency =
-                fieldAssignment && isConstantExpression(expression)
+                (fieldAssignment || methodReturn)
+                        && isConstantExpression(expression)
                         ? exactVmPathGuardDependency(raw, activation,
                         sliceInputs, normalization)
                         : ExactPathGuardDependency.notApplicable();
@@ -1046,7 +1072,8 @@ public final class ConcolicSummaryImporter {
             issues.add("NON_SYMBOLIC_OUTPUT_EXPRESSION");
         } else if (expressionSymbols.isEmpty() && !guardedConstant) {
             issues.add("NON_SYMBOLIC_OUTPUT_EXPRESSION");
-            if (fieldAssignment && isConstantExpression(expression)) {
+            if ((fieldAssignment || methodReturn)
+                    && isConstantExpression(expression)) {
                 issues.addAll(pathGuardDependency.issues);
             }
         } else if (!dependsOnSliceInput) {
@@ -1057,6 +1084,11 @@ public final class ConcolicSummaryImporter {
         if (fieldAssignment && !expressionSymbols.isEmpty()
                 && !everySymbolHasExactSliceInput) {
             issues.add("FIELD_ASSIGNMENT_RHS_RELATION_NOT_CLOSED_OVER_"
+                    + "SLICE_INPUTS");
+        }
+        if (methodReturn && !expressionSymbols.isEmpty()
+                && !everySymbolHasExactSliceInput) {
+            issues.add("METHOD_RETURN_VALUE_RELATION_NOT_CLOSED_OVER_"
                     + "SLICE_INPUTS");
         }
 
@@ -1075,12 +1107,20 @@ public final class ConcolicSummaryImporter {
         if (!outputActionFound) {
             issues.add("REQUESTED_OUTPUT_ACTION_NOT_FOUND");
         }
+        String authority;
+        if (fieldAssignment) {
+            authority = guardedConstant
+                    ? "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD"
+                    : "EXACT_FIELD_ASSIGNMENT_RHS";
+        } else if (methodReturn) {
+            authority = guardedConstant
+                    ? "EXACT_METHOD_RETURN_VALUE_WITH_VM_ATTESTED_PATH_GUARD"
+                    : "EXACT_METHOD_RETURN_VALUE";
+        } else {
+            authority = "EXACT_CALL_ARGUMENT";
+        }
         return new OutputExpressionExtraction(expressions,
-                issues.isEmpty(), issues, fieldAssignment
-                ? guardedConstant
-                ? "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD"
-                : "EXACT_FIELD_ASSIGNMENT_RHS"
-                : "EXACT_CALL_ARGUMENT");
+                issues.isEmpty(), issues, authority);
     }
 
     private static boolean isConstantExpression(JsonElement expression) {
@@ -1134,6 +1174,54 @@ public final class ConcolicSummaryImporter {
         if (!validConcretePrimitiveLiteral(descriptor, payload)
                 || !samePrimitiveLiteral(descriptor, payload, concrete)) {
             issues.add("GUARDED_CONSTANT_CAPTURE_VALUE_MISMATCH");
+        }
+    }
+
+    /**
+     * Validates a constant captured at an exact method return without
+     * borrowing any of the field-assignment reflection contract.  The method
+     * signature is the declared type authority; the VM envelope and the
+     * concrete boxed value independently attest the captured runtime value.
+     */
+    private static void validateExactMethodReturnPrimitiveConstantCapture(
+            JsonObject request, JsonObject capture, JsonObject expression,
+            List<String> issues) {
+        String descriptor = javaTypeDescriptor(declaredMethodReturnType(
+                string(request, "method")));
+        if (!("Z".equals(descriptor) || "B".equals(descriptor)
+                || "C".equals(descriptor) || "S".equals(descriptor)
+                || "I".equals(descriptor) || "J".equals(descriptor))) {
+            issues.add("GUARDED_CONSTANT_METHOD_RETURN_PRIMITIVE_TYPE_"
+                    + "UNSUPPORTED");
+            return;
+        }
+        String wrapper = primitiveWrapperClass(descriptor);
+        String payload = string(expression, "_exp");
+        String concrete = string(capture, "concretePrimitiveValue");
+        boolean exactEnvelope = integer(capture,
+                "expressionEnvelopeSchemaVersion", -1) == 1
+                && bool(capture, "expressionEnvelopeActive", false)
+                && "CONCRETE_PRIMITIVE".equals(string(capture,
+                "expressionEnvelopeKind"))
+                && !bool(capture, "expressionEnvelopeSymbolic", true)
+                && "VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1".equals(string(
+                capture, "expressionEnvelopeAuthority"))
+                && descriptor.equals(string(capture,
+                "expressionEnvelopeJavaTypeDescriptor"));
+        if (!exactEnvelope) {
+            issues.add("GUARDED_CONSTANT_METHOD_RETURN_VM_PRIMITIVE_"
+                    + "ENVELOPE_INVALID");
+        }
+        if (!descriptor.equals(string(expression, "_java_type"))
+                || wrapper.isEmpty()
+                || !wrapper.equals(string(capture, "concreteValueClass"))) {
+            issues.add("GUARDED_CONSTANT_METHOD_RETURN_TYPE_OR_WRAPPER_"
+                    + "MISMATCH");
+        }
+        if (!validConcretePrimitiveLiteral(descriptor, payload)
+                || !samePrimitiveLiteral(descriptor, payload, concrete)) {
+            issues.add("GUARDED_CONSTANT_METHOD_RETURN_CAPTURE_VALUE_"
+                    + "MISMATCH");
         }
     }
 
@@ -1308,6 +1396,18 @@ public final class ConcolicSummaryImporter {
         return false;
     }
 
+    private static boolean jsonArrayContainsString(JsonArray values,
+                                                   String expected) {
+        if (expected == null || expected.isEmpty()) return false;
+        for (JsonElement value : values) {
+            if (value.isJsonPrimitive()
+                    && expected.equals(value.getAsString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final class ExactPathGuardDependency {
         private final boolean complete;
         private final List<String> issues;
@@ -1321,6 +1421,116 @@ public final class ConcolicSummaryImporter {
         private static ExactPathGuardDependency notApplicable() {
             return new ExactPathGuardDependency(false,
                     Collections.<String>emptyList());
+        }
+    }
+
+    /**
+     * Validates the static/runtime-refined request for one interior scalar
+     * method return.  The requested output must be exactly that method's
+     * return cell, and the persisted causal edge must be the unique local
+     * value passed to the exact return statement.  A call argument or a field
+     * assignment cannot satisfy this contract by sharing a port name.
+     */
+    private static void validateExactMethodReturnRequest(
+            JsonObject request, JsonObject activation, String requestedPort,
+            List<String> issues) {
+        JsonObject requested = object(activation, "requestedOutput");
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        String requestedCell = string(requested, "cell");
+        String method = string(request, "method");
+        String site = string(request, "siteId");
+        int unitIndex = integer(request, "unitIndex", -1);
+        String unit = string(request, "unit").trim();
+        String returnExpression = string(request, "returnExpression").trim();
+        String returnCell = string(request, "returnCell");
+        String edgeId = string(request, "causalEdgeId");
+
+        if (!bool(activation, "requestedOutputCaptureRequired", false)
+                || !bool(activation, "requestedOutputCaptureComplete", false)
+                || !bool(activation, "requestedOutputSliceComplete", false)
+                || !bool(slice, "complete", false)
+                || !"RETURN".equals(string(requested, "kind"))
+                || !requestedPort.equals(string(request, "outputPort"))
+                || !requestedCell.equals(string(request, "outputCell"))
+                || !requestedPort.equals(string(slice, "outputPort"))
+                || !requestedCell.equals(string(slice, "outputCell"))) {
+            issues.add("INVALID_METHOD_RETURN_REQUESTED_OUTPUT_BINDING");
+        }
+        if (string(request, "captureBindingId").isEmpty()
+                || method.isEmpty() || site.isEmpty() || unitIndex < 0
+                || !site.equals(method + "#u" + unitIndex)
+                || !requestedCell.equals(method + ".return")
+                || returnExpression.isEmpty()
+                || !exactReturnExpressionCell(method, returnCell,
+                returnExpression)
+                || !unit.equals("return " + returnExpression)
+                || edgeId.isEmpty()
+                || !"VALUE_PASS".equals(string(request, "transferKind"))
+                || !"method_return".equals(string(request, "bindingKind"))
+                || !"STATIC_EXACT_METHOD_RETURN_VALUE".equals(string(
+                request, "bindingAuthority"))) {
+            issues.add("INVALID_EXACT_METHOD_RETURN_ENDPOINT");
+        }
+        if (integer(request, "occurrence", 0) < 1
+                || !"RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE".equals(string(
+                request, "occurrenceAuthority"))) {
+            issues.add("INVALID_RUNTIME_METHOD_RETURN_OCCURRENCE_BINDING");
+        }
+        String returnType = declaredMethodReturnType(method);
+        String descriptor = javaTypeDescriptor(returnType);
+        if (returnType.isEmpty() || "V".equals(descriptor)
+                || !primitiveDescriptor(descriptor)) {
+            issues.add("METHOD_RETURN_VALUE_REQUIRES_DECLARED_SCALAR_RETURN");
+        }
+
+        boolean exactEdge = false;
+        for (JsonElement element : array(slice, "causalEdges")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject edge = element.getAsJsonObject();
+            if (edgeId.equals(string(edge, "edgeId"))
+                    && method.equals(string(edge, "method"))
+                    && site.equals(string(edge, "siteId"))
+                    && requestedCell.equals(string(edge, "toCell"))
+                    && returnCell.equals(string(edge, "fromCell"))
+                    && "VALUE_PASS".equals(string(edge, "transferKind"))
+                    && "local_def_use".equals(string(edge, "kind"))) {
+                if (exactEdge) {
+                    exactEdge = false;
+                    break;
+                }
+                exactEdge = true;
+            }
+        }
+        if (!exactEdge || !jsonArrayContainsString(array(slice,
+                "causalEdgeIds"),
+                edgeId)) {
+            issues.add("METHOD_RETURN_VALUE_CAUSAL_EDGE_NOT_EXACT");
+        }
+        if (!jsonArrayContainsString(array(slice, "methods"), method)) {
+            issues.add("METHOD_RETURN_VALUE_METHOD_NOT_IN_EXACT_SLICE");
+        }
+    }
+
+    private static boolean exactReturnExpressionCell(
+            String method, String cell, String expression) {
+        return !method.isEmpty() && !expression.isEmpty()
+                && (expression.equals(cell)
+                || (method + "::" + expression).equals(cell));
+    }
+
+    private static void validateExactMethodReturnCapture(
+            JsonObject request, JsonObject capture, List<String> issues) {
+        int requestedOccurrence = integer(request, "occurrence", 0);
+        if (!"ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE".equals(string(
+                capture, "captureAuthority"))) {
+            issues.add("INVALID_EXACT_METHOD_RETURN_CAPTURE_AUTHORITY");
+        }
+        if (requestedOccurrence < 1
+                || requestedOccurrence != integer(capture,
+                "requestedOccurrence", -1)
+                || requestedOccurrence != integer(capture,
+                "occurrence", -2)) {
+            issues.add("METHOD_RETURN_VALUE_CAPTURE_OCCURRENCE_MISMATCH");
         }
     }
 
@@ -1606,7 +1816,12 @@ public final class ConcolicSummaryImporter {
         Matcher parameter = Pattern.compile(
                 "\\.param[0-9]+:([^#]+)(?:#.*)?$").matcher(
                 string(request, "outputCell"));
-        return parameter.find() ? parameter.group(1).trim() : "";
+        if (parameter.find()) {
+            return parameter.group(1).trim();
+        }
+        String method = string(request, "method");
+        return string(request, "outputCell").equals(method + ".return")
+                ? declaredMethodReturnType(method) : "";
     }
 
     private static boolean validArrayLengthExpression(JsonElement value,
@@ -1754,6 +1969,16 @@ public final class ConcolicSummaryImporter {
         return validConcretePrimitiveLiteral(descriptor, expression);
     }
 
+    private static String declaredMethodReturnType(String method) {
+        String value = method == null ? "" : method.trim();
+        if (!value.startsWith("<") || !value.endsWith(">")) return "";
+        int colon = value.indexOf(':');
+        int open = value.indexOf('(', colon + 1);
+        int methodName = open < 0 ? -1 : value.lastIndexOf(' ', open);
+        if (colon < 0 || methodName <= colon + 1) return "";
+        return value.substring(colon + 1, methodName).trim();
+    }
+
     /** Normalizes source names and VM descriptors to one JVM descriptor. */
     private static String javaTypeDescriptor(String type) {
         String value = type == null ? "" : type.trim().replace('.', '/');
@@ -1868,12 +2093,22 @@ public final class ConcolicSummaryImporter {
                     && string(request, "fieldSignature").equals(string(
                     capture, "fieldSignature"));
         }
-        return string(request, "callerMethod").equals(string(capture,
-                "callerMethod"))
-                && string(request, "calleeMethod").equals(string(capture,
-                "calleeMethod"))
-                && integer(request, "argumentIndex", -1) == integer(capture,
-                "argumentIndex", -2);
+        if ("METHOD_RETURN_VALUE".equals(outputCaptureKind(request))) {
+            return !string(request, "method").isEmpty()
+                    && string(request, "method").equals(string(capture,
+                    "method"))
+                    && integer(request, "occurrence", 0) == integer(capture,
+                    "requestedOccurrence", -1);
+        }
+        if ("CALL_ARGUMENT".equals(outputCaptureKind(request))) {
+            return string(request, "callerMethod").equals(string(capture,
+                    "callerMethod"))
+                    && string(request, "calleeMethod").equals(string(capture,
+                    "calleeMethod"))
+                    && integer(request, "argumentIndex", -1) == integer(
+                    capture, "argumentIndex", -2);
+        }
+        return false;
     }
 
     private static final class OutputExpressionExtraction {
