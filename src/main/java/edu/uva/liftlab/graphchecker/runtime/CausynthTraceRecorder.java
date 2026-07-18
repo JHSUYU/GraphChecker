@@ -25,6 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
@@ -57,6 +59,12 @@ public final class CausynthTraceRecorder {
     private static final int DEFAULT_MAX_EVENTS = 200000;
     private static final int DEFAULT_MAX_GRAPH_EDGES = 50000;
     private static final int DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE = 2000;
+    private static final ConcurrentMap<String, Pattern> JSON_STRING_FIELD_PATTERNS =
+            new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Pattern> JSON_NUMBER_FIELD_PATTERNS =
+            new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, Pattern> JSON_BOOLEAN_FIELD_PATTERNS =
+            new ConcurrentHashMap<>();
     /**
      * A plain concolic replay uses the rich-trace call stacks only as exact
      * accessor-site context.  It does not publish a runtime trace, so hashing
@@ -742,7 +750,7 @@ public final class CausynthTraceRecorder {
             if (!retainRecordedEventsInMemory && outputDir != null) {
                 long attempted = EVENT_COUNTER.get();
                 boolean truncated = attempted > maxEvents;
-                writeFile(new File(outputDir,
+                writeFileQuietly(new File(outputDir,
                                 "streaming_trace_manifest.json"),
                         jsonObject(
                                 "schemaVersion", 1,
@@ -1061,7 +1069,7 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void writeInstantiatedGraph() {
+    private static void writeInstantiatedGraph() throws IOException {
         // In-memory aggregation has the same cross-thread row-order property
         // as an offline-loaded stream.  Normalize centrally before any graph,
         // latest-write, or region-planning consumer observes the collections.
@@ -1108,12 +1116,6 @@ public final class CausynthTraceRecorder {
                 String toCell = instantiateCell(context.toContext, edge, edge.toCell);
                 String fromId = nodeId(context.fromContext, fromCell);
                 String toId = nodeId(context.toContext, toCell);
-                if (emittedNodes.add(fromId)) {
-                    nodeJson.add(nodeJson(context.fromContext, fromId, fromCell));
-                }
-                if (emittedNodes.add(toId)) {
-                    nodeJson.add(nodeJson(context.toContext, toId, toCell));
-                }
                 String edgeKey = edgeKey(edge, fromId, toId);
                 EdgeAccumulator accumulator = emittedEdges.get(edgeKey);
                 if (accumulator == null) {
@@ -1129,19 +1131,19 @@ public final class CausynthTraceRecorder {
                     accumulator.observe(edge, context.fromContext, context.toContext);
                     mergedEdgeInputCount++;
                 }
+                if (accumulator != null) {
+                    if (emittedNodes.add(fromId)) {
+                        nodeJson.add(nodeJson(context.fromContext, fromId, fromCell));
+                    }
+                    if (emittedNodes.add(toId)) {
+                        nodeJson.add(nodeJson(context.toContext, toId, toCell));
+                    }
+                }
 
                 String roleFromCell = roleCell(fromCell);
                 String roleToCell = roleCell(toCell);
                 String roleFromId = roleNodeId(context.fromContext, roleFromCell);
                 String roleToId = roleNodeId(context.toContext, roleToCell);
-                if (emittedRoleNodes.add(roleFromId)) {
-                    roleNodeJson.add(roleNodeJson(context.fromContext, roleFromId,
-                            roleFromCell));
-                }
-                if (emittedRoleNodes.add(roleToId)) {
-                    roleNodeJson.add(roleNodeJson(context.toContext, roleToId,
-                            roleToCell));
-                }
                 String roleEdgeKey = roleEdgeKey(edge, roleFromId, roleToId);
                 EdgeAccumulator roleAccumulator = emittedRoleEdges.get(roleEdgeKey);
                 if (roleAccumulator == null) {
@@ -1156,6 +1158,16 @@ public final class CausynthTraceRecorder {
                 } else {
                     roleAccumulator.observe(edge, context.fromContext, context.toContext);
                     mergedRoleEdgeInputCount++;
+                }
+                if (roleAccumulator != null) {
+                    if (emittedRoleNodes.add(roleFromId)) {
+                        roleNodeJson.add(roleNodeJson(context.fromContext,
+                                roleFromId, roleFromCell));
+                    }
+                    if (emittedRoleNodes.add(roleToId)) {
+                        roleNodeJson.add(roleNodeJson(context.toContext,
+                                roleToId, roleToCell));
+                    }
                 }
             }
         }
@@ -1216,7 +1228,7 @@ public final class CausynthTraceRecorder {
             Map<String, EdgeAccumulator> roleEdges,
             Map<String, List<MethodContext>> contextsByMethod,
             boolean objectGraphTruncated,
-            boolean roleGraphTruncated) {
+            boolean roleGraphTruncated) throws IOException {
         List<String> guidanceEdges = new ArrayList<>();
         Map<String, Integer> modelCounts = new LinkedHashMap<>();
         int emitted = 0;
@@ -1449,31 +1461,42 @@ public final class CausynthTraceRecorder {
 
     private static List<String> symbolicMergePoints(
             Map<String, EdgeAccumulator> roleEdges) {
-        Map<String, List<EdgeAccumulator>> incoming = new LinkedHashMap<>();
+        // Only a small, diagnostic subset of targets can become a guidance
+        // merge point.  First discover that subset, then count its incoming
+        // edges.  Retaining a List<EdgeAccumulator> for every target used to
+        // duplicate up to maxGraphEdges references on large HDFS traces.
+        Set<String> interestingTargets = new LinkedHashSet<>();
         for (EdgeAccumulator edge : roleEdges.values()) {
-            if (!shouldEmitGuidanceEdge(edge)) {
-                continue;
+            if (shouldEmitGuidanceEdge(edge)
+                    && interestingMergeTarget(edge.to, edge)) {
+                interestingTargets.add(edge.to);
             }
-            List<EdgeAccumulator> edges = incoming.get(edge.to);
-            if (edges == null) {
-                edges = new ArrayList<>();
-                incoming.put(edge.to, edges);
+        }
+        Map<String, MergePointSummary> incoming = new LinkedHashMap<>();
+        for (String target : interestingTargets) {
+            incoming.put(target, new MergePointSummary());
+        }
+        interestingTargets.clear();
+        for (EdgeAccumulator edge : roleEdges.values()) {
+            MergePointSummary summary = incoming.get(edge.to);
+            if (summary != null && shouldEmitGuidanceEdge(edge)) {
+                summary.observe(edge);
             }
-            edges.add(edge);
         }
         List<String> result = new ArrayList<>();
         int index = 0;
-        for (Map.Entry<String, List<EdgeAccumulator>> entry : incoming.entrySet()) {
-            List<EdgeAccumulator> edges = entry.getValue();
-            if (edges.size() < 2 || !interestingMergeTarget(entry.getKey(), edges)) {
+        for (Map.Entry<String, MergePointSummary> entry
+                : incoming.entrySet()) {
+            MergePointSummary summary = entry.getValue();
+            if (summary.incomingCount < 2) {
                 continue;
             }
             result.add(jsonObject(
                     "id", "MERGE." + index++,
                     "target", entry.getKey(),
-                    "incomingCount", edges.size(),
-                    "incomingKinds", incomingKinds(edges),
-                    "suggestedModel", suggestedMergeModel(entry.getKey(), edges),
+                    "incomingCount", summary.incomingCount,
+                    "incomingKinds", join(summary.incomingKinds, ";"),
+                    "suggestedModel", suggestedMergeModel(entry.getKey()),
                     "guidance", "Use Merge(...) for role-level summaries; use runtime sequence/latest-write when a concrete occurrence is selected."));
             if (result.size() >= 200) {
                 break;
@@ -1483,7 +1506,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static boolean interestingMergeTarget(String target,
-                                                  List<EdgeAccumulator> edges) {
+                                                  EdgeAccumulator edge) {
         String text = lower(target);
         if (text.contains("keyid") || text.contains("currentkey")
                 || text.contains("allkeys") || text.contains("exportedblockkeys")
@@ -1494,28 +1517,13 @@ public final class CausynthTraceRecorder {
                 || text.contains("sasl")) {
             return true;
         }
-        for (EdgeAccumulator edge : edges) {
-            String model = guidanceModel(edge);
-            if ("rpc_transfer_summary".equals(model)
-                    || "protocol_sasl_transfer".equals(model)
-                    || "heap_latest_write".equals(model)
-                    || "symbolic_map_state".equals(model)) {
-                return true;
-            }
-        }
-        return false;
+        String model = guidanceModel(edge);
+        return "port_mapping_candidate".equals(model)
+                || "heap_latest_write".equals(model)
+                || "symbolic_map_state".equals(model);
     }
 
-    private static String incomingKinds(List<EdgeAccumulator> edges) {
-        Set<String> kinds = new LinkedHashSet<>();
-        for (EdgeAccumulator edge : edges) {
-            kinds.add(edge.kind);
-        }
-        return join(kinds, ";");
-    }
-
-    private static String suggestedMergeModel(String target,
-                                              List<EdgeAccumulator> edges) {
+    private static String suggestedMergeModel(String target) {
         String text = lower(target);
         if (text.contains("allkeys") || text.contains("<java.util.map:")) {
             return "SymbolicMapState/MergeMapUpdates";
@@ -1527,6 +1535,16 @@ public final class CausynthTraceRecorder {
             return "Merge(MethodSummary alternatives)";
         }
         return "Merge(incomingExpressions)";
+    }
+
+    private static final class MergePointSummary {
+        private int incomingCount;
+        private final Set<String> incomingKinds = new LinkedHashSet<>();
+
+        private void observe(EdgeAccumulator edge) {
+            incomingCount++;
+            incomingKinds.add(edge.kind);
+        }
     }
 
     private static List<String> symbolicGuidanceLimitations() {
@@ -1673,12 +1691,6 @@ public final class CausynthTraceRecorder {
 
             String fromId = nodeId(writeContext, fromCell);
             String toId = nodeId(readContext, toCell);
-            if (emittedNodes.add(fromId)) {
-                nodeJson.add(nodeJson(writeContext, fromId, fromCell));
-            }
-            if (emittedNodes.add(toId)) {
-                nodeJson.add(nodeJson(readContext, toId, toCell));
-            }
             String edgeKey = edgeKey(edge, fromId, toId);
             EdgeAccumulator accumulator = emittedEdges.get(edgeKey);
             if (accumulator == null) {
@@ -1694,19 +1706,19 @@ public final class CausynthTraceRecorder {
                 accumulator.observe(edge, writeContext, readContext);
                 stats.mergedInputCount++;
             }
+            if (accumulator != null) {
+                if (emittedNodes.add(fromId)) {
+                    nodeJson.add(nodeJson(writeContext, fromId, fromCell));
+                }
+                if (emittedNodes.add(toId)) {
+                    nodeJson.add(nodeJson(readContext, toId, toCell));
+                }
+            }
 
             String roleFromCell = roleCell(fromCell);
             String roleToCell = roleCell(toCell);
             String roleFromId = roleNodeId(writeContext, roleFromCell);
             String roleToId = roleNodeId(readContext, roleToCell);
-            if (emittedRoleNodes.add(roleFromId)) {
-                roleNodeJson.add(roleNodeJson(writeContext, roleFromId,
-                        roleFromCell));
-            }
-            if (emittedRoleNodes.add(roleToId)) {
-                roleNodeJson.add(roleNodeJson(readContext, roleToId,
-                        roleToCell));
-            }
             String roleEdgeKey = roleEdgeKey(edge, roleFromId, roleToId);
             EdgeAccumulator roleAccumulator = emittedRoleEdges.get(roleEdgeKey);
             if (roleAccumulator == null) {
@@ -1721,6 +1733,16 @@ public final class CausynthTraceRecorder {
             } else {
                 roleAccumulator.observe(edge, writeContext, readContext);
                 stats.roleMergedInputCount++;
+            }
+            if (roleAccumulator != null) {
+                if (emittedRoleNodes.add(roleFromId)) {
+                    roleNodeJson.add(roleNodeJson(writeContext, roleFromId,
+                            roleFromCell));
+                }
+                if (emittedRoleNodes.add(roleToId)) {
+                    roleNodeJson.add(roleNodeJson(readContext, roleToId,
+                            roleToCell));
+                }
             }
         }
         return stats;
@@ -1790,14 +1812,16 @@ public final class CausynthTraceRecorder {
         return edge.kind + "\n" + edge.method + "\n" + fromId + "\n" + toId;
     }
 
-    private static List<StaticEdge> readStaticEdges(File file) {
+    private static List<StaticEdge> readStaticEdges(File file)
+            throws IOException {
         List<StaticEdge> edges = new ArrayList<>();
         if (file == null || !file.isFile()) {
             return edges;
         }
-        try {
-            List<String> lines = Files.readAllLines(file.toPath(), StandardCharsets.UTF_8);
-            for (String line : lines) {
+        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
                 String id = jsonField(line, "id");
                 String kind = jsonField(line, "kind");
                 String fromCell = jsonField(line, "fromCell");
@@ -1808,7 +1832,6 @@ public final class CausynthTraceRecorder {
                     edges.add(new StaticEdge(id, kind, fromCell, toCell, method, unitIndex));
                 }
             }
-        } catch (IOException ignored) {
         }
         return edges;
     }
@@ -2079,8 +2102,8 @@ public final class CausynthTraceRecorder {
     }
 
     private static String jsonField(String json, String field) {
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field)
-                + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"").matcher(json);
+        Matcher matcher = jsonFieldPattern(JSON_STRING_FIELD_PATTERNS, field,
+                "\"((?:\\\\.|[^\"])*)\"", 0).matcher(json);
         if (!matcher.find()) {
             return "";
         }
@@ -2088,8 +2111,8 @@ public final class CausynthTraceRecorder {
     }
 
     private static int jsonIntField(String json, String field, int fallback) {
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field)
-                + "\"\\s*:\\s*(-?\\d+)").matcher(json);
+        Matcher matcher = jsonFieldPattern(JSON_NUMBER_FIELD_PATTERNS, field,
+                "(-?\\d+)", 0).matcher(json);
         if (!matcher.find()) {
             return fallback;
         }
@@ -2101,8 +2124,8 @@ public final class CausynthTraceRecorder {
     }
 
     private static long jsonLongField(String json, String field, long fallback) {
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field)
-                + "\"\\s*:\\s*(-?\\d+)").matcher(json);
+        Matcher matcher = jsonFieldPattern(JSON_NUMBER_FIELD_PATTERNS, field,
+                "(-?\\d+)", 0).matcher(json);
         if (!matcher.find()) {
             return fallback;
         }
@@ -2115,10 +2138,23 @@ public final class CausynthTraceRecorder {
 
     private static boolean jsonBooleanField(String json, String field,
                                             boolean fallback) {
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field)
-                + "\"\\s*:\\s*(true|false)", Pattern.CASE_INSENSITIVE)
-                .matcher(json);
+        Matcher matcher = jsonFieldPattern(JSON_BOOLEAN_FIELD_PATTERNS, field,
+                "(true|false)", Pattern.CASE_INSENSITIVE).matcher(json);
         return matcher.find() ? Boolean.parseBoolean(matcher.group(1)) : fallback;
+    }
+
+    private static Pattern jsonFieldPattern(
+            ConcurrentMap<String, Pattern> patterns, String field,
+            String valuePattern, int flags) {
+        String key = field == null ? "" : field;
+        Pattern pattern = patterns.get(key);
+        if (pattern != null) {
+            return pattern;
+        }
+        Pattern compiled = Pattern.compile("\"" + Pattern.quote(key)
+                + "\"\\s*:\\s*" + valuePattern, flags);
+        Pattern existing = patterns.putIfAbsent(key, compiled);
+        return existing == null ? compiled : existing;
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -2146,7 +2182,8 @@ public final class CausynthTraceRecorder {
         return params;
     }
 
-    private static void writeSeedChainSummary(List<StaticEdge> staticEdges) {
+    private static void writeSeedChainSummary(List<StaticEdge> staticEdges)
+            throws IOException {
         File file = new File(outputDir, "seed_chain_summary.jsonl");
         SummarySelection selection = summarySelection(staticEdges);
         TreeMap<Long, String> lines = new TreeMap<>();
@@ -2252,7 +2289,8 @@ public final class CausynthTraceRecorder {
         return !name.isEmpty() && selection.fieldNames.contains(name);
     }
 
-    private static void writeRuntimeRefinedSymbolicPlan(File staticGraph) {
+    private static void writeRuntimeRefinedSymbolicPlan(File staticGraph)
+            throws IOException {
         File configured = new File(firstNonBlank(
                 System.getProperty("causynth.symbolic.plan"),
                 System.getenv("CAUSYNTH_SYMBOLIC_PLAN"),
@@ -2331,8 +2369,6 @@ public final class CausynthTraceRecorder {
                         .append(evidence.toJson())
                         .append("}\n");
             }
-        } catch (IOException ignored) {
-            return;
         }
         writeFile(new File(outputDir, "runtime_refined_symbolic_plan.jsonl"),
                 refined.toString());
@@ -2354,7 +2390,8 @@ public final class CausynthTraceRecorder {
      * resulting activation plan is consumed by the concolic replay runner; it
      * is intentionally separate from the descriptive runtime graph.
      */
-    private static void writeRuntimeRegionPlans(File staticGraph) {
+    private static void writeRuntimeRegionPlans(File staticGraph)
+            throws IOException {
         File parent = staticGraph == null ? null : staticGraph.getParentFile();
         File regionFile = new File(firstNonBlank(
                 System.getProperty("causynth.symbolic.regions"),
@@ -2401,7 +2438,8 @@ public final class CausynthTraceRecorder {
         }
 
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
-                regionFile, regionEdgeFile, methods, runtimeEvents, fields);
+                regionFile, regionEdgeFile, staticGraph, methods,
+                runtimeEvents, fields);
         writeFile(new File(outputDir, "runtime_region_instances.jsonl"),
                 planned.instancesJsonl());
         writeFile(new File(outputDir, "runtime_region_validation.jsonl"),
@@ -2426,7 +2464,8 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeRuntimeValidationSummary(List<StaticEdge> staticEdges,
-                                                      Map<String, List<MethodContext>> contextsByMethod) {
+                                                      Map<String, List<MethodContext>> contextsByMethod)
+            throws IOException {
         File file = new File(outputDir, "runtime_validation_summary.jsonl");
         StringBuilder builder = new StringBuilder();
         int count = 0;
@@ -2666,24 +2705,30 @@ public final class CausynthTraceRecorder {
         return builder.toString();
     }
 
-    private static void writeFile(File file, String value) {
+    private static void writeFile(File file, String value) throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
+        }
+        Files.write(file.toPath(), value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void writeFileQuietly(File file, String value) {
         try {
-            File parent = file.getParentFile();
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs();
-            }
-            Files.write(file.toPath(), value.getBytes(StandardCharsets.UTF_8));
+            writeFile(file, value);
         } catch (IOException ignored) {
+            // Shutdown diagnostics are best effort; offline aggregation uses
+            // the throwing writer above and therefore fails closed.
         }
     }
 
     private static void writeGraphFile(File file, String summary,
                                        List<String> nodes,
                                        Map<String, EdgeAccumulator> edges,
-                                       boolean roleMerged) {
+                                       boolean roleMerged) throws IOException {
         File parent = file.getParentFile();
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
         }
         try (BufferedWriter writer = Files.newBufferedWriter(file.toPath(),
                 StandardCharsets.UTF_8)) {
@@ -2694,7 +2739,6 @@ public final class CausynthTraceRecorder {
             writer.write("],\"edges\":[");
             writeEdgeJsonElements(writer, edges.values(), roleMerged);
             writer.write("]}");
-        } catch (IOException ignored) {
         }
     }
 
@@ -2730,7 +2774,7 @@ public final class CausynthTraceRecorder {
     private static void writeShutdownFailure(Throwable throwable) {
         File directory = outputDir == null ? new File("target/causynth-trace") : outputDir;
         String message = throwable == null ? "" : throwable.toString();
-        writeFile(new File(directory, "summary.json"), jsonObject(
+        writeFileQuietly(new File(directory, "summary.json"), jsonObject(
                 "test", testName,
                 "status", "shutdown_failure",
                 "message", message,

@@ -130,3 +130,12 @@ The later stage commands are `bootstrap-compose`, `bootstrap-project`,
 incomplete, rerun `campaign`; its atomic `campaign_state_manifest.json` is the
 only resume authority. Partial campaign directories without that pointer are
 rejected rather than overwritten.
+
+Five additional no-`while` branch fixtures live under `cases/`. Each keeps the
+same two-Boolean, three-thread RPC shape and uses this runner with a separate
+work root, target, and topology. For example:
+
+```bash
+CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/workflow.properties \
+  experiments/generic/three-thread-rpc/run.sh all
+```

@@ -1,5 +1,6 @@
 
 .idea/
+*.iml
 /target/
 /causynth-output/
 experiments/hdfs/instrumented_classes*/

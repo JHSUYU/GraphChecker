@@ -33,81 +33,117 @@ Soot 和自定义 OpenJDK 修改都只用于在受控研究环境中观察和建
 和执行边界。这里的“固定”是为了保证实验可复现和不越界，不是说分析框架
 只能用于 HDFS；核心 concolic/worklist/IR/composer 仍应保持项目无关。
 
-### HDFS-11741 end-to-end checkpoint（2026-07-18）
+### HDFS-11741 通用递归 composition → fatal SMT checkpoint（2026-07-18）
 
 Hadoop worktree 保持 pre-fix commit，baseline test 未修改。v4 静态 catalog 和唯一一次
-baseline workload 的 runtime trace 已冻结；后续 composition/replay 只复用这些产物，不再
-重跑静态分析或 workload。配置指向：
+baseline workload 的 runtime trace 已冻结；后续步骤直接复用这些产物，不再重复运行 Soot、
+runtime instrumentation 或 workload。输入路径、summary 列表、输出文件名、Z3 路径和语义
+policy 均由 `experiments/hdfs/conf/hdfs.properties` 配置，并可用对应的
+`CAUSYNTH_HDFS_GENERIC_*` 环境变量覆盖。配置中没有生成的 activation/region ID。
+
+正式结果位于 `target/hdfs-11741-generic-final-v7`。这条路径不再调用
+`Hdfs11741BootstrapComposer`，也没有注入面向本 bug 的 case formula：HDFS-specific 部分只负责
+按 method/cell/timeline policy 选择语义角色以及提供已声明的 RPC/SASL mapping；之后由 legacy
+branch-flip scheduler 和普通 `ConcolicSmtComposer` 完成 target fatal PC、递归 port binding、
+summary symbolic merging、SMT emission 和 Z3 调用。solver manifest 对此记录为
+`domainSemanticAdapterUsed=false`、`caseFormulaInjected=false`。
+
+当前自动化证据链如下：
+
+- selector 从 frozen catalog 自动选出 NameNode、DataNode、KeyUpdater、Dispatcher 和 target
+  五个有序语义角色。它依据 root/anchor/required method、requested cell、runtime instance
+  顺序和完整值 fingerprint 选择，不依赖某次生成的 activation/region 名字；
+- exact composition 包含四个 producer summary：NameNode、DataNode、KeyUpdater 和
+  Dispatcher。target replay summary 由 scheduler 单独消费，用来翻转最后的 `key == null`
+  fatal branch，因此不重复列在 composition manifest 的 `includedSummaries` 中；
+- composer 从 target input port 出发，沿 frozen runtime binding catalog 递归解析唯一 producer。
+  当前三条 exact binding 分别覆盖 Dispatcher→target 的 SASL username 值相等、DataNode
+  `allKeys` post-state→target lookup map 的 shared-field read-from，以及
+  KeyUpdater `currentKey`→Dispatcher cache input 的 declared-field projection。Dispatcher
+  summary 内部另用 exact equality-preserving causal path 证明 cached keyId 与生成的
+  `DataEncryptionKey.keyId` 相等；Java int→decimal string→parse-int round trip 由通用 String
+  codec 语义翻译，而不是 HDFS case formula；
+- NameNode→KeyUpdater/DataNode 的 RPC payload 在现有 frozen trace 中没有完整 transaction
+  fingerprint，所以这两条边使用 policy 中显式声明、selector 自动解析的配置化 field mapping。
+  policy 只写稳定 role/port alias/cell/field path，不写 ACT/REGION ID；selector 将其解析到本次
+  runtime instance，通用 composer 再把 equality group 展开为三个有类型约束：NameNode
+  `MAP_PUT.keyExpression` 分别等于 KeyUpdater `currentKey.keyId` 和 DataNode iterator
+  `keyId`，NameNode `expiryDate` 等于 DataNode entry `expiryDate`。manifest 记录
+  `configuredTransportProducerCount=1`、`configuredTransportBindingCount=2`、
+  `configuredTransportConstraintCount=3`。这是可见的 `CONFIGURED_NN_SNAPSHOT_FANOUT`
+  approximation，不是 domain composer 注入的整段 bug formula。NameNode source 采用 manifest
+  可审计的 `GUARDS_AND_SELECTED_TERMS_ONLY` projection：保留 source path guards 和被选中的
+  payload terms，但不声称已经构造完整 heap transformer；
+- DataNode summary 对内层 `removeExpiredKeys()` iterator 保留一个相关 map entry：
+  `expiry < Time.now() -> remove(keyId)`。composer 将 exact post-state edge 与 fatal
+  `Map.get(keyId) == null`、删除前 membership 和 `MAP_REMOVE` store semantics 组合起来；base SMT
+  没有直接断言“removed key = fatal lookup key”，该相等关系是由 pre-present、post-absent 和
+  remove transformer 推出的。对正式 SMT 额外断言这个派生等式的否定，Z3 返回 `unsat`；再
+  强制 NameNode snapshot key 与 fatal lookup key 不同也返回 `unsat`，说明配置化 fanout、
+  KeyUpdater/Dispatcher/SASL codec 和 DataNode remove 两条链已在同一模型中汇合；
+- NameNode projection summary 保留其初始 guard `snapshotExpiry >= NameNode Time.now()`；DataNode
+  summary 保留稍后 `snapshotExpiry < DataNode Time.now()`，所以同一 SMT 明确得到时间跨越。
+  外层 NameNode heartbeat 与 DataNode `BPServiceActor.run` 长循环只保留配置声明的有界
+  witness/path prefix，DataNode iterator 只展开上述一个相关 entry。一个与 fatal `allKeys`
+  无关的 ancillary computed map key 保留为 typed opaque concrete-workload result；这些都是
+  manifest 可见的 approximation，而不是 sound/complete 的全 HDFS 循环模型；
+- 正式 composition 状态为 `STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION`：
+  `structurallyComplete=true`、`eligibleForBootstrapModel=true`，并且
+  `missingSummaryRegions`、`incompleteSummaryRegions`、`unsupportedExpressions`、
+  `unboundPorts` 均为空。Z3 4.8.12 已真实运行并返回 `sat`；
+- `complete=false` 只表示这个 solver model 尚未经过一次自然 fatal replay 验证，不表示当前
+  summary→binding→SMT 结构缺失。它证明的是声明的一 DN、单相关 iterator entry 和有界外层
+  loop scope 下存在到达 `retrieveDataEncryptionKey()` 中 `key == null` exception branch 的模型。
+
+冻结的静态图仍有 150,000 条边、64 个 region 和 8,728 条 region edge；唯一 workload
+运行 56.856 秒并通过，raw trace 有 839,101 行且 streaming manifest 为
+`CLOSED/complete`。最终 offline aggregation 有 499 个 activation 和 57 条 confirmed
+read-from edge。这些较大的分析步骤不是下面一键 composition 命令的一部分。
+
+正式 artifact 为：
 
 ```text
-causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4
-experiments/hdfs/instrumented_classes.hdfs-11741-auto-smt-v4
-experiments/hdfs/concolic_classes.hdfs-11741-auto-smt-v4
+target/hdfs-11741-generic-final-v7/
+  semantic-selection/replay_selection_manifest.json
+  directed-target-query/branch_queries.jsonl
+  hdfs_11741_generic.smt2
+  hdfs_11741_generic_manifest.json
+  hdfs_11741_generic_relationships.json
+  hdfs_11741_generic_z3.out
+  hdfs_11741_generic_z3_manifest.json
 ```
 
-已真实完成的证据链如下：
+其中 composition manifest、SMT 和 solver output 的 SHA-256 分别为
+`5ad1029f26572691e4c286209ce93152375ccf438681c6e2d2d35b9fa2a764bd`、
+`5b58bc1a2e1f68ce28f479771b370a218e9a28ca983990da10fe4b314236e786`、
+`d9dbf94b05b8314af9ca7f2034e92685c33447917605a7243b1099c693a12e5e`。
 
-- static graph 有 150,000 条边、64 个 region、8,728 条 region edge；SHA-256 分别为
-  `75ae3f56fe16c593edea3b39ee893bd15c3e9b3dd0666b9c10b055de8a8deb7b`、
-  `fcdf8dd9506fad7e6e17858f449a9ee13d1be98776ea06fb9427e725e77c151e`、
-  `34489ea70ad06f7c6627b3a56b2f6b23846f7d5b0ace5f618744caaf3245af30`；
-- 唯一 workload 运行 56.856 秒并通过，raw trace 有 839,101 行，streaming manifest
-  `CLOSED/complete`，没有 raw/call-tree/graph truncation；
-- offline aggregation 找到 430 个 region instance、499 个 activation、57 条 confirmed
-  read-from edge。12 个 `BPServiceActor.run` instance 只保留外部长期循环的有界 path
-  signature prefix（跳过 11,691 个重复 path event），authority 为
-  `CONFIGURED_BOUNDED_EXTERNAL_LOOP_PATH_PREFIX_V1`；
-- 自动选择 target `REGION.0`、NameNode `REGION.15`、DataNode `REGION.30` 和 Balancer
-  `REGION.2`。这些数字只是结果，policy 不含任何 `REGION.*`/`ACT.*` id；选择依据是 exact
-  root/anchor/method/cell selector。Balancer 静态 region 本身带 bounded/truncated 标记，
-  因此 manifest 另列 `STATIC_REGION_CATALOG_BOUNDED` approximation；
-- DN `ExportedBlockKeys.allKeys` 中的 `keyId` 与 `expiryDate` 分别绑定为 schema-1
-  `FIELD_ACCESS_HOOK` 和 schema-2 五边 `CONTAINER_SNAPSHOT`。内层 iterator 保留一个相关
-  symbolic entry：`expiry < Time.now() -> remove(keyId)`；
-- runtime 确认了 `REGION.30 allKeys -> REGION.0 allKeys` 的 shared-state read-from；没有
-  runtime SASL value equality。因此 PendingMove 的 decimal username round-trip 使用静态
-  codec template，并在 manifest 中明确标成 approximation，而不是伪装成 exact edge；
-- `Hdfs11741BootstrapComposer` 自动生成 24 条 SMT assertion，脚本真实调用配置的 Z3
-  4.8.12，返回 `sat`。模型给出一个 witness：symbolic key id `4`，key/DEK expiry `1`，
-  DN removal time `2`，Balancer send/observation time `3`，且
-  `exception_reached = true`。本次 composer fat JAR SHA-256 为
-  `20f3c1551f3afe21bc5766b7b1f82203522ddecf0fd67118aacf3d62f0484870`；
-- SMT SHA-256 为
-  `2acaabe4bd9c87b067961bb083fbae9b79242f34c75a41ee7e3fe9280d4a7642`；solver output
-  SHA-256 为
-  `699850679eec8454d6f6a353f83905ee354160bb6f69177290da7bb32923d47f`；
-- milestone 回归为 657 项 JUnit 全通过；`experiments/generic/test_workflow.sh`、
-  三线程 fixture 和 parallel HDFS concolic batch fixture 均通过。
-
-结果位于：
-
-```text
-causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4/hdfs-11741-bootstrap/
-  hdfs_11741_bootstrap.smt2
-  hdfs_11741_bootstrap_manifest.json
-  hdfs_11741_z3.out
-  hdfs_11741_z3_manifest.json
-```
-
-从冻结 artifacts 重现 composition 和求解：
+从配置指定的 frozen artifacts 一键重现 selector→fatal flip→generic composition→Z3：
 
 ```bash
 mvn -q -DskipTests package
-experiments/hdfs/run_hdfs.sh hdfs-11741-bootstrap
+CAUSYNTH_HDFS_GENERIC_OUTPUT_DIR=/opt/GraphChecker/target/hdfs-11741-generic-fresh \
+  experiments/hdfs/run_hdfs.sh hdfs-11741-compose-generic \
+  org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
 ```
 
-输出目录是 immutable；若已存在，使用一个新的可配置目录：
+输出目录必须尚不存在且位于 workspace 内，以保证并行 worker/重复实验彼此隔离。除新的输出
+目录外，命令所需路径和文件名均读取 properties；如需搬迁 frozen artifacts，应修改配置或
+使用同名 `CAUSYNTH_HDFS_GENERIC_*` override，而不是修改脚本或写入生成的 ID。
+
+派生 key 关系可从 relationships artifact 自动取出并做独立反证检查；下面命令在正式 SMT
+末尾加入关系的否定，预期输出 `unsat`：
 
 ```bash
-CAUSYNTH_HDFS_BOOTSTRAP_OUTPUT_DIR=/path/to/fresh-output \
-  experiments/hdfs/run_hdfs.sh hdfs-11741-bootstrap
+artifact=/opt/GraphChecker/target/hdfs-11741-generic-final-v7
+derived_relation=$(jq -r \
+  '.relationships[] | select(.kind == "DERIVED_MAP_REMOVE_FATAL_MISS_KEY_EQUALITY") | .formula' \
+  "$artifact/hdfs_11741_generic_relationships.json")
+{
+  sed '$d' "$artifact/hdfs_11741_generic.smt2"
+  printf '(assert (not %s))\n(check-sat)\n' "$derived_relation"
+} | /usr/bin/z3 -in -smt2
 ```
-
-这个结果有意标记为 `complete=false`、`relationallyComplete=false`、
-`eligibleForApproximateBootstrapModel=true`。它证明在声明的一 DN、单相关 map entry、单个
-外层循环 witness 和显式 transport/cache approximation 下存在触发
-`allKeys.get(keyId) == null` 的模型；它不是 sound/complete 的全 HDFS 证明，也尚未经过
-自然 replay 验证。
 
 #### Activation-specific concolic 静态复用
 
@@ -126,7 +162,7 @@ GraphChecker pass 稳定在 30.9–31.2 秒，包含 runtime dependency 发布�
 region planner 热路径预编译。`trace+concolic` campaign 和 `ALL` bundle 暂不使用 partial
 catalog，会明确回退完整分析。
 
-本次优化后完整回归为 675 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
+本次优化后完整回归为 693 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
 parallel HDFS concolic batch fixture 也全部通过。
 
 ```bash
@@ -149,6 +185,38 @@ instrumentation report、GraphChecker JAR 的路径/SHA 和 authority，缺失 p
 catalog，并与 pipeline 安装的唯一 root 精确相等；supplemental process dirs 保留 Soot
 classpath 顺序并拒绝重复。可删除的 class output 只允许 checked-in exact path、专用
 replay root 的严格子目录，或 batch/campaign 已校验后显式授权的 exact job path。
+
+#### 三线程自然 replay milestone（2026-07-18）
+
+README 的三线程 RPC 工作流现已完整跑通，不再停在 bootstrap 候选模型。scheduler 在
+`CALL_RETURN` 或 `REGION_LIVE_IN` 由权威静态 DefinitionIndex 唯一解析到 primitive local
+定义点后，会解除早期 `deferredResolution` 状态并保留 discharge authority；零个或多个
+定义点仍保持 unresolved。projector 接受这两种来源的唯一
+`STATIC_DATAFLOW_DEF_SITE`，仍拒绝 deferred action、缺失 source binding 或不一致的
+method/local/site identity。
+
+Z3 选择 `b1=true, b2=true` 后，projector 生成 2 个 producer replay 和 1 个
+observation-only target replay 的三行 `ALL` bundle。custom JDK 自然产生 `a=1, b=0`，经
+RPC/shared field 传播后由 consumer 自然触发 `BugReachedException`；没有 forced branch、
+target model assignment 或 reference-result injection。最终 composition、relationship proof
+和 exhaustive Boolean projection 均通过，得到：
+
+```text
+(and (= sym__port__REGION_1_in_0__int 1)
+     (= sym__port__REGION_2_in_0__int 1))
+```
+
+bootstrap activation plan 也已改为严格 compact JSONL（一行一个 activation），避免 pretty
+JSON 被逐行 consumer 误读为截断输入。当前完整回归为 693 项 JUnit 零失败；从 clean
+work root 执行 `experiments/generic/three-thread-rpc/run.sh all` 会一直完成到
+`target/three-thread-rpc/final/boolean_reach_condition.json`。
+
+generic runner 现在还会把配置中的 `runtime_region_instances` 传给 scheduler；若 runtime
+planner 已给 output capture 绑定 exact call/event occurrence，后续静态 refinement 会保留这份
+更强的 identity。bootstrap projector 精确接受 importer 的旧、新两种 admission authority，
+但所选 root 必须确实 symbolized，且不能属于 observation-only、concrete fallback、VM
+placeholder 或 unforced environment requirement。2026-07-18 从空 work root 的 fresh run
+在 82.97 秒内完成两次 producer path flip、自然异常 replay、final compose 和 Z3 proof。
 
 ## 当前参考工作负载
 
@@ -201,7 +269,8 @@ target/three-thread-rpc/bootstrap/bootstrap_boolean_model.json
 ```
 
 这里的 `BOOTSTRAP` 只表示 SMT 组合和候选输入已得到，不能冒充经过最终自然回放验证的
-用户报告。最终自然回放仍是本文末尾的 TODO。
+用户报告。`run.sh all` 会继续执行无下游注入的自然回放，只有验证真实目标异常后才生成
+`target/three-thread-rpc/final` 下的最终报告。
 
 ## 核心抽象
 
@@ -273,7 +342,9 @@ Recursive composer
 Z3
   -> composed SMT、truth table、候选 reach condition
 自然传播验证
-  -> TODO
+  -> SAT producer 输入绑定回真实定义；target 无注入执行并验证异常
+Final composer + Z3 proof
+  -> VALIDATED_FINAL SMT、关系证明、最终 reach condition
 ```
 
 ### 两种 capture goal
@@ -405,8 +476,9 @@ experiments/generic/three-thread-rpc/run.sh all
 ```
 
 `all` 串联 build、static analysis、trace、discovery、target seed、producer campaigns、
-bootstrap composition、projection、natural replay、final composition。当前实现会在下面的
-自然回放 TODO 完成前停止，不能期待已生成 `final/boolean_reach_condition.json`。
+bootstrap composition、projection、natural replay、bounded campaign、final composition、
+relationship proof 和 reach-condition extraction。成功时会生成
+`final/boolean_reach_condition.json`。
 
 ## 关键实现
 
@@ -422,7 +494,7 @@ bootstrap composition、projection、natural replay、final composition。当前
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
-| `ConcolicNaturalReplayValidator` | 检查最终自然传播；当前三线程集成仍为 TODO |
+| `ConcolicNaturalReplayValidator` | 检查最终自然传播、异常和无 branch override |
 | `ConcolicStaticCatalogReuse` | 校验冻结 catalog/class-tree/schedule 哈希并加载一个 replay region |
 | `ConcolicStaticCatalogManifest` | 发布可复用静态 catalog 的 immutable manifest |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
@@ -430,9 +502,9 @@ bootstrap composition、projection、natural replay、final composition。当前
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、
 配置和阶段脚本位于 `experiments/generic/three-thread-rpc`。
 
-## TODO：最终自然回放验证
+## 三线程最终自然回放验证
 
-当前唯一保留在主流程上的 TODO 是把 bootstrap 候选变成最终的自然传播证据：
+主流程通过以下闭环把 bootstrap 候选变成最终的自然传播证据：
 
 1. 将 Z3 选中的 `b1=true`、`b2=true` 精确绑定到 producer activation 的真实定义动作；
    instrumentation 已找到 definition site 时，必须把 deferred plan 解析并持久化为可 replay
@@ -444,8 +516,8 @@ custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端
    传播这两个值，consumer 自然观察到 `a > b` 和 `BugReachedException`。
 4. strict importer 与 natural replay validator 绑定同一 activation、region instance、branch
    site/occurrence 和异常证据。
-5. 只有上述验证通过后，重新生成 `VALIDATED_FINAL` SMT、relationship proof 和最终
+5. 上述验证通过后，重新生成 `VALIDATED_FINAL` SMT、relationship proof 和最终
    `target/three-thread-rpc/final/boolean_reach_condition.json`。
 
-在此 TODO 完成之前，可以准确声称“SMT 与候选条件已全自动生成并由 Z3 求解”，但不能
-声称最终 reach condition 已通过自然传播验证。
+这五步现已由 `experiments/generic/three-thread-rpc/run.sh all` 自动完成；最终 reach
+condition 已由同一组 producer/target activation 的自然传播与异常证据验证。

@@ -8,11 +8,14 @@ default_graphchecker_jar="${graphchecker_dir}/target/GraphChecker-1.0-SNAPSHOT-j
 config_file=""
 config_dir="${graphchecker_dir}"
 dry_run=${GRAPH_CHECKER_DRY_RUN:-false}
+debug_graphs=${GRAPH_CHECKER_DEBUG:-false}
+debug_max_items=${GRAPH_CHECKER_DEBUG_MAX_ITEMS:-40}
+debug_max_bytes=${GRAPH_CHECKER_DEBUG_MAX_BYTES:-1048576}
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./run_engine.sh [--config FILE] [--dry-run] <command> [args...]
+  ./run_engine.sh [--config FILE] [--dry-run] [--debug] <command> [args...]
   ./run_engine.sh process <legacy-conf>
 
 Config-driven commands:
@@ -25,6 +28,7 @@ Config-driven commands:
   solve       Run generated SMT relationship obligations through Z3
   reach       Project the composed bug path onto finite Boolean root inputs
   workload    Run the configured target workload command
+  debug-stage Print an already-produced analyze/workload/schedule/merge/compose artifact
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
 
@@ -36,6 +40,10 @@ Compatibility commands:
 Extra arguments after a workflow command are forwarded to its Maven or Java
 entry point. Environment variables documented in experiments/generic/README.md
 override values loaded from FILE.
+
+--debug prints deterministic, bounded workflow artifacts to stderr after
+analyze, workload, schedule, merge, and compose. GRAPH_CHECKER_DEBUG=true is
+the environment equivalent; *_MAX_ITEMS and *_MAX_BYTES adjust its caps.
 EOF
 }
 
@@ -53,7 +61,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -94,6 +102,7 @@ reset_config() {
   static_regions=""
   static_graph=""
   runtime_activation_plan=""
+  runtime_region_instances=""
   runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
@@ -183,6 +192,7 @@ apply_environment_overrides() {
   apply_env_override static_regions CAUSYNTH_STATIC_REGIONS
   apply_env_override static_graph CAUSYNTH_STATIC_GRAPH
   apply_env_override runtime_activation_plan CAUSYNTH_ACTIVATION_PLAN
+  apply_env_override runtime_region_instances CAUSYNTH_RUNTIME_REGION_INSTANCES
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
@@ -353,6 +363,7 @@ initialize_config() {
   static_regions=${static_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
   static_graph=${static_graph:-${causynth_output_dir}/static_dataflow_edges.jsonl}
   runtime_activation_plan=${runtime_activation_plan:-${causynth_output_dir}/runtime/concolic_activation_plan.jsonl}
+  runtime_region_instances=${runtime_region_instances:-${causynth_output_dir}/runtime/runtime_region_instances.jsonl}
   runtime_edge_validations=${runtime_edge_validations:-${causynth_output_dir}/runtime/runtime_region_edge_validation.jsonl}
   schedule_output_dir=${schedule_output_dir:-${causynth_output_dir}/schedule}
   raw_concolic_results=${raw_concolic_results:-${schedule_output_dir}/concolic_region_results.jsonl}
@@ -376,6 +387,7 @@ initialize_config() {
   static_regions=$(resolve_path "${static_regions}")
   static_graph=$(resolve_path "${static_graph}")
   runtime_activation_plan=$(resolve_path "${runtime_activation_plan}")
+  runtime_region_instances=$(resolve_path "${runtime_region_instances}")
   runtime_edge_validations=$(resolve_path "${runtime_edge_validations}")
   schedule_output_dir=$(resolve_path "${schedule_output_dir}")
   raw_concolic_results=$(resolve_path "${raw_concolic_results}")
@@ -451,7 +463,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -542,6 +554,9 @@ do_schedule() {
   )
   if [[ -f "${static_graph}" ]]; then
     args+=(--static-graph "${static_graph}")
+  fi
+  if [[ -f "${runtime_region_instances}" ]]; then
+    args+=(--runtime-region-instances "${runtime_region_instances}")
   fi
   if [[ -n "${schedule_summaries}" ]]; then
     require_file "scheduler summaries" "${schedule_summaries}"
@@ -668,6 +683,288 @@ do_workload() {
   fi
 }
 
+debug_log() {
+  printf '[graphchecker-debug] %s\n' "$*" >&2
+}
+
+debug_is_enabled() {
+  case "${debug_graphs}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+debug_prepare_limits() {
+  case "${debug_max_items}" in
+    ''|*[!0-9]*|0) debug_max_items=40 ;;
+  esac
+  case "${debug_max_bytes}" in
+    ''|*[!0-9]*|0) debug_max_bytes=1048576 ;;
+  esac
+  debug_max_items=$((10#${debug_max_items}))
+  debug_max_bytes=$((10#${debug_max_bytes}))
+  if (( debug_max_items > 500 )); then debug_max_items=500; fi
+  if (( debug_max_bytes > 16777216 )); then debug_max_bytes=16777216; fi
+}
+
+debug_file_bytes() {
+  local count
+  count=$(LC_ALL=C wc -c < "$1")
+  printf '%s' "${count//[[:space:]]/}"
+}
+
+# JSON artifacts are projected before printing so runtime ids, trace payloads,
+# and other large incidental fields do not hide the graph structure.
+debug_json_projection() {
+  local label=$1
+  local path=$2
+  local filter=$3
+  local bytes rendered
+  if [[ ! -r "${path}" ]]; then
+    debug_log "artifact=${label} path=${path} status=missing"
+    return 0
+  fi
+  bytes=$(debug_file_bytes "${path}")
+  if (( bytes > debug_max_bytes )); then
+    debug_log "artifact=${label} path=${path} bytes=${bytes} status=skipped reason=byte-cap cap=${debug_max_bytes}"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    debug_log "artifact=${label} path=${path} status=skipped reason=jq-unavailable"
+    return 0
+  fi
+  if ! rendered=$(jq -cS --argjson max "${debug_max_items}" \
+      "${filter}" "${path}" 2>/dev/null); then
+    debug_log "artifact=${label} path=${path} bytes=${bytes} status=invalid-json"
+    return 0
+  fi
+  debug_log "artifact=${label} path=${path} bytes=${bytes} status=shown"
+  [[ -z "${rendered}" ]] || printf '%s\n' "${rendered}" >&2
+}
+
+debug_jsonl_projection() {
+  local label=$1
+  local path=$2
+  local filter=$3
+  local bytes total shown truncated=false rendered
+  if [[ ! -r "${path}" ]]; then
+    debug_log "artifact=${label} path=${path} status=missing"
+    return 0
+  fi
+  bytes=$(debug_file_bytes "${path}")
+  if (( bytes > debug_max_bytes )); then
+    debug_log "artifact=${label} path=${path} bytes=${bytes} status=skipped reason=byte-cap cap=${debug_max_bytes}"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    debug_log "artifact=${label} path=${path} status=skipped reason=jq-unavailable"
+    return 0
+  fi
+  total=$(LC_ALL=C awk 'NF { count++ } END { print count + 0 }' "${path}")
+  shown=${total}
+  if (( shown > debug_max_items )); then
+    shown=${debug_max_items}
+    truncated=true
+  fi
+  if ! rendered=$(jq -cS --argjson max "${debug_max_items}" \
+      "${filter}" "${path}" 2>/dev/null \
+      | LC_ALL=C sort | sed -n "1,${debug_max_items}p"); then
+    debug_log "artifact=${label} path=${path} bytes=${bytes} status=invalid-json"
+    return 0
+  fi
+  debug_log "artifact=${label} path=${path} bytes=${bytes} total=${total} shown=${shown} truncated=${truncated}"
+  [[ -z "${rendered}" ]] || printf '%s\n' "${rendered}" >&2
+}
+
+debug_static_artifacts() {
+  local region_edges="$(dirname "${static_regions}")/symbolic_region_edges.jsonl"
+  debug_jsonl_projection static_graph "${static_graph}" '
+    select(type == "object")
+    | {id, kind, transferKind, fromCell, toCell, method, siteId}'
+  debug_jsonl_projection symbolic_regions "${static_regions}" '
+    select(type == "object")
+    | {regionId, anchorMethod, rootMethod, precision, truncated,
+       inputCount: ((.symbolicInputs // []) | length),
+       inputs: ((.symbolicInputs // []) | sort_by(tojson) | .[:$max]),
+       outputCount: ((.outputs // []) | length),
+       outputs: ((.outputs // []) | sort_by(tojson) | .[:$max])}'
+  debug_jsonl_projection symbolic_region_edges "${region_edges}" '
+    select(type == "object")
+    | {edgeId, kind, relation, candidateRelation, fromRegion, fromPort,
+       toRegion, toPort, requiresOrder, runtimeStatus}'
+}
+
+debug_runtime_graph() {
+  local label=$1
+  local path=$2
+  debug_json_projection "${label}" "${path}" '
+    def stable_cell:
+      if type == "string" then gsub("@methodObject:[0-9-]+"; "@methodObject") else "" end;
+    def stable_node:
+      {process: (.process // ""),
+       threadRole: (.threadRole // .threadName // ""),
+       method: (.method // ""), cell: ((.cell // "") | stable_cell)};
+    (.nodes // []) as $raw_nodes
+    | ($raw_nodes | map({key: (.id | tostring), value: (. | stable_node)})
+       | from_entries) as $by_id
+    | ($raw_nodes | map(stable_node)
+       | sort_by([.process, .threadRole, .method, .cell])) as $nodes
+    | ([((.edges // [])[]) as $edge
+        | {kind: ($edge.kind // ""),
+           staticEdgeId: ($edge.staticEdgeId // ""),
+           staticEdgeIds: ($edge.staticEdgeIds // ""),
+           from: ($by_id[($edge.from | tostring)] // {cell: ($edge.from // "")}),
+           to: ($by_id[($edge.to | tostring)] // {cell: ($edge.to // "")}),
+           method: ($edge.method // ""),
+           occurrences: ($edge.occurrences // 0),
+           mergedInstances: ($edge.mergedInstances // 0)}}]
+       | sort_by([.kind, .staticEdgeId, (.from | tojson), (.to | tojson)])) as $edges
+    | {summary: ((.summary // {})
+         | {test, traceEventCount, fieldEventCount, executionEventCount,
+            staticEdgeCount, instantiatedNodeCount, instantiatedEdgeCount,
+            roleMergedNodeCount, roleMergedEdgeCount, truncated, roleTruncated}),
+       nodes: {total: ($nodes | length),
+               shown: ([($nodes[:$max])[]] | length),
+               truncated: (($nodes | length) > $max), items: $nodes[:$max]},
+       edges: {total: ($edges | length),
+               shown: ([($edges[:$max])[]] | length),
+               truncated: (($edges | length) > $max), items: $edges[:$max]}}'
+}
+
+debug_runtime_artifacts() {
+  local runtime_dir
+  runtime_dir=$(dirname "${runtime_activation_plan}")
+  debug_runtime_graph runtime_instantiated_graph \
+    "${runtime_dir}/unit_test_instantiated_graph.json"
+  debug_runtime_graph runtime_role_merged_graph \
+    "${runtime_dir}/unit_test_role_merged_graph.json"
+}
+
+debug_schedule_artifacts() {
+  debug_json_projection symbolic_merge_plan "${symbolic_merge_plan}" '
+    def relation:
+      {edgeId, kind, transportKind, fromRegion, toRegion, fromEndpoint,
+       toEndpoint, runtimeStatus,
+       runtimeBindingCount: ((.runtimeBindings // []) | length),
+       requiresOrder, requiresObjectIdentity, confirmedReadFromPairCount};
+    (.equalityClasses // []) as $classes
+    | (.equalityRelations // []) as $equalities
+    | (.versionedStateMerges // []) as $states
+    | (.alternativeWriterGroups // []) as $groups
+    | {counts: {equalityClasses: ($classes | length),
+                equalityRelations: ($equalities | length),
+                versionedStateMerges: ($states | length),
+                alternativeWriterGroups: ($groups | length)},
+       equalityClasses: ($classes
+         | map({canonicalSymbol, members: ((.members // []) | sort)})
+         | sort_by([(.members | join("\u0000")), .canonicalSymbol]) | .[:$max]),
+       equalityRelations: ($equalities | map(relation)
+         | sort_by([.fromEndpoint, .toEndpoint, .edgeId]) | .[:$max]),
+       versionedStateMerges: ($states | map(relation)
+         | sort_by([.fromEndpoint, .toEndpoint, .edgeId]) | .[:$max]),
+       alternativeWriterGroups: ($groups | map(. as $group
+         | {groupId: $group.groupId, kind: $group.kind,
+            downstreamEndpoint: $group.downstreamEndpoint,
+            selectionSemantics: $group.selectionSemantics,
+            alternativeCount: (($group.alternatives // []) | length),
+            alternatives: (($group.alternatives // [])
+              | map(. as $alternative
+                | ($alternative | relation)
+                  + {guardSymbol: ($alternative.guardSymbol // "")})
+              | sort_by([.fromEndpoint, .toEndpoint, .edgeId]) | .[:$max])})
+         | sort_by([.downstreamEndpoint, .groupId]) | .[:$max])}'
+}
+
+debug_merge_artifacts() {
+  debug_jsonl_projection guarded_merge "${merged_summaries}" '
+    def capped_object:
+      if type == "object" then to_entries | sort_by(.key) | .[:$max] | from_entries
+      else {} end;
+    select(type == "object")
+    | (.regionRelation // {}) as $relation
+    | {regionId,
+       requestedOutput: ((.requestedOutput // {}) | {portId, cell, kind}),
+       relation: {kind: ($relation.kind // ""),
+         complete: ($relation.complete // false),
+         caseCount: ($relation.caseCount // (($relation.cases // []) | length)),
+         shownCaseCount: ([($relation.cases // [])[:$max][]] | length),
+         cases: (($relation.cases // [])
+           | map(. as $case
+             | {caseId: ($case.caseId // ""), pathKey: ($case.pathKey // ""),
+                symbolScope: ($case.symbolScope // ""),
+                guard: (($case.guard // {})
+                  | {kind: (.kind // ""),
+                     conditionCount: ((.conditions // []) | length),
+                     conditions: ((.conditions // [])[:$max])}),
+                outputExpressionCount: (($case.outputExpressions // {}) | length),
+                outputExpressions: (($case.outputExpressions // {}) | capped_object),
+                heapEffectCount: (($case.heapEffects // []) | length),
+                heapEffects: (($case.heapEffects // [])[:$max]),
+                relationallyComplete: ($case.relationallyComplete // false),
+                normalExit: ($case.normalExit // false),
+                exceptionType: ($case.exceptionType // "")})
+           | sort_by([.caseId, .pathKey]) | .[:$max])}}'
+}
+
+debug_compose_artifacts() {
+  debug_json_projection composition_manifest "${composition_manifest}" '
+    {schemaVersion, kind, complete, status, fatalRegion, fatalActivationId,
+     fatalConditionCount, summaryCount, guardedCaseCount,
+     symbolicEqualityCount, versionedStateMergeCount}'
+  local path=${composed_smt}
+  local bytes lines truncated=false rendered
+  if [[ ! -r "${path}" ]]; then
+    debug_log "artifact=final_smt path=${path} status=missing"
+    return 0
+  fi
+  bytes=$(debug_file_bytes "${path}")
+  lines=$(LC_ALL=C awk 'END { print NR + 0 }' "${path}")
+  if (( bytes > debug_max_bytes || lines > debug_max_items )); then
+    truncated=true
+  fi
+  rendered=$(LC_ALL=C awk -v max_lines="${debug_max_items}" \
+      -v max_bytes="${debug_max_bytes}" '
+    BEGIN { used = 0 }
+    NR > max_lines { exit }
+    {
+      line = $0 "\n"
+      remaining = max_bytes - used
+      if (remaining <= 0) exit
+      if (length(line) > remaining) {
+        printf "%s", substr(line, 1, remaining)
+        exit
+      }
+      printf "%s", line
+      used += length(line)
+    }' "${path}")
+  debug_log "artifact=final_smt path=${path} bytes=${bytes} lines=${lines} truncated=${truncated} lineCap=${debug_max_items} byteCap=${debug_max_bytes}"
+  [[ -z "${rendered}" ]] || printf '%s\n' "${rendered}" >&2
+}
+
+debug_workflow_stage() {
+  local stage=$1
+  debug_is_enabled || return 0
+  if [[ "${dry_run}" == true ]]; then
+    debug_log "stage=${stage} status=skipped reason=dry-run"
+    return 0
+  fi
+  debug_prepare_limits
+  debug_log "stage=${stage} status=begin maxItems=${debug_max_items} maxBytes=${debug_max_bytes}"
+  case "${stage}" in
+    analyze) debug_static_artifacts ;;
+    workload) debug_runtime_artifacts ;;
+    schedule) debug_schedule_artifacts ;;
+    merge) debug_merge_artifacts ;;
+    compose) debug_compose_artifacts ;;
+  esac
+  debug_log "stage=${stage} status=end"
+}
+
+debug_after_stage() {
+  debug_workflow_stage "$1" \
+    || debug_log "stage=$1 status=formatter-error (workflow result preserved)"
+}
+
 # Keep the original process/transform contract intact for the HDFS adapter.
 # New workflows should use `--config FILE analyze` so all paths are normalized.
 legacy_process() {
@@ -710,6 +1007,10 @@ while [[ $# -gt 0 ]]; do
       dry_run=true
       shift
       ;;
+    --debug)
+      debug_graphs=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -730,6 +1031,7 @@ case "${command_name}" in
       initialize_config "${config_file}"
       require_config analyze
       do_analyze "$@"
+      debug_after_stage analyze
     else
       legacy_process "${1:-}"
     fi
@@ -742,17 +1044,28 @@ case "${command_name}" in
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
-      analyze) do_analyze "$@" ;;
-      schedule) do_schedule "$@" ;;
+      analyze) do_analyze "$@"; debug_after_stage analyze ;;
+      schedule) do_schedule "$@"; debug_after_stage schedule ;;
       import) do_import "$@" ;;
-      merge) do_merge "$@" ;;
-      compose) do_compose "$@" ;;
+      merge) do_merge "$@"; debug_after_stage merge ;;
+      compose) do_compose "$@"; debug_after_stage compose ;;
       solve) do_solve "$@" ;;
       reach) do_reach "$@" ;;
-      workload) do_workload "$@" ;;
+      workload) do_workload "$@"; debug_after_stage workload ;;
       config) print_normalized_config ;;
       validate) validate_config ;;
     esac
+    ;;
+  debug-stage)
+    [[ -n "${config_file}" ]] || die "debug-stage requires --config FILE"
+    [[ $# -eq 1 ]] || die "debug-stage requires exactly one stage"
+    case "$1" in
+      analyze|workload|schedule|merge|compose) ;;
+      *) die "unsupported debug stage '$1'" ;;
+    esac
+    initialize_config "${config_file}"
+    debug_graphs=true
+    debug_after_stage "$1"
     ;;
   *)
     die "unknown command '${command_name}' (run './run_engine.sh help')"

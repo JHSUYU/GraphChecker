@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -37,6 +39,13 @@ import java.util.Set;
  * to be approximate.  The resulting manifest therefore always says
  * {@code complete=false} and cannot be reported as a validated final model.</p>
  *
+ * <p>The adapter requires one imported, relationally complete concolic
+ * transformer for each configured semantic region (NameNode, balancer key
+ * updater, DataNode heartbeat, dispatcher, and SASL target).  Their real
+ * guards and output expressions are translated by {@link ConcolicSmtComposer}
+ * and conjoined with the explicit bootstrap contracts; replay files are not
+ * accepted as hash-only supplemental evidence.</p>
+ *
  * <p>Every HDFS method and field selector comes from the policy JSON.  Region
  * ids, port ids, filesystem paths, and commands are discovered from the CLI
  * artifacts and never embedded here.</p>
@@ -46,14 +55,15 @@ public final class Hdfs11741BootstrapComposer {
             .disableHtmlEscaping().serializeNulls().setPrettyPrinting()
             .create();
     private static final List<String> REGION_ROLES = Arrays.asList(
-            "target", "namenode", "datanode", "balancer");
+            "namenode", "keyUpdater", "datanode", "balancer", "target");
     private static final List<String> PORT_ROLES = Arrays.asList(
             "targetMap", "targetEncodedKey", "targetFailure",
             "namenodeMapPre", "namenodeMapPost", "namenodeExpiry",
             "namenodeNow", "datanodeMapPre", "datanodeMapPost",
             "datanodeSnapshot", "datanodeEntryKey",
             "datanodeEntryExpiry", "datanodeNow",
-            "balancerCachedKey", "balancerSaslUsername");
+            "keyUpdaterCurrentKey", "balancerCachedKey",
+            "balancerSaslUsername");
 
     private Hdfs11741BootstrapComposer() {
     }
@@ -76,8 +86,12 @@ public final class Hdfs11741BootstrapComposer {
         require(arguments.runtimeSummary, "runtime summary");
         require(arguments.activationPlan, "activation plan");
         require(arguments.offlineProvenance, "offline provenance");
+        require(arguments.targetQuery, "directed fatal branch query");
+        if (arguments.replaySummaries.isEmpty()) {
+            throw gap("FIVE_REPLAY_SUMMARIES_REQUIRED:0");
+        }
         for (Path replaySummary : arguments.replaySummaries) {
-            require(replaySummary, "optional replay summary");
+            require(replaySummary, "required replay summary");
         }
 
         JsonObject policy = readJson(arguments.policy);
@@ -109,6 +123,19 @@ public final class Hdfs11741BootstrapComposer {
         JsonObject offlineProvenance = readJson(
                 arguments.offlineProvenance);
 
+        TargetQueryEvidence targetQuery = selectTargetQuery(
+                arguments.targetQuery, regions.get("target"),
+                object(policy, "targetGuard"));
+        ReplayEvidence replayEvidence = selectReplaySummaries(
+                arguments.replaySummaries, regions,
+                object(policy, "approximationPolicy"), targetQuery);
+        ConcolicSmtComposer.SummaryFormulaFragment replayFormulas =
+                ConcolicSmtComposer.renderSummaryFormulaFragment(
+                        new ArrayList<>(regions.values()),
+                        replayEvidence.orderedSummaries);
+        validateReplayFormulaFragment(replayFormulas,
+                replayEvidence.orderedSummaries.size());
+
         JsonObject artifacts = inputArtifacts(arguments);
         validateRuntimeArtifacts(policy, runtimeSummary,
                 offlineProvenance, artifacts);
@@ -116,9 +143,10 @@ public final class Hdfs11741BootstrapComposer {
         validateTargetGuard(regions.get("target"),
                 object(policy, "targetGuard"));
         JsonArray approximations = approximationCatalog(policy,
-                runtimeEvidence, regions);
+                runtimeEvidence, regions, replayEvidence);
 
-        String smt = renderSmt(regions, ports, keyBinding, expiryBinding);
+        String smt = renderSmt(regions, ports, keyBinding, expiryBinding,
+                replayEvidence, replayFormulas, targetQuery);
         byte[] smtBytes = smt.getBytes(StandardCharsets.UTF_8);
 
         JsonObject manifest = new JsonObject();
@@ -171,15 +199,28 @@ public final class Hdfs11741BootstrapComposer {
         manifest.add("offlineProvenance",
                 selectedMetadata(offlineProvenance));
         manifest.add("approximations", approximations);
-        JsonArray replayArtifacts = new JsonArray();
-        for (Path replaySummary : arguments.replaySummaries) {
-            replayArtifacts.add(artifact(replaySummary));
-        }
         JsonObject supplemental = new JsonObject();
-        supplemental.addProperty("replaySummariesRequired", false);
+        supplemental.addProperty("replaySummariesRequired", true);
+        supplemental.addProperty("requiredSemanticRegionCount",
+                REGION_ROLES.size());
         supplemental.addProperty("replaySummaryCount",
-                replayArtifacts.size());
-        supplemental.add("replaySummaryArtifacts", replayArtifacts);
+                replayEvidence.orderedSummaries.size());
+        supplemental.add("selectedReplaySummaries",
+                replayEvidence.catalog.deepCopy());
+        supplemental.add("replayFormulaProjection",
+                replayFormulas.catalog.deepCopy());
+        supplemental.add("replaySummaryArtifacts",
+                replayEvidence.artifacts.deepCopy());
+        supplemental.add("directedFatalBranchQuery",
+                targetQuery.catalog.deepCopy());
+        supplemental.addProperty("directedFatalBranchQueryRequired", true);
+        supplemental.addProperty("summaryContractBridgeAuthority",
+                "POLICY_SELECTED_TYPED_PORTS_PLUS_EXACT_COMPOSER_"
+                        + "EMITTED_SYMBOLS_PLUS_CONFIGURED_HDFS_FIELD_"
+                        + "AND_CODEC_ADAPTER_V2");
+        supplemental.addProperty("summaryContractBridgeCount", 12);
+        supplemental.add("summaryContractBridges",
+                summaryContractBridgeCatalog());
         manifest.add("supplementalEvidence", supplemental);
         manifest.add("blockers", new JsonArray());
         manifest.addProperty("assertionCount", countAssertions(smt));
@@ -255,6 +296,12 @@ public final class Hdfs11741BootstrapComposer {
                 "outer loop authority");
         requireStringArray(approximation,
                 "allowedOuterLoopRootMethods");
+        if (bool(approximation,
+                "allowOperationallyAdmittedPartialReplaySummaries",
+                false)) {
+            requireStringArray(approximation,
+                    "allowedPartialReplayRoles");
+        }
     }
 
     private static void requireBindingPolicy(JsonObject policy,
@@ -617,7 +664,8 @@ public final class Hdfs11741BootstrapComposer {
     }
 
     private static JsonArray approximationCatalog(JsonObject policy,
-            RuntimeEvidence runtime, Map<String, JsonObject> regions)
+            RuntimeEvidence runtime, Map<String, JsonObject> regions,
+            ReplayEvidence replay)
             throws IOException {
         JsonObject allowed = object(policy, "approximationPolicy");
         JsonArray result = new JsonArray();
@@ -649,6 +697,14 @@ public final class Hdfs11741BootstrapComposer {
                             + ". The model uses only the explicitly selected "
                             + "ports and evidence slices."));
         }
+        if (!replay.partialRoles.isEmpty()) {
+            result.add(approximation(
+                    "OPERATIONALLY_ADMITTED_PARTIAL_REPLAY_SUMMARY",
+                    "These replay summaries have complete input admission "
+                            + "and an operational requested output slice, "
+                            + "but intentionally retain unresolved relational "
+                            + "heap details: " + replay.partialRoles + "."));
+        }
         if (!runtime.confirmedSasl) {
             if (!bool(allowed, "allowMissingRuntimeEquality", false)) {
                 throw gap("MISSING_RUNTIME_SASL_EQUALITY_NOT_AUTHORIZED");
@@ -669,9 +725,306 @@ public final class Hdfs11741BootstrapComposer {
         return result;
     }
 
+    private static ReplayEvidence selectReplaySummaries(
+            List<Path> paths, Map<String, JsonObject> regions,
+            JsonObject approximationPolicy, TargetQueryEvidence targetQuery)
+            throws IOException {
+        final Map<String, List<ReplayCandidate>> candidates =
+                new LinkedHashMap<>();
+        final Map<String, String> roleByRegion = new LinkedHashMap<>();
+        for (String role : REGION_ROLES) {
+            candidates.put(role, new ArrayList<ReplayCandidate>());
+            roleByRegion.put(string(regions.get(role), "regionId"), role);
+        }
+
+        JsonArray artifacts = new JsonArray();
+        for (final Path path : paths) {
+            final JsonObject sourceArtifact = artifact(path);
+            artifacts.add(sourceArtifact.deepCopy());
+            forEachJsonl(path, new JsonConsumer() {
+                @Override
+                public void accept(JsonObject row) {
+                    String role = roleByRegion.get(string(row, "regionId"));
+                    if (role != null) {
+                        candidates.get(role).add(new ReplayCandidate(
+                                row.deepCopy(), sourceArtifact.deepCopy()));
+                    }
+                }
+            });
+        }
+
+        ReplayEvidence result = new ReplayEvidence(artifacts);
+        for (String role : REGION_ROLES) {
+            List<ReplayCandidate> matches = candidates.get(role);
+            if (matches.size() != 1) {
+                throw gap("REPLAY_SUMMARY_CARDINALITY:" + role + ":"
+                        + matches.size());
+            }
+            ReplayCandidate candidate = matches.get(0);
+            JsonObject summary = "target".equals(role)
+                    ? applyTargetQuery(candidate.summary, targetQuery)
+                    : candidate.summary;
+            boolean guardedMerge = "GUARDED_PATH_MERGE".equals(string(
+                    object(summary, "regionRelation"), "kind"));
+            int guardCount = replayGuardExpressionCount(summary);
+            int outputCount = replayOutputExpressionCount(summary);
+            boolean relationallyComplete = bool(summary,
+                    "relationallyComplete", false);
+            boolean partialReplayAuthorized = !relationallyComplete
+                    && bool(approximationPolicy,
+                    "allowOperationallyAdmittedPartialReplaySummaries",
+                    false)
+                    && arrayContains(array(approximationPolicy,
+                    "allowedPartialReplayRoles"), role)
+                    && bool(summary,
+                    "requestedOutputSliceOperationallyAdmitted", false)
+                    && bool(object(summary,
+                    "inputMaterializationAdmission"), "complete", false);
+            if (string(summary, "summaryId").isEmpty()
+                    || string(summary, "activationId").isEmpty()
+                    || !string(regions.get(role), "rootMethod").equals(
+                    string(summary, "rootMethod"))
+                    || !bool(summary, "valid", false)
+                    || (!relationallyComplete && !partialReplayAuthorized)
+                    || !summary.has("pathCondition")
+                    || !summary.get("pathCondition").isJsonArray()
+                    || !summary.has("outputExpressions")
+                    || !summary.get("outputExpressions").isJsonObject()
+                    || outputCount == 0
+                    || guardedMerge && !bool(object(summary,
+                    "regionRelation"), "complete", false)
+                    || summary.has("protocolModel")) {
+                throw gap("REPLAY_SUMMARY_NOT_IMPORTED_RELATIONAL_"
+                        + "TRANSFORMER:" + role);
+            }
+            JsonObject selected = new JsonObject();
+            selected.addProperty("summaryId", string(summary,
+                    "summaryId"));
+            selected.addProperty("activationId", string(summary,
+                    "activationId"));
+            selected.addProperty("regionId", string(summary, "regionId"));
+            selected.addProperty("rootMethod", string(summary,
+                    "rootMethod"));
+            selected.addProperty("engine", string(summary, "engine"));
+            selected.addProperty("valid", true);
+            selected.addProperty("relationallyComplete",
+                    relationallyComplete);
+            selected.addProperty("partialReplayAdmitted",
+                    partialReplayAuthorized);
+            if (partialReplayAuthorized) {
+                selected.addProperty("partialReplayAuthority",
+                        "CONFIGURED_OPERATIONAL_OUTPUT_SLICE_PLUS_COMPLETE_"
+                                + "INPUT_ADMISSION_V1");
+                result.partialRoles.add(role);
+            }
+            selected.addProperty("guardedPathMerge", guardedMerge);
+            selected.addProperty("directedFatalBranchQueryApplied",
+                    "target".equals(role));
+            selected.addProperty("pathConditionCount", guardCount);
+            selected.addProperty("outputExpressionCount", outputCount);
+            selected.add("pathCondition",
+                    array(summary, "pathCondition").deepCopy());
+            selected.add("outputExpressions",
+                    object(summary, "outputExpressions").deepCopy());
+            if (summary.has("regionRelation")) {
+                selected.add("regionRelation",
+                        summary.get("regionRelation").deepCopy());
+            }
+            selected.add("sourceArtifact", candidate.artifact.deepCopy());
+            result.catalog.add(role, selected);
+            result.orderedSummaries.add(summary);
+        }
+        return result;
+    }
+
+    private static TargetQueryEvidence selectTargetQuery(Path path,
+            JsonObject targetRegion, JsonObject targetGuard)
+            throws IOException {
+        final List<JsonObject> matches = new ArrayList<>();
+        forEachJsonl(path, new JsonConsumer() {
+            @Override
+            public void accept(JsonObject row) {
+                if (string(targetRegion, "regionId").equals(
+                        string(row, "regionId"))
+                        && string(targetGuard, "siteId").equals(
+                        string(row, "siteId"))) {
+                    matches.add(row.deepCopy());
+                }
+            }
+        });
+        if (matches.size() != 1) {
+            throw gap("DIRECTED_TARGET_QUERY_CARDINALITY:"
+                    + matches.size());
+        }
+        JsonObject query = matches.get(0);
+        boolean desired = bool(targetGuard, "requiredOutcome", false);
+        if (string(query, "activationId").isEmpty()
+                || string(query, "regionInstanceId").isEmpty()
+                || !query.has("observedOutcome")
+                || !query.has("desiredOutcome")
+                || bool(query, "observedOutcome", desired) == desired
+                || bool(query, "desiredOutcome", !desired) != desired
+                || !bool(query, "readyForSolver", false)
+                || integer(query, "conditionIndex", -1) < 0
+                || !"KEEP_CONDITIONS_BEFORE_TARGET".equals(string(query,
+                "prefixPolicy"))
+                || !"NEGATE_TARGET_CONDITION".equals(string(query,
+                "targetPolicy"))
+                || !"DROP_OLD_SUFFIX".equals(string(query,
+                "suffixPolicy"))
+                || !query.has("originalTargetCondition")
+                || !query.has("negatedTargetCondition")
+                || array(query, "constraints").size() == 0
+                || !"MAP_LOOKUP_ABSENCE".equals(string(
+                object(query, "semanticModel"), "theory"))
+                || object(object(query, "semanticModel"),
+                "keyExpression").size() == 0) {
+            throw gap("DIRECTED_TARGET_QUERY_NOT_SOLVER_READY");
+        }
+        JsonObject catalog = selected(query, "activationId", "regionId",
+                "regionInstanceId", "siteId", "occurrence",
+                "observedOutcome", "desiredOutcome", "conditionIndex",
+                "prefixPolicy", "targetPolicy", "suffixPolicy",
+                "readyForSolver", "readyForReplay", "semanticModel");
+        catalog.addProperty("targetReplayValidated",
+                bool(query, "targetReplayValidated", false));
+        catalog.addProperty("branchFlipAppliedToSmt", true);
+        catalog.add("sourceArtifact", artifact(path));
+        return new TargetQueryEvidence(query, catalog);
+    }
+
+    private static JsonObject applyTargetQuery(JsonObject source,
+            TargetQueryEvidence evidence) throws IOException {
+        JsonObject query = evidence.query;
+        if (!string(source, "activationId").equals(
+                string(query, "activationId"))
+                || !string(source, "regionId").equals(
+                string(query, "regionId"))) {
+            throw gap("DIRECTED_TARGET_QUERY_SUMMARY_IDENTITY_MISMATCH");
+        }
+        JsonArray original = array(source, "pathCondition");
+        JsonArray constraints = array(query, "constraints");
+        int conditionIndex = integer(query, "conditionIndex", -1);
+        if (conditionIndex >= original.size()
+                || constraints.size() != conditionIndex + 1
+                || !original.get(conditionIndex).equals(
+                query.get("originalTargetCondition"))
+                || !constraints.get(conditionIndex).equals(
+                query.get("negatedTargetCondition"))) {
+            throw gap("DIRECTED_TARGET_QUERY_CONDITION_MISMATCH");
+        }
+        for (int index = 0; index < conditionIndex; index++) {
+            if (!original.get(index).equals(constraints.get(index))) {
+                throw gap("DIRECTED_TARGET_QUERY_PREFIX_MISMATCH:" + index);
+            }
+        }
+        JsonObject result = source.deepCopy();
+        result.add("pathCondition", constraints.deepCopy());
+        result.add("directedTargetQuery", query.deepCopy());
+        result.addProperty("directedFatalBranchQueryApplied", true);
+        result.addProperty("targetReplayValidated",
+                bool(query, "targetReplayValidated", false));
+        return result;
+    }
+
+    private static int replayGuardExpressionCount(JsonObject summary) {
+        JsonObject relation = object(summary, "regionRelation");
+        if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
+            return array(summary, "pathCondition").size();
+        }
+        int result = 0;
+        for (JsonElement element : array(relation, "cases")) {
+            if (element.isJsonObject()) {
+                result += array(object(element.getAsJsonObject(), "guard"),
+                        "conditions").size();
+            }
+        }
+        return result;
+    }
+
+    private static boolean arrayContains(JsonArray values, String expected) {
+        for (JsonElement value : values) {
+            if (value.isJsonPrimitive()
+                    && expected.equals(value.getAsString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int replayOutputExpressionCount(JsonObject summary) {
+        JsonObject relation = object(summary, "regionRelation");
+        if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
+            return object(summary, "outputExpressions").size();
+        }
+        int result = 0;
+        for (JsonElement element : array(relation, "cases")) {
+            if (element.isJsonObject()) {
+                result += object(element.getAsJsonObject(),
+                        "outputExpressions").size();
+            }
+        }
+        return result;
+    }
+
+    private static void validateReplayFormulaFragment(
+            ConcolicSmtComposer.SummaryFormulaFragment fragment,
+            int expectedSummaryCount) throws IOException {
+        JsonObject catalog = fragment.catalog;
+        if (integer(catalog, "summaryCount", -1) != expectedSummaryCount
+                || integer(catalog, "guardExpressionCount", 0) <= 0
+                || integer(catalog, "outputExpressionCount", 0)
+                < expectedSummaryCount
+                || integer(catalog, "assertionCount", 0) <= 0
+                || bool(catalog, "containsSolverCommand", true)
+                || fragment.smtLib.contains("(check-sat)")) {
+            throw gap("REPLAY_FORMULA_FRAGMENT_INCOMPLETE");
+        }
+        for (JsonElement element : array(catalog,
+                "summaryProjections")) {
+            if (!element.isJsonObject()
+                    || integer(element.getAsJsonObject(),
+                    "emittedAssertionCount", 0) <= 0) {
+                throw gap("REPLAY_SUMMARY_EMITTED_NO_SMT_ASSERTION");
+            }
+        }
+    }
+
     private static String renderSmt(Map<String, JsonObject> regions,
             Map<String, JsonObject> ports, JsonObject keyBinding,
-            JsonObject expiryBinding) {
+            JsonObject expiryBinding,
+            ReplayEvidence replayEvidence,
+            ConcolicSmtComposer.SummaryFormulaFragment replayFormulas,
+            TargetQueryEvidence targetQuery) throws IOException {
+        JsonObject namenodeSummary = replaySummary(replayEvidence,
+                regionId(regions, "namenode"));
+        String namenodeKeyRaw = uniqueHeapEffectExpression(
+                namenodeSummary, "MAP_PUT", "keyExpression", "Int");
+        String namenodeKeyTerm = summarySolverSymbol(replayFormulas,
+                regionId(regions, "namenode"), namenodeKeyRaw,
+                "NAMENODE_MAP_PUT_KEY");
+        String targetKeyRaw = string(object(object(targetQuery.query,
+                "semanticModel"), "keyExpression"), "_exp");
+        String targetKeyTerm = summarySolverSymbol(replayFormulas,
+                string(regions.get("target"), "regionId"), targetKeyRaw,
+                "TARGET_LOOKUP_KEY");
+        String targetMapPort = smtPort(ports.get("targetMap"));
+        String targetEncodedKeyPort = smtPort(
+                ports.get("targetEncodedKey"));
+        String targetFailurePort = smtPort(ports.get("targetFailure"));
+        String namenodeExpiryPort = smtPort(ports.get("namenodeExpiry"));
+        String datanodeMapPostPort = smtPort(
+                ports.get("datanodeMapPost"));
+        String datanodeEntryKeyPort = smtPort(
+                ports.get("datanodeEntryKey"));
+        String datanodeEntryExpiryPort = smtPort(
+                ports.get("datanodeEntryExpiry"));
+        String keyUpdaterCurrentKeyPort = smtPort(
+                ports.get("keyUpdaterCurrentKey"));
+        String balancerCachedKeyPort = smtPort(
+                ports.get("balancerCachedKey"));
+        String balancerUsernamePort = smtPort(
+                ports.get("balancerSaslUsername"));
         StringBuilder out = new StringBuilder();
         out.append("; Auto-generated approximate HDFS-11741 bootstrap model\n");
         out.append("; target region: ").append(regionId(regions, "target"))
@@ -685,7 +1038,23 @@ public final class Hdfs11741BootstrapComposer {
                 "bindingId")).append("; expiry binding: ").append(
                 string(expiryBinding, "bindingId")).append('\n');
         out.append("(set-option :produce-models true)\n");
-        out.append("(set-logic AUFLIA)\n");
+        out.append("; Imported concolic guards and output transformers follow.\n");
+        out.append(replayFormulas.smtLib);
+        if (!replayFormulas.smtLib.endsWith("\n")) out.append('\n');
+        out.append("; Explicit one-DN HDFS transport/outer-loop contracts follow.\n");
+        ensureDeclaration(out, targetMapPort, "MapState");
+        ensureDeclaration(out, datanodeMapPostPort, "MapState");
+        ensureDeclaration(out, targetEncodedKeyPort, "Value");
+        ensureDeclaration(out, balancerUsernamePort, "Value");
+        ensureDeclaration(out, targetFailurePort, "Value");
+        ensureDeclaration(out, keyUpdaterCurrentKeyPort, "Value");
+        ensureScalarPort(out, replayFormulas.smtLib, namenodeExpiryPort);
+        ensureScalarPort(out, replayFormulas.smtLib,
+                datanodeEntryKeyPort);
+        ensureScalarPort(out, replayFormulas.smtLib,
+                datanodeEntryExpiryPort);
+        ensureScalarPort(out, replayFormulas.smtLib,
+                balancerCachedKeyPort);
         out.append("(declare-const nn_snapshot_keys (Array Int Bool))\n");
         out.append("(declare-const nn_snapshot_expiry (Array Int Int))\n");
         out.append("(declare-const nn_snapshot_key_id Int)\n");
@@ -712,6 +1081,43 @@ public final class Hdfs11741BootstrapComposer {
         out.append("(declare-const sasl_server_key_id Int)\n");
         out.append("(declare-const lookup_key_id Int)\n");
         out.append("(declare-const exception_reached Bool)\n");
+        out.append("(declare-fun hdfs_block_key_id (Value) Int)\n");
+        out.append("(declare-fun hdfs_username_key_id (Value) Int)\n");
+
+        named(out, "summary_nn_map_put_key_to_hdfs_contract",
+                "(= nn_snapshot_key_id " + namenodeKeyTerm + ")");
+        named(out, "summary_nn_expiry_to_hdfs_contract",
+                "(= nn_snapshot_key_expiry "
+                        + scalarWitness(namenodeExpiryPort) + ")");
+        named(out, "summary_key_updater_output_to_hdfs_contract",
+                "(= (hdfs_block_key_id " + keyUpdaterCurrentKeyPort
+                        + ") nn_snapshot_key_id)");
+        named(out, "summary_dn_key_to_hdfs_contract",
+                "(= dn_received_key_id "
+                        + scalarWitness(datanodeEntryKeyPort) + ")");
+        named(out, "summary_dn_expiry_to_hdfs_contract",
+                "(= dn_received_key_expiry "
+                        + scalarWitness(datanodeEntryExpiryPort) + ")");
+        named(out, "summary_balancer_cache_to_hdfs_contract",
+                "(= balancer_cached_key_id "
+                        + scalarWitness(balancerCachedKeyPort) + ")");
+        named(out, "summary_dispatcher_username_to_target_input",
+                "(= " + balancerUsernamePort + " "
+                        + targetEncodedKeyPort + ")");
+        named(out, "summary_dispatcher_username_codec_bridge",
+                "(= (hdfs_username_key_id " + balancerUsernamePort
+                        + ") balancer_cached_key_id)");
+        named(out, "summary_target_username_codec_bridge",
+                "(= (hdfs_username_key_id " + targetEncodedKeyPort
+                        + ") " + targetKeyTerm + ")");
+        named(out, "summary_target_lookup_key_to_hdfs_contract",
+                "(= lookup_key_id " + targetKeyTerm + ")");
+        // The original replay exited normally.  This port is therefore an
+        // adapter projection of the directed fatal query, not a replay-
+        // emitted exception observation.
+        named(out, "directed_fatal_query_synthetic_output",
+                "(= " + targetFailurePort
+                        + " (VBool exception_reached))");
 
         named(out, "nn_snapshot_contains_symbolic_entry",
                 "(select nn_snapshot_keys nn_snapshot_key_id)");
@@ -740,6 +1146,10 @@ public final class Hdfs11741BootstrapComposer {
         named(out, "datanode_adds_snapshot_expiry",
                 "(= dn_expiry_after_add (store dn_expiry_before_add "
                         + "dn_received_key_id dn_received_key_expiry))");
+        named(out, "summary_dn_post_map_membership_bridge",
+                "(= (select dn_keys_after_add dn_received_key_id) "
+                        + "(map_has " + datanodeMapPostPort
+                        + " (VMapInteger dn_received_key_id)))");
 
         // One iterator entry is bounded, but its key and expiry remain fully
         // symbolic.  This is the inner loop semantics that must not collapse
@@ -772,6 +1182,10 @@ public final class Hdfs11741BootstrapComposer {
         named(out, "target_map_lookup_miss_definition",
                 "(= exception_reached (not (select dn_keys_at_target "
                         + "lookup_key_id)))");
+        named(out, "summary_target_map_membership_bridge",
+                "(= (select dn_keys_at_target lookup_key_id) "
+                        + "(map_has " + targetMapPort
+                        + " (VMapInteger lookup_key_id)))");
         named(out, "reach_invalid_encryption_key_exception",
                 "exception_reached");
         out.append("(check-sat)\n");
@@ -781,6 +1195,130 @@ public final class Hdfs11741BootstrapComposer {
                 + "remove_now balancer_cached_key_id sasl_server_key_id "
                 + "lookup_key_id))\n");
         return out.toString();
+    }
+
+    private static String summarySolverSymbol(
+            ConcolicSmtComposer.SummaryFormulaFragment fragment,
+            String regionId, String rawSymbol, String label)
+            throws IOException {
+        List<String> matches = new ArrayList<>();
+        for (JsonElement projectionElement : array(fragment.catalog,
+                "summaryProjections")) {
+            if (!projectionElement.isJsonObject()) continue;
+            JsonObject projection = projectionElement.getAsJsonObject();
+            if (!regionId.equals(string(projection, "regionId"))) continue;
+            for (JsonElement bindingElement : array(projection,
+                    "emittedSymbolBindings")) {
+                if (!bindingElement.isJsonObject()) continue;
+                JsonObject binding = bindingElement.getAsJsonObject();
+                if (rawSymbol.equals(string(binding, "rawSymbol"))
+                        && "Int".equals(string(binding, "sort"))) {
+                    matches.add(string(binding, "solverSymbol"));
+                }
+            }
+        }
+        if (rawSymbol.isEmpty() || matches.size() != 1
+                || matches.get(0).isEmpty()) {
+            throw gap(label + "_SOLVER_SYMBOL_CARDINALITY:"
+                    + matches.size());
+        }
+        return matches.get(0);
+    }
+
+    private static JsonObject replaySummary(ReplayEvidence evidence,
+            String regionId) throws IOException {
+        List<JsonObject> matches = new ArrayList<>();
+        for (JsonObject summary : evidence.orderedSummaries) {
+            if (regionId.equals(string(summary, "regionId"))) {
+                matches.add(summary);
+            }
+        }
+        if (matches.size() != 1) {
+            throw gap("REPLAY_SUMMARY_REGION_CARDINALITY:" + regionId
+                    + ":" + matches.size());
+        }
+        return matches.get(0);
+    }
+
+    /**
+     * Selects a unique raw symbolic leaf from the real heap transformer.  The
+     * HDFS adapter knows that the snapshot entry is introduced by MAP_PUT,
+     * but deliberately does not know an engine-generated symbol name.
+     */
+    private static String uniqueHeapEffectExpression(JsonObject summary,
+            String effectKind, String expressionField, String solverSort)
+            throws IOException {
+        Set<String> rawSymbols = new LinkedHashSet<>();
+        for (JsonElement element : array(summary, "heapEffects")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject effect = element.getAsJsonObject();
+            if (!effectKind.equals(string(effect, "kind"))) continue;
+            JsonObject expression = object(effect, expressionField);
+            String raw = string(expression, "_exp");
+            if (!raw.isEmpty() && expressionSort(expression).equals(
+                    solverSort)) {
+                rawSymbols.add(raw);
+            }
+        }
+        if (rawSymbols.size() != 1) {
+            throw gap("HEAP_EFFECT_" + effectKind + "_"
+                    + expressionField.toUpperCase() + "_CARDINALITY:"
+                    + rawSymbols.size());
+        }
+        return rawSymbols.iterator().next();
+    }
+
+    private static String expressionSort(JsonObject expression) {
+        String javaType = firstNonBlank(string(expression, "_java_type"),
+                string(expression, "javaType"));
+        if ("I".equals(javaType) || "J".equals(javaType)
+                || "S".equals(javaType) || "B".equals(javaType)
+                || "C".equals(javaType)
+                || "java/lang/Integer".equals(javaType)
+                || "java.lang.Integer".equals(javaType)
+                || "java/lang/Long".equals(javaType)
+                || "java.lang.Long".equals(javaType)) {
+            return "Int";
+        }
+        return "Ref";
+    }
+
+    private static String smtPort(JsonObject port) {
+        return "port__" + smtName(portId(port));
+    }
+
+    private static String smtName(String value) {
+        String normalized = firstNonBlank(value, "anonymous")
+                .replaceAll("[^A-Za-z0-9_]", "_");
+        if (normalized.isEmpty()) normalized = "anonymous";
+        if (Character.isDigit(normalized.charAt(0))) {
+            normalized = "n_" + normalized;
+        }
+        return normalized;
+    }
+
+    private static String scalarWitness(String portTerm) {
+        return "sym__port__" + portTerm.substring("port__".length())
+                + "__int";
+    }
+
+    private static void ensureDeclaration(StringBuilder out, String name,
+                                          String sort) {
+        String declaration = "(declare-const " + name + " " + sort + ")";
+        if (out.indexOf(declaration) < 0) out.append(declaration)
+                .append('\n');
+    }
+
+    private static void ensureScalarPort(StringBuilder out,
+            String replaySmt, String portTerm) {
+        ensureDeclaration(out, portTerm, "Value");
+        String witness = scalarWitness(portTerm);
+        ensureDeclaration(out, witness, "Int");
+        String binding = "(= " + portTerm + " (VInt " + witness + "))";
+        if (!replaySmt.contains(binding)) {
+            named(out, "hdfs_scalar_port_bridge_" + smtName(portTerm),
+                    binding);
+        }
     }
 
     private static void named(StringBuilder out, String name,
@@ -823,6 +1361,43 @@ public final class Hdfs11741BootstrapComposer {
         return result;
     }
 
+    private static JsonArray summaryContractBridgeCatalog() {
+        JsonArray result = new JsonArray();
+        bridge(result, "summary_nn_map_put_key_to_hdfs_contract",
+                "EMITTED_HEAP_EFFECT_SYMBOL");
+        bridge(result, "summary_nn_expiry_to_hdfs_contract",
+                "EMITTED_SCALAR_INPUT_PORT");
+        bridge(result, "summary_key_updater_output_to_hdfs_contract",
+                "EMITTED_OUTPUT_PORT_PLUS_CONFIGURED_HDFS_FIELD_PROJECTION");
+        bridge(result, "summary_dn_key_to_hdfs_contract",
+                "EMITTED_SCALAR_INPUT_PORT");
+        bridge(result, "summary_dn_expiry_to_hdfs_contract",
+                "STATIC_PORT_OUTER_LOOP_APPROXIMATION");
+        bridge(result, "summary_balancer_cache_to_hdfs_contract",
+                "STATIC_PORT_HDFS_ADAPTER");
+        bridge(result, "summary_dispatcher_username_to_target_input",
+                "POLICY_SELECTED_TRANSPORT_ENDPOINT_EQUALITY");
+        bridge(result, "summary_dispatcher_username_codec_bridge",
+                "CONFIGURED_HDFS_CODEC_ADAPTER");
+        bridge(result, "summary_target_username_codec_bridge",
+                "CONFIGURED_HDFS_CODEC_ADAPTER_PLUS_EMITTED_TARGET_KEY");
+        bridge(result, "summary_target_lookup_key_to_hdfs_contract",
+                "EMITTED_TARGET_LOOKUP_KEY_SYMBOL");
+        bridge(result, "summary_dn_post_map_membership_bridge",
+                "EMITTED_HEAP_STATE_OUTPUT_PORT");
+        bridge(result, "summary_target_map_membership_bridge",
+                "EMITTED_TARGET_MAP_INPUT_PORT");
+        return result;
+    }
+
+    private static void bridge(JsonArray catalog, String assertion,
+            String authority) {
+        JsonObject item = new JsonObject();
+        item.addProperty("assertion", assertion);
+        item.addProperty("authority", authority);
+        catalog.add(item);
+    }
+
     private static JsonObject inputArtifacts(Arguments arguments)
             throws IOException {
         JsonObject artifacts = new JsonObject();
@@ -836,6 +1411,13 @@ public final class Hdfs11741BootstrapComposer {
         artifacts.add("activationPlan", artifact(arguments.activationPlan));
         artifacts.add("offlineProvenance",
                 artifact(arguments.offlineProvenance));
+        artifacts.add("directedFatalBranchQuery",
+                artifact(arguments.targetQuery));
+        JsonArray replay = new JsonArray();
+        for (Path path : arguments.replaySummaries) {
+            replay.add(artifact(path));
+        }
+        artifacts.add("replaySummaries", replay);
         return artifacts;
     }
 
@@ -1268,6 +1850,37 @@ public final class Hdfs11741BootstrapComposer {
         }
     }
 
+    private static final class ReplayCandidate {
+        private final JsonObject summary;
+        private final JsonObject artifact;
+
+        private ReplayCandidate(JsonObject summary, JsonObject artifact) {
+            this.summary = summary;
+            this.artifact = artifact;
+        }
+    }
+
+    private static final class ReplayEvidence {
+        private final List<JsonObject> orderedSummaries = new ArrayList<>();
+        private final List<String> partialRoles = new ArrayList<>();
+        private final JsonObject catalog = new JsonObject();
+        private final JsonArray artifacts;
+
+        private ReplayEvidence(JsonArray artifacts) {
+            this.artifacts = artifacts;
+        }
+    }
+
+    private static final class TargetQueryEvidence {
+        private final JsonObject query;
+        private final JsonObject catalog;
+
+        private TargetQueryEvidence(JsonObject query, JsonObject catalog) {
+            this.query = query;
+            this.catalog = catalog;
+        }
+    }
+
     public static final class Result {
         public final String smtLib;
         public final JsonObject manifest;
@@ -1287,6 +1900,7 @@ public final class Hdfs11741BootstrapComposer {
         private Path runtimeSummary;
         private Path activationPlan;
         private Path offlineProvenance;
+        private Path targetQuery;
         private final List<Path> replaySummaries = new ArrayList<>();
         private Path output;
         private Path manifest;
@@ -1320,6 +1934,7 @@ public final class Hdfs11741BootstrapComposer {
             result.activationPlan = required(values, "activation-plan");
             result.offlineProvenance = required(values,
                     "offline-provenance");
+            result.targetQuery = required(values, "target-query");
             for (String value : replayValues) {
                 if (value != null && !value.trim().isEmpty()) {
                     result.replaySummaries.add(Paths.get(value));

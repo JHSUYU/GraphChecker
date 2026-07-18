@@ -84,6 +84,9 @@ public final class RegionSummaryMerger {
         Collections.sort(merged, Comparator.comparing(value ->
                 string(value, "regionId") + "\n"
                         + canonical(value.get("requestedOutput"))));
+        if (merged.isEmpty()) {
+            diagnostics.add(gap("", "NO_VALID_OUTPUT_CLOSURE_RELATIONS"));
+        }
 
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
@@ -92,7 +95,8 @@ public final class RegionSummaryMerger {
         manifest.addProperty("mergedRelationCount", merged.size());
         int caseCount = 0;
         boolean complete = bool(pathManifest, "complete", false)
-                && diagnostics.isEmpty();
+                && diagnostics.isEmpty()
+                && !merged.isEmpty();
         for (JsonObject summary : merged) {
             JsonObject relation = object(summary, "regionRelation");
             caseCount += integer(relation, "caseCount", 0);

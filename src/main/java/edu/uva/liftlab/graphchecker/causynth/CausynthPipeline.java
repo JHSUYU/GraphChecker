@@ -62,6 +62,7 @@ import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -444,6 +445,8 @@ public final class CausynthPipeline {
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
+        taggedMethods.addAll(
+                materializationSelection.boundedOutputCompletionMethods());
         taggedMethods.addAll(replaySelection.methods());
         taggedMethods.addAll(outputCaptureSelection.methods());
         taggedMethods.addAll(backedViewMethods);
@@ -571,7 +574,12 @@ public final class CausynthPipeline {
                                         refs.resumeObservation)));
                     }
                 }
-                insertBeforeOrAppend(body, insertionPoint, entry);
+                // A region root is a method invocation boundary, not an
+                // arbitrary control-flow visit to its first statement.  In
+                // particular, service-loop backedges must keep targeting the
+                // original loop head; redirecting them through this probe
+                // creates one false activation/frame per iteration.
+                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
 
                 for (Unit unit : originalUnits) {
                     if (!(unit instanceof Stmt)) {
@@ -612,6 +620,9 @@ public final class CausynthPipeline {
                 instrumentConcolicReplayMaterializations(replaySelection, refs);
         int outputCaptureHookCount = instrumentConcolicOutputCaptures(
                 outputCaptureSelection, refs);
+        int boundedOutputCompletionHookCount =
+                instrumentConcolicBoundedOutputCompletions(
+                        materializationSelection, refs);
         int backedViewMutationHookCount =
                 instrumentConcolicBackedViewMutations(backedViewMethods, refs);
         int branchCount = instrumentConcolicBranches(branchSelection, refs);
@@ -627,10 +638,66 @@ public final class CausynthPipeline {
                 replayMaterializationCount);
         result.slices.put("concolicOutputCaptureHookCount",
                 outputCaptureHookCount);
+        result.slices.put("concolicBoundedOutputCompletionHookCount",
+                boundedOutputCompletionHookCount);
         result.slices.put("concolicBackedViewMutationHookCount",
                 backedViewMutationHookCount);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
+    }
+
+    private int instrumentConcolicBoundedOutputCompletions(
+            ConcolicMaterializationSelection selection,
+            ConcolicRegionRefs refs) {
+        int count = 0;
+        for (String signature : selection
+                .boundedOutputCompletionMethods()) {
+            try {
+                SootMethod method = Scene.v().getMethod(signature);
+                if (method == null || !method.isConcrete()
+                        || method.isConstructor()) {
+                    continue;
+                }
+                Body body = method.retrieveActiveBody();
+                List<Unit> original = snapshotUnits(body);
+                tagOriginalUnits(original);
+                if (selection.boundedOutputDeferredStartMethods()
+                        .contains(signature)) {
+                    Unit insertionPoint = firstNonIdentity(body);
+                    Unit enter = Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.enterBoundedOutputTransformer,
+                                    StringConstant.v(signature)));
+                    insertBeforeOrAppendNoRedirect(body, insertionPoint,
+                            Collections.singletonList(enter));
+                    count++;
+                }
+                for (Unit unit : original) {
+                    if (!(unit instanceof ReturnStmt)
+                            && !(unit instanceof ReturnVoidStmt)) {
+                        continue;
+                    }
+                    Stmt returned = (Stmt) unit;
+                    List<Unit> completion = new ArrayList<>();
+                    completion.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.pauseObservation)));
+                    completion.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.completeBoundedOutputTransformer,
+                                    StringConstant.v(signature))));
+                    completion.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.resumeObservation)));
+                    insertBeforeSequence(body, returned, completion);
+                    count++;
+                }
+            } catch (RuntimeException exception) {
+                LOG.debug("Skipping bounded output completion hook for {}",
+                        signature, exception);
+            }
+        }
+        return count;
     }
 
     private Set<String> concolicRootMethods(AnalysisResult result) {
@@ -1448,6 +1515,18 @@ public final class CausynthPipeline {
                             StringConstant.v(target.callSiteId),
                             StringConstant.v(target.declaredCallee),
                             receiver)));
+            // The accessor implementation may live in a platform/JDK class
+            // which is deliberately outside Soot's application-class set.
+            // Materialize its exact backing field on the selected receiver
+            // while the exact-call context is active, before the unmodified
+            // getter consumes the field.
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.materializeField,
+                            StringConstant.v(target.implementationMethod),
+                            IntConstant.v(-1), receiver,
+                            StringConstant.v(target.fieldSignature),
+                            StringConstant.v(target.fieldName))));
             insertBeforeSequence(body, selected, before);
 
             Unit normalExit = Jimple.v().newInvokeStmt(
@@ -3119,6 +3198,8 @@ public final class CausynthPipeline {
         private final SootMethodRef prepareBranch;
         private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
+        private final SootMethodRef enterBoundedOutputTransformer;
+        private final SootMethodRef completeBoundedOutputTransformer;
         private final SootMethodRef exitRegionFrame;
         private final SootMethodRef throwRegionFrame;
 
@@ -3148,6 +3229,8 @@ public final class CausynthPipeline {
                                    SootMethodRef prepareBranch,
                                    SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
+                                   SootMethodRef enterBoundedOutputTransformer,
+                                   SootMethodRef completeBoundedOutputTransformer,
                                    SootMethodRef exitRegionFrame,
                                    SootMethodRef throwRegionFrame) {
             this.enterRegionFrame = enterRegionFrame;
@@ -3178,6 +3261,10 @@ public final class CausynthPipeline {
             this.prepareBranch = prepareBranch;
             this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
+            this.enterBoundedOutputTransformer =
+                    enterBoundedOutputTransformer;
+            this.completeBoundedOutputTransformer =
+                    completeBoundedOutputTransformer;
             this.exitRegionFrame = exitRegionFrame;
             this.throwRegionFrame = throwRegionFrame;
         }
@@ -3295,6 +3382,14 @@ public final class CausynthPipeline {
                             Arrays.asList(LongType.v(), LongType.v(), string,
                                     IntType.v(), string,
                                     BooleanType.v()), BooleanType.v(), true),
+                    Scene.v().makeMethodRef(runtime,
+                            "enterBoundedOutputTransformer",
+                            Collections.<Type>singletonList(string),
+                            VoidType.v(), true),
+                    Scene.v().makeMethodRef(runtime,
+                            "completeBoundedOutputTransformer",
+                            Collections.<Type>singletonList(string),
+                            VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "exitRegionFrame",
                             Arrays.asList(string, object, string),
                             VoidType.v(), true),
@@ -3416,12 +3511,30 @@ public final class CausynthPipeline {
                         + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
         private static final String ACCESSOR_CALLSITE_AUTHORITY =
                 "STATIC_UNIQUE_EXACT_DECLARED_FIELD_ACCESSOR_CALLSITE_V1";
+        private static final String ACCESSOR_IMPLEMENTATION_AUTHORITY =
+                "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY";
+        private static final Set<String> EXACT_ACCESS_FIELD_AUTHORITIES =
+                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                        "RUNTIME_FIELD_ACCESS_DECLARATION",
+                        "STATIC_CANONICAL_DECLARED_FIELD",
+                        "STATIC_EXACT_CONTAINER_ELEMENT_FIELD_DECLARATION",
+                        "STATIC_EXACT_CONTAINER_INPUT_FIELD_DECLARATION")));
+        private static final String CONTAINER_INPUT_OBSERVATION_MODE =
+                "CONTAINER_INPUT_OBSERVATION";
+        private static final String MAP_STATE_INPUT_OBSERVATION_MODE =
+                "MAP_STATE_INPUT_OBSERVATION";
+        private static final String FIRST_CONTAINER_OBSERVATION_AUTHORITY =
+                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
 
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
                 new LinkedHashMap<>();
         private final List<FieldTarget> fields = new ArrayList<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
+        private final Set<String> boundedOutputCompletionMethods =
+                new LinkedHashSet<>();
+        private final Set<String> boundedOutputDeferredStartMethods =
+                new LinkedHashSet<>();
         private final List<String> unsupported = new ArrayList<>();
 
         private static ConcolicMaterializationSelection from(
@@ -3454,11 +3567,33 @@ public final class CausynthPipeline {
                     if (!jsonBoolean(row, "replayable", true)) {
                         continue;
                     }
+                    JsonObject outputSlice = jsonObject(row,
+                            "requestedOutputSlice");
+                    String completionMethod = jsonString(outputSlice,
+                            "boundedOutputCompletionMethod");
+                    if (!completionMethod.isEmpty()
+                            && jsonBoolean(outputSlice,
+                            "boundedOutputCompletionNormalReturnOnly", false)
+                            && "UNIQUE_OUTERMOST_REQUESTED_STATE_"
+                            .concat("TRANSFORMER_IN_FROZEN_CALL_GRAPH_V1")
+                            .equals(jsonString(outputSlice,
+                                    "boundedOutputCompletionAuthority"))) {
+                        result.boundedOutputCompletionMethods.add(
+                                completionMethod);
+                        if (jsonBoolean(outputSlice,
+                                "boundedOutputDeferredEngineStart", false)
+                                && "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_"
+                                .concat("OUTERMOST_TRANSFORMER_ENTRY_V1")
+                                .equals(jsonString(outputSlice,
+                                        "boundedOutputDeferredEngineStartAuthority"))) {
+                            result.boundedOutputDeferredStartMethods.add(
+                                    completionMethod);
+                        }
+                    }
                     JsonElement materializations = row.get("materializations");
                     JsonElement legacy = row.get("symbolize");
                     JsonElement actions = materializations != null
                             && materializations.isJsonArray()
-                            && materializations.getAsJsonArray().size() > 0
                             ? materializations : legacy;
                     if (actions == null || !actions.isJsonArray()) {
                         continue;
@@ -3475,6 +3610,16 @@ public final class CausynthPipeline {
                         + result.unsupported);
             }
             return result;
+        }
+
+        private Set<String> boundedOutputCompletionMethods() {
+            return Collections.unmodifiableSet(
+                    boundedOutputCompletionMethods);
+        }
+
+        private Set<String> boundedOutputDeferredStartMethods() {
+            return Collections.unmodifiableSet(
+                    boundedOutputDeferredStartMethods);
         }
 
         private void add(JsonObject action) {
@@ -3516,6 +3661,62 @@ public final class CausynthPipeline {
                 return;
             }
             String location = jsonString(action, "location");
+            if (MAP_STATE_INPUT_OBSERVATION_MODE.equals(mode)) {
+                if (!jsonBoolean(action, "mapStateObservationOnly", false)
+                        || jsonBoolean(action, "modelControllable", true)
+                        || !FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
+                        jsonString(action,
+                                "containerObservationAuthority"))
+                        || !declaresMapValue(action)
+                        || !jsonString(action, "cell").equals(jsonString(
+                        action, "mapStateInputCell"))
+                        || !jsonString(action, "cell").equals(jsonString(
+                        action, "mapStateRequestedOutputCell"))) {
+                    unsupported.add("MAP_STATE_INPUT_OBSERVATION_REQUIRES_"
+                            + "EXACT_BOUNDED_MAP_AUTHORITY:"
+                            + jsonString(action, "symbol"));
+                    return;
+                }
+                String[] target = resolveConcolicFieldTarget(action);
+                if (target[0].isEmpty() || target[1].isEmpty()) {
+                    unsupported.add("MAP_STATE_INPUT_OBSERVATION_REQUIRES_"
+                            + "EXACT_DECLARED_FIELD:"
+                            + jsonString(action, "symbol"));
+                    return;
+                }
+                // Keep the ordinary getfield split.  Runtime consumes the
+                // exact field value as an identity/snapshot observation and
+                // deliberately does not invoke VM reference symbolization.
+                fields.add(new FieldTarget(target[0], target[1]));
+                return;
+            }
+            if (CONTAINER_INPUT_OBSERVATION_MODE.equals(mode)) {
+                if (!jsonBoolean(action, "arrayFieldObservationOnly", false)
+                        || !FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
+                        jsonString(action,
+                                "containerObservationAuthority"))
+                        || !declaresArrayValue(action)) {
+                    unsupported.add("CONTAINER_INPUT_OBSERVATION_REQUIRES_"
+                            + "EXPLICIT_ARRAY_AUTHORITY:"
+                            + jsonString(action, "symbol"));
+                    return;
+                }
+                String[] target = resolveConcolicFieldTarget(action);
+                if (target[0].isEmpty() || target[1].isEmpty()) {
+                    unsupported.add("CONTAINER_INPUT_OBSERVATION_REQUIRES_"
+                            + "EXACT_DECLARED_FIELD:"
+                            + jsonString(action, "symbol"));
+                    return;
+                }
+                // Observation-only arrays deliberately use the declaration
+                // as a field family.  Every concrete read is joined to its
+                // actual post-getfield value by the existing split hook; the
+                // runtime's explicit first-instance authority selects the
+                // bounded container and treats later reads as aliases or
+                // ignored outer-loop instances.
+                fields.add(new FieldTarget(target[0], target[1]));
+                return;
+            }
             if (declaresArrayValue(action)) {
                 List<String> fieldPath = exactArrayFieldPath(action);
                 boolean fieldBacked = !fieldPath.isEmpty()
@@ -3552,29 +3753,63 @@ public final class CausynthPipeline {
             String callee = jsonString(action, "accessorDeclaredCallee");
             String authority = jsonString(action,
                     "accessorCallSiteAuthority");
+            String implementation = jsonString(action,
+                    "accessorImplementationMethod");
+            String implementationAuthority = jsonString(action,
+                    "accessorImplementationAuthority");
             boolean constrained = !caller.isEmpty() || !site.isEmpty()
                     || unitIndex >= 0 || !callee.isEmpty()
-                    || !authority.isEmpty();
+                    || !authority.isEmpty() || !implementation.isEmpty()
+                    || !implementationAuthority.isEmpty();
             if (!constrained) return;
             if (caller.isEmpty() || unitIndex < 0 || callee.isEmpty()
                     || !site.equals(caller + "#u" + unitIndex)
-                    || !ACCESSOR_CALLSITE_AUTHORITY.equals(authority)) {
+                    || !ACCESSOR_CALLSITE_AUTHORITY.equals(authority)
+                    || implementation.isEmpty()
+                    || !ACCESSOR_IMPLEMENTATION_AUTHORITY.equals(
+                    implementationAuthority)) {
                 unsupported.add("ACCESSOR_CALL_CONTEXT_REQUIRES_EXACT_"
                         + "CALLSITE_METADATA:" + jsonString(action,
                         "symbol"));
                 return;
             }
-            AccessorCallTarget target = new AccessorCallTarget(caller,
-                    unitIndex, site, callee);
-            AccessorCallTarget previous = accessorCallsBySite.get(
-                    target.siteIdentity());
-            if (previous != null
-                    && !previous.declaredCallee.equals(callee)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_AMBIGUOUS_DECLARED_"
-                        + "CALLEE:" + site);
+
+            String fieldSignature = jsonString(action,
+                    "accessFieldSignature");
+            String fieldOwner = jsonString(action, "accessOwnerClass");
+            String fieldName = jsonString(action, "accessField");
+            String fieldType = jsonString(action, "accessFieldType");
+            String fieldAuthority = jsonString(action,
+                    "accessFieldAuthority");
+            Matcher declaredField = FIELD.matcher(fieldSignature);
+            if (!declaredField.matches()
+                    || isMethodMember(declaredField.group(3))
+                    || fieldOwner.isEmpty()
+                    || !fieldOwner.equals(declaredField.group(1))
+                    || fieldName.isEmpty()
+                    || !fieldName.equals(declaredField.group(3))
+                    || !fieldType.isEmpty()
+                    && !fieldType.equals(declaredField.group(2))
+                    || !EXACT_ACCESS_FIELD_AUTHORITIES.contains(
+                    fieldAuthority)) {
+                unsupported.add("ACCESSOR_CALL_CONTEXT_REQUIRES_EXACT_"
+                        + "DECLARED_FIELD_METADATA:" + jsonString(action,
+                        "symbol"));
                 return;
             }
-            accessorCallsBySite.put(target.siteIdentity(), target);
+            AccessorCallTarget target = new AccessorCallTarget(caller,
+                    unitIndex, site, callee, implementation, fieldSignature,
+                    fieldOwner, fieldName, fieldAuthority);
+            AccessorCallTarget previous = accessorCallsBySite.get(
+                    target.siteIdentity());
+            if (previous != null && !previous.sameMaterialization(target)) {
+                unsupported.add("ACCESSOR_CALL_CONTEXT_AMBIGUOUS_EXACT_"
+                        + "MATERIALIZATION_METADATA:" + site);
+                return;
+            }
+            if (previous == null) {
+                accessorCallsBySite.put(target.siteIdentity(), target);
+            }
         }
 
         private void addExactArrayLeafTarget(JsonObject action) {
@@ -3617,6 +3852,50 @@ public final class CausynthPipeline {
                 }
             }
             return false;
+        }
+
+        private static boolean declaresMapValue(JsonObject action) {
+            for (String type : Arrays.asList(
+                    jsonString(action, "javaType"),
+                    jsonString(action, "inputJavaType"),
+                    jsonString(action, "accessFieldType"))) {
+                if (looksLikeMapType(type)) {
+                    return true;
+                }
+            }
+            for (String field : Arrays.asList(
+                    jsonString(action, "leafFieldSignature"),
+                    jsonString(action, "accessFieldSignature"),
+                    jsonString(action, "field"),
+                    jsonString(action, "cell"))) {
+                Matcher matcher = FIELD.matcher(field);
+                if (matcher.matches() && looksLikeMapType(matcher.group(2))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static boolean looksLikeMapType(String type) {
+            String candidate = stringValue(firstNonBlank(type)).trim();
+            if (candidate.startsWith("L") && candidate.endsWith(";")) {
+                candidate = candidate.substring(1, candidate.length() - 1)
+                        .replace('/', '.');
+            }
+            if (candidate.isEmpty() || candidate.startsWith("[")
+                    || candidate.endsWith("[]")) {
+                return false;
+            }
+            try {
+                ClassLoader loader = Thread.currentThread()
+                        .getContextClassLoader();
+                Class<?> declared = Class.forName(candidate, false,
+                        loader == null ? CausynthPipeline.class
+                                .getClassLoader() : loader);
+                return Map.class.isAssignableFrom(declared);
+            } catch (Throwable ignored) {
+                return "java.util.Map".equals(candidate);
+            }
         }
 
         private static FieldTarget exactArrayLeafTarget(JsonObject action) {
@@ -4078,18 +4357,43 @@ public final class CausynthPipeline {
         private final int callUnitIndex;
         private final String callSiteId;
         private final String declaredCallee;
+        private final String implementationMethod;
+        private final String fieldSignature;
+        private final String fieldOwner;
+        private final String fieldName;
+        private final String fieldAuthority;
 
         private AccessorCallTarget(String callerMethod, int callUnitIndex,
                                    String callSiteId,
-                                   String declaredCallee) {
+                                   String declaredCallee,
+                                   String implementationMethod,
+                                   String fieldSignature,
+                                   String fieldOwner, String fieldName,
+                                   String fieldAuthority) {
             this.callerMethod = callerMethod;
             this.callUnitIndex = callUnitIndex;
             this.callSiteId = callSiteId;
             this.declaredCallee = declaredCallee;
+            this.implementationMethod = implementationMethod;
+            this.fieldSignature = fieldSignature;
+            this.fieldOwner = fieldOwner;
+            this.fieldName = fieldName;
+            this.fieldAuthority = fieldAuthority;
         }
 
         private String siteIdentity() {
             return callerMethod + "#u" + callUnitIndex;
+        }
+
+        private boolean sameMaterialization(AccessorCallTarget other) {
+            return other != null
+                    && declaredCallee.equals(other.declaredCallee)
+                    && implementationMethod.equals(
+                    other.implementationMethod)
+                    && fieldSignature.equals(other.fieldSignature)
+                    && fieldOwner.equals(other.fieldOwner)
+                    && fieldName.equals(other.fieldName)
+                    && fieldAuthority.equals(other.fieldAuthority);
         }
     }
 
@@ -4450,7 +4754,6 @@ public final class CausynthPipeline {
         private final List<StaticPortMapping> staticPortMappings = new ArrayList<>();
         private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
         private final Set<String> selectedMethods = new LinkedHashSet<>();
-        private final Set<String> emittedEdges = new LinkedHashSet<>();
         private final Map<String, Map<String, Object>> emittedEdgeRows =
                 new LinkedHashMap<>();
         private final Set<String> emittedRpcMappings = new LinkedHashSet<>();
@@ -10488,7 +10791,7 @@ public final class CausynthPipeline {
             String key = edgeKey(kind, fromText, toText, method);
             boolean changed = false;
             Map<String, Object> edge = emittedEdgeRows.get(key);
-            if (emittedEdges.add(key)) {
+            if (edge == null) {
                 String edgeId = "DF." + edgeCounter++;
                 boolean ownMappingOnly = isStaticPortMappingKind(kind);
                 boolean hasProjectionBase = projectionBaseEdge != null;
@@ -12181,12 +12484,18 @@ public final class CausynthPipeline {
 
         private void writeJsonl(String fileName, List<Map<String, Object>> values)
                 throws IOException {
-            StringBuilder builder = new StringBuilder();
-            for (Object value : values) {
-                builder.append(Json.write(value)).append('\n');
+            Path output = target.outputDir.resolve(fileName);
+            try (BufferedWriter writer = Files.newBufferedWriter(output,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE)) {
+                for (Object value : values) {
+                    writer.write(Json.write(value));
+                    // Keep artifact hashes stable across host platforms.
+                    writer.write('\n');
+                }
             }
-            Files.write(target.outputDir.resolve(fileName),
-                    builder.toString().getBytes(StandardCharsets.UTF_8));
             fileCount++;
         }
     }

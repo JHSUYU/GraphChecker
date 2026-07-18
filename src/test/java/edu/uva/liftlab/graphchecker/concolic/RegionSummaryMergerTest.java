@@ -56,6 +56,24 @@ public class RegionSummaryMergerTest {
     }
 
     @Test
+    public void noValidOutputClosureCannotReportACompleteMerge() {
+        JsonObject invalid = summary("INVALID", ">");
+        invalid.addProperty("valid", false);
+
+        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
+                Arrays.asList(invalid), closedManifest());
+
+        assertTrue(result.summaries.isEmpty());
+        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertEquals("REGION_RELATIONS_WITH_EXPLICIT_GAPS",
+                result.manifest.get("status").getAsString());
+        assertEquals(1, result.manifest.get("diagnosticCount").getAsInt());
+        assertEquals("NO_VALID_OUTPUT_CLOSURE_RELATIONS",
+                result.manifest.getAsJsonArray("diagnostics").get(0)
+                        .getAsJsonObject().get("reason").getAsString());
+    }
+
+    @Test
     public void alphaEquivalentJvmLocalNamesMergeAsOnePathCase() {
         JsonObject first = summary("A", ">");
         JsonObject second = summary("B", ">");

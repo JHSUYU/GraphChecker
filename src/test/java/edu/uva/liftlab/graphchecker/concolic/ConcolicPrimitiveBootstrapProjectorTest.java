@@ -147,6 +147,99 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     }
 
     @Test
+    public void resolvedCallReturnDefinitionCanJoinSelectedCase()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject action = activation.getAsJsonArray("materializations")
+                .get(0).getAsJsonObject();
+        makeCallReturn(action);
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        assertTrue(result.manifest.toString(), result.manifest.get(
+                "complete").getAsBoolean());
+    }
+
+    @Test
+    public void callReturnWithoutSourceBindingModeCannotJoinSelectedCase()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject action = activation.getAsJsonArray("materializations")
+                .get(0).getAsJsonObject();
+        makeCallReturn(action);
+        action.remove("sourceBindingMode");
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        expectFailure(fixture.arguments(),
+                "LOCAL_DEFINITION_ACTION_IDENTITY_INCOMPLETE");
+    }
+
+    @Test
+    public void deferredCallReturnCannotJoinSelectedCase()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject action = activation.getAsJsonArray("materializations")
+                .get(0).getAsJsonObject();
+        makeCallReturn(action);
+        action.addProperty("deferredResolution", true);
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        expectFailure(fixture.arguments(),
+                "ROOT_INPUT_HAS_NO_REAL_MATERIALIZATION");
+    }
+
+    @Test
+    public void mislabeledLocalCellCannotJoinAsCallReturnDefinition()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject action = activation.getAsJsonArray("materializations")
+                .get(0).getAsJsonObject();
+        makeCallReturn(action);
+        action.addProperty("cell", "<fixture.REGION.A: boolean input()>"
+                + "::$z0");
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        expectFailure(fixture.arguments(),
+                "LOCAL_DEFINITION_ACTION_IDENTITY_INCOMPLETE");
+    }
+
+    @Test
+    public void mainWritesOneCompactJsonObjectPerActivationLine()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+
+        ConcolicPrimitiveBootstrapProjector.main(
+                fixture.commandLine(Paths.get("z3")));
+
+        List<String> lines = Files.readAllLines(fixture.output,
+                StandardCharsets.UTF_8);
+        assertEquals(3, lines.size());
+        for (String line : lines) {
+            assertTrue(JsonParser.parseString(line).isJsonObject());
+        }
+    }
+
+    @Test
     public void summaryAdmissionMustOwnSelectedMaterialization()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -155,6 +248,33 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 "SUMMARY.A.1");
         summary.getAsJsonObject("inputMaterializationAdmission")
                 .add("observedSymbolizedInputs", new JsonArray());
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        expectFailure(fixture.arguments(),
+                "SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT");
+
+        fixture = fixture();
+        summary = jsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1");
+        JsonObject requirement = new JsonObject();
+        requirement.addProperty("inputPort", "REGION.A.in.0");
+        JsonArray requirements = new JsonArray();
+        requirements.add(requirement);
+        summary.getAsJsonObject("inputMaterializationAdmission")
+                .add("unforcedEnvironmentValidationRequirements",
+                        requirements);
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        expectFailure(fixture.arguments(),
+                "SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT");
+
+        fixture = fixture();
+        summary = jsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1");
+        JsonArray fallbacks = new JsonArray();
+        fallbacks.add("REGION.A.in.0");
+        summary.getAsJsonObject("inputMaterializationAdmission")
+                .add("admittedConcreteFallbackInputs", fallbacks);
         replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
                 summary);
 
@@ -516,10 +636,20 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         admission.add("requiredSliceInputs", one.deepCopy());
         admission.add("observedSymbolizedInputs", one.deepCopy());
         admission.add("pathInactiveSliceInputs", new JsonArray());
+        admission.add("admittedObservedInputs", new JsonArray());
+        admission.addProperty("admittedObservedInputAuthority",
+                "SCHEDULED_OBSERVATION_ONLY_INPUT_PLUS_UNIQUE_COMPLETE_"
+                        + "FIRST_CONTAINER_RUNTIME_EVIDENCE_V1");
+        admission.add("admittedConcreteFallbackInputs", new JsonArray());
+        admission.add("admittedVmIntrinsicPlaceholderInputs",
+                new JsonArray());
+        admission.add("unforcedEnvironmentValidationRequirements",
+                new JsonArray());
         admission.add("failures", new JsonArray());
         admission.addProperty("authority",
                 "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
-                        + "TRANSFORMER_RUNTIME_PATH_PROOFS");
+                        + "TRANSFORMER_RUNTIME_PATH_PROOFS_AND_EXPLICIT_"
+                        + "CONCRETE_FALLBACKS");
         result.add("inputMaterializationAdmission", admission);
         return result;
     }
@@ -591,6 +721,15 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         return result;
     }
 
+    private static void makeCallReturn(JsonObject action) {
+        action.addProperty("cell",
+                "<fixture.Source: boolean read()>.return");
+        action.addProperty("sourceKind", "OPAQUE_CALL");
+        action.addProperty("projection", "return");
+        action.addProperty("location", "CALL_RETURN");
+        action.addProperty("sourceBindingMode", "CALL_RETURN_DEFINITION");
+    }
+
     private static JsonObject artifact(Path path) throws Exception {
         JsonObject result = new JsonObject();
         result.addProperty("path", path.toString());
@@ -652,19 +791,23 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         private ConcolicPrimitiveBootstrapProjector.Arguments arguments(
                 Path solver) {
             return ConcolicPrimitiveBootstrapProjector.Arguments.parse(
-                    new String[]{
-                            "--smt", smt.toString(),
-                            "--composition-manifest", composition.toString(),
-                            "--reach-report", reachPath.toString(),
-                            "--summaries", summaries.toString(),
-                            "--activations", activations.toString(),
-                            "--target-activations", target.toString(),
-                            "--fatal-query", fatal.toString(),
-                            "--output", output.toString(),
-                            "--manifest", projection.toString(),
-                            "--z3", solver.toString(),
-                            "--timeout-ms", "10000"
-                    });
+                    commandLine(solver));
+        }
+
+        private String[] commandLine(Path solver) {
+            return new String[]{
+                    "--smt", smt.toString(),
+                    "--composition-manifest", composition.toString(),
+                    "--reach-report", reachPath.toString(),
+                    "--summaries", summaries.toString(),
+                    "--activations", activations.toString(),
+                    "--target-activations", target.toString(),
+                    "--fatal-query", fatal.toString(),
+                    "--output", output.toString(),
+                    "--manifest", projection.toString(),
+                    "--z3", solver.toString(),
+                    "--timeout-ms", "10000"
+            };
         }
     }
 }

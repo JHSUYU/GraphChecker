@@ -81,12 +81,18 @@ public class RuntimeRegionPlannerTest {
             List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
                     rootContextMethod(1, root, 1, "producer-a",
                             "example.ProducerAThread", 21L),
-                    rootContextMethod(2, root, 2, "consumer",
+                    rootContextMethod(2, root, 2, "pool-38-thread-1",
                             "example.ConsumerThread", 99L),
                     rootContextMethod(3, root, 3, "producer-b",
                             "example.ProducerBThread", 22L),
-                    rootContextMethod(4, root, 4, "consumer",
-                            "example.ConsumerThread", 1234L));
+                    rootContextMethod(4, root, 4, "pool-41-thread-1",
+                            "example.ConsumerThread", 1234L),
+                    rootContextMethod(5, root, 5,
+                            "null heartbeating to localhost/127.0.0.1:36121",
+                            "example.HeartbeatThread", 31L),
+                    rootContextMethod(6, root, 6,
+                            "null heartbeating to localhost/127.0.0.1:45222",
+                            "example.HeartbeatThread", 32L));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), methods, Collections.emptyList(),
@@ -94,23 +100,40 @@ public class RuntimeRegionPlannerTest {
 
             Map<String, Object> firstConsumer = null;
             Map<String, Object> secondConsumer = null;
+            Map<String, Object> firstHeartbeat = null;
+            Map<String, Object> secondHeartbeat = null;
             for (Map<String, Object> activation : result.activations) {
                 if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
                     firstConsumer = activation;
                 } else if (Long.valueOf(4L).equals(
                         activation.get("rootCallId"))) {
                     secondConsumer = activation;
+                } else if (Long.valueOf(5L).equals(
+                        activation.get("rootCallId"))) {
+                    firstHeartbeat = activation;
+                } else if (Long.valueOf(6L).equals(
+                        activation.get("rootCallId"))) {
+                    secondHeartbeat = activation;
                 }
             }
             assertTrue(firstConsumer != null);
             assertTrue(secondConsumer != null);
+            assertTrue(firstHeartbeat != null);
+            assertTrue(secondHeartbeat != null);
             assertEquals("example.ConsumerThread",
                     firstConsumer.get("receiverRuntimeClass"));
-            assertEquals("consumer", firstConsumer.get("threadName"));
+            assertEquals("pool-*-thread-1",
+                    firstConsumer.get("threadName"));
             assertEquals(1,
                     firstConsumer.get("invocationOrdinalWithinContext"));
             assertEquals(2,
                     secondConsumer.get("invocationOrdinalWithinContext"));
+            assertEquals("null heartbeating to localhost/127.0.0.1:*",
+                    firstHeartbeat.get("threadName"));
+            assertEquals(1,
+                    firstHeartbeat.get("invocationOrdinalWithinContext"));
+            assertEquals(2,
+                    secondHeartbeat.get("invocationOrdinalWithinContext"));
             assertEquals(RuntimeRegionPlanner
                             .ROOT_CONTEXT_SELECTION_AUTHORITY,
                     firstConsumer.get("rootContextSelectionAuthority"));
@@ -1682,12 +1705,130 @@ public class RuntimeRegionPlannerTest {
                     "\"fromOutputPort\":\"REGION.W.out.0\""));
             assertTrue(result.activationsJsonl().contains(
                     "\"toInputPort\":\"REGION.R.in.0\""));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> edgeBinding =
+                    ((List<Map<String, Object>>) upstream.get(
+                            "edgeBindings")).get(0);
+            assertEquals(field, edgeBinding.get("rawToInputCell"));
+            assertEquals(Boolean.TRUE, edgeBinding.get(
+                    "canonicalInputResolutionUsed"));
+            assertEquals("UNIQUE_EXACT_TARGET_REGION_SYMBOLIC_INPUT_CELL_V1",
+                    edgeBinding.get("canonicalInputResolutionAuthority"));
             assertTrue(result.activationsJsonl().contains(
                     "\"writerEventSeq\":2"));
             assertEquals(1, result.summary.get("upstreamActivationCount"));
         } finally {
             folder.delete();
         }
+    }
+
+    @Test
+    public void canonicalConsumerInputRequiresOneExactCellMatch() {
+        String cell = "<example.State: java.util.Map entries>";
+        String unique = "{\"regionId\":\"REGION.R\","
+                + "\"symbolicInputs\":[{\"portId\":\"REGION.R.in.0\","
+                + "\"cell\":\"" + cell + "\"}],\"outputs\":[]}";
+        String ambiguous = "{\"regionId\":\"REGION.R\","
+                + "\"symbolicInputs\":["
+                + "{\"portId\":\"REGION.R.in.0\",\"cell\":\""
+                + cell + "\"},"
+                + "{\"portId\":\"REGION.R.in.1\",\"cell\":\""
+                + cell + "\"}],\"outputs\":[]}";
+
+        assertEquals("REGION.R.in.0", RuntimeRegionPlanner
+                .uniqueExactInputPortForTests(unique, cell));
+        assertEquals("", RuntimeRegionPlanner
+                .uniqueExactInputPortForTests(unique,
+                        "<example.State: int other>"));
+        assertEquals("", RuntimeRegionPlanner
+                .uniqueExactInputPortForTests(ambiguous, cell));
+    }
+
+    @Test
+    public void projectedConsumerInputRequiresExactStaticProofAndUniqueness() {
+        String base = "<example.Manager: example.Key currentKey>";
+        String projected = base + "#field:keyId";
+        String local = "<example.Manager: int use()>::r1";
+        String region = "{\"regionId\":\"REGION.R\","
+                + "\"symbolicInputs\":[{\"portId\":\"REGION.R.in.0\","
+                + "\"cell\":\"" + projected + "\"}],\"outputs\":[]}";
+        String baseEdge = "{\"id\":\"DF.BASE\","
+                + "\"kind\":\"field_read\",\"transferKind\":\"HEAP_READ\","
+                + "\"relation\":\"value_flow\","
+                + "\"direction\":\"backward_provenance\","
+                + "\"mappingOnly\":false,"
+                + "\"semanticAssertionsAllowed\":true,"
+                + "\"eligibleForAutomaticDerivation\":true,"
+                + "\"eligibleForAutomaticSmt\":true,"
+                + "\"fromCell\":\"" + base + "\","
+                + "\"toCell\":\"" + local + "\"}";
+        String projectionEdge = "{\"id\":\"DF.PROJECTION\","
+                + "\"kind\":\"projected_field_read\","
+                + "\"transferKind\":\"HEAP_READ\","
+                + "\"relation\":\"value_flow\","
+                + "\"direction\":\"backward_provenance\","
+                + "\"mappingOnly\":false,\"fieldSensitive\":true,"
+                + "\"semanticAssertionsAllowed\":true,"
+                + "\"eligibleForAutomaticDerivation\":true,"
+                + "\"eligibleForAutomaticSmt\":true,"
+                + "\"fromCell\":\"" + projected + "\","
+                + "\"toCell\":\"" + local + "#field:keyId\","
+                + "\"objectFromCell\":\"" + base + "\","
+                + "\"objectToCell\":\"" + local + "\","
+                + "\"fieldPath\":\"#field:keyId\","
+                + "\"projectionBaseEdgeId\":\"DF.BASE\"}";
+        String declarationEdge = "{\"id\":\"DF.DECLARATION\","
+                + "\"kind\":\"accessor_field_return\","
+                + "\"transferKind\":\"PROJECTION\","
+                + "\"relation\":\"value_flow\","
+                + "\"direction\":\"backward_provenance\","
+                + "\"mappingOnly\":false,\"fieldSensitive\":true,"
+                + "\"semanticAssertionsAllowed\":true,"
+                + "\"eligibleForAutomaticDerivation\":true,"
+                + "\"eligibleForAutomaticSmt\":true,"
+                + "\"fromCell\":\"" + local + "#field:keyId\","
+                + "\"toCell\":\"<example.Manager: int use()>::i0\","
+                + "\"objectFromCell\":\"" + local + "\","
+                + "\"objectToCell\":\"<example.Manager: int use()>::i0\","
+                + "\"fieldPath\":\"#field:keyId\","
+                + "\"invoke\":\"<example.Key: int getKeyId()>\","
+                + "\"declaredFieldSignature\":"
+                + "\"<example.Key: int keyId>\","
+                + "\"declaredFieldOwner\":\"example.Key\","
+                + "\"declaredFieldType\":\"int\","
+                + "\"declaredFieldName\":\"keyId\","
+                + "\"declaredFieldAuthority\":"
+                + "\"SOOT_RESOLVED_DECLARATION_HIERARCHY\","
+                + "\"accessorImplementationMethod\":"
+                + "\"<example.Key: int getKeyId()>\","
+                + "\"accessorImplementationAuthority\":"
+                + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\"}";
+        String graph = baseEdge + "\n" + projectionEdge + "\n"
+                + declarationEdge;
+
+        Map<String, Object> proof = RuntimeRegionPlanner
+                .evidenceBackedProjectedInputForTests(region, graph, base);
+        assertEquals("REGION.R.in.0", proof.get("portId"));
+        assertEquals(Collections.singletonList("keyId"),
+                proof.get("fieldPath"));
+        assertEquals(Arrays.asList("DF.BASE", "DF.PROJECTION",
+                "DF.DECLARATION"), proof.get("evidenceEdgeIds"));
+        assertEquals("<example.Key: int keyId>",
+                proof.get("declaredFieldSignature"));
+        assertEquals(RuntimeRegionPlanner
+                        .STATIC_INPUT_FIELD_PROJECTION_AUTHORITY,
+                proof.get("authority"));
+
+        assertTrue(RuntimeRegionPlanner
+                .evidenceBackedProjectedInputForTests(region,
+                        projectionEdge + "\n" + declarationEdge, base)
+                .isEmpty());
+        String ambiguous = region.replace("}],\"outputs\":[]}",
+                "},{\"portId\":\"REGION.R.in.1\",\"cell\":\""
+                        + projected + "\"}],\"outputs\":[]}");
+        assertTrue(RuntimeRegionPlanner
+                .evidenceBackedProjectedInputForTests(ambiguous, graph, base)
+                .isEmpty());
     }
 
     @Test
@@ -2553,6 +2694,157 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void canonicalStringFieldUsesUniqueCompleteAccessorReturn()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            String field = "<example.Command: java.lang.String name>";
+            String getter = "<example.Command: java.lang.String getName()>";
+            String site = HANDLE + "#u11";
+            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
+                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
+                    + "\",\"methods\":[\"" + HANDLE
+                    + "\"],\"symbolicInputs\":[{\"portId\":"
+                    + "\"REGION.0.in.0\",\"cell\":\"" + field
+                    + "\",\"sourceKind\":\"PROTOCOL_INPUT\","
+                    + "\"projection\":\"value\","
+                    + "\"bindingMode\":\"FIELD_ACCESS\","
+                    + "\"accessFieldSignature\":\"" + field + "\","
+                    + "\"accessOwnerClass\":\"example.Command\","
+                    + "\"accessFieldType\":\"java.lang.String\","
+                    + "\"accessField\":\"name\","
+                    + "\"accessorCallerMethod\":\"" + HANDLE + "\","
+                    + "\"accessorCallSiteId\":\"" + site + "\","
+                    + "\"accessorCallUnitIndex\":11,"
+                    + "\"accessorDeclaredCallee\":\"" + getter + "\","
+                    + "\"accessorImplementationMethod\":\"" + getter
+                    + "\",\"accessorImplementationAuthority\":"
+                    + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\","
+                    + "\"accessorCallSiteAuthority\":"
+                    + "\"STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
+                    + "ACCESSOR_CALLSITE_V1\"}],\"outputs\":[],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.RuntimeEvent enter =
+                    new RuntimeRegionPlanner.RuntimeEvent(2,
+                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
+                            site, getter, -1, "example.Command", 43,
+                            "", false, false);
+            RuntimeRegionPlanner.RuntimeEvent returned =
+                    new RuntimeRegionPlanner.RuntimeEvent(3,
+                            "CALL_SITE_RETURN", HANDLE, 1, 20, 0,
+                            site, getter, -1, "java.lang.String", 71,
+                            "", false, false, "sha256:name", true, 1,
+                            "COMPLETE");
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), Collections.singletonList(
+                            method(1, HANDLE, 1, 0, 0)),
+                    Arrays.asList(enter, returned), Collections.emptyList());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> action = (Map<String, Object>)
+                    ((List<?>) result.activations.get(0).get(
+                            "symbolize")).get(0);
+            assertEquals(Boolean.TRUE, action.get("observed"));
+            assertEquals(field, action.get("field"));
+            assertEquals(43, action.get("fieldReceiverObjectId"));
+            assertEquals(71, action.get("valueObjectId"));
+            assertEquals("java.lang.String", action.get("runtimeType"));
+            assertEquals("sha256:name", action.get("valueFingerprint"));
+            assertEquals(Boolean.TRUE,
+                    action.get("valueFingerprintComplete"));
+            assertEquals(Boolean.TRUE,
+                    result.instances.get(0).get("symbolicReady"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void frozenGraphRecoversOnlyUniqueCanonicalAccessorInput()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path graph = folder.getRoot().toPath().resolve(
+                    "static_dataflow_edges.jsonl");
+            String field = "<example.Command: java.lang.String name>";
+            String getter = "<example.Command: java.lang.String getName()>";
+            String site = HANDLE + "#u11";
+            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
+                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
+                    + "\",\"methods\":[\"" + HANDLE
+                    + "\"],\"symbolicInputs\":[{\"portId\":"
+                    + "\"REGION.0.in.0\",\"cell\":\"" + field
+                    + "\",\"sourceKind\":\"PROTOCOL_INPUT\","
+                    + "\"projection\":\"value\"}],\"outputs\":[],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            String exactEdge = frozenAccessorEdge("DF.ACCESS.1", field,
+                    getter, site);
+            Files.write(graph, Collections.singletonList(exactEdge),
+                    StandardCharsets.UTF_8);
+
+            RuntimeRegionPlanner.RuntimeEvent enter =
+                    new RuntimeRegionPlanner.RuntimeEvent(2,
+                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
+                            site, getter, -1, "example.Command", 43,
+                            "", false, false);
+            RuntimeRegionPlanner.RuntimeEvent returned =
+                    new RuntimeRegionPlanner.RuntimeEvent(3,
+                            "CALL_SITE_RETURN", HANDLE, 1, 20, 0,
+                            site, getter, -1, "java.lang.String", 71,
+                            "", false, false, "sha256:name", true, 1,
+                            "COMPLETE");
+            List<RuntimeRegionPlanner.MethodEvent> methods =
+                    Collections.singletonList(method(1, HANDLE, 1, 0, 0));
+            List<RuntimeRegionPlanner.RuntimeEvent> events =
+                    Arrays.asList(enter, returned);
+
+            RuntimeRegionPlanner.Result selected =
+                    RuntimeRegionPlanner.plan(regions.toFile(), null,
+                            graph.toFile(), methods, events,
+                            Collections.emptyList());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> selectedAction = (Map<String, Object>)
+                    ((List<?>) selected.activations.get(0).get(
+                            "symbolize")).get(0);
+            assertEquals(Boolean.TRUE, selectedAction.get("observed"));
+            assertEquals(RuntimeRegionPlanner
+                            .FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY,
+                    selectedAction.get("observationAuthority"));
+            assertEquals(RuntimeRegionPlanner
+                            .FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY,
+                    selectedAction.get("accessorEvidenceAuthority"));
+            assertEquals(1, selected.summary.get(
+                    "frozenStaticAccessorInputBindingCount"));
+
+            Files.write(graph, Arrays.asList(exactEdge,
+                    frozenAccessorEdge("DF.ACCESS.2", field, getter, site)),
+                    StandardCharsets.UTF_8);
+            RuntimeRegionPlanner.Result ambiguous =
+                    RuntimeRegionPlanner.plan(regions.toFile(), null,
+                            graph.toFile(), methods, events,
+                            Collections.emptyList());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ambiguousAction = (Map<String, Object>)
+                    ((List<?>) ambiguous.activations.get(0).get(
+                            "symbolize")).get(0);
+            assertEquals(Boolean.FALSE, ambiguousAction.get("observed"));
+            assertEquals(0, ambiguous.summary.get(
+                    "frozenStaticAccessorInputBindingCount"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void ambiguousExactAccessorReturnsDoNotSelectOneFieldInstance()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -2943,7 +3235,8 @@ public class RuntimeRegionPlannerTest {
                 Arrays.asList(firstArgument, selectedArgument,
                         laterArgument, callbackReturn));
 
-        Map<String, Object> validation = result.edgeValidations.get(0);
+        Map<String, Object> validation = edgeValidationFor(result,
+                "REGION.C");
         assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
                 validation.get("status"));
         assertEquals("EQUALITY", validation.get("validatedRelation"));
@@ -2967,6 +3260,31 @@ public class RuntimeRegionPlannerTest {
         assertEquals("HDFS_SASL_NAME_CALLBACK_DEFAULT_RETURN",
                 binding.get("toFingerprintSource"));
         assertEquals(false, binding.get("sameProcess"));
+        assertEquals(2, result.edgeValidations.size());
+        assertEquals("REGION.LEGACY.FIRST",
+                validation.get("catalogFromRegion"));
+        assertEquals(2, validation.get("producerRegionCandidateCount"));
+        assertEquals(RuntimeRegionPlanner
+                        .EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY,
+                validation.get("producerRegionExpansionAuthority"));
+        assertEquals(true,
+                validation.get("producerRegionUniquelyConfirmed"));
+        assertEquals(RuntimeRegionPlanner
+                        .UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY,
+                validation.get("producerRegionConfirmationAuthority"));
+        assertEquals("STATIC_HDFS_SASL_CONTRACT",
+                validation.get("sourceMappingAuthority"));
+        assertEquals(Arrays.asList("STATIC_PROTOCOL",
+                        "mapping evidence retained"),
+                validation.get("staticEdgeEvidence"));
+        Map<String, Object> stale = edgeValidationFor(result,
+                "REGION.LEGACY.FIRST");
+        assertEquals("UNOBSERVED", stale.get("status"));
+        assertEquals(false,
+                stale.get("producerRegionUniquelyConfirmed"));
+        assertEquals("E.SASL.RUNTIME", stale.get("edgeId"));
+        assertEquals("STATIC_HDFS_SASL_CONTRACT",
+                stale.get("sourceMappingAuthority"));
     }
 
     @Test
@@ -2983,7 +3301,8 @@ public class RuntimeRegionPlannerTest {
                         saslCallbackReturn(50, 2, fingerprint),
                         saslArgument(60, 1, fingerprint)));
 
-        Map<String, Object> validation = result.edgeValidations.get(0);
+        Map<String, Object> validation = edgeValidationFor(result,
+                "REGION.C");
         assertEquals("ENDPOINTS_OBSERVED", validation.get("status"));
         assertEquals(false, validation.get("composable"));
         assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
@@ -3004,7 +3323,8 @@ public class RuntimeRegionPlannerTest {
                         saslCallbackReturn(50, 2,
                                 "sha256:different-server-user")));
 
-        Map<String, Object> validation = result.edgeValidations.get(0);
+        Map<String, Object> validation = edgeValidationFor(result,
+                "REGION.C");
         assertEquals("ENDPOINTS_OBSERVED", validation.get("status"));
         assertEquals(false, validation.get("composable"));
         assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
@@ -4580,6 +4900,33 @@ public class RuntimeRegionPlannerTest {
                 + "\"branchPolicies\":[],\"models\":[]}\n";
     }
 
+    private static String frozenAccessorEdge(String id, String field,
+                                             String getter, String site) {
+        return "{\"id\":\"" + id
+                + "\",\"kind\":\"accessor_field_return\","
+                + "\"transferKind\":\"HEAP_READ\","
+                + "\"relation\":\"value_flow\","
+                + "\"mappingOnly\":false,"
+                + "\"semanticAssertionsAllowed\":true,"
+                + "\"eligibleForAutomaticDerivation\":true,"
+                + "\"eligibleForAutomaticSmt\":true,"
+                + "\"direction\":\"backward_provenance\","
+                + "\"fromCell\":\"" + field + "\","
+                + "\"toCell\":\"" + HANDLE + "::$r4\","
+                + "\"method\":\"" + HANDLE + "\","
+                + "\"siteId\":\"" + site + "\","
+                + "\"unitIndex\":11,\"invoke\":\"" + getter + "\","
+                + "\"declaredFieldSignature\":\"" + field + "\","
+                + "\"declaredFieldOwner\":\"example.Command\","
+                + "\"declaredFieldType\":\"java.lang.String\","
+                + "\"declaredFieldName\":\"name\","
+                + "\"declaredFieldAuthority\":"
+                + "\"SOOT_RESOLVED_DECLARATION_HIERARCHY\","
+                + "\"accessorImplementationMethod\":\"" + getter + "\","
+                + "\"accessorImplementationAuthority\":"
+                + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\"}";
+    }
+
     private static RuntimeRegionPlanner.Result planSaslUsernameEdge(
             List<RuntimeRegionPlanner.MethodEvent> methods,
             List<RuntimeRegionPlanner.RuntimeEvent> events) throws Exception {
@@ -4590,14 +4937,16 @@ public class RuntimeRegionPlannerTest {
                     "symbolic_regions.jsonl");
             Path edges = folder.getRoot().toPath().resolve(
                     "symbolic_region_edges.jsonl");
-            Files.write(regions, (region("REGION.C", SASL_CLIENT)
+            String fromPort = SASL_CLIENT + ".param3:java.lang.String";
+            Files.write(regions, (regionWithOutput("REGION.LEGACY.FIRST",
+                    "<example.UnobservedProducer: void run()>", fromPort)
+                    + regionWithOutput("REGION.C", SASL_CLIENT, fromPort)
                     + region("REGION.S", SASL_SERVER)).getBytes(
                     StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.SASL.RUNTIME\","
-                    + "\"fromRegion\":\"REGION.C\","
+                    + "\"fromRegion\":\"REGION.LEGACY.FIRST\","
                     + "\"toRegion\":\"REGION.S\","
-                    + "\"fromPort\":\"" + SASL_CLIENT
-                    + ".param3:java.lang.String\","
+                    + "\"fromPort\":\"" + fromPort + "\","
                     + "\"toPort\":\"" + SASL_SERVER + "::$r4\","
                     + "\"kind\":\"SASL_TRANSFER\","
                     + "\"candidateRelation\":\"EQUALITY\","
@@ -4606,6 +4955,9 @@ public class RuntimeRegionPlannerTest {
                     + "\"STATIC_HDFS_SASL_CONTRACT\","
                     + "\"payloadEqualityCheckRequired\":true,"
                     + "\"requiresOrder\":true,"
+                    + "\"mappingOnly\":true,"
+                    + "\"evidence\":[\"STATIC_PROTOCOL\","
+                    + "\"mapping evidence retained\"],"
                     + "\"siteId\":\"synthetic:hdfs_sasl_username\"}\n";
             Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
@@ -4613,6 +4965,28 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
+    }
+
+    private static Map<String, Object> edgeValidationFor(
+            RuntimeRegionPlanner.Result result, String fromRegion) {
+        for (Map<String, Object> validation : result.edgeValidations) {
+            if (fromRegion.equals(validation.get("fromRegion"))) {
+                return validation;
+            }
+        }
+        throw new AssertionError("missing edge validation from "
+                + fromRegion);
+    }
+
+    private static String regionWithOutput(String id, String method,
+                                           String outputCell) {
+        return "{\"regionId\":\"" + id + "\",\"rootMethod\":\""
+                + method + "\",\"anchorMethod\":\"" + method
+                + "\",\"methods\":[\"" + method
+                + "\"],\"symbolicInputs\":[],\"outputs\":[{"
+                + "\"portId\":\"" + id + ".out.0\",\"cell\":\""
+                + outputCell + "\",\"kind\":\"SINK_STATE\"}],"
+                + "\"branchPolicies\":[],\"models\":[]}\n";
     }
 
     private static RuntimeRegionPlanner.RuntimeEvent saslArgument(

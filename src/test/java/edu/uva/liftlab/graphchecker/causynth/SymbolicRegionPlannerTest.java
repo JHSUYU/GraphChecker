@@ -117,6 +117,57 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
+    public void emitsProtocolCandidateForEveryEnclosingProducerRegion() {
+        String firstRoot = "<example.First: void run()>";
+        String secondRoot = "<example.Second: void run()>";
+        String sender = "<example.Protocol: java.lang.String send()>";
+        String receiver = "<example.Server: void receive(java.lang.String)>";
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(firstRoot, Collections.singletonList(
+                                firstRoot + ".param0:value"),
+                        Collections.singletonList(firstRoot + "#failure")),
+                plan(secondRoot, Collections.singletonList(
+                                secondRoot + ".param0:value"),
+                        Collections.singletonList(secondRoot + "#failure")),
+                plan(sender, Collections.singletonList(
+                                "<example.Protocol: int keyId>"),
+                        Collections.singletonList(sender + ".return")),
+                plan(receiver, Collections.singletonList(
+                                receiver + ".param0:userName"),
+                        Collections.singletonList(receiver + "#failure")));
+        List<Map<String, Object>> edges = Arrays.asList(
+                invocation(firstRoot, sender, firstRoot + "::r0",
+                        sender + "::r0", 1),
+                invocation(secondRoot, sender, secondRoot + "::r0",
+                        sender + "::r0", 2),
+                edge(firstRoot, "SEED", "seed", firstRoot + "#failure",
+                        firstRoot + ".return", 3),
+                edge(secondRoot, "SEED", "seed", secondRoot + "#failure",
+                        secondRoot + ".return", 4),
+                edge(receiver, "SEED", "seed", receiver + "#failure",
+                        receiver + ".return", 5),
+                edge(receiver, "PROTOCOL_TRANSFER",
+                        "hdfs_sasl_username_bridge", sender + ".return",
+                        receiver + ".param0:userName", 6));
+
+        SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(
+                edges, plans);
+
+        List<String> producerRoots = new ArrayList<>();
+        for (Map<String, Object> regionEdge : result.regionEdges) {
+            String producerId = String.valueOf(regionEdge.get("fromRegion"));
+            for (Map<String, Object> region : result.regions) {
+                if (producerId.equals(String.valueOf(region.get("regionId")))) {
+                    producerRoots.add(String.valueOf(region.get("rootMethod")));
+                }
+            }
+        }
+        assertEquals(2, result.regionEdges.size());
+        assertTrue(producerRoots.contains(firstRoot));
+        assertTrue(producerRoots.contains(secondRoot));
+    }
+
+    @Test
     public void keepsSynchronousCallbackInsideHighestSameThreadRegion() {
         String receive = "<example.Server: void receive(java.io.InputStream)>";
         String register = "<example.Server: void register()>";
@@ -3641,6 +3692,48 @@ public class SymbolicRegionPlannerTest {
         assertEquals("OPAQUE_CALL_RETURN_FRONTIER",
                 inputs.get(0).get("selectionReason"));
         assertEquals(Boolean.TRUE, region.get("inputSelectionComplete"));
+    }
+
+    @Test
+    public void canonicalGuardInputCarriesItsUniqueExactAccessorSite() {
+        String field = "<javax.security.auth.callback.NameCallback: "
+                + "java.lang.String defaultName>";
+        String getter = "<javax.security.auth.callback.NameCallback: "
+                + "java.lang.String getDefaultName()>";
+        String local = HANDLE + "::$r4";
+        String failure = HANDLE + "#failure:missing";
+        Map<String, Object> accessor = edge(HANDLE, "HEAP_READ",
+                "accessor_field_return", field, local, 36);
+        accessor.put("siteId", HANDLE + "#u36");
+        accessor.put("unit", "$r4 = virtualinvoke r12." + getter + "()");
+        accessor.put("invoke", getter);
+        accessor.put("accessorImplementationMethod", getter);
+        accessor.put("accessorImplementationAuthority",
+                "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
+        authoritativeValueFlow(accessor);
+        declaredMetadata(accessor, field,
+                "javax.security.auth.callback.NameCallback",
+                "java.lang.String", "defaultName");
+
+        Map<String, Object> region = onlyRegion(SymbolicRegionPlanner.plan(
+                Arrays.asList(accessor, edge(HANDLE, "SEED",
+                        "seed_exception_throw", local, failure, 40)),
+                Collections.singletonList(plan(HANDLE,
+                        Collections.singletonList(field),
+                        Collections.singletonList(failure)))));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> input = ((List<Map<String, Object>>) region.get(
+                "symbolicInputs")).stream()
+                .filter(candidate -> field.equals(candidate.get("cell")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals("FIELD_ACCESS", input.get("bindingMode"));
+        assertEquals(field, input.get("accessFieldSignature"));
+        assertEquals(HANDLE + "#u36", input.get("accessorCallSiteId"));
+        assertEquals(36, input.get("accessorCallUnitIndex"));
+        assertEquals(getter, input.get("accessorDeclaredCallee"));
+        assertEquals("STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
+                        + "ACCESSOR_CALLSITE_V1",
+                input.get("accessorCallSiteAuthority"));
     }
 
     @Test

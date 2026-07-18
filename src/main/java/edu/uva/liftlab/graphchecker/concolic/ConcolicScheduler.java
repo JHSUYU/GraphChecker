@@ -55,6 +55,9 @@ public final class ConcolicScheduler {
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
             "#field:([^#]+)");
+    private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
+            Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
+                    + "[0-9a-fA-F]+$");
     private static final String CONSUMED_FIELD_SITE_AUTHORITY =
             "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
                     + "OWNER_WITHIN_REGION_INSTANCE_V1";
@@ -69,6 +72,12 @@ public final class ConcolicScheduler {
     private static final String LOCAL_FIELD_ROOT_AUTHORITY =
             "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
                     + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
+    private static final String MAP_STATE_INPUT_OBSERVATION_MODE =
+            "MAP_STATE_INPUT_OBSERVATION";
+    private static final String FIRST_CONTAINER_OBSERVATION_AUTHORITY =
+            "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
+    static final String ACCESSOR_INPUT_CANONICALIZATION_AUTHORITY =
+            "STATIC_UNIQUE_EXACT_ACCESSOR_FIELD_RETURN_TO_REGION_INPUT_V1";
     private static final Map<String, String> OPPOSITE = opposites();
 
     private ConcolicScheduler() {
@@ -87,6 +96,10 @@ public final class ConcolicScheduler {
         requireFile(arguments.regions, "symbolic regions");
         requireFile(arguments.activations, "activation plan");
         requireFile(arguments.edgeValidations, "runtime edge validation");
+        if (arguments.runtimeRegionInstances != null) {
+            requireFile(arguments.runtimeRegionInstances,
+                    "runtime region instances");
+        }
         Files.createDirectories(arguments.outputDirectory);
 
         List<JsonObject> regions = readJsonl(arguments.regions);
@@ -102,6 +115,10 @@ public final class ConcolicScheduler {
         List<JsonObject> pathRecords = arguments.pathRecords == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.pathRecords);
+        List<JsonObject> runtimeRegionInstances =
+                arguments.runtimeRegionInstances == null
+                        ? Collections.<JsonObject>emptyList()
+                        : readJsonl(arguments.runtimeRegionInstances);
         DefinitionIndex definitions = arguments.staticGraph == null
                 ? DefinitionIndex.fallback()
                 : DefinitionIndex.from(staticGraph);
@@ -114,9 +131,11 @@ public final class ConcolicScheduler {
             }
         }
 
-        MergePlan mergePlan = buildMergePlan(regionIndex, edges);
+        MergePlan mergePlan = buildMergePlan(regionIndex, edges,
+                staticGraph);
         List<Candidate> candidates = candidates(arguments, activations,
-                regionIndex, definitions);
+                regionIndex, definitions,
+                CaptureEvidence.from(runtimeRegionInstances));
         Collections.sort(candidates, Candidate.ORDER);
 
         Result result = new Result();
@@ -190,12 +209,18 @@ public final class ConcolicScheduler {
                     materialization.deferredCount);
             scheduledActivation.addProperty("vmIntrinsicPlaceholderCount",
                     materialization.vmIntrinsicPlaceholderCount);
+            scheduledActivation.addProperty("concreteFallbackCount",
+                    materialization.concreteFallbacks.size());
+            scheduledActivation.addProperty("symbolicCoverageComplete",
+                    materialization.concreteFallbacks.size() == 0);
             scheduledActivation.addProperty("symbolicReady",
                     materialization.ready);
             scheduledActivation.addProperty("readinessAuthority",
                     "SCHEDULER_MATERIALIZATION_PLAN");
             scheduledActivation.add("materializations",
                     materialization.actions.deepCopy());
+            scheduledActivation.add("concreteFallbacks",
+                    materialization.concreteFallbacks.deepCopy());
             if (!candidate.outputClosure) {
                 scheduledActivation.add("targetBranch",
                         candidate.target.toJson());
@@ -238,6 +263,10 @@ public final class ConcolicScheduler {
                     materialization.deferredCount);
             job.addProperty("vmIntrinsicPlaceholderCount",
                     materialization.vmIntrinsicPlaceholderCount);
+            job.addProperty("concreteFallbackCount",
+                    materialization.concreteFallbacks.size());
+            job.addProperty("symbolicCoverageComplete",
+                    materialization.concreteFallbacks.size() == 0);
             job.addProperty("solverReplayReady", false);
             job.addProperty("forceValidationEnabled",
                     arguments.forceBranchValidation);
@@ -567,7 +596,7 @@ public final class ConcolicScheduler {
                 || staticGraph.isEmpty() ? DefinitionIndex.fallback()
                 : DefinitionIndex.from(staticGraph);
         MaterializationPlan materialization = materializationPlan(result,
-                definitions);
+                definitions, Collections.<String>emptySet());
         if (captureGoal.isTransitionDiscovery()) {
             RegionCaptureGoal.transitionDiscovery().writeTo(result);
         } else {
@@ -599,6 +628,12 @@ public final class ConcolicScheduler {
                 materialization.deferredCount);
         result.addProperty("vmIntrinsicPlaceholderCount",
                 materialization.vmIntrinsicPlaceholderCount);
+        result.addProperty("concreteFallbackCount",
+                materialization.concreteFallbacks.size());
+        result.addProperty("symbolicCoverageComplete",
+                materialization.concreteFallbacks.size() == 0);
+        result.add("concreteFallbacks",
+                materialization.concreteFallbacks.deepCopy());
         result.addProperty("symbolicReady", schedulerReady);
         result.addProperty("readinessAuthority",
                 "SCHEDULER_MATERIALIZATION_PLAN");
@@ -730,7 +765,8 @@ public final class ConcolicScheduler {
             return FreshTargetQueryResult.failure(scope.reason);
         }
         MergePlan mergePlan = buildMergePlan(regionIndex, edges == null
-                ? Collections.<JsonObject>emptyList() : edges);
+                ? Collections.<JsonObject>emptyList() : edges,
+                Collections.<JsonObject>emptyList());
         ExactContextResult selectedContext = mergePlan.contextForExact(
                 regionId, regionInstanceId, scope);
         if (selectedContext.gaps.size() > 0
@@ -949,14 +985,25 @@ public final class ConcolicScheduler {
     private static List<Candidate> candidates(Arguments arguments,
                                               List<JsonObject> activations,
                                               Map<String, Region> regions,
-                                              DefinitionIndex definitions) {
+                                              DefinitionIndex definitions,
+                                              CaptureEvidence evidence) {
         List<Candidate> result = new ArrayList<>();
-        for (JsonObject activation : activations) {
-            String activationId = string(activation, "activationId");
-            String regionId = string(activation, "regionId");
+        for (JsonObject discoveredActivation : activations) {
+            String activationId = string(discoveredActivation,
+                    "activationId");
+            String regionId = string(discoveredActivation, "regionId");
             Region region = regions.get(regionId);
-            if (region == null || activationId.isEmpty()
-                    || !bool(activation, "replayable", false)) {
+            if (region == null || activationId.isEmpty()) {
+                continue;
+            }
+            JsonObject configuredActivation = configuredOutputClosure(
+                    arguments, discoveredActivation, region);
+            configuredActivation = refineRequestedOutputCapture(arguments,
+                    configuredActivation, evidence);
+            JsonObject activation = boundedOutputCompletion(
+                    operationalActivation(arguments, configuredActivation),
+                    definitions);
+            if (!bool(activation, "replayable", false)) {
                 continue;
             }
             if (!arguments.activationId.isEmpty()
@@ -970,8 +1017,8 @@ public final class ConcolicScheduler {
             RegionCaptureGoal captureGoal = RegionCaptureGoal.from(activation);
             if (captureGoal.isOutputClosure()) {
                 MaterializationPlan upstreamPlan = materializationPlan(
-                        activation, definitions);
-                if (!bool(activation, "requestedOutputSliceComplete", false)
+                        activation, definitions, region.methods);
+                if (!requestedOutputSliceOperationallyAdmitted(activation)
                         || !upstreamPlan.complete
                         || !outputCaptureReady(activation)
                         && !transitionDiscoveryCaptureTemplateReady(
@@ -997,7 +1044,8 @@ public final class ConcolicScheduler {
                             "FRESH_OBSERVED_TARGET_VALIDATION");
                     result.add(new Candidate(activation, activationId,
                             region, target, true,
-                            materializationPlan(activation, definitions),
+                            materializationPlan(activation, definitions,
+                                    region.methods),
                             false));
                 }
                 continue;
@@ -1038,10 +1086,495 @@ public final class ConcolicScheduler {
                                 : "DIRECTED_REQUIRED_OUTCOME");
                 result.add(new Candidate(activation, activationId, region,
                         target, hasWitness,
-                        materializationPlan(activation, definitions), false));
+                        materializationPlan(activation, definitions,
+                                region.methods), false));
             }
         }
         return result;
+    }
+
+    /**
+     * Selects the unique outermost requested-state transformer as the end of
+     * one bounded service-loop iteration.  The logical region root is kept
+     * unchanged; replay may only complete after this transformer returns
+     * normally.  Call reachability comes from the same frozen static graph as
+     * the output slice, so an ambiguous transformer set simply keeps the
+     * concrete outer loop behavior.
+     */
+    private static JsonObject boundedOutputCompletion(
+            JsonObject activation, DefinitionIndex definitions) {
+        if (!RegionCaptureGoal.from(activation).isOutputClosure()
+                || !definitions.authoritative
+                || !"HEAP_STATE".equals(string(object(activation,
+                "requestedOutput"), "kind"))) {
+            return activation;
+        }
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        Set<String> transformers = new LinkedHashSet<>();
+        for (JsonElement element : array(slice,
+                "requestedStateTransformerObligations")) {
+            if (element.isJsonObject()) {
+                String method = string(element.getAsJsonObject(), "method");
+                if (!method.isEmpty()) {
+                    transformers.add(method);
+                }
+            }
+        }
+        String outermost = definitions.uniqueOutermost(transformers);
+        if (outermost.isEmpty()) {
+            return activation;
+        }
+        JsonObject result = activation.deepCopy();
+        JsonObject boundedSlice = object(result,
+                "requestedOutputSlice").deepCopy();
+        boundedSlice.addProperty("boundedOutputCompletionMethod",
+                outermost);
+        boundedSlice.addProperty("boundedOutputCompletionNormalReturnOnly",
+                true);
+        boundedSlice.addProperty("boundedOutputCompletionAuthority",
+                "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
+                        + "IN_FROZEN_CALL_GRAPH_V1");
+        if (!outermost.equals(string(result, "rootMethod"))
+                && boundedDeferredStartSafe(result)) {
+            boundedSlice.addProperty("boundedOutputDeferredEngineStart",
+                    true);
+            boundedSlice.addProperty(
+                    "boundedOutputDeferredEngineStartAuthority",
+                    "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_OUTERMOST_"
+                            + "TRANSFORMER_ENTRY_V1");
+        }
+        result.add("requestedOutputSlice", boundedSlice);
+        result.addProperty("boundedOutputCompletionEnabled", true);
+        return result;
+    }
+
+    private static boolean boundedDeferredStartSafe(JsonObject activation) {
+        JsonArray actions = array(activation, "symbolize");
+        if (actions.size() == 0) {
+            actions = array(activation, "materializations");
+        }
+        for (JsonElement element : actions) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            String location = string(element.getAsJsonObject(), "location");
+            if ("ARGUMENT".equals(location)
+                    || "ARGUMENT_FIELD".equals(location)
+                    || "ARGUMENT_FIELD_PATH".equals(location)
+                    || "RECEIVER_FIELD".equals(location)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Builds an output-closure request from a configured semantic output
+     * cell and the region catalog's existing exact output slice.  This lets a
+     * domain adapter request a producer summary without hard-coding generated
+     * REGION/ACT ids or rerunning static/runtime discovery.
+     */
+    private static JsonObject configuredOutputClosure(
+            Arguments arguments, JsonObject discovered, Region region) {
+        if (arguments.requestedOutputCell.isEmpty()) {
+            return discovered;
+        }
+        JsonObject output = region.outputByCell.get(
+                arguments.requestedOutputCell);
+        if (output == null) {
+            return discovered;
+        }
+        String outputPort = string(output, "portId");
+        JsonObject slice = region.outputSliceByPort.get(outputPort);
+        if (outputPort.isEmpty() || slice == null
+                || !bool(slice, "structuralComplete",
+                bool(slice, "complete", false))) {
+            return discovered;
+        }
+
+        JsonObject activation = discovered.deepCopy();
+        RegionCaptureGoal.outputClosure().writeTo(activation);
+        JsonObject requested = output.deepCopy();
+        requested.addProperty("selectionAuthority",
+                "CONFIGURED_EXACT_REGION_OUTPUT_CELL_V1");
+        activation.add("requestedOutput", requested);
+        activation.add("requestedOutputSlice", slice.deepCopy());
+        activation.addProperty("requestedOutputSliceComplete",
+                bool(slice, "complete", false));
+        activation.addProperty("requestedOutputSlicePolicy",
+                "CONFIGURED_REGION_CATALOG_EXACT_OUTPUT_SLICE");
+        activation.addProperty("requestedOutputSliceRefinementComplete",
+                true);
+        activation.addProperty("requestedOutputCaptureRequired",
+                bool(slice, "captureBindingsRequired", false));
+        activation.addProperty("requestedOutputCaptureComplete",
+                bool(slice, "captureBindingsComplete", true));
+        activation.add("requestedOutputCapture",
+                array(slice, "captureBindings").deepCopy());
+        activation.add("requestedOutputMethods",
+                array(slice, "methods").deepCopy());
+        activation.addProperty("configuredOutputClosureSynthesized", true);
+        activation.addProperty("configuredOutputClosureAuthority",
+                "SEMANTIC_OUTPUT_CELL_PLUS_FROZEN_REGION_SLICE_V1");
+        activation.addProperty("derivedFromActivationId",
+                string(discovered, "activationId"));
+
+        Set<String> inputs = stringSet(slice, "inputPorts");
+        if (!inputs.isEmpty()) {
+            JsonArray selected = new JsonArray();
+            for (JsonElement element : array(discovered, "symbolize")) {
+                if (element.isJsonObject()
+                        && inputs.contains(firstNonBlank(string(
+                        element.getAsJsonObject(), "symbol"), string(
+                        element.getAsJsonObject(), "inputPort")))) {
+                    selected.add(element.deepCopy());
+                }
+            }
+            activation.add("symbolize", selected);
+        }
+        Set<String> sites = stringSet(slice, "sites");
+        if (!sites.isEmpty()) {
+            JsonArray selected = new JsonArray();
+            for (JsonElement element : array(discovered, "branches")) {
+                if (element.isJsonObject() && sites.contains(string(
+                        element.getAsJsonObject(), "siteId"))) {
+                    selected.add(element.deepCopy());
+                }
+            }
+            activation.add("branches", selected);
+        }
+        return activation;
+    }
+
+    /**
+     * Turns static output-capture templates into an exact runtime request.
+     * An explicit selector always names both the static site and dynamic
+     * occurrence.  Without one, the frozen runtime-instance catalog may
+     * select a single template whose enclosing method was observed in this
+     * exact region instance.  Older compact catalogs retain method presence
+     * but not per-site counts, so that automatic case deliberately records a
+     * first-occurrence approximation instead of claiming exact trace proof.
+     */
+    private static JsonObject refineRequestedOutputCapture(
+            Arguments arguments, JsonObject source,
+            CaptureEvidence evidence) {
+        if (!RegionCaptureGoal.from(source).isOutputClosure()
+                || !bool(source, "requestedOutputCaptureRequired", false)) {
+            return source;
+        }
+        JsonArray templates = array(source, "requestedOutputCapture");
+        if (templates.size() == 0) {
+            return incompleteCaptureSelection(source,
+                    "NO_STATIC_CAPTURE_TEMPLATE", 0, 0);
+        }
+
+        String configuredSite = arguments.requestedOutputCaptureSite;
+        int configuredOccurrence =
+                arguments.requestedOutputCaptureOccurrence;
+        if (configuredSite.isEmpty() && configuredOccurrence == 0
+                && templates.size() == 1
+                && templates.get(0).isJsonObject()
+                && runtimeExactOutputCapture(
+                templates.get(0).getAsJsonObject())) {
+            JsonObject preserved = source.deepCopy();
+            JsonObject capture = templates.get(0).getAsJsonObject();
+            preserved.addProperty("requestedOutputCaptureComplete", true);
+            preserved.addProperty("requestedOutputCaptureRefinementRequired",
+                    false);
+            preserved.addProperty("requestedOutputCaptureSelectionStatus",
+                    "EXACT_RUNTIME_REQUEST_READY");
+            preserved.addProperty("requestedOutputCaptureSelectionAuthority",
+                    "PRESERVED_RUNTIME_EXACT_OUTPUT_CAPTURE_V1");
+            preserved.addProperty("requestedOutputCaptureSelectedSite",
+                    string(capture, "siteId"));
+            preserved.addProperty("requestedOutputCaptureSelectedOccurrence",
+                    integer(capture, "occurrence", 0));
+            preserved.addProperty("requestedOutputCaptureTemplateCount", 1);
+            preserved.addProperty(
+                    "requestedOutputCaptureObservedCandidateCount", 1);
+            preserved.addProperty(
+                    "requestedOutputCaptureOccurrenceApproximate", false);
+            return preserved;
+        }
+        List<JsonObject> candidates = new ArrayList<>();
+        String authority = "";
+        boolean firstOccurrenceApproximation = false;
+        Set<String> observedMethods = Collections.emptySet();
+        if (!configuredSite.isEmpty()) {
+            for (JsonElement element : templates) {
+                if (element.isJsonObject() && configuredSite.equals(string(
+                        element.getAsJsonObject(), "siteId"))) {
+                    candidates.add(element.getAsJsonObject());
+                }
+            }
+            if (configuredOccurrence <= 0) {
+                return incompleteCaptureSelection(source,
+                        "CONFIGURED_CAPTURE_SITE_REQUIRES_POSITIVE_"
+                                + "OCCURRENCE",
+                        templates.size(), candidates.size());
+            }
+            authority = "CONFIGURED_EXACT_CAPTURE_SITE_AND_OCCURRENCE_V1";
+        } else {
+            observedMethods = evidence.observedMethods(source);
+            if (!observedMethods.isEmpty()) {
+                for (JsonElement element : templates) {
+                    if (!element.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject capture = element.getAsJsonObject();
+                    if (observedMethods.contains(captureMethod(capture))) {
+                        candidates.add(capture);
+                    }
+                }
+                authority = "FROZEN_INSTANCE_UNIQUE_OBSERVED_CAPTURE_"
+                        + "METHOD_V1";
+            } else if (templates.size() == 1
+                    && templates.get(0).isJsonObject()
+                    && integer(templates.get(0).getAsJsonObject(),
+                    "occurrence", 0) > 0) {
+                candidates.add(templates.get(0).getAsJsonObject());
+                authority = "FROZEN_EXACT_CAPTURE_BINDING_V1";
+            }
+        }
+        if (candidates.size() != 1) {
+            return incompleteCaptureSelection(source,
+                    candidates.isEmpty()
+                            ? "NO_UNIQUE_OBSERVED_CAPTURE_SITE"
+                            : "AMBIGUOUS_OBSERVED_CAPTURE_SITE",
+                    templates.size(), candidates.size());
+        }
+
+        JsonObject selected = candidates.get(0).deepCopy();
+        int occurrence = configuredOccurrence > 0
+                ? configuredOccurrence
+                : integer(selected, "occurrence", 0);
+        if (occurrence <= 0) {
+            occurrence = 1;
+            firstOccurrenceApproximation = true;
+        }
+        selected.addProperty("occurrence", occurrence);
+        selected.addProperty("occurrenceAuthority",
+                firstOccurrenceApproximation
+                        ? "UNIQUE_OBSERVED_CAPTURE_METHOD_FIRST_"
+                        + "OCCURRENCE_APPROXIMATION_V1"
+                        : authority);
+        selected.addProperty("selectionAuthority", authority);
+
+        JsonObject result = source.deepCopy();
+        JsonArray exact = new JsonArray();
+        exact.add(selected);
+        result.add("requestedOutputCapture", exact);
+        result.addProperty("requestedOutputCaptureComplete", true);
+        result.addProperty("requestedOutputCaptureRefinementRequired", false);
+        result.addProperty("requestedOutputCaptureSelectionStatus",
+                "EXACT_RUNTIME_REQUEST_READY");
+        result.addProperty("requestedOutputCaptureSelectionAuthority",
+                authority);
+        result.addProperty("requestedOutputCaptureSelectedSite",
+                string(selected, "siteId"));
+        result.addProperty("requestedOutputCaptureSelectedOccurrence",
+                occurrence);
+        result.addProperty("requestedOutputCaptureTemplateCount",
+                templates.size());
+        result.addProperty("requestedOutputCaptureObservedCandidateCount",
+                candidates.size());
+        result.addProperty("requestedOutputCaptureOccurrenceApproximate",
+                firstOccurrenceApproximation);
+        if (!observedMethods.isEmpty()) {
+            result.add("requestedOutputCaptureObservedMethods",
+                    JSONL_GSON.toJsonTree(observedMethods));
+        }
+        return result;
+    }
+
+    private static JsonObject incompleteCaptureSelection(JsonObject source,
+                                                         String reason,
+                                                         int templateCount,
+                                                         int candidateCount) {
+        JsonObject result = source.deepCopy();
+        result.addProperty("requestedOutputCaptureComplete", false);
+        result.addProperty("requestedOutputCaptureSelectionStatus",
+                "RUNTIME_REFINEMENT_REQUIRED");
+        result.addProperty("requestedOutputCaptureSelectionReason", reason);
+        result.addProperty("requestedOutputCaptureTemplateCount",
+                templateCount);
+        result.addProperty("requestedOutputCaptureObservedCandidateCount",
+                candidateCount);
+        return result;
+    }
+
+    private static String captureMethod(JsonObject capture) {
+        return firstNonBlank(string(capture, "callerMethod"),
+                string(capture, "method"));
+    }
+
+    private static boolean runtimeExactOutputCapture(JsonObject capture) {
+        if (integer(capture, "occurrence", 0) < 1
+                || integer(capture, "runtimeEventSeq", 0) < 1) {
+            return false;
+        }
+        String authority = string(capture, "occurrenceAuthority");
+        String kind = firstNonBlank(string(capture, "captureKind"),
+                "CALL_ARGUMENT");
+        if ("METHOD_RETURN_VALUE".equals(kind)) {
+            return "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE".equals(authority)
+                    && integer(capture, "runtimeCallId", 0) > 0;
+        }
+        if ("FIELD_ASSIGNMENT_RHS".equals(kind)) {
+            return "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_SITE_"
+                    .concat("LAST_WRITE_OCCURRENCE").equals(authority)
+                    && integer(capture, "runtimeCallId", 0) > 0
+                    && integer(capture,
+                    "runtimeFieldOwnerObjectId", 0) > 0;
+        }
+        return "CALL_ARGUMENT".equals(kind)
+                && "RUNTIME_EXACT_CALL_ARGUMENT_OCCURRENCE".equals(authority)
+                && integer(capture, "runtimeInvocationId", 0) > 0;
+    }
+
+    /**
+     * Converts one discovery activation into an explicitly bounded replay
+     * request.  The raw slice-completeness bit is deliberately retained: the
+     * admission is operational provenance, not a claim that the underlying
+     * static/runtime analysis became complete.
+     */
+    private static JsonObject operationalActivation(Arguments arguments,
+                                                     JsonObject discovered) {
+        JsonObject configured = discovered;
+        if (arguments.allowBoundedPartialOutputSlice
+                && !arguments.boundedContainerFieldSignatures.isEmpty()) {
+            configured = discovered.deepCopy();
+            retainConfiguredContainerBindings(configured,
+                    arguments.boundedContainerFieldSignatures);
+        }
+        Matcher identityThread = DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(
+                string(configured, "threadName"));
+        if (identityThread.matches()) {
+            if (configured == discovered) {
+                configured = discovered.deepCopy();
+            }
+            int globalOrdinal = integer(configured, "invocationOrdinal", 1);
+            configured.addProperty("stableThreadName",
+                    identityThread.group(1) + "@*");
+            configured.addProperty("invocationOrdinalWithinContext",
+                    globalOrdinal);
+            configured.addProperty("stableContextOrdinalRebased", true);
+            configured.addProperty("stableContextOrdinalRebaseAuthority",
+                    "FROZEN_DEFAULT_OBJECT_THREAD_NAME_CANONICALIZATION_V1");
+        }
+        if (!arguments.allowBoundedPartialOutputSlice
+                || !boundedPartialOutputSliceEligible(configured)) {
+            return configured;
+        }
+        JsonObject activation = configured.deepCopy();
+        activation.addProperty("discoveryReplayable",
+                bool(discovered, "replayable", false));
+        activation.addProperty("discoverySymbolicReady",
+                bool(discovered, "symbolicReady", false));
+        activation.addProperty("boundedPartialOutputSliceAdmitted", true);
+        activation.addProperty(
+                "requestedOutputSliceOperationallyAdmitted", true);
+        activation.addProperty("boundedPartialOutputSliceAuthority",
+                "CONFIGURED_STRUCTURALLY_COMPLETE_OUTPUT_SLICE_PLUS_"
+                        + "CONCRETE_FALLBACK_V1");
+        activation.addProperty("boundedPartialOutputSliceSemanticClass",
+                bool(object(activation, "requestedOutputSlice"),
+                        "requestedStateTransformerContractApplicable", false)
+                        ? "REQUESTED_STATE_TRANSFORMER"
+                        : "VALUE_OR_SINK_OUTPUT");
+        activation.addProperty("replayable", true);
+
+        JsonObject requestedOutput = object(activation, "requestedOutput");
+        if (bool(activation, "requestedOutputCaptureRequired", false)
+                && !bool(activation, "requestedOutputCaptureComplete", false)
+                && "HEAP_STATE".equals(string(requestedOutput, "kind"))) {
+            activation.addProperty("requestedOutputCaptureRequired", false);
+            activation.addProperty("requestedOutputCaptureComplete", true);
+            activation.addProperty(
+                    "boundedHeapEffectCaptureApproximation", true);
+            activation.addProperty(
+                    "boundedHeapEffectCaptureApproximationAuthority",
+                    "CONFIGURED_REQUESTED_STATE_TRANSFORMER_EFFECT_V1");
+        }
+        return activation;
+    }
+
+    private static boolean boundedPartialOutputSliceEligible(
+            JsonObject activation) {
+        if (!RegionCaptureGoal.from(activation).isOutputClosure()
+                || bool(activation, "containedCallTreeTruncated", false)) {
+            return false;
+        }
+        JsonObject requestedOutput = object(activation, "requestedOutput");
+        if (string(requestedOutput, "portId").isEmpty()
+                || string(requestedOutput, "cell").isEmpty()) {
+            return false;
+        }
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        if (!bool(slice, "structuralComplete", false)
+                || bool(slice, "truncated", true)
+                || !bool(slice, "unresolvedInputProvenanceComplete", false)) {
+            return false;
+        }
+        boolean transformerContractApplicable = bool(slice,
+                "requestedStateTransformerContractApplicable", false);
+        boolean heapStateOutput = "HEAP_STATE".equals(string(
+                requestedOutput, "kind"));
+        // State transitions still need both the exact transformer contract
+        // and an ordered producer/consumer edge.  A value or sink output has
+        // neither concept; under the explicit approximation flag its exact
+        // structural slice may instead keep unresolved, provenance-complete
+        // carriers concrete.
+        if ((transformerContractApplicable
+                && !bool(slice,
+                "requestedStateTransformerContractComplete", false))
+                || heapStateOutput && (!transformerContractApplicable
+                || array(activation, "edgeBindings").size() == 0)) {
+            return false;
+        }
+        for (JsonElement element : array(activation, "runtimeGaps")) {
+            if (!element.isJsonPrimitive()
+                    || !"PATH_SIGNATURE_LIMIT_EXCEEDED".equals(
+                    safe(element.getAsString()))) {
+                return false;
+            }
+        }
+        return bool(activation, "requestedOutputCaptureComplete", false)
+                || !bool(activation, "requestedOutputCaptureRequired", false)
+                || "HEAP_STATE".equals(string(requestedOutput, "kind"));
+    }
+
+    private static boolean requestedOutputSliceOperationallyAdmitted(
+            JsonObject activation) {
+        return bool(activation, "requestedOutputSliceComplete", false)
+                || bool(activation,
+                "boundedPartialOutputSliceAdmitted", false);
+    }
+
+    private static void retainConfiguredContainerBindings(
+            JsonObject activation, Set<String> allowedFieldSignatures) {
+        if (allowedFieldSignatures == null
+                || allowedFieldSignatures.isEmpty()) {
+            return;
+        }
+        JsonArray retained = new JsonArray();
+        for (JsonElement element : array(activation,
+                "containerElementFieldBindings")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject binding = element.getAsJsonObject();
+            if (bool(binding, "complete", false)
+                    && allowedFieldSignatures.contains(string(binding,
+                    "declaredFieldSignature"))) {
+                retained.add(binding.deepCopy());
+            }
+        }
+        activation.add("containerElementFieldBindings", retained);
+        activation.addProperty("containerBindingSelectionAuthority",
+                "CONFIGURED_DECLARED_FIELD_SIGNATURE_ALLOWLIST_V1");
+        activation.add("configuredContainerFieldSignatures",
+                JSONL_GSON.toJsonTree(allowedFieldSignatures));
     }
 
     /**
@@ -1134,10 +1667,14 @@ public final class ConcolicScheduler {
     }
 
     private static MaterializationPlan materializationPlan(
-            JsonObject activation, DefinitionIndex definitions) {
+            JsonObject activation, DefinitionIndex definitions,
+            Set<String> regionMethods) {
         JsonArray result = new JsonArray();
-        boolean hardFailure = false;
-        boolean complete = true;
+        JsonArray concreteFallbacks = new JsonArray();
+        Set<String> containerBaseInputs = containerBindingSymbols(
+                activation, "baseInputSymbol");
+        Set<String> containerInputPorts = containerBindingSymbols(
+                activation, "containerInputPort");
         int sourceActionCount = 0;
         int executableCount = 0;
         int deferredCount = 0;
@@ -1155,6 +1692,76 @@ public final class ConcolicScheduler {
             JsonObject binding = action.deepCopy();
             String location = string(action, "location");
             String cell = string(action, "cell");
+            boolean vmIntrinsic = verifiedVmIntrinsicPlaceholder(action,
+                    location, cell);
+            if (boundedRequestedStateCore(activation)
+                    && !containerBaseInputs.contains(string(action,
+                    "symbol"))
+                    && !containerInputPorts.contains(string(action,
+                    "symbol"))
+                    && !configuredScalarContainerLeaf(activation, action)
+                    && !cell.equals(string(object(activation,
+                    "requestedOutput"), "cell"))
+                    && !vmIntrinsic) {
+                concreteFallbacks.add(concreteFallback(binding,
+                        "BOUNDED_REQUESTED_MAP_CORE_USES_WORKLOAD_VALUE"));
+                continue;
+            }
+            if (action.has("observed")
+                    && !bool(action, "observed", false)
+                    && !containerBaseInputs.contains(string(action,
+                    "symbol"))
+                    && !configuredScalarContainerLeaf(activation, action)
+                    && !authoritativeDefinitionResolutionRequested(action)
+                    && !vmIntrinsic) {
+                concreteFallbacks.add(concreteFallback(binding,
+                        "RUNTIME_EXPLICITLY_UNOBSERVED"));
+                continue;
+            }
+            if (configuredScalarContainerLeaf(activation, action)
+                    && "HEAP_OBJECT_FIELD".equals(location)) {
+                String declaredField = configuredDeclaredFieldSignature(
+                        activation, action);
+                Set<String> proofEdges = accessorProofEdges(activation,
+                        action, declaredField);
+                Set<String> requestedMethods =
+                        requestedOutputMethods(activation);
+                Set<String> allowedMethods = requestedMethods.isEmpty()
+                        ? regionMethods : requestedMethods;
+                JsonArray sites = definitions.accessorFieldSites(
+                        declaredField, proofEdges, allowedMethods);
+                binding.add("definitionSites", sites.deepCopy());
+                binding.addProperty("definitionAuthority",
+                        "STATIC_ACCESSOR_FIELD_RETURN_DEF_SITE");
+                binding.addProperty("accessorDeclaredFieldSignature",
+                        declaredField);
+                binding.add("accessorProofCausalEdgeIds",
+                        JSONL_GSON.toJsonTree(proofEdges));
+                if (!definitions.authoritative || sites.size() != 1) {
+                    concreteFallbacks.add(concreteFallback(binding,
+                            !definitions.authoritative
+                                    ? "ACCESSOR_RETURN_REQUIRES_"
+                                    + "AUTHORITATIVE_DEFINITION_INDEX"
+                                    : "ACCESSOR_RETURN_REQUIRES_ONE_"
+                                    + "EXACT_PROOF_SITE:" + sites.size()));
+                    continue;
+                }
+                JsonObject site = sites.get(0).getAsJsonObject();
+                binding.addProperty("bindingMode", "LOCAL_DEFINITION");
+                binding.addProperty("sourceBindingMode",
+                        "ACCESSOR_RETURN_DEFINITION");
+                binding.addProperty("method", string(site, "method"));
+                binding.addProperty("local", string(site, "local"));
+                binding.addProperty("accessorProofEdgeId",
+                        string(site, "edgeId"));
+                dischargeDeferredResolution(binding,
+                        "AUTHORITATIVE_STATIC_ACCESSOR_FIELD_RETURN_"
+                                + "DEFINITION_SITE_V1");
+                binding.addProperty("lazy", true);
+                result.add(binding);
+                executableCount++;
+                continue;
+            }
             if ("ARGUMENT".equals(location)
                     || "ARGUMENT_FIELD".equals(location)
                     || "RECEIVER_FIELD".equals(location)) {
@@ -1165,23 +1772,23 @@ public final class ConcolicScheduler {
                     binding.addProperty("bindingMode", "ROOT_ENTRY");
                     executableCount++;
                 } else {
-                    binding.addProperty("bindingMode",
-                            "UNRESOLVED_ARGUMENT_FIELD_PATH");
-                    hardFailure = true;
-                    complete = false;
-                    deferredCount++;
+                    concreteFallbacks.add(concreteFallback(binding,
+                            "UNRESOLVED_ARGUMENT_FIELD_PATH"));
+                    continue;
                 }
             } else if ("CALL_RETURN".equals(location)) {
+                Set<String> requestedMethods =
+                        requestedOutputMethods(activation);
+                Set<String> allowedMethods = requestedMethods.isEmpty()
+                        ? regionMethods : requestedMethods;
                 JsonArray sites = definitions.returnSites(cell,
-                        requestedOutputMethods(activation),
+                        allowedMethods,
                         requestedOutputSites(activation));
                 boolean pendingArrayFieldRoot =
                         pendingArrayFieldCallReturnRoot(action);
                 if (pendingArrayFieldRoot
                         && (!definitions.authoritative
                         || sites.size() != 1)) {
-                    binding.addProperty("bindingMode",
-                            "UNRESOLVED_CALL_RETURN_DEFINITION");
                     binding.add("definitionSites", sites.deepCopy());
                     binding.addProperty("definitionAuthority",
                             definitions.authoritative
@@ -1196,22 +1803,17 @@ public final class ConcolicScheduler {
                                     : "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
                                     + "ONE_EXACT_FILTERED_RETURN_SITE:"
                                     + sites.size());
-                    hardFailure = true;
-                    complete = false;
-                    deferredCount++;
-                    result.add(binding);
+                    concreteFallbacks.add(concreteFallback(binding,
+                            string(binding, "materializationIssue")));
                     continue;
                 }
                 if (sites.size() == 0) {
-                    binding.addProperty("bindingMode",
-                            "UNRESOLVED_CALL_RETURN_DEFINITION");
                     binding.addProperty("definitionAuthority",
                             definitions.authoritative
                                     ? "STATIC_DATAFLOW_DEF_SITE"
                                     : "LOCAL_NAME_FALLBACK");
-                    complete = false;
-                    deferredCount++;
-                    result.add(binding);
+                    concreteFallbacks.add(concreteFallback(binding,
+                            "UNRESOLVED_CALL_RETURN_DEFINITION"));
                     continue;
                 }
                 for (JsonElement siteElement : sites) {
@@ -1230,23 +1832,24 @@ public final class ConcolicScheduler {
                     localBinding.add("definitionSites", oneSite);
                     localBinding.addProperty("definitionAuthority",
                             "STATIC_DATAFLOW_DEF_SITE");
+                    dischargeDeferredResolution(localBinding,
+                            "AUTHORITATIVE_STATIC_CALL_RETURN_DEFINITION_"
+                                    + "SITE_V1");
                     localBinding.addProperty("lazy", true);
                     finalizePendingLocalArrayRoot(localBinding,
                             definitions.authoritative);
                     if (!validateExactArrayFieldMaterialization(
                             localBinding)) {
-                        hardFailure = true;
-                        complete = false;
-                        deferredCount++;
-                        result.add(localBinding);
+                        concreteFallbacks.add(concreteFallback(localBinding,
+                                string(localBinding,
+                                        "materializationIssue")));
                         continue;
                     }
                     result.add(localBinding);
                     executableCount++;
                 }
                 continue;
-            } else if (verifiedVmIntrinsicPlaceholder(action, location,
-                    cell)) {
+            } else if (vmIntrinsic) {
                 binding.addProperty("bindingMode",
                         "VM_INTRINSIC_PLACEHOLDER");
                 binding.addProperty("placeholderFunction",
@@ -1273,12 +1876,31 @@ public final class ConcolicScheduler {
                         "leafOwnerClass", leafOwnerClass(cell));
                 binding.addProperty("lazy", true);
                 if (!exactMetadata) {
-                    binding.addProperty("materializationIssue",
+                    concreteFallbacks.add(concreteFallback(binding,
                             "PLANNER_EXACT_FIELD_METADATA_CONFLICTS_WITH_"
-                                    + "STATIC_CELL");
-                    hardFailure = true;
-                    complete = false;
-                    deferredCount++;
+                                    + "STATIC_CELL"));
+                    continue;
+                } else if (path.size() > 1
+                        && action.has("valueObjectId")
+                        && longInteger(action, "valueObjectId", 0L) == 0L) {
+                    // The concrete discovery observed the first projected
+                    // reference as null.  A later write may make the path
+                    // traversable, but that does not make it a region-entry
+                    // value; keep the workload value instead of creating a
+                    // temporal alias for a future object.
+                    concreteFallbacks.add(concreteFallback(binding,
+                            "RUNTIME_OBSERVED_NULL_PROJECTED_FIELD_ROOT"));
+                    continue;
+                } else if (path.size() > 2
+                        && !hasCompleteDeclaredFieldPath(action, path)) {
+                    // Reflection can sometimes walk a deep path in one
+                    // execution, but without a declared leaf chain neither
+                    // static nor runtime evidence establishes the projected
+                    // value as a stable live-in.  Unknown inputs are concrete
+                    // passthrough by policy.
+                    concreteFallbacks.add(concreteFallback(binding,
+                            "DEEP_FIELD_PATH_LACKS_EXACT_DECLARED_CHAIN"));
+                    continue;
                 } else {
                     executableCount++;
                 }
@@ -1294,46 +1916,314 @@ public final class ConcolicScheduler {
                             definitions.authoritative
                                     ? "STATIC_DATAFLOW_DEF_SITE"
                                     : "LOCAL_NAME_FALLBACK");
+                    if (definitions.authoritative && sites.size() == 1) {
+                        dischargeDeferredResolution(binding,
+                                "AUTHORITATIVE_STATIC_LOCAL_DEFINITION_"
+                                        + "SITE_V1");
+                    }
                     finalizePendingLocalArrayRoot(binding,
                             definitions.authoritative);
                     if (definitions.authoritative && sites.size() == 0) {
-                        binding.addProperty("bindingMode",
-                                "UNRESOLVED_LOCAL_DEFINITION");
-                        complete = false;
-                        deferredCount++;
+                        concreteFallbacks.add(concreteFallback(binding,
+                                "UNRESOLVED_LOCAL_DEFINITION"));
+                        continue;
                     } else {
                         executableCount++;
                     }
                     binding.addProperty("lazy", true);
                 } else {
-                    binding.addProperty("bindingMode", "UNSUPPORTED_LIVE_IN");
-                    binding.addProperty("deferred", true);
-                    complete = false;
-                    deferredCount++;
+                    concreteFallbacks.add(concreteFallback(binding,
+                            "UNSUPPORTED_LIVE_IN"));
+                    continue;
                 }
             } else {
-                binding.addProperty("bindingMode", "UNSUPPORTED");
-                binding.addProperty("deferred", true);
-                complete = false;
-                deferredCount++;
+                concreteFallbacks.add(concreteFallback(binding,
+                        "UNSUPPORTED_MATERIALIZATION"));
+                continue;
+            }
+            if (containerInputPorts.contains(string(binding, "symbol"))
+                    && ArrayFieldContract.from(binding).fieldBackedArray) {
+                binding.addProperty("bindingMode",
+                        "CONTAINER_INPUT_OBSERVATION");
+                binding.addProperty("arrayFieldObservationOnly", true);
+                binding.addProperty("modelControllable", false);
+                binding.addProperty("containerObservationPolicy",
+                        "FIRST_MATCHING_CONTAINER_INSTANCE");
+                binding.addProperty("containerObservationAuthority",
+                        "FIRST_MATCHING_CONTAINER_INSTANCE_"
+                                + "APPROXIMATION_V1");
+                result.add(binding);
+                continue;
+            }
+            if (boundedRequestedMapStateObservation(activation, binding)) {
+                binding.addProperty("bindingMode",
+                        MAP_STATE_INPUT_OBSERVATION_MODE);
+                binding.addProperty("mapStateObservationOnly", true);
+                binding.addProperty("modelControllable", false);
+                binding.addProperty("containerObservationPolicy",
+                        "FIRST_MATCHING_CONTAINER_INSTANCE");
+                binding.addProperty("containerObservationAuthority",
+                        FIRST_CONTAINER_OBSERVATION_AUTHORITY);
+                binding.addProperty("mapStateInputCell",
+                        string(binding, "cell"));
+                binding.addProperty("mapStateRequestedOutputCell",
+                        string(object(activation, "requestedOutput"),
+                                "cell"));
+                result.add(binding);
+                continue;
             }
             if (!validateExactArrayFieldMaterialization(binding)) {
-                hardFailure = true;
-                complete = false;
                 if (isExecutableBindingMode(string(binding,
                         "bindingMode")) && executableCount > 0) {
                     executableCount--;
                 }
-                deferredCount++;
+                concreteFallbacks.add(concreteFallback(binding,
+                        string(binding, "materializationIssue")));
+                continue;
             }
             result.add(binding);
         }
-        boolean ready = !hardFailure
-                && (sourceActionCount == 0 || executableCount > 0
-                || vmIntrinsicPlaceholderCount > 0);
-        return new MaterializationPlan(result, ready, complete,
+        boolean ready = sourceActionCount == 0 || executableCount > 0
+                || vmIntrinsicPlaceholderCount > 0
+                || concreteFallbacks.size() > 0;
+        return new MaterializationPlan(result, concreteFallbacks, ready, true,
                 executableCount, deferredCount,
                 vmIntrinsicPlaceholderCount);
+    }
+
+    private static Set<String> containerBindingSymbols(
+            JsonObject activation, String member) {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement element : array(activation,
+                "containerElementFieldBindings")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject binding = element.getAsJsonObject();
+            String symbol = string(binding, member);
+            if (bool(binding, "complete", false) && !symbol.isEmpty()) {
+                result.add(symbol);
+            }
+        }
+        return result;
+    }
+
+    private static boolean configuredScalarContainerLeaf(
+            JsonObject activation, JsonObject action) {
+        Set<String> configured = stringSet(activation,
+                "configuredContainerFieldSignatures");
+        if (configured.isEmpty()) {
+            return false;
+        }
+        for (String candidate : new String[]{
+                string(action, "accessFieldSignature"),
+                string(action, "leafFieldSignature"),
+                string(action, "field"), string(action, "cell")}) {
+            if (configured.contains(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String configuredDeclaredFieldSignature(
+            JsonObject activation, JsonObject action) {
+        Set<String> configured = stringSet(activation,
+                "configuredContainerFieldSignatures");
+        for (String candidate : new String[]{
+                string(action, "accessFieldSignature"),
+                string(action, "leafFieldSignature"),
+                string(action, "field"), string(action, "cell")}) {
+            if (configured.contains(candidate)
+                    && declaredField(candidate) != null) {
+                return candidate;
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Restricts an accessor-return materialization to the exact causal proof
+     * already carried by the selected container leaf.  Older region catalogs
+     * may not have a leaf binding; in that case the configured output slice's
+     * causal edge set is the bounded authority.  No name-only getter match is
+     * admitted.
+     */
+    private static Set<String> accessorProofEdges(JsonObject activation,
+                                                   JsonObject action,
+                                                   String declaredField) {
+        Set<String> result = new LinkedHashSet<>();
+        String symbol = string(action, "symbol");
+        for (JsonElement element : array(activation,
+                "containerElementFieldBindings")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject binding = element.getAsJsonObject();
+            if (!bool(binding, "complete", false)
+                    || !(symbol.equals(string(binding, "baseInputSymbol"))
+                    || declaredField.equals(string(binding,
+                    "declaredFieldSignature")))) {
+                continue;
+            }
+            result.addAll(stringSet(binding, "proofCausalEdgeIds"));
+        }
+        if (result.isEmpty()) {
+            result.addAll(stringSet(object(activation,
+                    "requestedOutputSlice"), "causalEdgeIds"));
+        }
+        return result;
+    }
+
+    private static boolean boundedRequestedStateCore(
+            JsonObject activation) {
+        return "HEAP_STATE".equals(string(object(activation,
+                "requestedOutput"), "kind"))
+                && (bool(activation,
+                "configuredOutputClosureSynthesized", false)
+                || bool(activation,
+                "boundedPartialOutputSliceAdmitted", false));
+    }
+
+    /**
+     * A requested Map heap state is a versioned container value, not a
+     * scalar reference that the VM must make controllable.  Keep the real
+     * getfield hook so runtime identity and mutations remain observable, but
+     * never ask the VM to symbolize the Map reference itself.
+     */
+    private static boolean boundedRequestedMapStateObservation(
+            JsonObject activation, JsonObject binding) {
+        if (!RegionCaptureGoal.from(activation).isOutputClosure()
+                || !"BOUNDED_OUTPUT_RELEVANT_PATHS".equals(string(
+                object(activation, RegionCaptureGoal.FIELD), "scope"))) {
+            return false;
+        }
+        JsonObject requested = object(activation, "requestedOutput");
+        String cell = string(binding, "cell");
+        return "HEAP_STATE".equals(string(requested, "kind"))
+                && !cell.isEmpty()
+                && cell.equals(string(requested, "cell"))
+                && "HEAP_OBJECT_FIELD".equals(string(binding, "location"))
+                && "FIELD_ACCESS".equals(string(binding, "bindingMode"))
+                && fieldPath(cell).size() == 1
+                && declaresMapReference(binding);
+    }
+
+    private static boolean declaresMapReference(JsonObject binding) {
+        for (String candidate : new String[]{
+                string(binding, "javaType"),
+                string(binding, "inputJavaType"),
+                string(binding, "accessFieldType")}) {
+            if (isMapReferenceType(candidate)) {
+                return true;
+            }
+        }
+        for (String candidate : new String[]{
+                string(binding, "leafFieldSignature"),
+                string(binding, "accessFieldSignature"),
+                string(binding, "field"), string(binding, "cell")}) {
+            String[] declared = declaredField(candidate);
+            if (declared != null && isMapReferenceType(declared[1])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isMapReferenceType(String type) {
+        String candidate = safe(type).trim();
+        if (candidate.startsWith("L") && candidate.endsWith(";")) {
+            candidate = candidate.substring(1, candidate.length() - 1)
+                    .replace('/', '.');
+        }
+        if (candidate.isEmpty() || candidate.startsWith("[")
+                || candidate.endsWith("[]")) {
+            return false;
+        }
+        try {
+            ClassLoader loader = Thread.currentThread()
+                    .getContextClassLoader();
+            Class<?> declared = Class.forName(candidate, false,
+                    loader == null ? ConcolicScheduler.class
+                            .getClassLoader() : loader);
+            return Map.class.isAssignableFrom(declared);
+        } catch (Throwable ignored) {
+            // Application Map subtypes may be absent from GraphChecker's
+            // own class path; the standard Map declaration remains exact.
+            return "java.util.Map".equals(candidate);
+        }
+    }
+
+    private static JsonObject concreteFallback(JsonObject action,
+                                               String reason) {
+        JsonObject fallback = action.deepCopy();
+        fallback.remove("deferred");
+        fallback.remove("deferredResolution");
+        fallback.remove("deferredResolutionAuthority");
+        fallback.addProperty("bindingMode", "CONCRETE_PASSTHROUGH");
+        fallback.addProperty("concreteFallback", true);
+        fallback.addProperty("modelControllable", false);
+        fallback.addProperty("concreteFallbackReason", firstNonBlank(reason,
+                "NO_EXACT_SYMBOLIC_MATERIALIZATION"));
+        fallback.addProperty("concreteFallbackAuthority",
+                "STATIC_RUNTIME_UNCONFIRMED_USE_WORKLOAD_VALUE_V1");
+        return fallback;
+    }
+
+    private static boolean hasCompleteDeclaredFieldPath(
+            JsonObject action, List<String> expectedPath) {
+        JsonArray declarations = array(action,
+                "fieldPathLeafDeclarations");
+        for (JsonElement element : declarations) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject declaration = element.getAsJsonObject();
+            if (!bool(declaration, "complete", false)
+                    || string(declaration, "fieldSignature").isEmpty()
+                    || string(declaration,
+                    "declaredFieldOwnerClass").isEmpty()
+                    || string(declaration, "declaredFieldType").isEmpty()) {
+                continue;
+            }
+            JsonArray declaredPath = array(declaration, "fieldPath");
+            if (declaredPath.size() != expectedPath.size()) {
+                continue;
+            }
+            boolean matches = true;
+            for (int index = 0; index < expectedPath.size(); index++) {
+                if (!expectedPath.get(index).equals(
+                        declaredPath.get(index).getAsString())) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void dischargeDeferredResolution(JsonObject binding,
+                                                     String authority) {
+        String requestAuthority = string(binding,
+                "deferredResolutionAuthority");
+        boolean requested = bool(binding, "deferredResolution", false)
+                || bool(binding, "deferred", false)
+                || !requestAuthority.isEmpty();
+        binding.remove("deferredResolution");
+        binding.remove("deferredResolutionAuthority");
+        binding.remove("deferred");
+        if (requested) {
+            binding.addProperty("deferredResolutionDischarged", true);
+            binding.addProperty("deferredResolutionDischargeAuthority",
+                    authority);
+            if (!requestAuthority.isEmpty()) {
+                binding.addProperty("deferredResolutionRequestAuthority",
+                        requestAuthority);
+            }
+        }
     }
 
     private static boolean verifiedVmIntrinsicPlaceholder(
@@ -1341,6 +2231,26 @@ public final class ConcolicScheduler {
         return "ENVIRONMENT_MODEL".equals(location)
                 && "ENVIRONMENT".equals(string(action, "sourceKind"))
                 && SymbolicEnvironment.isCurrentTimeMillisReturn(safe(cell));
+    }
+
+    /**
+     * An unobserved planner candidate is normally concrete passthrough.  A
+     * deferred call-return/local candidate is different: its runtime row is
+     * deliberately incomplete until the scheduler consults the authoritative
+     * static DefinitionIndex.  Give that exact resolution a chance before
+     * applying the concrete fallback; the location-specific branches below
+     * still fall back when no usable definition exists.
+     */
+    private static boolean authoritativeDefinitionResolutionRequested(
+            JsonObject action) {
+        String location = string(action, "location");
+        if (!"CALL_RETURN".equals(location)
+                && !"REGION_LIVE_IN".equals(location)) {
+            return false;
+        }
+        return bool(action, "deferredResolution", false)
+                || bool(action, "deferred", false)
+                || !string(action, "deferredResolutionAuthority").isEmpty();
     }
 
     /**
@@ -1405,7 +2315,8 @@ public final class ConcolicScheduler {
     private static boolean isExecutableBindingMode(String mode) {
         return "ROOT_ENTRY".equals(mode)
                 || "LOCAL_DEFINITION".equals(mode)
-                || "FIELD_ACCESS".equals(mode);
+                || "FIELD_ACCESS".equals(mode)
+                || MAP_STATE_INPUT_OBSERVATION_MODE.equals(mode);
     }
 
     /**
@@ -1707,7 +2618,8 @@ public final class ConcolicScheduler {
 
     private static MaterializationPlan materializationPlan(
             JsonObject activation) {
-        return materializationPlan(activation, DefinitionIndex.fallback());
+        return materializationPlan(activation, DefinitionIndex.fallback(),
+                Collections.<String>emptySet());
     }
 
     private static String leafField(String cell) {
@@ -1772,7 +2684,8 @@ public final class ConcolicScheduler {
     }
 
     private static MergePlan buildMergePlan(Map<String, Region> regions,
-                                            List<JsonObject> edges) {
+                                            List<JsonObject> edges,
+                                            List<JsonObject> staticGraph) {
         UnionFind aliases = new UnionFind();
         List<JsonObject> equalityRelations = new ArrayList<>();
         List<JsonObject> stateMerges = new ArrayList<>();
@@ -1796,15 +2709,19 @@ public final class ConcolicScheduler {
             }
             Endpoint from = endpoint(regions.get(fromRegion), fromRegion,
                     fromCell);
-            Endpoint to = endpoint(regions.get(toRegion), toRegion, toCell);
+            ConsumerEndpointResolution consumer = consumerEndpoint(
+                    regions.get(toRegion), toRegion, toCell, staticGraph);
+            Endpoint to = consumer.endpoint;
             if ("EQUALITY".equals(relation)) {
                 aliases.union(from.id, to.id);
                 JsonObject equality = relation(edge, from, to,
                         "SYMBOLIC_EQUALITY");
+                consumer.addProof(equality);
                 equalityRelations.add(equality);
             } else if ("READ_FROM".equals(relation)) {
                 JsonObject state = relation(edge, from, to,
                         "VERSIONED_HEAP_READ_FROM");
+                consumer.addProof(state);
                 state.addProperty("requiresOrder",
                         bool(edge, "requiresOrder", true));
                 state.addProperty("requiresObjectIdentity",
@@ -1941,6 +2858,98 @@ public final class ConcolicScheduler {
             }
         }
         return new Endpoint(regionId + "::" + cell, cell);
+    }
+
+    /**
+     * Runtime protocol validation names the concrete callback local, while a
+     * static region may expose the declared field returned by that accessor
+     * as its symbolic input.  Canonicalize that consumer only with one exact,
+     * fully authoritative accessor-return value-flow proof.  A direct input
+     * match remains preferred; missing or ambiguous proof retains the raw
+     * synthetic endpoint so later context selection fails closed.
+     */
+    private static ConsumerEndpointResolution consumerEndpoint(
+            Region region, String regionId, String rawCell,
+            List<JsonObject> staticGraph) {
+        if (region == null) {
+            return ConsumerEndpointResolution.raw(regionId, rawCell);
+        }
+        String direct = region.uniqueInputPort(rawCell);
+        if (!direct.isEmpty()) {
+            return ConsumerEndpointResolution.direct(direct, rawCell);
+        }
+        // A duplicated exact input is already ambiguous.  Do not escape that
+        // ambiguity through a different static projection.
+        if (region.hasInputCell(rawCell)) {
+            return ConsumerEndpointResolution.raw(regionId, rawCell);
+        }
+        List<ConsumerInputProof> matches = new ArrayList<>();
+        for (JsonObject proof : staticGraph == null
+                ? Collections.<JsonObject>emptyList() : staticGraph) {
+            String inputCell = string(proof, "fromCell");
+            String inputPort = region.uniqueInputPort(inputCell);
+            if (inputPort.isEmpty()
+                    || !completeAccessorInputProof(proof, rawCell,
+                    inputCell)) {
+                continue;
+            }
+            matches.add(new ConsumerInputProof(inputPort, inputCell,
+                    string(proof, "id")));
+        }
+        if (matches.size() != 1) {
+            return ConsumerEndpointResolution.raw(regionId, rawCell);
+        }
+        ConsumerInputProof proof = matches.get(0);
+        return ConsumerEndpointResolution.canonical(proof.inputPort,
+                proof.inputCell, rawCell, proof.edgeId);
+    }
+
+    private static boolean completeAccessorInputProof(JsonObject proof,
+                                                       String rawCell,
+                                                       String inputCell) {
+        if (proof == null || string(proof, "id").isEmpty()
+                || !"accessor_field_return".equals(string(proof, "kind"))
+                || !"value_flow".equals(string(proof, "relation"))
+                || !"backward_provenance".equals(string(proof,
+                "direction"))
+                || !proof.has("mappingOnly")
+                || bool(proof, "mappingOnly", true)
+                || !bool(proof, "semanticAssertionsAllowed", false)
+                || !bool(proof, "eligibleForAutomaticDerivation", false)
+                || !bool(proof, "eligibleForAutomaticSmt", false)
+                || !safe(rawCell).equals(string(proof, "toCell"))
+                || !safe(inputCell).equals(string(proof, "fromCell"))) {
+            return false;
+        }
+        String declaredSignature = string(proof,
+                "declaredFieldSignature");
+        String[] declared = declaredField(declaredSignature);
+        String invoke = string(proof, "invoke");
+        String implementation = string(proof,
+                "accessorImplementationMethod");
+        return declared != null
+                && declaredSignature.equals(inputCell)
+                && declared[0].equals(string(proof, "declaredFieldOwner"))
+                && declared[1].equals(string(proof, "declaredFieldType"))
+                && declared[2].equals(string(proof, "declaredFieldName"))
+                && "SOOT_RESOLVED_DECLARATION_HIERARCHY".equals(
+                string(proof, "declaredFieldAuthority"))
+                && !invoke.isEmpty() && !implementation.isEmpty()
+                && declared[1].equals(methodReturnType(invoke))
+                && declared[1].equals(methodReturnType(implementation))
+                && "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY".equals(
+                string(proof, "accessorImplementationAuthority"));
+    }
+
+    private static String methodReturnType(String signature) {
+        String value = safe(signature);
+        int colon = value.indexOf(':');
+        int open = value.indexOf('(', colon + 1);
+        int separator = open < 0 ? -1 : value.lastIndexOf(' ', open);
+        if (colon < 0 || open < 0 || separator <= colon) {
+            return "";
+        }
+        return value.substring(colon + 1, separator).trim();
     }
 
     private static String producerOutputCell(JsonObject edge,
@@ -2534,6 +3543,10 @@ public final class ConcolicScheduler {
                 new LinkedHashMap<>();
         private final Map<String, List<JsonObject>> byCallReturn =
                 new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> byAccessorField =
+                new LinkedHashMap<>();
+        private final Map<String, Set<String>> callsByMethod =
+                new LinkedHashMap<>();
 
         private DefinitionIndex(boolean authoritative) {
             this.authoritative = authoritative;
@@ -2547,7 +3560,14 @@ public final class ConcolicScheduler {
             DefinitionIndex result = new DefinitionIndex(true);
             Set<String> seen = new LinkedHashSet<>();
             Set<String> seenCallReturns = new LinkedHashSet<>();
+            Set<String> seenAccessorReturns = new LinkedHashSet<>();
             for (JsonObject edge : edges) {
+                String caller = string(edge, "method");
+                String callee = string(edge, "invoke");
+                if (!caller.isEmpty() && !callee.isEmpty()) {
+                    result.callsByMethod.computeIfAbsent(caller,
+                            ignored -> new LinkedHashSet<>()).add(callee);
+                }
                 String cell = string(edge, "toCell");
                 Matcher localCell = LOCAL_CELL.matcher(cell);
                 if (!localCell.matches()) {
@@ -2571,6 +3591,29 @@ public final class ConcolicScheduler {
                 if (seen.add(key)) {
                     result.byCell.computeIfAbsent(cell,
                             ignored -> new ArrayList<>()).add(site);
+                }
+
+                String declaredField = string(edge,
+                        "declaredFieldSignature");
+                if ("accessor_field_return".equals(string(edge, "kind"))
+                        && "HEAP_READ".equals(string(edge,
+                        "transferKind"))
+                        && !declaredField.isEmpty()
+                        && declaredField.equals(string(edge, "fromCell"))) {
+                    String accessorKey = declaredField + "\n"
+                            + string(edge, "siteId");
+                    if (seenAccessorReturns.add(accessorKey)) {
+                        JsonObject accessorSite = site.deepCopy();
+                        accessorSite.addProperty("edgeId",
+                                string(edge, "id"));
+                        accessorSite.addProperty("declaredFieldSignature",
+                                declaredField);
+                        accessorSite.addProperty("authority",
+                                "STATIC_ACCESSOR_FIELD_RETURN_DEF_SITE");
+                        result.byAccessorField.computeIfAbsent(declaredField,
+                                ignored -> new ArrayList<>())
+                                .add(accessorSite);
+                    }
                 }
 
                 String source = string(edge, "fromCell");
@@ -2632,16 +3675,179 @@ public final class ConcolicScheduler {
             }
             return result;
         }
+
+        private JsonArray accessorFieldSites(String declaredField,
+                                             Set<String> proofEdgeIds,
+                                             Set<String> allowedMethods) {
+            JsonArray result = new JsonArray();
+            if (declaredField == null || declaredField.isEmpty()
+                    || proofEdgeIds == null || proofEdgeIds.isEmpty()) {
+                return result;
+            }
+            List<JsonObject> sites = byAccessorField.get(declaredField);
+            if (sites == null) {
+                return result;
+            }
+            for (JsonObject site : sites) {
+                if (!proofEdgeIds.contains(string(site, "edgeId"))) {
+                    continue;
+                }
+                if (allowedMethods != null && !allowedMethods.isEmpty()
+                        && !allowedMethods.contains(string(site,
+                        "method"))) {
+                    continue;
+                }
+                result.add(site.deepCopy());
+            }
+            return result;
+        }
+
+        private String uniqueOutermost(Set<String> methods) {
+            if (methods == null || methods.isEmpty()) {
+                return "";
+            }
+            String selected = "";
+            for (String candidate : methods) {
+                boolean reachesAll = true;
+                for (String target : methods) {
+                    if (!candidate.equals(target)
+                            && !reaches(candidate, target,
+                            new LinkedHashSet<String>())) {
+                        reachesAll = false;
+                        break;
+                    }
+                }
+                if (!reachesAll) {
+                    continue;
+                }
+                if (!selected.isEmpty()) {
+                    return "";
+                }
+                selected = candidate;
+            }
+            return selected;
+        }
+
+        private boolean reaches(String source, String target,
+                                Set<String> visited) {
+            if (!visited.add(source)) {
+                return false;
+            }
+            Set<String> callees = callsByMethod.get(source);
+            if (callees == null) {
+                return false;
+            }
+            if (callees.contains(target)) {
+                return true;
+            }
+            for (String callee : callees) {
+                if (reaches(callee, target, visited)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private static final class CaptureEvidence {
+        private final Map<String, Set<String>> observedMethodsByInstance;
+
+        private CaptureEvidence(
+                Map<String, Set<String>> observedMethodsByInstance) {
+            this.observedMethodsByInstance = observedMethodsByInstance;
+        }
+
+        private static CaptureEvidence from(List<JsonObject> rows) {
+            Map<String, Set<String>> observed = new LinkedHashMap<>();
+            for (JsonObject row : rows) {
+                String instance = string(row, "regionInstanceId");
+                if (instance.isEmpty()) {
+                    continue;
+                }
+                Set<String> methods = observed.get(instance);
+                if (methods == null) {
+                    methods = new LinkedHashSet<>();
+                    observed.put(instance, methods);
+                }
+                methods.addAll(stringSet(row, "observedMethods"));
+            }
+            return new CaptureEvidence(observed);
+        }
+
+        private Set<String> observedMethods(JsonObject activation) {
+            String instance = string(activation, "regionInstanceId");
+            Set<String> methods = observedMethodsByInstance.get(instance);
+            return methods == null
+                    ? Collections.<String>emptySet()
+                    : methods;
+        }
     }
 
     private static final class Region {
         private final String regionId;
+        private final Set<String> methods = new LinkedHashSet<>();
         private final Map<String, String> portByCell = new LinkedHashMap<>();
+        private final Map<String, List<String>> inputPortsByCell =
+                new LinkedHashMap<>();
+        private final Map<String, JsonObject> outputByCell =
+                new LinkedHashMap<>();
+        private final Map<String, JsonObject> outputSliceByPort =
+                new LinkedHashMap<>();
 
         private Region(JsonObject row) {
             this.regionId = string(row, "regionId");
-            collectPorts(array(row, "symbolicInputs"));
-            collectPorts(array(row, "outputs"));
+            this.methods.addAll(stringSet(row, "methods"));
+            collectInputs(array(row, "symbolicInputs"));
+            collectOutputs(array(row, "outputs"));
+            for (JsonElement element : array(row, "outputSlices")) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject slice = element.getAsJsonObject();
+                String outputPort = string(slice, "outputPort");
+                if (!outputPort.isEmpty()) {
+                    outputSliceByPort.put(outputPort, slice.deepCopy());
+                }
+            }
+        }
+
+        private void collectInputs(JsonArray inputs) {
+            collectPorts(inputs);
+            for (JsonElement element : inputs) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject input = element.getAsJsonObject();
+                String id = firstNonBlank(string(input, "portId"),
+                        string(input, "symbol"));
+                String cell = string(input, "cell");
+                if (!id.isEmpty() && !cell.isEmpty()) {
+                    add(inputPortsByCell, cell, id);
+                }
+            }
+        }
+
+        private boolean hasInputCell(String cell) {
+            return inputPortsByCell.containsKey(safe(cell));
+        }
+
+        private String uniqueInputPort(String cell) {
+            List<String> ports = inputPortsByCell.get(safe(cell));
+            return ports != null && ports.size() == 1 ? ports.get(0) : "";
+        }
+
+        private void collectOutputs(JsonArray outputs) {
+            collectPorts(outputs);
+            for (JsonElement element : outputs) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject output = element.getAsJsonObject();
+                String cell = string(output, "cell");
+                if (!cell.isEmpty()) {
+                    outputByCell.put(cell, output.deepCopy());
+                }
+            }
         }
 
         private void collectPorts(JsonArray ports) {
@@ -2670,19 +3876,80 @@ public final class ConcolicScheduler {
         }
     }
 
+    private static final class ConsumerInputProof {
+        private final String inputPort;
+        private final String inputCell;
+        private final String edgeId;
+
+        private ConsumerInputProof(String inputPort, String inputCell,
+                                   String edgeId) {
+            this.inputPort = safe(inputPort);
+            this.inputCell = safe(inputCell);
+            this.edgeId = safe(edgeId);
+        }
+    }
+
+    private static final class ConsumerEndpointResolution {
+        private final Endpoint endpoint;
+        private final String rawCell;
+        private final String proofEdgeId;
+        private final String proofAuthority;
+
+        private ConsumerEndpointResolution(Endpoint endpoint,
+                String rawCell, String proofEdgeId, String proofAuthority) {
+            this.endpoint = endpoint;
+            this.rawCell = safe(rawCell);
+            this.proofEdgeId = safe(proofEdgeId);
+            this.proofAuthority = safe(proofAuthority);
+        }
+
+        private static ConsumerEndpointResolution direct(String port,
+                                                          String cell) {
+            return new ConsumerEndpointResolution(new Endpoint(port, cell),
+                    cell, "", "");
+        }
+
+        private static ConsumerEndpointResolution raw(String regionId,
+                                                       String cell) {
+            return new ConsumerEndpointResolution(new Endpoint(
+                    safe(regionId) + "::" + safe(cell), cell), cell, "", "");
+        }
+
+        private static ConsumerEndpointResolution canonical(
+                String port, String cell, String rawCell, String proofEdgeId) {
+            return new ConsumerEndpointResolution(new Endpoint(port, cell),
+                    rawCell, proofEdgeId,
+                    ACCESSOR_INPUT_CANONICALIZATION_AUTHORITY);
+        }
+
+        private void addProof(JsonObject relation) {
+            if (relation == null || proofEdgeId.isEmpty()) {
+                return;
+            }
+            relation.addProperty("rawToCell", rawCell);
+            relation.addProperty("toCanonicalizationProofEdgeId",
+                    proofEdgeId);
+            relation.addProperty("toCanonicalizationAuthority",
+                    proofAuthority);
+        }
+    }
+
     private static final class MaterializationPlan {
         private final JsonArray actions;
+        private final JsonArray concreteFallbacks;
         private final boolean ready;
         private final boolean complete;
         private final int executableCount;
         private final int deferredCount;
         private final int vmIntrinsicPlaceholderCount;
 
-        private MaterializationPlan(JsonArray actions, boolean ready,
+        private MaterializationPlan(JsonArray actions,
+                                    JsonArray concreteFallbacks, boolean ready,
                                     boolean complete, int executableCount,
                                     int deferredCount,
                                     int vmIntrinsicPlaceholderCount) {
             this.actions = actions;
+            this.concreteFallbacks = concreteFallbacks;
             this.ready = ready;
             this.complete = complete;
             this.executableCount = executableCount;
@@ -2691,7 +3958,8 @@ public final class ConcolicScheduler {
         }
 
         private MaterializationPlan notReady() {
-            return new MaterializationPlan(actions, false, complete,
+            return new MaterializationPlan(actions, concreteFallbacks, false,
+                    complete,
                     executableCount, deferredCount,
                     vmIntrinsicPlaceholderCount);
         }
@@ -3515,25 +4783,38 @@ public final class ConcolicScheduler {
         public final Path staticGraph;
         public final Path summaries;
         public final Path pathRecords;
+        public final Path runtimeRegionInstances;
         public final Path outputDirectory;
         public final String regionId;
         public final String activationId;
         public final String targetSite;
+        public final String requestedOutputCell;
+        public final String requestedOutputCaptureSite;
+        public final int requestedOutputCaptureOccurrence;
         public final int maxJobs;
         public final boolean allowMultipleJobsPerRegion;
         public final boolean forceBranchValidation;
         public final boolean captureOnly;
+        public final boolean allowBoundedPartialOutputSlice;
+        public final Set<String> boundedContainerFieldSignatures;
         public final RecursiveRegionWorklist.Bounds regionBounds;
         public final RegionPathWorklist.Bounds pathBounds;
 
         private Arguments(Path regions, Path activations,
                           Path edgeValidations, Path staticGraph,
                           Path summaries, Path pathRecords,
+                          Path runtimeRegionInstances,
                           Path outputDirectory, String regionId,
-                          String activationId, String targetSite, int maxJobs,
+                          String activationId, String targetSite,
+                          String requestedOutputCell,
+                          String requestedOutputCaptureSite,
+                          int requestedOutputCaptureOccurrence,
+                          int maxJobs,
                           boolean allowMultipleJobsPerRegion,
                           boolean forceBranchValidation,
                           boolean captureOnly,
+                          boolean allowBoundedPartialOutputSlice,
+                          Set<String> boundedContainerFieldSignatures,
                           RecursiveRegionWorklist.Bounds regionBounds,
                           RegionPathWorklist.Bounds pathBounds) {
             this.regions = regions;
@@ -3542,14 +4823,28 @@ public final class ConcolicScheduler {
             this.staticGraph = staticGraph;
             this.summaries = summaries;
             this.pathRecords = pathRecords;
+            this.runtimeRegionInstances = runtimeRegionInstances;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
             this.activationId = safe(activationId);
             this.targetSite = safe(targetSite);
+            this.requestedOutputCell = safe(requestedOutputCell);
+            this.requestedOutputCaptureSite = safe(
+                    requestedOutputCaptureSite);
+            this.requestedOutputCaptureOccurrence = Math.max(0,
+                    requestedOutputCaptureOccurrence);
             this.maxJobs = Math.max(1, maxJobs);
             this.allowMultipleJobsPerRegion = allowMultipleJobsPerRegion;
             this.forceBranchValidation = forceBranchValidation;
             this.captureOnly = captureOnly;
+            this.allowBoundedPartialOutputSlice =
+                    allowBoundedPartialOutputSlice;
+            this.boundedContainerFieldSignatures =
+                    boundedContainerFieldSignatures == null
+                            ? Collections.<String>emptySet()
+                            : Collections.unmodifiableSet(
+                            new LinkedHashSet<>(
+                                    boundedContainerFieldSignatures));
             this.regionBounds = regionBounds;
             this.pathBounds = pathBounds;
         }
@@ -3579,15 +4874,26 @@ public final class ConcolicScheduler {
             Path staticGraph = optionalPath(values.get("static-graph"));
             Path summaries = optionalPath(values.get("summaries"));
             Path pathRecords = optionalPath(values.get("path-records"));
+            Path runtimeRegionInstances = optionalPath(values.get(
+                    "runtime-region-instances"));
             return new Arguments(regions, activations, edges, staticGraph,
-                    summaries, pathRecords, output,
+                    summaries, pathRecords, runtimeRegionInstances, output,
                     firstNonBlank(values.get("region-id")),
                     firstNonBlank(values.get("activation-id")),
                     firstNonBlank(values.get("target-site")),
+                    firstNonBlank(values.get("requested-output-cell")),
+                    firstNonBlank(values.get(
+                            "requested-output-capture-site")),
+                    parseInt(values.get(
+                            "requested-output-capture-occurrence"), 0),
                     parseInt(values.get("max-jobs"), 1),
                     Boolean.parseBoolean(values.get("multiple-per-region")),
                     Boolean.parseBoolean(values.get("force-branch-validation")),
                     Boolean.parseBoolean(values.get("capture-only")),
+                    Boolean.parseBoolean(values.get(
+                            "allow-bounded-partial-output-slice")),
+                    pipeSeparatedSet(values.get(
+                            "bounded-container-field-signatures")),
                     new RecursiveRegionWorklist.Bounds(
                             parseInt(firstNonBlank(values.get(
                                     "max-region-depth"), values.get(
@@ -3614,6 +4920,20 @@ public final class ConcolicScheduler {
                             parseInt(values.get("max-path-tasks"), 256),
                             parseLong(values.get(
                                     "max-path-wall-clock-ms"), 30000L)));
+        }
+
+        private static Set<String> pipeSeparatedSet(String value) {
+            Set<String> result = new LinkedHashSet<>();
+            if (value == null || value.trim().isEmpty()) {
+                return result;
+            }
+            for (String member : value.split("\\|")) {
+                String normalized = safe(member).trim();
+                if (!normalized.isEmpty()) {
+                    result.add(normalized);
+                }
+            }
+            return result;
         }
 
         private static Path requiredPath(Map<String, String> values,

@@ -20,6 +20,13 @@ assert_contains() {
     || fail "expected output to contain: ${expected}"
 }
 
+assert_not_contains() {
+  local text=$1
+  local unexpected=$2
+  [[ "${text}" != *"${unexpected}"* ]] \
+    || fail "expected output not to contain: ${unexpected}"
+}
+
 mkdir -p \
   "${fixture_root}/repo/module/classes" \
   "${fixture_root}/repo/module/test-classes" \
@@ -30,10 +37,14 @@ mkdir -p \
   "${fixture_root}/bin"
 
 for file in \
-  tool/fake.jar tool/env.jar tool/pom.xml target.yaml rpc.jsonl bin/z3 \
+  tool/fake.jar tool/env.jar tool/pom.xml target.yaml rpc.jsonl bin/z3 bin/java \
   artifacts/symbolic_regions.jsonl artifacts/static_dataflow_edges.jsonl \
+  artifacts/symbolic_region_edges.jsonl \
   artifacts/runtime/concolic_activation_plan.jsonl \
+  artifacts/runtime/runtime_region_instances.jsonl \
   artifacts/runtime/runtime_region_edge_validation.jsonl \
+  artifacts/runtime/unit_test_instantiated_graph.json \
+  artifacts/runtime/unit_test_role_merged_graph.json \
   artifacts/schedule/concolic_region_results.jsonl \
   artifacts/schedule/scheduled_activation_plan.jsonl \
   artifacts/schedule/concolic_region_summaries.jsonl \
@@ -47,13 +58,42 @@ for file in \
   : > "${fixture_root}/${file}"
 done
 
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${fixture_root}/bin/java"
+chmod +x "${fixture_root}/bin/java"
+printf '%s\n' \
+  '{"id":"DF.Z","kind":"z-static","fromCell":"z-cell","toCell":"sink","method":"m","siteId":"z"}' \
+  '{"id":"DF.A","kind":"a-static","fromCell":"a-cell","toCell":"sink","method":"m","siteId":"a"}' \
+  > "${fixture_root}/artifacts/static_dataflow_edges.jsonl"
+printf '%s\n' \
+  '{"regionId":"REGION.0","anchorMethod":"m","symbolicInputs":[{"portId":"in.0"}],"outputs":[{"portId":"out.0"}],"truncated":false}' \
+  > "${fixture_root}/artifacts/symbolic_regions.jsonl"
+printf '%s\n' \
+  '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","fromPort":"out.0","toRegion":"REGION.0","toPort":"in.0"}' \
+  > "${fixture_root}/artifacts/symbolic_region_edges.jsonl"
+printf '%s\n' \
+  '{"summary":{"test":"fixture","instantiatedNodeCount":2,"instantiatedEdgeCount":1},"nodes":[{"id":"n-z","process":"p","threadName":"worker","method":"m","cell":"z-cell"},{"id":"n-a","process":"p","threadName":"worker","method":"m","cell":"a-cell"}],"edges":[{"id":"DYN.9","kind":"transfer","staticEdgeId":"DF.A","from":"n-a","to":"n-z","method":"m","occurrences":1}]}' \
+  > "${fixture_root}/artifacts/runtime/unit_test_instantiated_graph.json"
+cp "${fixture_root}/artifacts/runtime/unit_test_instantiated_graph.json" \
+  "${fixture_root}/artifacts/runtime/unit_test_role_merged_graph.json"
+printf '%s\n' \
+  '{"equalityClasses":[{"canonicalSymbol":"EQ.Z","members":["z","a"]},{"canonicalSymbol":"EQ.A","members":["b","a"]}],"equalityRelations":[{"edgeId":"E.0","kind":"SYMBOLIC_EQUALITY","fromEndpoint":"out.0","toEndpoint":"in.0","runtimeBindings":[]}],"versionedStateMerges":[{"edgeId":"E.1","kind":"VERSIONED_HEAP_READ_FROM","fromEndpoint":"state.out","toEndpoint":"state.in","runtimeBindings":[]}],"alternativeWriterGroups":[]}' \
+  > "${fixture_root}/artifacts/schedule/symbolic_merge_plan.json"
+printf '%s\n' \
+  '{"regionId":"REGION.0","requestedOutput":{"portId":"out.0","kind":"RETURN"},"regionRelation":{"kind":"GUARDED_PATH_MERGE","complete":true,"caseCount":1,"cases":[{"caseId":"CASE.0","pathKey":"path","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"out.0":{"exp":"x"}},"heapEffects":[],"relationallyComplete":true,"normalExit":true}]}}' \
+  > "${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl"
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"COMPOSED_SMT_MANIFEST","complete":true,"fatalRegion":"REGION.0","fatalConditionCount":1}' \
+  > "${fixture_root}/artifacts/schedule/composed_smt_manifest.json"
+printf '%s\n' '(set-logic ALL)' '(assert true)' '(check-sat)' \
+  > "${fixture_root}/artifacts/schedule/composed_fatal.smt2"
+
 config="${fixture_root}/workflow.properties"
 printf '%s\n' \
   'workflow_path_base=config' \
   'graphchecker_jar=tool/fake.jar' \
   'graphchecker_pom=tool/pom.xml' \
   'graphchecker_work_dir=repo' \
-  'java_bin=java' \
+  'java_bin=bin/java' \
   'maven_bin=mvn' \
   'project_repo=repo' \
   'project_module_dir=@repo/module' \
@@ -69,6 +109,7 @@ printf '%s\n' \
   'workload_work_dir=@repo/module' \
   'workload_command=echo workflow' \
   'runtime_activation_plan=artifacts/runtime/concolic_activation_plan.jsonl' \
+  'runtime_region_instances=artifacts/runtime/runtime_region_instances.jsonl' \
   'runtime_edge_validations=artifacts/runtime/runtime_region_edge_validation.jsonl' \
   'schedule_output_dir=artifacts/schedule' \
   'reach_report=artifacts/reports/reach-condition.json' \
@@ -118,8 +159,56 @@ analyze=$("${runner}" --config "${config}" --dry-run analyze)
 assert_contains "${analyze}" 'edu.uva.liftlab.graphchecker.GraphCheckerMain'
 assert_contains "${analyze}" "-Dcausynth.repo=${fixture_root}/repo"
 
+quiet_stdout="${fixture_root}/quiet.stdout"
+quiet_stderr="${fixture_root}/quiet.stderr"
+"${runner}" --config "${config}" analyze \
+  >"${quiet_stdout}" 2>"${quiet_stderr}"
+[[ ! -s "${quiet_stderr}" ]] || fail 'debug output was enabled by default'
+
+debug_stdout="${fixture_root}/debug.stdout"
+debug_stderr="${fixture_root}/debug.stderr"
+GRAPH_CHECKER_DEBUG_MAX_ITEMS=1 \
+  "${runner}" --config "${config}" --debug analyze \
+  >"${debug_stdout}" 2>"${debug_stderr}"
+[[ ! -s "${debug_stdout}" ]] || fail 'analyze debug output leaked to stdout'
+debug_text=$(<"${debug_stderr}")
+assert_contains "${debug_text}" 'artifact=static_graph'
+assert_contains "${debug_text}" 'total=2 shown=1 truncated=true'
+assert_contains "${debug_text}" 'a-static'
+assert_not_contains "${debug_text}" 'z-static'
+
+"${runner}" --config "${config}" --debug workload \
+  >"${debug_stdout}" 2>"${debug_stderr}"
+assert_contains "$(<"${debug_stdout}")" 'workflow'
+debug_text=$(<"${debug_stderr}")
+assert_contains "${debug_text}" 'artifact=runtime_instantiated_graph'
+assert_contains "${debug_text}" 'artifact=runtime_role_merged_graph'
+
+GRAPH_CHECKER_DEBUG=true "${runner}" --config "${config}" schedule \
+  >"${debug_stdout}" 2>"${debug_stderr}"
+assert_contains "$(<"${debug_stderr}")" 'artifact=symbolic_merge_plan'
+
+"${runner}" --config "${config}" --debug merge \
+  >"${debug_stdout}" 2>"${debug_stderr}"
+assert_contains "$(<"${debug_stderr}")" 'artifact=guarded_merge'
+assert_contains "$(<"${debug_stderr}")" 'GUARDED_PATH_MERGE'
+
+CAUSYNTH_MERGED_SUMMARIES="${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl" \
+  "${runner}" --config "${config}" debug-stage merge \
+  >"${debug_stdout}" 2>"${debug_stderr}"
+assert_contains "$(<"${debug_stderr}")" 'artifact=guarded_merge'
+
+"${runner}" --config "${config}" --debug compose \
+  >"${debug_stdout}" 2>"${debug_stderr}"
+debug_text=$(<"${debug_stderr}")
+assert_contains "${debug_text}" 'artifact=composition_manifest'
+assert_contains "${debug_text}" 'artifact=final_smt'
+assert_contains "${debug_text}" '(check-sat)'
+
 schedule=$("${runner}" --config "${config}" --dry-run schedule)
 assert_contains "${schedule}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler'
+assert_contains "${schedule}" \
+  "--runtime-region-instances ${fixture_root}/artifacts/runtime/runtime_region_instances.jsonl"
 
 imported=$("${runner}" --config "${config}" --dry-run import)
 assert_contains "${imported}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter'

@@ -40,6 +40,7 @@ roots="${generation_dir}/campaign_roots.jsonl"
 summaries="${generation_dir}/campaign_summaries.jsonl"
 records="${generation_dir}/region_path_records.jsonl"
 static_graph="${generation_dir}/campaign_static_graph.jsonl"
+runtime_instances="${fixture}/runtime_region_instances.jsonl"
 complete="${generation_dir}/campaign_complete_manifest.json"
 generation_manifest="${generation_dir}/state_manifest.json"
 pointer="${campaign_dir}/campaign_state_manifest.json"
@@ -54,6 +55,8 @@ jq -nc --arg activation "${activation}" --arg region "${region}" \
 printf '%s\n' '{"edgeId":"EDGE.FIXTURE"}' > "${edges}"
 printf '%s\n' '{"pathId":"PATH.FIXTURE"}' > "${records}"
 printf '%s\n' '{"edgeId":"STATIC.FIXTURE"}' > "${static_graph}"
+jq -nc --arg region "${region}" --arg instance "${instance}" \
+    '{regionId:$region,regionInstanceId:$instance}' > "${runtime_instances}"
 printf '%s\n' 'fixture-jar' > "${jar}"
 
 jq -nc --arg activation "${activation}" --arg region "${region}" \
@@ -169,6 +172,7 @@ publish() {
     CAUSYNTH_GC_JAR="${jar}" \
     CAUSYNTH_FRESH_HANDOFF_TEST_MODE=true \
     CAUSYNTH_FRESH_HANDOFF_SCHEDULER_FIXTURE=true \
+    CAUSYNTH_SCHEDULE_RUNTIME_REGION_INSTANCES="${runtime_instances}" \
         "${runner}" publish-campaign-handoff \
             "fixture.Test#freshHandoff" "${campaign_dir}"
 }

@@ -25,6 +25,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Date;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -218,26 +220,30 @@ public class GraphCheckerMain {
         Scene.v().addBasicClass("java.lang.String[]", SootClass.HIERARCHY);
     }
 
-    private static String expandClassPath(String classPath) {
+    static String expandClassPath(String classPath) {
         if (classPath == null || classPath.trim().isEmpty()) {
             return classPath;
         }
 
-        StringBuilder expanded = new StringBuilder();
+        Set<String> expanded = new LinkedHashSet<>();
         for (String entry : classPath.split(File.pathSeparator)) {
+            if (entry == null || entry.trim().isEmpty()) {
+                continue;
+            }
             if (entry.endsWith(File.separator + "*") || entry.endsWith("/*")) {
                 String dir = entry.substring(0, entry.length() - 2);
                 File[] jars = new File(dir).listFiles(file -> file.getName().endsWith(".jar"));
                 if (jars != null) {
+                    Arrays.sort(jars, Comparator.comparing(File::getAbsolutePath));
                     for (File jar : jars) {
-                        appendClasspathEntry(expanded, jar.getAbsolutePath());
+                        expanded.add(jar.getAbsolutePath());
                     }
                 }
                 continue;
             }
-            appendClasspathEntry(expanded, entry);
+            expanded.add(entry);
         }
-        return expanded.toString();
+        return String.join(File.pathSeparator, expanded);
     }
 
     private List<String> expandProcessDirs(List<String> inputDirs) {

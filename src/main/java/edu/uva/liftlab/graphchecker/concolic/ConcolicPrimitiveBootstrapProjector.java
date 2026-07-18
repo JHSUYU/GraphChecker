@@ -47,6 +47,8 @@ import java.util.regex.Pattern;
 public final class ConcolicPrimitiveBootstrapProjector {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
+    private static final Gson JSONL_GSON = new GsonBuilder()
+            .disableHtmlEscaping().create();
     private static final Pattern SAFE_SMT_ATOM = Pattern.compile(
             "[A-Za-z_~!@$%^&*+=<>.?/][A-Za-z0-9_~!@$%^&*+\\-=<>.?/]*");
 
@@ -623,10 +625,13 @@ public final class ConcolicPrimitiveBootstrapProjector {
             throws IOException {
         JsonObject admission = object(summary,
                 "inputMaterializationAdmission");
+        String authority = string(admission, "authority");
+        boolean explicitFallbackAuthority =
+                ("STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                        + "TRANSFORMER_RUNTIME_PATH_PROOFS_AND_EXPLICIT_"
+                        + "CONCRETE_FALLBACKS").equals(authority);
         if (!bool(admission, "complete", false)
-                || !"STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
-                .concat("TRANSFORMER_RUNTIME_PATH_PROOFS").equals(
-                        string(admission, "authority"))
+                || !exactInputMaterializationAuthority(authority)
                 || array(admission, "failures").size() != 0
                 || countString(array(admission, "globalSliceInputs"), port)
                 != 1
@@ -635,18 +640,80 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 || countString(array(admission,
                 "observedSymbolizedInputs"), port) != 1
                 || countString(array(admission,
-                "pathInactiveSliceInputs"), port) != 0) {
+                "pathInactiveSliceInputs"), port) != 0
+                || (explicitFallbackAuthority
+                && (!isArray(admission, "admittedObservedInputs")
+                || !isArray(admission, "admittedConcreteFallbackInputs")
+                || !isArray(admission,
+                "admittedVmIntrinsicPlaceholderInputs")
+                || !isArray(admission,
+                "unforcedEnvironmentValidationRequirements")
+                || !("SCHEDULED_OBSERVATION_ONLY_INPUT_PLUS_UNIQUE_"
+                + "COMPLETE_FIRST_CONTAINER_RUNTIME_EVIDENCE_V1").equals(
+                string(admission, "admittedObservedInputAuthority"))))
+                || coversInput(array(admission, "admittedObservedInputs"),
+                port)
+                || coversInput(array(admission,
+                "admittedConcreteFallbackInputs"), port)
+                || coversInput(array(admission,
+                "admittedVmIntrinsicPlaceholderInputs"), port)
+                || requirementsCoverInput(array(admission,
+                "unforcedEnvironmentValidationRequirements"), port)) {
             throw gap("SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT:" + port);
         }
+    }
+
+    private static boolean exactInputMaterializationAuthority(
+            String authority) {
+        String base = "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                + "TRANSFORMER_RUNTIME_PATH_PROOFS";
+        return base.equals(authority)
+                || (base + "_AND_EXPLICIT_CONCRETE_FALLBACKS").equals(
+                authority);
+    }
+
+    private static boolean coversInput(JsonArray values, String port) {
+        for (JsonElement value : values) {
+            if (value == null || !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isString()) {
+                continue;
+            }
+            String candidate = value.getAsString();
+            if (candidate.equals(port) || candidate.startsWith(port + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean requirementsCoverInput(JsonArray requirements,
+                                                  String port) {
+        for (JsonElement element : requirements) {
+            if (!element.isJsonObject()) continue;
+            String candidate = string(element.getAsJsonObject(),
+                    "inputPort");
+            if (candidate.equals(port) || candidate.startsWith(port + ".")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void validateLocalDefinitionIdentity(JsonObject action,
                                                         String port)
             throws IOException {
+        String location = string(action, "location");
+        boolean regionLiveIn = "REGION_LIVE_IN".equals(location);
+        boolean callReturnDefinition = "CALL_RETURN".equals(location)
+                && "CALL_RETURN_DEFINITION".equals(string(action,
+                "sourceBindingMode"))
+                && "OPAQUE_CALL".equals(string(action, "sourceKind"))
+                && "return".equals(string(action, "projection"))
+                && string(action, "cell").endsWith(">.return");
         String method = string(action, "method");
         String local = string(action, "local");
         JsonArray sites = array(action, "definitionSites");
-        if (!"REGION_LIVE_IN".equals(string(action, "location"))
+        if ((!regionLiveIn && !callReturnDefinition)
                 || method.isEmpty() || local.isEmpty()
                 || sites.size() != 1 || !sites.get(0).isJsonObject()
                 || !"STATIC_DATAFLOW_DEF_SITE".equals(string(action,
@@ -1097,7 +1164,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
     private static void writeJsonl(Path path, List<JsonObject> rows)
             throws IOException {
         StringBuilder result = new StringBuilder();
-        for (JsonObject row : rows) result.append(GSON.toJson(row)).append('\n');
+        for (JsonObject row : rows) {
+            result.append(JSONL_GSON.toJson(row)).append('\n');
+        }
         write(path, result.toString());
     }
 
@@ -1123,6 +1192,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
+    }
+
+    private static boolean isArray(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonArray();
     }
 
     private static JsonObject object(JsonObject object, String field) {

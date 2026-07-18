@@ -44,9 +44,17 @@ public class Hdfs11741BootstrapComposerTest {
         assertEquals("REGION.D", result.manifest.getAsJsonObject(
                 "portMappings").getAsJsonObject("datanodeMapPost")
                 .get("regionId").getAsString());
-        assertEquals(1, result.manifest.getAsJsonObject(
+        assertEquals(5, result.manifest.getAsJsonObject(
                 "supplementalEvidence").get("replaySummaryCount")
                 .getAsInt());
+        assertTrue(result.manifest.getAsJsonObject("supplementalEvidence")
+                .get("replaySummariesRequired").getAsBoolean());
+        assertEquals(5, result.manifest.getAsJsonObject(
+                "supplementalEvidence").getAsJsonObject(
+                "selectedReplaySummaries").size());
+        assertTrue(result.manifest.getAsJsonObject("supplementalEvidence")
+                .getAsJsonObject("replayFormulaProjection")
+                .getAsJsonArray("emittedAssertions").size() >= 5);
 
         String smt = result.smtLib;
         assertTrue(smt.contains("(declare-const dn_iterator_key_id Int)"));
@@ -65,8 +73,106 @@ public class Hdfs11741BootstrapComposerTest {
         assertTrue(smt.indexOf("(get-model)")
                 > smt.indexOf("(check-sat)"));
         assertTrue(smt.contains("(get-value (exception_reached"));
+        assertTrue(smt.contains("; replay summary: SUMMARY.REGION.K"));
+        assertTrue(smt.contains("summary_path_REGION_K"));
         assertFalse("the iterator key must not be a workload constant",
                 smt.contains("dn_iterator_key_id 1005215027"));
+
+        Hdfs11741ReplaySelector.Result replaySelection =
+                Hdfs11741ReplaySelector.select(
+                        fixture.replaySelectorArguments());
+        assertEquals(5, replaySelection.selections.size());
+        JsonObject selectedActivations = replaySelection.manifest
+                .getAsJsonObject("selectedActivations");
+        assertEquals("ACT.NN.LATEST", selectedActivations
+                .getAsJsonObject("namenode").get("activationId")
+                .getAsString());
+        assertEquals("ACT.DN.LATEST", selectedActivations
+                .getAsJsonObject("datanode").get("activationId")
+                .getAsString());
+        assertEquals("ACT.KU", selectedActivations
+                .getAsJsonObject("keyUpdater").get("activationId")
+                .getAsString());
+        assertEquals("ACT.BAL.FIRST", selectedActivations
+                .getAsJsonObject("balancer").get("activationId")
+                .getAsString());
+        assertEquals("ACT.TARGET.FIRST.AFTER", selectedActivations
+                .getAsJsonObject("target").get("activationId")
+                .getAsString());
+        JsonObject runtimeSelection = replaySelection.manifest
+                .getAsJsonObject("dispatcherTargetRuntimeEvidence");
+        assertEquals("REGION.B@fixture#call40", runtimeSelection.get(
+                "fromRegionInstance").getAsString());
+        assertEquals("REGION.T@fixture#call41", runtimeSelection.get(
+                "toRegionInstance").getAsString());
+        assertTrue(runtimeSelection.get("uniqueValidatedBinding")
+                .getAsBoolean());
+        assertEquals(5, Files.readAllLines(fixture.replaySelection,
+                StandardCharsets.UTF_8).size());
+        assertTrue(replaySelection.manifest.get("causalBoundsVerified")
+                .getAsBoolean());
+        assertTrue(replaySelection.manifest.getAsJsonObject("causalBounds")
+                .getAsJsonObject("namenodeToDatanode")
+                .get("strictlyBefore").getAsBoolean());
+        assertFalse(replaySelection.manifest.get(
+                "configuredGeneratedActivationIds").getAsBoolean());
+        JsonObject transport = replaySelection.manifest.getAsJsonObject(
+                "configuredTransportBindings");
+        assertEquals(1, transport.get("schemaVersion").getAsInt());
+        assertEquals("POLICY_DERIVED_HDFS_RPC_SNAPSHOT_BINDING_V1",
+                transport.get("authority").getAsString());
+        assertTrue(transport.get("policyDerived").getAsBoolean());
+        assertFalse(transport.get("configuredGeneratedRegionIds")
+                .getAsBoolean());
+        assertFalse(transport.get("configuredGeneratedActivationIds")
+                .getAsBoolean());
+        assertEquals(2, transport.get("bindingCount").getAsInt());
+        JsonArray resolvedBindings = transport.getAsJsonArray("bindings");
+        JsonObject keyBinding = resolvedBindings.get(0).getAsJsonObject();
+        JsonObject keySource = keyBinding.getAsJsonObject("source");
+        assertEquals("namenode", keySource.get("role").getAsString());
+        assertEquals("REGION.N", keySource.get("regionId").getAsString());
+        assertEquals("REGION.N@fixture#call20", keySource.get(
+                "regionInstanceId").getAsString());
+        assertEquals("MAP_PUT", keySource.get("effectKind").getAsString());
+        assertEquals("keyExpression", keySource.get("expressionField")
+                .getAsString());
+        assertTrue(keySource.get("selectorPreserved").getAsBoolean());
+        JsonObject updaterTarget = keyBinding.getAsJsonArray("targets")
+                .get(0).getAsJsonObject();
+        assertEquals("REGION.K.out.0", updaterTarget.get("portId")
+                .getAsString());
+        assertEquals("REGION.K@fixture#call30", updaterTarget.get(
+                "regionInstanceId").getAsString());
+        assertEquals("keyId", updaterTarget.getAsJsonArray("fieldPath")
+                .get(0).getAsString());
+        JsonObject datanodeKeyTarget = keyBinding.getAsJsonArray("targets")
+                .get(1).getAsJsonObject();
+        assertEquals("REGION.D.in.2", datanodeKeyTarget.get("portId")
+                .getAsString());
+        JsonObject expiryBinding = resolvedBindings.get(1)
+                .getAsJsonObject();
+        assertEquals("REGION.N.in.1", expiryBinding.getAsJsonObject(
+                "source").get("portId").getAsString());
+        assertEquals("REGION.D.in.3", expiryBinding.getAsJsonArray(
+                "targets").get(0).getAsJsonObject().get("portId")
+                .getAsString());
+        JsonObject captures = replaySelection.manifest.getAsJsonObject(
+                "roleCapturePolicies");
+        assertEquals("OUTPUT_CLOSURE", captures.getAsJsonObject(
+                "keyUpdater").get("kind").getAsString());
+        assertEquals("KU.CURRENT.OUT", captures.getAsJsonObject(
+                "keyUpdater").get("requestedOutputCell").getAsString());
+        assertEquals("TARGET_BRANCH", captures.getAsJsonObject("target")
+                .get("kind").getAsString());
+
+        try {
+            Hdfs11741BootstrapComposer.compose(fixture.arguments(false));
+            fail("all five replay summaries must be required");
+        } catch (java.io.IOException exception) {
+            assertTrue(exception.getMessage(), exception.getMessage()
+                    .contains("FIVE_REPLAY_SUMMARIES_REQUIRED:0"));
+        }
     }
 
     @Test
@@ -75,7 +181,7 @@ public class Hdfs11741BootstrapComposerTest {
         Fixture fixture = new Fixture(folder.getRoot().toPath(), false);
 
         Hdfs11741BootstrapComposer.Result result =
-                Hdfs11741BootstrapComposer.compose(fixture.arguments(false));
+                Hdfs11741BootstrapComposer.compose(fixture.arguments(true));
 
         JsonArray approximations = result.manifest.getAsJsonArray(
                 "approximations");
@@ -100,7 +206,7 @@ public class Hdfs11741BootstrapComposerTest {
                 malformed.getBytes(StandardCharsets.UTF_8));
 
         try {
-            Hdfs11741BootstrapComposer.compose(fixture.arguments(false));
+            Hdfs11741BootstrapComposer.compose(fixture.arguments(true));
             fail("schema-2 expiry evidence must be required");
         } catch (java.io.IOException exception) {
             assertTrue(exception.getMessage(), exception.getMessage()
@@ -122,7 +228,7 @@ public class Hdfs11741BootstrapComposerTest {
         write(fixture.activationPlan, retained.toString());
 
         try {
-            Hdfs11741BootstrapComposer.compose(fixture.arguments(false));
+            Hdfs11741BootstrapComposer.compose(fixture.arguments(true));
             fail("an unobserved selected role must reject composition");
         } catch (java.io.IOException exception) {
             assertTrue(exception.getMessage(), exception.getMessage()
@@ -141,7 +247,7 @@ public class Hdfs11741BootstrapComposerTest {
         write(fixture.offlineProvenance, provenance);
 
         try {
-            Hdfs11741BootstrapComposer.compose(fixture.arguments(false));
+            Hdfs11741BootstrapComposer.compose(fixture.arguments(true));
             fail("a stale static graph must reject composition");
         } catch (java.io.IOException exception) {
             assertTrue(exception.getMessage(), exception.getMessage()
@@ -166,9 +272,12 @@ public class Hdfs11741BootstrapComposerTest {
         private final Path runtimeSummary;
         private final Path activationPlan;
         private final Path offlineProvenance;
+        private final Path targetQuery;
         private final Path replaySummary;
         private final Path output;
         private final Path manifest;
+        private final Path replaySelection;
+        private final Path replaySelectionManifest;
 
         private Fixture(Path root, boolean runtimeConfirmed)
                 throws Exception {
@@ -180,20 +289,24 @@ public class Hdfs11741BootstrapComposerTest {
             runtimeSummary = root.resolve(unique("runtime-summary.json"));
             activationPlan = root.resolve(unique("activations.jsonl"));
             offlineProvenance = root.resolve(unique("provenance.json"));
+            targetQuery = root.resolve(unique("target-query.jsonl"));
             replaySummary = root.resolve(unique("replay.jsonl"));
             output = root.resolve(unique("bootstrap.smt2"));
             manifest = root.resolve(unique("manifest.json"));
+            replaySelection = root.resolve(unique("replay-selection.jsonl"));
+            replaySelectionManifest = root.resolve(unique(
+                    "replay-selection-manifest.json"));
             write(policy, policy());
             write(regions, regions());
             write(staticGraph, staticGraph());
             write(regionEdges, regionEdges());
             write(runtimeEdges, runtimeConfirmed ? runtimeEdges() : "");
             write(runtimeSummary, "{\"schemaVersion\":1,"
-                    + "\"staticRegionCount\":4,"
+                    + "\"staticRegionCount\":5,"
                     + "\"staticRegionEdgeCount\":1,"
-                    + "\"runtimeRegionInstanceCount\":4,"
+                    + "\"runtimeRegionInstanceCount\":5,"
                     + "\"runtimeRegionEdgeValidationCount\":2,"
-                    + "\"activationCount\":4,"
+                    + "\"activationCount\":5,"
                     + "\"truncatedCallTreeInstanceCount\":0,"
                     + "\"truncatedPathSignatureInstanceCount\":0,"
                     + "\"skippedContainedCallCount\":0,"
@@ -215,8 +328,8 @@ public class Hdfs11741BootstrapComposerTest {
                     + sha256(regionEdges) + "\","
                     + "\"runtimeRegionSummarySha256\":\""
                     + sha256(runtimeSummary) + "\"}\n");
-            write(replaySummary, "{\"summaryId\":\"OPTIONAL.REPLAY\","
-                    + "\"relationallyComplete\":false}\n");
+            write(replaySummary, replaySummaries());
+            write(targetQuery, targetQuery());
         }
 
         private Hdfs11741BootstrapComposer.Arguments arguments(
@@ -230,11 +343,24 @@ public class Hdfs11741BootstrapComposerTest {
             add(values, "--runtime-summary", runtimeSummary);
             add(values, "--activation-plan", activationPlan);
             add(values, "--offline-provenance", offlineProvenance);
+            add(values, "--target-query", targetQuery);
             if (includeReplay) add(values, "--replay-summary",
                     replaySummary);
             add(values, "--output", output);
             add(values, "--manifest", manifest);
             return Hdfs11741BootstrapComposer.Arguments.parse(
+                    values.toArray(new String[0]));
+        }
+
+        private Hdfs11741ReplaySelector.Arguments replaySelectorArguments() {
+            java.util.List<String> values = new java.util.ArrayList<>();
+            add(values, "--policy", policy);
+            add(values, "--regions", regions);
+            add(values, "--activation-plan", activationPlan);
+            add(values, "--runtime-edges", runtimeEdges);
+            add(values, "--output", replaySelection);
+            add(values, "--manifest", replaySelectionManifest);
+            return Hdfs11741ReplaySelector.Arguments.parse(
                     values.toArray(new String[0]));
         }
 
@@ -259,10 +385,18 @@ public class Hdfs11741BootstrapComposerTest {
                 "TARGET.METHOD") + ","
                 + regionSelector("namenode", "NN.ROOT", "NN.ANCHOR",
                 "REMOVE.METHOD") + ","
+                + regionSelector("keyUpdater", "KU.ROOT", "KU.ANCHOR",
+                "ADD.METHOD", "CACHE.METHOD") + ","
                 + regionSelector("datanode", "DN.ROOT", "DN.ANCHOR",
                 "ADD.METHOD", "REMOVE.METHOD") + ","
                 + regionSelector("balancer", "BAL.ROOT", "BAL.ANCHOR",
                 "CACHE.METHOD") + "},"
+                + "\"replaySelection\":{\"schemaVersion\":1,"
+                + "\"producerOutputs\":{"
+                + producerOutput("namenode", "NN.MAP") + ","
+                + producerOutput("keyUpdater", "KU.CURRENT.OUT") + ","
+                + producerOutput("datanode", "DN.MAP") + ","
+                + producerOutput("balancer", "BAL.SASL.USER") + "}},"
                 + "\"ports\":{"
                 + port("targetMap", "target", "symbolicInputs", "T.MAP")
                 + "," + port("targetEncodedKey", "target",
@@ -289,10 +423,13 @@ public class Hdfs11741BootstrapComposerTest {
                 "symbolicInputs", "KEY.EXPIRY")
                 + "," + port("datanodeNow", "datanode",
                 "symbolicInputs", "CLOCK.NOW")
+                + "," + port("keyUpdaterCurrentKey", "keyUpdater",
+                "outputs", "KU.CURRENT.OUT")
                 + "," + port("balancerCachedKey", "balancer",
                 "symbolicInputs", "BAL.CACHED.KEY")
                 + "," + port("balancerSaslUsername", "balancer",
                 "outputs", "BAL.SASL.USER") + "},"
+                + "\"transportBindings\":" + transportBindings() + ","
                 + "\"targetGuard\":{\"siteId\":\"TARGET.METHOD#u8\","
                 + "\"requiredOutcome\":false},"
                 + "\"containerBindings\":{"
@@ -351,6 +488,41 @@ public class Hdfs11741BootstrapComposerTest {
                 + "\",\"cell\":\"" + cell + "\"}";
     }
 
+    private static String producerOutput(String role, String cell) {
+        return "\"" + role + "\":{\"cell\":\"" + cell + "\"}";
+    }
+
+    private static String transportBindings() {
+        return "{\"schemaVersion\":1,\"authority\":"
+                + "\"POLICY_DERIVED_HDFS_RPC_SNAPSHOT_BINDING_V1\","
+                + "\"bindings\":[{\"bindingId\":"
+                + "\"NN_SNAPSHOT_KEY_FANOUT\",\"source\":{"
+                + "\"role\":\"namenode\",\"kind\":"
+                + "\"UNIFORM_HEAP_EFFECT_EXPRESSION\","
+                + "\"effectKind\":\"MAP_PUT\","
+                + "\"expressionField\":\"keyExpression\","
+                + "\"expectedSort\":\"Int\"},\"targets\":[{"
+                + "\"role\":\"keyUpdater\",\"portAlias\":"
+                + "\"keyUpdaterCurrentKey\",\"fieldPath\":[\"keyId\"],"
+                + "\"declaredFieldSignature\":\"KEY.ID.FIELD\","
+                + "\"expectedSort\":\"Int\"},{\"role\":\"datanode\","
+                + "\"portAlias\":\"datanodeEntryKey\","
+                + "\"expectedSort\":\"Int\"}],"
+                + "\"includeSourcePathGuards\":true,"
+                + "\"approximation\":\"CONFIGURED_NN_SNAPSHOT_FANOUT\"},"
+                + "{\"bindingId\":\"NN_SNAPSHOT_EXPIRY_FANOUT\","
+                + "\"source\":{\"role\":\"namenode\","
+                + "\"kind\":\"PORT_ALIAS\","
+                + "\"portAlias\":\"namenodeExpiry\","
+                + "\"expectedSort\":\"Int\"},\"targets\":[{"
+                + "\"role\":\"datanode\",\"portAlias\":"
+                + "\"datanodeEntryExpiry\","
+                + "\"expectedSort\":\"Int\"}],"
+                + "\"includeSourcePathGuards\":true,"
+                + "\"approximation\":"
+                + "\"CONFIGURED_NN_SNAPSHOT_FANOUT\"}]}";
+    }
+
     private static String regions() {
         String target = region("REGION.T", "TARGET.ROOT", "TARGET.ANCHOR",
                 "[\"TARGET.METHOD\"]",
@@ -369,8 +541,19 @@ public class Hdfs11741BootstrapComposerTest {
                         + "{\"portId\":\"REGION.N.in.2\","
                         + "\"cell\":\"CLOCK.NOW\"}]",
                 "[{\"portId\":\"REGION.N.out.0\","
-                        + "\"cell\":\"NN.MAP\"}]", "");
+                        + "\"cell\":\"NN.MAP\"}]",
+                outputSlice("REGION.N.out.0", "NN.MAP"));
+        String keyUpdater = region("REGION.K", "KU.ROOT", "KU.ANCHOR",
+                "[\"ADD.METHOD\",\"CACHE.METHOD\"]",
+                "[{\"portId\":\"REGION.K.in.0\","
+                        + "\"cell\":\"KU.CURRENT.IN\"}]",
+                "[{\"portId\":\"REGION.K.out.0\","
+                        + "\"cell\":\"KU.CURRENT.OUT\"}]",
+                outputSlice("REGION.K.out.0", "KU.CURRENT.OUT"));
         String dnExtra = ",\"outputSlices\":[{"
+                + "\"outputPort\":\"REGION.D.out.0\","
+                + "\"outputCell\":\"DN.MAP\","
+                + "\"structuralComplete\":true,\"truncated\":false,"
                 + "\"containerElementFieldBindings\":[{"
                 + "\"schemaVersion\":1,\"kind\":\"ARRAY_ELEMENT_FIELD\","
                 + "\"bindingId\":\"BIND.KEY\",\"complete\":true,"
@@ -408,8 +591,17 @@ public class Hdfs11741BootstrapComposerTest {
                 "[{\"portId\":\"REGION.B.in.0\","
                         + "\"cell\":\"BAL.CACHED.KEY\"}]",
                 "[{\"portId\":\"REGION.B.out.0\","
-                        + "\"cell\":\"BAL.SASL.USER\"}]", "");
-        return target + "\n" + nn + "\n" + dn + "\n" + bal + "\n";
+                        + "\"cell\":\"BAL.SASL.USER\"}]",
+                outputSlice("REGION.B.out.0", "BAL.SASL.USER"));
+        return target + "\n" + nn + "\n" + keyUpdater + "\n"
+                + dn + "\n" + bal + "\n";
+    }
+
+    private static String outputSlice(String port, String cell) {
+        return ",\"outputSlices\":[{\"outputPort\":\"" + port
+                + "\",\"outputCell\":\"" + cell
+                + "\",\"structuralComplete\":true,"
+                + "\"truncated\":false}]";
     }
 
     private static String region(String id, String root, String anchor,
@@ -462,9 +654,32 @@ public class Hdfs11741BootstrapComposerTest {
     private static String runtimeEdges() {
         return "{\"edgeId\":\"RT.SASL\",\"fromRegion\":\"REGION.B\","
                 + "\"toRegion\":\"REGION.T\",\"kind\":"
+                + "\"SASL_TRANSFER\",\"mappingKind\":"
                 + "\"SASL_TRANSFER\",\"status\":"
-                + "\"CONFIRMED_VALUE_EQUALITY\","
-                + "\"confirmedValueEqualityPairCount\":1}\n"
+                + "\"CONFIRMED_RUNTIME_VALUE_EQUALITY\","
+                + "\"validation\":"
+                + "\"COMPLETE_ENDPOINT_VALUE_FINGERPRINT_EQUALITY\","
+                + "\"producerRegionUniquelyConfirmed\":true,"
+                + "\"valueEqualityAuthority\":"
+                + "\"RUNTIME_COMPLETE_VALUE_FINGERPRINT\","
+                + "\"endpointOrderAuthority\":"
+                + "\"GLOBAL_TRACE_ENDPOINT_SEQUENCE\","
+                + "\"confirmedValueEqualityPairCount\":1,"
+                + "\"validatedBindings\":[{\"fromRegionInstance\":"
+                + "\"REGION.B@fixture#call40\","
+                + "\"toRegionInstance\":\"REGION.T@fixture#call41\","
+                + "\"test\":\"example.Test#workload\","
+                + "\"orderConfirmed\":true,"
+                + "\"valueEqualityObserved\":true,"
+                + "\"valueFingerprint\":\"sha256:"
+                + "0000000000000000000000000000000000000000000000000000000000000000\","
+                + "\"valueEqualityAuthority\":"
+                + "\"RUNTIME_COMPLETE_VALUE_FINGERPRINT\","
+                + "\"endpointOrderAuthority\":"
+                + "\"GLOBAL_TRACE_ENDPOINT_SEQUENCE\","
+                + "\"endpointCorrelationAuthority\":"
+                + "\"NEAREST_PRECEDING_SOURCE_ROOT_THEN_ENDPOINT\","
+                + "\"fromEndpointSeq\":400,\"toEndpointSeq\":410}]}\n"
                 + "{\"edgeId\":\"RT.MAP\",\"fromRegion\":\"REGION.D\","
                 + "\"toRegion\":\"REGION.T\",\"kind\":"
                 + "\"SHARED_STATE\",\"status\":\"CONFIRMED_READ_FROM\","
@@ -473,17 +688,131 @@ public class Hdfs11741BootstrapComposerTest {
 
     private static String activations() {
         StringBuilder result = new StringBuilder();
-        int call = 10;
-        for (String id : new String[]{"REGION.T", "REGION.N", "REGION.D",
-                "REGION.B"}) {
-            result.append("{\"activationId\":\"ACT.").append(id)
-                    .append("\",\"regionId\":\"").append(id)
-                    .append("\",\"regionInstanceId\":\"").append(id)
-                    .append("@fixture#call").append(call)
-                    .append("\",\"rootCallId\":").append(call++)
-                    .append(",\"test\":\"example.Test#workload\"}\n");
-        }
+        result.append(activation("ACT.TARGET.BEFORE", "REGION.T",
+                "TARGET.ROOT", 5, 1, ""));
+        result.append(activation("ACT.NN.EARLY", "REGION.N", "NN.ROOT",
+                10, 1, ""));
+        result.append(activation("ACT.DN.EARLY", "REGION.D", "DN.ROOT",
+                11, 1, ""));
+        result.append(activation("ACT.NN.LATEST", "REGION.N", "NN.ROOT",
+                20, 2, ""));
+        result.append(activation("ACT.DN.LATEST", "REGION.D", "DN.ROOT",
+                21, 2, ""));
+        // A derived output-closure activation shares the exact runtime root;
+        // the semantic timeline selector must retain the frozen base row.
+        result.append(activation("ACT.DN.DERIVED", "REGION.D", "DN.ROOT",
+                21, 2, "ACT.DN.LATEST"));
+        // This is before KeyUpdater but after the selected DN snapshot.  NN
+        // must be bounded by DN, not merely by the later updater pivot.
+        result.append(activation("ACT.NN.AFTER.DN", "REGION.N", "NN.ROOT",
+                25, 3, ""));
+        result.append(activation("ACT.KU", "REGION.K", "KU.ROOT",
+                30, 1, ""));
+        result.append(activation("ACT.BAL.FIRST", "REGION.B", "BAL.ROOT",
+                40, 1, ""));
+        result.append(activation("ACT.TARGET.FIRST.AFTER", "REGION.T",
+                "TARGET.ROOT", 41, 2, ""));
+        result.append(activation("ACT.BAL.LATE", "REGION.B", "BAL.ROOT",
+                50, 2, ""));
+        result.append(activation("ACT.TARGET.LATE", "REGION.T",
+                "TARGET.ROOT", 51, 3, ""));
         return result.toString();
+    }
+
+    private static String activation(String activation, String region,
+                                     String root, int call, int ordinal,
+                                     String derivedFrom) {
+        return "{\"activationId\":\"" + activation
+                + "\",\"regionId\":\"" + region
+                + "\",\"regionInstanceId\":\"" + region
+                + "@fixture#call" + call + "\",\"rootCallId\":" + call
+                + ",\"invocationOrdinal\":" + ordinal
+                + ",\"rootMethod\":\"" + root
+                + "\",\"observedRootMethod\":\"" + root
+                + "\",\"staticRootMethod\":\"" + root
+                + "\",\"anchorObserved\":true,\"test\":"
+                + "\"example.Test#workload\""
+                + ("REGION.T".equals(region)
+                ? ",\"branches\":[{\"siteId\":\"TARGET.METHOD#u8\","
+                + "\"observed\":true,\"requiredOutcome\":false}]" : "")
+                + (derivedFrom.isEmpty() ? "" : ",\"derivedFromActivationId\":\""
+                + derivedFrom + "\"") + "}\n";
+    }
+
+    private static String replaySummaries() {
+        return namenodeReplaySummary()
+                + replaySummary("REGION.K", "KU.ROOT", "REGION.K.in.0",
+                "REGION.K.out.0")
+                + replaySummary("REGION.D", "DN.ROOT", "REGION.D.in.3",
+                "REGION.D.out.0")
+                + replaySummary("REGION.B", "BAL.ROOT", "REGION.B.in.0",
+                "REGION.B.out.0")
+                + replaySummary("REGION.T", "TARGET.ROOT", "ENGINE.TARGET.KEY",
+                "REGION.T.out.0");
+    }
+
+    private static String namenodeReplaySummary() {
+        String base = replaySummary("REGION.N", "NN.ROOT",
+                "REGION.N.in.1", "REGION.N.out.0").replace(
+                "M_I_field_REGION.N.in.1_fixture", "NN.SNAPSHOT.KEY");
+        String effect = ",\"heapEffects\":[{\"kind\":\"MAP_PUT\","
+                + "\"keyExpression\":{\"_type\":\"SymbolExpression\","
+                + "\"_java_type\":\"java/lang/Integer\","
+                + "\"_exp\":\"NN.SNAPSHOT.KEY\"}}]";
+        return base.substring(0, base.length() - 2) + effect + "}\n";
+    }
+
+    private static String targetQuery() {
+        String symbol = "M_I_field_ENGINE.TARGET.KEY_fixture";
+        String original = "{\"_type\":\"BinaryExpression\","
+                + "\"_left\":{\"_type\":\"SymbolExpression\","
+                + "\"_java_type\":\"I\",\"_exp\":\"" + symbol
+                + "\"},\"_op\":\"<\",\"_right\":{\"_type\":"
+                + "\"ConstExpr\",\"_java_type\":\"I\","
+                + "\"_exp\":\"Y_I_7\"}}";
+        String negated = original.replace("\"_op\":\"<\"",
+                "\"_op\":\">=\"");
+        return "{\"activationId\":\"ACT.REGION.T\","
+                + "\"regionId\":\"REGION.T\","
+                + "\"regionInstanceId\":\"INSTANCE.TARGET\","
+                + "\"siteId\":\"TARGET.METHOD#u8\","
+                + "\"occurrence\":1,\"observedOutcome\":true,"
+                + "\"desiredOutcome\":false,\"conditionIndex\":0,"
+                + "\"prefixPolicy\":\"KEEP_CONDITIONS_BEFORE_TARGET\","
+                + "\"targetPolicy\":\"NEGATE_TARGET_CONDITION\","
+                + "\"suffixPolicy\":\"DROP_OLD_SUFFIX\","
+                + "\"readyForSolver\":true,\"readyForReplay\":true,"
+                + "\"targetReplayValidated\":false,"
+                + "\"originalTargetCondition\":" + original + ","
+                + "\"negatedTargetCondition\":" + negated + ","
+                + "\"constraints\":[" + negated + "],"
+                + "\"semanticModel\":{\"status\":\"SAT\","
+                + "\"theory\":\"MAP_LOOKUP_ABSENCE\","
+                + "\"keyExpression\":{\"_type\":"
+                + "\"SymbolExpression\",\"_java_type\":\"I\","
+                + "\"_exp\":\"" + symbol + "\"}}}\n";
+    }
+
+    private static String replaySummary(String region, String root,
+                                        String input, String output) {
+        String symbol = "M_I_field_" + input + "_fixture";
+        return "{\"summaryId\":\"SUMMARY." + region + "\","
+                + "\"activationId\":\"ACT." + region + "\","
+                + "\"regionId\":\"" + region + "\","
+                + "\"rootMethod\":\"" + root + "\","
+                + "\"engine\":\"fixture-concolic\","
+                + "\"valid\":true,\"relationallyComplete\":true,"
+                + "\"normalExit\":true,"
+                + "\"pathCondition\":[{\"_type\":"
+                + "\"BinaryExpression\",\"_left\":{\"_type\":"
+                + "\"SymbolExpression\",\"_java_type\":\"I\","
+                + "\"_exp\":\"" + symbol + "\"},\"_op\":\"<\","
+                + "\"_right\":{\"_type\":\"ConstExpr\","
+                + "\"_java_type\":\"I\",\"_exp\":\"Y_I_7\"}}],"
+                + "\"outputExpressions\":{\"" + output + "\":{"
+                + "\"_type\":\"SymbolExpression\","
+                + "\"_java_type\":\"I\",\"_exp\":\"" + symbol
+                + "\"}}}\n";
     }
 
     private static void write(Path path, String value) throws Exception {
