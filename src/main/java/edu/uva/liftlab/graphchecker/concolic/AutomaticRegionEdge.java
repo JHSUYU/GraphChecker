@@ -20,6 +20,8 @@ public final class AutomaticRegionEdge {
             "DECLARED_CALLEE_MUTATOR_METHOD_NAME_ALLOWLIST_V1";
     static final String TRACE_ORDER_AUTHORITY =
             "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1";
+    static final String VALUE_EQUALITY_ORDER_AUTHORITY =
+            "GLOBAL_TRACE_ENDPOINT_SEQUENCE";
 
     private AutomaticRegionEdge() {
     }
@@ -75,6 +77,48 @@ public final class AutomaticRegionEdge {
                 && "RUNTIME_CONFIRMED_READ_FROM".equals(string(binding,
                 "selectionAuthority"))
                 && trustedReadFromEvidence(binding);
+    }
+
+    /**
+     * Validates a value-equality summary edge independently of READ_FROM.
+     *
+     * <p>RPC and other serialization transports normally allocate a new
+     * receiver-side object, so process-local object identity is neither
+     * available nor required. Automatic composition instead requires the two
+     * exact region instances and canonical ports, a complete runtime
+     * fingerprint on both endpoints, and their concrete trace order.</p>
+     */
+    public static boolean trustedRuntimeValueEqualityBinding(
+            JsonObject binding) {
+        if (binding == null
+                || !"RUNTIME_CONFIRMED_VALUE_EQUALITY".equals(string(
+                binding, "selectionAuthority"))
+                || !"EQUALITY".equals(string(binding, "relationKind"))
+                || string(binding, "fromRegionInstance").isEmpty()
+                || string(binding, "toRegionInstance").isEmpty()
+                || string(binding, "fromOutputPort").isEmpty()
+                || string(binding, "toInputPort").isEmpty()
+                || !bool(binding, "valueEqualityObserved", false)
+                || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(string(
+                binding, "valueEqualityAuthority"))
+                || string(binding, "valueFingerprint").isEmpty()
+                || !VALUE_EQUALITY_ORDER_AUTHORITY.equals(string(binding,
+                "endpointOrderAuthority"))
+                || !bool(binding, "orderConfirmed", false)) {
+            return false;
+        }
+        long writer = firstLong(binding, "writerEventSeq", "writeSeq",
+                "fromEndpointSeq", "fromEventSeq");
+        long reader = firstLong(binding, "readerEventSeq", "readSeq",
+                "toEndpointSeq", "toEventSeq");
+        return writer >= 0L && reader > writer;
+    }
+
+    /** Runtime evidence admitted for recursive summary composition. */
+    public static boolean trustedRuntimeCompositionBinding(
+            JsonObject binding) {
+        return trustedRuntimeReadFromBinding(binding)
+                || trustedRuntimeValueEqualityBinding(binding);
     }
 
     public static boolean trustedReadFromEvidence(JsonObject evidence) {

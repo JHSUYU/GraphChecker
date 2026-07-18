@@ -159,6 +159,8 @@ public final class ConcolicScheduler {
             String scheduleId = "SCHEDULE." + result.jobs.size();
             MaterializationPlan materialization = candidate.materialization;
             JsonObject scheduledActivation = candidate.activation.deepCopy();
+            mergePlan.attachOutboundValueEqualityBindings(
+                    scheduledActivation);
             JsonObject captured = candidate.outputClosure ? null
                     : exactTargetSummary(candidate, summaries);
             String executionPhase = candidate.outputClosure
@@ -245,7 +247,7 @@ public final class ConcolicScheduler {
                 upstreamCaptureJobCount++;
                 JsonElement requestedOutput = candidate.activation.get(
                         "requestedOutput");
-                JsonElement edgeBindings = firstElement(candidate.activation,
+                JsonElement edgeBindings = firstElement(scheduledActivation,
                         "edgeBindings", "producerBindings");
                 job.add("requestedOutput", requestedOutput == null
                         ? new JsonObject() : requestedOutput.deepCopy());
@@ -1918,6 +1920,10 @@ public final class ConcolicScheduler {
         result.addProperty("mappingAuthority",
                 string(edge, "mappingAuthority"));
         result.addProperty("runtimeStatus", string(edge, "status"));
+        result.addProperty("endpointOrderAuthority",
+                string(edge, "endpointOrderAuthority"));
+        result.addProperty("endpointCorrelationAuthority",
+                string(edge, "endpointCorrelationAuthority"));
         result.addProperty("discoveredExecutionId",
                 string(edge, "discoveredExecutionId"));
         result.add("discoveredExecutionIds", array(edge,
@@ -2456,6 +2462,26 @@ public final class ConcolicScheduler {
         }
     }
 
+    private static long longInteger(JsonObject object, String field,
+                                    long fallback) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsLong();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static long firstLong(JsonObject object, String... fields) {
+        for (String field : fields) {
+            if (object != null && object.has(field)) {
+                return longInteger(object, field, -1L);
+            }
+        }
+        return -1L;
+    }
+
     private static String firstNonBlank(String... values) {
         if (values != null) {
             for (String value : values) {
@@ -2788,6 +2814,224 @@ public final class ConcolicScheduler {
             this.equalityClasses = equalityClasses;
             this.stateMerges = stateMerges;
             this.alternativeWriterGroups = alternativeWriterGroups;
+        }
+
+        /**
+         * Copies runtime-confirmed protocol equalities onto the producer
+         * activation that will own the imported output summary. This is a
+         * summary edge, not a READ_FROM edge: serialization may change object
+         * identity while preserving the complete endpoint value.
+         */
+        private void attachOutboundValueEqualityBindings(
+                JsonObject activation) {
+            if (activation == null) return;
+            for (JsonElement element : array(activation,
+                    "reachabilitySupportActivations")) {
+                if (element.isJsonObject()) {
+                    attachOutboundValueEqualityBindings(
+                            element.getAsJsonObject());
+                }
+            }
+            String region = string(activation, "regionId");
+            String instance = string(activation, "regionInstanceId");
+            if (region.isEmpty() || instance.isEmpty()) return;
+
+            JsonArray bindings = new JsonArray();
+            JsonElement existing = firstElement(activation, "edgeBindings",
+                    "producerBindings");
+            if (existing != null && existing.isJsonArray()) {
+                for (JsonElement element : existing.getAsJsonArray()) {
+                    bindings.add(element.deepCopy());
+                }
+            }
+            JsonObject requestedOutput = object(activation,
+                    "requestedOutput");
+            String requestedPort = string(requestedOutput, "portId");
+            String requestedCell = string(requestedOutput, "cell");
+
+            for (JsonElement relationElement : array(json,
+                    "equalityRelations")) {
+                if (!relationElement.isJsonObject()) continue;
+                JsonObject relation = relationElement.getAsJsonObject();
+                String fromRegion = firstNonBlank(string(relation,
+                        "fromRegion"), regionOfEndpoint(string(relation,
+                        "fromEndpoint")));
+                String toRegion = firstNonBlank(string(relation,
+                        "toRegion"), regionOfEndpoint(string(relation,
+                        "toEndpoint")));
+                String fromPort = string(relation, "fromEndpoint");
+                String toPort = string(relation, "toEndpoint");
+                boolean requestedPortMismatch = !requestedPort.isEmpty()
+                        && !requestedPort.equals(fromPort);
+                boolean requestedCellMismatch = requestedPort.isEmpty()
+                        && !requestedCell.isEmpty()
+                        && !requestedCell.equals(string(relation,
+                        "fromCell"));
+                if (!region.equals(fromRegion) || toRegion.isEmpty()
+                        || !fromPort.startsWith(fromRegion + ".out.")
+                        || !toPort.startsWith(toRegion + ".in.")
+                        || requestedPortMismatch || requestedCellMismatch) {
+                    continue;
+                }
+                for (JsonElement element : array(relation,
+                        "runtimeBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject raw = element.getAsJsonObject();
+                    String fromInstance = string(raw,
+                            "fromRegionInstance");
+                    String toInstance = string(raw, "toRegionInstance");
+                    long writer = firstLong(raw, "fromEndpointSeq",
+                            "writerEventSeq", "writeSeq");
+                    long reader = firstLong(raw, "toEndpointSeq",
+                            "readerEventSeq", "readSeq");
+                    String orderAuthority = firstNonBlank(string(raw,
+                            "endpointOrderAuthority"), string(relation,
+                            "endpointOrderAuthority"));
+                    String correlationAuthority = firstNonBlank(string(raw,
+                            "endpointCorrelationAuthority"), string(relation,
+                            "endpointCorrelationAuthority"));
+                    String discoveredExecution = firstNonBlank(string(raw,
+                            "discoveredExecutionId"), string(relation,
+                            "discoveredExecutionId"));
+                    if (!instance.equals(fromInstance)
+                            || toInstance.isEmpty()
+                            || writer < 0L || reader <= writer
+                            || !bool(raw, "orderConfirmed", false)
+                            || !AutomaticRegionEdge
+                            .VALUE_EQUALITY_ORDER_AUTHORITY.equals(
+                                    orderAuthority)
+                            || !bool(raw, "valueEqualityObserved", false)
+                            || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(
+                            string(raw, "valueEqualityAuthority"))
+                            || string(raw, "valueFingerprint").isEmpty()) {
+                        continue;
+                    }
+                    JsonObject normalized = new JsonObject();
+                    normalized.addProperty("schemaVersion", 1);
+                    normalized.addProperty("edgeId", string(relation,
+                            "edgeId"));
+                    normalized.addProperty("relation", "EQUALITY");
+                    normalized.addProperty("relationKind", "EQUALITY");
+                    normalized.addProperty("transportKind", string(
+                            relation, "transportKind"));
+                    normalized.addProperty("mappingKind", string(relation,
+                            "mappingKind"));
+                    normalized.addProperty("mappingAuthority", string(
+                            relation, "mappingAuthority"));
+                    normalized.addProperty("fromRegion", fromRegion);
+                    normalized.addProperty("toRegion", toRegion);
+                    normalized.addProperty("fromRegionInstance",
+                            fromInstance);
+                    normalized.addProperty("toRegionInstance", toInstance);
+                    normalized.addProperty("fromOutputPort", fromPort);
+                    normalized.addProperty("toInputPort", toPort);
+                    normalized.addProperty("fromOutputCell", string(
+                            relation, "fromCell"));
+                    normalized.addProperty("toInputCell", string(relation,
+                            "toCell"));
+                    normalized.addProperty("writerEventSeq", writer);
+                    normalized.addProperty("readerEventSeq", reader);
+                    normalized.addProperty("fromEndpointSeq", writer);
+                    normalized.addProperty("toEndpointSeq", reader);
+                    normalized.addProperty("orderConfirmed", true);
+                    normalized.addProperty("valueEqualityObserved", true);
+                    normalized.addProperty("valueEqualityAuthority",
+                            "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
+                    normalized.addProperty("valueFingerprint", string(raw,
+                            "valueFingerprint"));
+                    normalized.addProperty("endpointOrderAuthority",
+                            orderAuthority);
+                    if (!correlationAuthority.isEmpty()) {
+                        normalized.addProperty("endpointCorrelationAuthority",
+                                correlationAuthority);
+                    }
+                    if (!discoveredExecution.isEmpty()) {
+                        normalized.addProperty("discoveredExecutionId",
+                                discoveredExecution);
+                    }
+                    JsonElement discoveredExecutions = firstElement(raw,
+                            "discoveredExecutionIds");
+                    if (discoveredExecutions == null) {
+                        discoveredExecutions = firstElement(relation,
+                                "discoveredExecutionIds");
+                    }
+                    if (discoveredExecutions != null) {
+                        normalized.add("discoveredExecutionIds",
+                                discoveredExecutions.deepCopy());
+                    }
+                    normalized.addProperty("selectionAuthority",
+                            "RUNTIME_CONFIRMED_VALUE_EQUALITY");
+                    normalized.addProperty("objectIdentityRequired", false);
+                    copyIfPresent(raw, normalized, "test", "fromProcess",
+                            "fromThreadId", "toProcess", "toThreadId",
+                            "fromFingerprintSource", "toFingerprintSource");
+                    addUniqueBinding(bindings, normalized);
+                }
+            }
+            if (bindings.size() > 0) {
+                activation.add("edgeBindings", bindings);
+            }
+        }
+
+        private static void copyIfPresent(JsonObject source,
+                                          JsonObject target,
+                                          String... fields) {
+            for (String field : fields) {
+                JsonElement value = source.get(field);
+                if (value != null && !value.isJsonNull()) {
+                    target.add(field, value.deepCopy());
+                }
+            }
+        }
+
+        private static void addUniqueBinding(JsonArray bindings,
+                                             JsonObject candidate) {
+            String identity = bindingIdentity(candidate);
+            for (int index = 0; index < bindings.size(); index++) {
+                JsonElement element = bindings.get(index);
+                if (element.isJsonObject()
+                        && identity.equals(bindingIdentity(
+                        element.getAsJsonObject()))) {
+                    if (compareRuntimeEqualityWitness(candidate,
+                            element.getAsJsonObject()) < 0) {
+                        bindings.set(index, candidate.deepCopy());
+                    }
+                    return;
+                }
+            }
+            bindings.add(candidate);
+        }
+
+        /** Chooses one stable nearest ordered pair for a semantic transfer. */
+        private static int compareRuntimeEqualityWitness(JsonObject left,
+                                                         JsonObject right) {
+            long leftWriter = firstLong(left, "writerEventSeq", "writeSeq",
+                    "fromEndpointSeq");
+            long leftReader = firstLong(left, "readerEventSeq", "readSeq",
+                    "toEndpointSeq");
+            long rightWriter = firstLong(right, "writerEventSeq", "writeSeq",
+                    "fromEndpointSeq");
+            long rightReader = firstLong(right, "readerEventSeq", "readSeq",
+                    "toEndpointSeq");
+            int compared = Long.compare(leftReader - leftWriter,
+                    rightReader - rightWriter);
+            if (compared != 0) return compared;
+            compared = Long.compare(rightWriter, leftWriter);
+            if (compared != 0) return compared;
+            compared = Long.compare(leftReader, rightReader);
+            if (compared != 0) return compared;
+            return JSONL_GSON.toJson(left).compareTo(
+                    JSONL_GSON.toJson(right));
+        }
+
+        private static String bindingIdentity(JsonObject binding) {
+            return string(binding, "edgeId") + "\n"
+                    + string(binding, "relationKind") + "\n"
+                    + string(binding, "fromRegionInstance") + "\n"
+                    + string(binding, "toRegionInstance") + "\n"
+                    + string(binding, "fromOutputPort") + "\n"
+                    + string(binding, "toInputPort") + "\n"
+                    + string(binding, "valueFingerprint");
         }
 
         private JsonObject contextFor(String regionId, String regionInstanceId) {

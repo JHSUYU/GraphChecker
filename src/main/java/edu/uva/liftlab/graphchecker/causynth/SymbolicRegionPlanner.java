@@ -135,10 +135,13 @@ final class SymbolicRegionPlanner {
         private final Map<String, Object> arrayLoad;
         private final Map<String, Object> projectedAccessor;
         private final Map<String, Object> declaredAccessor;
+        private final Map<String, Object> mapPutValue;
         private final DeclaredFieldIdentity containerField;
         private final DeclaredFieldIdentity elementField;
+        private final List<String> fieldPath;
         private final int elementIndex;
         private final boolean constantIndex;
+        private final boolean materializeFromContainerSnapshot;
 
         private ContainerElementFieldCandidate(
                 Map<String, Object> containerAccessor,
@@ -148,14 +151,35 @@ final class SymbolicRegionPlanner {
                 DeclaredFieldIdentity containerField,
                 DeclaredFieldIdentity elementField,
                 int elementIndex, boolean constantIndex) {
+            this(containerAccessor, arrayLoad, projectedAccessor,
+                    declaredAccessor, null, containerField, elementField,
+                    Collections.singletonList(elementField.name),
+                    elementIndex, constantIndex, false);
+        }
+
+        private ContainerElementFieldCandidate(
+                Map<String, Object> containerAccessor,
+                Map<String, Object> arrayLoad,
+                Map<String, Object> projectedAccessor,
+                Map<String, Object> declaredAccessor,
+                Map<String, Object> mapPutValue,
+                DeclaredFieldIdentity containerField,
+                DeclaredFieldIdentity elementField,
+                List<String> fieldPath,
+                int elementIndex, boolean constantIndex,
+                boolean materializeFromContainerSnapshot) {
             this.containerAccessor = containerAccessor;
             this.arrayLoad = arrayLoad;
             this.projectedAccessor = projectedAccessor;
             this.declaredAccessor = declaredAccessor;
+            this.mapPutValue = mapPutValue;
             this.containerField = containerField;
             this.elementField = elementField;
+            this.fieldPath = new ArrayList<>(fieldPath);
             this.elementIndex = elementIndex;
             this.constantIndex = constantIndex;
+            this.materializeFromContainerSnapshot =
+                    materializeFromContainerSnapshot;
         }
     }
 
@@ -1437,7 +1461,7 @@ final class SymbolicRegionPlanner {
                 List<ContainerElementFieldCandidate> containerCandidates =
                         heapStateOutput
                                 ? exactContainerElementFieldCandidates(
-                                region, slice)
+                                region, slice, outputCell)
                                 : Collections
                                 .<ContainerElementFieldCandidate>emptyList();
                 Set<String> containerElementSchemaFields =
@@ -1797,7 +1821,8 @@ final class SymbolicRegionPlanner {
          */
         private List<ContainerElementFieldCandidate>
         exactContainerElementFieldCandidates(RegionDraft region,
-                                              RegionDraft slice) {
+                                              RegionDraft slice,
+                                              String outputCell) {
             Set<String> sliceEdgeIds = new LinkedHashSet<>(
                     causalEdgeIds(slice.causalEdges));
             Map<String, List<Map<String, Object>>> arrayLoadsByShape =
@@ -1908,6 +1933,8 @@ final class SymbolicRegionPlanner {
                             selector >= 0));
                 }
             }
+            addArrayPutValueFieldCandidates(slice, outputCell,
+                    sliceEdgeIds, arrayLoadsByShape, result, emitted);
             result.sort(Comparator
                     .comparing((ContainerElementFieldCandidate candidate) ->
                             string(candidate.projectedAccessor.get("siteId")))
@@ -1915,6 +1942,238 @@ final class SymbolicRegionPlanner {
                     .thenComparing(candidate ->
                             string(candidate.arrayLoad.get("id"))));
             return result;
+        }
+
+        /**
+         * Completes the inverse container projection used by state updates of
+         * the form {@code state.put(key, incoming[i])}.  A later activation
+         * may read {@code state[key].leaf} even though this producer never
+         * invokes the leaf accessor on {@code incoming[i]}.  Requiring that
+         * incidental getter call strands the leaf at a concrete object value.
+         *
+         * <p>The admission remains structural and container-sensitive: one
+         * exact declared array accessor, one exact array load, and one exact
+         * Java {@code Map.put} value edge must identify the same local.  The
+         * demanded scalar leaf must independently have one exact projected /
+         * declared accessor pair in the selected output slice.  Runtime then
+         * verifies the concrete array index and declared leaf owner before
+         * materializing it.  No object reference is reclassified as a scalar
+         * and no field-name-only relation is introduced.</p>
+         */
+        private void addArrayPutValueFieldCandidates(
+                RegionDraft slice, String outputCell,
+                Set<String> sliceEdgeIds,
+                Map<String, List<Map<String, Object>>> arrayLoadsByShape,
+                List<ContainerElementFieldCandidate> result,
+                Set<String> emitted) {
+            Set<String> directlyBoundFields = new LinkedHashSet<>();
+            for (ContainerElementFieldCandidate candidate : result) {
+                directlyBoundFields.add(candidate.containerField.signature
+                        + "\n" + candidate.elementField.signature + "\n"
+                        + candidate.fieldPath);
+            }
+
+            List<Map<String, Object>[]> accessorPairs =
+                    exactProjectedDeclaredAccessorPairs(sliceEdgeIds);
+            for (List<Map<String, Object>> loadGroup
+                    : arrayLoadsByShape.values()) {
+                if (loadGroup.size() != 1) {
+                    continue;
+                }
+                Map<String, Object> arrayLoad = loadGroup.get(0);
+                String method = string(arrayLoad.get("method"));
+                String arrayCell = string(arrayLoad.get("fromCell"));
+                String elementCell = string(arrayLoad.get("toCell"));
+
+                List<Map<String, Object>> containers = new ArrayList<>();
+                for (Map<String, Object> edge : edges) {
+                    if (sliceEdgeIds.contains(string(edge.get("id")))
+                            && exactContainerAccessor(edge, method,
+                            arrayCell)) {
+                        containers.add(edge);
+                    }
+                }
+                if (containers.size() != 1) {
+                    continue;
+                }
+                Map<String, Object> container = containers.get(0);
+                DeclaredFieldIdentity containerField = declaredField(
+                        string(container.get("fromCell")));
+                if (containerField == null
+                        || !containerField.type.endsWith("[]")) {
+                    continue;
+                }
+
+                List<Map<String, Object>> putValues = new ArrayList<>();
+                for (Map<String, Object> edge : slice.causalEdges) {
+                    if (exactArrayElementMapPutValue(edge, method,
+                            elementCell, outputCell)) {
+                        putValues.add(edge);
+                    }
+                }
+                if (putValues.size() != 1) {
+                    continue;
+                }
+                Map<String, Object> putValue = putValues.get(0);
+
+                for (Map<String, Object>[] pair : accessorPairs) {
+                    Map<String, Object> projection = pair[0];
+                    Map<String, Object> declaredRead = pair[1];
+                    DeclaredFieldIdentity elementField = declaredField(
+                            string(projection.get(
+                                    "declaredFieldSignature")));
+                    List<String> fieldPath = exactProjectedFieldPath(
+                            projection, elementField);
+                    if (elementField == null
+                            || !closedProtocolScalarType(elementField.type)
+                            || fieldPath.isEmpty()) {
+                        continue;
+                    }
+                    String fieldIdentity = containerField.signature + "\n"
+                            + elementField.signature + "\n" + fieldPath;
+                    if (directlyBoundFields.contains(fieldIdentity)) {
+                        continue;
+                    }
+                    Set<String> proofIds = new LinkedHashSet<>(Arrays.asList(
+                            string(container.get("id")),
+                            string(arrayLoad.get("id")),
+                            string(putValue.get("id")),
+                            string(projection.get("id")),
+                            string(declaredRead.get("id"))));
+                    if (proofIds.size() != 5 || proofIds.contains("")) {
+                        continue;
+                    }
+                    String identity = "MAP_PUT_VALUE\n"
+                            + string(arrayLoad.get("id")) + "\n"
+                            + string(putValue.get("id")) + "\n"
+                            + elementField.signature + "\n" + fieldPath;
+                    if (!emitted.add(identity)) {
+                        continue;
+                    }
+                    int selector = arrayLoadSelector(arrayLoad);
+                    result.add(new ContainerElementFieldCandidate(container,
+                            arrayLoad, projection, declaredRead, putValue,
+                            containerField, elementField, fieldPath, selector,
+                            selector >= 0, true));
+                }
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<Map<String, Object>[]>
+        exactProjectedDeclaredAccessorPairs(Set<String> sliceEdgeIds) {
+            List<Map<String, Object>[]> result = new ArrayList<>();
+            Map<String, List<Map<String, Object>>> projections =
+                    new LinkedHashMap<>();
+            for (Map<String, Object> edge : edges) {
+                if (!sliceEdgeIds.contains(string(edge.get("id")))
+                        || !exactProjectedAccessorPath(edge)) {
+                    continue;
+                }
+                projections.computeIfAbsent(projectedAccessorShape(edge),
+                        ignored -> new ArrayList<>()).add(edge);
+            }
+            for (List<Map<String, Object>> group : projections.values()) {
+                if (group.size() != 1) {
+                    continue;
+                }
+                Map<String, Object> projection = group.get(0);
+                DeclaredFieldIdentity field = declaredField(string(
+                        projection.get("declaredFieldSignature")));
+                if (field == null || !declaredMetadataMatches(projection,
+                        field)) {
+                    continue;
+                }
+                List<Map<String, Object>> declared = new ArrayList<>();
+                for (Map<String, Object> edge : edges) {
+                    if (sliceEdgeIds.contains(string(edge.get("id")))
+                            && exactDeclaredAccessorPair(edge, projection,
+                            field)) {
+                        declared.add(edge);
+                    }
+                }
+                if (declared.size() == 1) {
+                    result.add(new Map[]{projection, declared.get(0)});
+                }
+            }
+            return result;
+        }
+
+        private boolean exactProjectedAccessorPath(
+                Map<String, Object> edge) {
+            DeclaredFieldIdentity field = declaredField(string(edge.get(
+                    "declaredFieldSignature")));
+            String method = string(edge.get("method"));
+            String from = string(edge.get("fromCell"));
+            String objectFrom = string(edge.get("objectFromCell"));
+            String to = string(edge.get("toCell"));
+            String path = string(edge.get("fieldPath"));
+            return exactStaticEdge(edge)
+                    && "accessor_field_return".equals(string(edge.get(
+                    "kind")))
+                    && "PROJECTION".equals(string(edge.get(
+                    "transferKind")))
+                    && "value_flow".equals(string(edge.get("relation")))
+                    && Boolean.TRUE.equals(edge.get("fieldSensitive"))
+                    && field != null && declaredMetadataMatches(edge, field)
+                    && !objectFrom.isEmpty() && from.equals(objectFrom + path)
+                    && path.matches("(?:#field:[^#]+){1,4}")
+                    && path.endsWith("#field:" + field.name)
+                    && to.equals(string(edge.get("objectToCell")))
+                    && exactLocalCell(method, to)
+                    && exactUnitDefines(edge, to);
+        }
+
+        private List<String> exactProjectedFieldPath(
+                Map<String, Object> projection,
+                DeclaredFieldIdentity field) {
+            if (field == null || !exactProjectedAccessorPath(projection)) {
+                return Collections.emptyList();
+            }
+            List<String> result = new ArrayList<>();
+            Matcher matcher = Pattern.compile("#field:([^#]+)").matcher(
+                    string(projection.get("fieldPath")));
+            while (matcher.find()) {
+                result.add(matcher.group(1));
+            }
+            return !result.isEmpty()
+                    && field.name.equals(result.get(result.size() - 1))
+                    ? result : Collections.<String>emptyList();
+        }
+
+        private boolean exactArrayElementMapPutValue(
+                Map<String, Object> edge, String method,
+                String elementCell, String outputCell) {
+            if (!exactStaticEdge(edge)
+                    || !method.equals(string(edge.get("method")))
+                    || !elementCell.equals(string(edge.get("fromCell")))
+                    || !outputCell.equals(string(edge.get("toCell")))
+                    || !"field_mutation".equals(string(edge.get("kind")))
+                    || !"HEAP_WRITE".equals(string(edge.get(
+                    "transferKind")))
+                    || !"value_flow".equals(string(edge.get("relation")))
+                    || !exactJavaMapPut(string(edge.get("invoke")))) {
+                return false;
+            }
+            String local = exactLocalName(method, elementCell);
+            String unit = string(edge.get("unit")).trim();
+            int open = unit.lastIndexOf('(');
+            int close = unit.lastIndexOf(')');
+            if (local.isEmpty() || open < 0 || close <= open) {
+                return false;
+            }
+            String[] arguments = unit.substring(open + 1, close).split(",",
+                    -1);
+            return arguments.length == 2
+                    && local.equals(arguments[1].trim());
+        }
+
+        private boolean exactJavaMapPut(String invoke) {
+            return invoke.matches("^<java\\.util\\.(?:Map|SortedMap|"
+                    + "NavigableMap|Hashtable|concurrent\\.ConcurrentMap|"
+                    + "concurrent\\.ConcurrentNavigableMap):\\s+"
+                    + "java\\.lang\\.Object\\s+put\\(java\\.lang\\.Object,"
+                    + "java\\.lang\\.Object\\)>$");
         }
 
         private List<Map<String, Object>> containerElementFieldBindings(
@@ -1932,19 +2191,28 @@ final class SymbolicRegionPlanner {
                         || basePort.equals(containerPort)) {
                     continue;
                 }
-                List<String> proofIds = sorted(Arrays.asList(
+                List<String> proofIds = new ArrayList<>(Arrays.asList(
                         string(candidate.containerAccessor.get("id")),
                         string(candidate.arrayLoad.get("id")),
                         string(candidate.projectedAccessor.get("id")),
                         string(candidate.declaredAccessor.get("id"))));
+                if (candidate.mapPutValue != null) {
+                    proofIds.add(string(candidate.mapPutValue.get("id")));
+                }
+                proofIds = sorted(proofIds);
                 String selectorAuthority = candidate.constantIndex
                         ? "EXACT_ARRAY_INDEX"
                         : "DISCOVER_UNIQUE_IDENTITY_INDEX";
                 result.add(object(
-                        "schemaVersion", 1,
+                        "schemaVersion",
+                        candidate.materializeFromContainerSnapshot ? 2 : 1,
                         "kind", "ARRAY_ELEMENT_FIELD",
                         "bindingId", outputPort + ".array-element-field."
-                                + string(candidate.arrayLoad.get("id")),
+                                + string(candidate.arrayLoad.get("id"))
+                                + (candidate.materializeFromContainerSnapshot
+                                ? ".map-put-value."
+                                + string(candidate.projectedAccessor.get(
+                                "id")) : ""),
                         "baseInputSymbol", basePort,
                         "containerInputPort", containerPort,
                         "containerInputCell",
@@ -1954,24 +2222,37 @@ final class SymbolicRegionPlanner {
                                 ? candidate.elementIndex : -1,
                         "elementOccurrence", candidate.constantIndex
                                 ? 1 : -1,
-                        "fieldPath", Collections.singletonList(
-                                candidate.elementField.name),
+                        "fieldPath", candidate.fieldPath,
                         "declaredFieldSignature",
                         candidate.elementField.signature,
                         "declaredFieldOwnerClass",
                         candidate.elementField.owner,
                         "declaredFieldType", candidate.elementField.type,
                         "declaredFieldName", candidate.elementField.name,
-                        "method", string(candidate.projectedAccessor.get(
+                        "materializationMode",
+                        candidate.materializeFromContainerSnapshot
+                                ? "CONTAINER_SNAPSHOT"
+                                : "FIELD_ACCESS_HOOK",
+                        "method", string((candidate
+                                .materializeFromContainerSnapshot
+                                ? candidate.arrayLoad
+                                : candidate.projectedAccessor).get(
                                 "method")),
                         "fieldMaterializationSiteId",
-                        string(candidate.projectedAccessor.get("siteId")),
+                        string((candidate
+                                .materializeFromContainerSnapshot
+                                ? candidate.mapPutValue
+                                : candidate.projectedAccessor).get(
+                                "siteId")),
                         "arrayLoadSiteId",
                         string(candidate.arrayLoad.get("siteId")),
                         "proofCausalEdgeIds", proofIds,
                         "proofAuthority",
-                        "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                                + "FIELD_FOUR_EDGE_JOIN_V1",
+                        candidate.materializeFromContainerSnapshot
+                                ? "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_"
+                                + "AND_DECLARED_FIELD_FIVE_EDGE_JOIN_V1"
+                                : "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_"
+                                + "DECLARED_FIELD_FOUR_EDGE_JOIN_V1",
                         "complete", true));
             }
             return result;

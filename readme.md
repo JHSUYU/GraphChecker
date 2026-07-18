@@ -108,6 +108,13 @@ VM placeholder 都可以成为 input。一个 region 可以有多个 input。
 绑定到具体 activation、对象、调用和定义位置。不能因为某个 input 在一条路径上未使用，
 就把它从整个 region 接口中删除；它应被记录为该路径 inactive。
 
+容器输入保留 selector 与 scalar leaf 两层身份。对于
+`array[i] -> Map.put(key, element) -> element.field.field`，数组索引和元素对象只用于定位，
+有序 `fieldPath` 的末级 primitive/String 值才成为 symbol。若 producer 没有偶然调用该
+leaf getter，静态 output demand 仍可把 leaf 反投影到 exact container snapshot；运行时必须
+再确认数组元素 identity、逐级 owner、declared field signature 和类型，不能把整个对象引用
+当作 scalar symbol。
+
 ### `region.out`
 
 `region.out` 不是“方法返回值列表”，也不是 region 中所有被写过的变量。它只包含会流入
@@ -190,6 +197,11 @@ condition。
 Branch 身份由 VM 观察到的 `site + occurrence + outcome` 绑定，而不是靠不稳定的全局
 branch 序号猜测。这里的 invocation ordinal 只表示同一 receiver-class/thread context 中的
 第几次调用，用于定位动态 activation，不代表程序语义，也不进入稳定 worklist key。
+
+跨 RPC/codec/SASL 的值传播使用独立的 runtime-confirmed `EQUALITY` binding：它要求两端
+canonical port、exact region instance、完整 value fingerprint 和 writer-before-reader 顺序，
+但不要求序列化前后的对象 identity。它与共享 field 的 `READ_FROM` 保持不同 relation kind，
+composer 按 edge、kind、instance 和 runtime witness 精确选择，二者不能互相替代。
 
 Producer 的模型只能 materialize 到静态分析找到并由 instrumentation 确认的真实定义位置。
 `forcedBranches` 不能作为关系证据。最终 target replay 必须是 observation-only：不得给

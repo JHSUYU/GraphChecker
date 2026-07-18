@@ -3189,7 +3189,8 @@ final class RuntimeRegionPlanner {
                     instanceof Collection<?> ? new ArrayList<>((Collection<
                     String>) declaration.get("fieldPath"))
                     : Collections.<String>emptyList();
-            if (path.size() != 1 || !field.name.equals(path.get(0))) {
+            if (path.isEmpty() || path.size() > 4
+                    || !field.name.equals(path.get(path.size() - 1))) {
                 return false;
             }
             baseAction.put("field", fieldSignature);
@@ -5623,6 +5624,8 @@ final class RuntimeRegionPlanner {
                     "declaredFieldType"),
                     "declaredFieldName", jsonString(json,
                     "declaredFieldName"),
+                    "materializationMode", jsonString(json,
+                    "materializationMode"),
                     "method", jsonString(json, "method"),
                     "fieldMaterializationSiteId", jsonString(json,
                     "fieldMaterializationSiteId"),
@@ -5638,7 +5641,7 @@ final class RuntimeRegionPlanner {
         private Map<String, Object> copyContainerElementFieldBinding(
                 Map<String, Object> declaration) {
             Map<String, Object> copy = new LinkedHashMap<>(declaration);
-            copy.put("fieldPath", new ArrayList<>(stringSet(
+            copy.put("fieldPath", new ArrayList<>(stringList(
                     declaration.get("fieldPath"))));
             Object proof = declaration.get("proofCausalEdgeIds");
             copy.put("proofCausalEdgeIds", proof instanceof Collection<?>
@@ -5668,10 +5671,30 @@ final class RuntimeRegionPlanner {
                     ? index >= 0 && occurrence > 0
                     : "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(selector)
                     && index == -1 && occurrence == -1;
-            Set<String> path = stringSet(declaration.get("fieldPath"));
+            List<String> path = stringList(declaration.get("fieldPath"));
             Set<String> proof = stringSet(declaration.get(
                     "proofCausalEdgeIds"));
-            return intValue(declaration.get("schemaVersion"), -1) == 1
+            int schemaVersion = intValue(declaration.get(
+                    "schemaVersion"), -1);
+            String materializationMode = string(declaration.get(
+                    "materializationMode"));
+            boolean direct = schemaVersion == 1
+                    && (materializationMode.isEmpty()
+                    || "FIELD_ACCESS_HOOK".equals(materializationMode))
+                    && path.equals(Collections.singletonList(field.name))
+                    && proof.size() == 4
+                    && "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
+                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(string(
+                    declaration.get("proofAuthority")));
+            boolean snapshot = schemaVersion == 2
+                    && "CONTAINER_SNAPSHOT".equals(materializationMode)
+                    && !path.isEmpty() && path.size() <= 4
+                    && field.name.equals(path.get(path.size() - 1))
+                    && proof.size() == 5
+                    && "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_AND_"
+                    .concat("DECLARED_FIELD_FIVE_EDGE_JOIN_V1").equals(
+                    string(declaration.get("proofAuthority")));
+            return (direct || snapshot)
                     && "ARRAY_ELEMENT_FIELD".equals(string(declaration.get(
                     "kind")))
                     && Boolean.TRUE.equals(declaration.get("complete"))
@@ -5690,7 +5713,6 @@ final class RuntimeRegionPlanner {
                     "declaredFieldType")))
                     && field.name.equals(string(declaration.get(
                     "declaredFieldName")))
-                    && path.equals(Collections.singleton(field.name))
                     && method.equals(string(declaration.get("method")))
                     && exactUnitSite(method, string(declaration.get(
                     "fieldMaterializationSiteId")))
@@ -5700,11 +5722,8 @@ final class RuntimeRegionPlanner {
                     "arrayLoadSiteId")))
                     && sites.contains(string(declaration.get(
                     "arrayLoadSiteId")))
-                    && proof.size() == 4 && !proof.contains("")
-                    && new LinkedHashSet<>(causalEdgeIds).containsAll(proof)
-                    && "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(string(
-                    declaration.get("proofAuthority")));
+                    && !proof.contains("")
+                    && new LinkedHashSet<>(causalEdgeIds).containsAll(proof);
         }
 
         private int intValue(Object value, int fallback) {

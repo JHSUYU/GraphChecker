@@ -3784,8 +3784,11 @@ public class SymbolicRegionPlannerTest {
                 (List<Map<String, Object>>) slice.get(
                         "containerElementFieldBindings");
 
-        assertEquals(1, bindings.size());
-        Map<String, Object> binding = bindings.get(0);
+        assertEquals(2, bindings.size());
+        Map<String, Object> binding = bindings.stream()
+                .filter(row -> Collections.singletonList("keyId").equals(
+                        row.get("fieldPath")))
+                .findFirst().orElseThrow(AssertionError::new);
         assertEquals(1, binding.get("schemaVersion"));
         assertEquals("ARRAY_ELEMENT_FIELD", binding.get("kind"));
         assertEquals("EXACT_ARRAY_INDEX",
@@ -3803,10 +3806,46 @@ public class SymbolicRegionPlannerTest {
         assertEquals(Boolean.TRUE, binding.get("complete"));
         assertTrue(((List<?>) slice.get("causalEdgeIds")).contains("A"));
 
-        // A map-iterator expiry accessor has the same declared-field pair but
-        // no exact array-container provenance.  It must remain a map-entry
-        // field family and never acquire a container selector.
-        assertFalse(String.valueOf(bindings).contains("expiryDate"));
+        Map<String, Object> expiry = bindings.stream()
+                .filter(row -> Collections.singletonList("expiryDate").equals(
+                        row.get("fieldPath")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals(2, expiry.get("schemaVersion"));
+        assertEquals("CONTAINER_SNAPSHOT",
+                expiry.get("materializationMode"));
+        assertEquals("EXACT_ARRAY_INDEX",
+                expiry.get("selectorAuthority"));
+        assertEquals(Arrays.asList("A", "C", "EXPIRY.G", "EXPIRY.P",
+                        "PUT.VALUE"),
+                expiry.get("proofCausalEdgeIds"));
+        assertEquals("STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_AND_"
+                        + "DECLARED_FIELD_FIVE_EDGE_JOIN_V1",
+                expiry.get("proofAuthority"));
+    }
+
+    @Test
+    public void arrayPutValueSnapshotPreservesNestedLeafPath() {
+        List<Map<String, Object>> edges = containerFieldEdges("$i7");
+        Map<String, Object> projection = edges.stream()
+                .filter(edge -> "EXPIRY.P".equals(edge.get("id")))
+                .findFirst().orElseThrow(AssertionError::new);
+        String owner = CONTAINER_ADD + "::$r7";
+        projection.put("fromCell", owner
+                + "#field:metadata#field:expiryDate");
+        projection.put("fieldPath", "#field:metadata#field:expiryDate");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> bindings = (List<Map<String, Object>>)
+                containerFieldSlice(edges).get(
+                        "containerElementFieldBindings");
+        Map<String, Object> expiry = bindings.stream()
+                .filter(row -> "CONTAINER_SNAPSHOT".equals(
+                        row.get("materializationMode")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals(Arrays.asList("metadata", "expiryDate"),
+                expiry.get("fieldPath"));
+        assertEquals("<example.KeyBase: long expiryDate>",
+                expiry.get("declaredFieldSignature"));
     }
 
     @Test
@@ -3817,11 +3856,15 @@ public class SymbolicRegionPlannerTest {
         List<Map<String, Object>> bindings =
                 (List<Map<String, Object>>) slice.get(
                         "containerElementFieldBindings");
-        assertEquals(1, bindings.size());
+        assertEquals(2, bindings.size());
+        Map<String, Object> keyId = bindings.stream()
+                .filter(row -> Collections.singletonList("keyId").equals(
+                        row.get("fieldPath")))
+                .findFirst().orElseThrow(AssertionError::new);
         assertEquals("DISCOVER_UNIQUE_IDENTITY_INDEX",
-                bindings.get(0).get("selectorAuthority"));
-        assertEquals(-1, bindings.get(0).get("elementIndex"));
-        assertEquals(-1, bindings.get(0).get("elementOccurrence"));
+                keyId.get("selectorAuthority"));
+        assertEquals(-1, keyId.get("elementIndex"));
+        assertEquals(-1, keyId.get("elementOccurrence"));
     }
 
     @Test
@@ -3830,7 +3873,8 @@ public class SymbolicRegionPlannerTest {
             List<Map<String, Object>> missing = containerFieldEdges("0");
             missing.removeIf(edge -> id.equals(edge.get("id")));
             assertEquals("missing " + id, 0,
-                    containerBindingCount(containerFieldSlice(missing)));
+                    containerBindingCount(containerFieldSlice(missing),
+                            "keyId"));
 
             List<Map<String, Object>> ambiguous = containerFieldEdges("0");
             Map<String, Object> original = ambiguous.stream()
@@ -3840,7 +3884,8 @@ public class SymbolicRegionPlannerTest {
             duplicate.put("id", id + ".DUPLICATE");
             ambiguous.add(duplicate);
             assertEquals("ambiguous " + id, 0,
-                    containerBindingCount(containerFieldSlice(ambiguous)));
+                    containerBindingCount(containerFieldSlice(ambiguous),
+                            "keyId"));
         }
     }
 
@@ -3935,6 +3980,21 @@ public class SymbolicRegionPlannerTest {
         return ((List<?>) slice.get("containerElementFieldBindings")).size();
     }
 
+    @SuppressWarnings("unchecked")
+    private static int containerBindingCount(Map<String, Object> slice,
+                                             String leaf) {
+        int count = 0;
+        for (Map<String, Object> binding : (List<Map<String, Object>>) slice
+                .get("containerElementFieldBindings")) {
+            List<String> path = (List<String>) binding.get("fieldPath");
+            if (path != null && !path.isEmpty()
+                    && leaf.equals(path.get(path.size() - 1))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private static List<Map<String, Object>> containerFieldEdges(
             String selector) {
         String array = CONTAINER_ADD + "::$r4";
@@ -3988,6 +4048,14 @@ public class SymbolicRegionPlannerTest {
                 "HEAP_WRITE", "field_mutation", result, OUTPUT_FIELD, 17);
         elementEffect.put("id", "EFFECT.ELEMENT");
         edges.add(elementEffect);
+
+        Map<String, Object> putValue = exactStaticEdge("PUT.VALUE",
+                "HEAP_WRITE", "field_mutation", owner, OUTPUT_FIELD, 18,
+                "interfaceinvoke $r8.<java.util.Map: java.lang.Object "
+                        + "put(java.lang.Object,java.lang.Object)>($r9, $r5)");
+        putValue.put("invoke", "<java.util.Map: java.lang.Object "
+                + "put(java.lang.Object,java.lang.Object)>");
+        edges.add(putValue);
 
         // Same accessor pair as expiry handling, deliberately rooted in a
         // map iterator value rather than the exact array-load owner.

@@ -330,6 +330,65 @@ public class CausynthTraceRecorderTest {
     }
 
     @Test
+    public void streamedGraphEdgesPreserveInsertionOrderIdsAndCounts()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path output = folder.getRoot().toPath().resolve("streamed-edges");
+        Files.createDirectories(output);
+        Path trace = output.resolve("runtime_trace.jsonl");
+        Path graph = output.resolve("static_dataflow_edges.jsonl");
+        String method = "<test.StreamedEdges: void run()>";
+        Files.write(trace, Collections.singletonList(
+                methodRow(1, method, "worker", 1, 11, 1)),
+                StandardCharsets.UTF_8);
+        Files.write(graph, java.util.Arrays.asList(
+                "{\"id\":\"DF.FIRST\","
+                        + "\"kind\":\"first_flow\","
+                        + "\"fromCell\":\"local:firstFrom\","
+                        + "\"toCell\":\"local:firstTo\","
+                        + "\"method\":\"" + method + "\","
+                        + "\"unitIndex\":1}",
+                "{\"id\":\"DF.SECOND\","
+                        + "\"kind\":\"second_flow\","
+                        + "\"fromCell\":\"local:secondFrom\","
+                        + "\"toCell\":\"local:secondTo\","
+                        + "\"method\":\"" + method + "\","
+                        + "\"unitIndex\":2}"),
+                StandardCharsets.UTF_8);
+
+        try {
+            aggregateExistingTrace(output, graph, 100, 100);
+            String instantiated = new String(Files.readAllBytes(output.resolve(
+                    "unit_test_instantiated_graph.json")),
+                    StandardCharsets.UTF_8);
+            int first = instantiated.indexOf("\"id\":\"DYN.0\"");
+            int second = instantiated.indexOf("\"id\":\"DYN.1\"");
+            assertTrue(first >= 0);
+            assertTrue(second > first);
+            assertTrue(instantiated.indexOf("\"staticEdgeId\":\"DF.FIRST\"",
+                    first) < second);
+            assertTrue(instantiated.indexOf("\"staticEdgeId\":\"DF.SECOND\"",
+                    second) > second);
+            assertFalse(instantiated.contains("\"id\":\"DYN.2\""));
+            assertTrue(instantiated.contains("\"instantiatedEdgeCount\":2"));
+
+            String roleMerged = new String(Files.readAllBytes(output.resolve(
+                    "unit_test_role_merged_graph.json")),
+                    StandardCharsets.UTF_8);
+            int roleFirst = roleMerged.indexOf("\"id\":\"ROLE.0\"");
+            int roleSecond = roleMerged.indexOf("\"id\":\"ROLE.1\"");
+            assertTrue(roleFirst >= 0);
+            assertTrue(roleSecond > roleFirst);
+            assertFalse(roleMerged.contains("\"id\":\"ROLE.2\""));
+            assertTrue(roleMerged.contains("\"roleMergedEdgeCount\":2"));
+        } finally {
+            resetRecorder();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void contextPairLimitIsReportedAsGraphTruncation()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Test;
@@ -590,12 +591,85 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void outputClosureCarriesOrderedRuntimeValueEqualityBinding()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            setSaslEqualityEvidence(fixture, 10, 20);
+            String activation = "{\"activationId\":\"ACT.NN\","
+                    + "\"regionInstanceId\":\"REGION.1@test#call1\","
+                    + "\"regionId\":\"REGION.1\","
+                    + "\"test\":\"testMiniDfs\","
+                    + "\"rootMethod\":\"<example.Client: void send()>\","
+                    + "\"invocationOrdinal\":1,\"replayable\":true,"
+                    + "\"symbolicReady\":true,"
+                    + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
+                    + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
+                    + "\"requestedOutputSliceComplete\":true,"
+                    + "\"requestedOutput\":{"
+                    + "\"portId\":\"REGION.1.out.0\","
+                    + "\"cell\":\"client.userName\","
+                    + "\"kind\":\"VALUE\"},"
+                    + "\"symbolize\":[],\"outputs\":[],"
+                    + "\"branches\":[]}\n";
+            Files.write(fixture.activations,
+                    activation.getBytes(StandardCharsets.UTF_8));
+            ConcolicScheduler.Arguments arguments =
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan", fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--output-dir", fixture.output.toString(),
+                            "--activation-id", "ACT.NN", "--capture-only"});
+
+            ConcolicScheduler.Result result =
+                    ConcolicScheduler.schedule(arguments);
+
+            JsonObject scheduledBinding = result.scheduledActivations.get(0)
+                    .getAsJsonArray("edgeBindings").get(0)
+                    .getAsJsonObject();
+            assertRuntimeEqualityBinding(scheduledBinding);
+            JsonObject jobBinding = result.jobs.get(0)
+                    .getAsJsonArray("edgeBindings").get(0)
+                    .getAsJsonObject();
+            assertEquals(scheduledBinding, jobBinding);
+
+            // Equality is not admitted from fingerprint coincidence alone;
+            // the concrete producer event must precede the consumer event.
+            setSaslEqualityEvidence(fixture, 20, 10);
+            ConcolicScheduler.Result unordered =
+                    ConcolicScheduler.schedule(arguments);
+            assertEquals(0, unordered.jobs.get(0)
+                    .getAsJsonArray("edgeBindings").size());
+
+            // Repeated endpoint observations in a long-running root describe
+            // one semantic transfer. Prefer the nearest ordered witness even
+            // when it appears after a less precise row.
+            setSaslEqualityEvidence(fixture, 10, 20);
+            prependSaslEqualityEvidence(fixture, 1, 100);
+            ConcolicScheduler.Result repeated =
+                    ConcolicScheduler.schedule(arguments);
+            assertEquals(1, repeated.jobs.get(0)
+                    .getAsJsonArray("edgeBindings").size());
+            assertRuntimeEqualityBinding(repeated.jobs.get(0)
+                    .getAsJsonArray("edgeBindings").get(0)
+                    .getAsJsonObject());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void expandsRecursiveReachabilitySupportBeforePrimaryActivation()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            setSaslEqualityEvidence(fixture, 10, 20);
             JsonObject primary = JsonParser.parseString(new String(
                     Files.readAllBytes(fixture.activations),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
@@ -657,6 +731,9 @@ public class ConcolicSchedulerTest {
                     .get("activationSelectionRequired").getAsString());
             assertFalse(result.scheduledActivations.get(0)
                     .has("reachabilitySupportActivations"));
+            assertRuntimeEqualityBinding(result.scheduledActivations.get(0)
+                    .getAsJsonArray("edgeBindings").get(0)
+                    .getAsJsonObject());
         } finally {
             folder.delete();
         }
@@ -1707,6 +1784,106 @@ public class ConcolicSchedulerTest {
         return result;
     }
 
+    private static void setSaslEqualityEvidence(Fixture fixture,
+                                                long writer,
+                                                long reader)
+            throws Exception {
+        List<String> rows = Files.readAllLines(fixture.edges,
+                StandardCharsets.UTF_8);
+        JsonArray rewritten = new JsonArray();
+        boolean found = false;
+        for (String row : rows) {
+            if (row.trim().isEmpty()) continue;
+            JsonObject edge = JsonParser.parseString(row).getAsJsonObject();
+            if ("E.SASL".equals(edge.get("edgeId").getAsString())) {
+                JsonObject evidence = edge.getAsJsonArray("evidence")
+                        .get(0).getAsJsonObject().deepCopy();
+                evidence.addProperty("fromRegionInstance",
+                        "REGION.1@test#call1");
+                evidence.addProperty("toRegionInstance",
+                        "REGION.0@testMiniDfs#call7");
+                evidence.addProperty("fromEndpointSeq", writer);
+                evidence.addProperty("toEndpointSeq", reader);
+                evidence.addProperty("orderConfirmed", writer < reader);
+                JsonArray singleton = new JsonArray();
+                singleton.add(evidence);
+                edge.add("evidence", singleton);
+                found = true;
+            }
+            rewritten.add(edge);
+        }
+        assertTrue(found);
+        StringBuilder content = new StringBuilder();
+        for (JsonElement element : rewritten) {
+            content.append(element).append('\n');
+        }
+        Files.write(fixture.edges,
+                content.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void prependSaslEqualityEvidence(Fixture fixture,
+                                                    long writer,
+                                                    long reader)
+            throws Exception {
+        List<String> rows = Files.readAllLines(fixture.edges,
+                StandardCharsets.UTF_8);
+        StringBuilder content = new StringBuilder();
+        boolean found = false;
+        for (String row : rows) {
+            if (row.trim().isEmpty()) continue;
+            JsonObject edge = JsonParser.parseString(row).getAsJsonObject();
+            if ("E.SASL".equals(edge.get("edgeId").getAsString())) {
+                JsonArray current = edge.getAsJsonArray("evidence");
+                JsonObject duplicate = current.get(0).getAsJsonObject()
+                        .deepCopy();
+                duplicate.addProperty("fromEndpointSeq", writer);
+                duplicate.addProperty("toEndpointSeq", reader);
+                duplicate.addProperty("orderConfirmed", writer < reader);
+                JsonArray repeated = new JsonArray();
+                repeated.add(duplicate);
+                for (JsonElement element : current) {
+                    repeated.add(element.deepCopy());
+                }
+                edge.add("evidence", repeated);
+                found = true;
+            }
+            content.append(edge).append('\n');
+        }
+        assertTrue(found);
+        Files.write(fixture.edges,
+                content.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void assertRuntimeEqualityBinding(JsonObject binding) {
+        assertEquals("E.SASL", binding.get("edgeId").getAsString());
+        assertEquals("EQUALITY", binding.get("relationKind").getAsString());
+        assertEquals("RUNTIME_CONFIRMED_VALUE_EQUALITY", binding.get(
+                "selectionAuthority").getAsString());
+        assertEquals("REGION.1@test#call1", binding.get(
+                "fromRegionInstance").getAsString());
+        assertEquals("REGION.0@testMiniDfs#call7", binding.get(
+                "toRegionInstance").getAsString());
+        assertEquals("REGION.1.out.0", binding.get(
+                "fromOutputPort").getAsString());
+        assertEquals("REGION.0.in.0", binding.get(
+                "toInputPort").getAsString());
+        assertEquals(10, binding.get("writerEventSeq").getAsInt());
+        assertEquals(20, binding.get("readerEventSeq").getAsInt());
+        assertTrue(binding.get("orderConfirmed").getAsBoolean());
+        assertTrue(binding.get("valueEqualityObserved").getAsBoolean());
+        assertEquals("RUNTIME_COMPLETE_VALUE_FINGERPRINT", binding.get(
+                "valueEqualityAuthority").getAsString());
+        assertEquals("GLOBAL_TRACE_ENDPOINT_SEQUENCE", binding.get(
+                "endpointOrderAuthority").getAsString());
+        assertEquals("EXEC.fixture", binding.get(
+                "discoveredExecutionId").getAsString());
+        assertEquals("sha256:fixture", binding.get(
+                "valueFingerprint").getAsString());
+        assertFalse(binding.get("objectIdentityRequired").getAsBoolean());
+        assertFalse(binding.has("receiverObjectId"));
+        assertFalse(binding.has("objectIdentityConfirmed"));
+    }
+
     private static JsonObject heapBinding(String from, String to,
                                           int receiver) {
         JsonObject result = new JsonObject();
@@ -1814,6 +1991,11 @@ public class ConcolicSchedulerTest {
                 + "\"confirmedValueEqualityPairCount\":1,"
                 + "\"valueEqualityAuthority\":"
                 + "\"RUNTIME_COMPLETE_VALUE_FINGERPRINT\","
+                + "\"endpointOrderAuthority\":"
+                + "\"GLOBAL_TRACE_ENDPOINT_SEQUENCE\","
+                + "\"endpointCorrelationAuthority\":"
+                + "\"NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT\","
+                + "\"discoveredExecutionId\":\"EXEC.fixture\","
                 + "\"eligibleForAutomaticDerivation\":true,"
                 + "\"eligibleForAutomaticSmt\":true,"
                 + "\"composable\":true,\"evidence\":[{"

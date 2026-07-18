@@ -1961,6 +1961,99 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void materializesNestedArrayPutValueLeafFromContainerSnapshot()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.Handler: void snapshotArrayValueFields()>";
+        String base = "REGION.TEST.in.elementExpiry";
+        String container = "REGION.TEST.in.elements";
+        JsonObject activation = concreteActivation(
+                "ACT.SNAPSHOT.ARRAY.VALUE.FIELD", root, 1);
+        activation.addProperty("test", "mock-symbolic-test");
+        activation.addProperty("concreteReplayOnly", false);
+
+        JsonArray actions = genericArrayActions(base, container, root);
+        JsonObject leafAction = actions.get(1).getAsJsonObject();
+        leafAction.addProperty("cell", metadataExpiryFieldSignature());
+        leafAction.addProperty("field", metadataExpiryFieldSignature());
+        leafAction.addProperty("accessOwnerClass", Metadata.class.getName());
+        leafAction.addProperty("accessField", "expiry");
+        leafAction.addProperty("leafOwnerClass", Metadata.class.getName());
+        leafAction.addProperty("leafField", "expiry");
+        leafAction.add("fieldPath",
+                JsonParser.parseString("[\"metadata\",\"expiry\"]"));
+        activation.add("symbolize", actions);
+
+        JsonObject binding = genericArrayBinding("BIND.SNAPSHOT", base,
+                container, "DISCOVER_UNIQUE_IDENTITY_INDEX", -1, -1,
+                root + "#u18");
+        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("materializationMode", "CONTAINER_SNAPSHOT");
+        binding.add("fieldPath",
+                JsonParser.parseString("[\"metadata\",\"expiry\"]"));
+        binding.addProperty("declaredFieldSignature",
+                metadataExpiryFieldSignature());
+        binding.addProperty("declaredFieldOwnerClass",
+                Metadata.class.getName());
+        binding.addProperty("declaredFieldType", "long");
+        activation.add("containerElementFieldBindings",
+                singleton(binding));
+        Files.write(plan, (activation + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "mock-symbolic-test");
+        try {
+            DelayedExpressionEngine.reset();
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            GenericArrayEnvelope envelope = new GenericArrayEnvelope(4);
+            // No expiry getter/field hook is executed.  Observing the exact
+            // container snapshot must be sufficient to materialize all four
+            // array-element leaf fields.
+            runGenericArrayActivation(root, envelope,
+                    Collections.<Current>emptyList());
+
+            JsonObject row = resultRows(results).get(0);
+            assertEquals(row.getAsJsonArray("unresolvedInputs").toString(),
+                    0, row.getAsJsonArray("unresolvedInputs").size());
+            JsonArray dynamic = row.getAsJsonArray("dynamicFieldBindings");
+            assertEquals(4, dynamic.size());
+            for (int index = 0; index < dynamic.size(); index++) {
+                JsonObject current = dynamic.get(index).getAsJsonObject();
+                assertEquals("DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING",
+                        current.get("kind").getAsString());
+                JsonArray fieldPath = current.getAsJsonArray("fieldPath");
+                assertEquals(2, fieldPath.size());
+                assertEquals("metadata", fieldPath.get(0).getAsString());
+                assertEquals("expiry", fieldPath.get(1).getAsString());
+                JsonObject selector = current.getAsJsonObject(
+                        "containerSelector");
+                assertEquals(index,
+                        selector.get("elementIndex").getAsInt());
+                assertEquals(selector.get("elementObjectToken").getAsLong(),
+                        current.get("materializationSiteBridgeElementObjectToken")
+                                .getAsLong());
+                assertTrue(selector.get("elementObjectToken").getAsLong()
+                        != current.get("leafOwnerObjectToken").getAsLong());
+                assertEquals("DISCOVER_UNIQUE_IDENTITY_INDEX",
+                        selector.get("resolvedFromSelectorAuthority")
+                                .getAsString());
+                assertEquals(current.get("dynamicFieldSymbol").getAsString(),
+                        DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES.get(
+                                envelope.elements[index].metadata));
+            }
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            DelayedExpressionEngine.reset();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void exactArraySelectorReplaysModelOnlyToItsOwningElement()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -5107,6 +5200,8 @@ public class ConcolicRegionRuntimeTest {
         binding.addProperty("fieldMaterializationSiteId",
                 fieldMaterializationSiteId);
         binding.add("fieldPath", JsonParser.parseString("[\"id\"]"));
+        binding.addProperty("declaredFieldSignature",
+                currentIdFieldSignature());
         binding.addProperty("declaredFieldOwnerClass",
                 Current.class.getName());
         binding.addProperty("declaredFieldType", "int");
@@ -5179,6 +5274,10 @@ public class ConcolicRegionRuntimeTest {
 
     private static String currentIdFieldSignature() {
         return "<" + Current.class.getName() + ": int id>";
+    }
+
+    private static String metadataExpiryFieldSignature() {
+        return "<" + Metadata.class.getName() + ": long expiry>";
     }
 
     private static JsonObject concreteIntegerExpression(int value) {
@@ -5278,6 +5377,12 @@ public class ConcolicRegionRuntimeTest {
     private static final class Current {
         @SuppressWarnings("unused")
         private int id = 7;
+        private final Metadata metadata = new Metadata();
+    }
+
+    private static final class Metadata {
+        @SuppressWarnings("unused")
+        private long expiry = 17L;
     }
 
     private static final class ArrayEnvelope {

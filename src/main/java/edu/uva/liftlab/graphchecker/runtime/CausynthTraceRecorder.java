@@ -1081,11 +1081,9 @@ public final class CausynthTraceRecorder {
         }
 
         List<String> nodeJson = new ArrayList<>();
-        List<String> edgeJson = new ArrayList<>();
         Set<String> emittedNodes = new LinkedHashSet<>();
         Map<String, EdgeAccumulator> emittedEdges = new LinkedHashMap<>();
         List<String> roleNodeJson = new ArrayList<>();
-        List<String> roleEdgeJson = new ArrayList<>();
         Set<String> emittedRoleNodes = new LinkedHashSet<>();
         Map<String, EdgeAccumulator> emittedRoleEdges = new LinkedHashMap<>();
         int mergedEdgeInputCount = 0;
@@ -1166,14 +1164,6 @@ public final class CausynthTraceRecorder {
                 emittedRoleNodes, roleNodeJson, emittedRoleEdges);
         truncated = truncated || runtimeFieldBridgeStats.truncated;
         roleTruncated = roleTruncated || runtimeFieldBridgeStats.roleTruncated;
-        int edgeIndex = 0;
-        for (EdgeAccumulator edge : emittedEdges.values()) {
-            edgeJson.add(edge.toJson("DYN." + edgeIndex++));
-        }
-        int roleEdgeIndex = 0;
-        for (EdgeAccumulator edge : emittedRoleEdges.values()) {
-            roleEdgeJson.add(edge.toRoleJson("ROLE." + roleEdgeIndex++));
-        }
 
         String summary = jsonObject(
                 "test", testName,
@@ -1186,10 +1176,10 @@ public final class CausynthTraceRecorder {
                 "observedMethodCount", contextsByMethod.size(),
                 "staticEdgeCount", staticEdges.size(),
                 "instantiatedNodeCount", nodeJson.size(),
-                "instantiatedEdgeCount", edgeJson.size(),
+                "instantiatedEdgeCount", emittedEdges.size(),
                 "mergedEdgeInputCount", mergedEdgeInputCount,
                 "roleMergedNodeCount", roleNodeJson.size(),
-                "roleMergedEdgeCount", roleEdgeJson.size(),
+                "roleMergedEdgeCount", emittedRoleEdges.size(),
                 "mergedRoleEdgeInputCount", mergedRoleEdgeInputCount,
                 "runtimeFieldBridgeInputCount", runtimeFieldBridgeStats.inputCount,
                 "runtimeFieldBridgeMergedInputCount", runtimeFieldBridgeStats.mergedInputCount,
@@ -1209,9 +1199,9 @@ public final class CausynthTraceRecorder {
         // maximum String/byte[] size.  Stream the already bounded collections
         // instead of constructing one multi-gigabyte intermediate String.
         writeGraphFile(new File(outputDir, "unit_test_instantiated_graph.json"),
-                summary, nodeJson, edgeJson);
+                summary, nodeJson, emittedEdges, false);
         writeGraphFile(new File(outputDir, "unit_test_role_merged_graph.json"),
-                summary, roleNodeJson, roleEdgeJson);
+                summary, roleNodeJson, emittedRoleEdges, true);
         writeFile(new File(outputDir, "summary.json"), summary);
         writeSymbolicGuidanceDag(emittedEdges, emittedRoleEdges,
                 contextsByMethod, truncated, roleTruncated);
@@ -2689,7 +2679,8 @@ public final class CausynthTraceRecorder {
 
     private static void writeGraphFile(File file, String summary,
                                        List<String> nodes,
-                                       List<String> edges) {
+                                       Map<String, EdgeAccumulator> edges,
+                                       boolean roleMerged) {
         File parent = file.getParentFile();
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
@@ -2701,9 +2692,25 @@ public final class CausynthTraceRecorder {
             writer.write(",\"nodes\":[");
             writeJsonElements(writer, nodes);
             writer.write("],\"edges\":[");
-            writeJsonElements(writer, edges);
+            writeEdgeJsonElements(writer, edges.values(), roleMerged);
             writer.write("]}");
         } catch (IOException ignored) {
+        }
+    }
+
+    private static void writeEdgeJsonElements(BufferedWriter writer,
+                                              Collection<EdgeAccumulator> edges,
+                                              boolean roleMerged)
+            throws IOException {
+        boolean first = true;
+        int index = 0;
+        for (EdgeAccumulator edge : edges) {
+            if (!first) {
+                writer.write(',');
+            }
+            String id = (roleMerged ? "ROLE." : "DYN.") + index++;
+            writer.write(roleMerged ? edge.toRoleJson(id) : edge.toJson(id));
+            first = false;
         }
     }
 
