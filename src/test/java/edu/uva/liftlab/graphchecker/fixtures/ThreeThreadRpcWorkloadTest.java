@@ -36,6 +36,9 @@ public class ThreeThreadRpcWorkloadTest {
                 assertEquals(b2, result.getB2());
                 assertEquals(result.getA() > result.getB(),
                         result.isBugReached());
+                assertTrue("consumer entered its RPC/bug method before both "
+                                + "producer methods returned",
+                        result.isConsumerEnteredAfterProducerMethodsReturned());
                 Set<Long> workers = new HashSet<>();
                 for (long threadId : result.getWorkerThreadIds()) {
                     assertTrue(threadId > 0L);

@@ -2,12 +2,14 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Assume;
 import org.junit.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.List;
 
@@ -31,6 +33,28 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 "complete").getAsBoolean());
         assertEquals("SAT_UPSTREAM_BOOLEAN_MODEL_READY",
                 result.manifest.get("status").getAsString());
+        JsonObject solverIdentity = result.manifest.getAsJsonObject(
+                "solverIdentity");
+        assertTrue(solverIdentity.get("version").getAsString().contains(
+                "Z3"));
+        assertTrue(Paths.get(solverIdentity.get("resolvedPath").getAsString())
+                .isAbsolute());
+        if (solverIdentity.get("regularFile").getAsBoolean()) {
+            assertEquals(64, solverIdentity.get("binarySha256")
+                    .getAsString().length());
+        }
+        assertEquals(sha256(fixture.summaries), result.manifest
+                .getAsJsonObject("summaryLedgerArtifact").get("sha256")
+                .getAsString());
+        assertEquals(sha256(fixture.activations), result.manifest
+                .getAsJsonObject("producerActivationLedgerArtifact")
+                .get("sha256").getAsString());
+        assertEquals(sha256(fixture.target), result.manifest
+                .getAsJsonObject("targetActivationPlanArtifact")
+                .get("sha256").getAsString());
+        assertEquals(sha256(fixture.fatal), result.manifest
+                .getAsJsonObject("fatalQueryArtifact").get("sha256")
+                .getAsString());
         assertFalse(result.manifest.get(
                 "reportableFinalReachCondition").getAsBoolean());
         assertEquals(3, result.activations.size());
@@ -50,6 +74,9 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                     .get("value").getAsString());
             assertEquals("Z3_PATH_FLIP_MODEL", assignments.get(0)
                     .getAsJsonObject().get("authority").getAsString());
+            assertEquals(64, assignments.get(0).getAsJsonObject()
+                    .get("targetActionIdentitySha256").getAsString()
+                    .length());
         }
         JsonObject target = result.activations.get(2);
         assertEquals("PRIMARY", target.get(
@@ -86,6 +113,140 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         }
     }
 
+    @Test
+    public void tamperedDefinitionIdentityCannotJoinSelectedCase()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        activation.getAsJsonArray("materializations").get(0)
+                .getAsJsonObject().getAsJsonArray("definitionSites").get(0)
+                .getAsJsonObject().addProperty("local", "$z9");
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        expectFailure(fixture.arguments(),
+                "LOCAL_DEFINITION_ACTION_SITE_MISMATCH");
+    }
+
+    @Test
+    public void summaryAdmissionMustOwnSelectedMaterialization()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject summary = jsonlRow(fixture.summaries, "summaryId",
+                "SUMMARY.A.1");
+        summary.getAsJsonObject("inputMaterializationAdmission")
+                .add("observedSymbolizedInputs", new JsonArray());
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        expectFailure(fixture.arguments(),
+                "SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT");
+    }
+
+    @Test
+    public void targetActivationMustMatchFatalBranchIdentity()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject target = jsonlRow(fixture.target, "activationId", "ACT.T");
+        target.getAsJsonObject("targetBranch").addProperty("occurrence", 2);
+        replaceJsonlRow(fixture.target, "activationId", "ACT.T", target);
+
+        expectFailure(fixture.arguments(),
+                "TARGET_ACTIVATION_EXACT_BINDING_MISMATCH");
+    }
+
+    @Test
+    public void reachSolverLiteralCannotInjectSmt()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        JsonObject report = fixture.reach.deepCopy();
+        report.getAsJsonArray("truthTable").get(0).getAsJsonObject()
+                .getAsJsonArray("assignments").get(0).getAsJsonObject()
+                .addProperty("solverLiteral",
+                        "(= xa 1)) (assert false) (assert (= xa 1)");
+        Files.write(fixture.reachPath, report.toString().getBytes(
+                StandardCharsets.UTF_8));
+
+        expectFailure(fixture.arguments(),
+                "INVALID_BOOTSTRAP_VALUATION_ASSIGNMENT");
+    }
+
+    @Test
+    public void nonzeroSolverExitAlwaysFailsProjection() throws Exception {
+        Fixture fixture = fixture();
+        Path solver = fixture.output.getParent().resolve("fake-z3");
+        Files.write(solver, ("#!/bin/sh\n"
+                + "if [ \"$1\" = \"-version\" ]; then\n"
+                + "  echo 'Z3 version fixture'\n"
+                + "  exit 0\n"
+                + "fi\n"
+                + "exit 7\n").getBytes(StandardCharsets.UTF_8));
+        assertTrue(solver.toFile().setExecutable(true));
+
+        expectFailure(fixture.arguments(solver),
+                "Bootstrap model projection solver failed");
+    }
+
+    @Test
+    public void solverVersionMustAttestZ3Identity() throws Exception {
+        Fixture fixture = fixture();
+        Path solver = fixture.output.getParent().resolve("not-z3");
+        Files.write(solver, ("#!/bin/sh\n"
+                + "echo 'generic solver version fixture'\n"
+                + "exit 0\n").getBytes(StandardCharsets.UTF_8));
+        assertTrue(solver.toFile().setExecutable(true));
+
+        expectFailure(fixture.arguments(solver),
+                "Solver identity is not Z3");
+    }
+
+    private static void expectFailure(
+            ConcolicPrimitiveBootstrapProjector.Arguments arguments,
+            String expected) throws Exception {
+        try {
+            ConcolicPrimitiveBootstrapProjector.project(arguments);
+            fail("expected projection failure containing " + expected);
+        } catch (java.io.IOException failure) {
+            assertTrue(failure.getMessage(), failure.getMessage().contains(
+                    expected));
+        }
+    }
+
+    private static JsonObject jsonlRow(Path path, String field, String id)
+            throws Exception {
+        for (String line : Files.readAllLines(path,
+                StandardCharsets.UTF_8)) {
+            if (line.trim().isEmpty()) continue;
+            JsonObject row = JsonParser.parseString(line).getAsJsonObject();
+            if (id.equals(row.get(field).getAsString())) return row;
+        }
+        throw new AssertionError("missing " + field + "=" + id);
+    }
+
+    private static void replaceJsonlRow(Path path, String field, String id,
+                                        JsonObject replacement)
+            throws Exception {
+        List<String> lines = Files.readAllLines(path,
+                StandardCharsets.UTF_8);
+        boolean replaced = false;
+        for (int index = 0; index < lines.size(); index++) {
+            if (lines.get(index).trim().isEmpty()) continue;
+            JsonObject row = JsonParser.parseString(lines.get(index))
+                    .getAsJsonObject();
+            if (id.equals(row.get(field).getAsString())) {
+                lines.set(index, replacement.toString());
+                replaced = true;
+            }
+        }
+        if (!replaced) throw new AssertionError("missing " + field + "=" + id);
+        Files.write(path, lines, StandardCharsets.UTF_8);
+    }
+
     private static Fixture fixture() throws Exception {
         Path directory = Files.createTempDirectory("primitive-bootstrap-");
         Path smt = directory.resolve("bootstrap.smt2");
@@ -114,6 +275,10 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 + "(check-sat)\n";
         Files.write(smt, smtText.getBytes(StandardCharsets.UTF_8));
 
+        JsonObject fatalQuery = fatal();
+        Files.write(fatal, (fatalQuery + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
         JsonObject compositionJson = new JsonObject();
         compositionJson.addProperty("schemaVersion", 1);
         compositionJson.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
@@ -125,6 +290,18 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         compositionJson.addProperty(
                 "eligibleToReportAutomaticRelationship", false);
         compositionJson.addProperty("caseProjectionCatalogComplete", true);
+        compositionJson.addProperty("fatalRegion", "REGION.T");
+        compositionJson.addProperty("fatalActivation", "ACT.T");
+        compositionJson.addProperty("fatalRegionInstanceId", "INSTANCE.T");
+        compositionJson.addProperty("fatalSite",
+                "<fixture.T: void run()>#u4");
+        compositionJson.addProperty("fatalOccurrence", 1);
+        compositionJson.addProperty("fatalDesiredOutcome", true);
+        compositionJson.addProperty("fatalConditionCount", 1);
+        compositionJson.addProperty("validatedSummaryId", "");
+        compositionJson.addProperty("validatedFatalReplaySummary", "");
+        compositionJson.add("composedSmtArtifact", artifact(smt));
+        compositionJson.add("fatalQueriesArtifact", artifact(fatal));
         JsonArray cases = new JsonArray();
         cases.add(pathCase("REGION.A", "CASE.A.0", "ca0",
                 "SUMMARY.A.0", "ACT.A.0", "REGION.A.in.0", "xa",
@@ -140,6 +317,12 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 "M_Z_field_REGION.B.in.0_java/lang/Boolean"));
         compositionJson.add("caseProjectionCatalog", cases);
         compositionJson.addProperty("caseProjectionCatalogCount", 4);
+        JsonArray included = new JsonArray();
+        included.add("SUMMARY.A.0");
+        included.add("SUMMARY.A.1");
+        included.add("SUMMARY.B.0");
+        included.add("SUMMARY.B.1");
+        compositionJson.add("includedSummaries", included);
         Files.write(composition, compositionJson.toString().getBytes(
                 StandardCharsets.UTF_8));
 
@@ -196,10 +379,18 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         targetActivation.addProperty("rootMethod", "<fixture.T: void run()>");
         targetActivation.addProperty("replayable", true);
         targetActivation.addProperty("symbolicReady", true);
+        targetActivation.addProperty("schedulerReady", true);
+        targetActivation.addProperty("branchOverrideProhibited", true);
+        JsonObject captureGoal = new JsonObject();
+        captureGoal.addProperty("kind", "TARGET_BRANCH");
+        captureGoal.addProperty("scope", "ONE_DIRECTED_BRANCH");
+        targetActivation.add("captureGoal", captureGoal);
+        JsonObject targetBranch = new JsonObject();
+        targetBranch.addProperty("siteId", "<fixture.T: void run()>#u4");
+        targetBranch.addProperty("occurrence", 1);
+        targetBranch.addProperty("desiredOutcome", true);
+        targetActivation.add("targetBranch", targetBranch);
         Files.write(target, (targetActivation + "\n").getBytes(
-                StandardCharsets.UTF_8));
-        JsonObject fatalQuery = fatal();
-        Files.write(fatal, (fatalQuery + "\n").getBytes(
                 StandardCharsets.UTF_8));
         return new Fixture(smt, composition, reach, summaries, activations,
                 target, fatal, output, projection, reachJson);
@@ -218,6 +409,8 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         result.addProperty("sourceActivationId", activation);
         result.addProperty("selectorSolverSymbol", selector);
         result.addProperty("complete", true);
+        result.addProperty("rawEngineSymbolMappingAuthority",
+                "EMITTER_ACTUAL_TERM_CAPTURE_IN_CASE_SCOPE");
         JsonObject mapping = new JsonObject();
         mapping.addProperty("canonicalPort", port);
         mapping.addProperty("solverTerm", solver);
@@ -226,6 +419,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         JsonArray mappings = new JsonArray();
         mappings.add(mapping);
         result.add("rawEngineSymbolMappings", mappings);
+        result.addProperty("rawEngineSymbolMappingCount", mappings.size());
         return result;
     }
 
@@ -260,6 +454,19 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         result.addProperty("regionInstanceId", "INSTANCE." + region);
         result.addProperty("valid", true);
         result.addProperty("relationallyComplete", true);
+        JsonObject admission = new JsonObject();
+        admission.addProperty("complete", true);
+        JsonArray one = new JsonArray();
+        one.add(region + ".in.0");
+        admission.add("globalSliceInputs", one.deepCopy());
+        admission.add("requiredSliceInputs", one.deepCopy());
+        admission.add("observedSymbolizedInputs", one.deepCopy());
+        admission.add("pathInactiveSliceInputs", new JsonArray());
+        admission.add("failures", new JsonArray());
+        admission.addProperty("authority",
+                "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                        + "TRANSFORMER_RUNTIME_PATH_PROOFS");
+        result.add("inputMaterializationAdmission", admission);
         return result;
     }
 
@@ -275,9 +482,21 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         JsonObject action = new JsonObject();
         action.addProperty("symbol", region + ".in.0");
         action.addProperty("bindingMode", "LOCAL_DEFINITION");
-        action.addProperty("method", "<fixture." + region
-                + ": boolean input()>");
+        action.addProperty("location", "REGION_LIVE_IN");
+        String method = "<fixture." + region + ": boolean input()>";
+        action.addProperty("method", method);
         action.addProperty("local", "$z0");
+        action.addProperty("cell", method + "::$z0");
+        action.addProperty("definitionAuthority",
+                "STATIC_DATAFLOW_DEF_SITE");
+        JsonObject definition = new JsonObject();
+        definition.addProperty("method", method);
+        definition.addProperty("local", "$z0");
+        definition.addProperty("unitIndex", 2);
+        definition.addProperty("siteId", method + "#u2");
+        JsonArray definitions = new JsonArray();
+        definitions.add(definition);
+        action.add("definitionSites", definitions);
         JsonArray actions = new JsonArray();
         actions.add(action);
         result.add("materializations", actions);
@@ -363,6 +582,11 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         }
 
         private ConcolicPrimitiveBootstrapProjector.Arguments arguments() {
+            return arguments(Paths.get("z3"));
+        }
+
+        private ConcolicPrimitiveBootstrapProjector.Arguments arguments(
+                Path solver) {
             return ConcolicPrimitiveBootstrapProjector.Arguments.parse(
                     new String[]{
                             "--smt", smt.toString(),
@@ -374,7 +598,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                             "--fatal-query", fatal.toString(),
                             "--output", output.toString(),
                             "--manifest", projection.toString(),
-                            "--z3", "z3",
+                            "--z3", solver.toString(),
                             "--timeout-ms", "10000"
                     });
         }

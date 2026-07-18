@@ -31,16 +31,20 @@ public class BooleanReachConditionExtractorTest {
         Path output = directory.resolve("reach.json");
         try {
             Files.write(smt, fixture.smt.getBytes(StandardCharsets.UTF_8));
-            Files.write(manifest, fixture.manifest.toString().getBytes(
-                    StandardCharsets.UTF_8));
             StringBuilder regionLines = new StringBuilder();
             for (JsonObject region : fixture.regions) {
                 regionLines.append(region).append('\n');
             }
             Files.write(regions, regionLines.toString().getBytes(
                     StandardCharsets.UTF_8));
+            bindCliArtifacts(fixture.manifest, fixture.relationships,
+                    smt, regions, relationships);
             Files.write(relationships, fixture.relationships.toString()
                     .getBytes(StandardCharsets.UTF_8));
+            fixture.manifest.add("relationshipCandidatesArtifact",
+                    BooleanReachConditionExtractor.artifact(relationships));
+            Files.write(manifest, fixture.manifest.toString().getBytes(
+                    StandardCharsets.UTF_8));
 
             BooleanReachConditionExtractor.main(new String[]{
                     "--smt", smt.toString(),
@@ -66,6 +70,10 @@ public class BooleanReachConditionExtractorTest {
             assertEquals(Files.size(smt), report.getAsJsonObject(
                     "composedSmtArtifact").get("sizeBytes").getAsLong());
             assertTrue(report.getAsJsonObject("composedSmtArtifact")
+                    .get("sha256").getAsString().matches("[0-9a-f]{64}"));
+            assertTrue(report.getAsJsonObject("solverArtifact")
+                    .get("version").getAsString().contains("Z3"));
+            assertTrue(report.getAsJsonObject("solverArtifact")
                     .get("sha256").getAsString().matches("[0-9a-f]{64}"));
         } finally {
             Files.deleteIfExists(output);
@@ -182,6 +190,7 @@ public class BooleanReachConditionExtractorTest {
                 "eligibleToReportAutomaticRelationship", false);
         fixture.relationships.addProperty("compositionStage", "BOOTSTRAP");
         fixture.relationships.addProperty("structurallyComplete", true);
+        fixture.relationships.addProperty("fatalReplayValidated", false);
         fixture.relationships.addProperty("eligibleForBootstrapModel", true);
         fixture.relationships.addProperty(
                 "eligibleForAutomaticVerification", false);
@@ -208,6 +217,187 @@ public class BooleanReachConditionExtractorTest {
                         "COMPOSITION_MANIFEST_NOT_COMPLETE_AND_ELIGIBLE"));
     }
 
+    @Test
+    public void finalReportRejectsNonFinalRelationshipCatalog()
+            throws Exception {
+        Fixture fixture = fixture();
+        fixture.relationships.addProperty("compositionStage", "BOOTSTRAP");
+        final int[] invocations = {0};
+
+        BooleanReachConditionExtractor.Extraction extraction =
+                BooleanReachConditionExtractor.extract(fixture.smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships,
+                        new BooleanReachConditionExtractor.Solver() {
+                            @Override
+                            public BooleanReachConditionExtractor.SolverResult
+                            check(String smt) {
+                                invocations[0]++;
+                                return new BooleanReachConditionExtractor
+                                        .SolverResult("sat", "sat");
+                            }
+                        }, 8, 256);
+
+        assertFalse(extraction.report.get("complete").getAsBoolean());
+        assertEquals(0, invocations[0]);
+        assertTrue(extraction.report.getAsJsonArray("discoveryGaps")
+                .toString().contains(
+                        "RELATIONSHIP_CATALOG_NOT_COMPLETE_AND_ELIGIBLE"));
+    }
+
+    @Test
+    public void finalArtifactBindingsRejectCrossWiredInputs()
+            throws Exception {
+        Fixture fixture = fixture();
+        Path directory = Files.createTempDirectory("boolean-reach-bindings-");
+        Path smt = directory.resolve("composed.smt2");
+        Path regions = directory.resolve("regions.jsonl");
+        Path relationships = directory.resolve("relationships.json");
+        try {
+            byte[] exactSmt = fixture.smt.getBytes(StandardCharsets.UTF_8);
+            StringBuilder regionLines = new StringBuilder();
+            for (JsonObject region : fixture.regions) {
+                regionLines.append(region).append('\n');
+            }
+            byte[] exactRegions = regionLines.toString().getBytes(
+                    StandardCharsets.UTF_8);
+            Files.write(smt, exactSmt);
+            Files.write(regions, exactRegions);
+            bindCliArtifacts(fixture.manifest, fixture.relationships,
+                    smt, regions, relationships);
+            byte[] exactRelationships = fixture.relationships.toString()
+                    .getBytes(StandardCharsets.UTF_8);
+            Files.write(relationships, exactRelationships);
+            fixture.manifest.add("relationshipCandidatesArtifact",
+                    BooleanReachConditionExtractor.artifact(relationships));
+
+            BooleanReachConditionExtractor.validateArtifactBindings(smt,
+                    regions, relationships, fixture.manifest,
+                    fixture.relationships);
+
+            Files.write(smt, (fixture.smt + "; cross-wired\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertArtifactRejected(smt, regions, relationships,
+                    fixture.manifest, fixture.relationships);
+            Files.write(smt, exactSmt);
+
+            Files.write(regions, (regionLines + "{}\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertArtifactRejected(smt, regions, relationships,
+                    fixture.manifest, fixture.relationships);
+            Files.write(regions, exactRegions);
+
+            JsonObject otherRelationships = fixture.relationships.deepCopy();
+            otherRelationships.addProperty("candidateCount", 99);
+            Files.write(relationships, otherRelationships.toString().getBytes(
+                    StandardCharsets.UTF_8));
+            assertArtifactRejected(smt, regions, relationships,
+                    fixture.manifest, otherRelationships);
+        } finally {
+            Files.deleteIfExists(relationships);
+            Files.deleteIfExists(regions);
+            Files.deleteIfExists(smt);
+            Files.deleteIfExists(directory);
+        }
+    }
+
+    @Test
+    public void solverStatusUsesOnlyFirstNonEmptyStdoutLine() {
+        assertEquals("sat", BooleanReachConditionExtractor.solverStatus(
+                "\n sat\nwarning"));
+        assertEquals("unknown", BooleanReachConditionExtractor.solverStatus(
+                "diagnostic\nsat"));
+    }
+
+    @Test
+    public void z3SolverAttestsExecutableAndRejectsNonzeroSatOutput()
+            throws Exception {
+        Path directory = Files.createTempDirectory("fake-z3-");
+        Path executable = directory.resolve("z3-fake");
+        try {
+            Files.write(executable, ("#!/bin/sh\n"
+                    + "if [ \"$1\" = \"-version\" ]; then\n"
+                    + "  echo 'Z3 version 0.0-test'\n"
+                    + "  exit 0\n"
+                    + "fi\n"
+                    + "echo sat\n"
+                    + "exit 7\n").getBytes(StandardCharsets.UTF_8));
+            assertTrue(executable.toFile().setExecutable(true));
+            BooleanReachConditionExtractor.Z3Solver solver =
+                    new BooleanReachConditionExtractor.Z3Solver(
+                            executable.toString(), 5_000L);
+            BooleanReachConditionExtractor.SolverResult result =
+                    solver.check("(check-sat)\n");
+            assertEquals("error", result.status);
+            JsonObject identity = solver.artifact();
+            assertEquals(executable.toRealPath().toString(),
+                    identity.get("path").getAsString());
+            assertEquals("Z3 version 0.0-test",
+                    identity.get("version").getAsString());
+            assertTrue(identity.get("sha256").getAsString().matches(
+                    "[0-9a-f]{64}"));
+        } finally {
+            Files.deleteIfExists(executable);
+            Files.deleteIfExists(directory);
+        }
+    }
+
+    private static void bindCliArtifacts(JsonObject manifest,
+                                         JsonObject relationships,
+                                         Path smt, Path regions,
+                                         Path relationshipPath)
+            throws Exception {
+        JsonObject smtArtifact = BooleanReachConditionExtractor.artifact(smt);
+        JsonObject regionsArtifact =
+                BooleanReachConditionExtractor.artifact(regions);
+        JsonObject sourceArtifact = smtArtifact.deepCopy();
+        JsonArray summaries = new JsonArray();
+        summaries.add(sourceArtifact.deepCopy());
+        for (JsonObject target : Arrays.asList(manifest, relationships)) {
+            target.addProperty("artifactBindingAuthority",
+                    "COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1");
+            target.add("composedSmtArtifact", smtArtifact.deepCopy());
+            target.add("staticRegionsArtifact", regionsArtifact.deepCopy());
+            target.add("fatalQueriesArtifact", sourceArtifact.deepCopy());
+            target.add("symbolicMergePlanArtifact",
+                    sourceArtifact.deepCopy());
+            target.add("summaryInputArtifacts", summaries.deepCopy());
+            target.addProperty("fatalRegion", "REGION.F");
+            target.addProperty("fatalActivation", "ACT.F");
+            target.addProperty("fatalRegionInstanceId", "INSTANCE.F");
+            target.addProperty("fatalOccurrence", 1);
+            target.addProperty("fatalDesiredOutcome", true);
+            target.addProperty("validatedSummaryId", "SUMMARY.F");
+        }
+        String bindingId = BooleanReachConditionExtractor
+                .compositionBindingId(manifest);
+        manifest.addProperty("compositionBindingId", bindingId);
+        relationships.addProperty("compositionBindingId", bindingId);
+        relationships.addProperty("baseSmt",
+                smt.toAbsolutePath().normalize().toString());
+        relationships.addProperty("baseSmtSha256",
+                smtArtifact.get("sha256").getAsString());
+        relationships.addProperty("baseSmtSizeBytes",
+                smtArtifact.get("sizeBytes").getAsLong());
+        manifest.addProperty("relationshipCandidates",
+                relationshipPath.toAbsolutePath().normalize().toString());
+    }
+
+    private static void assertArtifactRejected(Path smt, Path regions,
+                                               Path relationshipsPath,
+                                               JsonObject manifest,
+                                               JsonObject relationships)
+            throws Exception {
+        boolean rejected = false;
+        try {
+            BooleanReachConditionExtractor.validateArtifactBindings(smt,
+                    regions, relationshipsPath, manifest, relationships);
+        } catch (java.io.IOException expected) {
+            rejected = true;
+        }
+        assertTrue("cross-wired artifact must be rejected", rejected);
+    }
+
     private static Fixture fixture() {
         String first = "ROOT.A.in.0";
         String second = "ROOT.B.in.0";
@@ -223,8 +413,11 @@ public class BooleanReachConditionExtractorTest {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
+        manifest.addProperty("compositionStage", "VALIDATED_FINAL");
+        manifest.addProperty("structurallyComplete", true);
         manifest.addProperty("complete", true);
         manifest.addProperty("fatalReplayValidated", true);
+        manifest.addProperty("eligibleForBootstrapModel", false);
         manifest.addProperty("eligibleToReportAutomaticRelationship", true);
         manifest.addProperty("caseProjectionCatalogComplete", true);
         JsonObject pathCase = caseProjection(first, second, supplied);
@@ -237,6 +430,10 @@ public class BooleanReachConditionExtractorTest {
         relationships.addProperty("schemaVersion", 1);
         relationships.addProperty("kind",
                 "SYMBOLIC_RELATIONSHIP_CANDIDATES");
+        relationships.addProperty("compositionStage", "VALIDATED_FINAL");
+        relationships.addProperty("structurallyComplete", true);
+        relationships.addProperty("fatalReplayValidated", true);
+        relationships.addProperty("eligibleForBootstrapModel", false);
         relationships.addProperty("eligibleForAutomaticVerification", true);
         JsonObject relation = new JsonObject();
         JsonObject roles = new JsonObject();

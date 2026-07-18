@@ -23,6 +23,7 @@ Config-driven commands:
   merge       Merge imported output paths into guarded region relations
   compose     Compose the fatal query and upstream summaries into SMT-LIB
   solve       Run generated SMT relationship obligations through Z3
+  reach       Project the composed bug path onto finite Boolean root inputs
   workload    Run the configured target workload command
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
@@ -52,7 +53,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|fatal_region|fatal_activation_id|solver_timeout_ms)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -116,9 +117,12 @@ reset_config() {
   composition_manifest=""
   relationship_candidates=""
   proof_report=""
+  reach_report=""
   fatal_region=""
   fatal_activation_id=""
   solver_timeout_ms=""
+  reach_max_inputs=""
+  reach_max_valuations=""
 }
 
 # Generic workflow configs deliberately use a small key=value grammar. Unknown
@@ -202,9 +206,12 @@ apply_environment_overrides() {
   apply_env_override composition_manifest CAUSYNTH_COMPOSITION_MANIFEST
   apply_env_override relationship_candidates CAUSYNTH_RELATIONSHIP_CANDIDATES
   apply_env_override proof_report CAUSYNTH_PROOF_REPORT
+  apply_env_override reach_report CAUSYNTH_REACH_REPORT
   apply_env_override fatal_region CAUSYNTH_FATAL_REGION
   apply_env_override fatal_activation_id CAUSYNTH_FATAL_ACTIVATION_ID
   apply_env_override solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS
+  apply_env_override reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS
+  apply_env_override reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS
 }
 
 canonical_path() {
@@ -313,6 +320,8 @@ initialize_config() {
   z3_bin=${z3_bin:-z3}
   workload_work_dir=${workload_work_dir:-${project_module_dir}}
   solver_timeout_ms=${solver_timeout_ms:-20000}
+  reach_max_inputs=${reach_max_inputs:-12}
+  reach_max_valuations=${reach_max_valuations:-4096}
 
   graphchecker_jar=$(resolve_path "${graphchecker_jar}")
   graphchecker_pom=$(resolve_path "${graphchecker_pom}")
@@ -362,6 +371,7 @@ initialize_config() {
   composition_manifest=${composition_manifest:-${schedule_output_dir}/composed_smt_manifest.json}
   relationship_candidates=${relationship_candidates:-${schedule_output_dir}/symbolic_relationship_candidates.json}
   proof_report=${proof_report:-${schedule_output_dir}/symbolic_relationship_proofs.json}
+  reach_report=${reach_report:-${schedule_output_dir}/boolean_reach_condition.json}
 
   static_regions=$(resolve_path "${static_regions}")
   static_graph=$(resolve_path "${static_graph}")
@@ -384,6 +394,7 @@ initialize_config() {
   composition_manifest=$(resolve_path "${composition_manifest}")
   relationship_candidates=$(resolve_path "${relationship_candidates}")
   proof_report=$(resolve_path "${proof_report}")
+  reach_report=$(resolve_path "${reach_report}")
   if [[ -n "${schedule_summaries}" ]]; then
     schedule_summaries=$(resolve_path "${schedule_summaries}")
   fi
@@ -440,7 +451,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt relationship_candidates proof_report; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -458,6 +469,14 @@ validate_config() {
   case "${solver_timeout_ms}" in
     ''|*[!0-9]*) die "solver_timeout_ms must be a positive integer" ;;
     0) die "solver_timeout_ms must be greater than zero" ;;
+  esac
+  case "${reach_max_inputs}" in
+    ''|*[!0-9]*) die "reach_max_inputs must be a positive integer" ;;
+    0) die "reach_max_inputs must be greater than zero" ;;
+  esac
+  case "${reach_max_valuations}" in
+    ''|*[!0-9]*) die "reach_max_valuations must be a positive integer" ;;
+    0) die "reach_max_valuations must be greater than zero" ;;
   esac
   echo "Workflow configuration is valid."
 }
@@ -615,6 +634,24 @@ do_solve() {
     --timeout-ms "${solver_timeout_ms}" "$@"
 }
 
+do_reach() {
+  require_file "composed SMT" "${composed_smt}"
+  require_file "composition manifest" "${composition_manifest}"
+  require_file "symbolic regions" "${static_regions}"
+  require_file "relationship candidates" "${relationship_candidates}"
+  ensure_output_directory "$(dirname "${reach_report}")"
+  run_java_main edu.uva.liftlab.graphchecker.concolic.BooleanReachConditionExtractor \
+    --smt "${composed_smt}" \
+    --manifest "${composition_manifest}" \
+    --regions "${static_regions}" \
+    --relationships "${relationship_candidates}" \
+    --output "${reach_report}" \
+    --z3 "${z3_bin}" \
+    --timeout-ms "${solver_timeout_ms}" \
+    --max-inputs "${reach_max_inputs}" \
+    --max-valuations "${reach_max_valuations}" "$@"
+}
+
 do_workload() {
   [[ -n "${workload_command}" ]] || die "workload_command is empty"
   require_directory "workload working" "${workload_work_dir}"
@@ -701,7 +738,7 @@ case "${command_name}" in
     initialize_config "${config_file}"
     do_build "$@"
     ;;
-  analyze|schedule|import|merge|compose|solve|workload|config|validate)
+  analyze|schedule|import|merge|compose|solve|reach|workload|config|validate)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
@@ -711,6 +748,7 @@ case "${command_name}" in
       merge) do_merge "$@" ;;
       compose) do_compose "$@" ;;
       solve) do_solve "$@" ;;
+      reach) do_reach "$@" ;;
       workload) do_workload "$@" ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

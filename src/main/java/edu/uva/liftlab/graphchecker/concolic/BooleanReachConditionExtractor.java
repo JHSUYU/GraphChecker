@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -42,6 +43,8 @@ import java.util.regex.Pattern;
 public final class BooleanReachConditionExtractor {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
+    private static final Gson BINDING_GSON = new GsonBuilder()
+            .disableHtmlEscaping().serializeNulls().create();
     private static final Pattern FIELD_CELL = Pattern.compile(
             "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
     private static final Pattern RETURN_CELL = Pattern.compile(
@@ -62,9 +65,12 @@ public final class BooleanReachConditionExtractor {
         String smt = readText(arguments.smt);
         JsonObject relationships = readJson(relationshipsPath);
         List<JsonObject> regions = readJsonl(arguments.regions);
+        validateArtifactBindings(arguments.smt, arguments.regions,
+                relationshipsPath, manifest, relationships);
+        Z3Solver solver = new Z3Solver(arguments.z3,
+                arguments.timeoutMillis);
         Extraction extraction = extract(smt, manifest, regions,
-                relationships,
-                new Z3Solver(arguments.z3, arguments.timeoutMillis),
+                relationships, solver,
                 arguments.maxInputs, arguments.maxValuations,
                 arguments.mode);
         JsonObject report = extraction.report;
@@ -74,6 +80,7 @@ public final class BooleanReachConditionExtractor {
         report.add("staticRegionsArtifact", artifact(arguments.regions));
         report.add("relationshipCandidatesArtifact",
                 artifact(relationshipsPath));
+        report.add("solverArtifact", solver.artifact());
         write(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
@@ -259,6 +266,8 @@ public final class BooleanReachConditionExtractor {
                     "compositionStage"))
                     || !bool(manifest, "structurallyComplete", false)
                     || bool(manifest, "fatalReplayValidated", true)
+                    || bool(manifest, "complete", true)
+                    || !bool(manifest, "eligibleForBootstrapModel", false)
                     || bool(manifest,
                     "eligibleToReportAutomaticRelationship", true)) {
                 gaps.add("COMPOSITION_MANIFEST_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
@@ -267,6 +276,7 @@ public final class BooleanReachConditionExtractor {
                     || !"BOOTSTRAP".equals(string(relationships,
                     "compositionStage"))
                     || !bool(relationships, "structurallyComplete", false)
+                    || bool(relationships, "fatalReplayValidated", true)
                     || !bool(relationships,
                     "eligibleForBootstrapModel", false)
                     || bool(relationships,
@@ -275,13 +285,24 @@ public final class BooleanReachConditionExtractor {
             }
             return;
         }
-        if (!commonManifest || !bool(manifest, "complete", false)
+        if (!commonManifest
+                || !"VALIDATED_FINAL".equals(string(manifest,
+                "compositionStage"))
+                || !bool(manifest, "structurallyComplete", false)
+                || !bool(manifest, "complete", false)
                 || !bool(manifest, "fatalReplayValidated", false)
+                || bool(manifest, "eligibleForBootstrapModel", true)
                 || !bool(manifest,
                 "eligibleToReportAutomaticRelationship", false)) {
             gaps.add("COMPOSITION_MANIFEST_NOT_COMPLETE_AND_ELIGIBLE");
         }
-        if (!commonRelationships || !bool(relationships,
+        if (!commonRelationships
+                || !"VALIDATED_FINAL".equals(string(relationships,
+                "compositionStage"))
+                || !bool(relationships, "structurallyComplete", false)
+                || !bool(relationships, "fatalReplayValidated", false)
+                || bool(relationships, "eligibleForBootstrapModel", true)
+                || !bool(relationships,
                 "eligibleForAutomaticVerification", false)) {
             gaps.add("RELATIONSHIP_CATALOG_NOT_COMPLETE_AND_ELIGIBLE");
         }
@@ -507,12 +528,27 @@ public final class BooleanReachConditionExtractor {
     }
 
     static final class Z3Solver implements Solver {
-        private final String executable;
+        private final Path executable;
         private final long timeoutMillis;
+        private final String version;
+        private final JsonObject artifact;
 
-        Z3Solver(String executable, long timeoutMillis) {
-            this.executable = firstNonBlank(executable, "z3");
+        Z3Solver(String executable, long timeoutMillis)
+                throws IOException, InterruptedException {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
+            this.executable = resolveExecutable(firstNonBlank(executable,
+                    "z3"));
+            this.version = validateVersion(this.executable,
+                    this.timeoutMillis);
+            this.artifact = BooleanReachConditionExtractor.artifact(
+                    this.executable);
+            this.artifact.addProperty("version", version);
+            this.artifact.addProperty("identityAuthority",
+                    "RESOLVED_REGULAR_FILE_SHA256_PLUS_Z3_VERSION_V1");
+        }
+
+        JsonObject artifact() {
+            return artifact.deepCopy();
         }
 
         @Override
@@ -521,12 +557,14 @@ public final class BooleanReachConditionExtractor {
             Path directory = Files.createTempDirectory(
                     "graphchecker-reach-z3-");
             Path query = directory.resolve("query.smt2");
-            Path output = directory.resolve("output.txt");
+            Path stdout = directory.resolve("stdout.txt");
+            Path stderr = directory.resolve("stderr.txt");
             try {
                 Files.write(query, smt.getBytes(StandardCharsets.UTF_8));
-                Process process = new ProcessBuilder(executable, "-smt2",
-                        query.toString()).redirectErrorStream(true)
-                        .redirectOutput(output.toFile()).start();
+                Process process = new ProcessBuilder(executable.toString(),
+                        "-smt2", query.toString())
+                        .redirectOutput(stdout.toFile())
+                        .redirectError(stderr.toFile()).start();
                 boolean finished = process.waitFor(timeoutMillis,
                         TimeUnit.MILLISECONDS);
                 if (!finished) {
@@ -534,26 +572,99 @@ public final class BooleanReachConditionExtractor {
                     process.waitFor();
                     return new SolverResult("timeout", "solver timeout");
                 }
-                String text = Files.isRegularFile(output)
-                        ? readText(output) : "";
-                String status = solverStatus(text);
-                if (process.exitValue() != 0 && "unknown".equals(status)) {
-                    status = "error";
-                }
-                return new SolverResult(status, text.trim());
+                String out = Files.isRegularFile(stdout)
+                        ? readText(stdout) : "";
+                String err = Files.isRegularFile(stderr)
+                        ? readText(stderr) : "";
+                String status = process.exitValue() == 0
+                        ? solverStatus(out) : "error";
+                return new SolverResult(status, combinedOutput(out, err));
             } finally {
                 Files.deleteIfExists(query);
+                Files.deleteIfExists(stdout);
+                Files.deleteIfExists(stderr);
+                Files.deleteIfExists(directory);
+            }
+        }
+
+        private static Path resolveExecutable(String requested)
+                throws IOException {
+            Path direct = Paths.get(requested);
+            if (direct.isAbsolute() || requested.contains(File.separator)) {
+                return regularExecutable(direct);
+            }
+            String path = firstNonBlank(System.getenv("PATH"));
+            for (String entry : path.split(Pattern.quote(
+                    File.pathSeparator), -1)) {
+                Path directory = entry.isEmpty()
+                        ? Paths.get("").toAbsolutePath() : Paths.get(entry);
+                Path candidate = directory.resolve(requested);
+                if (Files.isRegularFile(candidate)
+                        && Files.isExecutable(candidate)) {
+                    return candidate.toRealPath();
+                }
+            }
+            throw new IOException("Z3 executable not found on PATH: "
+                    + requested);
+        }
+
+        private static Path regularExecutable(Path candidate)
+                throws IOException {
+            Path resolved = candidate.toAbsolutePath().normalize()
+                    .toRealPath();
+            if (!Files.isRegularFile(resolved)
+                    || !Files.isExecutable(resolved)) {
+                throw new IOException("Z3 executable is not an executable "
+                        + "regular file: " + resolved);
+            }
+            return resolved;
+        }
+
+        private static String validateVersion(Path executable,
+                                              long timeoutMillis)
+                throws IOException, InterruptedException {
+            Path directory = Files.createTempDirectory(
+                    "graphchecker-reach-z3-version-");
+            Path output = directory.resolve("version.txt");
+            try {
+                Process process = new ProcessBuilder(executable.toString(),
+                        "-version").redirectErrorStream(true)
+                        .redirectOutput(output.toFile()).start();
+                boolean finished = process.waitFor(timeoutMillis,
+                        TimeUnit.MILLISECONDS);
+                if (!finished) {
+                    process.destroyForcibly();
+                    process.waitFor();
+                    throw new IOException("Z3 -version timed out");
+                }
+                String text = Files.isRegularFile(output)
+                        ? readText(output).trim() : "";
+                if (process.exitValue() != 0 || !text.contains("Z3")) {
+                    throw new IOException("Invalid Z3 executable identity: "
+                            + text);
+                }
+                return text;
+            } finally {
                 Files.deleteIfExists(output);
                 Files.deleteIfExists(directory);
             }
+        }
+
+        private static String combinedOutput(String stdout, String stderr) {
+            String out = firstNonBlank(stdout);
+            String err = firstNonBlank(stderr);
+            if (out.isEmpty()) return err;
+            if (err.isEmpty()) return out;
+            return out + System.lineSeparator() + err;
         }
     }
 
     static String solverStatus(String output) {
         for (String line : firstNonBlank(output).split("\\r?\\n")) {
             String value = line.trim();
-            if ("sat".equals(value) || "unsat".equals(value)
-                    || "unknown".equals(value)) return value;
+            if (value.isEmpty()) continue;
+            return "sat".equals(value) || "unsat".equals(value)
+                    || "unknown".equals(value) ? value : "unknown";
         }
         return "unknown";
     }
@@ -929,13 +1040,141 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static JsonObject artifact(Path path) throws IOException {
+    static JsonObject artifact(Path path) throws IOException {
+        byte[] bytes = Files.readAllBytes(path);
         JsonObject result = new JsonObject();
         result.addProperty("path", path.toAbsolutePath().normalize()
                 .toString());
-        result.addProperty("sha256", sha256(Files.readAllBytes(path)));
-        result.addProperty("sizeBytes", Files.size(path));
+        result.addProperty("sha256", sha256(bytes));
+        result.addProperty("sizeBytes", bytes.length);
         return result;
+    }
+
+    /**
+     * Rejects cross-wired CLI artifacts before any solver process starts.
+     * The composer manifest is the trust root: it fingerprints the exact SMT,
+     * static-region ledger, and relationship-candidate bytes.  The candidate
+     * catalog then independently binds itself back to the same composition
+     * and SMT digest.
+     */
+    static void validateArtifactBindings(Path smtPath, Path regionsPath,
+                                         Path relationshipsPath,
+                                         JsonObject manifest,
+                                         JsonObject relationships)
+            throws IOException {
+        if (!"COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1".equals(
+                string(manifest, "artifactBindingAuthority"))) {
+            throw new IOException("Composition manifest has no exact "
+                    + "artifact binding authority");
+        }
+        JsonObject actualSmt = artifact(smtPath);
+        JsonObject actualRegions = artifact(regionsPath);
+        JsonObject actualRelationships = artifact(relationshipsPath);
+        requireExactArtifact("composed SMT", object(manifest,
+                "composedSmtArtifact"), actualSmt);
+        requireExactArtifact("static regions", object(manifest,
+                "staticRegionsArtifact"), actualRegions);
+        requireExactArtifact("relationship candidates", object(manifest,
+                "relationshipCandidatesArtifact"), actualRelationships);
+
+        String bindingId = string(manifest, "compositionBindingId");
+        if (bindingId.isEmpty() || !bindingId.matches("[0-9a-f]{64}")
+                || !bindingId.equals(string(relationships,
+                "compositionBindingId"))) {
+            throw new IOException("Composition binding id mismatch");
+        }
+        if (!bindingId.equals(compositionBindingId(manifest))) {
+            throw new IOException("Composition binding id is not derived "
+                    + "from its exact fatal identity and artifacts");
+        }
+        if (!"COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1".equals(
+                string(relationships, "artifactBindingAuthority"))) {
+            throw new IOException("Relationship catalog has no exact "
+                    + "artifact binding authority");
+        }
+        requireExactArtifact("relationship base SMT", object(relationships,
+                "composedSmtArtifact"), actualSmt);
+        requireExactArtifact("relationship static regions",
+                object(relationships, "staticRegionsArtifact"),
+                actualRegions);
+        if (!object(manifest, "fatalQueriesArtifact").equals(
+                object(relationships, "fatalQueriesArtifact"))
+                || !object(manifest, "symbolicMergePlanArtifact").equals(
+                object(relationships, "symbolicMergePlanArtifact"))
+                || !array(manifest, "summaryInputArtifacts").equals(
+                array(relationships, "summaryInputArtifacts"))) {
+            throw new IOException("Composition source artifact binding "
+                    + "mismatch");
+        }
+        String actualSmtPath = string(actualSmt, "path");
+        if (!actualSmtPath.equals(normalizedPath(string(relationships,
+                "baseSmt")))
+                || !string(actualSmt, "sha256").equals(
+                string(relationships, "baseSmtSha256"))
+                || longInteger(actualSmt, "sizeBytes", -1L)
+                != longInteger(relationships, "baseSmtSizeBytes", -2L)) {
+            throw new IOException("Relationship base SMT fingerprint "
+                    + "mismatch");
+        }
+        for (String field : new String[]{"fatalRegion", "fatalActivation",
+                "fatalRegionInstanceId", "fatalOccurrence",
+                "fatalDesiredOutcome", "validatedSummaryId"}) {
+            JsonElement left = manifest == null ? null : manifest.get(field);
+            JsonElement right = relationships == null
+                    ? null : relationships.get(field);
+            if (left == null || right == null || !left.equals(right)) {
+                throw new IOException("Fatal identity binding mismatch: "
+                        + field);
+            }
+        }
+    }
+
+    private static void requireExactArtifact(String label,
+                                             JsonObject expected,
+                                             JsonObject actual)
+            throws IOException {
+        if (expected.size() == 0
+                || !string(actual, "path").equals(normalizedPath(
+                string(expected, "path")))
+                || !string(actual, "sha256").equals(string(expected,
+                "sha256"))
+                || longInteger(actual, "sizeBytes", -1L)
+                != longInteger(expected, "sizeBytes", -2L)) {
+            throw new IOException(label + " artifact fingerprint mismatch");
+        }
+    }
+
+    private static String normalizedPath(String value) {
+        if (firstNonBlank(value).isEmpty()) return "";
+        return Paths.get(value).toAbsolutePath().normalize().toString();
+    }
+
+    static String compositionBindingId(JsonObject manifest) {
+        JsonObject material = new JsonObject();
+        material.addProperty("schemaVersion", 1);
+        for (String field : new String[]{"fatalRegion", "fatalActivation",
+                "fatalRegionInstanceId"}) {
+            material.addProperty(field, string(manifest, field));
+        }
+        for (String field : new String[]{"fatalOccurrence",
+                "fatalDesiredOutcome"}) {
+            JsonElement value = manifest == null ? null : manifest.get(field);
+            if (value == null) return "";
+            material.add(field, value.deepCopy());
+        }
+        material.addProperty("validatedSummaryId",
+                string(manifest, "validatedSummaryId"));
+        material.add("composedSmtArtifact", object(manifest,
+                "composedSmtArtifact").deepCopy());
+        material.add("staticRegionsArtifact", object(manifest,
+                "staticRegionsArtifact").deepCopy());
+        material.add("fatalQueriesArtifact", object(manifest,
+                "fatalQueriesArtifact").deepCopy());
+        material.add("symbolicMergePlanArtifact", object(manifest,
+                "symbolicMergePlanArtifact").deepCopy());
+        material.add("summaryInputArtifacts", array(manifest,
+                "summaryInputArtifacts").deepCopy());
+        return sha256(BINDING_GSON.toJson(material));
     }
 
     private static Path referencedPath(JsonObject source, String field,
@@ -1100,6 +1339,17 @@ public final class BooleanReachConditionExtractor {
             JsonElement value = object == null ? null : object.get(key);
             return value != null && value.isJsonPrimitive()
                     ? value.getAsInt() : fallback;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static long longInteger(JsonObject object, String key,
+                                    long fallback) {
+        try {
+            JsonElement value = object == null ? null : object.get(key);
+            return value != null && value.isJsonPrimitive()
+                    ? value.getAsLong() : fallback;
         } catch (RuntimeException ignored) {
             return fallback;
         }

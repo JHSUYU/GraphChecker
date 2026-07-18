@@ -17,6 +17,51 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicSmtComposerTest {
     @Test
+    public void cliBindsExactInputsAndOutputsWithoutDigestCycle()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            Path relationshipsPath = folder.getRoot().toPath().resolve(
+                    "relationships.json");
+            ConcolicSmtComposer.main(new String[]{
+                    "--fatal-query", fixture.fatal.toString(),
+                    "--summaries", fixture.summaries.toString(),
+                    "--regions", fixture.regions.toString(),
+                    "--merge-plan", fixture.merge.toString(),
+                    "--output", fixture.output.toString(),
+                    "--manifest", fixture.manifest.toString(),
+                    "--relationships", relationshipsPath.toString(),
+                    "--fatal-region", "REGION.F",
+                    "--activation-id", "ACT.F"
+            });
+            JsonObject manifest = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.manifest),
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject relationships = JsonParser.parseString(new String(
+                    Files.readAllBytes(relationshipsPath),
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+
+            assertTrue(manifest.get("compositionBindingId").getAsString()
+                    .matches("[0-9a-f]{64}"));
+            assertEquals(manifest.get("compositionBindingId").getAsString(),
+                    relationships.get("compositionBindingId").getAsString());
+            assertTrue(manifest.has("fatalRegionInstanceId"));
+            assertTrue(manifest.has("fatalOccurrence"));
+            assertTrue(manifest.has("fatalDesiredOutcome"));
+            assertTrue(manifest.has("validatedSummaryId"));
+            assertEquals(1, manifest.getAsJsonArray(
+                    "summaryInputArtifacts").size());
+            BooleanReachConditionExtractor.validateArtifactBindings(
+                    fixture.output, fixture.regions, relationshipsPath,
+                    manifest, relationships);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void tokenValueRefWitnessRequiresImporterCertification() {
         JsonObject record = new JsonObject();
         record.addProperty("valueExpressionAuthority",

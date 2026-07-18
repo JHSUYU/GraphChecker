@@ -18,6 +18,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * generic workflow declares which producer return reaches which consumer RPC
  * result.  Values and thread identities are still observed from this concrete
  * execution rather than declared in that topology.</p>
+ *
+ * <p>All three workers are started together.  The consumer nevertheless waits
+ * in {@link WorkerThread#preExecute()} until both producer worker methods have
+ * returned.  This keeps the wait outside the consumer method that contains the
+ * RPC reads and bug branch, so producer concrete replay regions cannot overlap
+ * the custom VM's single engine-backed target region.</p>
  */
 public final class ThreeThreadRpcWorkload {
     public static final String PRODUCER_A_THREAD = "rpc-producer-a";
@@ -107,24 +113,38 @@ public final class ThreeThreadRpcWorkload {
                         TimeUnit.MILLISECONDS)) {
                     throw new IllegalStateException("start gate timed out");
                 }
-                executeWorker();
+                preExecute();
+                try {
+                    executeWorker();
+                } finally {
+                    postExecute();
+                }
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("worker interrupted", exception);
             }
         }
 
+        void preExecute() throws InterruptedException {
+        }
+
         abstract void executeWorker() throws InterruptedException;
+
+        void postExecute() {
+        }
     }
 
     private static final class ProducerAThread extends WorkerThread {
         private final Boolean input;
         private final RpcBus bus;
+        private final CountDownLatch producerMethodsReturned;
 
-        ProducerAThread(Boolean input, RpcBus bus, CountDownLatch start) {
+        ProducerAThread(Boolean input, RpcBus bus, CountDownLatch start,
+                        CountDownLatch producerMethodsReturned) {
             super(PRODUCER_A_THREAD, start);
             this.input = input;
             this.bus = bus;
+            this.producerMethodsReturned = producerMethodsReturned;
         }
 
         @Override
@@ -132,16 +152,24 @@ public final class ThreeThreadRpcWorkload {
             int a = new ProducerA().compute(input);
             bus.publishA(a);
         }
+
+        @Override
+        void postExecute() {
+            producerMethodsReturned.countDown();
+        }
     }
 
     private static final class ProducerBThread extends WorkerThread {
         private final Boolean input;
         private final RpcBus bus;
+        private final CountDownLatch producerMethodsReturned;
 
-        ProducerBThread(Boolean input, RpcBus bus, CountDownLatch start) {
+        ProducerBThread(Boolean input, RpcBus bus, CountDownLatch start,
+                        CountDownLatch producerMethodsReturned) {
             super(PRODUCER_B_THREAD, start);
             this.input = input;
             this.bus = bus;
+            this.producerMethodsReturned = producerMethodsReturned;
         }
 
         @Override
@@ -149,17 +177,33 @@ public final class ThreeThreadRpcWorkload {
             int b = new ProducerB().compute(input);
             bus.publishB(b);
         }
+
+        @Override
+        void postExecute() {
+            producerMethodsReturned.countDown();
+        }
     }
 
     private static final class ConsumerThread extends WorkerThread {
         private final RpcBus bus;
+        private final CountDownLatch producerMethodsReturned;
         private volatile int receivedA;
         private volatile int receivedB;
         private volatile boolean received;
+        private volatile boolean enteredAfterProducerMethodsReturned;
 
-        ConsumerThread(RpcBus bus, CountDownLatch start) {
+        ConsumerThread(RpcBus bus, CountDownLatch start,
+                       CountDownLatch producerMethodsReturned) {
             super(CONSUMER_THREAD, start);
             this.bus = bus;
+            this.producerMethodsReturned = producerMethodsReturned;
+        }
+
+        @Override
+        void preExecute() throws InterruptedException {
+            producerMethodsReturned.await();
+            enteredAfterProducerMethodsReturned =
+                    producerMethodsReturned.getCount() == 0L;
         }
 
         @Override
@@ -246,10 +290,12 @@ public final class ThreeThreadRpcWorkload {
         private final String failureThread;
         private final Throwable failure;
         private final List<RpcObservation> rpcObservations;
+        private final boolean consumerEnteredAfterProducerMethodsReturned;
 
         RunResult(Boolean b1, Boolean b2, int a, int b,
                   long[] workerThreadIds, String failureThread,
-                  Throwable failure, List<RpcObservation> observations) {
+                  Throwable failure, List<RpcObservation> observations,
+                  boolean consumerEnteredAfterProducerMethodsReturned) {
             this.b1 = b1;
             this.b2 = b2;
             this.a = a;
@@ -260,6 +306,8 @@ public final class ThreeThreadRpcWorkload {
             this.failure = failure;
             this.rpcObservations = Collections.unmodifiableList(
                     new ArrayList<>(observations));
+            this.consumerEnteredAfterProducerMethodsReturned =
+                    consumerEnteredAfterProducerMethodsReturned;
         }
 
         public Boolean getB1() {
@@ -298,6 +346,10 @@ public final class ThreeThreadRpcWorkload {
             return rpcObservations;
         }
 
+        public boolean isConsumerEnteredAfterProducerMethodsReturned() {
+            return consumerEnteredAfterProducerMethodsReturned;
+        }
+
         public String toJson() {
             StringBuilder observations = new StringBuilder();
             for (RpcObservation observation : rpcObservations) {
@@ -310,6 +362,8 @@ public final class ThreeThreadRpcWorkload {
                     + "\"b1\":" + b1 + ",\"b2\":" + b2 + ","
                     + "\"a\":" + a + ",\"b\":" + b + ","
                     + "\"bugReached\":" + bugReached + ","
+                    + "\"consumerEnteredAfterProducerMethodsReturned\":"
+                    + consumerEnteredAfterProducerMethodsReturned + ","
                     + "\"workerThreadIds\":[" + workerThreadIds[0]
                     + ',' + workerThreadIds[1] + ',' + workerThreadIds[2]
                     + "],\"failureThread\":"
@@ -326,9 +380,13 @@ public final class ThreeThreadRpcWorkload {
         }
         RpcBus bus = new RpcBus();
         CountDownLatch start = new CountDownLatch(1);
-        ProducerAThread producerA = new ProducerAThread(b1, bus, start);
-        ProducerBThread producerB = new ProducerBThread(b2, bus, start);
-        ConsumerThread consumer = new ConsumerThread(bus, start);
+        CountDownLatch producerMethodsReturned = new CountDownLatch(2);
+        ProducerAThread producerA = new ProducerAThread(b1, bus, start,
+                producerMethodsReturned);
+        ProducerBThread producerB = new ProducerBThread(b2, bus, start,
+                producerMethodsReturned);
+        ConsumerThread consumer = new ConsumerThread(bus, start,
+                producerMethodsReturned);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         AtomicReference<String> failureThread = new AtomicReference<>();
         Thread.UncaughtExceptionHandler handler = (thread, throwable) -> {
@@ -361,7 +419,8 @@ public final class ThreeThreadRpcWorkload {
         return new RunResult(b1, b2, a, b,
                 new long[]{producerA.getId(), producerB.getId(),
                         consumer.getId()}, failureThread.get(), failure.get(),
-                observations);
+                observations,
+                consumer.enteredAfterProducerMethodsReturned);
     }
 
     private static void join(Thread thread) throws InterruptedException {

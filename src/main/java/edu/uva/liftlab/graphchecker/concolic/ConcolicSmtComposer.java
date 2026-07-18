@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -14,6 +15,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -44,7 +47,10 @@ import java.util.regex.Pattern;
  */
 public final class ConcolicSmtComposer {
     private static final Gson GSON = new GsonBuilder()
-            .disableHtmlEscaping().setPrettyPrinting().create();
+            .disableHtmlEscaping().serializeNulls().setPrettyPrinting()
+            .create();
+    private static final Gson BINDING_GSON = new GsonBuilder()
+            .disableHtmlEscaping().serializeNulls().create();
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
@@ -75,9 +81,15 @@ public final class ConcolicSmtComposer {
         Arguments arguments = Arguments.parse(argv);
         Result result = compose(arguments);
         write(arguments.output, result.smtLib);
-        write(arguments.manifest, GSON.toJson(result.manifest)
-                + System.lineSeparator());
         write(arguments.relationships, GSON.toJson(result.relationships)
+                + System.lineSeparator());
+        // The manifest is the trust root for the other CLI artifacts.  Write
+        // the relationship catalog first, then fingerprint its exact on-disk
+        // bytes into the manifest.  The catalog deliberately does not hash
+        // itself, which avoids an impossible self-referential digest.
+        result.manifest.add("relationshipCandidatesArtifact",
+                artifact(arguments.relationships));
+        write(arguments.manifest, GSON.toJson(result.manifest)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(result.manifest));
     }
@@ -197,6 +209,45 @@ public final class ConcolicSmtComposer {
                 relevantRegions));
         emitter.finishBindings();
         emitter.finish();
+        String composedSmt = emitter.render();
+
+        JsonObject composedSmtArtifact = artifact(arguments.output,
+                composedSmt.getBytes(StandardCharsets.UTF_8));
+        JsonObject staticRegionsArtifact = artifact(arguments.regions);
+        JsonObject fatalQueriesArtifact = artifact(arguments.fatalQueries);
+        JsonObject symbolicMergePlanArtifact = artifact(arguments.mergePlan);
+        JsonArray summaryInputArtifacts = new JsonArray();
+        for (Path input : arguments.summaries) {
+            summaryInputArtifacts.add(artifact(input));
+        }
+        String fatalRegionInstanceId = firstNonBlank(string(fatal,
+                "regionInstanceId"), string(object(fatal,
+                "symbolicContext"), "regionInstanceId"));
+        JsonObject bindingMaterial = new JsonObject();
+        bindingMaterial.addProperty("schemaVersion", 1);
+        bindingMaterial.addProperty("fatalRegion", fatalRegion);
+        bindingMaterial.addProperty("fatalActivation",
+                string(fatal, "activationId"));
+        bindingMaterial.addProperty("fatalRegionInstanceId",
+                fatalRegionInstanceId);
+        bindingMaterial.add("fatalOccurrence", copyOrNull(fatal,
+                "occurrence"));
+        bindingMaterial.add("fatalDesiredOutcome", copyOrNull(fatal,
+                "desiredOutcome"));
+        bindingMaterial.addProperty("validatedSummaryId",
+                string(fatal, "validatedSummaryId"));
+        bindingMaterial.add("composedSmtArtifact",
+                composedSmtArtifact.deepCopy());
+        bindingMaterial.add("staticRegionsArtifact",
+                staticRegionsArtifact.deepCopy());
+        bindingMaterial.add("fatalQueriesArtifact",
+                fatalQueriesArtifact.deepCopy());
+        bindingMaterial.add("symbolicMergePlanArtifact",
+                symbolicMergePlanArtifact.deepCopy());
+        bindingMaterial.add("summaryInputArtifacts",
+                summaryInputArtifacts.deepCopy());
+        String compositionBindingId = sha256(BINDING_GSON.toJson(
+                bindingMaterial).getBytes(StandardCharsets.UTF_8));
 
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
@@ -204,6 +255,13 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("fatalRegion", fatalRegion);
         manifest.addProperty("fatalActivation",
                 string(fatal, "activationId"));
+        manifest.addProperty("fatalRegionInstanceId",
+                fatalRegionInstanceId);
+        manifest.add("fatalOccurrence", copyOrNull(fatal, "occurrence"));
+        manifest.add("fatalDesiredOutcome", copyOrNull(fatal,
+                "desiredOutcome"));
+        manifest.addProperty("validatedSummaryId",
+                string(fatal, "validatedSummaryId"));
         manifest.addProperty("fatalSite", string(fatal, "siteId"));
         manifest.addProperty("fatalConditionCount", fatalConstraints.size());
         manifest.addProperty("fatalReplayRequired", fatalReplayRequired);
@@ -327,13 +385,39 @@ public final class ConcolicSmtComposer {
                 arguments.output.toAbsolutePath().toString());
         manifest.addProperty("relationshipCandidates",
                 arguments.relationships.toAbsolutePath().toString());
+        manifest.addProperty("compositionBindingId", compositionBindingId);
+        manifest.addProperty("artifactBindingAuthority",
+                "COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1");
+        manifest.add("composedSmtArtifact", composedSmtArtifact.deepCopy());
+        manifest.add("staticRegionsArtifact",
+                staticRegionsArtifact.deepCopy());
+        manifest.add("fatalQueriesArtifact",
+                fatalQueriesArtifact.deepCopy());
+        manifest.add("symbolicMergePlanArtifact",
+                symbolicMergePlanArtifact.deepCopy());
+        manifest.add("summaryInputArtifacts",
+                summaryInputArtifacts.deepCopy());
         JsonObject relationships = new JsonObject();
         relationships.addProperty("schemaVersion", 1);
         relationships.addProperty("kind",
                 "SYMBOLIC_RELATIONSHIP_CANDIDATES");
         relationships.addProperty("baseSmt",
                 arguments.output.toAbsolutePath().toString());
+        relationships.addProperty("baseSmtSha256",
+                string(composedSmtArtifact, "sha256"));
+        relationships.addProperty("baseSmtSizeBytes",
+                longInteger(composedSmtArtifact, "sizeBytes", -1L));
         relationships.addProperty("fatalRegion", fatalRegion);
+        relationships.addProperty("fatalActivation",
+                string(fatal, "activationId"));
+        relationships.addProperty("fatalRegionInstanceId",
+                fatalRegionInstanceId);
+        relationships.add("fatalOccurrence", copyOrNull(fatal,
+                "occurrence"));
+        relationships.add("fatalDesiredOutcome", copyOrNull(fatal,
+                "desiredOutcome"));
+        relationships.addProperty("validatedSummaryId",
+                string(fatal, "validatedSummaryId"));
         relationships.addProperty("candidateCount",
                 emitter.relationshipCandidates.size());
         relationships.add("relationships",
@@ -353,7 +437,21 @@ public final class ConcolicSmtComposer {
                 arguments.boundedUpstreamRegions));
         relationships.addProperty("eligibleForAutomaticVerification",
                 complete && fatalReplayValidated);
-        return new Result(emitter.render(), manifest, relationships);
+        relationships.addProperty("compositionBindingId",
+                compositionBindingId);
+        relationships.addProperty("artifactBindingAuthority",
+                "COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1");
+        relationships.add("composedSmtArtifact",
+                composedSmtArtifact.deepCopy());
+        relationships.add("staticRegionsArtifact",
+                staticRegionsArtifact.deepCopy());
+        relationships.add("fatalQueriesArtifact",
+                fatalQueriesArtifact.deepCopy());
+        relationships.add("symbolicMergePlanArtifact",
+                symbolicMergePlanArtifact.deepCopy());
+        relationships.add("summaryInputArtifacts",
+                summaryInputArtifacts.deepCopy());
+        return new Result(composedSmt, manifest, relationships);
     }
 
     private static FatalReplaySelection selectValidatedFatalReplay(
@@ -7386,6 +7484,41 @@ public final class ConcolicSmtComposer {
         if (parent != null) Files.createDirectories(parent);
         Files.write(path, value.getBytes(StandardCharsets.UTF_8),
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    private static JsonObject artifact(Path path) throws IOException {
+        require(path, "artifact input");
+        return artifact(path, Files.readAllBytes(path));
+    }
+
+    private static JsonObject artifact(Path path, byte[] bytes) {
+        byte[] exact = bytes == null ? new byte[0] : bytes;
+        JsonObject result = new JsonObject();
+        result.addProperty("path", path.toAbsolutePath().normalize()
+                .toString());
+        result.addProperty("sha256", sha256(exact));
+        result.addProperty("sizeBytes", exact.length);
+        return result;
+    }
+
+    private static JsonElement copyOrNull(JsonObject source, String field) {
+        JsonElement value = source == null ? null : source.get(field);
+        return value == null ? JsonNull.INSTANCE : value.deepCopy();
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value == null ? new byte[0] : value);
+            StringBuilder result = new StringBuilder(bytes.length * 2);
+            for (byte current : bytes) {
+                result.append(String.format(Locale.ROOT, "%02x",
+                        current & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private static Path sibling(Path path, String name) {

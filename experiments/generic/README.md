@@ -16,11 +16,23 @@ GraphChecker checkout:
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties merge
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties compose
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties solve
+./run_engine.sh --config experiments/generic/conf/workflow.example.properties reach
 ```
 
-The last command calls `SymbolicRelationshipVerifier`, which starts the
-configured Z3 executable for the composer-generated SMT and relationship
-candidates. It is not a text-only or handwritten-SMT shortcut.
+`solve` calls `SymbolicRelationshipVerifier` for the generated relationship
+obligations. `reach` calls `BooleanReachConditionExtractor` and asks the
+configured Z3 executable about every valuation of the automatically discovered
+Boolean root inputs. It writes a machine-readable truth table and canonical
+DNF, then checks the composed SMT plus the Java Boolean domain implies that
+DNF. Neither command accepts handwritten SMT or a caller-provided reachability
+condition.
+
+The `reach` stage consumes four authenticated composition artifacts:
+`composed_smt`, `composition_manifest`, `static_regions`, and
+`relationship_candidates`. Its output defaults to
+`schedule/boolean_reach_condition.json`. `reach_max_inputs` (default `12`) and
+`reach_max_valuations` (default `4096`) bound exhaustive enumeration; exceeding
+either limit produces an incomplete report instead of silently sampling.
 
 ## Paths and configuration
 
@@ -59,6 +71,9 @@ The principal environment overrides are:
 | `causynth_target_spec` | `CAUSYNTH_TARGET_SPEC` |
 | `custom_jdk_home` | `CAUSYNTH_CUSTOM_JDK_HOME` |
 | `z3_bin` | `CAUSYNTH_Z3` |
+| `reach_report` | `CAUSYNTH_REACH_REPORT` |
+| `reach_max_inputs` | `CAUSYNTH_REACH_MAX_INPUTS` |
+| `reach_max_valuations` | `CAUSYNTH_REACH_MAX_VALUATIONS` |
 | `rpc_mapping_file` | `CAUSYNTH_RPC_MAPPING_FILE` |
 | `workload_command` | `CAUSYNTH_WORKLOAD_COMMAND` |
 
@@ -66,7 +81,9 @@ Artifact-specific overrides use the same names shown by `config`, including
 `CAUSYNTH_ACTIVATION_PLAN`, `CAUSYNTH_EDGE_VALIDATIONS`,
 `CAUSYNTH_RAW_RESULTS`, `CAUSYNTH_MERGE_SUMMARIES`,
 `CAUSYNTH_COMPOSE_SUMMARIES`, `CAUSYNTH_COMPOSED_SMT`, and
-`CAUSYNTH_RELATIONSHIP_CANDIDATES`.
+`CAUSYNTH_RELATIONSHIP_CANDIDATES`. The reachability output can be relocated
+with `CAUSYNTH_REACH_REPORT`; solver timeout remains shared with relationship
+verification through `CAUSYNTH_SOLVER_TIMEOUT_MS`.
 
 `rpc_mapping_file` is intentionally not concatenated into runtime edge
 validation automatically. A fixture adapter may translate its declared RPC

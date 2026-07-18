@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,6 +47,8 @@ import java.util.regex.Pattern;
 public final class ConcolicPrimitiveBootstrapProjector {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
+    private static final Pattern SAFE_SMT_ATOM = Pattern.compile(
+            "[A-Za-z_~!@$%^&*+=<>.?/][A-Za-z0-9_~!@$%^&*+\\-=<>.?/]*");
 
     private ConcolicPrimitiveBootstrapProjector() {
     }
@@ -90,7 +93,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
         queried.addAll(rootTerms);
         String solverInput = solverInput(smt, assignmentByPort.values(),
                 queried);
-        SolverOutput solver = run(arguments.z3, solverInput,
+        SolverIdentity solverIdentity = attestSolver(arguments.z3,
+                arguments.timeoutMillis);
+        SolverOutput solver = run(solverIdentity, solverInput,
                 arguments.timeoutMillis);
         if (solver.timedOut || solver.exitCode != 0
                 || !"sat".equals(firstLine(solver.stdout))) {
@@ -114,6 +119,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
         JsonObject fatal = selectFatal(readJsonl(arguments.fatalQueries));
         JsonObject targetSource = selectTarget(
                 readJsonl(arguments.targetActivations), fatal);
+        validateFatalBinding(composition, fatal, targetSource, arguments,
+                smt);
 
         List<JsonObject> producerRows = new ArrayList<>();
         JsonArray caseManifest = new JsonArray();
@@ -130,13 +137,15 @@ public final class ConcolicPrimitiveBootstrapProjector {
             String summaryId = string(selectedCase, "sourceSummaryId");
             String activationId = string(selectedCase,
                     "sourceActivationId");
+            validateCompositionSummaryMembership(composition, summaryId);
             JsonObject summary = summaries.get(summaryId);
             JsonObject source = activations.get(activationId);
             validateSource(region, summaryId, activationId, summary, source);
             JsonObject mapping = exactPortMapping(selectedCase, port);
-            JsonObject action = exactAction(source, port);
+            JsonObject action = exactAction(summary, source, port);
+            String actionIdentity = actionIdentitySha256(action);
             JsonObject modelAssignment = modelAssignment(mapping,
-                    rootAssignment, action);
+                    rootAssignment, action, actionIdentity);
             JsonObject replay = producerReplay(source, modelAssignment);
             if (!usedActivationIds.add(activationId)) {
                 throw gap("ONE_PRODUCER_ACTIVATION_CONTROLS_MULTIPLE_ROOTS:"
@@ -158,6 +167,10 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     "solverTerm"));
             selected.addProperty("modelValue", string(rootAssignment,
                     "value"));
+            selected.addProperty("materializationActionIdentitySha256",
+                    actionIdentity);
+            selected.add("materializationActionIdentity",
+                    actionIdentity(action));
             caseManifest.add(selected);
         }
         Collections.sort(producerRows, Comparator.comparing(
@@ -198,7 +211,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
         manifest.addProperty("reportableFinalReachCondition", false);
         manifest.addProperty("callerProvidedFormulaUsed", false);
         manifest.addProperty("callerProvidedValuationUsed", false);
-        manifest.addProperty("solver", arguments.z3.toString());
+        manifest.addProperty("solver", solver.identity.resolvedPath);
+        manifest.add("solverIdentity", solver.identity.toJson());
         manifest.addProperty("solverStatus", "sat");
         manifest.addProperty("solverInputSha256", sha256(solverInput));
         manifest.addProperty("selectedValuationOrdinal", integer(valuation,
@@ -225,7 +239,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
         manifest.addProperty("targetUnforcedReplayRequired", true);
         manifest.addProperty("projectionAuthority",
                 "BOOTSTRAP_SMT_Z3_MODEL_PLUS_EXACT_CASE_SELECTOR_AND_REAL_"
-                        + "ACTIVATION_DEFINITION_BINDING_V1");
+                        + "ACTIVATION_DEFINITION_BINDING_V2");
+        manifest.addProperty("inputArtifactBindingAuthority",
+                "PROJECTOR_EXACT_CLI_INPUT_SHA256_AND_SELECTED_IDENTITY_V1");
         manifest.add("bootstrapSmtArtifact", artifact(arguments.smt));
         manifest.add("compositionManifestArtifact",
                 artifact(arguments.compositionManifest));
@@ -279,6 +295,97 @@ public final class ConcolicPrimitiveBootstrapProjector {
         }
     }
 
+    private static void validateFatalBinding(JsonObject composition,
+                                             JsonObject fatal,
+                                             JsonObject target,
+                                             Arguments arguments,
+                                             String smt)
+            throws IOException {
+        String activationId = string(fatal, "activationId");
+        String regionId = string(fatal, "regionId");
+        String instanceId = firstNonBlank(string(fatal,
+                "regionInstanceId"), string(object(fatal,
+                "symbolicContext"), "regionInstanceId"));
+        String siteId = string(fatal, "siteId");
+        int occurrence = integer(fatal, "occurrence", -1);
+        if (activationId.isEmpty() || regionId.isEmpty()
+                || instanceId.isEmpty() || siteId.isEmpty()
+                || occurrence < 1
+                || !activationId.equals(string(composition,
+                "fatalActivation"))
+                || !regionId.equals(string(composition, "fatalRegion"))
+                || !instanceId.equals(string(composition,
+                "fatalRegionInstanceId"))
+                || !siteId.equals(string(composition, "fatalSite"))
+                || occurrence != integer(composition, "fatalOccurrence", -1)
+                || !sameBoolean(fatal, composition, "desiredOutcome",
+                "fatalDesiredOutcome")
+                || integer(composition, "fatalConditionCount", -1)
+                != array(fatal, "constraints").size()
+                || bool(composition, "fatalReplayValidated", true)
+                || !string(composition, "validatedSummaryId").isEmpty()
+                || !string(composition,
+                "validatedFatalReplaySummary").isEmpty()
+                || bool(fatal, "targetReplayValidated", false)
+                || bool(fatal, "replayAlreadyValidated", false)) {
+            throw gap("COMPOSITION_FATAL_QUERY_IDENTITY_MISMATCH");
+        }
+        if (!artifactMatches(object(composition, "composedSmtArtifact"),
+                arguments.smt, sha256(smt))
+                || !artifactMatches(object(composition,
+                "fatalQueriesArtifact"), arguments.fatalQueries,
+                sha256(arguments.fatalQueries))) {
+            throw gap("COMPOSITION_FATAL_OR_SMT_ARTIFACT_MISMATCH");
+        }
+        JsonObject branch = object(target, "targetBranch");
+        JsonObject goal = object(target, "captureGoal");
+        if (!activationId.equals(string(target, "activationId"))
+                || !regionId.equals(string(target, "regionId"))
+                || !instanceId.equals(string(target, "regionInstanceId"))
+                || !"TARGET_BRANCH".equals(string(goal, "kind"))
+                || !siteId.equals(string(branch, "siteId"))
+                || occurrence != integer(branch, "occurrence", -1)
+                || !sameBoolean(fatal, branch, "desiredOutcome",
+                "desiredOutcome")
+                || !bool(target, "replayable", false)
+                || !bool(target, "symbolicReady", false)
+                || !bool(target, "schedulerReady", false)
+                || !bool(target, "branchOverrideProhibited", false)) {
+            throw gap("TARGET_ACTIVATION_EXACT_BINDING_MISMATCH");
+        }
+    }
+
+    private static boolean sameBoolean(JsonObject left, JsonObject right,
+                                       String leftField,
+                                       String rightField) {
+        JsonElement leftValue = left == null ? null : left.get(leftField);
+        JsonElement rightValue = right == null ? null : right.get(rightField);
+        return leftValue != null && rightValue != null
+                && leftValue.isJsonPrimitive()
+                && rightValue.isJsonPrimitive()
+                && leftValue.getAsJsonPrimitive().isBoolean()
+                && rightValue.getAsJsonPrimitive().isBoolean()
+                && leftValue.getAsBoolean() == rightValue.getAsBoolean();
+    }
+
+    private static boolean artifactMatches(JsonObject artifact, Path path,
+                                           String expectedSha)
+            throws IOException {
+        return path.toAbsolutePath().normalize().toString().equals(
+                string(artifact, "path"))
+                && expectedSha.equals(string(artifact, "sha256"))
+                && Files.size(path) == longInteger(artifact, "sizeBytes", -1L);
+    }
+
+    private static void validateCompositionSummaryMembership(
+            JsonObject composition, String summaryId) throws IOException {
+        if (countString(array(composition, "includedSummaries"), summaryId)
+                != 1) {
+            throw gap("SELECTED_SOURCE_SUMMARY_NOT_IN_COMPOSITION_INPUT:"
+                    + summaryId);
+        }
+    }
+
     private static JsonObject selectedValuation(JsonObject reach)
             throws IOException {
         JsonObject selected = null;
@@ -303,9 +410,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
             if (!element.isJsonObject()) continue;
             JsonObject root = element.getAsJsonObject();
             String port = string(root, "portId");
+            String solverTerm = string(root, "solverTerm");
             if (port.isEmpty() || rootByPort.put(port, root) != null
                     || !bool(root, "root", false)
                     || bool(root, "upstreamSupplied", true)
+                    || !safeSmtAtom(solverTerm)
                     || !("Z".equals(string(root, "javaTypeDescriptor"))
                     || "Ljava/lang/Boolean;".equals(string(root,
                     "javaTypeDescriptor")))) {
@@ -318,14 +427,19 @@ public final class ConcolicPrimitiveBootstrapProjector {
             JsonObject assignment = element.getAsJsonObject();
             String port = string(assignment, "portId");
             JsonObject root = rootByPort.get(port);
+            String solverTerm = string(assignment, "solverTerm");
+            boolean value = bool(assignment, "value", false);
+            String canonicalLiteral = "(= " + solverTerm + " "
+                    + (value ? "1" : "0") + ")";
             if (root == null || result.put(port, assignment.deepCopy()) != null
-                    || !string(root, "solverTerm").equals(string(assignment,
-                    "solverTerm"))
+                    || !string(root, "solverTerm").equals(solverTerm)
+                    || !safeSmtAtom(solverTerm)
                     || !assignment.has("value")
                     || !assignment.get("value").isJsonPrimitive()
                     || !assignment.get("value").getAsJsonPrimitive()
                     .isBoolean()
-                    || string(assignment, "solverLiteral").isEmpty()) {
+                    || !canonicalLiteral.equals(string(assignment,
+                    "solverLiteral"))) {
                 throw gap("INVALID_BOOTSTRAP_VALUATION_ASSIGNMENT:" + port);
             }
             JsonObject enriched = result.get(port);
@@ -342,7 +456,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         Set<String> result = new LinkedHashSet<>();
         for (JsonObject pathCase : cases) {
             String selector = string(pathCase, "selectorSolverSymbol");
-            if (selector.isEmpty() || !result.add(selector)
+            if (!safeSmtAtom(selector) || !result.add(selector)
                     || !bool(pathCase, "complete", false)) {
                 throw gap("INVALID_OR_DUPLICATE_CASE_SELECTOR:" + selector);
             }
@@ -390,6 +504,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
                                        JsonObject summary, JsonObject source)
             throws IOException {
         if (summary == null || source == null
+                || !summaryId.equals(string(summary, "summaryId"))
+                || !activationId.equals(string(source, "activationId"))
                 || !bool(summary, "valid", false)
                 || !bool(summary, "relationallyComplete", false)
                 || !region.equals(string(summary, "regionId"))
@@ -405,9 +521,19 @@ public final class ConcolicPrimitiveBootstrapProjector {
     private static JsonObject exactPortMapping(JsonObject pathCase,
                                                String port)
             throws IOException {
+        JsonArray catalog = array(pathCase, "rawEngineSymbolMappings");
+        if (!"GUARDED_CASE_PROJECTION_CATALOG".equals(string(pathCase,
+                "kind"))
+                || integer(pathCase, "schemaVersion", -1) != 1
+                || !bool(pathCase, "complete", false)
+                || !"EMITTER_ACTUAL_TERM_CAPTURE_IN_CASE_SCOPE".equals(
+                string(pathCase, "rawEngineSymbolMappingAuthority"))
+                || integer(pathCase, "rawEngineSymbolMappingCount", -1)
+                != catalog.size()) {
+            throw gap("CASE_INPUT_MAPPING_CATALOG_NOT_EXACT:" + port);
+        }
         JsonObject selected = null;
-        for (JsonElement element : array(pathCase,
-                "rawEngineSymbolMappings")) {
+        for (JsonElement element : catalog) {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
             if (!port.equals(string(mapping, "canonicalPort"))) continue;
@@ -425,8 +551,10 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return selected.deepCopy();
     }
 
-    private static JsonObject exactAction(JsonObject activation, String port)
+    private static JsonObject exactAction(JsonObject summary,
+                                          JsonObject activation, String port)
             throws IOException {
+        validateInputAdmission(summary, port);
         JsonArray source = array(activation, "materializations");
         if (source.size() == 0) source = array(activation, "symbolize");
         JsonObject selected = null;
@@ -437,17 +565,91 @@ public final class ConcolicPrimitiveBootstrapProjector {
             if (selected != null) throw gap("AMBIGUOUS_INPUT_ACTION:" + port);
             selected = action;
         }
-        if (selected == null
-                || "UNSUPPORTED".equals(string(selected, "bindingMode"))
-                || bool(selected, "deferred", false)) {
+        if (selected == null || bool(selected, "deferred", false)
+                || bool(selected, "deferredResolution", false)) {
             throw gap("ROOT_INPUT_HAS_NO_REAL_MATERIALIZATION:" + port);
+        }
+        String bindingMode = string(selected, "bindingMode");
+        String location = string(selected, "location");
+        String cell = string(selected, "cell");
+        if (bindingMode.isEmpty() || location.isEmpty() || cell.isEmpty()) {
+            throw gap("ROOT_INPUT_ACTION_IDENTITY_INCOMPLETE:" + port);
+        }
+        if ("LOCAL_DEFINITION".equals(bindingMode)) {
+            validateLocalDefinitionIdentity(selected, port);
+        } else if ("ROOT_ENTRY".equals(bindingMode)) {
+            validateRootEntryIdentity(selected, port);
+        } else {
+            throw gap("ROOT_INPUT_ACTION_BINDING_NOT_MODEL_CONTROLLABLE:"
+                    + port + ":" + bindingMode);
         }
         return selected.deepCopy();
     }
 
+    private static void validateInputAdmission(JsonObject summary,
+                                               String port)
+            throws IOException {
+        JsonObject admission = object(summary,
+                "inputMaterializationAdmission");
+        if (!bool(admission, "complete", false)
+                || !"STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                .concat("TRANSFORMER_RUNTIME_PATH_PROOFS").equals(
+                        string(admission, "authority"))
+                || array(admission, "failures").size() != 0
+                || countString(array(admission, "globalSliceInputs"), port)
+                != 1
+                || countString(array(admission, "requiredSliceInputs"), port)
+                != 1
+                || countString(array(admission,
+                "observedSymbolizedInputs"), port) != 1
+                || countString(array(admission,
+                "pathInactiveSliceInputs"), port) != 0) {
+            throw gap("SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT:" + port);
+        }
+    }
+
+    private static void validateLocalDefinitionIdentity(JsonObject action,
+                                                        String port)
+            throws IOException {
+        String method = string(action, "method");
+        String local = string(action, "local");
+        JsonArray sites = array(action, "definitionSites");
+        if (!"REGION_LIVE_IN".equals(string(action, "location"))
+                || method.isEmpty() || local.isEmpty()
+                || sites.size() != 1 || !sites.get(0).isJsonObject()
+                || !"STATIC_DATAFLOW_DEF_SITE".equals(string(action,
+                "definitionAuthority"))) {
+            throw gap("LOCAL_DEFINITION_ACTION_IDENTITY_INCOMPLETE:" + port);
+        }
+        JsonObject site = sites.get(0).getAsJsonObject();
+        int unit = integer(site, "unitIndex", -1);
+        if (unit < 0 || !method.equals(string(site, "method"))
+                || !local.equals(string(site, "local"))
+                || (!string(site, "siteId").isEmpty()
+                && !string(site, "siteId").equals(method + "#u" + unit))) {
+            throw gap("LOCAL_DEFINITION_ACTION_SITE_MISMATCH:" + port);
+        }
+    }
+
+    private static void validateRootEntryIdentity(JsonObject action,
+                                                  String port)
+            throws IOException {
+        String location = string(action, "location");
+        boolean argument = "ARGUMENT".equals(location)
+                || "ARGUMENT_FIELD".equals(location)
+                || "ARGUMENT_FIELD_PATH".equals(location);
+        boolean receiver = "RECEIVER_FIELD".equals(location);
+        if ((!argument && !receiver)
+                || (argument && integer(action, "index", -1) < 0)
+                || (receiver && string(action, "field").isEmpty())) {
+            throw gap("ROOT_ENTRY_ACTION_IDENTITY_INCOMPLETE:" + port);
+        }
+    }
+
     private static JsonObject modelAssignment(JsonObject mapping,
                                               JsonObject root,
-                                              JsonObject action)
+                                              JsonObject action,
+                                              String actionIdentity)
             throws IOException {
         String canonical = string(root, "solverTerm");
         if (!canonical.equals(string(mapping, "solverTerm"))) {
@@ -465,9 +667,63 @@ public final class ConcolicPrimitiveBootstrapProjector {
         result.addProperty("authority", "Z3_PATH_FLIP_MODEL");
         result.addProperty("materializeAtRealDefinition", true);
         result.add("target", action.deepCopy());
+        result.addProperty("targetActionIdentitySha256", actionIdentity);
+        result.add("targetActionIdentity", actionIdentity(action));
         result.addProperty("projectionAuthority",
-                "BOOTSTRAP_COMPOSED_SMT_EXACT_SELECTED_CASE_ROOT_TERM_V1");
+                "BOOTSTRAP_COMPOSED_SMT_EXACT_SELECTED_CASE_ROOT_TERM_"
+                        + "AND_ACTION_IDENTITY_V2");
         return result;
+    }
+
+    private static JsonObject actionIdentity(JsonObject action) {
+        JsonObject result = new JsonObject();
+        result.addProperty("symbol", string(action, "symbol"));
+        result.addProperty("bindingMode", string(action, "bindingMode"));
+        result.addProperty("location", string(action, "location"));
+        result.addProperty("cell", string(action, "cell"));
+        result.addProperty("method", string(action, "method"));
+        result.addProperty("local", string(action, "local"));
+        result.addProperty("index", integer(action, "index", -1));
+        result.add("definitionSites", array(action,
+                "definitionSites").deepCopy());
+        result.addProperty("canonicalActionSha256",
+                actionIdentitySha256(action));
+        result.addProperty("authority",
+                "CANONICAL_FULL_ACTION_JSON_PLUS_EXACT_BINDING_FIELDS_V1");
+        return result;
+    }
+
+    private static String actionIdentitySha256(JsonObject action) {
+        return sha256(canonicalJson(action));
+    }
+
+    private static String canonicalJson(JsonElement element) {
+        if (element == null || element.isJsonNull()) return "null";
+        if (element.isJsonArray()) {
+            StringBuilder result = new StringBuilder("[");
+            boolean first = true;
+            for (JsonElement item : element.getAsJsonArray()) {
+                if (!first) result.append(',');
+                result.append(canonicalJson(item));
+                first = false;
+            }
+            return result.append(']').toString();
+        }
+        if (element.isJsonObject()) {
+            JsonObject object = element.getAsJsonObject();
+            List<String> names = new ArrayList<>(object.keySet());
+            Collections.sort(names);
+            StringBuilder result = new StringBuilder("{");
+            boolean first = true;
+            for (String name : names) {
+                if (!first) result.append(',');
+                result.append(GSON.toJson(name)).append(':')
+                        .append(canonicalJson(object.get(name)));
+                first = false;
+            }
+            return result.append('}').toString();
+        }
+        return GSON.toJson(element);
     }
 
     private static JsonObject producerReplay(JsonObject source,
@@ -580,8 +836,10 @@ public final class ConcolicPrimitiveBootstrapProjector {
             result.append('\n');
         }
         for (JsonObject assignment : assignments) {
-            result.append("(assert ").append(string(assignment,
-                    "solverLiteral")).append(")\n");
+            result.append("(assert (= ").append(string(assignment,
+                    "solverTerm")).append(' ')
+                    .append(bool(assignment, "value", false) ? '1' : '0')
+                    .append("))\n");
         }
         result.append("(check-sat)\n(get-value (");
         boolean first = true;
@@ -593,10 +851,70 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return result.append("))\n").toString();
     }
 
-    private static SolverOutput run(Path executable, String input,
+    private static SolverIdentity attestSolver(Path configured,
+                                               long timeoutMillis)
+            throws IOException, InterruptedException {
+        Path resolved = resolveExecutable(configured);
+        Process process = new ProcessBuilder(resolved.toString(),
+                "-version").start();
+        boolean finished = process.waitFor(Math.max(1L, timeoutMillis),
+                TimeUnit.MILLISECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+            process.waitFor();
+            throw new IOException("Z3 identity command timed out: "
+                    + resolved);
+        }
+        String stdout = read(process.getInputStream());
+        String stderr = read(process.getErrorStream());
+        String evidence = (stdout + "\n" + stderr).trim();
+        if (process.exitValue() != 0) {
+            throw new IOException("Z3 identity command failed with exit "
+                    + process.exitValue() + ": " + evidence);
+        }
+        if (!Pattern.compile("(?i)\\bZ3\\b").matcher(evidence).find()) {
+            throw new IOException("Solver identity is not Z3: " + evidence);
+        }
+        boolean regular = Files.isRegularFile(resolved);
+        return new SolverIdentity(configured.toString(),
+                resolved.toString(), firstLine(evidence), regular,
+                regular ? sha256(resolved) : "");
+    }
+
+    private static Path resolveExecutable(Path configured)
+            throws IOException {
+        if (configured == null || configured.toString().trim().isEmpty()) {
+            throw new IOException("Z3 executable is empty");
+        }
+        String command = configured.toString();
+        if (configured.isAbsolute() || command.contains(File.separator)) {
+            Path candidate = configured.toAbsolutePath().normalize();
+            if (!Files.isRegularFile(candidate)
+                    || !Files.isExecutable(candidate)) {
+                throw new IOException("Z3 executable is not executable: "
+                        + candidate);
+            }
+            return candidate.toRealPath();
+        }
+        String path = System.getenv("PATH");
+        if (path != null) {
+            for (String directory : path.split(Pattern.quote(
+                    File.pathSeparator))) {
+                if (directory.isEmpty()) continue;
+                Path candidate = Paths.get(directory).resolve(command);
+                if (Files.isRegularFile(candidate)
+                        && Files.isExecutable(candidate)) {
+                    return candidate.toRealPath();
+                }
+            }
+        }
+        throw new IOException("Z3 executable not found on PATH: " + command);
+    }
+
+    private static SolverOutput run(SolverIdentity identity, String input,
                                     long timeoutMillis)
             throws IOException, InterruptedException {
-        Process process = new ProcessBuilder(executable.toString(), "-in",
+        Process process = new ProcessBuilder(identity.resolvedPath, "-in",
                 "-smt2").start();
         try (OutputStream stream = process.getOutputStream()) {
             stream.write(input.getBytes(StandardCharsets.UTF_8));
@@ -607,10 +925,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
             process.destroyForcibly();
             process.waitFor();
             return new SolverOutput(-1, true, read(process.getInputStream()),
-                    read(process.getErrorStream()));
+                    read(process.getErrorStream()), identity);
         }
         return new SolverOutput(process.exitValue(), false,
-                read(process.getInputStream()), read(process.getErrorStream()));
+                read(process.getInputStream()), read(process.getErrorStream()),
+                identity);
     }
 
     private static Map<String, String> parseValues(String output,
@@ -811,6 +1130,41 @@ public final class ConcolicPrimitiveBootstrapProjector {
         }
     }
 
+    private static long longInteger(JsonObject object, String field,
+                                    long fallback) {
+        JsonElement value = object == null ? null : object.get(field);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsLong();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static int countString(JsonArray values, String expected) {
+        int count = 0;
+        for (JsonElement value : values) {
+            if (value != null && value.isJsonPrimitive()
+                    && value.getAsJsonPrimitive().isString()
+                    && expected.equals(value.getAsString())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean safeSmtAtom(String value) {
+        return value != null && SAFE_SMT_ATOM.matcher(value).matches();
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) return value;
+        }
+        return "";
+    }
+
     static final class Result {
         final List<JsonObject> activations;
         final JsonObject manifest;
@@ -826,13 +1180,45 @@ public final class ConcolicPrimitiveBootstrapProjector {
         private final boolean timedOut;
         private final String stdout;
         private final String stderr;
+        private final SolverIdentity identity;
 
         private SolverOutput(int exitCode, boolean timedOut, String stdout,
-                             String stderr) {
+                             String stderr, SolverIdentity identity) {
             this.exitCode = exitCode;
             this.timedOut = timedOut;
             this.stdout = stdout;
             this.stderr = stderr;
+            this.identity = identity;
+        }
+    }
+
+    private static final class SolverIdentity {
+        private final String configuredPath;
+        private final String resolvedPath;
+        private final String version;
+        private final boolean regularFile;
+        private final String binarySha256;
+
+        private SolverIdentity(String configuredPath, String resolvedPath,
+                               String version, boolean regularFile,
+                               String binarySha256) {
+            this.configuredPath = configuredPath;
+            this.resolvedPath = resolvedPath;
+            this.version = version;
+            this.regularFile = regularFile;
+            this.binarySha256 = binarySha256;
+        }
+
+        private JsonObject toJson() {
+            JsonObject result = new JsonObject();
+            result.addProperty("configuredPath", configuredPath);
+            result.addProperty("resolvedPath", resolvedPath);
+            result.addProperty("version", version);
+            result.addProperty("regularFile", regularFile);
+            result.addProperty("binarySha256", binarySha256);
+            result.addProperty("identityAuthority",
+                    "SUCCESSFUL_Z3_VERSION_AND_RESOLVED_EXECUTABLE_SHA256_V1");
+            return result;
         }
     }
 
