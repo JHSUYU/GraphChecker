@@ -33,6 +33,45 @@ Soot 和自定义 OpenJDK 修改都只用于在受控研究环境中观察和建
 和执行边界。这里的“固定”是为了保证实验可复现和不越界，不是说分析框架
 只能用于 HDFS；核心 concolic/worklist/IR/composer 仍应保持项目无关。
 
+### HDFS-11741 end-to-end checkpoint（2026-07-18）
+
+当前可恢复 milestone 是 GraphChecker commit `2bb90afc`（已 push 到
+`origin/main`），固定 fat JAR 为
+`target/GraphChecker-2bb90afc-hdfs-auto-smt.jar`，SHA-256 是
+`8f2a3362c7f083190dc17c08de705a452522266dba09d4455cfad61ec8019a3a`。
+Hadoop worktree 保持上述 pre-fix commit，未修改 baseline test。
+
+已经真实验证：
+
+- v3 static catalog 自动找到 fatal `Map.get(keyId) == null` guard、
+  `HeartbeatManager$Monitor.run` 和 `BPServiceActor.run` 两个长期 root，以及
+  `DataEncryptionKey.keyId -> SASL username -> DN keyId`；
+- 唯一 baseline workload 在 instrumented JVM 上 55.0 秒通过，完整 raw trace 为
+  833,447 events，`attempted == written`，未截断；
+- 流式 offline aggregation 在同一 trace 上生成 819,056 dynamic edges，object graph
+  约 2.35 GB，`truncated=false` 且 `contextPairTruncated=false`；
+- generic container snapshot 已覆盖
+  `array[i] -> Map.put(key, element) -> element.field.field`；RPC/SASL equality 与
+  shared-field READ_FROM 分开，并由 exact edge/kind/instance/runtime witness 选择；
+- milestone 全量 JUnit 652 项通过，`experiments/generic/test_workflow.sh` 与
+  三线程 fixture JUnit 继续通过。
+
+配置已指向 fresh v4：
+
+```text
+causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4
+experiments/hdfs/instrumented_classes.hdfs-11741-auto-smt-v4
+experiments/hdfs/concolic_classes.hdfs-11741-auto-smt-v4
+```
+
+恢复时先检查 v4 static artifact 是否已经完整落盘；不要覆盖非空目录。随后只运行原始
+`testEncryptedBalancer1`，离线聚合 fresh trace，选择 fatal/NN/DN/Balancer activations，
+做 bounded concolic capture 并用 `ConcolicSmtComposer` 生成 bootstrap SMT。外层 heartbeat
+长期循环允许选择一个确定性有序 witness；`removeExpiredKeys` 的 map iterator 和
+`addKeys` 的 array element 仍保留 generic symbolic relation。telemetry 不完整不应阻止
+bootstrap SMT，未知量保留 concrete/approximation 并写入 manifest。终点是把生成的 SMT
+实际交给配置的 Z3，保存 `check-sat` 和 model；自然回放验证留待后续。
+
 ## 当前参考工作负载
 
 三线程 fixture 位于
