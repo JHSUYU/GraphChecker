@@ -39,6 +39,8 @@ public class ConcolicPathReplayVerifierTest {
         assertEquals(1, report.get("matchingRawResultCount").getAsInt());
         assertEquals(1, report.get("matchingImportedSummaryCount")
                 .getAsInt());
+        assertEquals(64, report.get("observedPathKey").getAsString()
+                .length());
         assertTrue(report.getAsJsonObject("scheduledTargetValidation")
                 .get("valid").getAsBoolean());
         assertTrue(report.getAsJsonObject("replayValidation")

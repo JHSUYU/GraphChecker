@@ -657,7 +657,8 @@ producer_campaign_directory() {
 do_explore_producer() {
   local requested=$1
   local channel schedule classes campaign region source_activation binding
-  local summaries activations planner_dir replay_activation raw imported
+  local summaries activations records planner_dir replay_activation raw imported
+  local replay_verification
   local z3 solver_timeout planner_status query_key iteration
   local -A seen_queries=()
   local -a _replay_activations=()
@@ -677,6 +678,8 @@ do_explore_producer() {
   mkdir -p "${campaign}"
   summaries="${campaign}/combined_region_summaries.jsonl"
   activations="${campaign}/combined_activation_plan.jsonl"
+  records="${campaign}/path_exploration_records.jsonl"
+  : >"${records}"
   combine_jsonl_unique summaryId "${summaries}" \
     "${schedule}/concolic_region_summaries.jsonl"
   combine_jsonl_unique activationId "${activations}" \
@@ -693,6 +696,7 @@ do_explore_producer() {
       edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
       --summaries "${summaries}" \
       --activations "${activations}" \
+      --records "${records}" \
       --output-dir "${planner_dir}" \
       --z3 "${z3}" \
       --solver-timeout-ms "${solver_timeout}" \
@@ -759,19 +763,29 @@ do_explore_producer() {
     replay_activation=${_replay_activations[0]}
     raw="${planner_dir}/concolic_region_results.jsonl"
     imported="${planner_dir}/concolic_region_summaries.jsonl"
+    replay_verification="${planner_dir}/path_replay_verification.json"
     run_custom_plan "${planner_dir}/activation_plan.jsonl" \
       "${replay_activation}" "${classes}" "${raw}" false false false
     import_plan "${planner_dir}/activation_plan.jsonl" "${raw}" \
       "${imported}" "${planner_dir}"
-    jq -e -s --arg region "${region}" --arg activation "${replay_activation}" '
-      length == 1
-      and .[0].regionId == $region
-      and .[0].activationId == $activation
-      and .[0].valid == true
-      and .[0].relationallyComplete == true
-      and .[0].branchOverrideUsed == false
-    ' "${imported}" >/dev/null \
-      || die "producer path replay was not admitted as a complete unforced summary"
+    run_graphchecker_main \
+      edu.uva.liftlab.graphchecker.concolic.ConcolicPathReplayVerifier \
+      --task "${planner_dir}/replay_validation_plan.json" \
+      --activation-plan "${planner_dir}/activation_plan.jsonl" \
+      --results "${raw}" \
+      --summary "${imported}" \
+      --output "${replay_verification}"
+    jq -e --arg query "${query_key}" --arg region "${region}" \
+      --arg activation "${replay_activation}" '
+      .valid == true
+      and .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+      and .queryKey == $query
+      and .regionId == $region
+      and .activationId == $activation
+      and (.observedPathKey | test("^[0-9a-f]{64}$"))
+    ' "${replay_verification}" >/dev/null \
+      || die "producer path replay did not pass the exact verifier"
+    jq -c '.' "${replay_verification}" >>"${records}"
     combine_jsonl_unique summaryId "${campaign}/next_summaries.jsonl" \
       "${summaries}" "${imported}"
     mv -f "${campaign}/next_summaries.jsonl" "${summaries}"

@@ -152,6 +152,64 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void oppositeObservedFrontiersCloseWithoutReverseReplay() {
+        JsonObject taken = oneBranchSummary("ACT.TAKEN", ">", true, -1);
+        JsonObject notTaken = oneBranchSummary("ACT.NOT.TAKEN", "<=",
+                false, 1);
+        assertNotEquals(RegionPathWorklist.stablePathKey(taken),
+                RegionPathWorklist.stablePathKey(notTaken));
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(taken, notTaken), Arrays.asList(
+                        activation("ACT.TAKEN",
+                                RegionCaptureGoal.outputClosure()),
+                        activation("ACT.NOT.TAKEN",
+                                RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertTrue(result.tasks.toString(), result.tasks.isEmpty());
+        assertTrue(result.manifest.toString(), result.manifest.get(
+                "complete").getAsBoolean());
+        assertEquals(2, result.manifest.get(
+                "candidateFlipCount").getAsInt());
+        assertEquals(2, result.manifest.get(
+                "terminalFlipCount").getAsInt());
+        assertEquals(2, result.manifest.get(
+                "observedCoveredFlipCount").getAsInt());
+    }
+
+    @Test
+    public void observedOutcomeUnderDifferentPrefixDoesNotCloseFlip() {
+        JsonObject first = summary("ACT.PREFIX.1",
+                RegionCaptureGoal.outputClosure());
+        JsonObject second = summary("ACT.PREFIX.2",
+                RegionCaptureGoal.outputClosure());
+        second.getAsJsonArray("pathCondition").set(0, binary("<=", 0));
+        second.getAsJsonArray("pathCondition").set(1, binary(">=", 5));
+        for (com.google.gson.JsonElement element
+                : second.getAsJsonArray("branchMappings")) {
+            element.getAsJsonObject().addProperty("outcome", false);
+        }
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(first, second), Arrays.asList(
+                        activation("ACT.PREFIX.1",
+                                RegionCaptureGoal.outputClosure()),
+                        activation("ACT.PREFIX.2",
+                                RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 2, result.tasks.size());
+        assertTrue(result.tasks.stream().allMatch(task -> "SITE.1".equals(
+                task.get("flipSite").getAsString())));
+        assertEquals(2, result.manifest.get(
+                "observedCoveredFlipCount").getAsInt());
+        assertFalse(result.manifest.get("complete").getAsBoolean());
+    }
+
+    @Test
     public void materializationGapIsTerminalAndSurfacesExplorationGap() {
         JsonObject summary = summary("ACT.GAP",
                 RegionCaptureGoal.outputClosure());
@@ -573,6 +631,30 @@ public class RegionPathWorklistTest {
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapEffects", new JsonArray());
         return summary;
+    }
+
+    private static JsonObject oneBranchSummary(String activationId,
+                                               String operator,
+                                               boolean outcome,
+                                               int outputValue) {
+        JsonObject result = summary(activationId,
+                RegionCaptureGoal.outputClosure());
+        JsonArray conditions = new JsonArray();
+        conditions.add(binary(operator, 0));
+        result.add("pathCondition", conditions);
+        JsonArray mappings = new JsonArray();
+        JsonObject mapping = mapping("SITE.0", 0);
+        mapping.addProperty("outcome", outcome);
+        mappings.add(mapping);
+        result.add("branchMappings", mappings);
+        JsonObject outputs = new JsonObject();
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "ConstExpr");
+        value.addProperty("_java_type", "I");
+        value.addProperty("_exp", "Y_I_" + outputValue);
+        outputs.add("REGION.3.out.0", value);
+        result.add("outputExpressions", outputs);
+        return result;
     }
 
     private static JsonObject mapping(String site, int condition) {

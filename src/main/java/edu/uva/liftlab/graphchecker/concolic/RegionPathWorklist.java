@@ -105,10 +105,12 @@ public final class RegionPathWorklist {
         private final List<JsonObject> gaps = new ArrayList<>();
         private final Set<String> gapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
+        private final Set<String> observedFlipKeys = new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private int candidateFlipCount;
         private int terminalFlipCount;
+        private int observedCoveredFlipCount;
         private int duplicateTaskCount;
         private int transitionDiscoverySeedCount;
         private int transitionDiscoveryTaskCount;
@@ -134,6 +136,7 @@ public final class RegionPathWorklist {
         }
 
         private Result run() {
+            indexObservedFlipCoverage();
             Set<String> seenPaths = new LinkedHashSet<>();
             for (JsonObject summary : summaries) {
                 if (!bool(summary, "valid", true)) continue;
@@ -305,6 +308,18 @@ public final class RegionPathWorklist {
                 }
                 return;
             }
+            if (observedFlipKeys.contains(key)) {
+                // The task constrains only the retained prefix plus the
+                // selected edge (DROP_OLD_SUFFIX).  A complete admitted
+                // summary with the same canonical prefix, requested output,
+                // runtime bindings, site, occurrence, and desired outcome is
+                // therefore direct evidence that this exact flip frontier
+                // has already been executed.  Later suffix decisions remain
+                // independently enumerable from that observed summary.
+                terminalFlipCount++;
+                observedCoveredFlipCount++;
+                return;
+            }
             if (!emitted.add(key)) {
                 duplicateTaskCount++;
                 return;
@@ -354,6 +369,76 @@ public final class RegionPathWorklist {
             task.addProperty("status", "PENDING_SOLVE");
             task.addProperty("dynamicIdsExcludedFromQueryKey", true);
             tasks.add(task);
+        }
+
+        /**
+         * Indexes exact branch frontiers already represented by complete
+         * output-closure summaries.  This avoids replaying the reverse edge
+         * after both sides of a branch have already been observed, while the
+         * full stable flip identity prevents cross-prefix or cross-object
+         * guesses.
+         */
+        private void indexObservedFlipCoverage() {
+            for (JsonObject summary : summaries) {
+                if (!bool(summary, "valid", true)
+                        || !bool(summary, "relationallyComplete", false)) {
+                    continue;
+                }
+                String region = string(summary, "regionId");
+                if (region.isEmpty()) continue;
+                JsonObject activation = activations.get(string(summary,
+                        "activationId"));
+                RegionCaptureGoal goal = RegionCaptureGoal.from(
+                        activation == null ? summary : activation);
+                if (!goal.isOutputClosure()) continue;
+
+                JsonArray conditions = array(summary, "pathCondition");
+                JsonArray mappings = array(summary, "branchMappings");
+                boolean policyAware = hasBranchPolicy(mappings);
+                Set<String> outputSites = outputSliceSites(summary,
+                        activation);
+                JsonObject discovery = object(summary,
+                        "transitionDiscovery");
+                String discoverySite = goal.isTransitionDiscovery()
+                        ? string(discovery, "guardSiteId") : "";
+                int discoveryOccurrence = integer(discovery,
+                        "guardOccurrence", -1);
+                boolean discoveryDesired = bool(discovery,
+                        "desiredOutcome", false);
+                AlphaNormalizer alpha = new AlphaNormalizer(summary);
+                String purpose = goal.isTransitionDiscovery()
+                        ? stableTransitionDiscoveryPurpose(summary) : "";
+                for (JsonElement element : mappings) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject mapping = element.getAsJsonObject();
+                    if (policyAware && !isExplorePolicy(mapping)) continue;
+                    String site = string(mapping, "siteId");
+                    if (!outputSites.isEmpty()
+                            && !outputSites.contains(site)) continue;
+                    int occurrence = integer(mapping, "occurrence", 1);
+                    if (goal.isTransitionDiscovery()
+                            && (!discoverySite.equals(site)
+                            || discoveryOccurrence > 0
+                            && discoveryOccurrence != occurrence
+                            || discoveryDesired == bool(mapping, "outcome",
+                            false))) {
+                        continue;
+                    }
+                    int conditionIndex = integer(mapping,
+                            "conditionIndex", -1);
+                    if (conditionIndex < 0
+                            || conditionIndex >= conditions.size()) continue;
+                    JsonArray prefix = new JsonArray();
+                    for (int index = 0; index < conditionIndex; index++) {
+                        prefix.add(conditions.get(index).deepCopy());
+                    }
+                    observedFlipKeys.add(stableFlipKey(region,
+                            summary.get("requestedOutput"), site, occurrence,
+                            bool(mapping, "outcome", false),
+                            alphaCanonical(prefix, alpha),
+                            stableRuntimeBindings(summary, alpha), purpose));
+                }
+            }
         }
 
         private String stableTransitionDiscoveryPurpose(JsonObject summary) {
@@ -411,6 +496,8 @@ public final class RegionPathWorklist {
             result.addProperty("observedPathCount", observedPathCount);
             result.addProperty("candidateFlipCount", candidateFlipCount);
             result.addProperty("terminalFlipCount", terminalFlipCount);
+            result.addProperty("observedCoveredFlipCount",
+                    observedCoveredFlipCount);
             result.addProperty("pendingTaskCount", tasks.size());
             result.addProperty("duplicateTaskCount", duplicateTaskCount);
             result.addProperty("transitionDiscoverySeedCount",
@@ -543,6 +630,7 @@ public final class RegionPathWorklist {
                 || "NO_RUNTIME_TRANSITION_EVIDENCE".equals(status)
                 || "EXECUTED_NEW_PATH".equals(status)
                 || "EXECUTED_DUPLICATE_PATH".equals(status)
+                || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status)
                 || "UNSUPPORTED".equals(status)
                 || "MATERIALIZATION_GAP".equals(status)
                 || "EXECUTION_ERROR".equals(status)
