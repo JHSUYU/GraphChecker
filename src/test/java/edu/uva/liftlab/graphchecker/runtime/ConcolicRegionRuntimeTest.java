@@ -680,6 +680,50 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void runtimeDerivedFieldSiteRequiresExactSiteOwnerAndDeclaration() {
+        String owner = Manager.class.getName();
+        String signature = "<" + owner + ": java.util.Map allKeys>";
+        String method = "<example.ManagerReader: void retrieve()>";
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", "REGION.0.in.allKeys");
+        action.addProperty("cell", signature + "#field:key");
+        action.addProperty("field", signature);
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("accessFieldSignature", signature);
+        action.addProperty("accessOwnerClass", owner);
+        action.addProperty("accessFieldType", "java.util.Map");
+        action.addProperty("accessField", "allKeys");
+        action.addProperty("accessMethod", method);
+        action.addProperty("accessUnitIndex", 7);
+        action.addProperty("accessSiteId", method + "#u7");
+        action.addProperty("accessSiteAuthority",
+                "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+
+        Manager manager = new Manager();
+        assertTrue(ConcolicRegionRuntime
+                .symbolizeActionMatchesFieldAtSiteForTests(action,
+                        method, 7, manager, signature, "allKeys"));
+        assertFalse(ConcolicRegionRuntime
+                .symbolizeActionMatchesFieldAtSiteForTests(action,
+                        method, 8, manager, signature, "allKeys"));
+        assertFalse(ConcolicRegionRuntime
+                .symbolizeActionMatchesFieldAtSiteForTests(action,
+                        "<example.Other: void retrieve()>", 7,
+                        manager, signature, "allKeys"));
+        assertFalse(ConcolicRegionRuntime
+                .symbolizeActionMatchesFieldAtSiteForTests(action,
+                        method, 7, manager,
+                        "<" + owner + ": java.util.SortedMap allKeys>",
+                        "allKeys"));
+
+        action.addProperty("accessOwnerClass", AssignmentOwner.class.getName());
+        assertFalse(ConcolicRegionRuntime
+                .symbolizeActionMatchesFieldAtSiteForTests(action,
+                        method, 7, manager, signature, "allKeys"));
+    }
+
+    @Test
     public void promotedAccessorFieldRequiresItsRuntimeParentCallSite() {
         String owner = Manager.class.getName();
         String signature = "<" + owner + ": java.util.Map allKeys>";

@@ -775,6 +775,42 @@ public class RecursiveRegionWorklistTest {
                 .contains("source.out"));
     }
 
+    @Test
+    public void validatedTransportEndpointCanPassThroughOneSymbolicInput() {
+        JsonObject consumer = region("REGION.CONSUMER");
+        JsonObject sender = region("REGION.SENDER");
+        JsonObject input = new JsonObject();
+        input.addProperty("portId", "sender.in.username");
+        input.addProperty("cell", "<example.SaslClient: void send(java.lang.String)>.param0:java.lang.String");
+        sender.getAsJsonArray("symbolicInputs").add(input);
+        JsonObject transport = edge("EDGE.SASL", "REGION.SENDER",
+                input.get("cell").getAsString(), "REGION.CONSUMER",
+                "consumer.in.username", "EQUALITY");
+        transport.addProperty("kind", "SASL_TRANSFER");
+
+        RecursiveRegionWorklist.Result result =
+                RecursiveRegionWorklist.explore(
+                        Arrays.asList(consumer, sender),
+                        Arrays.asList(activation("ACT.C", "REGION.CONSUMER"),
+                                activation("ACT.S", "REGION.SENDER")),
+                        Collections.singletonList(transport),
+                        Collections.<JsonObject>emptyList(),
+                        Collections.singletonList(
+                                activation("ACT.C", "REGION.CONSUMER")),
+                        RecursiveRegionWorklist.Bounds.defaults());
+
+        assertEquals(1, result.upstreamRequests.size());
+        JsonObject request = result.upstreamRequests.get(0);
+        assertTrue(request.get("outputDependencyClosureComplete")
+                .getAsBoolean());
+        assertEquals("STATIC_TRANSPORT_ENDPOINT_IDENTITY", request.get(
+                "outputDependencyClosureAuthority").getAsString());
+        assertEquals("[\"sender.in.username\"]", request.getAsJsonArray(
+                "outputDependencyInputPorts").toString());
+        assertFalse(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("MISSING_OUTPUT_DEPENDENCY_CLOSURE"));
+    }
+
     private static JsonObject region(String id) {
         JsonObject value = new JsonObject();
         value.addProperty("regionId", id);

@@ -969,6 +969,377 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
+    public void seedGuardFrontierAndSeedOutputPreemptBroadPortNoise() {
+        String handle = "<example.Handler: void handle(int)>";
+        String retrieve =
+                "<example.ZSecretManager: byte[] retrieve(int)>";
+        String suppliedKeyId = handle + ".param0:int";
+        String callerKeyId = handle + "::$keyId";
+        String keyId = retrieve + ".param0:int";
+        String allKeys =
+                "<example.ZSecretManager: java.util.Map allKeys>";
+        String map = retrieve + "::$map";
+        String boxedKey = retrieve + "::$boxedKey";
+        String lookup = retrieve + "::$lookup";
+        String guard = retrieve + "::$missing";
+        String exceptionObject = retrieve + "::$exceptionObject";
+        String failure = retrieve
+                + "#z999#exception:example.InvalidEncryptionKey";
+
+        List<String> inputs = new ArrayList<>();
+        List<String> outputs = new ArrayList<>();
+        List<Map<String, Object>> edges = new ArrayList<>();
+        // Every noise cell is genuinely in the exception closure through the
+        // diagnostic payload.  They are not dependencies of the controlling
+        // guard and all sort before ZSecretManager, reproducing broad-port
+        // starvation without relying on irrelevant plan entries.
+        for (int index = 0; index < 129; index++) {
+            String suffix = String.format("%03d", index);
+            String noise = "<example.ANoise" + suffix
+                    + ": int value>";
+            String noiseException = retrieve + "#a" + suffix
+                    + "#exception:example.Noise";
+            inputs.add(noise);
+            outputs.add(noiseException);
+            edges.add(edge(retrieve, "HEAP_READ", "field_read",
+                    noise, retrieve + "::$noise" + suffix, 1000 + index));
+            edges.add(edge(retrieve, "COMPUTE", "diagnostic_payload",
+                    retrieve + "::$noise" + suffix, exceptionObject,
+                    2000 + index));
+            edges.add(edge(retrieve, "COMPUTE", "diagnostic_alias",
+                    noiseException, exceptionObject, 3000 + index));
+        }
+        inputs.add(allKeys);
+        inputs.add(keyId);
+        outputs.add(failure);
+
+        Map<String, Object> fieldRead = edge(retrieve, "HEAP_READ",
+                "field_read", allKeys, map, 1);
+        authoritativeValueFlow(fieldRead);
+        edges.add(fieldRead);
+        Map<String, Object> keyCopy = edge(retrieve, "VALUE_PASS",
+                "local_def_use", keyId, boxedKey, 2);
+        authoritativeValueFlow(keyCopy);
+        edges.add(keyCopy);
+        Map<String, Object> lookupState = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_state", map, lookup, 3);
+        authoritativeValueFlow(lookupState);
+        edges.add(lookupState);
+        Map<String, Object> lookupKey = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_key", boxedKey, lookup, 3);
+        authoritativeValueFlow(lookupKey);
+        edges.add(lookupKey);
+        Map<String, Object> guardValue = edge(retrieve, "VALUE_PASS",
+                "local_def_use", lookup, guard, 4);
+        authoritativeValueFlow(guardValue);
+        edges.add(guardValue);
+        edges.add(edge(retrieve, "GUARD", "exception_guard", guard,
+                failure, 5));
+        edges.add(edge(retrieve, "SEED", "seed_exception_throw",
+                exceptionObject, failure, 6));
+        Map<String, Object> callerCopy = edge(handle, "VALUE_PASS",
+                "local_def_use", suppliedKeyId, callerKeyId, 0);
+        authoritativeValueFlow(callerCopy);
+        edges.add(callerCopy);
+        Map<String, Object> callArgument = invocation(handle, retrieve,
+                callerKeyId, keyId, 1);
+        authoritativeValueFlow(callArgument);
+        edges.add(callArgument);
+
+        Map<String, Object> region = onlyRegion(SymbolicRegionPlanner.plan(
+                edges, Arrays.asList(
+                        plan(handle, Collections.singletonList(suppliedKeyId),
+                                Collections.<String>emptyList()),
+                        plan(retrieve, inputs, outputs))));
+
+        assertEquals(handle, region.get("rootMethod"));
+        assertEquals(131, region.get("selectedExternalInputCount"));
+        assertEquals(128, region.get("broadInputPortCount"));
+        assertEquals(Boolean.TRUE, region.get("broadInputPortTruncated"));
+        assertEquals(2, region.get("mandatorySeedGuardInputCount"));
+        assertEquals(Arrays.asList(suppliedKeyId, allKeys),
+                region.get("mandatorySeedGuardInputs"));
+        assertEquals(Boolean.TRUE,
+                region.get("seedGuardInputDerivationComplete"));
+        assertEquals(0, region.get("seedGuardInputDerivationGapCount"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inputPorts =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        for (String dependency : Arrays.asList(allKeys, suppliedKeyId)) {
+            Map<String, Object> port = inputPorts.stream()
+                    .filter(candidate -> dependency.equals(candidate.get(
+                            "cell")))
+                    .findFirst().orElseThrow(AssertionError::new);
+            assertEquals(Boolean.TRUE, port.get("mandatory"));
+            assertEquals("SEED_GUARD_DEPENDENCY",
+                    port.get("selectionPriority"));
+            assertEquals("SEED_GUARD_DEPENDENCY_FRONTIER",
+                    port.get("selectionReason"));
+        }
+        assertFalse(inputPorts.stream().anyMatch(port ->
+                keyId.equals(port.get("cell"))));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> outputPorts =
+                (List<Map<String, Object>>) region.get("outputs");
+        assertEquals(128, outputPorts.size());
+        Map<String, Object> seedOutput = outputPorts.stream()
+                .filter(candidate -> failure.equals(candidate.get("cell")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals(Boolean.TRUE, seedOutput.get("mandatory"));
+        assertEquals("SEED_OUTPUT", seedOutput.get("selectionPriority"));
+    }
+
+    @Test
+    public void seedGuardDerivationGapStaysConcreteInsteadOfBecomingFreeInput() {
+        String handle = "<example.Handler: void handle(int)>";
+        String retrieve = "<example.SecretManager: byte[] retrieve(int)>";
+        String suppliedKeyId = handle + ".param0:int";
+        String keyId = retrieve + ".param0:int";
+        String allKeys = "<example.SecretManager: java.util.Map allKeys>";
+        String map = retrieve + "::$map";
+        String boxedKey = retrieve + "::$boxedKey";
+        String lookup = retrieve + "::$lookup";
+        String guard = retrieve + "::$missing";
+        String exceptionObject = retrieve + "::$exceptionObject";
+        String failure = retrieve
+                + "#u9#exception:example.InvalidEncryptionKey";
+
+        List<Map<String, Object>> edges = new ArrayList<>();
+        Map<String, Object> fieldRead = edge(retrieve, "HEAP_READ",
+                "field_read", allKeys, map, 1);
+        authoritativeValueFlow(fieldRead);
+        edges.add(fieldRead);
+        Map<String, Object> keyCopy = edge(retrieve, "VALUE_PASS",
+                "local_def_use", keyId, boxedKey, 2);
+        authoritativeValueFlow(keyCopy);
+        edges.add(keyCopy);
+        Map<String, Object> lookupState = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_state", map, lookup, 3);
+        authoritativeValueFlow(lookupState);
+        edges.add(lookupState);
+        Map<String, Object> lookupKey = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_key", boxedKey, lookup, 3);
+        authoritativeValueFlow(lookupKey);
+        edges.add(lookupKey);
+        Map<String, Object> guardValue = edge(retrieve, "VALUE_PASS",
+                "local_def_use", lookup, guard, 4);
+        authoritativeValueFlow(guardValue);
+        edges.add(guardValue);
+        Map<String, Object> exceptionValue = edge(retrieve, "CONSTRUCT",
+                "constructor_value", guard, exceptionObject, 7);
+        authoritativeValueFlow(exceptionValue);
+        edges.add(exceptionValue);
+        edges.add(edge(retrieve, "GUARD", "exception_guard", guard,
+                failure, 5));
+        edges.add(edge(retrieve, "SEED", "seed_exception_throw",
+                exceptionObject, failure, 9));
+
+        // This edge is structurally a call binding, but deliberately lacks
+        // exact static/runtime provenance.  It may group the methods into one
+        // region; it must not authorize suppliedKeyId -> keyId as a symbolic
+        // equality or turn the deep formal into an independent free input.
+        edges.add(invocation(handle, retrieve, suppliedKeyId, keyId, 1));
+
+        Map<String, Object> region = onlyRegion(SymbolicRegionPlanner.plan(
+                edges, Arrays.asList(
+                        plan(handle, Collections.singletonList(suppliedKeyId),
+                                Collections.<String>emptyList()),
+                        plan(retrieve, Arrays.asList(allKeys, keyId),
+                                Collections.singletonList(failure)))));
+
+        assertEquals(handle, region.get("rootMethod"));
+        assertEquals(Collections.singletonList(allKeys),
+                region.get("mandatorySeedGuardInputs"));
+        assertEquals(Boolean.FALSE,
+                region.get("seedGuardInputDerivationComplete"));
+        assertEquals(1, region.get("seedGuardInputDerivationGapCount"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> gaps =
+                (List<Map<String, Object>>) region.get(
+                        "seedGuardInputDerivationGaps");
+        assertEquals(keyId, gaps.get(0).get("dependencyCell"));
+        assertEquals("NON_AUTHORITATIVE_IN_REGION_DEFINITION",
+                gaps.get(0).get("reason"));
+        assertEquals(Boolean.FALSE, gaps.get(0).get("symbolicEligibility"));
+        assertEquals("CONCRETE_BOUND_OBSERVED_VALUE",
+                gaps.get(0).get("fallbackPolicy"));
+        assertEquals("CONCRETE_PATH_ALLOWED",
+                gaps.get(0).get("analysisContinuation"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> ports =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        assertFalse(ports.stream().anyMatch(port ->
+                keyId.equals(port.get("cell"))));
+        assertTrue(ports.stream().anyMatch(port ->
+                suppliedKeyId.equals(port.get("cell"))));
+        @SuppressWarnings("unchecked")
+        List<String> derived = (List<String>) region.get("derivedInputs");
+        assertTrue(derived.stream().anyMatch(value ->
+                value.startsWith(keyId + " [seed guard provenance gap; "
+                        + "CONCRETE_BOUND_OBSERVED_VALUE")));
+        assertEquals(Boolean.TRUE, region.get("inputSelectionComplete"));
+    }
+
+    @Test
+    public void seedGuardIgnoresExactAliasesOfModeledDefinitions() {
+        String root = "<example.Handler: void handle(int)>";
+        String suppliedKey = root + ".param0:int";
+        String retrieve = "<example.Secret: void retrieve(int)>";
+        String key = retrieve + ".param0:int";
+        String declaredMap = "<example.Secret: java.util.Map allKeys>";
+        String receiverMap = retrieve + "::r0#field:allKeys";
+        String map = retrieve + "::$map";
+        String boxed = retrieve + "::$boxed";
+        String lookup = retrieve + "::$lookup";
+        String guard = retrieve + "::$guard";
+        String failure = retrieve + "#u8#exception:example.MissingKey";
+
+        List<Map<String, Object>> edges = new ArrayList<>();
+        Map<String, Object> declaredRead = edge(retrieve, "HEAP_READ",
+                "field_read", declaredMap, map, 1);
+        authoritativeValueFlow(declaredRead);
+        edges.add(declaredRead);
+        Map<String, Object> projectedRead = edge(retrieve, "HEAP_READ",
+                "instance_field_read", receiverMap, map, 1);
+        authoritativeValueFlow(projectedRead);
+        projectedRead.put("siteId", declaredRead.get("siteId"));
+        edges.add(projectedRead);
+        Map<String, Object> boxOperand = edge(retrieve, "FUNCTION_RETURN",
+                "local_def_use", key, boxed, 2);
+        authoritativeValueFlow(boxOperand);
+        edges.add(boxOperand);
+        Map<String, Object> boxReturn = edge(retrieve, "FUNCTION_RETURN",
+                "call_return", "<java.lang.Integer: java.lang.Integer valueOf(int)>.return",
+                boxed, 2);
+        authoritativeValueFlow(boxReturn);
+        boxReturn.put("siteId", boxOperand.get("siteId"));
+        edges.add(boxReturn);
+        Map<String, Object> lookupState = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_state", map, lookup, 3);
+        authoritativeValueFlow(lookupState);
+        edges.add(lookupState);
+        Map<String, Object> lookupKey = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_key", boxed, lookup, 3);
+        authoritativeValueFlow(lookupKey);
+        edges.add(lookupKey);
+        Map<String, Object> mapReturn = edge(retrieve, "HEAP_LOOKUP",
+                "call_return", "<java.util.Map: java.lang.Object get(java.lang.Object)>.return",
+                lookup, 3);
+        authoritativeValueFlow(mapReturn);
+        mapReturn.put("siteId", lookupState.get("siteId"));
+        edges.add(mapReturn);
+        Map<String, Object> cast = edge(retrieve, "VALUE_PASS",
+                "local_def_use", "(example.Key) $lookup", guard, 4);
+        authoritativeValueFlow(cast);
+        edges.add(cast);
+        Map<String, Object> castLeaf = edge(retrieve, "VALUE_PASS",
+                "local_def_use", lookup, guard, 4);
+        authoritativeValueFlow(castLeaf);
+        cast.put("siteId", castLeaf.get("siteId"));
+        edges.add(castLeaf);
+        edges.add(edge(retrieve, "GUARD", "exception_guard", guard,
+                failure, 8));
+        edges.add(edge(retrieve, "SEED", "seed_exception_throw",
+                retrieve + "::$exception", failure, 9));
+        Map<String, Object> call = invocation(root, retrieve, suppliedKey,
+                key, 1);
+        authoritativeValueFlow(call);
+        edges.add(call);
+
+        Map<String, Object> region = onlyRegion(SymbolicRegionPlanner.plan(
+                edges, Arrays.asList(
+                        plan(root, Collections.singletonList(suppliedKey),
+                                Collections.<String>emptyList()),
+                        plan(retrieve, Arrays.asList(key, declaredMap,
+                                receiverMap), Collections.singletonList(
+                                failure)))));
+
+        assertEquals(String.valueOf(region), Boolean.TRUE,
+                region.get("seedGuardInputDerivationComplete"));
+        assertEquals(0, region.get("seedGuardInputDerivationGapCount"));
+        assertEquals(Arrays.asList(suppliedKey, declaredMap),
+                region.get("mandatorySeedGuardInputs"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inputs =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        assertFalse(inputs.stream().anyMatch(input ->
+                key.equals(input.get("cell"))
+                        || receiverMap.equals(input.get("cell"))));
+    }
+
+    @Test
+    public void sharedHeapWriterInputsBelongToProducerRegionNotConsumer() {
+        String writer = "<example.NameNode: void install(example.Keys)>";
+        String exported = writer + ".param0:example.Keys";
+        String mutationValue = writer + "::$key";
+        String retrieve = "<example.DataNode: void retrieve(example.Keys)>";
+        String context = retrieve + ".param0:example.Keys";
+        String key = "<example.DataNode: int requestedKey>";
+        String allKeys = "<example.DataNode: java.util.Map allKeys>";
+        String map = retrieve + "::$map";
+        String lookup = retrieve + "::$lookup";
+        String guard = retrieve + "::$guard";
+        String failure = retrieve + "#u8#exception:example.MissingKey";
+
+        List<Map<String, Object>> edges = new ArrayList<>();
+        Map<String, Object> exportedValue = edge(writer, "VALUE_PASS",
+                "local_def_use", exported, mutationValue, 1);
+        authoritativeValueFlow(exportedValue);
+        edges.add(exportedValue);
+        Map<String, Object> mutation = edge(writer, "HEAP_WRITE",
+                "field_mutation", mutationValue, allKeys, 2);
+        authoritativeValueFlow(mutation);
+        edges.add(mutation);
+        Map<String, Object> call = invocation(writer, retrieve, exported,
+                context, 3);
+        authoritativeValueFlow(call);
+        edges.add(call);
+        Map<String, Object> read = edge(retrieve, "HEAP_READ",
+                "field_read", allKeys, map, 1);
+        authoritativeValueFlow(read);
+        edges.add(read);
+        Map<String, Object> lookupState = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_state", map, lookup, 2);
+        authoritativeValueFlow(lookupState);
+        edges.add(lookupState);
+        Map<String, Object> lookupKey = edge(retrieve, "HEAP_LOOKUP",
+                "map_lookup_key", key, lookup, 2);
+        authoritativeValueFlow(lookupKey);
+        edges.add(lookupKey);
+        Map<String, Object> guardValue = edge(retrieve, "VALUE_PASS",
+                "local_def_use", lookup, guard, 3);
+        authoritativeValueFlow(guardValue);
+        edges.add(guardValue);
+        edges.add(edge(retrieve, "GUARD", "exception_guard", guard,
+                failure, 8));
+        edges.add(edge(retrieve, "SEED", "seed_exception_throw",
+                retrieve + "::$exception", failure, 9));
+
+        Map<String, Object> region = onlyRegion(SymbolicRegionPlanner.plan(
+                edges, Arrays.asList(
+                        plan(writer, Collections.singletonList(exported),
+                                Collections.singletonList(allKeys)),
+                        plan(retrieve, Arrays.asList(context, key, allKeys),
+                                Collections.singletonList(failure)))));
+
+        assertEquals(Arrays.asList(key, allKeys),
+                region.get("mandatorySeedGuardInputs"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inputs =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        assertFalse(inputs.stream().anyMatch(input ->
+                exported.equals(input.get("cell"))));
+        @SuppressWarnings("unchecked")
+        List<String> derived = (List<String>) region.get("derivedInputs");
+        assertTrue(derived.stream().anyMatch(value ->
+                value.startsWith(exported
+                        + " [upstream shared-heap producer")));
+    }
+
+    @Test
     public void requestedOutputSliceUsesIndependentMethodBudget() {
         Map<String, Object> slice = helperFanoutOutputSlice(66);
 
@@ -1756,7 +2127,7 @@ public class SymbolicRegionPlannerTest {
         String reader = "<example.Reader: void read()>";
         String allKeys = "<example.KeyManager: java.util.Map allKeys>";
         String expiry = "<example.DelegationKey: long expiryDate>";
-        String now = "<java.lang.System: long currentTimeMillis()>.return";
+        String now = "<org.apache.hadoop.util.Time: long now()>.return";
         String hasNext = "<java.util.Iterator: boolean hasNext()>.return";
         String l1 = prune + "::$l1";
         String l0 = prune + "::$l0";
@@ -2708,6 +3079,9 @@ public class SymbolicRegionPlannerTest {
                 sourceKind.invoke(null, lifetime, updater));
         assertEquals("ENVIRONMENT", sourceKind.invoke(null,
                 "<java.lang.System: long currentTimeMillis()>.return",
+                updater));
+        assertEquals("ENVIRONMENT", sourceKind.invoke(null,
+                "<org.apache.hadoop.util.Time: long now()>.return",
                 updater));
         assertEquals("OPAQUE_CALL", sourceKind.invoke(null,
                 "<example.RpcProtocol: example.Response fetch()>.return",

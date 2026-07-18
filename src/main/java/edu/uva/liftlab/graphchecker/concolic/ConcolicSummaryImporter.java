@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -8382,8 +8384,8 @@ public final class ConcolicSummaryImporter {
                     string(action, "sourceKind"))
                     || "ENVIRONMENT_MODEL".equals(
                     string(action, "location"))
-                    || "<java.lang.System: long currentTimeMillis()>.return"
-                    .equals(string(action, "cell")))) {
+                    || SymbolicEnvironment.isCurrentTimeMillisReturn(
+                    string(action, "cell")))) {
                 placeholderCandidate = true;
             }
         }
@@ -8431,7 +8433,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static boolean exactCurrentTimeMillisBinding(JsonObject action) {
-        return "<java.lang.System: long currentTimeMillis()>.return".equals(
+        return SymbolicEnvironment.isCurrentTimeMillisReturn(
                 string(action, "cell"))
                 && "ENVIRONMENT".equals(string(action, "sourceKind"))
                 && "ENVIRONMENT_MODEL".equals(string(action, "location"))
@@ -8512,8 +8514,8 @@ public final class ConcolicSummaryImporter {
                     && admission.admittedVmIntrinsicPlaceholders.contains(port)
                     && admission.globalRequired.contains(port)
                     && admission.required.contains(port)
-                    && "<java.lang.System: long currentTimeMillis()>.return"
-                    .equals(string(requirement, "cell"))
+                    && SymbolicEnvironment.isCurrentTimeMillisReturn(
+                    string(requirement, "cell"))
                     && "ENVIRONMENT".equals(string(requirement,
                     "sourceKind"))
                     && "VM_INTRINSIC_PLACEHOLDER".equals(string(requirement,

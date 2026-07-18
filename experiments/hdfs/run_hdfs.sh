@@ -21,6 +21,7 @@ hadoop_maven_bin="${GRAPH_CHECKER_MAVEN:-${hadoop_maven_bin:-mvn}}"
 container_runtime_bin="${GRAPH_CHECKER_CONTAINER_RUNTIME:-${container_runtime_bin:-docker}}"
 z3_bin="${CAUSYNTH_Z3:-${z3_bin:-z3}}"
 protoc_bin="${CAUSYNTH_PROTOC:-${protoc_bin:-protoc}}"
+configured_causynth_workload_test="${causynth_workload_test}"
 causynth_workload_test="${CAUSYNTH_WORKLOAD_TEST:-${causynth_workload_test}}"
 
 configured_tool_path() {
@@ -33,6 +34,17 @@ configured_tool_path() {
     else
         command -v "${tool}"
     fi
+}
+
+run_container() {
+    if [[ -n "${container_runtime_group:-}" \
+            && " $(id -Gn) " != *" ${container_runtime_group} "* ]]; then
+        local quoted_command
+        printf -v quoted_command '%q ' "${container_runtime_bin}" "$@"
+        sg "${container_runtime_group}" -c "${quoted_command}"
+        return
+    fi
+    "${container_runtime_bin}" "$@"
 }
 
 with_configured_protoc() {
@@ -212,6 +224,7 @@ usage() {
     echo "  build-hadoop                  Build required Hadoop modules"
     echo "  compile                       Compile HDFS and snapshot original classes"
     echo "  process                       Run the Causynth Soot transformer"
+    echo "  verify-region-roots [catalog] Validate configured NN/DN maintenance roots"
     echo "  test [TestClass[#method]]     Run HDFS unit tests"
     echo "  run [TestClass[#method]]      process + test"
     echo "  schedule-concolic [test] [region] [activation]"
@@ -222,6 +235,8 @@ usage() {
     echo "                                Generate activation-specific replay classes"
     echo "  replay-concolic <plan> [activation] [test]"
     echo "                                Run one HDFS-owned test on the custom JDK"
+    echo "  replay-concolic-batch <JSONL manifest>"
+    echo "                                Process/replay isolated jobs in parallel, then import"
     echo "  import-concolic <plan> <results>"
     echo "                                Normalize the raw VM region result"
     echo "  campaign-concolic [test]      Close recursive captures and path flips"
@@ -267,6 +282,15 @@ usage() {
     echo "  CAUSYNTH_NATURAL_REPLAY_OUTPUT_DIR    Fresh projection/replay output directory"
     echo "  CAUSYNTH_NATURAL_REPLAY_CLASSES_PATH  Fresh path below natural output only"
     echo "  CAUSYNTH_NATURAL_REPLAY_STATIC_OUTPUT_DIR Fresh path below natural output only"
+    echo ""
+    echo "Batch JSONL schema (one object per independent activation):"
+    echo '  {"schemaVersion":2,"jobId":"...","plan":"/abs/.../scheduled_activation_plan.jsonl",'
+    echo '   "activationId":"ACT...","outputDir":"/abs/plan-parent",'
+    echo '   "classesDir":"/abs/output/classes","staticOutputDir":"/abs/output/static",'
+    echo '   "regions":"/abs/static/symbolic_regions.jsonl","regionsSha256":"<sha256>"}'
+    echo "  The sibling schedule_input_provenance.json must bind plan and regions hashes"
+    echo "  Optional per-job: hadoopTargetDir, workDir; both must be below outputDir"
+    echo "  Parallelism: CAUSYNTH_HDFS_CONCOLIC_PARALLELISM (or conf default)"
 }
 
 timing() {
@@ -304,6 +328,83 @@ do_compile() {
     rsync -a "${hdfs_dir}/target/classes/" "${system_classes_path}/"
 }
 
+verify_region_root_spec() {
+    local catalog=$1
+    local label=$2
+    local root_method=$3
+    local required_methods=$4
+    local jq_filter
+    jq_filter='($required | split("|") | map(select(length > 0))) as $need
+      | select(.rootMethod == $root
+          and ((.methods? // null) | type) == "array")
+      | . as $region
+      | select($need | all(. as $method
+          | (($region.methods | index($method)) != null)))'
+
+    local matches
+    if ! matches=$(jq -r --arg root "${root_method}" \
+            --arg required "${required_methods}" \
+            "${jq_filter} | .regionId" "${catalog}"); then
+        echo "[ERROR] Invalid static region-root catalog: ${catalog}" >&2
+        return 1
+    fi
+    if [[ -n "${matches}" ]]; then
+        matches=${matches//$'\n'/,}
+        echo "[Static region root] ${label}: ${matches}"
+        return 0
+    fi
+
+    echo "[ERROR] No ${label} region has the configured root and all required methods" >&2
+    echo "[ERROR] Root: ${root_method}" >&2
+    echo "[ERROR] Required: ${required_methods}" >&2
+    jq -rc --arg root "${root_method}" --arg required "${required_methods}" '
+        ($required | split("|") | map(select(length > 0))) as $need
+        | select(.rootMethod == $root)
+        | . as $region
+        | {regionId, missing:($need - ($region.methods // []))}' \
+        "${catalog}" >&2
+    return 1
+}
+
+verify_hdfs_region_roots() {
+    local requested_catalog="${1:-}"
+    local enabled="${CAUSYNTH_HDFS_REGION_ROOT_GATE_ENABLED:-${causynth_hdfs_region_root_gate_enabled:-true}}"
+    if [[ "${enabled}" != "true" ]]; then
+        echo "[Static region root] validation disabled by configuration"
+        return 0
+    fi
+
+    local configured_catalog catalog
+    configured_catalog="${CAUSYNTH_HDFS_REGION_ROOT_GATE_FILE:-${causynth_hdfs_region_root_gate_file:-symbolic_regions.jsonl}}"
+    if [[ -n "${requested_catalog}" ]]; then
+        catalog="${requested_catalog}"
+    elif [[ "${configured_catalog}" = /* ]]; then
+        catalog="${configured_catalog}"
+    else
+        catalog="${causynth_output_dir}/${configured_catalog}"
+    fi
+    if [[ ! -s "${catalog}" ]]; then
+        echo "[ERROR] Static region-root catalog is missing or empty: ${catalog}" >&2
+        return 1
+    fi
+
+    local dn_root dn_methods nn_root nn_methods
+    dn_root="${CAUSYNTH_HDFS_DN_REGION_ROOT_METHOD:-${causynth_hdfs_dn_region_root_method:-}}"
+    dn_methods="${CAUSYNTH_HDFS_DN_REGION_REQUIRED_METHODS:-${causynth_hdfs_dn_region_required_methods:-}}"
+    nn_root="${CAUSYNTH_HDFS_NN_REGION_ROOT_METHOD:-${causynth_hdfs_nn_region_root_method:-}}"
+    nn_methods="${CAUSYNTH_HDFS_NN_REGION_REQUIRED_METHODS:-${causynth_hdfs_nn_region_required_methods:-}}"
+    if [[ -z "${dn_root}" || -z "${dn_methods}" \
+            || -z "${nn_root}" || -z "${nn_methods}" ]]; then
+        echo "[ERROR] HDFS region-root gate signatures are incomplete in ${conf}" >&2
+        return 1
+    fi
+
+    verify_region_root_spec "${catalog}" "NN-to-DN block-key snapshot" \
+        "${dn_root}" "${dn_methods}"
+    verify_region_root_spec "${catalog}" "NN block-key rotation" \
+        "${nn_root}" "${nn_methods}"
+}
+
 do_process() {
     verify_hadoop_source
     if [[ ! -f "${gc_jar}" ]]; then
@@ -327,17 +428,24 @@ do_process() {
         -Dcausynth.instrument.trace=true
         -Dcausynth.output.dir="${causynth_output_dir}"
         -Dcausynth.coverage.strict="${causynth_coverage_strict:-true}"
+        -Dcausynth.static.max.methods="${causynth_static_max_methods:-1000}"
+        -Dcausynth.static.max.edges="${causynth_static_max_edges:-50000}"
     )
     if [[ -n "${process_dirs}" ]]; then
         properties+=(-Dcausynth.process.dirs="${process_dirs}")
     fi
-    java "${properties[@]}" \
+    "${graphchecker_java_bin}" "${properties[@]}" \
         -cp "${gc_jar}:${java_class_path}" \
         edu.uva.liftlab.graphchecker.GraphCheckerMain \
         -i "${system_classes_path}" \
         -x "${java_class_path}" \
         -C "${conf}" \
         -o "${instrumented_classes_path}"
+
+    # Guard against accidentally treating removeExpiredKeys() as a standalone
+    # region entry.  Both maintenance slices must remain rooted at the actual
+    # long-running heartbeat actors before this process output is accepted.
+    verify_hdfs_region_roots
 
     local graphchecker_jar_sha256
     graphchecker_jar_sha256=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
@@ -433,18 +541,24 @@ do_schedule_concolic() {
     fi
     if [[ "${CAUSYNTH_CAPTURE_ONLY:-false}" == "true" ]]; then
         args+=(--capture-only)
-    elif [[ -n "${schedule_summaries}" ]]; then
+    else
+        if [[ -z "${schedule_summaries}" \
+                && -s "${capture_dir}/concolic_region_summaries.jsonl" ]]; then
+            schedule_summaries="${capture_dir}/concolic_region_summaries.jsonl"
+        elif [[ -z "${schedule_summaries}" \
+                && -s "${schedule_dir}/concolic_region_summaries.jsonl" ]]; then
+            schedule_summaries="${schedule_dir}/concolic_region_summaries.jsonl"
+        elif [[ -z "${schedule_summaries}" \
+                && -s "${trace_dir}/concolic_region_summaries.jsonl" ]]; then
+            schedule_summaries="${trace_dir}/concolic_region_summaries.jsonl"
+        fi
+    fi
+    if [[ -n "${schedule_summaries}" ]]; then
         if [[ ! -s "${schedule_summaries}" ]]; then
             echo "[ERROR] Requested schedule summaries are missing or empty: ${schedule_summaries}" >&2
             exit 1
         fi
         args+=(--summaries "${schedule_summaries}")
-    elif [[ -s "${capture_dir}/concolic_region_summaries.jsonl" ]]; then
-        args+=(--summaries "${capture_dir}/concolic_region_summaries.jsonl")
-    elif [[ -s "${schedule_dir}/concolic_region_summaries.jsonl" ]]; then
-        args+=(--summaries "${schedule_dir}/concolic_region_summaries.jsonl")
-    elif [[ -s "${trace_dir}/concolic_region_summaries.jsonl" ]]; then
-        args+=(--summaries "${trace_dir}/concolic_region_summaries.jsonl")
     fi
     if [[ "${CAUSYNTH_FORCE_BRANCH_VALIDATION:-false}" == "true" ]]; then
         args+=(--force-branch-validation)
@@ -476,7 +590,7 @@ do_schedule_concolic() {
         jq -n '{}' > "${schedule_dir}/symbolic_merge_plan.json"
         jq -n '{}' > "${schedule_dir}/concolic_scheduler_summary.json"
     else
-        java -cp "${gc_jar}" \
+        "${graphchecker_java_bin}" -cp "${gc_jar}" \
             edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
             "${args[@]}"
     fi
@@ -661,6 +775,9 @@ do_process_concolic() {
         -Dcausynth.instrument.concolic=true
         -Dcausynth.concolic.activation.plan="$(realpath "${activation_plan}")"
         -Dcausynth.output.dir="${CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR:-${causynth_output_dir}/concolic-replay-static}"
+        -Dcausynth.coverage.strict="${causynth_coverage_strict:-true}"
+        -Dcausynth.static.max.methods="${causynth_static_max_methods:-1000}"
+        -Dcausynth.static.max.edges="${causynth_static_max_edges:-50000}"
     )
     if [[ -n "${process_dirs}" ]]; then
         properties+=(-Dcausynth.process.dirs="${process_dirs}")
@@ -680,7 +797,7 @@ do_process_concolic() {
     if [[ -n "${activation_id}" ]]; then
         properties+=(-Dcausynth.concolic.activation.id="${activation_id}")
     fi
-    java -Xmx4g "${properties[@]}" \
+    "${graphchecker_java_bin}" -Xmx4g "${properties[@]}" \
         -cp "${gc_jar}:${java_class_path}" \
         edu.uva.liftlab.graphchecker.GraphCheckerMain \
         -i "${system_classes_path}" \
@@ -742,15 +859,60 @@ do_replay_concolic() {
     fi
 
     local plan_in_container result_file result_in_container log_dir arg_line
+    local hadoop_repo_mount replay_target_dir replay_work_dir
+    local replay_work_in_container
     local surefire_test_selector test_classes_overlay
     local replay_status=0
     local -a discovery_properties=()
+    local -a isolated_target_mount=()
+    local -a isolated_test_properties=()
     local -a test_classes_mount=()
+    local -a container_user_args=()
     plan_in_container=$(workspace_container_path "${activation_plan}")
     result_file="$(dirname "$(realpath "${activation_plan}")")/concolic_region_results.jsonl"
     rm -f "${result_file}"
     result_in_container=$(workspace_container_path "${result_file}")
     log_dir="/graphchecker/target/hdfs-concolic-test-logs"
+    hadoop_repo_mount="${causynth_repo}:/hadoop"
+    replay_target_dir="${CAUSYNTH_REPLAY_HDFS_TARGET_DIR:-}"
+    replay_work_dir="${CAUSYNTH_REPLAY_WORK_DIR:-}"
+    if [[ -n "${replay_target_dir}" || -n "${replay_work_dir}" ]]; then
+        if [[ -z "${replay_target_dir}" || ! -d "${replay_target_dir}" \
+                || -z "${replay_work_dir}" ]]; then
+            echo "[ERROR] Isolated replay requires an existing target snapshot and a work directory" >&2
+            exit 1
+        fi
+        replay_target_dir=$(realpath "${replay_target_dir}")
+        require_workspace_output_path "isolated HDFS target snapshot" \
+            "${replay_target_dir}"
+        replay_work_dir=$(realpath -m "${replay_work_dir}")
+        require_workspace_output_path "isolated HDFS replay work directory" \
+            "${replay_work_dir}"
+        mkdir -p "${replay_work_dir}/logs" \
+            "${replay_work_dir}/test-build-data" \
+            "${replay_work_dir}/test-build-dir" \
+            "${replay_work_dir}/shared-data" \
+            "${replay_work_dir}/hadoop-tmp" \
+            "${replay_work_dir}/java-tmp"
+        replay_work_in_container=$(workspace_container_path \
+            "${replay_work_dir}")
+        log_dir="${replay_work_in_container}/logs"
+        # The source checkout is read-only in batch mode.  The nested target
+        # mount owns every Maven/Surefire write, while explicit test and tmp
+        # properties isolate MiniDFSCluster state outside that target too.
+        hadoop_repo_mount="${causynth_repo}:/hadoop:ro"
+        isolated_target_mount=(
+            -v "${replay_target_dir}:/hadoop/hadoop-hdfs-project/hadoop-hdfs/target"
+        )
+        container_user_args=(--user "$(id -u):$(id -g)")
+        isolated_test_properties=(
+            -Dtest.build.data="${replay_work_in_container}/test-build-data"
+            -Dtest.build.dir="${replay_work_in_container}/test-build-dir"
+            -Dtest.build.shared.data="${replay_work_in_container}/shared-data"
+            -Dhadoop.tmp.dir="${replay_work_in_container}/hadoop-tmp"
+            -Djava.io.tmpdir="${replay_work_in_container}/java-tmp"
+        )
+    fi
     # Keep the Causynth identity pinned to the original HDFS test.  A caller
     # may select a harness-only wrapper for Surefire (for example, one that
     # removes JUnit's 60-second wall-clock deadline on the interpreted custom
@@ -768,6 +930,9 @@ do_replay_concolic() {
         )
     fi
     arg_line="-Dcausynth.trace.test=${test_name} -Dcausynth.concolic.activation.plan=${plan_in_container} -Dcausynth.concolic.activation.id=${activation_id} -Dcausynth.concolic.results=${result_in_container}"
+    if [[ -n "${replay_work_in_container:-}" ]]; then
+        arg_line+=" -Dtest.build.data=${replay_work_in_container}/test-build-data -Dtest.build.dir=${replay_work_in_container}/test-build-dir -Dtest.build.shared.data=${replay_work_in_container}/shared-data -Dhadoop.tmp.dir=${replay_work_in_container}/hadoop-tmp -Djava.io.tmpdir=${replay_work_in_container}/java-tmp -Duser.home=/tmp -Duser.name=$(id -un)"
+    fi
 
     local discovery_trace_dir=""
     if [[ -n "${CAUSYNTH_CAMPAIGN_DISCOVERED_ACTIVATIONS:-}" \
@@ -820,9 +985,9 @@ do_replay_concolic() {
             "${discovery_trace_dir}/summary.json" \
             "${discovery_trace_dir}/streaming_trace_manifest.json" \
             "${discovery_trace_dir}/offline_aggregation_provenance.json"
-        discovery_max_events="${CAUSYNTH_CAMPAIGN_TRACE_MAX_EVENTS:-2000000}"
-        discovery_max_graph_edges="${CAUSYNTH_CAMPAIGN_TRACE_MAX_GRAPH_EDGES:-250000}"
-        discovery_max_context_pairs="${CAUSYNTH_CAMPAIGN_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE:-10000}"
+        discovery_max_events="${CAUSYNTH_CAMPAIGN_TRACE_MAX_EVENTS:-${causynth_campaign_trace_max_events:-2000000}}"
+        discovery_max_graph_edges="${CAUSYNTH_CAMPAIGN_TRACE_MAX_GRAPH_EDGES:-${causynth_campaign_trace_max_graph_edges:-250000}}"
+        discovery_max_context_pairs="${CAUSYNTH_CAMPAIGN_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE:-${causynth_campaign_trace_max_context_pairs_per_edge:-10000}}"
         discovery_streaming_only="${CAUSYNTH_CAMPAIGN_TRACE_STREAMING_ONLY:-true}"
         trace_in_container=$(workspace_container_path "${discovery_trace_dir}")
         static_graph_in_container=$(workspace_container_path \
@@ -855,21 +1020,27 @@ do_replay_concolic() {
         arg_line+=" -Dcausynth.trace.output.dir=${trace_in_container} -Dcausynth.static.graph=${static_graph_in_container} -Dcausynth.symbolic.regions=${regions_in_container} -Dcausynth.symbolic.region.edges=${region_edges_in_container} -Dcausynth.trace.max.events=${discovery_max_events} -Dcausynth.trace.max.graph.edges=${discovery_max_graph_edges} -Dcausynth.trace.max.context.pairs.per.edge=${discovery_max_context_pairs}"
     fi
 
-    docker run --rm --platform linux/amd64 \
+    run_container run --rm --platform linux/amd64 \
+        ${container_user_args[@]+"${container_user_args[@]}"} \
         -e HOME=/tmp \
+        -e USER="$(id -un)" \
+        -e LOGNAME="$(id -un)" \
         -e MAVEN_OPTS=-Duser.home=/tmp \
         -e JAVA_HOME=/openjdk/build/linux-x86_64-normal-zero-release/images/j2sdk-image \
         -e PATH=/openjdk/build/linux-x86_64-normal-zero-release/images/j2sdk-image/bin:/maven/bin:/usr/bin:/bin \
         -v "${HOME}/.m2:/tmp/.m2:ro" \
         -v "${concolic_maven_dir}:/maven:ro" \
+        -v "${concolic_maven_java_lib_dir}:/java:ro" \
+        -v "${concolic_maven_etc_dir}:/etc/maven:ro" \
         -v "${concolic_openjdk_dir}:/openjdk:ro" \
-        -v "${causynth_repo}:/hadoop" \
+        -v "${hadoop_repo_mount}" \
+        ${isolated_target_mount[@]+"${isolated_target_mount[@]}"} \
         -v "${concolic_classes_path}:/hadoop/hadoop-hdfs-project/hadoop-hdfs/target/classes:ro" \
         ${test_classes_mount[@]+"${test_classes_mount[@]}"} \
         -v "${gc_dir}:/graphchecker" \
         -w /hadoop/hadoop-hdfs-project/hadoop-hdfs \
         "${concolic_docker_image}" \
-        mvn -o \
+        "${concolic_maven_command:-mvn}" -o \
         -Dmaven.repo.local=/tmp/.m2/repository \
         surefire:test \
         -Dtest="${surefire_test_selector}" \
@@ -879,6 +1050,7 @@ do_replay_concolic() {
         -Dcausynth.concolic.activation.plan="${plan_in_container}" \
         -Dcausynth.concolic.activation.id="${activation_id}" \
         -Dcausynth.concolic.results="${result_in_container}" \
+        ${isolated_test_properties[@]+"${isolated_test_properties[@]}"} \
         ${discovery_properties[@]+"${discovery_properties[@]}"} \
         -DargLine="${arg_line}" \
         -Dmaven-surefire-plugin.argLine="${arg_line}" || replay_status=$?
@@ -1038,20 +1210,640 @@ do_replay_concolic() {
 do_import_concolic() {
     local activation_plan="${1:-}"
     local results="${2:-}"
+    local regions="${3:-${causynth_output_dir}/symbolic_regions.jsonl}"
+    local expected_regions_sha256="${4:-}"
     if [[ ! -f "${activation_plan}" || ! -f "${results}" ]]; then
-        echo "[ERROR] Usage: import-concolic <scheduled-plan> <raw-results>"
-        exit 1
+        echo "[ERROR] Usage: import-concolic <scheduled-plan> <raw-results> [regions] [regions-sha256]"
+        return 1
     fi
-    local output_dir
+    if [[ ! -s "${regions}" ]]; then
+        echo "[ERROR] Concolic import region catalog is missing or empty: ${regions}" >&2
+        return 1
+    fi
+    regions=$(realpath "${regions}")
+    local output_dir actual_regions_sha256
+    actual_regions_sha256=$(shasum -a 256 "${regions}" | awk '{print $1}')
+    if [[ -n "${expected_regions_sha256}" \
+            && "${actual_regions_sha256}" != "${expected_regions_sha256}" ]]; then
+        echo "[ERROR] Concolic import region catalog changed after batch preflight" >&2
+        echo "[ERROR] Expected: ${expected_regions_sha256}" >&2
+        echo "[ERROR] Actual:   ${actual_regions_sha256}" >&2
+        return 1
+    fi
     output_dir=$(dirname "$(realpath "${results}")")
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
         --results "${results}" \
         --activation-plan "${activation_plan}" \
-        --regions "${causynth_output_dir}/symbolic_regions.jsonl" \
+        --regions "${regions}" \
         --output "${output_dir}/concolic_region_summaries.jsonl" \
         --diagnostics "${output_dir}/concolic_import_diagnostics.jsonl" \
         --cache-dir "${output_dir}/concolic-summary-cache"
+}
+
+batch_paths_overlap() {
+    local left=$1 right=$2
+    [[ "${left}" == "${right}" \
+        || "${left}" == "${right}/"* \
+        || "${right}" == "${left}/"* ]]
+}
+
+verify_batch_schedule_binding() {
+    local plan=$1 regions=$2 regions_sha256=$3 provenance=$4
+    local expected_plan_sha256="${5:-}" expected_provenance_sha256="${6:-}"
+    local actual_plan_sha256 actual_provenance_sha256
+    if [[ ! -s "${plan}" || ! -s "${regions}" \
+            || ! -s "${provenance}" || -L "${provenance}" ]]; then
+        echo "[ERROR] Batch schedule binding input is missing or invalid: ${provenance}" >&2
+        return 1
+    fi
+    actual_plan_sha256=$(shasum -a 256 "${plan}" | awk '{print $1}')
+    actual_provenance_sha256=$(shasum -a 256 "${provenance}" | awk '{print $1}')
+    if [[ -n "${expected_plan_sha256}" \
+            && "${actual_plan_sha256}" != "${expected_plan_sha256}" ]]; then
+        echo "[ERROR] Batch scheduled activation plan changed after preflight" >&2
+        return 1
+    fi
+    if [[ -n "${expected_provenance_sha256}" \
+            && "${actual_provenance_sha256}" != "${expected_provenance_sha256}" ]]; then
+        echo "[ERROR] Batch schedule provenance changed after preflight" >&2
+        return 1
+    fi
+    if ! jq -e --arg plan "${plan}" \
+            --arg planSha256 "${actual_plan_sha256}" \
+            --arg regions "${regions}" --arg regionsSha256 "${regions_sha256}" '
+            .complete == true
+            and .scheduledActivationPlan == $plan
+            and .scheduledActivationPlanSha256 == $planSha256
+            and .regions == $regions
+            and .regionsSha256 == $regionsSha256' \
+            "${provenance}" >/dev/null; then
+        echo "[ERROR] Batch plan/region catalog is not bound by schedule provenance: ${provenance}" >&2
+        return 1
+    fi
+}
+
+batch_ownership_marker() {
+    local spec=$1
+    printf '%s/.causynth-hdfs-concolic-batch-owner.json\n' \
+        "$(jq -r '.outputDir' "${spec}")"
+}
+
+ensure_batch_job_ownership() {
+    local spec=$1 marker temporary output_dir path
+    output_dir=$(jq -r '.outputDir' "${spec}")
+    marker=$(batch_ownership_marker "${spec}")
+    if [[ -L "${marker}" ]]; then
+        echo "[ERROR] Batch ownership marker must not be a symbolic link: ${marker}" >&2
+        return 1
+    fi
+    if [[ -f "${marker}" ]]; then
+        if ! jq -e --slurpfile expected "${spec}" '
+                .schemaVersion == 1
+                and .kind == "HDFS_CONCOLIC_BATCH_OWNERSHIP"
+                and .job == ($expected[0] | {
+                    jobId, outputDir, classesDir, staticOutputDir,
+                    hadoopTargetDir, workDir})' "${marker}" >/dev/null; then
+            echo "[ERROR] Batch ownership marker does not match job paths: ${marker}" >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [[ -e "${marker}" || -L "${marker}" ]]; then
+        echo "[ERROR] Batch ownership marker is not a regular file: ${marker}" >&2
+        return 1
+    fi
+    for path in \
+            "$(jq -r '.classesDir' "${spec}")" \
+            "$(jq -r '.staticOutputDir' "${spec}")" \
+            "$(jq -r '.hadoopTargetDir' "${spec}")" \
+            "$(jq -r '.workDir' "${spec}")" \
+            "${output_dir}/concolic_region_results.jsonl" \
+            "${output_dir}/concolic_region_summaries.jsonl" \
+            "${output_dir}/concolic_import_diagnostics.jsonl" \
+            "${output_dir}/concolic_runtime_provenance.json" \
+            "${output_dir}/concolic-summary-cache"; do
+        if [[ -e "${path}" || -L "${path}" ]]; then
+            echo "[ERROR] Refusing to claim pre-existing unowned batch artifact: ${path}" >&2
+            return 1
+        fi
+    done
+    temporary="${marker}.tmp.$$"
+    if ! jq -n --slurpfile expected "${spec}" '
+        {schemaVersion:1, kind:"HDFS_CONCOLIC_BATCH_OWNERSHIP",
+         job:($expected[0] | {
+            jobId, outputDir, classesDir, staticOutputDir,
+            hadoopTargetDir, workDir})}' > "${temporary}"; then
+        rm -f -- "${temporary}"
+        return 1
+    fi
+    mv "${temporary}" "${marker}" || return $?
+}
+
+reset_batch_job_paths() {
+    local spec=$1 path work_dir
+    ensure_batch_job_ownership "${spec}" || return $?
+    for path in \
+            "$(jq -r '.classesDir' "${spec}")" \
+            "$(jq -r '.staticOutputDir' "${spec}")" \
+            "$(jq -r '.hadoopTargetDir' "${spec}")" \
+            "$(jq -r '.workDir' "${spec}")"; do
+        require_no_symlink_components "batch-owned reset path" "${path}" \
+            || return $?
+        if [[ -e "${path}" ]]; then
+            rm -rf -- "${path}" || return $?
+        fi
+    done
+    rm -f -- \
+        "$(jq -r '.outputDir' "${spec}")/concolic_region_results.jsonl" \
+        "$(jq -r '.outputDir' "${spec}")/concolic_region_summaries.jsonl" \
+        "$(jq -r '.outputDir' "${spec}")/concolic_import_diagnostics.jsonl" \
+        "$(jq -r '.outputDir' "${spec}")/concolic_runtime_provenance.json" \
+        || return $?
+    rm -rf -- \
+        "$(jq -r '.outputDir' "${spec}")/concolic-summary-cache" \
+        || return $?
+    work_dir=$(jq -r '.workDir' "${spec}")
+    mkdir -p "${work_dir}"
+}
+
+prepare_batch_hdfs_target() {
+    local spec=$1 base_target target_dir output_dir copy_binary mode
+    local staging_dir
+    base_target="${CAUSYNTH_HDFS_CONCOLIC_BASE_TARGET:-${causynth_hdfs_concolic_base_target:-${hdfs_dir}/target}}"
+    if [[ ! -d "${base_target}" ]]; then
+        echo "[ERROR] Configured base HDFS target is missing: ${base_target}" >&2
+        return 1
+    fi
+    base_target=$(realpath "${base_target}")
+    target_dir=$(jq -r '.hadoopTargetDir' "${spec}")
+    output_dir=$(jq -r '.outputDir' "${spec}")
+    case "${target_dir}" in
+        "${output_dir}"/*) ;;
+        *)
+            echo "[ERROR] Batch HDFS target must be owned by its output directory: ${target_dir}" >&2
+            return 1
+            ;;
+    esac
+    require_no_symlink_components "batch HDFS target snapshot" "${target_dir}" \
+        || return $?
+    copy_binary=$(configured_tool_path \
+        "${CAUSYNTH_SNAPSHOT_COPY_BIN:-${snapshot_copy_bin:-cp}}") \
+        || return $?
+    mode="${CAUSYNTH_HDFS_TARGET_SNAPSHOT_MODE:-${causynth_hdfs_target_snapshot_mode:-auto}}"
+    case "${mode}" in
+        auto|always|copy) ;;
+        *)
+            echo "[ERROR] Unsupported HDFS target snapshot mode: ${mode}" >&2
+            return 1
+            ;;
+    esac
+
+    # A replay must never inherit Surefire/MiniDFSCluster writes from an
+    # earlier attempt.  Both paths are statically proven children of the
+    # manifest-owned output directory before this bounded cleanup.
+    if [[ -e "${target_dir}" ]]; then
+        rm -rf -- "${target_dir}" || return $?
+    fi
+    mkdir -p "$(dirname "${target_dir}")" || return $?
+    staging_dir=$(mktemp -d "${target_dir}.tmp.XXXXXX") || return $?
+    local copy_status=0
+    case "${mode}" in
+        auto)
+            "${copy_binary}" -a --reflink=auto \
+                "${base_target}/." "${staging_dir}/" || copy_status=$?
+            ;;
+        always)
+            "${copy_binary}" -a --reflink=always \
+                "${base_target}/." "${staging_dir}/" || copy_status=$?
+            ;;
+        copy)
+            "${copy_binary}" -a \
+                "${base_target}/." "${staging_dir}/" || copy_status=$?
+            ;;
+    esac
+    if [[ "${copy_status}" -ne 0 ]]; then
+        rm -rf -- "${staging_dir}"
+        return "${copy_status}"
+    fi
+    rm -rf -- "${staging_dir}/surefire-reports" \
+        "${staging_dir}/test-dir" "${staging_dir}/test-logs" \
+        "${staging_dir}/log" || return $?
+    mv "${staging_dir}" "${target_dir}" || return $?
+}
+
+run_concolic_batch_job() {
+    local spec=$1 plan activation classes_dir static_dir output_dir
+    local target_dir work_dir test_name fixture_worker step_status
+    output_dir=$(jq -r '.outputDir' "${spec}")
+    reset_batch_job_paths "${spec}" || return $?
+    if [[ "${CAUSYNTH_HDFS_CONCOLIC_BATCH_FIXTURE_MODE:-false}" == "true" ]]; then
+        fixture_worker="${CAUSYNTH_HDFS_CONCOLIC_BATCH_FIXTURE_WORKER:-}"
+        if [[ -z "${fixture_worker}" || ! -x "${fixture_worker}" ]]; then
+            echo "[ERROR] Batch fixture mode requires an executable fixture worker" >&2
+            return 1
+        fi
+        CAUSYNTH_CAMPAIGN_DISCOVERED_ACTIVATIONS= \
+        CAUSYNTH_CAMPAIGN_DISCOVERED_EDGES= \
+        CAUSYNTH_SUREFIRE_TEST_SELECTOR= \
+        CAUSYNTH_TEST_CLASSES_OVERLAY= \
+            "${fixture_worker}" "${spec}" || return $?
+        if [[ ! -s "${output_dir}/concolic_region_results.jsonl" ]]; then
+            echo "[ERROR] Batch fixture produced no region result: ${output_dir}" >&2
+            return 88
+        fi
+        return
+    fi
+
+    plan=$(jq -r '.plan' "${spec}")
+    activation=$(jq -r '.activationId' "${spec}")
+    classes_dir=$(jq -r '.classesDir' "${spec}")
+    static_dir=$(jq -r '.staticOutputDir' "${spec}")
+    target_dir=$(jq -r '.hadoopTargetDir' "${spec}")
+    work_dir=$(jq -r '.workDir' "${spec}")
+    test_name=$(jq -r '.test' "${spec}")
+
+    CAUSYNTH_CAMPAIGN_DISCOVERED_ACTIVATIONS= \
+    CAUSYNTH_CAMPAIGN_DISCOVERED_EDGES= \
+    CAUSYNTH_SUREFIRE_TEST_SELECTOR= \
+    CAUSYNTH_TEST_CLASSES_OVERLAY= \
+    CAUSYNTH_CONCOLIC_CLASSES_PATH="${classes_dir}" \
+    CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR="${static_dir}" \
+        "${script_dir}/run_hdfs.sh" process-concolic \
+            "${plan}" "${activation}" \
+        || { step_status=$?; return "${step_status}"; }
+    prepare_batch_hdfs_target "${spec}" \
+        || { step_status=$?; return "${step_status}"; }
+    CAUSYNTH_CAMPAIGN_DISCOVERED_ACTIVATIONS= \
+    CAUSYNTH_CAMPAIGN_DISCOVERED_EDGES= \
+    CAUSYNTH_SUREFIRE_TEST_SELECTOR= \
+    CAUSYNTH_TEST_CLASSES_OVERLAY= \
+    CAUSYNTH_CONCOLIC_CLASSES_PATH="${classes_dir}" \
+    CAUSYNTH_REPLAY_HDFS_TARGET_DIR="${target_dir}" \
+    CAUSYNTH_REPLAY_WORK_DIR="${work_dir}" \
+        "${script_dir}/run_hdfs.sh" replay-concolic \
+            "${plan}" "${activation}" "${test_name}" \
+        || { step_status=$?; return "${step_status}"; }
+    if [[ ! -s "${output_dir}/concolic_region_results.jsonl" ]]; then
+        echo "[ERROR] Batch replay produced no region result: ${output_dir}" >&2
+        return 88
+    fi
+}
+
+run_concolic_batch_job_with_status() {
+    local spec=$1 status_file=$2 start_time finish_time result_file
+    local status=0 temporary_status
+    start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if run_concolic_batch_job "${spec}"; then
+        status=0
+    else
+        status=$?
+    fi
+    finish_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    result_file="$(jq -r '.outputDir' "${spec}")/concolic_region_results.jsonl"
+    temporary_status="${status_file}.tmp.$$"
+    jq -n --slurpfile job "${spec}" \
+        --arg startedAt "${start_time}" --arg finishedAt "${finish_time}" \
+        --arg result "${result_file}" --argjson workerStatus "${status}" \
+        '{schemaVersion:1, kind:"HDFS_CONCOLIC_BATCH_JOB_STATUS",
+          job:$job[0], startedAt:$startedAt, finishedAt:$finishedAt,
+          result:$result, workerStatus:$workerStatus, importStatus:null,
+          complete:false}' > "${temporary_status}"
+    mv "${temporary_status}" "${status_file}"
+    return "${status}"
+}
+
+write_concolic_batch_summary() {
+    local manifest=$1 run_dir=$2 parallelism=$3
+    shift 3
+    local -a statuses=("$@")
+    local summary="${run_dir}/batch_summary.json" temporary
+    temporary="${summary}.tmp.$$"
+    jq -s --arg manifest "${manifest}" --arg runDirectory "${run_dir}" \
+        --argjson parallelism "${parallelism}" \
+        '{schemaVersion:1, kind:"HDFS_CONCOLIC_BATCH_STATUS",
+          manifest:$manifest, runDirectory:$runDirectory,
+          parallelism:$parallelism, jobs:.,
+          workerFailureCount:([.[] | select(.workerStatus != 0)] | length),
+          importFailureCount:([.[] | select(.importStatus != null
+              and .importStatus != 0)] | length),
+          complete:(length > 0 and all(.[];
+              .workerStatus == 0 and .importStatus == 0
+              and .complete == true))}' \
+        "${statuses[@]}" > "${temporary}"
+    mv "${temporary}" "${summary}"
+    echo "[Concolic batch] status: ${summary}"
+}
+
+do_replay_concolic_batch() {
+    local manifest="${1:-}" parallelism status_base run_dir row
+    local job_id plan activation output_dir classes_dir static_dir target_dir
+    local work_dir test_name regions regions_sha256 actual_regions_sha256
+    local schedule_provenance plan_sha256 schedule_provenance_sha256
+    local base_target batch_workload_test candidate existing readonly
+    local spec status_file index=0 worker_failed=0
+    local finished_pid import_failed=0 result temporary_status status
+    local -a specs=() statuses=() all_writable_paths=()
+    local -a read_only_inputs=() current_writable=() current_children=()
+    local -A active_pids=()
+
+    require_nonempty_input "HDFS concolic batch manifest" "${manifest}"
+    manifest=$(realpath "${manifest}")
+    require_workspace_output_path "HDFS concolic batch manifest" "${manifest}"
+    read_only_inputs=("${manifest}")
+    parallelism="${CAUSYNTH_HDFS_CONCOLIC_PARALLELISM:-${causynth_hdfs_concolic_parallelism:-1}}"
+    if [[ ! "${parallelism}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "[ERROR] HDFS concolic parallelism must be a positive integer: ${parallelism}" >&2
+        return 1
+    fi
+    batch_workload_test="${configured_causynth_workload_test}"
+    if ! jq -e -s --arg workload "${batch_workload_test}" '
+            length > 0
+            and all(.[];
+              type == "object"
+              and ((keys_unsorted - ["schemaVersion", "jobId", "plan",
+                    "activationId", "classesDir", "staticOutputDir",
+                    "outputDir", "hadoopTargetDir", "workDir", "test",
+                    "regions", "regionsSha256"])
+                   | length) == 0
+              and .schemaVersion == 2
+              and (.jobId | type == "string"
+                   and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+              and (.plan | type == "string" and startswith("/")
+                   and (test("[[:space:]]") | not))
+              and (.activationId | type == "string" and length > 0
+                   and (test("[[:space:]]") | not))
+              and (.regions | type == "string" and startswith("/")
+                   and (test("[[:space:]]") | not))
+              and (.regionsSha256 | type == "string"
+                   and test("^[0-9a-f]{64}$"))
+              and (.classesDir | type == "string" and startswith("/")
+                   and (test("[[:space:]]") | not))
+              and (.staticOutputDir | type == "string" and startswith("/")
+                   and (test("[[:space:]]") | not))
+              and (.outputDir | type == "string" and startswith("/")
+                   and (test("[[:space:]]") | not))
+              and ((has("hadoopTargetDir") | not)
+                   or (.hadoopTargetDir | type == "string"
+                       and startswith("/")
+                       and (test("[[:space:]]") | not)))
+              and ((has("workDir") | not)
+                   or (.workDir | type == "string" and startswith("/")
+                       and (test("[[:space:]]") | not)))
+              and ((.test // $workload) == $workload))
+            and ([.[].jobId] | unique | length) == length' \
+            "${manifest}" >/dev/null; then
+        echo "[ERROR] Invalid HDFS concolic batch manifest schema or workload" >&2
+        return 1
+    fi
+
+    status_base="${CAUSYNTH_HDFS_CONCOLIC_BATCH_STATUS_DIR:-${causynth_output_dir}/${causynth_hdfs_concolic_batch_status_subdir:-concolic-batch-status}}"
+    status_base=$(realpath -m "${status_base}")
+    require_workspace_output_path "HDFS concolic batch status directory" \
+        "${status_base}"
+    base_target="${CAUSYNTH_HDFS_CONCOLIC_BASE_TARGET:-${causynth_hdfs_concolic_base_target:-${hdfs_dir}/target}}"
+    if [[ ! -d "${base_target}" ]]; then
+        echo "[ERROR] Configured base HDFS target is missing: ${base_target}" >&2
+        return 1
+    fi
+    base_target=$(realpath "${base_target}")
+    if batch_paths_overlap "${status_base}" "${base_target}"; then
+        echo "[ERROR] Batch status directory overlaps the base HDFS target" >&2
+        return 1
+    fi
+    mkdir -p "${status_base}"
+    run_dir=$(mktemp -d "${status_base}/run.XXXXXX")
+    mkdir -p "${run_dir}/specs" "${run_dir}/jobs"
+
+    while IFS= read -r row; do
+        job_id=$(jq -r '.jobId' <<< "${row}")
+        plan=$(realpath -m "$(jq -r '.plan' <<< "${row}")")
+        activation=$(jq -r '.activationId' <<< "${row}")
+        output_dir=$(realpath -m "$(jq -r '.outputDir' <<< "${row}")")
+        classes_dir=$(realpath -m "$(jq -r '.classesDir' <<< "${row}")")
+        static_dir=$(realpath -m "$(jq -r '.staticOutputDir' <<< "${row}")")
+        regions=$(realpath -m "$(jq -r '.regions' <<< "${row}")")
+        regions_sha256=$(jq -r '.regionsSha256' <<< "${row}")
+        schedule_provenance="${output_dir}/schedule_input_provenance.json"
+        target_dir=$(jq -r '.hadoopTargetDir // empty' <<< "${row}")
+        work_dir=$(jq -r '.workDir // empty' <<< "${row}")
+        test_name=$(jq -r --arg workload "${batch_workload_test}" \
+            '.test // $workload' <<< "${row}")
+        target_dir=$(realpath -m \
+            "${target_dir:-${output_dir}/hadoop-target-snapshot}")
+        work_dir=$(realpath -m "${work_dir:-${output_dir}/replay-work}")
+
+        if [[ ! -f "${plan}" || "$(dirname "${plan}")" != "${output_dir}" ]]; then
+            echo "[ERROR] Batch plan must exist directly in its explicit outputDir: ${plan}" >&2
+            return 1
+        fi
+        if [[ ! -s "${regions}" ]]; then
+            echo "[ERROR] Batch region catalog is missing or empty: ${regions}" >&2
+            return 1
+        fi
+        actual_regions_sha256=$(shasum -a 256 "${regions}" | awk '{print $1}')
+        if [[ "${actual_regions_sha256}" != "${regions_sha256}" ]]; then
+            echo "[ERROR] Batch region catalog SHA-256 mismatch: ${regions}" >&2
+            echo "[ERROR] Expected: ${regions_sha256}" >&2
+            echo "[ERROR] Actual:   ${actual_regions_sha256}" >&2
+            return 1
+        fi
+        verify_batch_schedule_binding "${plan}" "${regions}" \
+            "${regions_sha256}" "${schedule_provenance}"
+        plan_sha256=$(shasum -a 256 "${plan}" | awk '{print $1}')
+        schedule_provenance_sha256=$(shasum -a 256 \
+            "${schedule_provenance}" | awk '{print $1}')
+        require_workspace_output_path "batch output directory" "${output_dir}"
+        require_workspace_output_path "batch region catalog" "${regions}"
+        require_workspace_output_path "batch schedule provenance" \
+            "${schedule_provenance}"
+        for row in "${classes_dir}" "${static_dir}" "${target_dir}" \
+                "${work_dir}"; do
+            require_workspace_output_path "batch job-owned path" "${row}"
+            case "${row}" in
+                "${output_dir}"/*) ;;
+                *)
+                    echo "[ERROR] Batch job path escapes outputDir: ${row}" >&2
+                    return 1
+                    ;;
+            esac
+        done
+        if batch_paths_overlap "${classes_dir}" "${static_dir}" \
+                || batch_paths_overlap "${classes_dir}" "${target_dir}" \
+                || batch_paths_overlap "${classes_dir}" "${work_dir}" \
+                || batch_paths_overlap "${static_dir}" "${target_dir}" \
+                || batch_paths_overlap "${static_dir}" "${work_dir}" \
+                || batch_paths_overlap "${target_dir}" "${work_dir}"; then
+            echo "[ERROR] Batch classes/static/target/work paths must not overlap: ${job_id}" >&2
+            return 1
+        fi
+        current_writable=("${output_dir}" "${classes_dir}" "${static_dir}"
+            "${target_dir}" "${work_dir}")
+        current_children=("${classes_dir}" "${static_dir}" "${target_dir}"
+            "${work_dir}")
+        for candidate in "${current_writable[@]}"; do
+            if batch_paths_overlap "${candidate}" "${status_base}" \
+                    || batch_paths_overlap "${candidate}" "${base_target}"; then
+                echo "[ERROR] Batch writable path overlaps status/base target: ${candidate}" >&2
+                return 1
+            fi
+            for existing in "${all_writable_paths[@]}"; do
+                if batch_paths_overlap "${candidate}" "${existing}"; then
+                    echo "[ERROR] Batch jobs have nested or cross-role writable paths: ${candidate} <> ${existing}" >&2
+                    return 1
+                fi
+            done
+            for readonly in "${read_only_inputs[@]}"; do
+                if batch_paths_overlap "${candidate}" "${readonly}"; then
+                    echo "[ERROR] Batch writable path overlaps another job input: ${candidate} <> ${readonly}" >&2
+                    return 1
+                fi
+            done
+        done
+        for readonly in "${plan}" "${regions}" "${schedule_provenance}"; do
+            for candidate in "${current_children[@]}"; do
+                if batch_paths_overlap "${readonly}" "${candidate}"; then
+                    echo "[ERROR] Batch reset path overlaps plan/region input: ${candidate} <> ${readonly}" >&2
+                    return 1
+                fi
+            done
+            for existing in "${all_writable_paths[@]}"; do
+                if batch_paths_overlap "${readonly}" "${existing}"; then
+                    echo "[ERROR] Batch input overlaps another job writable path: ${readonly} <> ${existing}" >&2
+                    return 1
+                fi
+            done
+        done
+        for readonly in "${plan}" "${regions}" "${schedule_provenance}"; do
+            for candidate in \
+                    "${output_dir}/concolic_region_results.jsonl" \
+                    "${output_dir}/concolic_region_summaries.jsonl" \
+                    "${output_dir}/concolic_import_diagnostics.jsonl" \
+                    "${output_dir}/runtime_provenance.json" \
+                    "${output_dir}/.causynth-hdfs-concolic-batch-owner.json"; do
+                if [[ "${readonly}" == "${candidate}" ]]; then
+                    echo "[ERROR] Batch input collides with a reset/output artifact: ${readonly}" >&2
+                    return 1
+                fi
+            done
+        done
+        all_writable_paths+=("${current_writable[@]}")
+        read_only_inputs+=("${plan}" "${regions}" "${schedule_provenance}")
+        spec=$(printf '%s/%04d-%s.json' "${run_dir}/specs" \
+            "${index}" "${job_id}")
+        jq -n --arg jobId "${job_id}" --arg plan "${plan}" \
+            --arg activationId "${activation}" --arg outputDir "${output_dir}" \
+            --arg classesDir "${classes_dir}" --arg staticOutputDir "${static_dir}" \
+            --arg hadoopTargetDir "${target_dir}" --arg workDir "${work_dir}" \
+            --arg test "${test_name}" --arg regions "${regions}" \
+            --arg regionsSha256 "${regions_sha256}" \
+            --arg planSha256 "${plan_sha256}" \
+            --arg scheduleProvenance "${schedule_provenance}" \
+            --arg scheduleProvenanceSha256 \
+                "${schedule_provenance_sha256}" \
+            '{schemaVersion:2, jobId:$jobId, plan:$plan,
+              activationId:$activationId, outputDir:$outputDir,
+              classesDir:$classesDir, staticOutputDir:$staticOutputDir,
+              hadoopTargetDir:$hadoopTargetDir, workDir:$workDir, test:$test,
+              regions:$regions, regionsSha256:$regionsSha256,
+              planSha256:$planSha256,
+              scheduleProvenance:$scheduleProvenance,
+              scheduleProvenanceSha256:$scheduleProvenanceSha256}' \
+            > "${spec}"
+        status_file=$(printf '%s/%04d-%s.json' "${run_dir}/jobs" \
+            "${index}" "${job_id}")
+        specs+=("${spec}")
+        statuses+=("${status_file}")
+        index=$((index + 1))
+    done < <(jq -c '.' "${manifest}")
+
+    # Keep the pool full: as soon as any custom-JDK process finishes, the next
+    # activation starts.  Job-owned mounts make completion order irrelevant.
+    for index in "${!specs[@]}"; do
+        run_concolic_batch_job_with_status "${specs[${index}]}" \
+            "${statuses[${index}]}" &
+        active_pids[$!]="${index}"
+        if [[ "${#active_pids[@]}" -ge "${parallelism}" ]]; then
+            if wait -n -p finished_pid "${!active_pids[@]}"; then
+                :
+            else
+                worker_failed=1
+            fi
+            unset 'active_pids['"${finished_pid}"']'
+        fi
+    done
+    while [[ "${#active_pids[@]}" -gt 0 ]]; do
+        if wait -n -p finished_pid "${!active_pids[@]}"; then
+            :
+        else
+            worker_failed=1
+        fi
+        unset 'active_pids['"${finished_pid}"']'
+    done
+    for index in "${!statuses[@]}"; do
+        status_file="${statuses[${index}]}"
+        if [[ ! -s "${status_file}" ]]; then
+            jq -n --slurpfile job "${specs[${index}]}" \
+                '{schemaVersion:1, kind:"HDFS_CONCOLIC_BATCH_JOB_STATUS",
+                  job:$job[0], startedAt:null, finishedAt:null,
+                  result:($job[0].outputDir + "/concolic_region_results.jsonl"),
+                  workerStatus:90, importStatus:null, complete:false}' \
+                > "${status_file}"
+        fi
+        if [[ ! -s "${status_file}" ]] \
+                || ! jq -e '.workerStatus == 0' "${status_file}" >/dev/null; then
+            worker_failed=1
+        fi
+    done
+    if [[ "${worker_failed}" -ne 0 ]]; then
+        write_concolic_batch_summary "${manifest}" "${run_dir}" \
+            "${parallelism}" "${statuses[@]}"
+        echo "[ERROR] At least one batch replay failed; import phase was not started" >&2
+        return 1
+    fi
+
+    # Import is deliberately a barrier phase.  No partial set of concrete
+    # runs can be mistaken for a completed symbolic-summary generation.
+    for index in "${!specs[@]}"; do
+        plan=$(jq -r '.plan' "${specs[${index}]}")
+        output_dir=$(jq -r '.outputDir' "${specs[${index}]}")
+        regions=$(jq -r '.regions' "${specs[${index}]}")
+        regions_sha256=$(jq -r '.regionsSha256' "${specs[${index}]}")
+        plan_sha256=$(jq -r '.planSha256' "${specs[${index}]}")
+        schedule_provenance=$(jq -r '.scheduleProvenance' \
+            "${specs[${index}]}")
+        schedule_provenance_sha256=$(jq -r \
+            '.scheduleProvenanceSha256' "${specs[${index}]}")
+        result="${output_dir}/concolic_region_results.jsonl"
+        rm -f -- "${output_dir}/concolic_region_summaries.jsonl" \
+            "${output_dir}/concolic_import_diagnostics.jsonl"
+        rm -rf -- "${output_dir}/concolic-summary-cache"
+        if verify_batch_schedule_binding "${plan}" "${regions}" \
+                "${regions_sha256}" "${schedule_provenance}" \
+                "${plan_sha256}" "${schedule_provenance_sha256}" \
+                && do_import_concolic "${plan}" "${result}" \
+                "${regions}" "${regions_sha256}" \
+                && [[ -s "${output_dir}/concolic_region_summaries.jsonl" ]]; then
+            status=0
+        else
+            status=$?
+            [[ "${status}" -ne 0 ]] || status=89
+            import_failed=1
+        fi
+        status_file="${statuses[${index}]}"
+        temporary_status="${status_file}.tmp.$$"
+        jq --argjson importStatus "${status}" \
+            '.importStatus=$importStatus
+             | .complete=(.workerStatus == 0 and $importStatus == 0)' \
+            "${status_file}" > "${temporary_status}"
+        mv "${temporary_status}" "${status_file}"
+    done
+    write_concolic_batch_summary "${manifest}" "${run_dir}" \
+        "${parallelism}" "${statuses[@]}"
+    if [[ "${import_failed}" -ne 0 ]]; then
+        echo "[ERROR] At least one batch import failed" >&2
+        return 1
+    fi
 }
 
 do_campaign_capture() {
@@ -1101,7 +1893,7 @@ do_campaign_concolic() {
         --static-graph "${handoff_static_graph:-${causynth_output_dir}/static_dataflow_edges.jsonl}"
         --roots "${target_branch_queries}"
         --output-dir "${campaign_dir}"
-        --z3 "$(command -v z3)"
+        --z3 "$(configured_tool_path "${z3_bin}")"
         --runtime-discovery-mode \
             "${CAUSYNTH_CAMPAIGN_RUNTIME_DISCOVERY_MODE:-SAME_EXECUTION_REQUIRED}"
         --execution-timeout-ms "${CAUSYNTH_CAMPAIGN_EXECUTION_TIMEOUT_MS:-1200000}"
@@ -1160,7 +1952,7 @@ do_campaign_concolic() {
         done < <(find "${campaign_dir}/executions" -type f \
             -name activation_plan.jsonl -size +0c 2>/dev/null | sort)
     fi
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicCampaignRunner \
         "${args[@]}" -- "${script_dir}/run_hdfs.sh" campaign-capture "${test_name}"
     echo "[Concolic] campaign manifest: ${campaign_dir}/concolic_campaign_manifest.json"
@@ -1184,6 +1976,13 @@ do_hdfs_port_map() {
     verify_hadoop_source
     local test_name="${1:-${causynth_workload_test}}"
     local trace_dir schedule_dir mapping_dir port_map contracts
+    local -a scope_args=(
+        --scope-repository "${causynth_repo}"
+        --scope-commit "${causynth_expected_hadoop_commit}"
+        --scope-workload "${causynth_workload_test}"
+        --scope-patch "${causynth_hadoop_experiment_patch}"
+        --scope-source-sha256 "${causynth_hadoop_pinned_source_sha256}"
+    )
     resolve_target_context "${test_name}"
     trace_dir="${target_trace_dir}"
     schedule_dir="${target_schedule_dir}"
@@ -1194,16 +1993,18 @@ do_hdfs_port_map() {
     port_map="${mapping_dir}/hdfs_region_port_map.json"
     contracts="${mapping_dir}/hdfs_explicit_contracts.json"
 
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.causynth.HdfsRegionPortMapper \
         --regions "${causynth_output_dir}/symbolic_regions.jsonl" \
         --runtime-report "${trace_dir}/runtime_region_summary.json" \
         --fatal-query "${schedule_dir}/branch_queries.jsonl" \
         --merge-plan "${schedule_dir}/symbolic_merge_plan.json" \
-        --output "${port_map}"
-    java -cp "${gc_jar}" \
+        --output "${port_map}" \
+        "${scope_args[@]}"
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.causynth.HdfsExplicitContracts \
-        --output "${contracts}"
+        --output "${contracts}" \
+        "${scope_args[@]}"
     echo "[Concolic] mapping-only HDFS port map: ${port_map}"
     echo "[Concolic] excluded explicit contracts: ${contracts}"
 }
@@ -2789,7 +3590,7 @@ derive_producer_groups_resolved() {
         "${target_activation_plan}"
     require_nonempty_input "exact fatal query" "${target_branch_queries}"
     require_nonempty_input "GraphChecker jar" "${gc_jar}"
-    z3_binary=$(command -v z3 || true)
+    z3_binary=$(configured_tool_path "${z3_bin}" || true)
     if [[ -z "${z3_binary}" || ! -x "${z3_binary}" ]]; then
         echo "[ERROR] z3 executable is unavailable" >&2
         return 1
@@ -2804,7 +3605,7 @@ derive_producer_groups_resolved() {
         "${producer_witnesses}"
     require_absent_output "enriched producer summaries" \
         "${producer_enriched_output}"
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicProducerGroupPlanner \
         --composition-manifest "${composition_manifest}" \
         --smt "${composed_smt}" \
@@ -2886,7 +3687,7 @@ discover_composition_scope() {
     discovery_relationships="${discovery_dir}/relationship_candidates.json"
     prepare_fresh_output_directory "composition scope-discovery output" \
         "${discovery_dir}"
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
         --fatal-query "${target_branch_queries}" \
         --summaries "${target_summary}" \
@@ -2995,7 +3796,7 @@ do_compose_smt() {
     prepare_fresh_output_directory "composition output directory" \
         "${composition_dir}"
 
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
         --fatal-query "${target_branch_queries}" \
         --summaries "${target_summary}" \
@@ -3026,7 +3827,7 @@ do_compose_smt() {
         echo "[ERROR] Composer did not produce one complete SMT bounded to the exact producer regions and fatal target" >&2
         return 1
     fi
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.SymbolicRelationshipVerifier \
         --smt "${composed_smt}" \
         --candidates "${relationship_candidates}" \
@@ -3051,7 +3852,7 @@ do_verify_relationships() {
     require_nonempty_input "GraphChecker jar" "${gc_jar}"
     proof_output="${CAUSYNTH_RELATIONSHIP_PROOFS_OUTPUT:-${composition_dir}/symbolic_relationship_proofs.recheck.json}"
     require_absent_output "relationship proof output" "${proof_output}"
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.SymbolicRelationshipVerifier \
         --smt "${composed_smt}" \
         --candidates "${relationship_candidates}" \
@@ -3097,7 +3898,7 @@ do_project_composed_model() {
     require_nonempty_input "projection summaries" "${projection_summaries}"
     require_nonempty_input "static dataflow graph" "${static_graph}"
     require_nonempty_input "GraphChecker jar" "${gc_jar}"
-    z3_binary=$(command -v z3 || true)
+    z3_binary=$(configured_tool_path "${z3_bin}" || true)
     if [[ -z "${z3_binary}" || ! -x "${z3_binary}" ]]; then
         echo "[ERROR] z3 executable is unavailable" >&2
         return 1
@@ -3119,7 +3920,7 @@ do_project_composed_model() {
     prepare_fresh_output_directory "natural replay output directory" \
         "${natural_dir}"
 
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicComposedModelProjector \
         --smt "${composed_smt}" \
         --composition-manifest "${composition_manifest}" \
@@ -3158,7 +3959,7 @@ do_validate_natural_replay() {
         "${projection_manifest}"
     require_nonempty_input "GraphChecker jar" "${gc_jar}"
     require_absent_output "natural replay validation" "${natural_validation}"
-    java -cp "${gc_jar}" \
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicNaturalReplayValidator \
         --plan "${natural_plan}" \
         --results "${natural_results}" \
@@ -3265,13 +4066,13 @@ do_test() {
     static_regions_sha=$(shasum -a 256 "${regions_file}" | awk '{print $1}')
     static_region_edges_sha=$(shasum -a 256 "${region_edges_file}" | awk '{print $1}')
     graphchecker_jar_sha256=$(shasum -a 256 "${gc_jar}" | awk '{print $1}')
-    local max_events="${CAUSYNTH_TRACE_MAX_EVENTS:-2000000}"
-    local max_graph_edges="${CAUSYNTH_TRACE_MAX_GRAPH_EDGES:-200000}"
-    local max_context_pairs="${CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE:-2000}"
+    local max_events="${CAUSYNTH_TRACE_MAX_EVENTS:-${causynth_trace_max_events:-2000000}}"
+    local max_graph_edges="${CAUSYNTH_TRACE_MAX_GRAPH_EDGES:-${causynth_trace_max_graph_edges:-200000}}"
+    local max_context_pairs="${CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE:-${causynth_trace_max_context_pairs_per_edge:-2000}}"
     local trace_arg_line="-Dcausynth.trace.output.dir=${trace_dir} -Dcausynth.static.graph=${static_graph_file} -Dcausynth.trace.test=${trace_test_name} -Dcausynth.trace.max.events=${max_events} -Dcausynth.trace.max.graph.edges=${max_graph_edges} -Dcausynth.trace.max.context.pairs.per.edge=${max_context_pairs} -Dcausynth.trace.streaming.only=true -Dcausynth.trace.aggregate.on.shutdown=false"
 
     cd "${hdfs_dir}"
-    mvn surefire:test \
+    "${hadoop_maven_bin}" surefire:test \
         ${test_arg} \
         ${isolated_test_data_args[@]+"${isolated_test_data_args[@]}"} \
         -DfailIfNoTests=false \
@@ -3372,7 +4173,7 @@ EOF
 
 do_restore() {
     verify_hadoop_source
-    mvn -f "${hdfs_dir}/pom.xml" clean compile -DskipTests
+    "${hadoop_maven_bin}" -f "${hdfs_dir}/pom.xml" clean compile -DskipTests
 }
 
 cmd="${1:-help}"
@@ -3390,6 +4191,9 @@ case "${cmd}" in
         ;;
     process|instrument)
         timing "process" do_process
+        ;;
+    verify-region-roots)
+        timing "verify-region-roots" verify_hdfs_region_roots "${1:-}"
         ;;
     test)
         timing "test" do_test "${1:-}"
@@ -3414,9 +4218,12 @@ case "${cmd}" in
         timing "replay-concolic" do_replay_concolic \
             "${1:-}" "${2:-}" "${3:-}"
         ;;
+    replay-concolic-batch)
+        timing "replay-concolic-batch" do_replay_concolic_batch "${1:-}"
+        ;;
     import-concolic)
         timing "import-concolic" do_import_concolic \
-            "${1:-}" "${2:-}"
+            "${1:-}" "${2:-}" "${3:-}" "${4:-}"
         ;;
     campaign-concolic)
         timing "campaign-concolic" do_campaign_concolic "${1:-}"

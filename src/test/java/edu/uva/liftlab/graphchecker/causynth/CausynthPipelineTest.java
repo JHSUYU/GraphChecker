@@ -71,6 +71,8 @@ public class CausynthPipelineTest {
     private String previousActivationPlan;
     private String previousActivationId;
     private String previousRuntimeCallEdges;
+    private String previousStaticMaxMethods;
+    private String previousStaticMaxEdges;
 
     @Before
     public void rememberSystemProperties() {
@@ -84,6 +86,10 @@ public class CausynthPipelineTest {
                 System.getProperty("causynth.concolic.activation.id");
         previousRuntimeCallEdges =
                 System.getProperty("causynth.runtime.call.edges");
+        previousStaticMaxMethods =
+                System.getProperty("causynth.static.max.methods");
+        previousStaticMaxEdges =
+                System.getProperty("causynth.static.max.edges");
     }
 
     @After
@@ -98,6 +104,10 @@ public class CausynthPipelineTest {
                 previousActivationId);
         restoreProperty("causynth.runtime.call.edges",
                 previousRuntimeCallEdges);
+        restoreProperty("causynth.static.max.methods",
+                previousStaticMaxMethods);
+        restoreProperty("causynth.static.max.edges",
+                previousStaticMaxEdges);
         G.reset();
     }
 
@@ -2185,6 +2195,200 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void interfaceCallSiteRecordsInvokeBaseInsteadOfCallerThis()
+            throws Exception {
+        G.reset();
+        System.setProperty("causynth.instrument.trace", "true");
+        System.setProperty("causynth.instrument.concolic", "false");
+
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+        SootClass string = new SootClass("java.lang.String",
+                Modifier.PUBLIC);
+        string.setSuperclass(object);
+        Scene.v().addClass(string);
+        Scene.v().addClass(new SootClass("java.lang.Throwable",
+                Modifier.PUBLIC));
+        installCombinedRuntimeStubs();
+
+        SootClass encryptionKey = new SootClass(
+                "org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey",
+                Modifier.PUBLIC);
+        encryptionKey.setSuperclass(object);
+        Scene.v().addClass(encryptionKey);
+
+        SootClass factory = new SootClass(
+                "org.apache.hadoop.hdfs.protocol.datatransfer.sasl."
+                        + "DataEncryptionKeyFactory",
+                Modifier.PUBLIC | Modifier.INTERFACE | Modifier.ABSTRACT);
+        Scene.v().addClass(factory);
+        SootMethod newEncryptionKey = new SootMethod(
+                "newDataEncryptionKey", Collections.emptyList(),
+                encryptionKey.getType(),
+                Modifier.PUBLIC | Modifier.ABSTRACT);
+        factory.addMethod(newEncryptionKey);
+
+        SootClass caller = new SootClass("example.BalancerCallSite",
+                Modifier.PUBLIC);
+        caller.setSuperclass(object);
+        Scene.v().addClass(caller);
+        caller.setApplicationClass();
+        SootMethod method = new SootMethod("requestEncryptionKey",
+                Collections.singletonList(factory.getType()),
+                encryptionKey.getType(), Modifier.PUBLIC);
+        caller.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local callerThis = Jimple.v().newLocal("callerThis",
+                caller.getType());
+        Local factoryReceiver = Jimple.v().newLocal("factoryReceiver",
+                factory.getType());
+        Local key = Jimple.v().newLocal("key", encryptionKey.getType());
+        body.getLocals().addAll(Arrays.asList(callerThis, factoryReceiver,
+                key));
+        body.getUnits().add(Jimple.v().newIdentityStmt(callerThis,
+                Jimple.v().newThisRef(caller.getType())));
+        body.getUnits().add(Jimple.v().newIdentityStmt(factoryReceiver,
+                Jimple.v().newParameterRef(factory.getType(), 0)));
+        AssignStmt interfaceCall = Jimple.v().newAssignStmt(key,
+                Jimple.v().newInterfaceInvokeExpr(factoryReceiver,
+                        newEncryptionKey.makeRef()));
+        body.getUnits().add(interfaceCall);
+        body.getUnits().add(Jimple.v().newReturnStmt(key));
+
+        Object result = newAnalysisResultWithRoot(method.getSignature());
+        addAnalysisRow(result, "traceMethods", Collections.<String, Object>
+                singletonMap("method", method.getSignature()));
+        addAnalysisRow(result, "symbolicPlan", Collections.<String, Object>
+                singletonMap("method", method.getSignature()));
+        Map<String, Object> callEdge = new LinkedHashMap<>();
+        callEdge.put("method", method.getSignature());
+        callEdge.put("unitIndex", 2);
+        callEdge.put("invoke", newEncryptionKey.getSignature());
+        addAnalysisRow(result, "edges", callEdge);
+
+        Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                "instrumentRuntimeTrace", result.getClass());
+        instrument.setAccessible(true);
+        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+
+        Value recordedReceiver = null;
+        int beginCallCount = 0;
+        String recorderClass =
+                "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
+        for (Unit unit : body.getUnits()) {
+            InvokeExpr invoke = invokeExpression(unit);
+            if (invoke == null
+                    || !"beginCall".equals(invoke.getMethodRef().name())
+                    || !recorderClass.equals(
+                            invoke.getMethodRef().declaringClass().getName())) {
+                continue;
+            }
+            beginCallCount++;
+            recordedReceiver = invoke.getArg(4);
+        }
+
+        assertEquals(1, beginCallCount);
+        assertSame("runtime dispatch must use the interface invoke base",
+                factoryReceiver, recordedReceiver);
+        assertFalse("the enclosing caller receiver is not the callee receiver",
+                recordedReceiver == callerThis);
+        assertSame(factoryReceiver,
+                CausynthPipeline.runtimeCallSiteReceiver(
+                        interfaceCall.getInvokeExpr()));
+    }
+
+    @Test
+    public void staticDispatchDoesNotPruneAnUnselectedImplementation() {
+        List<String> candidates = Arrays.asList(
+                "<example.DataNodeFactory: example.Key newDataEncryptionKey()>",
+                "<example.BalancerKeyManager: example.Key newDataEncryptionKey()>");
+
+        assertEquals(candidates,
+                CausynthPipeline.conservativeDispatchTargets(candidates));
+    }
+
+    @Test
+    public void staticAnalysisBudgetsUseConfiguredValuesAndReportCaps()
+            throws Exception {
+        G.reset();
+        System.setProperty("causynth.static.max.methods", "7");
+        System.setProperty("causynth.static.max.edges", "11");
+        Object analyzer = newStaticAnalyzer();
+
+        Field maxMethods = analyzer.getClass().getDeclaredField("maxMethods");
+        maxMethods.setAccessible(true);
+        Field maxEdges = analyzer.getClass().getDeclaredField("maxEdges");
+        maxEdges.setAccessible(true);
+        assertEquals(7, maxMethods.getInt(analyzer));
+        assertEquals(11, maxEdges.getInt(analyzer));
+
+        Field selectedMethods = analyzer.getClass().getDeclaredField(
+                "selectedMethods");
+        selectedMethods.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> selected = (Set<String>) selectedMethods.get(analyzer);
+        for (int index = 0; index < 7; index++) {
+            selected.add("<example.Budget" + index + ": void run()>");
+        }
+        Field edges = analyzer.getClass().getDeclaredField("edges");
+        edges.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> emitted =
+                (List<Map<String, Object>>) edges.get(analyzer);
+        for (int index = 0; index < 11; index++) {
+            emitted.add(new LinkedHashMap<String, Object>());
+        }
+
+        Object result = newAnalysisResultWithRoot(
+                "<example.BudgetRoot: void run()>");
+        Method summarize = analyzer.getClass().getDeclaredMethod(
+                "addStaticAnalysisBudgetSummary", result.getClass());
+        summarize.setAccessible(true);
+        summarize.invoke(analyzer, result);
+
+        Field slicesField = result.getClass().getDeclaredField("slices");
+        slicesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slices =
+                (Map<String, Object>) slicesField.get(result);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> budget = (Map<String, Object>) slices.get(
+                "staticAnalysisBudget");
+        assertEquals(7, budget.get("maxMethods"));
+        assertEquals(11, budget.get("maxEdges"));
+        assertEquals(Boolean.TRUE, budget.get("methodCapReached"));
+        assertEquals(Boolean.TRUE, budget.get("edgeCapReached"));
+        assertEquals(Boolean.TRUE, budget.get("capReached"));
+        assertEquals(Boolean.FALSE, budget.get("complete"));
+
+        Field coverageField = result.getClass().getDeclaredField(
+                "symbolicCoverage");
+        coverageField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> coverage =
+                (Map<String, Object>) coverageField.get(result);
+        assertEquals(budget, coverage.get("staticAnalysisBudget"));
+    }
+
+    @Test
+    public void staticAnalysisBudgetsRejectNonPositiveAndMalformedValues()
+            throws Exception {
+        G.reset();
+        System.setProperty("causynth.static.max.methods", "0");
+        System.setProperty("causynth.static.max.edges", "not-an-integer");
+        Object analyzer = newStaticAnalyzer();
+
+        Field maxMethods = analyzer.getClass().getDeclaredField("maxMethods");
+        maxMethods.setAccessible(true);
+        Field maxEdges = analyzer.getClass().getDeclaredField("maxEdges");
+        maxEdges.setAccessible(true);
+        assertEquals(1000, maxMethods.getInt(analyzer));
+        assertEquals(50000, maxEdges.getInt(analyzer));
+    }
+
+    @Test
     public void traceThenConcolicPassesPreserveOriginalBranchIdentityAndOrder()
             throws Exception {
         G.reset();
@@ -2727,6 +2931,18 @@ public class CausynthPipelineTest {
                                     && !edge.containsKey(
                                     "valueFlowAuthority")));
         }
+        assertTrue("cast must depend on its qualified leaf local",
+                edges.stream().anyMatch(edge ->
+                        "local_def_use".equals(edge.get("kind"))
+                                && (prefix + "left").equals(
+                                edge.get("fromCell"))
+                                && (prefix + "widened").equals(
+                                edge.get("toCell"))));
+        assertFalse("cast expression must not become a second data-flow cell",
+                edges.stream().anyMatch(edge ->
+                        "local_def_use".equals(edge.get("kind"))
+                                && String.valueOf(edge.get("fromCell"))
+                                .startsWith("(long)")));
 
         Map<String, Object> fieldRead = edges.stream().filter(edge ->
                 "field_read".equals(edge.get("kind"))

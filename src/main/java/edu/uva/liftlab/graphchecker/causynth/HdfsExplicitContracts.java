@@ -9,6 +9,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Human-authored hypotheses that are deliberately outside automatic symbolic
@@ -20,28 +22,21 @@ public final class HdfsExplicitContracts {
     }
 
     public static void main(String[] argv) throws Exception {
-        Path output = null;
-        for (int index = 0; index < argv.length; index++) {
-            if ("--output".equals(argv[index]) && index + 1 < argv.length) {
-                output = Paths.get(argv[++index]);
-            }
-        }
-        if (output == null) {
-            throw new IllegalArgumentException("Missing --output");
-        }
-        Path parent = output.toAbsolutePath().getParent();
+        Arguments arguments = Arguments.parse(argv);
+        Path parent = arguments.output.toAbsolutePath().getParent();
         if (parent != null) Files.createDirectories(parent);
-        JsonObject registry = registry();
+        JsonObject registry = registry(arguments.scope);
         String json = new GsonBuilder().disableHtmlEscaping()
                 .setPrettyPrinting().create().toJson(registry);
-        Files.write(output, (json + System.lineSeparator()).getBytes(
+        Files.write(arguments.output,
+                (json + System.lineSeparator()).getBytes(
                         StandardCharsets.UTF_8), StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING,
                 StandardOpenOption.WRITE);
         System.out.println(json);
     }
 
-    static JsonObject registry() {
+    static JsonObject registry(HdfsRegionPortMapper.ResearchScope scope) {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "EXPLICIT_CONTRACT_REGISTRY");
@@ -56,19 +51,7 @@ public final class HdfsExplicitContracts {
         contracts.add(contract("HDFS.MAP.EXPIRY_MEMBERSHIP",
                 "Map membership as a function of observation and expiry time"));
         result.add("contracts", contracts);
-        JsonObject scope = new JsonObject();
-        scope.addProperty("repository", "/Users/lizhenyu/Desktop/study/hadoop");
-        scope.addProperty("commit",
-                "ece33208b89a6a06c1b362d10fab31343fe5df13");
-        scope.addProperty("test", "org.apache.hadoop.hdfs.server.balancer."
-                + "TestBalancerWithEncryptedTransfer#testEncryptedBalancer1");
-        scope.addProperty("experimentalSourcePatch",
-                "CAUSYNTH_FIXED_MINIDFSCLUSTER_LOOP_FREE_V1");
-        scope.addProperty("experimentalSourceSha256",
-                "352efc4dd9a3d4e0df4d0840754d63fce1a09509ad947f9c232e24f35372bb93");
-        scope.addProperty("executionBoundary", "LOCAL_MINIDFSCLUSTER_ONLY");
-        scope.addProperty("thirdPartySystemsProhibited", true);
-        result.add("researchScope", scope);
+        result.add("researchScope", scope.toJson());
         return result;
     }
 
@@ -84,5 +67,38 @@ public final class HdfsExplicitContracts {
         result.addProperty("includedInSmt", false);
         result.addProperty("mayBeReportedAsSymbolicExecutionResult", false);
         return result;
+    }
+
+    static final class Arguments {
+        private final Path output;
+        private final HdfsRegionPortMapper.ResearchScope scope;
+
+        private Arguments(Path output,
+                          HdfsRegionPortMapper.ResearchScope scope) {
+            this.output = output;
+            this.scope = scope;
+        }
+
+        static Arguments parse(String[] argv) {
+            Map<String, String> values = new LinkedHashMap<>();
+            for (int index = 0; argv != null && index < argv.length; index++) {
+                String key = argv[index];
+                if (!key.startsWith("--") || index + 1 >= argv.length) {
+                    throw new IllegalArgumentException(
+                            "Expected --key value, got " + key);
+                }
+                values.put(key.substring(2), argv[++index]);
+            }
+            String output = values.get("output");
+            if (output == null || output.trim().isEmpty()) {
+                throw new IllegalArgumentException("Missing --output");
+            }
+            return new Arguments(Paths.get(output),
+                    HdfsRegionPortMapper.ResearchScope.parse(values));
+        }
+
+        HdfsRegionPortMapper.ResearchScope researchScope() {
+            return scope;
+        }
     }
 }

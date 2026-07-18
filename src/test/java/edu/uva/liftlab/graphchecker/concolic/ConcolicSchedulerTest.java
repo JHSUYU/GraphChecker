@@ -884,8 +884,8 @@ public class ConcolicSchedulerTest {
                 + "\"requestedOutputSliceComplete\":true,"
                 + "\"symbolize\":[{"
                 + "\"symbol\":\"REGION.7.in.0\","
-                + "\"cell\":\"<java.lang.System: long "
-                + "currentTimeMillis()>.return\","
+                + "\"cell\":\"<org.apache.hadoop.util.Time: long "
+                + "now()>.return\","
                 + "\"sourceKind\":\"ENVIRONMENT\","
                 + "\"location\":\"ENVIRONMENT_MODEL\"}]}"
         ).getAsJsonObject();

@@ -2268,11 +2268,9 @@ public final class CausynthPipeline {
         InvokeExpr invoke = stmt.getInvokeExpr();
         List<Unit> before = new ArrayList<>();
         beginTraceObservationIsolation(before, observationIsolation);
-        Value receiver = NullConstant.v();
-        if (invoke instanceof InstanceInvokeExpr
-                && !"<init>".equals(invoke.getMethodRef().name())) {
-            receiver = objectArg(body, ((InstanceInvokeExpr) invoke).getBase(), before);
-        }
+        Value receiverBase = runtimeCallSiteReceiver(invoke);
+        Value receiver = receiverBase == null
+                ? NullConstant.v() : objectArg(body, receiverBase, before);
         Local invocationId = newTraceLocal(body, LongType.v(), "$causynthInvocation");
         before.add(Jimple.v().newAssignStmt(invocationId,
                 Jimple.v().newStaticInvokeExpr(refs.beginCall,
@@ -2310,6 +2308,36 @@ public final class CausynthPipeline {
                 refs.endCall, invocationId, returnObject, primitiveReturn)));
         endTraceObservationIsolation(after, observationIsolation);
         insertAfterSequence(body, stmt, after);
+    }
+
+    /**
+     * Returns the object on which an ordinary instance call is dispatched.
+     * This must come from the invoke expression itself, rather than from the
+     * enclosing method's {@code this} local: an interface call such as
+     * {@code DataEncryptionKeyFactory.newDataEncryptionKey()} may dispatch on
+     * a {@code KeyManager} owned by a different caller object.
+     *
+     * <p>Constructor receivers remain excluded because passing an
+     * uninitialized object to a recorder call before {@code <init>} would
+     * violate JVM verification rules.</p>
+     */
+    static Value runtimeCallSiteReceiver(InvokeExpr invoke) {
+        if (!(invoke instanceof InstanceInvokeExpr)
+                || "<init>".equals(invoke.getMethodRef().name())) {
+            return null;
+        }
+        return ((InstanceInvokeExpr) invoke).getBase();
+    }
+
+    /**
+     * Static worklist admission is not receiver-type evidence.  Until an
+     * exact runtime call-site observation is unique, retain every
+     * class-hierarchy candidate and let activation binding distinguish the
+     * concrete executions.
+     */
+    static List<String> conservativeDispatchTargets(List<String> targets) {
+        return targets == null ? Collections.<String>emptyList()
+                : new ArrayList<>(targets);
     }
 
     private void instrumentBranch(Body body, SootMethod method, IfStmt branch,
@@ -4199,8 +4227,12 @@ public final class CausynthPipeline {
 
     private static final class SeedBackwardStaticAnalyzer {
         private static final int MAX_ROUNDS = 96;
-        private static final int MAX_METHODS = 1000;
-        private static final int MAX_EDGES = 50000;
+        private static final int DEFAULT_MAX_METHODS = 1000;
+        private static final int DEFAULT_MAX_EDGES = 50000;
+        private static final String MAX_METHODS_PROPERTY =
+                "causynth.static.max.methods";
+        private static final String MAX_EDGES_PROPERTY =
+                "causynth.static.max.edges";
         private static final int MAX_RPC_TARGETS_PER_CALL = 6;
         private static final int MAX_DISPATCH_TARGETS_PER_CALL = 8;
         private static final int MAX_RUNTIME_RECURSIVE_METHODS = 128;
@@ -4220,6 +4252,8 @@ public final class CausynthPipeline {
                 "org.apache.hadoop.security.token.SecretManager";
 
         private final TargetContext target;
+        private final int maxMethods;
+        private final int maxEdges;
         private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
         private final Map<String, SootMethod> methodsBySignature = new LinkedHashMap<>();
         private final Map<String, List<SootMethod>> concreteMethodsBySubSignature =
@@ -4283,6 +4317,10 @@ public final class CausynthPipeline {
 
         private SeedBackwardStaticAnalyzer(TargetContext target) {
             this.target = target;
+            this.maxMethods = positiveSystemProperty(MAX_METHODS_PROPERTY,
+                    DEFAULT_MAX_METHODS);
+            this.maxEdges = positiveSystemProperty(MAX_EDGES_PROPERTY,
+                    DEFAULT_MAX_EDGES);
             try {
                 this.runtimeDispatchEvidence =
                         RuntimeDispatchEvidence.fromConfiguration();
@@ -4313,6 +4351,25 @@ public final class CausynthPipeline {
             // discovery strategy.  In particular, a scoped HDFS analysis
             // must not silently ignore a configured cross-process boundary.
             buildConfiguredRpcPortMappings();
+        }
+
+        private static int positiveSystemProperty(String property,
+                                                  int defaultValue) {
+            String configured;
+            try {
+                configured = System.getProperty(property);
+            } catch (SecurityException ignored) {
+                return defaultValue;
+            }
+            if (configured == null || configured.trim().isEmpty()) {
+                return defaultValue;
+            }
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                return parsed > 0 ? parsed : defaultValue;
+            } catch (NumberFormatException ignored) {
+                return defaultValue;
+            }
         }
 
         private void buildRpcMappings() {
@@ -5206,6 +5263,7 @@ public final class CausynthPipeline {
                 result.slices.put("projectedPassNoSuffix", projectedPassNoSuffix);
                 result.slices.put("projectedPassCandidates", projectedPassCandidates);
                 result.slices.put("projectedPassEmitted", projectedPassEmitted);
+                addStaticAnalysisBudgetSummary(result);
                 return result;
             }
 
@@ -5247,7 +5305,29 @@ public final class CausynthPipeline {
             result.slices.put("projectedPassNoSuffix", projectedPassNoSuffix);
             result.slices.put("projectedPassCandidates", projectedPassCandidates);
             result.slices.put("projectedPassEmitted", projectedPassEmitted);
+            addStaticAnalysisBudgetSummary(result);
             return result;
+        }
+
+        private void addStaticAnalysisBudgetSummary(AnalysisResult result) {
+            boolean methodCapReached = selectedMethods.size() >= maxMethods;
+            boolean edgeCapReached = edges.size() >= maxEdges;
+            Map<String, Object> budget = object(
+                    "authority",
+                    "JVM_SYSTEM_PROPERTY_WITH_POSITIVE_DEFAULT_V1",
+                    "maxMethodsProperty", MAX_METHODS_PROPERTY,
+                    "maxEdgesProperty", MAX_EDGES_PROPERTY,
+                    "maxMethods", maxMethods,
+                    "maxEdges", maxEdges,
+                    "selectedMethodCount", selectedMethods.size(),
+                    "emittedEdgeCount", edges.size(),
+                    "methodCapReached", methodCapReached,
+                    "edgeCapReached", edgeCapReached,
+                    "capReached", methodCapReached || edgeCapReached,
+                    "complete", !methodCapReached && !edgeCapReached);
+            result.slices.put("staticAnalysisBudget", budget);
+            result.symbolicCoverage.put("staticAnalysisBudget",
+                    new LinkedHashMap<>(budget));
         }
 
         private void addGlobalStaticIndexSummary(Map<String, Object> slices) {
@@ -6360,7 +6440,7 @@ public final class CausynthPipeline {
         }
 
         private void runWorklist() {
-            for (int round = 0; round < MAX_ROUNDS && edges.size() < MAX_EDGES; round++) {
+            for (int round = 0; round < MAX_ROUNDS && edges.size() < maxEdges; round++) {
                 boolean changed = false;
                 List<String> methodsThisRound = new ArrayList<>(selectedMethods);
                 for (String method : methodsThisRound) {
@@ -6372,13 +6452,13 @@ public final class CausynthPipeline {
                     changed |= expandFieldWriters(method);
                     changed |= expandConstructorCallers(method);
                     changed |= expandMethodCallers(method);
-                    // MAX_METHODS limits admission of new static candidates;
+                    // maxMethods limits admission of new static candidates;
                     // it must not prevent already admitted methods from
                     // reaching their fixed point.  The previous early break
                     // left the tail of selectedMethods unprocessed whenever
                     // the cap was reached (trace-visible methods could then
                     // have zero data-flow edges).
-                    if (edges.size() >= MAX_EDGES) {
+                    if (edges.size() >= maxEdges) {
                         break;
                     }
                 }
@@ -6796,8 +6876,8 @@ public final class CausynthPipeline {
                 int count = 0;
                 for (FieldWrite writer : writers) {
                     if (count++ >= MAX_FIELD_WRITERS_PER_FIELD
-                            || selectedMethods.size() >= MAX_METHODS
-                            || edges.size() >= MAX_EDGES) {
+                            || selectedMethods.size() >= maxMethods
+                            || edges.size() >= maxEdges) {
                         break;
                     }
                     SootMethod writerMethod = methodsBySignature.get(writer.method);
@@ -6875,8 +6955,8 @@ public final class CausynthPipeline {
                 }
                 int count = 0;
                 for (ConstructorCallsite callsite : callsites) {
-                    if (selectedMethods.size() >= MAX_METHODS
-                            || edges.size() >= MAX_EDGES
+                    if (selectedMethods.size() >= maxMethods
+                            || edges.size() >= maxEdges
                             || count++ >= MAX_CONSTRUCTOR_CALLERS_PER_PARAM) {
                         break;
                     }
@@ -6941,8 +7021,8 @@ public final class CausynthPipeline {
             int count = 0;
             for (MethodCallsite callsite : callsites) {
                 if (count++ >= MAX_METHOD_CALLERS_PER_METHOD
-                        || selectedMethods.size() >= MAX_METHODS
-                        || edges.size() >= MAX_EDGES) {
+                        || selectedMethods.size() >= maxMethods
+                        || edges.size() >= maxEdges) {
                     break;
                 }
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
@@ -7505,7 +7585,7 @@ public final class CausynthPipeline {
             SootMethod calleeMethod = expandableCallee ? methodsBySignature.get(callee.raw) : null;
             boolean runtimeRecursiveCaller =
                     runtimeRecursiveMethods.contains(callerMethod);
-            if (expandableCallee && (selectedMethods.size() < MAX_METHODS
+            if (expandableCallee && (selectedMethods.size() < maxMethods
                     || runtimeRecursiveMethods.contains(callee.raw))) {
                 loadMethod(calleeMethod);
             }
@@ -8249,7 +8329,7 @@ public final class CausynthPipeline {
                 if (targetMethod == null) {
                     continue;
                 }
-                if (selectedMethods.size() < MAX_METHODS) {
+                if (selectedMethods.size() < maxMethods) {
                     loadMethod(targetMethod);
                 }
                 MethodSig targetSig = parseMethodSig(target.targetSignature);
@@ -8362,8 +8442,7 @@ public final class CausynthPipeline {
             } else {
                 targetMethods = callbackBoundDispatchTargets(callerMethod,
                         callee, targetMethods);
-                targetMethods = demandedDispatchTargets(targetMethods, defs,
-                        actuals, callerRelevant);
+                targetMethods = conservativeDispatchTargets(targetMethods);
             }
             if (!runtimeSelection.unique()
                     && targetMethods.size()
@@ -8393,7 +8472,7 @@ public final class CausynthPipeline {
                                 "RUNTIME_RECURSIVE_METHOD_LIMIT_EXCEEDED"));
                         continue;
                     }
-                } else if (selectedMethods.size() < MAX_METHODS) {
+                } else if (selectedMethods.size() < maxMethods) {
                     loadMethod(sootMethod);
                 }
                 MethodSig targetSig = parseMethodSig(targetMethod);
@@ -8518,31 +8597,6 @@ public final class CausynthPipeline {
                 }
             }
             return filtered.isEmpty() ? targets : filtered;
-        }
-
-        /**
-         * If the backward slice reached an interface call from an already
-         * demanded concrete implementation, retain that implementation instead
-         * of reopening every class-wide dispatch candidate.  Calls first
-         * reached at the interface remain conservatively over-approximated.
-         */
-        private List<String> demandedDispatchTargets(List<String> targets,
-                                                     List<String> callerDefs,
-                                                     List<String> callerActuals,
-                                                     Set<String> callerRelevant) {
-            if (!intersects(callerRelevant, callerDefs)
-                    && !intersects(callerRelevant, callerActuals)) {
-                return targets;
-            }
-            List<String> demanded = new ArrayList<>();
-            for (String target : targets) {
-                Set<String> relevant = relevantByMethod.get(target);
-                if (selectedMethods.contains(target) && relevant != null
-                        && !relevant.isEmpty()) {
-                    demanded.add(target);
-                }
-            }
-            return demanded.isEmpty() ? targets : demanded;
         }
 
         /**
@@ -8712,7 +8766,7 @@ public final class CausynthPipeline {
                     || containsProjection(calleeRelevant, returnNode);
             boolean changed = false;
             for (Fact caller : callers) {
-                if (selectedMethods.size() >= MAX_METHODS) {
+                if (selectedMethods.size() >= maxMethods) {
                     break;
                 }
                 Set<String> callerRelevant = relevant(caller.method);
@@ -8767,7 +8821,7 @@ public final class CausynthPipeline {
                     continue;
                 }
                 for (MethodCallsite callsite : callsites) {
-                    if (selectedMethods.size() >= MAX_METHODS) {
+                    if (selectedMethods.size() >= maxMethods) {
                         break;
                     }
                     SootMethod callerMethod = methodsBySignature.get(callsite.method);
@@ -8833,7 +8887,7 @@ public final class CausynthPipeline {
                     continue;
                 }
                 for (MethodCallsite callsite : callsites) {
-                    if (selectedMethods.size() >= MAX_METHODS
+                    if (selectedMethods.size() >= maxMethods
                             && !runtimeRecursiveMethods.contains(
                             targetMethod)) {
                         break;
@@ -9139,13 +9193,13 @@ public final class CausynthPipeline {
         }
 
         private boolean propagateProjectedEdgesFromExistingEdges() {
-            if (edges.isEmpty() || edges.size() >= MAX_EDGES) {
+            if (edges.isEmpty() || edges.size() >= maxEdges) {
                 return false;
             }
             boolean changed = false;
             List<Map<String, Object>> snapshot = new ArrayList<>(edges);
             for (Map<String, Object> edge : snapshot) {
-                if (edges.size() >= MAX_EDGES) {
+                if (edges.size() >= maxEdges) {
                     break;
                 }
                 String kind = String.valueOf(edge.get("kind"));
@@ -9255,7 +9309,7 @@ public final class CausynthPipeline {
             if (applicationInvoke) {
                 applicationInvokeArgs.addAll(actualInvokeArgs(fact.unitText));
             }
-            List<String> uses = new ArrayList<>();
+            Set<String> uses = new LinkedHashSet<>();
             for (String use : nonInvokeUses(fact)) {
                 // Soot exposes both a composite expression and each of its
                 // leaf operands through Unit.getUseBoxes().  Only the leaves
@@ -9270,9 +9324,14 @@ public final class CausynthPipeline {
                         || isFieldAccessValue(use)) {
                     continue;
                 }
-                uses.add(use);
+                // Unit.getUseBoxes() can report both a cast expression and
+                // its leaf local.  The cast is an in-region operation, not a
+                // second data-flow cell.  Preserve the leaf so the backward
+                // slice does not invent an unqualified "(T) local" live-in.
+                String leafLocal = localName(use);
+                uses.add(leafLocal == null ? use : leafLocal);
             }
-            return uses;
+            return new ArrayList<>(uses);
         }
 
         private boolean atomicDataflowUse(String value) {
@@ -9927,7 +9986,7 @@ public final class CausynthPipeline {
                                         Fact fact, String evidence,
                                         boolean deriveProjectedEdges,
                                         Map<String, Object> projectionBaseEdge) {
-            if (edges.size() >= MAX_EDGES || from == null || to == null) {
+            if (edges.size() >= maxEdges || from == null || to == null) {
                 return false;
             }
             String fromText = String.valueOf(from);

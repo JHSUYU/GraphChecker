@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -53,8 +55,6 @@ public final class ConcolicScheduler {
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
             "#field:([^#]+)");
-    private static final String VM_CURRENT_TIME_MILLIS_RETURN =
-            "<java.lang.System: long currentTimeMillis()>.return";
     private static final String CONSUMED_FIELD_SITE_AUTHORITY =
             "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
                     + "OWNER_WITHIN_REGION_INSTANCE_V1";
@@ -1248,7 +1248,7 @@ public final class ConcolicScheduler {
                 binding.addProperty("bindingMode",
                         "VM_INTRINSIC_PLACEHOLDER");
                 binding.addProperty("placeholderFunction",
-                        "currentTimeMills");
+                        SymbolicEnvironment.CURRENT_TIME_MILLIS_PLACEHOLDER);
                 binding.addProperty("captureAuthority",
                         "CUSTOM_JDK_SYMBOLIC_ND_FUNC");
                 binding.addProperty("modelControllable", false);
@@ -1338,7 +1338,7 @@ public final class ConcolicScheduler {
             JsonObject action, String location, String cell) {
         return "ENVIRONMENT_MODEL".equals(location)
                 && "ENVIRONMENT".equals(string(action, "sourceKind"))
-                && VM_CURRENT_TIME_MILLIS_RETURN.equals(safe(cell));
+                && SymbolicEnvironment.isCurrentTimeMillisReturn(safe(cell));
     }
 
     /**
@@ -2997,7 +2997,9 @@ public final class ConcolicScheduler {
                 if (requireHeapWitness
                         && (!binding.has("writeSeq")
                         || !binding.has("readSeq")
-                        || !binding.has("receiverObjectId"))) {
+                        || !binding.has("receiverObjectId")
+                        || !AutomaticRegionEdge
+                        .trustedReadFromEvidence(binding))) {
                     continue;
                 }
                 if (!requireHeapWitness
@@ -3047,9 +3049,12 @@ public final class ConcolicScheduler {
                 if (requireHeapWitness
                         && (!binding.has("writeSeq")
                         || !binding.has("readSeq")
-                        || !binding.has("receiverObjectId"))) {
+                        || !binding.has("receiverObjectId")
+                        || !AutomaticRegionEdge
+                        .trustedReadFromEvidence(binding))) {
                     addContextGap(gaps, relation,
-                            "EXACT_TARGET_HEAP_BINDING_WITNESS_INCOMPLETE");
+                            "EXACT_TARGET_HEAP_BINDING_WITNESS_INCOMPLETE_"
+                                    + "OR_UNTRUSTED");
                     continue;
                 }
                 if (!requireHeapWitness

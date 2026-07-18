@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -1180,8 +1182,7 @@ public final class ConcolicSmtComposer {
     }
 
     private static boolean trustedRuntimeReadFrom(JsonObject binding) {
-        return "RUNTIME_CONFIRMED_READ_FROM".equals(
-                string(binding, "selectionAuthority"));
+        return AutomaticRegionEdge.trustedRuntimeReadFromBinding(binding);
     }
 
     private static boolean bindingTargets(JsonObject binding, String region,
@@ -3005,8 +3006,7 @@ public final class ConcolicSmtComposer {
                         && count > 0
                         && identity.equals(function + "#" + count)
                         && "currentTimeMills".equals(function)
-                        && "<java.lang.System: long currentTimeMillis()>"
-                        .concat(".return").equals(cell)
+                        && SymbolicEnvironment.isCurrentTimeMillisReturn(cell)
                         && "J".equals(string(row, "javaTypeDescriptor"))
                         && "ENVIRONMENT".equals(string(row, "sourceKind"))
                         && "VM_INTRINSIC_PLACEHOLDER".equals(string(row,
@@ -5899,11 +5899,16 @@ public final class ConcolicSmtComposer {
                         || !relevantRegions.contains(regionOf(to))) {
                     continue;
                 }
+                JsonArray bindings = selectedBindings(relation);
+                if (!allTrustedReadFromEvidence(bindings)) {
+                    unsupported.add("UntrustedVersionedStateReadFrom:"
+                            + string(relation, "edgeId"));
+                    continue;
+                }
                 if (assertPortEquality(from, to,
                         "read_from_" + stats.readFrom)) {
                     stats.readFrom++;
                 }
-                JsonArray bindings = selectedBindings(relation);
                 for (int index = 0; index < bindings.size(); index++) {
                     JsonObject binding = bindings.get(index).getAsJsonObject();
                     if (!bool(binding, "orderConfirmed", false)) continue;
@@ -5952,6 +5957,12 @@ public final class ConcolicSmtComposer {
                             || !relevantRegions.contains(regionOf(to))) {
                         continue;
                     }
+                    if (!allTrustedReadFromEvidence(
+                            selectedBindings(relation))) {
+                        unsupported.add("UntrustedAlternativeWriterReadFrom:"
+                                + groupId + ":" + index);
+                        continue;
+                    }
                     String guard = firstNonBlank(string(relation,
                             "guardSymbol"), "writer_guard__"
                             + smtName(groupId + "_" + index));
@@ -5984,6 +5995,18 @@ public final class ConcolicSmtComposer {
                 stats.alternativeWriterGroups++;
             }
             return stats;
+        }
+
+        private boolean allTrustedReadFromEvidence(JsonArray bindings) {
+            if (bindings == null || bindings.size() == 0) return false;
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()
+                        || !AutomaticRegionEdge.trustedReadFromEvidence(
+                        element.getAsJsonObject())) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private boolean assertGuardedPortEquality(String left, String right,

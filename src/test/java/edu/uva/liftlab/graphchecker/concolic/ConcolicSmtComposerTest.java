@@ -281,13 +281,15 @@ public class ConcolicSmtComposerTest {
         folder.create();
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            String hadoopTimeNow = hadoopTimeNowCell();
             addRegionPort(fixture, "REGION.P", "symbolicInputs",
-                    port("REGION.P.in.6", vmCurrentTimeCell()));
+                    port("REGION.P.in.6", hadoopTimeNow));
             JsonObject summary = producerSummary(singlePutEffect(), true);
             summary.getAsJsonArray("pathCondition").add(binaryCondition(
                     placeholderExpression("currentTimeMills", 3), ">",
                     constant("J", "Y_J_0")));
-            addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3);
+            addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3,
+                    hadoopTimeNow);
             writeSummary(fixture, summary);
 
             ConcolicSmtComposer.Result result =
@@ -3663,15 +3665,25 @@ public class ConcolicSmtComposerTest {
         return "<java.lang.System: long currentTimeMillis()>.return";
     }
 
+    private static String hadoopTimeNowCell() {
+        return "<org.apache.hadoop.util.Time: long now()>.return";
+    }
+
     private static void addVmPlaceholderCertificate(
             JsonObject container, String inputPort, int count) {
+        addVmPlaceholderCertificate(container, inputPort, count,
+                vmCurrentTimeCell());
+    }
+
+    private static void addVmPlaceholderCertificate(
+            JsonObject container, String inputPort, int count, String cell) {
         String identity = "currentTimeMills#" + count;
         JsonObject requirement = new JsonObject();
         requirement.addProperty("kind",
                 "UNFORCED_ENVIRONMENT_VALIDATION_REQUIREMENT");
         requirement.addProperty("required", true);
         requirement.addProperty("inputPort", inputPort);
-        requirement.addProperty("cell", vmCurrentTimeCell());
+        requirement.addProperty("cell", cell);
         requirement.addProperty("sourceKind", "ENVIRONMENT");
         requirement.addProperty("bindingMode",
                 "VM_INTRINSIC_PLACEHOLDER");
@@ -3717,7 +3729,7 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("placeholderFunction", "currentTimeMills");
         binding.addProperty("placeholderCount", count);
         binding.addProperty("inputPort", inputPort);
-        binding.addProperty("cell", vmCurrentTimeCell());
+        binding.addProperty("cell", cell);
         binding.addProperty("javaTypeDescriptor", "J");
         binding.addProperty("sourceKind", "ENVIRONMENT");
         binding.addProperty("bindingMode", "VM_INTRINSIC_PLACEHOLDER");

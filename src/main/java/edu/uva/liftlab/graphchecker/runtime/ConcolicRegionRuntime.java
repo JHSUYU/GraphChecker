@@ -88,6 +88,8 @@ public final class ConcolicRegionRuntime {
     private static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
             "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
                     + "CONTEXT_ORDINAL_V1";
+    private static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
+            "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1";
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
@@ -8730,9 +8732,14 @@ public final class ConcolicRegionRuntime {
             boolean accessSiteConstrained = !accessMethod.isEmpty()
                     || !accessSiteId.isEmpty() || accessUnitIndex >= 0
                     || !accessSiteAuthority.isEmpty();
+            boolean staticExactSite =
+                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1".equals(
+                            accessSiteAuthority);
+            boolean runtimeExactSite =
+                    RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY.equals(
+                            accessSiteAuthority);
             if (accessSiteConstrained
-                    && (!("STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1"
-                    .equals(accessSiteAuthority))
+                    && (!(staticExactSite || runtimeExactSite)
                     || !accessMethod.equals(safe(actualMethod))
                     || accessUnitIndex != actualUnitIndex
                     || !accessSiteId.equals(siteId(actualMethod,
@@ -8773,6 +8780,12 @@ public final class ConcolicRegionRuntime {
             }
             if (!accessOwnerClass.isEmpty()
                     && !instanceOfName(owner.getClass(), accessOwnerClass)) {
+                return false;
+            }
+            if (runtimeExactSite
+                    && (accessOwnerClass.isEmpty()
+                    || accessFieldSignature.isEmpty()
+                    || !accessFieldSignature.equals(safe(signature)))) {
                 return false;
             }
             // A projection rooted at a method return/local may not carry a
