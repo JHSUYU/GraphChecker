@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -1091,6 +1092,7 @@ public final class CausynthPipeline {
     }
 
     private static String jsonString(JsonObject object, String field) {
+        if (object == null) return "";
         JsonElement value = object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -1098,6 +1100,13 @@ public final class CausynthPipeline {
         } catch (RuntimeException ignored) {
             return "";
         }
+    }
+
+    private static JsonObject jsonObject(JsonObject object, String field) {
+        if (object == null) return new JsonObject();
+        JsonElement value = object.get(field);
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : new JsonObject();
     }
 
     private static boolean jsonBoolean(JsonObject object, String field,
@@ -1578,10 +1587,10 @@ public final class CausynthPipeline {
                 }
                 Value argument = invoke.getArg(target.argumentIndex);
                 List<Unit> before = new ArrayList<>();
-                // Box while symbolic propagation is still enabled.  The
-                // custom JDK models Wrapper.valueOf and transfers the exact
-                // primitive shadow expression to the wrapper object consumed
-                // by the runtime expression API.
+                // Box while symbolic propagation is still enabled.  Capture
+                // boxes are always fresh: Wrapper.valueOf may return a JVM
+                // cache singleton, which cannot safely own an activation-
+                // local symbolic shadow.
                 Value objectValue = boxedCaptureValue(body, argument, before);
                 before.add(Jimple.v().newInvokeStmt(
                         Jimple.v().newStaticInvokeExpr(
@@ -2068,10 +2077,9 @@ public final class CausynthPipeline {
                                   SootMethodRef pauseObservation,
                                   SootMethodRef resumeObservation) {
         List<Unit> units = new ArrayList<>();
-        // Wrapper.valueOf must execute before observation is paused so the
-        // custom VM can attach the primitive shadow expression.  The wrapper
-        // is then stable while serialization and concrete string formatting
-        // execute with path-condition recording disabled.
+        // The fresh wrapper constructor must execute before observation is
+        // paused so the interpreter's putfield shadow propagation can attach
+        // the primitive expression without using a cached wrapper singleton.
         Value objectValue = boxedCaptureValue(body, returnValue, units);
         units.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(pauseObservation)));
@@ -2610,14 +2618,17 @@ public final class CausynthPipeline {
         if (wrapper == null) return NullConstant.v();
         SootClass wrapperClass = Scene.v().getSootClass(wrapper.className);
         RefType wrapperType = RefType.v(wrapper.className);
-        SootMethodRef valueOf = Scene.v().makeMethodRef(wrapperClass,
-                "valueOf", Collections.singletonList(value.getType()),
-                wrapperType, true);
         Value source = immediateValue(body, value, prefixUnits);
         Local boxed = newTraceLocal(body, wrapperType,
                 "$causynthCaptureBox");
         prefixUnits.add(Jimple.v().newAssignStmt(boxed,
-                Jimple.v().newStaticInvokeExpr(valueOf, source)));
+                Jimple.v().newNewExpr(wrapperType)));
+        SootMethodRef constructor = Scene.v().makeMethodRef(wrapperClass,
+                "<init>", Collections.singletonList(value.getType()),
+                VoidType.v(), false);
+        prefixUnits.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(boxed, constructor,
+                        source)));
         return boxed;
     }
 
@@ -2626,10 +2637,15 @@ public final class CausynthPipeline {
             return StringConstant.v("");
         }
         SootClass stringClass = Scene.v().getSootClass("java.lang.String");
-        if (value.getType() instanceof IntType) {
+        if (value.getType() instanceof IntType
+                || value.getType() instanceof ByteType
+                || value.getType() instanceof ShortType
+                || value.getType() instanceof CharType) {
             SootMethodRef ref = Scene.v().makeMethodRef(stringClass, "valueOf",
                     Collections.singletonList(IntType.v()), RefType.v("java.lang.String"), true);
-            return primitiveStringLocal(body, value, ref, prefixUnits);
+            Value numeric = value.getType() instanceof IntType ? value
+                    : Jimple.v().newCastExpr(value, IntType.v());
+            return primitiveStringLocal(body, numeric, ref, prefixUnits);
         }
         if (value.getType() instanceof BooleanType) {
             SootMethodRef ref = Scene.v().makeMethodRef(stringClass, "valueOf",
@@ -3902,10 +3918,11 @@ public final class CausynthPipeline {
         private final String seedFunction;
         private final String seedException;
         private final String analysisScope;
+        private final Path rpcMappingFile;
         private TargetContext(Path repoRoot, Path moduleDir, Path outputDir,
                               Path specPath, List<String> seedVariables,
                               String seedFunction, String seedException,
-                              String analysisScope) {
+                              String analysisScope, Path rpcMappingFile) {
             this.repoRoot = repoRoot;
             this.moduleDir = moduleDir;
             this.outputDir = outputDir;
@@ -3914,6 +3931,7 @@ public final class CausynthPipeline {
             this.seedFunction = seedFunction;
             this.seedException = seedException;
             this.analysisScope = analysisScope;
+            this.rpcMappingFile = rpcMappingFile;
         }
 
         static TargetContext resolve(GraphCheckerOptions options) throws IOException {
@@ -3941,8 +3959,16 @@ public final class CausynthPipeline {
                     config.get("causynth_analysis_scope"),
                     config.get("causynth_scope"),
                     "");
+            String rpcMapping = firstNonBlank(
+                    System.getProperty("causynth.rpc.mapping.file"),
+                    System.getenv("CAUSYNTH_RPC_MAPPING_FILE"),
+                    config.get("rpc_mapping_file"),
+                    config.get("causynth_rpc_mapping_file"),
+                    "");
             return new TargetContext(repo, module, output, specPath,
-                    spec.seedVariables, spec.seedFunction, spec.seedException, scope);
+                    spec.seedVariables, spec.seedFunction, spec.seedException,
+                    scope, rpcMapping.isEmpty() ? null : Paths.get(rpcMapping)
+                    .toAbsolutePath().normalize());
         }
 
         boolean hasSeed() {
@@ -4187,6 +4213,10 @@ public final class CausynthPipeline {
             } else {
                 buildRpcMappings();
             }
+            // Explicit project topology is orthogonal to the built-in RPC
+            // discovery strategy.  In particular, a scoped HDFS analysis
+            // must not silently ignore a configured cross-process boundary.
+            buildConfiguredRpcPortMappings();
         }
 
         private void buildRpcMappings() {
@@ -4220,6 +4250,234 @@ public final class CausynthPipeline {
             }
             LOG.info("Discovered {} static RPC method mappings",
                     emittedRpcMappings.size());
+        }
+
+        /**
+         * Loads project-owned RPC topology as navigation evidence only.  A
+         * configured producer return and consumer RPC return become one
+         * mapping-only static edge; RuntimeRegionPlanner must still observe
+         * complete, equal endpoint fingerprints before promoting it to an
+         * automatic EQUALITY relation.
+         */
+        private void buildConfiguredRpcPortMappings() {
+            Path mappingFile = target.rpcMappingFile;
+            if (mappingFile == null) return;
+            if (!Files.isRegularFile(mappingFile)) {
+                throw new IllegalStateException(
+                        "Configured RPC mapping file not found: "
+                                + mappingFile);
+            }
+            int loaded = 0;
+            int downstreamDeclarations = 0;
+            try (BufferedReader reader = Files.newBufferedReader(mappingFile,
+                    StandardCharsets.UTF_8)) {
+                String line;
+                int lineNumber = 0;
+                while ((line = reader.readLine()) != null) {
+                    lineNumber++;
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                        continue;
+                    }
+                    JsonElement parsed = JsonParser.parseString(trimmed);
+                    if (!parsed.isJsonObject()) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " is not an object");
+                    }
+                    JsonObject row = parsed.getAsJsonObject();
+                    if (jsonInt(row, "schemaVersion", -1) != 1) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " has unsupported schemaVersion");
+                    }
+                    String kind = jsonString(row, "kind");
+                    if ("DECLARED_RPC_EQUALITY".equals(kind)) {
+                        // This older, region-port-level declaration belongs
+                        // to fixture/runtime adapters.  Static analysis has no
+                        // instance evidence with which to promote it, so it is
+                        // recognized but deliberately not asserted or mapped.
+                        if (jsonString(row, "fromEndpoint").isEmpty()
+                                || jsonString(row, "toEndpoint").isEmpty()) {
+                            throw new IllegalStateException(
+                                    "RPC topology row " + lineNumber
+                                            + " has incomplete declared endpoints");
+                        }
+                        downstreamDeclarations++;
+                        continue;
+                    }
+                    if (!"RPC_TOPOLOGY".equals(kind)) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " has unsupported kind "
+                                + kind);
+                    }
+                    JsonObject producer = jsonObject(row, "producer");
+                    JsonObject publisher = jsonObject(row, "publisher");
+                    JsonObject consumer = jsonObject(row, "consumer");
+                    SootMethod source = configuredRpcMethod(producer,
+                            lineNumber, "producer");
+                    SootMethod publisherMethod = configuredRpcMethod(
+                            publisher, lineNumber, "publisher");
+                    SootMethod targetMethod = configuredRpcMethod(consumer,
+                            lineNumber, "consumer");
+                    if (!"RETURN_VALUE".equals(jsonString(producer,
+                            "role")) || !"RETURN_VALUE".equals(jsonString(
+                            consumer, "role"))) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " must map return values");
+                    }
+                    String channel = jsonString(row, "channel");
+                    String authority = jsonString(row, "authority");
+                    String fromCell = jsonString(row, "fromCell");
+                    String toCell = jsonString(row, "toCell");
+                    if (channel.isEmpty() || authority.isEmpty()
+                            || fromCell.isEmpty() || toCell.isEmpty()) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " is missing channel, authority, "
+                                + "fromCell, or toCell");
+                    }
+                    String sourceReturnCell = source.getSignature()
+                            + ".return";
+                    if (!sourceReturnCell.equals(fromCell)) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " fromCell does not name the "
+                                + "resolved producer return: " + fromCell);
+                    }
+                    if (source.getReturnType() instanceof VoidType
+                            || targetMethod.getReturnType() instanceof VoidType
+                            || !source.getReturnType().equals(
+                            targetMethod.getReturnType())) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " producer and consumer return "
+                                + "types differ: " + source.getReturnType()
+                                + " vs " + targetMethod.getReturnType());
+                    }
+                    int payloadIndex = jsonInt(publisher,
+                            "payloadParameterIndex", jsonInt(publisher,
+                                    "argumentIndex", 0));
+                    if (payloadIndex < 0
+                            || payloadIndex >= publisherMethod
+                            .getParameterCount()
+                            || !source.getReturnType().equals(publisherMethod
+                            .getParameterType(payloadIndex))) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " publisher payload parameter "
+                                + payloadIndex + " does not match producer "
+                                + "return type " + source.getReturnType());
+                    }
+                    SootField transportField = configuredRpcField(toCell,
+                            lineNumber);
+                    if (!source.getReturnType().equals(
+                            transportField.getType())) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " transport field type "
+                                + transportField.getType()
+                                + " does not match producer return type "
+                                + source.getReturnType());
+                    }
+                    addStaticPortMapping("configured_rpc_return_mapping",
+                            source.getSignature(),
+                            sourceReturnCell,
+                            targetMethod.getSignature(),
+                            targetMethod.getSignature() + ".return",
+                            "configured RPC channel " + channel
+                                    + " authority " + authority
+                                    + " through publisher "
+                                    + publisherMethod.getSignature()
+                                    + " and transport field " + toCell
+                                    + "; mapping only until runtime endpoint "
+                                    + "fingerprints establish equality");
+                    loaded++;
+                }
+            } catch (IOException | RuntimeException exception) {
+                throw new IllegalStateException(
+                        "Could not load configured RPC topology "
+                                + mappingFile, exception);
+            }
+            LOG.info("Loaded {} configured mapping-only RPC return edges from {}",
+                    loaded, mappingFile);
+            if (downstreamDeclarations > 0) {
+                LOG.info("Recognized {} downstream-only declared RPC "
+                                + "equalities in {}; no static semantic edge "
+                                + "was created",
+                        downstreamDeclarations, mappingFile);
+            }
+        }
+
+        private SootMethod configuredRpcMethod(JsonObject endpoint,
+                                               int lineNumber,
+                                               String endpointName) {
+            String owner = jsonString(endpoint, "owner");
+            String name = jsonString(endpoint, "name");
+            List<String> parameters = new ArrayList<>();
+            JsonElement parameterElement = endpoint == null
+                    ? null : endpoint.get("parameters");
+            if (parameterElement != null && !parameterElement.isJsonNull()
+                    && !parameterElement.isJsonArray()) {
+                throw new IllegalStateException("RPC topology row "
+                        + lineNumber + " " + endpointName
+                        + " parameters must be an array");
+            }
+            JsonArray configuredParameters = parameterElement == null
+                    || parameterElement.isJsonNull()
+                    ? null : parameterElement.getAsJsonArray();
+            if (configuredParameters != null) {
+                for (JsonElement parameter : configuredParameters) {
+                    if (!parameter.isJsonPrimitive()
+                            || !parameter.getAsJsonPrimitive().isString()) {
+                        throw new IllegalStateException("RPC topology row "
+                                + lineNumber + " " + endpointName
+                                + " parameters must contain type strings");
+                    }
+                    parameters.add(parameter.getAsString());
+                }
+            } else {
+                String parameter = jsonString(endpoint, "parameter");
+                if (!parameter.isEmpty()) parameters.add(parameter);
+            }
+            SootClass ownerClass = classesByName.get(owner);
+            List<SootMethod> matches = new ArrayList<>();
+            if (ownerClass != null) {
+                for (SootMethod method : ownerClass.getMethods()) {
+                    if (!method.isConcrete() || !name.equals(method.getName())
+                            || method.getParameterCount()
+                            != parameters.size()) {
+                        continue;
+                    }
+                    boolean exact = true;
+                    for (int index = 0; index < parameters.size(); index++) {
+                        if (!parameters.get(index).equals(
+                                method.getParameterType(index).toString())) {
+                            exact = false;
+                            break;
+                        }
+                    }
+                    if (exact) matches.add(method);
+                }
+            }
+            if (matches.size() != 1) {
+                throw new IllegalStateException("RPC topology row "
+                        + lineNumber + " " + endpointName + " " + owner
+                        + "." + name + parameters + " matched "
+                        + matches.size() + " concrete methods");
+            }
+            return matches.get(0);
+        }
+
+        private SootField configuredRpcField(String signature,
+                                             int lineNumber) {
+            List<SootField> matches = new ArrayList<>();
+            for (SootClass sootClass : classesByName.values()) {
+                for (SootField field : sootClass.getFields()) {
+                    if (signature.equals(field.getSignature())) {
+                        matches.add(field);
+                    }
+                }
+            }
+            if (matches.size() != 1) {
+                throw new IllegalStateException("RPC topology row "
+                        + lineNumber + " transport field " + signature
+                        + " matched " + matches.size() + " fields");
+            }
+            return matches.get(0);
         }
 
         private void buildStaticPortMappings() {

@@ -30,8 +30,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Composes one validated fatal-region query with concolic summaries of its
- * upstream region summaries and runtime-validated equality/read-from edges.
+ * Composes one selected fatal-region query with concolic summaries of its
+ * upstream regions and runtime-validated equality/read-from edges.  The
+ * resulting SMT may be a structurally complete bootstrap formula used to
+ * obtain a replay model; only a formula backed by a validated, unforced target
+ * replay is marked as a complete final composition.
  *
  * <p>This class is intentionally project independent.  Project adapters may
  * discover regions and map ports, but cannot add semantic assertions; the
@@ -124,8 +127,11 @@ public final class ConcolicSmtComposer {
                     fatal, fatalReplayClaimed);
         }
         JsonObject fatalReplay = fatalReplaySelection.summary;
-        boolean fatalReplayValidated = !fatalReplayRequired
-                || fatalReplaySelection.valid;
+        // A seed query is useful for producing the next replay model, but it
+        // is not itself evidence that the target branch was reached without
+        // an override.  Do not make replay validation vacuously true merely
+        // because the selected query has not claimed a replay yet.
+        boolean fatalReplayValidated = fatalReplaySelection.valid;
 
         PortIndex ports = PortIndex.from(regions);
         JsonObject rawContext = object(fatal, "symbolicContext");
@@ -201,10 +207,11 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("fatalSite", string(fatal, "siteId"));
         manifest.addProperty("fatalConditionCount", fatalConstraints.size());
         manifest.addProperty("fatalReplayRequired", fatalReplayRequired);
+        manifest.addProperty("fatalReplayRequiredForFinalReport", true);
         manifest.addProperty("fatalReplayClaimed", fatalReplayClaimed);
         manifest.addProperty("fatalReplayValidated", fatalReplayValidated);
         manifest.addProperty("fatalReplayGap",
-                fatalReplayRequired && !fatalReplayValidated
+                !fatalReplayValidated
                         ? fatalReplaySelection.reason : "");
         manifest.addProperty("fatalReplayExactCandidateCount",
                 fatalReplaySelection.exactCandidateCount);
@@ -247,6 +254,8 @@ public final class ConcolicSmtComposer {
                 resolved.selectedEdges.size());
         manifest.addProperty("resolvedRecursiveEdgeCount",
                 resolved.recursiveEdgeCount());
+        manifest.add("resolvedEdgeBindings",
+                resolved.resolvedEdgeCatalog());
         manifest.add("includedSummaries", GSON.toJsonTree(includedSummaries));
         manifest.add("missingSummaryRegions",
                 GSON.toJsonTree(missingSummaries));
@@ -289,16 +298,24 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("symbolicRelationshipCandidateCount",
                 emitter.relationshipCandidates.size());
         manifest.addProperty("assertionCount", emitter.assertionCount);
-        boolean complete = missingSummaries.isEmpty()
+        boolean structurallyComplete = missingSummaries.isEmpty()
                 && emitter.incompleteSummaries.isEmpty()
                 && emitter.unsupported.isEmpty()
                 && emitter.unboundPorts.isEmpty()
                 && emitter.caseProjectionCatalogComplete
-                && fatalReplayValidated
                 && bool(fatal, "readyForSolver", false);
+        boolean complete = structurallyComplete && fatalReplayValidated;
+        String compositionStage = fatalReplayValidated
+                ? "VALIDATED_FINAL" : "BOOTSTRAP";
+        manifest.addProperty("compositionStage", compositionStage);
+        manifest.addProperty("structurallyComplete", structurallyComplete);
+        manifest.addProperty("eligibleForBootstrapModel",
+                structurallyComplete && !fatalReplayValidated);
         manifest.addProperty("complete", complete);
         manifest.addProperty("status", complete
                 ? "COMPLETE_BOUNDED_COMPOSITION"
+                : structurallyComplete
+                ? "STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION"
                 : "COMPOSITION_WITH_EXPLICIT_GAPS");
         manifest.addProperty("soundnessScope",
                 "SELECTED_REGION_PATHS_AND_RUNTIME_VALIDATED_BINDINGS");
@@ -325,6 +342,11 @@ public final class ConcolicSmtComposer {
                 "CHECK_BASE_AND_NEGATED_RELATION_WITH_SMT_SOLVER");
         relationships.addProperty("fatalReplayValidated",
                 fatalReplayValidated);
+        relationships.addProperty("compositionStage", compositionStage);
+        relationships.addProperty("structurallyComplete",
+                structurallyComplete);
+        relationships.addProperty("eligibleForBootstrapModel",
+                structurallyComplete && !fatalReplayValidated);
         relationships.addProperty("boundedComposition",
                 !arguments.boundedUpstreamRegions.isEmpty());
         relationships.add("boundedUpstreamRegions", GSON.toJsonTree(
@@ -1258,6 +1280,24 @@ public final class ConcolicSmtComposer {
             return source + "->" + targetRegion + "@" + targetInstance
                     + ":" + targetInput + "\n" + GSON.toJson(binding);
         }
+
+        private JsonObject toJson() {
+            JsonObject result = new JsonObject();
+            result.addProperty("sourceRegion", source.regionId);
+            result.addProperty("sourceRegionInstance", source.instanceId);
+            result.addProperty("sourceOutput", source.outputPort);
+            result.addProperty("sourceSummaryId",
+                    string(summary, "summaryId"));
+            result.addProperty("targetRegion", targetRegion);
+            result.addProperty("targetRegionInstance", targetInstance);
+            result.addProperty("targetInput", targetInput);
+            result.addProperty("recursive", recursive);
+            result.addProperty("selectionAuthority",
+                    string(binding, "selectionAuthority"));
+            result.addProperty("edgeId", string(binding, "edgeId"));
+            result.add("binding", binding.deepCopy());
+            return result;
+        }
     }
 
     private static final class ResolvedSummaryGraph {
@@ -1415,6 +1455,14 @@ public final class ConcolicSmtComposer {
             int result = 0;
             for (ResolvedEdge edge : selectedEdges) {
                 if (edge.recursive) result++;
+            }
+            return result;
+        }
+
+        private JsonArray resolvedEdgeCatalog() {
+            JsonArray result = new JsonArray();
+            for (ResolvedEdge edge : selectedEdges) {
+                result.add(edge.toJson());
             }
             return result;
         }

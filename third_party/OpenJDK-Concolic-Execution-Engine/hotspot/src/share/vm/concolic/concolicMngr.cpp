@@ -69,6 +69,16 @@ Expression *concrete_boxed_primitive_expression(oop value) {
   }
 }
 
+BasicType boxed_primitive_type(oop value) {
+  if (value == NULL || value->klass() == NULL
+      || value->klass()->name() == NULL) {
+    return T_ILLEGAL;
+  }
+  ResourceMark rm;
+  return primitive_target(
+      std::string(value->klass()->name()->as_C_string()));
+}
+
 void serialize_concrete_primitive(ArrayValueWriter &writer,
                                   typeArrayOop array, BasicType type,
                                   int index) {
@@ -312,6 +322,7 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   }
 
   oop obj = handle();
+  BasicType primitive_type = boxed_primitive_type(obj);
   bool symbolic = obj->is_symbolic();
   if (obj->is_array()) {
     arrayOop array = arrayOop(obj);
@@ -340,6 +351,20 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
     writer.Key("kind");
     writer.String(temporary_expression
         ? "CONCRETE_PRIMITIVE" : "CONCRETE_OBJECT");
+  }
+
+  if (primitive_type != T_ILLEGAL) {
+    char descriptor[2] = { type2char(primitive_type), '\0' };
+    writer.Key("javaTypeDescriptor");
+    writer.String(descriptor);
+  }
+  writer.Key("expressionAuthority");
+  if (temporary_expression) {
+    writer.String("VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1");
+  } else if (primitive_type != T_ILLEGAL && expression != NULL) {
+    writer.String("VM_EXACT_BOXED_PRIMITIVE_SHADOW_V1");
+  } else {
+    writer.String("VM_OBJECT_EXPRESSION_OBSERVATION_V1");
   }
 
   writer.Key("expression");

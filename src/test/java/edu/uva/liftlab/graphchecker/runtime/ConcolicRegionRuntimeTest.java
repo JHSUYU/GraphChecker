@@ -12,6 +12,7 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -106,7 +107,16 @@ public class ConcolicRegionRuntimeTest {
         for (int index = 0; index < pending.size(); index++) {
             final Class<?> type = pending.get(index);
             pending.addAll(Arrays.asList(type.getDeclaredClasses()));
-            ClassReader reader = new ClassReader(type.getName());
+            String resource = "/" + type.getName().replace('.', '/')
+                    + ".class";
+            ClassReader reader;
+            try (InputStream bytecode = type.getResourceAsStream(resource)) {
+                if (bytecode == null) {
+                    throw new IllegalStateException(
+                            "Missing runtime bytecode resource " + resource);
+                }
+                reader = new ClassReader(bytecode);
+            }
             reader.accept(new ClassVisitor(Opcodes.ASM9) {
                 @Override
                 public MethodVisitor visitMethod(int access, String name,
@@ -769,6 +779,11 @@ public class ConcolicRegionRuntimeTest {
                         + "\"symbolic\":false,"
                         + "\"kind\":\"CONCRETE_OBJECT\","
                         + "\"expression\":null}"));
+        assertEquals("an inactive VM envelope is not a bare expression",
+                null, ConcolicRegionRuntime.canonicalEngineExpression(
+                        "{\"schemaVersion\":1,\"active\":false,"
+                                + "\"symbolic\":false,"
+                                + "\"kind\":\"CONCOLIC_DISABLED\"}"));
     }
 
     @Test
@@ -2180,6 +2195,10 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
                     observed.getAsJsonObject("expression").get("_exp")
                             .getAsString());
+            assertEquals(1, observed.get(
+                    "expressionEnvelopeSchemaVersion").getAsInt());
+            assertTrue(observed.get("expressionEnvelopeActive")
+                    .getAsBoolean());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -2281,6 +2300,10 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("M_L_field_REGION.TEST.in.0_java/lang/String",
                     observed.getAsJsonObject("expression").get("_exp")
                             .getAsString());
+            assertEquals(1, observed.get(
+                    "expressionEnvelopeSchemaVersion").getAsInt());
+            assertTrue(observed.get("expressionEnvelopeActive")
+                    .getAsBoolean());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();

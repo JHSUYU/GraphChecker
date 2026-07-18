@@ -2735,16 +2735,72 @@ public final class ConcolicRegionRuntime {
      * rather than string- or project-specific.
      */
     static JsonElement canonicalEngineExpression(String serialized) {
+        return engineExpressionCapture(serialized).expression;
+    }
+
+    private static EngineExpressionCapture engineExpressionCapture(
+            String serialized) {
         JsonElement parsed = parseJson(serialized);
         if (parsed.isJsonObject()) {
             JsonObject envelope = parsed.getAsJsonObject();
-            if (envelope.has("expression")) {
-                JsonElement expression = envelope.get("expression");
-                return expression == null || expression.isJsonNull()
-                        ? null : expression;
+            // A VM envelope can legitimately omit expression (for example
+            // CONCOLIC_DISABLED and NULL).  Recognize the envelope from its
+            // schema fields so it can never be mistaken for a legacy bare
+            // expression tree.
+            if (envelope.has("expression")
+                    || envelope.has("schemaVersion")
+                    && envelope.has("kind")
+                    && envelope.has("active")
+                    && envelope.has("symbolic")) {
+                JsonElement expression = envelope.has("expression")
+                        ? envelope.get("expression") : null;
+                return new EngineExpressionCapture(expression == null
+                        || expression.isJsonNull() ? null : expression,
+                        integer(envelope, "schemaVersion", -1),
+                        bool(envelope, "active", false),
+                        jsonString(envelope, "kind"),
+                        bool(envelope, "symbolic", false),
+                        jsonString(envelope, "expressionAuthority"),
+                        jsonString(envelope, "javaTypeDescriptor"));
             }
         }
-        return parsed;
+        return new EngineExpressionCapture(parsed, -1, false, "", false,
+                "", "");
+    }
+
+    private static final class EngineExpressionCapture {
+        private final JsonElement expression;
+        private final int schemaVersion;
+        private final boolean active;
+        private final String kind;
+        private final boolean symbolic;
+        private final String authority;
+        private final String javaTypeDescriptor;
+
+        private EngineExpressionCapture(JsonElement expression,
+                                        int schemaVersion, boolean active,
+                                        String kind, boolean symbolic,
+                                        String authority,
+                                        String javaTypeDescriptor) {
+            this.expression = expression;
+            this.schemaVersion = schemaVersion;
+            this.active = active;
+            this.kind = safe(kind);
+            this.symbolic = symbolic;
+            this.authority = safe(authority);
+            this.javaTypeDescriptor = safe(javaTypeDescriptor);
+        }
+
+        private void addEvidence(JsonObject row) {
+            row.addProperty("expressionEnvelopeSchemaVersion",
+                    schemaVersion);
+            row.addProperty("expressionEnvelopeActive", active);
+            row.addProperty("expressionEnvelopeKind", kind);
+            row.addProperty("expressionEnvelopeSymbolic", symbolic);
+            row.addProperty("expressionEnvelopeAuthority", authority);
+            row.addProperty("expressionEnvelopeJavaTypeDescriptor",
+                    javaTypeDescriptor);
+        }
     }
 
     /** Returns every exact native remove match in the selected raw suffix. */
@@ -3036,14 +3092,16 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            JsonElement expression = canonicalEngineExpression(
+            EngineExpressionCapture captured = engineExpressionCapture(
                     api.expression(value));
+            JsonElement expression = captured.expression;
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException("custom VM returned no "
                         + "expression for captured output value "
                         + row.get("concreteValueClass").getAsString());
             }
             row.add("expression", expression);
+            captured.addEvidence(row);
             row.addProperty("expressionCaptured", true);
             JsonArray projectionVerifications =
                     active.verifyMapProjectionOutput(outputPort, outputCell,
@@ -3171,14 +3229,16 @@ public final class ConcolicRegionRuntime {
                         + "failed" + (observation.error.isEmpty() ? ""
                         : ": " + observation.error));
             }
-            JsonElement expression = canonicalEngineExpression(
+            EngineExpressionCapture captured = engineExpressionCapture(
                     api.expression(assignedValue));
+            JsonElement expression = captured.expression;
             if (expression == null || expression.isJsonNull()) {
                 throw new IllegalStateException("custom VM returned no "
                         + "expression for captured field assignment value "
                         + row.get("assignedValueClass").getAsString());
             }
             row.add("expression", expression);
+            captured.addEvidence(row);
             row.addProperty("expressionCaptured", true);
         } catch (Throwable throwable) {
             row.addProperty("expressionCaptured", false);

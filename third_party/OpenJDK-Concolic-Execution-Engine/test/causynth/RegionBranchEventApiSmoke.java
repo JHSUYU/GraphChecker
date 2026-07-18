@@ -1,6 +1,7 @@
 public final class RegionBranchEventApiSmoke {
     private static final class Input {
         int value = 1;
+        int otherValue = 1;
         long wide = 2L;
         boolean flag = true;
     }
@@ -30,7 +31,17 @@ public final class RegionBranchEventApiSmoke {
         String concreteBoolean = System.getSymbolicExpression(Boolean.FALSE);
         String concreteLong = System.getSymbolicExpression(
                 Long.valueOf(1234567890123L));
+        String concreteChar = System.getSymbolicExpression(
+                Character.valueOf('A'));
+        String concreteFloat = System.getSymbolicExpression(
+                Float.valueOf(1.25F));
+        String concreteDouble = System.getSymbolicExpression(
+                Double.valueOf(1.25D));
         check(concreteInt.contains("\"kind\":\"CONCRETE_PRIMITIVE\"")
+                        && concreteInt.contains(
+                        "\"javaTypeDescriptor\":\"I\"")
+                        && concreteInt.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1\"")
                         && concreteInt.contains("\"_type\":\"ConstExpr\"")
                         && concreteInt.contains("\"_java_type\":\"I\"")
                         && concreteInt.contains("Y_I_10"),
@@ -39,6 +50,10 @@ public final class RegionBranchEventApiSmoke {
         check(concreteBoolean.contains(
                         "\"kind\":\"CONCRETE_PRIMITIVE\"")
                         && concreteBoolean.contains(
+                        "\"javaTypeDescriptor\":\"Z\"")
+                        && concreteBoolean.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1\"")
+                        && concreteBoolean.contains(
                         "\"_type\":\"ConstExpr\"")
                         && concreteBoolean.contains(
                         "\"_java_type\":\"Z\"")
@@ -46,25 +61,76 @@ public final class RegionBranchEventApiSmoke {
                 "concrete Boolean was not serialized as a typed constant: "
                         + concreteBoolean);
         check(concreteLong.contains("\"kind\":\"CONCRETE_PRIMITIVE\"")
+                        && concreteLong.contains(
+                        "\"javaTypeDescriptor\":\"J\"")
+                        && concreteLong.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1\"")
                         && concreteLong.contains("\"_type\":\"ConstExpr\"")
                         && concreteLong.contains("\"_java_type\":\"J\"")
                         && concreteLong.contains("Y_J_1234567890123"),
                 "concrete Long was not serialized as a typed constant: "
                         + concreteLong);
+        check(concreteChar.contains("\"javaTypeDescriptor\":\"C\"")
+                        && concreteChar.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1\"")
+                        && concreteChar.contains("Y_C_65"),
+                "concrete Character did not use a numeric constant: "
+                        + concreteChar);
+        check(concreteFloat.contains("\"javaTypeDescriptor\":\"F\"")
+                        && concreteFloat.contains("Y_F_1.250000000e+00"),
+                "concrete Float lost round-trip precision: "
+                        + concreteFloat);
+        check(concreteDouble.contains("\"javaTypeDescriptor\":\"D\"")
+                        && concreteDouble.contains(
+                        "Y_D_1.25000000000000000e+00"),
+                "concrete Double lost round-trip precision: "
+                        + concreteDouble);
 
         System.symbolizeField(input, "value", "branch_value");
+        System.symbolizeField(input, "otherValue", "branch_other_value");
         System.symbolizeField(input, "wide", "branch_wide");
         System.symbolizeField(input, "flag", "branch_flag");
 
-        Integer boxedInt = Integer.valueOf(input.value);
-        Boolean boxedBoolean = Boolean.valueOf(input.flag);
+        Integer boxedInt = new Integer(input.value);
+        Integer boxedOtherInt = new Integer(input.otherValue);
+        Boolean boxedBoolean = new Boolean(input.flag);
         String intExpression = System.getSymbolicExpression(boxedInt);
+        String otherIntExpression = System.getSymbolicExpression(
+                boxedOtherInt);
         String booleanExpression = System.getSymbolicExpression(boxedBoolean);
-        check(intExpression.contains("branch_value"),
+        check(intExpression.contains("branch_value")
+                        && intExpression.contains(
+                        "\"javaTypeDescriptor\":\"I\"")
+                        && intExpression.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_BOXED_PRIMITIVE_SHADOW_V1\""),
                 "boxed int lost its primitive shadow: " + intExpression);
-        check(booleanExpression.contains("branch_flag"),
+        check(otherIntExpression.contains("branch_other_value")
+                        && !otherIntExpression.contains("branch_value_"),
+                "second fresh int wrapper has the wrong shadow: "
+                        + otherIntExpression);
+        check(System.getSymbolicExpression(boxedInt).contains(
+                        "branch_value"),
+                "second same-value wrapper overwrote the first shadow");
+        check(booleanExpression.contains("branch_flag")
+                        && booleanExpression.contains(
+                        "\"javaTypeDescriptor\":\"Z\"")
+                        && booleanExpression.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_BOXED_PRIMITIVE_SHADOW_V1\""),
                 "boxed boolean lost its primitive shadow: "
                         + booleanExpression);
+        String cachedConcrete = System.getSymbolicExpression(
+                Integer.valueOf(1));
+        check(cachedConcrete.contains(
+                        "\"kind\":\"CONCRETE_PRIMITIVE\"")
+                        && cachedConcrete.contains(
+                        "\"javaTypeDescriptor\":\"I\"")
+                        && cachedConcrete.contains("\"expressionAuthority\":"
+                        + "\"VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1\"")
+                        && cachedConcrete.contains("Y_I_1")
+                        && !cachedConcrete.contains("branch_value")
+                        && !cachedConcrete.contains("branch_other_value"),
+                "fresh symbolic boxes polluted IntegerCache: "
+                        + cachedConcrete);
 
         long first = System.markConcolicBranch("SAME_SHAPE.1", 1);
         boolean firstOutcome;

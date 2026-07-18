@@ -1507,10 +1507,9 @@ public class CausynthPipelineTest {
         SootClass integer = new SootClass("java.lang.Integer",
                 Modifier.PUBLIC);
         Scene.v().addClass(integer);
-        integer.addMethod(new SootMethod("valueOf",
+        integer.addMethod(new SootMethod("<init>",
                 Collections.<soot.Type>singletonList(IntType.v()),
-                RefType.v("java.lang.Integer"),
-                Modifier.PUBLIC | Modifier.STATIC | Modifier.NATIVE));
+                VoidType.v(), Modifier.PUBLIC));
 
         SootClass owner = new SootClass("example.PrimitiveReturnRegion",
                 Modifier.PUBLIC);
@@ -1531,16 +1530,24 @@ public class CausynthPipelineTest {
 
         List<Unit> units = new ArrayList<>();
         Unit wrapperCall = null;
+        Unit wrapperAllocation = null;
         Unit exitCall = null;
         Unit primitiveStringCall = null;
         for (Unit unit : body.getUnits()) {
             units.add(unit);
             InvokeExpr invoke = invokeExpression(unit);
+            if (unit instanceof AssignStmt
+                    && ((AssignStmt) unit).getRightOp()
+                    instanceof soot.jimple.NewExpr
+                    && "java.lang.Integer".equals(((AssignStmt) unit)
+                    .getRightOp().getType().toString())) {
+                wrapperAllocation = unit;
+            }
             if (invoke == null) continue;
             String method = invoke.getMethodRef().name();
             String declaring = invoke.getMethodRef().declaringClass()
                     .getName();
-            if ("valueOf".equals(method)
+            if ("<init>".equals(method)
                     && "java.lang.Integer".equals(declaring)) {
                 wrapperCall = unit;
             } else if ("valueOf".equals(method)
@@ -1550,22 +1557,81 @@ public class CausynthPipelineTest {
                 exitCall = unit;
             }
         }
+        assertNotNull(wrapperAllocation);
         assertNotNull(wrapperCall);
         assertNotNull(primitiveStringCall);
         assertNotNull(exitCall);
+        int wrapperAllocationIndex = units.indexOf(wrapperAllocation);
         int wrapperIndex = units.indexOf(wrapperCall);
         int stringIndex = units.indexOf(primitiveStringCall);
         int exitIndex = units.indexOf(exitCall);
-        assertTrue(wrapperIndex < stringIndex && stringIndex < exitIndex);
+        assertTrue(wrapperAllocationIndex < wrapperIndex
+                && wrapperIndex < stringIndex && stringIndex < exitIndex);
         Unit pause = units.get(wrapperIndex + 1);
         assertRuntimeInvoke(pause,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
                 "pauseObservation");
         InvokeExpr exit = invokeExpression(exitCall);
-        assertTrue(wrapperCall instanceof AssignStmt);
-        assertSame(((AssignStmt) wrapperCall).getLeftOp(), exit.getArg(1));
+        assertTrue(invokeExpression(wrapperCall)
+                instanceof soot.jimple.SpecialInvokeExpr);
+        assertSame(((soot.jimple.SpecialInvokeExpr) invokeExpression(
+                wrapperCall)).getBase(), exit.getArg(1));
         assertFalse("primitive return must not be serialized as null",
                 exit.getArg(1) instanceof soot.jimple.NullConstant);
+    }
+
+    @Test
+    public void smallIntegralConcreteCaptureUsesNumericStringEncoding()
+            throws Exception {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+        SootClass string = new SootClass("java.lang.String",
+                Modifier.PUBLIC);
+        Scene.v().addClass(string);
+        string.setSuperclass(object);
+        string.addMethod(new SootMethod("valueOf",
+                Collections.<soot.Type>singletonList(IntType.v()),
+                RefType.v("java.lang.String"),
+                Modifier.PUBLIC | Modifier.STATIC | Modifier.NATIVE));
+        SootClass owner = new SootClass("example.SmallIntegralCapture",
+                Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setSuperclass(object);
+        SootMethod host = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(host);
+        Body body = Jimple.v().newBody(host);
+        host.setActiveBody(body);
+
+        Method encode = CausynthPipeline.class.getDeclaredMethod(
+                "primitiveValueString", Body.class, Value.class, List.class);
+        encode.setAccessible(true);
+        soot.Type[] types = {soot.ByteType.v(), soot.ShortType.v(),
+                soot.CharType.v()};
+        for (int index = 0; index < types.length; index++) {
+            Local value = Jimple.v().newLocal("v" + index, types[index]);
+            body.getLocals().add(value);
+            body.getUnits().add(Jimple.v().newAssignStmt(value,
+                    IntConstant.v(index + 1)));
+            List<Unit> units = new ArrayList<>();
+            Value result = (Value) encode.invoke(null, body, value, units);
+            for (Unit unit : units) body.getUnits().add(unit);
+
+            assertEquals(2, units.size());
+            assertTrue(((AssignStmt) units.get(0)).getRightOp()
+                    instanceof soot.jimple.CastExpr);
+            assertEquals(IntType.v(), ((soot.jimple.CastExpr)
+                    ((AssignStmt) units.get(0)).getRightOp()).getCastType());
+            InvokeExpr stringValueOf = invokeExpression(units.get(1));
+            assertNotNull(stringValueOf);
+            assertEquals(IntType.v(), stringValueOf.getMethodRef()
+                    .parameterType(0));
+            assertEquals(RefType.v("java.lang.String"), result.getType());
+        }
+        body.getUnits().add(Jimple.v().newReturnVoidStmt());
+        body.validate();
     }
 
     @Test
@@ -2939,6 +3005,97 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void configuredRpcTopologyResolvesExactMethodsInScopedAnalysis()
+            throws Exception {
+        RpcTopologyFixture fixture = rpcTopologyFixture();
+        JsonObject row = rpcTopologyRow(fixture);
+        Path mapping = Files.createTempFile("causynth-rpc-topology-",
+                ".jsonl");
+        try {
+            Files.write(mapping, (row + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            Object analyzer = newStaticAnalyzer("hdfs_block_key", mapping);
+            Field mappingsField = analyzer.getClass().getDeclaredField(
+                    "staticPortMappings");
+            mappingsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            List<Object> mappings = (List<Object>) mappingsField.get(analyzer);
+            assertEquals(1, mappings.size());
+            Object portMapping = mappings.get(0);
+            assertEquals("configured_rpc_return_mapping",
+                    privateString(portMapping, "kind"));
+            assertEquals(fixture.producer.getSignature(),
+                    privateString(portMapping, "sourceMethod"));
+            assertEquals(fixture.producer.getSignature() + ".return",
+                    privateString(portMapping, "sourceCell"));
+            assertEquals(fixture.consumer.getSignature(),
+                    privateString(portMapping, "targetMethod"));
+            assertEquals(fixture.consumer.getSignature() + ".return",
+                    privateString(portMapping, "targetCell"));
+            String evidence = privateString(portMapping, "evidence");
+            assertTrue(evidence, evidence.contains("channel orders"));
+            assertTrue(evidence, evidence.contains(
+                    fixture.publisher.getSignature()));
+            assertTrue(evidence, evidence.contains(
+                    fixture.transport.getSignature()));
+            assertTrue(evidence, evidence.contains("mapping only"));
+        } finally {
+            Files.deleteIfExists(mapping);
+        }
+    }
+
+    @Test
+    public void regionPortRpcEqualityIsRecognizedButNotAssertedByStaticPass()
+            throws Exception {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "DECLARED_RPC_EQUALITY");
+        row.addProperty("authority", "FIXTURE_DECLARATION_ONLY");
+        row.addProperty("fromEndpoint", "REGION.A.out.0");
+        row.addProperty("toEndpoint", "REGION.C.in.0");
+        Path mapping = Files.createTempFile("causynth-rpc-declared-",
+                ".jsonl");
+        try {
+            Files.write(mapping, (row + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Object analyzer = newStaticAnalyzer("", mapping);
+            Field mappingsField = analyzer.getClass().getDeclaredField(
+                    "staticPortMappings");
+            mappingsField.setAccessible(true);
+            assertTrue(((List<?>) mappingsField.get(analyzer)).isEmpty());
+        } finally {
+            Files.deleteIfExists(mapping);
+        }
+    }
+
+    @Test
+    public void configuredRpcTopologyRejectsEndpointDeclarationDrift()
+            throws Exception {
+        RpcTopologyFixture fixture = rpcTopologyFixture();
+        JsonObject row = rpcTopologyRow(fixture);
+        row.addProperty("fromCell", fixture.producer.getSignature()
+                + ".param0:java.lang.Boolean");
+        Path mapping = Files.createTempFile("causynth-rpc-invalid-",
+                ".jsonl");
+        try {
+            Files.write(mapping, (row + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Throwable failure = null;
+            try {
+                newStaticAnalyzer("", mapping);
+            } catch (InvocationTargetException exception) {
+                failure = exception;
+            }
+            assertNotNull("topology drift must fail closed", failure);
+            assertTrue(deepMessage(failure), deepMessage(failure).contains(
+                    "fromCell does not name the resolved producer return"));
+        } finally {
+            Files.deleteIfExists(mapping);
+        }
+    }
+
+    @Test
     public void hdfsScopedIndexRecursesThroughConstantSetterAndCallerGuard()
             throws Exception {
         RecursiveFieldWriterFixture fixture = recursiveFieldWriterFixture();
@@ -3128,6 +3285,92 @@ public class CausynthPipelineTest {
         return value instanceof Number ? ((Number) value).intValue() : -1;
     }
 
+    private static RpcTopologyFixture rpcTopologyFixture() {
+        SootClass producerOwner = new SootClass("example.rpc.Producer",
+                Modifier.PUBLIC);
+        Scene.v().addClass(producerOwner);
+        producerOwner.setApplicationClass();
+        SootMethod producer = new SootMethod("compute",
+                Collections.<soot.Type>singletonList(
+                        RefType.v("java.lang.Boolean")), IntType.v(),
+                Modifier.PUBLIC);
+        producerOwner.addMethod(producer);
+
+        SootClass bus = new SootClass("example.rpc.Bus", Modifier.PUBLIC);
+        Scene.v().addClass(bus);
+        bus.setApplicationClass();
+        SootField transport = new SootField("wire", IntType.v(),
+                Modifier.PRIVATE);
+        bus.addField(transport);
+        SootMethod publisher = new SootMethod("publish",
+                Arrays.<soot.Type>asList(RefType.v("java.lang.String"),
+                        IntType.v()), VoidType.v(), Modifier.PUBLIC);
+        bus.addMethod(publisher);
+        SootMethod consumer = new SootMethod("receive",
+                Collections.<soot.Type>emptyList(), IntType.v(),
+                Modifier.PUBLIC);
+        bus.addMethod(consumer);
+        return new RpcTopologyFixture(producer, publisher, consumer,
+                transport);
+    }
+
+    private static JsonObject rpcTopologyRow(RpcTopologyFixture fixture) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "RPC_TOPOLOGY");
+        row.addProperty("authority", "TEST_RUNTIME_GATED_TOPOLOGY");
+        row.addProperty("channel", "orders");
+        row.addProperty("fromCell", fixture.producer.getSignature()
+                + ".return");
+        row.addProperty("toCell", fixture.transport.getSignature());
+
+        JsonObject producer = new JsonObject();
+        producer.addProperty("owner", fixture.producer.getDeclaringClass()
+                .getName());
+        producer.addProperty("name", fixture.producer.getName());
+        producer.addProperty("parameter", "java.lang.Boolean");
+        producer.addProperty("role", "RETURN_VALUE");
+        row.add("producer", producer);
+
+        JsonObject publisher = new JsonObject();
+        publisher.addProperty("owner", fixture.publisher.getDeclaringClass()
+                .getName());
+        publisher.addProperty("name", fixture.publisher.getName());
+        JsonArray publisherParameters = new JsonArray();
+        publisherParameters.add("java.lang.String");
+        publisherParameters.add("int");
+        publisher.add("parameters", publisherParameters);
+        publisher.addProperty("payloadParameterIndex", 1);
+        row.add("publisher", publisher);
+
+        JsonObject consumer = new JsonObject();
+        consumer.addProperty("owner", fixture.consumer.getDeclaringClass()
+                .getName());
+        consumer.addProperty("name", fixture.consumer.getName());
+        consumer.addProperty("role", "RETURN_VALUE");
+        row.add("consumer", consumer);
+        return row;
+    }
+
+    private static String privateString(Object owner, String fieldName)
+            throws Exception {
+        Field field = owner.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return String.valueOf(field.get(owner));
+    }
+
+    private static String deepMessage(Throwable failure) {
+        StringBuilder result = new StringBuilder();
+        Throwable current = failure;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                result.append(current.getMessage()).append('\n');
+            }
+            current = current.getCause();
+        }
+        return result.toString();
+    }
+
     private static void registerStaticPortMapping(Object analyzer,
                                                   String kind,
                                                   String method,
@@ -3186,21 +3429,27 @@ public class CausynthPipelineTest {
     }
 
     private static Object newStaticAnalyzer() throws Exception {
-        return newStaticAnalyzer("");
+        return newStaticAnalyzer("", null);
     }
 
     private static Object newStaticAnalyzer(String analysisScope)
+            throws Exception {
+        return newStaticAnalyzer(analysisScope, null);
+    }
+
+    private static Object newStaticAnalyzer(String analysisScope,
+                                            Path rpcMappingFile)
             throws Exception {
         Class<?> targetClass = Class.forName(
                 CausynthPipeline.class.getName() + "$TargetContext");
         Constructor<?> targetConstructor = targetClass.getDeclaredConstructor(
                 Path.class, Path.class, Path.class, Path.class, List.class,
-                String.class, String.class, String.class);
+                String.class, String.class, String.class, Path.class);
         targetConstructor.setAccessible(true);
         Path current = Paths.get(".").toAbsolutePath().normalize();
         Object target = targetConstructor.newInstance(current, current,
                 current, current, Collections.emptyList(), null, null,
-                analysisScope);
+                analysisScope, rpcMappingFile);
         Class<?> analyzerClass = Class.forName(
                 CausynthPipeline.class.getName()
                         + "$SeedBackwardStaticAnalyzer");
@@ -4208,6 +4457,23 @@ public class CausynthPipelineTest {
                 Collections.emptyList(), VoidType.v());
         fixture.staticMethod(system, "markConcolicBranch",
                 Arrays.asList(fixture.string, IntType.v()), LongType.v());
+    }
+
+    private static final class RpcTopologyFixture {
+        private final SootMethod producer;
+        private final SootMethod publisher;
+        private final SootMethod consumer;
+        private final SootField transport;
+
+        private RpcTopologyFixture(SootMethod producer,
+                                   SootMethod publisher,
+                                   SootMethod consumer,
+                                   SootField transport) {
+            this.producer = producer;
+            this.publisher = publisher;
+            this.consumer = consumer;
+            this.transport = transport;
+        }
     }
 
     private static final class TypeFixture {

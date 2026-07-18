@@ -324,7 +324,8 @@ public final class ConcolicSummaryImporter {
                     normalization.filteredConditions());
             summary.add("pathConditionNormalization", normalizationSummary);
             OutputExpressionExtraction outputExtraction =
-                    outputExpressions(raw, activation, captureGoal);
+                    outputExpressions(raw, activation, captureGoal,
+                            normalization);
             JsonObject outputs = outputExtraction.expressions;
             heapEffects.bindOutputExpressions(outputs);
             summary.add("outputExpressions", outputs);
@@ -873,7 +874,8 @@ public final class ConcolicSummaryImporter {
 
     private static OutputExpressionExtraction outputExpressions(
             JsonObject raw, JsonObject activation,
-            RegionCaptureGoal captureGoal) {
+            RegionCaptureGoal captureGoal,
+            PathNormalization normalization) {
         JsonObject result = new JsonObject();
         JsonElement rootExpression = copy(raw.get("rootOutputExpression"),
                 new JsonObject());
@@ -892,7 +894,7 @@ public final class ConcolicSummaryImporter {
                 || fieldAssignmentCapture);
         if (exactRequestedCapture) {
             return exactOutputCaptureExpressions(raw, activation,
-                    requestedPort);
+                    requestedPort, normalization);
         }
         for (JsonElement element : array(activation, "outputs")) {
             if (!element.isJsonObject()) {
@@ -940,7 +942,8 @@ public final class ConcolicSummaryImporter {
     }
 
     private static OutputExpressionExtraction exactOutputCaptureExpressions(
-            JsonObject raw, JsonObject activation, String requestedPort) {
+            JsonObject raw, JsonObject activation, String requestedPort,
+            PathNormalization normalization) {
         JsonObject expressions = new JsonObject();
         List<String> issues = new ArrayList<>();
         if (requestedPort.isEmpty()) {
@@ -1002,6 +1005,10 @@ public final class ConcolicSummaryImporter {
         if (fieldAssignment && matches.size() == 1) {
             validateExactFieldAssignmentCapture(matches.get(0), activation,
                     issues);
+            if (isConstantExpression(expression)) {
+                validateExactPrimitiveConstantCapture(requests.get(0),
+                        matches.get(0), expression.getAsJsonObject(), issues);
+            }
         }
         if (requests.size() == 1) {
             validateExactArrayOutputExpression(requests.get(0), expression,
@@ -1017,7 +1024,7 @@ public final class ConcolicSummaryImporter {
         ExactPathGuardDependency pathGuardDependency =
                 fieldAssignment && isConstantExpression(expression)
                         ? exactVmPathGuardDependency(raw, activation,
-                        sliceInputs)
+                        sliceInputs, normalization)
                         : ExactPathGuardDependency.notApplicable();
         boolean guardedConstant = pathGuardDependency.complete;
         boolean dependsOnSliceInput = false;
@@ -1085,6 +1092,89 @@ public final class ConcolicSummaryImporter {
                 && !string(expression.getAsJsonObject(), "_exp").isEmpty();
     }
 
+    private static void validateExactPrimitiveConstantCapture(
+            JsonObject request, JsonObject capture, JsonObject expression,
+            List<String> issues) {
+        String descriptor = javaTypeDescriptor(fieldJavaType(firstNonBlank(
+                string(request, "fieldSignature"),
+                string(request, "outputCell"))));
+        if (!("Z".equals(descriptor) || "B".equals(descriptor)
+                || "C".equals(descriptor) || "S".equals(descriptor)
+                || "I".equals(descriptor) || "J".equals(descriptor))) {
+            issues.add("GUARDED_CONSTANT_PRIMITIVE_TYPE_UNSUPPORTED");
+            return;
+        }
+        String wrapper = primitiveWrapperClass(descriptor);
+        String payload = string(expression, "_exp");
+        String concrete = string(capture, "concretePrimitiveValue");
+        boolean exactEnvelope = integer(capture,
+                "expressionEnvelopeSchemaVersion", -1) == 1
+                && bool(capture, "expressionEnvelopeActive", false)
+                && "CONCRETE_PRIMITIVE".equals(string(capture,
+                "expressionEnvelopeKind"))
+                && !bool(capture, "expressionEnvelopeSymbolic", true)
+                && "VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1".equals(string(
+                capture, "expressionEnvelopeAuthority"))
+                && descriptor.equals(string(capture,
+                "expressionEnvelopeJavaTypeDescriptor"));
+        if (!exactEnvelope) {
+            issues.add("GUARDED_CONSTANT_VM_PRIMITIVE_ENVELOPE_INVALID");
+        }
+        if (!descriptor.equals(string(expression, "_java_type"))
+                || wrapper.isEmpty()
+                || !wrapper.equals(string(capture, "assignedValueClass"))
+                || !wrapper.equals(string(capture,
+                "observedFieldValueClass"))
+                || bool(capture, "assignedValueWasNull", true)
+                || bool(capture, "observedFieldValueWasNull", true)
+                || !"BOXED_PRIMITIVE_VALUE_EQUALITY".equals(string(capture,
+                "assignmentIdentityMode"))) {
+            issues.add("GUARDED_CONSTANT_FIELD_TYPE_OR_WRAPPER_MISMATCH");
+        }
+        if (!validConcretePrimitiveLiteral(descriptor, payload)
+                || !samePrimitiveLiteral(descriptor, payload, concrete)) {
+            issues.add("GUARDED_CONSTANT_CAPTURE_VALUE_MISMATCH");
+        }
+    }
+
+    private static String primitiveWrapperClass(String descriptor) {
+        if ("Z".equals(descriptor)) return "java.lang.Boolean";
+        if ("B".equals(descriptor)) return "java.lang.Byte";
+        if ("C".equals(descriptor)) return "java.lang.Character";
+        if ("S".equals(descriptor)) return "java.lang.Short";
+        if ("I".equals(descriptor)) return "java.lang.Integer";
+        if ("J".equals(descriptor)) return "java.lang.Long";
+        return "";
+    }
+
+    private static boolean samePrimitiveLiteral(String descriptor,
+                                                String expression,
+                                                String concrete) {
+        String prefix = "Y_" + descriptor + "_";
+        if (expression == null || !expression.startsWith(prefix)
+                || concrete == null || concrete.trim().isEmpty()) {
+            return false;
+        }
+        String encoded = expression.substring(prefix.length());
+        if ("Z".equals(descriptor)) {
+            Integer left = booleanLiteral(encoded);
+            Integer right = booleanLiteral(concrete.trim());
+            return left != null && left.equals(right);
+        }
+        try {
+            return new java.math.BigInteger(encoded).equals(
+                    new java.math.BigInteger(concrete.trim()));
+        } catch (NumberFormatException malformed) {
+            return false;
+        }
+    }
+
+    private static Integer booleanLiteral(String value) {
+        if ("1".equals(value) || "true".equalsIgnoreCase(value)) return 1;
+        if ("0".equals(value) || "false".equalsIgnoreCase(value)) return 0;
+        return null;
+    }
+
     /**
      * A per-path constant is a relational output when the path guard itself
      * carries the input dependency.  Accept that case only from the exact VM
@@ -1093,7 +1183,8 @@ public final class ConcolicSummaryImporter {
      * summary relation.
      */
     private static ExactPathGuardDependency exactVmPathGuardDependency(
-            JsonObject raw, JsonObject activation, Set<String> sliceInputs) {
+            JsonObject raw, JsonObject activation, Set<String> sliceInputs,
+            PathNormalization normalization) {
         List<String> issues = new ArrayList<>();
         if (bool(raw, "branchOverrideUsed", false)) {
             issues.add("CONSTANT_OUTPUT_PATH_GUARD_USED_BRANCH_OVERRIDE");
@@ -1107,6 +1198,9 @@ public final class ConcolicSummaryImporter {
             if (method.isJsonPrimitive()) {
                 sliceMethods.add(method.getAsString());
             }
+        }
+        if (sliceMethods.isEmpty()) {
+            issues.add("CONSTANT_OUTPUT_PATH_GUARD_MISSING_SLICE_METHODS");
         }
         int mappedCount = 0;
         boolean dependsOnSliceInput = false;
@@ -1125,7 +1219,12 @@ public final class ConcolicSummaryImporter {
                     integer(mapping, "enginePathConditionSize", -1));
             JsonElement rawCondition = mapping.get("rawCondition");
             JsonElement condition = mapping.get("condition");
+            int normalizedIndex = normalization == null
+                    ? -1 : normalization.index(index);
             boolean exact = index < enginePath.size()
+                    && normalizedIndex >= 0
+                    && normalizedIndex < normalization.conditions.size()
+                    && normalization.isSemantic(index)
                     && occurrence > 0
                     && occurrence == integer(mapping, "vmOccurrence", -1)
                     && integer(mapping, "vmBranchEventId", 0) > 0
@@ -1155,14 +1254,16 @@ public final class ConcolicSummaryImporter {
                     && rawCondition != null && condition != null
                     && GSON.toJson(enginePath.get(index)).equals(
                     GSON.toJson(rawCondition))
-                    && (sliceMethods.isEmpty() || sliceMethods.contains(
-                    string(mapping, "method")));
+                    && validSemanticBranchCondition(mapping, rawCondition,
+                    condition)
+                    && sliceMethods.contains(string(mapping, "method"));
             if (!exact) {
                 issues.add("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_EVENT");
                 continue;
             }
             Set<String> symbols = new LinkedHashSet<>();
-            collectSymbolicExpressionSymbols(condition, symbols);
+            collectSymbolicExpressionSymbols(
+                    normalization.conditions.get(normalizedIndex), symbols);
             if (symbols.isEmpty()) {
                 issues.add("CONSTANT_OUTPUT_PATH_GUARD_HAS_NO_SYMBOL");
                 continue;
@@ -1604,7 +1705,43 @@ public final class ConcolicSummaryImporter {
             return literal.matches("[-+]?(?:[0-9]+(?:\\.[0-9]*)?"
                     + "|\\.[0-9]+)(?:[eE][-+]?[0-9]+)?");
         }
-        return literal.matches("-?[0-9]+");
+        if (!literal.matches("-?(?:0|[1-9][0-9]*)")) {
+            return false;
+        }
+        try {
+            java.math.BigInteger value = new java.math.BigInteger(literal);
+            if (!value.toString().equals(literal)) return false;
+            if ("B".equals(descriptor)) {
+                return value.compareTo(java.math.BigInteger.valueOf(
+                        Byte.MIN_VALUE)) >= 0
+                        && value.compareTo(java.math.BigInteger.valueOf(
+                        Byte.MAX_VALUE)) <= 0;
+            }
+            if ("C".equals(descriptor)) {
+                return value.signum() >= 0
+                        && value.compareTo(java.math.BigInteger.valueOf(
+                        Character.MAX_VALUE)) <= 0;
+            }
+            if ("S".equals(descriptor)) {
+                return value.compareTo(java.math.BigInteger.valueOf(
+                        Short.MIN_VALUE)) >= 0
+                        && value.compareTo(java.math.BigInteger.valueOf(
+                        Short.MAX_VALUE)) <= 0;
+            }
+            if ("I".equals(descriptor)) {
+                return value.compareTo(java.math.BigInteger.valueOf(
+                        Integer.MIN_VALUE)) >= 0
+                        && value.compareTo(java.math.BigInteger.valueOf(
+                        Integer.MAX_VALUE)) <= 0;
+            }
+            return "J".equals(descriptor)
+                    && value.compareTo(java.math.BigInteger.valueOf(
+                    Long.MIN_VALUE)) >= 0
+                    && value.compareTo(java.math.BigInteger.valueOf(
+                    Long.MAX_VALUE)) <= 0;
+        } catch (NumberFormatException malformed) {
+            return false;
+        }
     }
 
     static boolean engineArrayIdMatchesComponentForTests(
@@ -1937,9 +2074,19 @@ public final class ConcolicSummaryImporter {
             return false;
         }
         String normalization = string(mapping, "conditionNormalization");
-        if (!normalization.isEmpty()
-                && !"JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE".equals(
-                normalization)) {
+        boolean sameOperator = rawOperator.equals(semanticOperator);
+        if (sameOperator && !normalization.isEmpty()) {
+            return false;
+        }
+        if (!sameOperator
+                && (!"JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE".equals(
+                normalization)
+                || !(">=".equals(semanticOperator)
+                && (">".equals(rawOperator)
+                || "==".equals(rawOperator))
+                || "<=".equals(semanticOperator)
+                && ("<".equals(rawOperator)
+                || "==".equals(rawOperator))))) {
             return false;
         }
         JsonObject rawShape = raw.getAsJsonObject().deepCopy();
@@ -2641,7 +2788,8 @@ public final class ConcolicSummaryImporter {
                         firstNonBlank(string(object(activation,
                                 "requestedOutput"), "portId"),
                                 string(object(activation,
-                                        "requestedOutput"), "symbol")))
+                                        "requestedOutput"), "symbol")),
+                        normalization)
                         : null;
         StaticHeapTransformerCoverage staticCoverage =
                 staticHeapTransformerCoverage(activation, effects,

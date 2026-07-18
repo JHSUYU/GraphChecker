@@ -2991,12 +2991,12 @@ public class ConcolicSummaryImporterTest {
         try {
             MapFixture imported = importExactFieldAssignmentCaptureFixture(
                     folder.getRoot().toPath(), "NORMAL", true, true,
-                    "<example.State: java.lang.String value>",
-                    constant("Y_L_NULL", "L"), true);
+                    "<example.State: int value>",
+                    constant("Y_I_10", "I"), "EXACT");
 
             assertTrue(imported.diagnostics, imported.summary.get(
                     "relationallyComplete").getAsBoolean());
-            assertEquals("Y_L_NULL", imported.summary.getAsJsonObject(
+            assertEquals("Y_I_10", imported.summary.getAsJsonObject(
                     "outputExpressions").getAsJsonObject(
                     "REGION.FIELD.out.0").get("_exp").getAsString());
             assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
@@ -3006,6 +3006,71 @@ public class ConcolicSummaryImporterTest {
                             .get("authority").getAsString());
             assertEquals(1, imported.summary.getAsJsonArray(
                     "pathCondition").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void guardedConstantRejectsValueMismatchFilteredAndForgedGuards()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            MapFixture valueMismatch =
+                    importExactFieldAssignmentCaptureFixture(
+                            root.resolve("value"), "NORMAL", true, true,
+                            "<example.State: int value>",
+                            constant("Y_I_11", "I"), "EXACT");
+            MapFixture filtered = importExactFieldAssignmentCaptureFixture(
+                    root.resolve("filtered"), "NORMAL", true, true,
+                    "<example.State: int value>",
+                    constant("Y_I_10", "I"), "FILTERED");
+            MapFixture forged = importExactFieldAssignmentCaptureFixture(
+                    root.resolve("forged"), "NORMAL", true, true,
+                    "<example.State: int value>",
+                    constant("Y_I_10", "I"), "FORGED_SEMANTIC");
+            MapFixture forgedOperator =
+                    importExactFieldAssignmentCaptureFixture(
+                            root.resolve("forged-operator"), "NORMAL", true,
+                            true, "<example.State: int value>",
+                            constant("Y_I_10", "I"), "FORGED_OPERATOR");
+            MapFixture inactiveEnvelope =
+                    importExactFieldAssignmentCaptureFixture(
+                            root.resolve("inactive-envelope"), "NORMAL", true,
+                            true, "<example.State: int value>",
+                            constant("Y_I_10", "I"), "INACTIVE_ENVELOPE");
+
+            assertFalse(valueMismatch.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(valueMismatch.summary.getAsJsonObject(
+                    "outputExpressionAdmission").get("issues").toString()
+                    .contains("GUARDED_CONSTANT_CAPTURE_VALUE_MISMATCH"));
+            assertFalse(filtered.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(filtered.summary.getAsJsonObject(
+                    "outputExpressionAdmission").get("issues").toString()
+                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
+                            + "EVENT"));
+            assertFalse(forged.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(forged.summary.getAsJsonObject(
+                    "outputExpressionAdmission").get("issues").toString()
+                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
+                            + "EVENT"));
+            assertFalse(forgedOperator.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(forgedOperator.summary.getAsJsonObject(
+                    "outputExpressionAdmission").get("issues").toString()
+                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
+                            + "EVENT"));
+            assertFalse(inactiveEnvelope.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(inactiveEnvelope.summary.getAsJsonObject(
+                    "outputExpressionAdmission").get("issues").toString()
+                    .contains("GUARDED_CONSTANT_VM_PRIMITIVE_ENVELOPE_"
+                            + "INVALID"));
         } finally {
             folder.delete();
         }
@@ -3128,6 +3193,21 @@ public class ConcolicSummaryImporterTest {
                 .engineArrayIdMatchesComponentForTests("VM_ARRAY_12", "[I"));
         assertTrue(ConcolicSummaryImporter
                 .validConcretePrimitiveLiteralForTests("I", "Y_I_-17"));
+        assertTrue(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("B", "Y_B_-128"));
+        assertTrue(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("C", "Y_C_65535"));
+        assertFalse(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("B", "Y_B_128"));
+        assertFalse(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("C", "Y_C_-1"));
+        assertFalse(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("I", "Y_I_01"));
+        assertFalse(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("I", "Y_I_-0"));
+        assertFalse(ConcolicSummaryImporter
+                .validConcretePrimitiveLiteralForTests("I",
+                        "Y_I_2147483648"));
         assertFalse(ConcolicSummaryImporter
                 .validConcretePrimitiveLiteralForTests("I", "Y_J_-17"));
         assertFalse(ConcolicSummaryImporter
@@ -5379,6 +5459,16 @@ public class ConcolicSummaryImporterTest {
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, String field,
             JsonElement expression, boolean exactVmGuard) throws Exception {
+        return importExactFieldAssignmentCaptureFixture(root, exitKind,
+                identityVerified, rhsRelationComplete, field, expression,
+                exactVmGuard ? "EXACT" : "NONE");
+    }
+
+    private static MapFixture importExactFieldAssignmentCaptureFixture(
+            Path root, String exitKind, boolean identityVerified,
+            boolean rhsRelationComplete, String field,
+            JsonElement expression, String guardMode) throws Exception {
+        boolean exactVmGuard = !"NONE".equals(guardMode);
         Files.createDirectories(root);
         Path activations = root.resolve("activation.jsonl");
         Path regions = root.resolve("regions.jsonl");
@@ -5517,6 +5607,26 @@ public class ConcolicSummaryImporterTest {
         observed.addProperty("objectTokenScope", "ACT.FIELD");
         observed.addProperty("expressionCaptured", true);
         observed.add("expression", expression.deepCopy());
+        if (exactVmGuard) {
+            observed.addProperty("expressionEnvelopeSchemaVersion", 1);
+            observed.addProperty("expressionEnvelopeActive",
+                    !"INACTIVE_ENVELOPE".equals(guardMode));
+            observed.addProperty("assignedValueClass", "java.lang.Integer");
+            observed.addProperty("observedFieldValueClass",
+                    "java.lang.Integer");
+            observed.addProperty("assignedValueWasNull", false);
+            observed.addProperty("observedFieldValueWasNull", false);
+            observed.addProperty("assignmentIdentityMode",
+                    "BOXED_PRIMITIVE_VALUE_EQUALITY");
+            observed.addProperty("concretePrimitiveValue", "10");
+            observed.addProperty("expressionEnvelopeKind",
+                    "CONCRETE_PRIMITIVE");
+            observed.addProperty("expressionEnvelopeSymbolic", false);
+            observed.addProperty("expressionEnvelopeAuthority",
+                    "VM_EXACT_CONCRETE_BOXED_PRIMITIVE_V1");
+            observed.addProperty("expressionEnvelopeJavaTypeDescriptor",
+                    "I");
+        }
 
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
@@ -5538,12 +5648,25 @@ public class ConcolicSummaryImporterTest {
         engine.addProperty("activationId", "ACT.FIELD");
         JsonArray pathCondition = new JsonArray();
         if (exactVmGuard) {
+            String codePosition = "FILTERED".equals(guardMode)
+                    ? "virtual void example.Unrelated.install(jobject):12"
+                    : "virtual void example.Heartbeat.install(jobject):12";
+            JsonElement rawLeft = "FORGED_SEMANTIC".equals(guardMode)
+                    ? symbol("M_L_unrelated_guard", "L")
+                    : symbol("M_L_field_REGION.FIELD.in.0_java/lang/String",
+                    "L");
             JsonObject condition = binaryCondition(
-                    "virtual void example.Heartbeat.install(jobject):12",
-                    "!=",
-                    symbol("M_L_field_REGION.FIELD.in.0_java/lang/String",
-                            "L"), constant("Y_L_NULL", "L"));
-            pathCondition.add(condition);
+                    codePosition, "!=", rawLeft,
+                    constant("Y_L_NULL", "L"));
+            JsonObject semanticCondition = condition.deepCopy();
+            if ("FORGED_SEMANTIC".equals(guardMode)) {
+                semanticCondition.add("_left", symbol(
+                        "M_L_field_REGION.FIELD.in.0_java/lang/String",
+                        "L"));
+            } else if ("FORGED_OPERATOR".equals(guardMode)) {
+                semanticCondition.addProperty("_op", "==");
+            }
+            pathCondition.add(condition.deepCopy());
             JsonObject mapping = new JsonObject();
             mapping.addProperty("siteId", method + "#u2");
             mapping.addProperty("method", method);
@@ -5577,7 +5700,7 @@ public class ConcolicSummaryImporterTest {
             vmConditionIndices.add(0);
             mapping.add("vmConditionIndices", vmConditionIndices);
             mapping.add("rawCondition", condition.deepCopy());
-            mapping.add("condition", condition.deepCopy());
+            mapping.add("condition", semanticCondition);
             raw.add("branchMappings", singletonObject(mapping));
         }
         engine.add("pathCondition", pathCondition);
