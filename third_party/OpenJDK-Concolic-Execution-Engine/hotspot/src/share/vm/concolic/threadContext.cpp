@@ -140,6 +140,8 @@ std::string ThreadContext::get_branch_events() const {
   writer.Int(1);
   writer.Key("kind");
   writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
+  writer.Key("active");
+  writer.Bool(true);
   writer.Key("contextId");
   writer.Int64(_context_id);
   writer.Key("ownerJavaThreadId");

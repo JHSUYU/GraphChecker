@@ -3493,9 +3493,10 @@ public final class ConcolicRegionRuntime {
         JsonObject envelope = parsed.getAsJsonObject();
         if (integer(envelope, "schemaVersion", -1) != 1
                 || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
-                string(envelope, "kind"))) {
+                string(envelope, "kind"))
+                || !bool(envelope, "active", false)) {
             return VmBranchEventAttestation.invalid(null, "",
-                    "unexpected event stream kind");
+                    "unexpected or inactive event stream");
         }
         long envelopeContext = longInteger(envelope, "contextId", 0L);
         long envelopeOwner = longInteger(envelope,

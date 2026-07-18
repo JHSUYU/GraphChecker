@@ -1959,8 +1959,12 @@ public final class CausynthPipeline {
         // case the runtime records concrete replay or fails closed.
         Unit noMarkerPath = Jimple.v().newNopStmt();
         List<Unit> beforeBranch = new ArrayList<>();
+        // This must be a direct native call.  A long/double/float compare is
+        // lowered by Soot before this prefix and leaves an exact VM witness
+        // for the following IfStmt.  Entering a Java helper before pausing
+        // would execute helper branches that could consume that witness.
         beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
+                Jimple.v().newStaticInvokeExpr(refs.pauseVmPathCondition)));
         beforeBranch.add(Jimple.v().newAssignStmt(prepared,
                 Jimple.v().newStaticInvokeExpr(refs.prepareBranch,
                         StringConstant.v(method.getSignature()),
@@ -1972,7 +1976,7 @@ public final class CausynthPipeline {
                 Jimple.v().newLeExpr(prepared, LongConstant.v(0L)),
                 noMarkerPath));
         beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
+                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
         beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
                 Jimple.v().newCastExpr(prepared, IntType.v())));
         beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
@@ -1984,7 +1988,7 @@ public final class CausynthPipeline {
         beforeBranch.add(exactTransfer);
         beforeBranch.add(noMarkerPath);
         beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
+                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
         insertBeforeSequence(body, branch, beforeBranch);
         // UnitPatchingChain redirects pre-existing targets whenever another
         // unit is inserted before their anchor.  Restore this internal edge
@@ -2810,6 +2814,8 @@ public final class CausynthPipeline {
         private final SootMethodRef recordFieldAssignmentOutput;
         private final SootMethodRef pauseObservation;
         private final SootMethodRef resumeObservation;
+        private final SootMethodRef pauseVmPathCondition;
+        private final SootMethodRef resumeVmPathCondition;
         private final SootMethodRef prepareBranch;
         private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
@@ -2836,6 +2842,8 @@ public final class CausynthPipeline {
                                    SootMethodRef recordFieldAssignmentOutput,
                                    SootMethodRef pauseObservation,
                                    SootMethodRef resumeObservation,
+                                   SootMethodRef pauseVmPathCondition,
+                                   SootMethodRef resumeVmPathCondition,
                                    SootMethodRef prepareBranch,
                                    SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
@@ -2863,6 +2871,8 @@ public final class CausynthPipeline {
                     recordFieldAssignmentOutput;
             this.pauseObservation = pauseObservation;
             this.resumeObservation = resumeObservation;
+            this.pauseVmPathCondition = pauseVmPathCondition;
+            this.resumeVmPathCondition = resumeVmPathCondition;
             this.prepareBranch = prepareBranch;
             this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
@@ -2960,6 +2970,12 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(runtime, "pauseObservation",
                             Collections.<Type>emptyList(), VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "resumeObservation",
+                            Collections.<Type>emptyList(), VoidType.v(), true),
+                    Scene.v().makeMethodRef(system,
+                            "pauseConcolicPathCondition",
+                            Collections.<Type>emptyList(), VoidType.v(), true),
+                    Scene.v().makeMethodRef(system,
+                            "resumeConcolicPathCondition",
                             Collections.<Type>emptyList(), VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "prepareBranch",
                             Arrays.asList(string, IntType.v(), string),

@@ -359,6 +359,8 @@ std::string ConcolicMngr::getRegionSummary() {
     writer.Int(1);
     writer.Key("kind");
     writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
+    writer.Key("active");
+    writer.Bool(false);
     writer.Key("events");
     writer.StartArray();
     writer.EndArray();

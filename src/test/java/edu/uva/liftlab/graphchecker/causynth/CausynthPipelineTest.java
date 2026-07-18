@@ -1851,8 +1851,15 @@ public class CausynthPipelineTest {
         assertRuntimeInvoke(prepareHook,
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
                 "prepareBranch");
+        Unit nativePause = body.getUnits().getPredOf(prepareHook);
+        assertRuntimeInvoke(nativePause, "java.lang.System",
+                "pauseConcolicPathCondition");
         assertRuntimeInvoke(nativeMarker, "java.lang.System",
                 "markConcolicBranch");
+        Unit occurrenceCast = body.getUnits().getPredOf(nativeMarker);
+        Unit nativeResume = body.getUnits().getPredOf(occurrenceCast);
+        assertRuntimeInvoke(nativeResume, "java.lang.System",
+                "resumeConcolicPathCondition");
         Unit afterNativeMarker = body.getUnits().getSuccOf(nativeMarker);
         assertTrue("the native marker may be followed only by an unconditional "
                         + "transfer to the original condition",
@@ -4195,6 +4202,10 @@ public class CausynthPipelineTest {
         if (system == null) {
             system = fixture.runtimeClass("java.lang.System");
         }
+        fixture.staticMethod(system, "pauseConcolicPathCondition",
+                Collections.emptyList(), VoidType.v());
+        fixture.staticMethod(system, "resumeConcolicPathCondition",
+                Collections.emptyList(), VoidType.v());
         fixture.staticMethod(system, "markConcolicBranch",
                 Arrays.asList(fixture.string, IntType.v()), LongType.v());
     }

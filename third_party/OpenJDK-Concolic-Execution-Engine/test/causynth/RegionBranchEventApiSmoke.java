@@ -115,6 +115,8 @@ public final class RegionBranchEventApiSmoke {
         String events = System.getConcolicBranchEvents();
         check(events.contains("\"kind\":\"CONCOLIC_THREAD_BRANCH_EVENTS\""),
                 "missing branch event envelope: " + events);
+        check(events.contains("\"active\":true"),
+                "active branch event envelope is not explicit: " + events);
         check(events.contains("\"regionId\":\"REGION.BRANCH.SMOKE\""),
                 "missing region ownership: " + events);
         check(events.contains("\"activationId\":\"ACT.BRANCH.SMOKE\""),

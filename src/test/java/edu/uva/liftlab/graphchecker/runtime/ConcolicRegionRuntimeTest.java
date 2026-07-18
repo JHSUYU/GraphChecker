@@ -4841,6 +4841,7 @@ public class ConcolicRegionRuntimeTest {
             envelope.addProperty("schemaVersion", 1);
             envelope.addProperty("kind",
                     "CONCOLIC_THREAD_BRANCH_EVENTS");
+            envelope.addProperty("active", true);
             envelope.addProperty("contextId", CONTEXT_ID);
             envelope.addProperty("ownerJavaThreadId", claimedOwner);
             envelope.addProperty("ownerOsThreadId", OS_THREAD_ID);
