@@ -162,7 +162,7 @@ GraphChecker pass 稳定在 30.9–31.2 秒，包含 runtime dependency 发布�
 region planner 热路径预编译。`trace+concolic` campaign 和 `ALL` bundle 暂不使用 partial
 catalog，会明确回退完整分析。
 
-本次优化后完整回归为 675 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
+本次优化后完整回归为 693 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
 parallel HDFS concolic batch fixture 也全部通过。
 
 ```bash
@@ -207,7 +207,7 @@ target model assignment 或 reference-result injection。最终 composition、re
 ```
 
 bootstrap activation plan 也已改为严格 compact JSONL（一行一个 activation），避免 pretty
-JSON 被逐行 consumer 误读为截断输入。当前完整回归为 680 项 JUnit 零失败；从 clean
+JSON 被逐行 consumer 误读为截断输入。当前完整回归为 693 项 JUnit 零失败；从 clean
 work root 执行 `experiments/generic/three-thread-rpc/run.sh all` 会一直完成到
 `target/three-thread-rpc/final/boolean_reach_condition.json`。
 

@@ -93,6 +93,11 @@ equalities into the scheduler's validated edge schema, but production
 composition must retain its existing runtime-evidence gates.
 
 Use `--dry-run` or `GRAPH_CHECKER_DRY_RUN=true` to inspect constructed commands.
+For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded,
+deterministic graph projections after analyze/workload/schedule, guarded
+symbolic merges after merge, and the generated SMT after compose, all on
+stderr. The item and byte caps are configurable through
+`GRAPH_CHECKER_DEBUG_MAX_ITEMS` and `GRAPH_CHECKER_DEBUG_MAX_BYTES`.
 The historical `run_engine.sh process <conf>` form is preserved for existing
 HDFS-compatible shell configs.
 

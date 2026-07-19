@@ -25,6 +25,7 @@ trim_value() {
 
 workflow_property() {
   local requested=$1
+  local required=${2:-true}
   local raw key value="" found=false
   while IFS= read -r raw || [[ -n "${raw}" ]]; do
     raw=$(trim_value "${raw}")
@@ -41,9 +42,11 @@ workflow_property() {
     fi
     found=true
   done < "${config}"
-  [[ "${found}" == "true" && -n "${value}" ]] \
-    || die "workflow configuration has no ${requested}"
-  printf '%s\n' "${value}"
+  if [[ "${found}" == "true" && -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+  elif [[ "${required}" == "true" ]]; then
+    die "workflow configuration has no ${requested}"
+  fi
 }
 
 [[ -f "${config}" ]] || die "workflow configuration not found: ${config}"
@@ -72,6 +75,7 @@ fixture_class=$(workflow_property fixture_class)
 fixture_test_class=$(workflow_property fixture_test_class)
 trace_test=$(workflow_property trace_test)
 custom_jdk_docker_image=$(workflow_property custom_jdk_docker_image)
+fixture_variant=$(workflow_property fixture_variant false)
 fixture_package=${fixture_class%.*}
 fixture_package=${fixture_package//./\/}
 fixture_simple_class=${fixture_class##*.}
@@ -231,20 +235,27 @@ target_binding() {
       <<< "${binding}"
     from_cell=$(topology_value "${channel}" fromCell) || return $?
     to_cell=$(topology_value "${channel}" toCell) || return $?
-    mapfile -t downstream_regions < <(jq -r \
+    mapfile -t downstream_regions < <(jq -s -r \
       --arg activation "${producer_activation}" \
       --arg producerRegion "${producer_region}" \
       --arg fromCell "${from_cell}" \
       --arg toCell "${to_cell}" '
-      select(.activationId == $activation and .regionId == $producerRegion)
+      . as $plans
+      | $plans[]
+      | select(.activationId == $activation and .regionId == $producerRegion)
       | .edgeBindings[]?
       | select(.fromRegion == $producerRegion
           and .fromOutputCell == $fromCell
           and .rawFromPort == $toCell
           and .canonicalOutputAliasUsed == true
           and .aliasProofComplete == true)
-      | .toRegion
-    ' "${activation_plan}")
+      | .toRegion as $candidate
+      | select(any($plans[];
+          .regionId == $candidate
+          and .captureGoal.kind == "TARGET_BRANCH"
+          and .replayable == true))
+      | $candidate
+    ' "${activation_plan}" | sort -u)
     [[ ${#downstream_regions[@]} -eq 1 ]] || die \
       "channel ${channel} must have one exact producer-to-target binding"
     target_regions+=("${downstream_regions[0]}")
@@ -254,7 +265,9 @@ target_binding() {
     "declared RPC channels do not converge on one runtime target region"
   target_region=${target_regions[0]}
   mapfile -t target_activations < <(jq -r --arg region "${target_region}" '
-    select(.regionId == $region and .captureGoal.kind == "TARGET_BRANCH")
+    select(.regionId == $region
+        and .captureGoal.kind == "TARGET_BRANCH"
+        and .replayable == true)
     | .activationId
   ' "${activation_plan}")
   [[ ${#target_activations[@]} -eq 1 ]] || die \
@@ -494,12 +507,19 @@ run_custom_plan() {
   [[ "${select_all}" == "true" || -n "${selected}" ]] \
     || die "exact activation selection is empty for non-bundle plan: ${plan}"
 
-  local -a java_args
+  local -a java_args fixture_variant_args
+  fixture_variant_args=()
+  if [[ -n "${fixture_variant}" ]]; then
+    fixture_variant_args+=(
+      -Dcausynth.fixture.variant="${fixture_variant}"
+    )
+  fi
   java_args=(
     -Xint
     -Dcausynth.trace.test="${trace_test}"
     -Dcausynth.concolic.activation.plan="${plan}"
     -Dcausynth.concolic.results="${results}"
+    "${fixture_variant_args[@]}"
     -cp "${classes}:${graphchecker_jar}"
     "${fixture_class}" "${b1}" "${b2}"
   )
@@ -541,17 +561,28 @@ run_custom_plan() {
     die "custom-JDK replay failed with exit ${replay_status}: ${results}"
   fi
   if [[ "${replay_status}" -ne 0 ]]; then
-    local -a primary_activations
-    mapfile -t primary_activations < <(jq -r '
-      select(.activationBundleMemberRole == "PRIMARY") | .activationId
-    ' "${plan}")
-    [[ ${#primary_activations[@]} -eq 1 ]] \
-      || die "nonzero replay is only admissible for one PRIMARY bundle row"
-    jq -e -s --arg activation "${primary_activations[0]}" '
-      [.[] | select(.activationId == $activation)] | length == 1
-    ' "${results}" >/dev/null \
-      || die "nonzero replay emitted no raw PRIMARY target row"
-    echo "[three-thread-rpc] accepted expected nonzero replay exit ${replay_status}; PRIMARY raw evidence exists"
+    if [[ "${select_all}" == "true" ]]; then
+      local -a primary_activations
+      mapfile -t primary_activations < <(jq -r '
+        select(.activationBundleMemberRole == "PRIMARY") | .activationId
+      ' "${plan}")
+      [[ ${#primary_activations[@]} -eq 1 ]] \
+        || die "nonzero bundle replay requires one PRIMARY row"
+      jq -e -s --arg activation "${primary_activations[0]}" '
+        [.[] | select(.activationId == $activation)] | length == 1
+      ' "${results}" >/dev/null \
+        || die "nonzero replay emitted no raw PRIMARY target row"
+    else
+      jq -e -s --arg activation "${selected}" '
+        [.[] | select(.activationId == $activation)] | length == 1
+      ' "${plan}" >/dev/null \
+        || die "nonzero exact replay selection is not unique in its plan"
+      jq -e -s --arg activation "${selected}" '
+        [.[] | select(.activationId == $activation)] | length == 1
+      ' "${results}" >/dev/null \
+        || die "nonzero exact replay emitted no selected raw result row"
+    fi
+    echo "[three-thread-rpc] accepted expected nonzero replay exit ${replay_status}; selected raw evidence exists"
   fi
 }
 
@@ -611,6 +642,21 @@ run_graphchecker_main() {
     "${main_class}" "$@")
 }
 
+debug_enabled() {
+  case "${GRAPH_CHECKER_DEBUG:-false}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+debug_merged_relation() {
+  local merged=$1
+  debug_enabled || return 0
+  (cd "${graphchecker_dir}" && \
+    CAUSYNTH_MERGED_SUMMARIES="${merged}" \
+      "${runner}" --config "${config}" debug-stage merge)
+}
+
 combine_jsonl_unique() {
   local identity_field=$1
   local output=$2
@@ -659,7 +705,7 @@ do_explore_producer() {
   local channel schedule classes campaign region source_activation binding
   local summaries activations records planner_dir replay_activation raw imported
   local replay_verification
-  local z3 solver_timeout planner_status query_key iteration
+  local z3 solver_timeout planner_status query_key iteration selection_dir
   local -A seen_queries=()
   local -a _replay_activations=()
   validate_discovery_inputs
@@ -707,7 +753,58 @@ do_explore_producer() {
       "${planner_dir}/path_flip_plan_manifest.json"
     require_file "producer path worklist manifest" \
       "${planner_dir}/region_path_manifest.json"
+    if [[ "${planner_status}" -eq 2 ]] \
+        && jq -e '.status == "AMBIGUOUS_PATH_FLIP"
+          and .selectedTaskCount > 1' \
+          "${planner_dir}/path_flip_plan_manifest.json" >/dev/null; then
+      query_key=$(jq -er -s \
+        'sort_by(.queryKey) | .[0].queryKey' \
+        "${planner_dir}/region_path_worklist.jsonl") \
+        || die "ambiguous producer worklist has no deterministic query key"
+      selection_dir="${planner_dir}/selected"
+      mkdir -p "${selection_dir}"
+      set +e
+      run_graphchecker_main \
+        edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
+        --summaries "${summaries}" \
+        --activations "${activations}" \
+        --records "${records}" \
+        --output-dir "${selection_dir}" \
+        --z3 "${z3}" \
+        --solver-timeout-ms "${solver_timeout}" \
+        --region-id "${region}" \
+        --query-key "${query_key}"
+      planner_status=$?
+      set -e
+      planner_dir=${selection_dir}
+      require_file "selected producer path planner manifest" \
+        "${planner_dir}/path_flip_plan_manifest.json"
+      require_file "selected producer path worklist manifest" \
+        "${planner_dir}/region_path_manifest.json"
+    fi
     if [[ "${planner_status}" -eq 2 ]]; then
+      if jq -e '.status == "PATH_FLIP_NOT_REPLAYABLE"
+          and .solverStatus == "UNSAT"
+          and .selectedTaskCount == 1' \
+          "${planner_dir}/path_flip_plan_manifest.json" >/dev/null; then
+        query_key=$(jq -er '.queryKey' \
+          "${planner_dir}/path_flip_plan_manifest.json") \
+          || die "UNSAT producer path flip has no query identity"
+        [[ -z "${seen_queries[${query_key}]+present}" ]] \
+          || die "producer path worklist repeated UNSAT query ${query_key}"
+        seen_queries[${query_key}]=present
+        jq -e --arg query "${query_key}" '
+          .status == "UNSAT" and .queryKey == $query
+        ' "${planner_dir}/path_flip_solver_result.json" >/dev/null \
+          || die "producer UNSAT result does not match its selected query"
+        [[ ! -s "${planner_dir}/activation_plan.jsonl" ]] \
+          || die "UNSAT producer path unexpectedly emitted a replay"
+        jq -c '.' "${planner_dir}/path_flip_solver_result.json" \
+          >>"${records}"
+        echo "[three-thread-rpc] producer path proved UNSAT: ${query_key}"
+        iteration=$((iteration + 1))
+        continue
+      fi
       jq -e '
         .status == "NO_MATCHING_PATH_FLIP"
         and .selectedTaskCount == 0
@@ -765,7 +862,7 @@ do_explore_producer() {
     imported="${planner_dir}/concolic_region_summaries.jsonl"
     replay_verification="${planner_dir}/path_replay_verification.json"
     run_custom_plan "${planner_dir}/activation_plan.jsonl" \
-      "${replay_activation}" "${classes}" "${raw}" false false false
+      "${replay_activation}" "${classes}" "${raw}" false false true
     import_plan "${planner_dir}/activation_plan.jsonl" "${raw}" \
       "${imported}" "${planner_dir}"
     run_graphchecker_main \
@@ -801,6 +898,7 @@ do_explore_producer() {
     --path-manifest "${campaign}/region_path_manifest.json" \
     --output "${campaign}/merged_region_summaries.jsonl" \
     --manifest "${campaign}/region_relation_merge_manifest.json"
+  debug_merged_relation "${campaign}/merged_region_summaries.jsonl"
   jq -e '.complete == true and .mergedRelationCount == 1' \
     "${campaign}/region_relation_merge_manifest.json" >/dev/null \
     || die "producer guarded merge is incomplete for channel ${channel}"

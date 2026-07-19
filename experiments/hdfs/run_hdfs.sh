@@ -4733,6 +4733,8 @@ finalize_native_runtime_artifacts() {
     for required_file in "${static_graph_file}" "${regions_file}" \
             "${region_edges_file}" "${raw_trace}" "${streaming_manifest}" \
             "${trace_dir}/summary.json" \
+            "${trace_dir}/unit_test_instantiated_graph.json" \
+            "${trace_dir}/unit_test_role_merged_graph.json" \
             "${trace_dir}/runtime_region_summary.json"; do
         if [[ ! -s "${required_file}" ]]; then
             echo "[ERROR] Native runtime finalization input is missing: ${required_file}" >&2
@@ -4963,6 +4965,8 @@ do_test() {
         cat > "${trace_dir}/summary.json" <<EOF
 {"test":"${trace_test_name}","status":"no_runtime_trace","message":"No instrumented selected method executed; the requested test may not exist or may not touch the selected static graph."}
 EOF
+        echo "[ERROR] Native runtime trace is missing or empty: ${trace_dir}/runtime_trace.jsonl" >&2
+        return 1
     fi
 }
 

@@ -62,6 +62,7 @@ import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -4753,7 +4754,6 @@ public final class CausynthPipeline {
         private final List<StaticPortMapping> staticPortMappings = new ArrayList<>();
         private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
         private final Set<String> selectedMethods = new LinkedHashSet<>();
-        private final Set<String> emittedEdges = new LinkedHashSet<>();
         private final Map<String, Map<String, Object>> emittedEdgeRows =
                 new LinkedHashMap<>();
         private final Set<String> emittedRpcMappings = new LinkedHashSet<>();
@@ -10791,7 +10791,7 @@ public final class CausynthPipeline {
             String key = edgeKey(kind, fromText, toText, method);
             boolean changed = false;
             Map<String, Object> edge = emittedEdgeRows.get(key);
-            if (emittedEdges.add(key)) {
+            if (edge == null) {
                 String edgeId = "DF." + edgeCounter++;
                 boolean ownMappingOnly = isStaticPortMappingKind(kind);
                 boolean hasProjectionBase = projectionBaseEdge != null;
@@ -12484,12 +12484,18 @@ public final class CausynthPipeline {
 
         private void writeJsonl(String fileName, List<Map<String, Object>> values)
                 throws IOException {
-            StringBuilder builder = new StringBuilder();
-            for (Object value : values) {
-                builder.append(Json.write(value)).append('\n');
+            Path output = target.outputDir.resolve(fileName);
+            try (BufferedWriter writer = Files.newBufferedWriter(output,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE)) {
+                for (Object value : values) {
+                    writer.write(Json.write(value));
+                    // Keep artifact hashes stable across host platforms.
+                    writer.write('\n');
+                }
             }
-            Files.write(target.outputDir.resolve(fileName),
-                    builder.toString().getBytes(StandardCharsets.UTF_8));
             fileCount++;
         }
     }
