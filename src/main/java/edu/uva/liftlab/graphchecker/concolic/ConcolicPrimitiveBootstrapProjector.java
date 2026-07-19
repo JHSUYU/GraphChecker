@@ -625,10 +625,13 @@ public final class ConcolicPrimitiveBootstrapProjector {
             throws IOException {
         JsonObject admission = object(summary,
                 "inputMaterializationAdmission");
+        String authority = string(admission, "authority");
+        boolean explicitFallbackAuthority =
+                ("STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                        + "TRANSFORMER_RUNTIME_PATH_PROOFS_AND_EXPLICIT_"
+                        + "CONCRETE_FALLBACKS").equals(authority);
         if (!bool(admission, "complete", false)
-                || !"STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
-                .concat("TRANSFORMER_RUNTIME_PATH_PROOFS").equals(
-                        string(admission, "authority"))
+                || !exactInputMaterializationAuthority(authority)
                 || array(admission, "failures").size() != 0
                 || countString(array(admission, "globalSliceInputs"), port)
                 != 1
@@ -637,9 +640,63 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 || countString(array(admission,
                 "observedSymbolizedInputs"), port) != 1
                 || countString(array(admission,
-                "pathInactiveSliceInputs"), port) != 0) {
+                "pathInactiveSliceInputs"), port) != 0
+                || (explicitFallbackAuthority
+                && (!isArray(admission, "admittedObservedInputs")
+                || !isArray(admission, "admittedConcreteFallbackInputs")
+                || !isArray(admission,
+                "admittedVmIntrinsicPlaceholderInputs")
+                || !isArray(admission,
+                "unforcedEnvironmentValidationRequirements")
+                || !("SCHEDULED_OBSERVATION_ONLY_INPUT_PLUS_UNIQUE_"
+                + "COMPLETE_FIRST_CONTAINER_RUNTIME_EVIDENCE_V1").equals(
+                string(admission, "admittedObservedInputAuthority"))))
+                || coversInput(array(admission, "admittedObservedInputs"),
+                port)
+                || coversInput(array(admission,
+                "admittedConcreteFallbackInputs"), port)
+                || coversInput(array(admission,
+                "admittedVmIntrinsicPlaceholderInputs"), port)
+                || requirementsCoverInput(array(admission,
+                "unforcedEnvironmentValidationRequirements"), port)) {
             throw gap("SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT:" + port);
         }
+    }
+
+    private static boolean exactInputMaterializationAuthority(
+            String authority) {
+        String base = "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
+                + "TRANSFORMER_RUNTIME_PATH_PROOFS";
+        return base.equals(authority)
+                || (base + "_AND_EXPLICIT_CONCRETE_FALLBACKS").equals(
+                authority);
+    }
+
+    private static boolean coversInput(JsonArray values, String port) {
+        for (JsonElement value : values) {
+            if (value == null || !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isString()) {
+                continue;
+            }
+            String candidate = value.getAsString();
+            if (candidate.equals(port) || candidate.startsWith(port + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean requirementsCoverInput(JsonArray requirements,
+                                                  String port) {
+        for (JsonElement element : requirements) {
+            if (!element.isJsonObject()) continue;
+            String candidate = string(element.getAsJsonObject(),
+                    "inputPort");
+            if (candidate.equals(port) || candidate.startsWith(port + ".")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void validateLocalDefinitionIdentity(JsonObject action,
@@ -1135,6 +1192,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
+    }
+
+    private static boolean isArray(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonArray();
     }
 
     private static JsonObject object(JsonObject object, String field) {

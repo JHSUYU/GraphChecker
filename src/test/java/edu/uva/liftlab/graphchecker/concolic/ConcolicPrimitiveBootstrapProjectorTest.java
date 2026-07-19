@@ -253,6 +253,33 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
 
         expectFailure(fixture.arguments(),
                 "SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT");
+
+        fixture = fixture();
+        summary = jsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1");
+        JsonObject requirement = new JsonObject();
+        requirement.addProperty("inputPort", "REGION.A.in.0");
+        JsonArray requirements = new JsonArray();
+        requirements.add(requirement);
+        summary.getAsJsonObject("inputMaterializationAdmission")
+                .add("unforcedEnvironmentValidationRequirements",
+                        requirements);
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        expectFailure(fixture.arguments(),
+                "SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT");
+
+        fixture = fixture();
+        summary = jsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1");
+        JsonArray fallbacks = new JsonArray();
+        fallbacks.add("REGION.A.in.0");
+        summary.getAsJsonObject("inputMaterializationAdmission")
+                .add("admittedConcreteFallbackInputs", fallbacks);
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        expectFailure(fixture.arguments(),
+                "SELECTED_SUMMARY_INPUT_ADMISSION_NOT_EXACT");
     }
 
     @Test
@@ -609,10 +636,20 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         admission.add("requiredSliceInputs", one.deepCopy());
         admission.add("observedSymbolizedInputs", one.deepCopy());
         admission.add("pathInactiveSliceInputs", new JsonArray());
+        admission.add("admittedObservedInputs", new JsonArray());
+        admission.addProperty("admittedObservedInputAuthority",
+                "SCHEDULED_OBSERVATION_ONLY_INPUT_PLUS_UNIQUE_COMPLETE_"
+                        + "FIRST_CONTAINER_RUNTIME_EVIDENCE_V1");
+        admission.add("admittedConcreteFallbackInputs", new JsonArray());
+        admission.add("admittedVmIntrinsicPlaceholderInputs",
+                new JsonArray());
+        admission.add("unforcedEnvironmentValidationRequirements",
+                new JsonArray());
         admission.add("failures", new JsonArray());
         admission.addProperty("authority",
                 "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
-                        + "TRANSFORMER_RUNTIME_PATH_PROOFS");
+                        + "TRANSFORMER_RUNTIME_PATH_PROOFS_AND_EXPLICIT_"
+                        + "CONCRETE_FALLBACKS");
         result.add("inputMaterializationAdmission", admission);
         return result;
     }

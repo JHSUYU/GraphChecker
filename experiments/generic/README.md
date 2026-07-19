@@ -75,10 +75,12 @@ The principal environment overrides are:
 | `reach_max_inputs` | `CAUSYNTH_REACH_MAX_INPUTS` |
 | `reach_max_valuations` | `CAUSYNTH_REACH_MAX_VALUATIONS` |
 | `rpc_mapping_file` | `CAUSYNTH_RPC_MAPPING_FILE` |
+| `runtime_region_instances` | `CAUSYNTH_RUNTIME_REGION_INSTANCES` |
 | `workload_command` | `CAUSYNTH_WORKLOAD_COMMAND` |
 
 Artifact-specific overrides use the same names shown by `config`, including
-`CAUSYNTH_ACTIVATION_PLAN`, `CAUSYNTH_EDGE_VALIDATIONS`,
+`CAUSYNTH_ACTIVATION_PLAN`, `CAUSYNTH_RUNTIME_REGION_INSTANCES`,
+`CAUSYNTH_EDGE_VALIDATIONS`,
 `CAUSYNTH_RAW_RESULTS`, `CAUSYNTH_MERGE_SUMMARIES`,
 `CAUSYNTH_COMPOSE_SUMMARIES`, `CAUSYNTH_COMPOSED_SMT`, and
 `CAUSYNTH_RELATIONSHIP_CANDIDATES`. The reachability output can be relocated

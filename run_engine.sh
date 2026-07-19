@@ -53,7 +53,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -94,6 +94,7 @@ reset_config() {
   static_regions=""
   static_graph=""
   runtime_activation_plan=""
+  runtime_region_instances=""
   runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
@@ -183,6 +184,7 @@ apply_environment_overrides() {
   apply_env_override static_regions CAUSYNTH_STATIC_REGIONS
   apply_env_override static_graph CAUSYNTH_STATIC_GRAPH
   apply_env_override runtime_activation_plan CAUSYNTH_ACTIVATION_PLAN
+  apply_env_override runtime_region_instances CAUSYNTH_RUNTIME_REGION_INSTANCES
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
@@ -353,6 +355,7 @@ initialize_config() {
   static_regions=${static_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
   static_graph=${static_graph:-${causynth_output_dir}/static_dataflow_edges.jsonl}
   runtime_activation_plan=${runtime_activation_plan:-${causynth_output_dir}/runtime/concolic_activation_plan.jsonl}
+  runtime_region_instances=${runtime_region_instances:-${causynth_output_dir}/runtime/runtime_region_instances.jsonl}
   runtime_edge_validations=${runtime_edge_validations:-${causynth_output_dir}/runtime/runtime_region_edge_validation.jsonl}
   schedule_output_dir=${schedule_output_dir:-${causynth_output_dir}/schedule}
   raw_concolic_results=${raw_concolic_results:-${schedule_output_dir}/concolic_region_results.jsonl}
@@ -376,6 +379,7 @@ initialize_config() {
   static_regions=$(resolve_path "${static_regions}")
   static_graph=$(resolve_path "${static_graph}")
   runtime_activation_plan=$(resolve_path "${runtime_activation_plan}")
+  runtime_region_instances=$(resolve_path "${runtime_region_instances}")
   runtime_edge_validations=$(resolve_path "${runtime_edge_validations}")
   schedule_output_dir=$(resolve_path "${schedule_output_dir}")
   raw_concolic_results=$(resolve_path "${raw_concolic_results}")
@@ -451,7 +455,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -542,6 +546,9 @@ do_schedule() {
   )
   if [[ -f "${static_graph}" ]]; then
     args+=(--static-graph "${static_graph}")
+  fi
+  if [[ -f "${runtime_region_instances}" ]]; then
+    args+=(--runtime-region-instances "${runtime_region_instances}")
   fi
   if [[ -n "${schedule_summaries}" ]]; then
     require_file "scheduler summaries" "${schedule_summaries}"

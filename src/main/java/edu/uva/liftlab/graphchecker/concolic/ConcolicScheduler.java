@@ -1271,6 +1271,31 @@ public final class ConcolicScheduler {
         String configuredSite = arguments.requestedOutputCaptureSite;
         int configuredOccurrence =
                 arguments.requestedOutputCaptureOccurrence;
+        if (configuredSite.isEmpty() && configuredOccurrence == 0
+                && templates.size() == 1
+                && templates.get(0).isJsonObject()
+                && runtimeExactOutputCapture(
+                templates.get(0).getAsJsonObject())) {
+            JsonObject preserved = source.deepCopy();
+            JsonObject capture = templates.get(0).getAsJsonObject();
+            preserved.addProperty("requestedOutputCaptureComplete", true);
+            preserved.addProperty("requestedOutputCaptureRefinementRequired",
+                    false);
+            preserved.addProperty("requestedOutputCaptureSelectionStatus",
+                    "EXACT_RUNTIME_REQUEST_READY");
+            preserved.addProperty("requestedOutputCaptureSelectionAuthority",
+                    "PRESERVED_RUNTIME_EXACT_OUTPUT_CAPTURE_V1");
+            preserved.addProperty("requestedOutputCaptureSelectedSite",
+                    string(capture, "siteId"));
+            preserved.addProperty("requestedOutputCaptureSelectedOccurrence",
+                    integer(capture, "occurrence", 0));
+            preserved.addProperty("requestedOutputCaptureTemplateCount", 1);
+            preserved.addProperty(
+                    "requestedOutputCaptureObservedCandidateCount", 1);
+            preserved.addProperty(
+                    "requestedOutputCaptureOccurrenceApproximate", false);
+            return preserved;
+        }
         List<JsonObject> candidates = new ArrayList<>();
         String authority = "";
         boolean firstOccurrenceApproximation = false;
@@ -1381,6 +1406,30 @@ public final class ConcolicScheduler {
     private static String captureMethod(JsonObject capture) {
         return firstNonBlank(string(capture, "callerMethod"),
                 string(capture, "method"));
+    }
+
+    private static boolean runtimeExactOutputCapture(JsonObject capture) {
+        if (integer(capture, "occurrence", 0) < 1
+                || integer(capture, "runtimeEventSeq", 0) < 1) {
+            return false;
+        }
+        String authority = string(capture, "occurrenceAuthority");
+        String kind = firstNonBlank(string(capture, "captureKind"),
+                "CALL_ARGUMENT");
+        if ("METHOD_RETURN_VALUE".equals(kind)) {
+            return "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE".equals(authority)
+                    && integer(capture, "runtimeCallId", 0) > 0;
+        }
+        if ("FIELD_ASSIGNMENT_RHS".equals(kind)) {
+            return "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_SITE_"
+                    .concat("LAST_WRITE_OCCURRENCE").equals(authority)
+                    && integer(capture, "runtimeCallId", 0) > 0
+                    && integer(capture,
+                    "runtimeFieldOwnerObjectId", 0) > 0;
+        }
+        return "CALL_ARGUMENT".equals(kind)
+                && "RUNTIME_EXACT_CALL_ARGUMENT_OCCURRENCE".equals(authority)
+                && integer(capture, "runtimeInvocationId", 0) > 0;
     }
 
     /**
@@ -1663,6 +1712,7 @@ public final class ConcolicScheduler {
                     && !containerBaseInputs.contains(string(action,
                     "symbol"))
                     && !configuredScalarContainerLeaf(activation, action)
+                    && !authoritativeDefinitionResolutionRequested(action)
                     && !vmIntrinsic) {
                 concreteFallbacks.add(concreteFallback(binding,
                         "RUNTIME_EXPLICITLY_UNOBSERVED"));
@@ -2181,6 +2231,26 @@ public final class ConcolicScheduler {
         return "ENVIRONMENT_MODEL".equals(location)
                 && "ENVIRONMENT".equals(string(action, "sourceKind"))
                 && SymbolicEnvironment.isCurrentTimeMillisReturn(safe(cell));
+    }
+
+    /**
+     * An unobserved planner candidate is normally concrete passthrough.  A
+     * deferred call-return/local candidate is different: its runtime row is
+     * deliberately incomplete until the scheduler consults the authoritative
+     * static DefinitionIndex.  Give that exact resolution a chance before
+     * applying the concrete fallback; the location-specific branches below
+     * still fall back when no usable definition exists.
+     */
+    private static boolean authoritativeDefinitionResolutionRequested(
+            JsonObject action) {
+        String location = string(action, "location");
+        if (!"CALL_RETURN".equals(location)
+                && !"REGION_LIVE_IN".equals(location)) {
+            return false;
+        }
+        return bool(action, "deferredResolution", false)
+                || bool(action, "deferred", false)
+                || !string(action, "deferredResolutionAuthority").isEmpty();
     }
 
     /**

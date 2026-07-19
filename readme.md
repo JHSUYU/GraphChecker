@@ -211,6 +211,13 @@ JSON 被逐行 consumer 误读为截断输入。当前完整回归为 680 项 JU
 work root 执行 `experiments/generic/three-thread-rpc/run.sh all` 会一直完成到
 `target/three-thread-rpc/final/boolean_reach_condition.json`。
 
+generic runner 现在还会把配置中的 `runtime_region_instances` 传给 scheduler；若 runtime
+planner 已给 output capture 绑定 exact call/event occurrence，后续静态 refinement 会保留这份
+更强的 identity。bootstrap projector 精确接受 importer 的旧、新两种 admission authority，
+但所选 root 必须确实 symbolized，且不能属于 observation-only、concrete fallback、VM
+placeholder 或 unforced environment requirement。2026-07-18 从空 work root 的 fresh run
+在 82.97 秒内完成两次 producer path flip、自然异常 replay、final compose 和 Z3 proof。
+
 ## 当前参考工作负载
 
 三线程 fixture 位于
@@ -262,7 +269,8 @@ target/three-thread-rpc/bootstrap/bootstrap_boolean_model.json
 ```
 
 这里的 `BOOTSTRAP` 只表示 SMT 组合和候选输入已得到，不能冒充经过最终自然回放验证的
-用户报告。最终自然回放仍是本文末尾的 TODO。
+用户报告。`run.sh all` 会继续执行无下游注入的自然回放，只有验证真实目标异常后才生成
+`target/three-thread-rpc/final` 下的最终报告。
 
 ## 核心抽象
 
@@ -334,7 +342,9 @@ Recursive composer
 Z3
   -> composed SMT、truth table、候选 reach condition
 自然传播验证
-  -> TODO
+  -> SAT producer 输入绑定回真实定义；target 无注入执行并验证异常
+Final composer + Z3 proof
+  -> VALIDATED_FINAL SMT、关系证明、最终 reach condition
 ```
 
 ### 两种 capture goal

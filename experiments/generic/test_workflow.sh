@@ -33,6 +33,7 @@ for file in \
   tool/fake.jar tool/env.jar tool/pom.xml target.yaml rpc.jsonl bin/z3 \
   artifacts/symbolic_regions.jsonl artifacts/static_dataflow_edges.jsonl \
   artifacts/runtime/concolic_activation_plan.jsonl \
+  artifacts/runtime/runtime_region_instances.jsonl \
   artifacts/runtime/runtime_region_edge_validation.jsonl \
   artifacts/schedule/concolic_region_results.jsonl \
   artifacts/schedule/scheduled_activation_plan.jsonl \
@@ -69,6 +70,7 @@ printf '%s\n' \
   'workload_work_dir=@repo/module' \
   'workload_command=echo workflow' \
   'runtime_activation_plan=artifacts/runtime/concolic_activation_plan.jsonl' \
+  'runtime_region_instances=artifacts/runtime/runtime_region_instances.jsonl' \
   'runtime_edge_validations=artifacts/runtime/runtime_region_edge_validation.jsonl' \
   'schedule_output_dir=artifacts/schedule' \
   'reach_report=artifacts/reports/reach-condition.json' \
@@ -120,6 +122,8 @@ assert_contains "${analyze}" "-Dcausynth.repo=${fixture_root}/repo"
 
 schedule=$("${runner}" --config "${config}" --dry-run schedule)
 assert_contains "${schedule}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler'
+assert_contains "${schedule}" \
+  "--runtime-region-instances ${fixture_root}/artifacts/runtime/runtime_region_instances.jsonl"
 
 imported=$("${runner}" --config "${config}" --dry-run import)
 assert_contains "${imported}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter'

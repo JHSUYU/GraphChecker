@@ -1089,6 +1089,15 @@ public class ConcolicSchedulerTest {
                     + "\"requestedOutputMethods\":[\"" + root + "\"],"
                     + "\"requestedOutputSlice\":{\"sites\":[\""
                     + site + "\"]},"
+                    + "\"requestedOutputCaptureRequired\":true,"
+                    + "\"requestedOutputCaptureComplete\":true,"
+                    + "\"requestedOutputCapture\":[{"
+                    + "\"captureKind\":\"METHOD_RETURN_VALUE\","
+                    + "\"siteId\":\"" + site + "\","
+                    + "\"occurrence\":1,"
+                    + "\"occurrenceAuthority\":"
+                    + "\"RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE\","
+                    + "\"runtimeCallId\":17,\"runtimeEventSeq\":23}],"
                     + "\"requestedOutput\":{"
                     + "\"portId\":\"REGION.11.out.0\","
                     + "\"cell\":\"" + ALL_KEYS + "\","
@@ -1101,7 +1110,7 @@ public class ConcolicSchedulerTest {
                     + "\"cell\":\"" + returned + "\","
                     + "\"sourceKind\":\"OPAQUE_CALL\","
                     + "\"location\":\"CALL_RETURN\","
-                    + "\"observed\":true,"
+                    + "\"observed\":false,"
                     + "\"deferredResolution\":true,"
                     + "\"deferredResolutionAuthority\":"
                     + "\"AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_"
@@ -1152,6 +1161,10 @@ public class ConcolicSchedulerTest {
             assertEquals("AUTHORITATIVE_STATIC_CALL_RETURN_DEFINITION_"
                             + "SITE_V1",
                     binding.get("deferredResolutionDischargeAuthority")
+                            .getAsString());
+            assertEquals("PRESERVED_RUNTIME_EXACT_OUTPUT_CAPTURE_V1",
+                    result.scheduledActivations.get(0).get(
+                            "requestedOutputCaptureSelectionAuthority")
                             .getAsString());
         } finally {
             folder.delete();
