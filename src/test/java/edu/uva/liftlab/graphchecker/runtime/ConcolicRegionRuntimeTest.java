@@ -1976,6 +1976,12 @@ public class ConcolicRegionRuntimeTest {
         activation.addProperty("concreteReplayOnly", false);
 
         JsonArray actions = genericArrayActions(base, container, root);
+        JsonObject containerAction = actions.get(0).getAsJsonObject();
+        containerAction.addProperty("bindingMode",
+                "CONTAINER_INPUT_OBSERVATION");
+        containerAction.addProperty("arrayFieldObservationOnly", true);
+        containerAction.addProperty("containerObservationAuthority",
+                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1");
         JsonObject leafAction = actions.get(1).getAsJsonObject();
         leafAction.addProperty("cell", metadataExpiryFieldSignature());
         leafAction.addProperty("field", metadataExpiryFieldSignature());
@@ -2010,11 +2016,25 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             GenericArrayEnvelope envelope = new GenericArrayEnvelope(4);
+            GenericArrayEnvelope laterOuterLoopEnvelope =
+                    new GenericArrayEnvelope(2);
             // No expiry getter/field hook is executed.  Observing the exact
-            // container snapshot must be sufficient to materialize all four
-            // array-element leaf fields.
-            runGenericArrayActivation(root, envelope,
-                    Collections.<Current>emptyList());
+            // post-getfield container snapshot must be sufficient to
+            // materialize all four array-element leaf fields. Re-reading the
+            // same reference is idempotent; a later distinct outer-loop
+            // container is explicitly ignored by the bounded approximation.
+            long token = ConcolicRegionRuntime.enterRegion(root, envelope);
+            assertTrue(token > 0L);
+            for (GenericArrayEnvelope observed : Arrays.asList(envelope,
+                    envelope, laterOuterLoopEnvelope)) {
+                ConcolicRegionRuntime.prepareFieldMaterialization(root, 2,
+                        observed, genericArrayFieldSignature(), "elements");
+                Current[] consumed = observed.elements;
+                ConcolicRegionRuntime.materializeConsumedField(root, 2,
+                        observed, genericArrayFieldSignature(), "elements",
+                        consumed);
+            }
+            ConcolicRegionRuntime.exitRegion(token, null, "");
 
             JsonObject row = resultRows(results).get(0);
             assertEquals(row.getAsJsonArray("unresolvedInputs").toString(),
@@ -2045,6 +2065,23 @@ public class ConcolicRegionRuntimeTest {
                         DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES.get(
                                 envelope.elements[index].metadata));
             }
+            for (Current ignored : laterOuterLoopEnvelope.elements) {
+                assertFalse(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
+                        .containsKey(ignored.metadata));
+            }
+            JsonArray approximations = row.getAsJsonArray(
+                    "runtimeApproximations");
+            assertEquals(2, approximations.size());
+            assertEquals("FIRST_MATCHING_CONTAINER_SELECTED",
+                    approximations.get(0).getAsJsonObject().get("outcome")
+                            .getAsString());
+            assertEquals("LATER_DISTINCT_CONTAINER_IGNORED",
+                    approximations.get(1).getAsJsonObject().get("outcome")
+                            .getAsString());
+            assertEquals("FIRST_MATCHING_CONTAINER_INSTANCE_"
+                            + "APPROXIMATION_V1",
+                    approximations.get(1).getAsJsonObject().get("authority")
+                            .getAsString());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -2955,7 +2992,7 @@ public class ConcolicRegionRuntimeTest {
         JsonObject activation = concreteActivation("ACT.CONTEXT", root, 99);
         activation.addProperty("test", "stable-context-test");
         addStableRootContext(activation, ConsumerWorker.class.getName(),
-                "consumer-thread", 1);
+                "null heartbeating to localhost/127.0.0.1:36121", 1);
         addRootArgumentSelector(activation, 1, 1,
                 KeyUpdateCommand.class.getName());
         Files.write(plan, (activation + "\n").getBytes(
@@ -2964,17 +3001,21 @@ public class ConcolicRegionRuntimeTest {
         String[] old = installPlan(plan, results, "stable-context-test");
         String oldThreadName = Thread.currentThread().getName();
         try {
-            // Exact class and exact thread name are independent parts of the
-            // stable context; neither partial match may advance its ordinal.
-            Thread.currentThread().setName("consumer-thread");
+            // Receiver class and heartbeat host remain exact context parts;
+            // neither mismatch may advance its ordinal. Only the endpoint
+            // port is normalized between discovery and replay.
+            Thread.currentThread().setName(
+                    "null heartbeating to localhost/127.0.0.1:45222");
             assertEquals(0L, ConcolicRegionRuntime.enterRegion(root,
                     new ProducerWorker(),
                     new Object[]{new KeyUpdateCommand()}));
-            Thread.currentThread().setName("producer-thread");
+            Thread.currentThread().setName(
+                    "null heartbeating to localhost/127.0.0.2:45222");
             assertEquals(0L, ConcolicRegionRuntime.enterRegion(root,
                     new ConsumerWorker(),
                     new Object[]{new KeyUpdateCommand()}));
-            Thread.currentThread().setName("consumer-thread");
+            Thread.currentThread().setName(
+                    "null heartbeating to localhost/127.0.0.1:45222");
             long token = ConcolicRegionRuntime.enterRegion(root,
                     new ConsumerWorker(),
                     new Object[]{new KeyUpdateCommand()});
@@ -4269,7 +4310,8 @@ public class ConcolicRegionRuntimeTest {
             throws Exception {
         JsonObject row = runMapProjectionRuntimeCase(
                 "ACT.MAP.PROJECTION.OK",
-                "ROOT_RETURN_PROJECTED_FIELD", "IDENTICAL", null);
+                "ROOT_RETURN_PROJECTED_FIELD", "IDENTICAL", null,
+                false, true);
 
         assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
         JsonArray bindings = row.getAsJsonArray("dynamicFieldBindings");
@@ -4353,6 +4395,17 @@ public class ConcolicRegionRuntimeTest {
         assertTrue(output.get("outputFieldValueFlowVerified")
                 .getAsBoolean());
         assertTrue(output.get("complete").getAsBoolean());
+
+        JsonObject mapInput = row.getAsJsonArray(
+                "runtimeHeapObservations").get(0).getAsJsonObject();
+        assertEquals("MAP_STATE_INPUT_OBSERVATION",
+                mapInput.get("kind").getAsString());
+        assertTrue(mapInput.get("identityBindingComplete").getAsBoolean());
+        assertTrue(mapInput.get("snapshotComplete").getAsBoolean());
+        assertFalse(mapInput.get("vmReferenceSymbolized").getAsBoolean());
+        assertEquals(3, mapInput.get("entryCount").getAsInt());
+        assertEquals(3, mapInput.getAsJsonArray("entries").size());
+        assertEquals(1, row.getAsJsonArray("runtimeApproximations").size());
     }
 
     @Test
@@ -4589,6 +4642,16 @@ public class ConcolicRegionRuntimeTest {
             String activationId, String outputValidationMode,
             String mutation, JsonObject assignment,
             boolean concreteReplayOnly) throws Exception {
+        return runMapProjectionRuntimeCase(activationId,
+                outputValidationMode, mutation, assignment,
+                concreteReplayOnly, false);
+    }
+
+    private static JsonObject runMapProjectionRuntimeCase(
+            String activationId, String outputValidationMode,
+            String mutation, JsonObject assignment,
+            boolean concreteReplayOnly,
+            boolean mapStateObservationOnly) throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
@@ -4597,7 +4660,21 @@ public class ConcolicRegionRuntimeTest {
         JsonObject activation = concreteActivation(activationId, root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", concreteReplayOnly);
-        activation.add("symbolize", singleton(mapProjectionMapAction()));
+        JsonObject mapAction = mapProjectionMapAction();
+        if (mapStateObservationOnly) {
+            mapAction.addProperty("bindingMode",
+                    "MAP_STATE_INPUT_OBSERVATION");
+            mapAction.addProperty("javaType", "java.util.Map");
+            mapAction.addProperty("mapStateObservationOnly", true);
+            mapAction.addProperty("modelControllable", false);
+            mapAction.addProperty("containerObservationAuthority",
+                    "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1");
+            mapAction.addProperty("mapStateInputCell",
+                    mapProjectionMapFieldSignature());
+            mapAction.addProperty("mapStateRequestedOutputCell",
+                    mapProjectionMapFieldSignature());
+        }
+        activation.add("symbolize", singleton(mapAction));
         JsonObject projectionDeclaration = mapProjectionDeclaration(
                 outputValidationMode);
         if ("KEY_SET_VIEW".equals(mutation)) {
@@ -4661,11 +4738,15 @@ public class ConcolicRegionRuntimeTest {
                 boolean projectionRejectedAtEntry = Arrays.asList(
                         "FLOAT_KEY", "IDENTITY_MAP", "SHADOW_FIELD",
                         "KEY_SET_VIEW").contains(mutation);
-                assertEquals(projectionRejectedAtEntry ? 1 : 4,
+                int mapReferenceSymbols = mapStateObservationOnly ? 0 : 1;
+                assertEquals(projectionRejectedAtEntry
+                                ? mapReferenceSymbols
+                                : mapReferenceSymbols + 3,
                         DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
                                 .size());
-                assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                        .containsKey(producer));
+                assertEquals(!mapStateObservationOnly,
+                        DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
+                                .containsKey(producer));
                 if (!projectionRejectedAtEntry) {
                     assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
                             .containsKey(first));

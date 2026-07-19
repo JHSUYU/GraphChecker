@@ -1312,6 +1312,8 @@ final class SymbolicRegionPlanner {
                             "SEED_GUARD_AUTHORITATIVE_LIVE_IN_"
                                     + "FRONTIER_V2");
                 }
+                addRegionInputAccessorMaterializationMetadata(port, input,
+                        draft);
                 inputPorts.add(port);
             }
             int selectedExternalInputCount = inputCandidates.size();
@@ -2961,6 +2963,71 @@ final class SymbolicRegionPlanner {
             port.put("leafFieldSignature", access.field.signature);
             port.put("leafOwnerClass", access.field.owner);
             port.put("leafField", access.field.name);
+        }
+
+        /**
+         * Carries an exact accessor site onto an already-selected canonical
+         * declared-field region input.  Broad exception/guard frontiers are
+         * built before requested-output slices, so relying only on output
+         * promotion metadata leaves a directly selected field without the
+         * site evidence that the runtime trace needs to identify its owner.
+         *
+         * <p>The authority is deliberately narrow: exactly one eligible
+         * {@code accessor_field_return} edge in this region's causal slice
+         * must match the complete declared field tuple, caller, canonical
+         * unit/site, declared callee and Soot-resolved implementation.  A
+         * direct getfield, a duplicate accessor edge, or any malformed tuple
+         * leaves the input unchanged.</p>
+         */
+        private void addRegionInputAccessorMaterializationMetadata(
+                Map<String, Object> port, String cell, RegionDraft region) {
+            DeclaredFieldIdentity field = declaredField(cell);
+            if (field == null || !closedProtocolScalarType(field.type)) {
+                return;
+            }
+            DeclaredFieldAccess selected = null;
+            for (Map<String, Object> edge : region.causalEdges) {
+                DeclaredFieldAccess access = declaredFieldAccessAtEdge(edge,
+                        field, region);
+                if (access == null || !access.accessorCall
+                        || !field.type.equals(declaredReturnType(
+                        access.invokedMethod))
+                        || !field.type.equals(declaredReturnType(
+                        access.accessorImplementationMethod))
+                        || !methodSubSignature(access.invokedMethod).equals(
+                        methodSubSignature(
+                                access.accessorImplementationMethod))) {
+                    continue;
+                }
+                if (selected != null) {
+                    return;
+                }
+                selected = access;
+            }
+            if (selected == null) {
+                return;
+            }
+            port.put("bindingMode", "FIELD_ACCESS");
+            port.put("javaType", field.type);
+            port.put("accessFieldSignature", field.signature);
+            port.put("accessOwnerClass", field.owner);
+            port.put("accessFieldType", field.type);
+            port.put("accessField", field.name);
+            port.put("accessorCallerMethod", selected.method);
+            port.put("accessorCallSiteId", selected.siteId);
+            port.put("accessorCallUnitIndex", selected.unitIndex);
+            port.put("accessorDeclaredCallee", selected.invokedMethod);
+            port.put("accessorImplementationMethod",
+                    selected.accessorImplementationMethod);
+            port.put("accessorImplementationAuthority",
+                    "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
+            port.put("accessorCallSiteAuthority",
+                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
+                            + "ACCESSOR_CALLSITE_V1");
+            port.put("fieldPath", Collections.singletonList(field.name));
+            port.put("leafFieldSignature", field.signature);
+            port.put("leafOwnerClass", field.owner);
+            port.put("leafField", field.name);
         }
 
         /**
@@ -6298,57 +6365,73 @@ final class SymbolicRegionPlanner {
                 if (toRegions == null || toRegions.isEmpty()) {
                     continue;
                 }
+                // A shared protocol helper can be enclosed by several
+                // independently rooted regions.  The static boundary does
+                // not identify which enclosing activation executed the
+                // transfer, so publishing only the first region silently
+                // assigns the endpoint to an arbitrary root.  Emit every
+                // enclosing producer as a mapping-only candidate and leave
+                // the choice to RuntimeRegionPlanner's exact endpoint
+                // fingerprint and ordering checks.  A method outside all
+                // regions retains the historical EXTERNAL producer.
+                List<Map<String, Object>> sourceCandidates =
+                        fromRegions == null || fromRegions.isEmpty()
+                                ? Collections.singletonList(null)
+                                : fromRegions;
                 for (Map<String, Object> toRegion : toRegions) {
                     String toRegionId = string(toRegion.get("regionId"));
-                    String fromRegionId = firstRegionId(fromRegions);
-                    String staticMappingKind = string(edge.get("kind"));
-                    String key = fromRegionId + "\n" + toRegionId + "\n"
-                            + fromCell + "\n" + toCell + "\n"
-                            + string(edge.get("siteId"));
-                    if (!emitted.add(key)) {
-                        continue;
+                    for (Map<String, Object> fromRegion : sourceCandidates) {
+                        String fromRegionId = fromRegion == null
+                                ? "EXTERNAL"
+                                : string(fromRegion.get("regionId"));
+                        String staticMappingKind = string(edge.get("kind"));
+                        String key = fromRegionId + "\n" + toRegionId + "\n"
+                                + fromCell + "\n" + toCell + "\n"
+                                + string(edge.get("siteId"));
+                        if (!emitted.add(key)) {
+                            continue;
+                        }
+                        Map<String, Object> regionEdge = object(
+                                "edgeId", "REGION_EDGE." + index++,
+                                "fromRegion", fromRegionId,
+                                "fromPort", fromCell,
+                                "toRegion", toRegionId,
+                                "toPort", toCell,
+                                "kind", boundaryKind(edge),
+                                // A static boundary edge identifies ports and a
+                                // possible relation.  It is not evidence that the
+                                // values are equal.  RuntimeRegionPlanner may
+                                // promote the candidate only after observing a
+                                // complete value fingerprint on both endpoints.
+                                "relation", "",
+                                "candidateRelation", "EQUALITY",
+                                "requiresOrder", true,
+                                "mappingKind", staticMappingKind,
+                                "mappingAuthority",
+                                "STATIC_FORMAT_AND_PORT_MAPPING",
+                                "mappingOnly", true,
+                                "semanticAssertionsAllowed", false,
+                                "eligibleForAutomaticDerivation", false,
+                                "eligibleForAutomaticSmt", false,
+                                "payloadEqualityCheckRequired", true,
+                                "rootValidation", "RUNTIME_REQUIRED",
+                                "siteId", string(edge.get("siteId")),
+                                "evidence", Arrays.asList("STATIC_PROTOCOL",
+                                        string(edge.get("evidence"))));
+                        CanonicalOutputResolution canonical =
+                                canonicalProducerOutput(fromRegion, fromCell);
+                        if (canonical != null) {
+                            regionEdge.put("fromOutputPort", canonical.port);
+                            regionEdge.put("fromOutputCell", canonical.cell);
+                            regionEdge.put("aliasProofEdgeIds",
+                                    canonical.proofEdgeIds);
+                            regionEdge.put("aliasProofAuthority",
+                                    "STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
+                                            + "AND_DECLARED_RETURN_FIELD");
+                            regionEdge.put("aliasProofComplete", true);
+                        }
+                        result.regionEdges.add(regionEdge);
                     }
-                    Map<String, Object> regionEdge = object(
-                            "edgeId", "REGION_EDGE." + index++,
-                            "fromRegion", fromRegionId,
-                            "fromPort", fromCell,
-                            "toRegion", toRegionId,
-                            "toPort", toCell,
-                            "kind", boundaryKind(edge),
-                            // A static boundary edge identifies ports and a
-                            // possible relation.  It is not evidence that the
-                            // values are equal.  RuntimeRegionPlanner may
-                            // promote the candidate only after observing a
-                            // complete value fingerprint on both endpoints.
-                            "relation", "",
-                            "candidateRelation", "EQUALITY",
-                            "requiresOrder", true,
-                            "mappingKind", staticMappingKind,
-                            "mappingAuthority",
-                            "STATIC_FORMAT_AND_PORT_MAPPING",
-                            "mappingOnly", true,
-                            "semanticAssertionsAllowed", false,
-                            "eligibleForAutomaticDerivation", false,
-                            "eligibleForAutomaticSmt", false,
-                            "payloadEqualityCheckRequired", true,
-                            "rootValidation", "RUNTIME_REQUIRED",
-                            "siteId", string(edge.get("siteId")),
-                            "evidence", Arrays.asList("STATIC_PROTOCOL",
-                                    string(edge.get("evidence"))));
-                    CanonicalOutputResolution canonical =
-                            canonicalProducerOutput(
-                                    regionsById.get(fromRegionId), fromCell);
-                    if (canonical != null) {
-                        regionEdge.put("fromOutputPort", canonical.port);
-                        regionEdge.put("fromOutputCell", canonical.cell);
-                        regionEdge.put("aliasProofEdgeIds",
-                                canonical.proofEdgeIds);
-                        regionEdge.put("aliasProofAuthority",
-                                "STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
-                                        + "AND_DECLARED_RETURN_FIELD");
-                        regionEdge.put("aliasProofComplete", true);
-                    }
-                    result.regionEdges.add(regionEdge);
                 }
             }
 

@@ -1101,6 +1101,11 @@ public final class BooleanReachConditionExtractor {
                 object(relationships, "fatalQueriesArtifact"))
                 || !object(manifest, "symbolicMergePlanArtifact").equals(
                 object(relationships, "symbolicMergePlanArtifact"))
+                || !object(manifest, "runtimeBindingCatalogArtifact").equals(
+                object(relationships, "runtimeBindingCatalogArtifact"))
+                || !object(manifest,
+                "configuredTransportBindingsArtifact").equals(object(
+                relationships, "configuredTransportBindingsArtifact"))
                 || !array(manifest, "summaryInputArtifacts").equals(
                 array(relationships, "summaryInputArtifacts"))) {
             throw new IOException("Composition source artifact binding "
@@ -1172,6 +1177,15 @@ public final class BooleanReachConditionExtractor {
                 "fatalQueriesArtifact").deepCopy());
         material.add("symbolicMergePlanArtifact", object(manifest,
                 "symbolicMergePlanArtifact").deepCopy());
+        material.add("runtimeBindingCatalogArtifact", object(manifest,
+                "runtimeBindingCatalogArtifact").deepCopy());
+        if (manifest != null
+                && manifest.has("configuredTransportBindingsArtifact")) {
+            material.add("configuredTransportBindingsArtifact",
+                    object(manifest,
+                            "configuredTransportBindingsArtifact")
+                            .deepCopy());
+        }
         material.add("summaryInputArtifacts", array(manifest,
                 "summaryInputArtifacts").deepCopy());
         return sha256(BINDING_GSON.toJson(material));

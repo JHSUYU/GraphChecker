@@ -22,6 +22,8 @@ container_runtime_bin="${GRAPH_CHECKER_CONTAINER_RUNTIME:-${container_runtime_bi
 z3_bin="${CAUSYNTH_Z3:-${z3_bin:-z3}}"
 protoc_bin="${CAUSYNTH_PROTOC:-${protoc_bin:-protoc}}"
 java_archive_bin="${GRAPH_CHECKER_JAR_BIN:-${java_archive_bin:-jar}}"
+concolic_container_passwd_file="${CAUSYNTH_CONCOLIC_CONTAINER_PASSWD_FILE:-${concolic_container_passwd_file:-/etc/passwd}}"
+concolic_container_group_file="${CAUSYNTH_CONCOLIC_CONTAINER_GROUP_FILE:-${concolic_container_group_file:-/etc/group}}"
 configured_causynth_workload_test="${causynth_workload_test}"
 causynth_workload_test="${CAUSYNTH_WORKLOAD_TEST:-${causynth_workload_test}}"
 
@@ -49,14 +51,26 @@ run_container() {
 }
 
 with_configured_protoc() {
-    local protoc_path protoc_dir
+    local protoc_path protoc_dir protoc_shim_dir status
     protoc_path=$(configured_tool_path "${protoc_bin}")
     if [[ ! -x "${protoc_path}" ]]; then
         echo "[ERROR] Configured protoc is not executable: ${protoc_path}" >&2
         return 1
     fi
     protoc_dir=$(dirname "${protoc_path}")
-    PATH="${protoc_dir}:${PATH}" "$@"
+    if [[ "$(basename "${protoc_path}")" == "protoc" ]]; then
+        PATH="${protoc_dir}:${PATH}" "$@"
+        return
+    fi
+    # Hadoop's Maven plugin invokes the fixed name `protoc` even when the
+    # configured executable is Maven's classifier artifact.  Publish a
+    # job-local name without copying or mutating that cached binary.
+    protoc_shim_dir=$(mktemp -d)
+    ln -s "${protoc_path}" "${protoc_shim_dir}/protoc"
+    status=0
+    PATH="${protoc_shim_dir}:${protoc_dir}:${PATH}" "$@" || status=$?
+    rm -rf -- "${protoc_shim_dir}"
+    return "${status}"
 }
 
 # Versioned experiments override active output/process locations explicitly;
@@ -224,6 +238,7 @@ usage() {
     echo "Commands:"
     echo "  build                         Build GraphChecker jar"
     echo "  build-hadoop                  Build required Hadoop modules"
+    echo "  compile-hadoop-tests          Compile the pinned HDFS workload tests"
     echo "  compile                       Compile HDFS and snapshot original classes"
     echo "  process                       Run the Causynth Soot transformer"
     echo "  freeze-concolic-static        Hash-bind the completed static catalog/classes"
@@ -231,6 +246,8 @@ usage() {
     echo "  test [TestClass[#method]]     Run HDFS unit tests"
     echo "  finalize-runtime [test]      Seal an existing complete native aggregation"
     echo "  hdfs-11741-bootstrap [test] Generate the one-DN approximate SMT and run Z3"
+    echo "  hdfs-11741-compose-generic [test]"
+    echo "                                Select roles, flip fatal guard, recursively compose, run Z3"
     echo "  run [TestClass[#method]]      process + test"
     echo "  schedule-concolic [test] [region] [activation]"
     echo "                                Build a graph-directed concolic schedule"
@@ -322,6 +339,12 @@ hadoop-common-project/hadoop-kms,\
 hadoop-hdfs-project/hadoop-hdfs-client,\
 hadoop-hdfs-project/hadoop-hdfs \
         -am
+}
+
+do_compile_hadoop_tests() {
+    verify_hadoop_source
+    with_configured_protoc "${hadoop_maven_bin}" \
+        -f "${hdfs_dir}/pom.xml" test-compile -DskipTests
 }
 
 do_compile() {
@@ -753,7 +776,8 @@ do_schedule_concolic() {
     local safe_name trace_dir schedule_dir capture_dir region_suffix
     local activation_plan edge_validations schedule_summaries
     local schedule_regions schedule_static_graph schedule_path_records
-    local schedule_root
+    local schedule_root requested_output_cell runtime_region_instances
+    local requested_output_capture_site requested_output_capture_occurrence
     if [[ -z "${region_id}" ]]; then
         echo "[ERROR] schedule-concolic requires a runtime-selected region argument or CAUSYNTH_SCHEDULE_REGION_ID" >&2
         return 1
@@ -770,11 +794,16 @@ do_schedule_concolic() {
     schedule_static_graph="${CAUSYNTH_SCHEDULE_STATIC_GRAPH:-${causynth_output_dir}/static_dataflow_edges.jsonl}"
     schedule_path_records="${CAUSYNTH_SCHEDULE_PATH_RECORDS:-}"
     schedule_root="${CAUSYNTH_SCHEDULE_ROOT:-}"
+    requested_output_cell="${CAUSYNTH_SCHEDULE_REQUESTED_OUTPUT_CELL:-}"
+    runtime_region_instances="${CAUSYNTH_SCHEDULE_RUNTIME_REGION_INSTANCES:-${trace_dir}/${causynth_hdfs_schedule_runtime_region_instances_file:-runtime_region_instances.jsonl}}"
+    requested_output_capture_site="${CAUSYNTH_SCHEDULE_REQUESTED_OUTPUT_CAPTURE_SITE:-}"
+    requested_output_capture_occurrence="${CAUSYNTH_SCHEDULE_REQUESTED_OUTPUT_CAPTURE_OCCURRENCE:-}"
     if [[ "${CAUSYNTH_CAPTURE_ONLY:-false}" == "true" ]]; then
         schedule_dir="${CAUSYNTH_SCHEDULE_OUTPUT_DIR:-${capture_dir}}"
     fi
     for schedule_input in "${activation_plan}" "${edge_validations}" \
-            "${schedule_regions}" "${schedule_static_graph}"; do
+            "${schedule_regions}" "${schedule_static_graph}" \
+            "${runtime_region_instances}"; do
         if [[ ! -s "${schedule_input}" ]]; then
             echo "[ERROR] Concolic schedule input is missing or empty: ${schedule_input}" >&2
             exit 1
@@ -786,6 +815,7 @@ do_schedule_concolic() {
         --activation-plan "${activation_plan}"
         --edge-validations "${edge_validations}"
         --static-graph "${schedule_static_graph}"
+        --runtime-region-instances "${runtime_region_instances}"
         --output-dir "${schedule_dir}"
         --region-id "${region_id}"
         --max-jobs 1
@@ -799,6 +829,21 @@ do_schedule_concolic() {
     fi
     if [[ -n "${activation_id}" ]]; then
         args+=(--activation-id "${activation_id}")
+    fi
+    if [[ -n "${requested_output_cell}" ]]; then
+        args+=(--requested-output-cell "${requested_output_cell}")
+    fi
+    if [[ -n "${requested_output_capture_site}" \
+            || -n "${requested_output_capture_occurrence}" ]]; then
+        if [[ -z "${requested_output_capture_site}" \
+                || ! "${requested_output_capture_occurrence}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "[ERROR] Exact output capture requires both a site and a positive occurrence" >&2
+            return 1
+        fi
+        args+=(--requested-output-capture-site \
+            "${requested_output_capture_site}"
+            --requested-output-capture-occurrence \
+            "${requested_output_capture_occurrence}")
     fi
     if [[ "${CAUSYNTH_CAPTURE_ONLY:-false}" == "true" ]]; then
         args+=(--capture-only)
@@ -823,6 +868,15 @@ do_schedule_concolic() {
     fi
     if [[ "${CAUSYNTH_FORCE_BRANCH_VALIDATION:-false}" == "true" ]]; then
         args+=(--force-branch-validation)
+    fi
+    if [[ "${CAUSYNTH_ALLOW_BOUNDED_PARTIAL_OUTPUT_SLICE:-${causynth_hdfs_allow_bounded_partial_output_slice:-false}}" == "true" ]]; then
+        args+=(--allow-bounded-partial-output-slice)
+        local bounded_container_fields
+        bounded_container_fields="${CAUSYNTH_BOUNDED_CONTAINER_FIELD_SIGNATURES:-${causynth_hdfs_bounded_container_field_signatures:-}}"
+        if [[ -n "${bounded_container_fields}" ]]; then
+            args+=(--bounded-container-field-signatures \
+                "${bounded_container_fields}")
+        fi
     fi
 
     if [[ "${CAUSYNTH_FRESH_HANDOFF_SCHEDULER_FIXTURE:-false}" == "true" ]]; then
@@ -857,6 +911,7 @@ do_schedule_concolic() {
     fi
     local graphchecker_jar_sha activation_plan_sha edge_validations_sha
     local regions_sha static_graph_sha summaries_sha path_records_sha
+    local runtime_region_instances_sha
     local root_sha branch_queries_sha scheduled_plan_sha merge_plan_sha
     local concolic_schedule_sha scheduler_summary_sha provenance_authority
     local selected_activation_id selected_region_instance_id
@@ -866,6 +921,8 @@ do_schedule_concolic() {
     edge_validations_sha=$(shasum -a 256 "${edge_validations}" | awk '{print $1}')
     regions_sha=$(shasum -a 256 "${schedule_regions}" | awk '{print $1}')
     static_graph_sha=$(shasum -a 256 "${schedule_static_graph}" | awk '{print $1}')
+    runtime_region_instances_sha=$(shasum -a 256 \
+        "${runtime_region_instances}" | awk '{print $1}')
     summaries_sha=""
     path_records_sha=""
     root_sha=""
@@ -945,6 +1002,8 @@ do_schedule_concolic() {
         --arg regionsSha256 "${regions_sha}" \
         --arg staticGraph "$(realpath "${schedule_static_graph}")" \
         --arg staticGraphSha256 "${static_graph_sha}" \
+        --arg runtimeRegionInstances "$(realpath "${runtime_region_instances}")" \
+        --arg runtimeRegionInstancesSha256 "${runtime_region_instances_sha}" \
         --arg summaries "${schedule_summaries:+$(realpath "${schedule_summaries}")}" \
         --arg summariesSha256 "${summaries_sha}" \
         --arg pathRecords "${schedule_path_records:+$(realpath "${schedule_path_records}")}" \
@@ -963,6 +1022,8 @@ do_schedule_concolic() {
         --arg schedulerSummarySha256 "${scheduler_summary_sha}" \
         --arg authority "${provenance_authority}" \
         --arg requestedActivationId "${activation_id}" \
+        --arg requestedOutputCaptureSite "${requested_output_capture_site}" \
+        --arg requestedOutputCaptureOccurrence "${requested_output_capture_occurrence}" \
         --arg activationId "${selected_activation_id}" \
         --arg regionId "${region_id}" \
         --arg regionInstanceId "${selected_region_instance_id}" \
@@ -976,6 +1037,8 @@ do_schedule_concolic() {
           edgeValidationsSha256:$edgeValidationsSha256,
           regions:$regions, regionsSha256:$regionsSha256,
           staticGraph:$staticGraph, staticGraphSha256:$staticGraphSha256,
+          runtimeRegionInstances:$runtimeRegionInstances,
+          runtimeRegionInstancesSha256:$runtimeRegionInstancesSha256,
           summaries:$summaries, summariesSha256:$summariesSha256,
           pathRecords:$pathRecords, pathRecordsSha256:$pathRecordsSha256,
           exactTargetRoot:$exactTargetRoot,
@@ -991,6 +1054,8 @@ do_schedule_concolic() {
           schedulerSummary:$schedulerSummary,
           schedulerSummarySha256:$schedulerSummarySha256,
           requestedActivationId:$requestedActivationId,
+          requestedOutputCaptureSite:$requestedOutputCaptureSite,
+          requestedOutputCaptureOccurrence:$requestedOutputCaptureOccurrence,
           activationId:$activationId, regionId:$regionId,
           regionInstanceId:$regionInstanceId, complete:true}' \
         > "${schedule_dir}/schedule_input_provenance.json"
@@ -1302,6 +1367,7 @@ do_replay_concolic() {
     local -a isolated_test_properties=()
     local -a test_classes_mount=()
     local -a container_user_args=()
+    local -a container_identity_mounts=()
     plan_in_container=$(workspace_container_path "${activation_plan}")
     result_file="$(dirname "$(realpath "${activation_plan}")")/concolic_region_results.jsonl"
     rm -f "${result_file}"
@@ -1339,6 +1405,19 @@ do_replay_concolic() {
             -v "${replay_target_dir}:/hadoop/hadoop-hdfs-project/hadoop-hdfs/target"
         )
         container_user_args=(--user "$(id -u):$(id -g)")
+        if [[ ! -r "${concolic_container_passwd_file}" \
+                || ! -r "${concolic_container_group_file}" ]]; then
+            echo "[ERROR] Numeric-UID replay requires readable passwd/group files: ${concolic_container_passwd_file}, ${concolic_container_group_file}" >&2
+            exit 1
+        fi
+        # The custom JDK initializes user.name through getpwuid(3).  Batch
+        # workers deliberately run as the host UID so their artifacts remain
+        # writable, therefore the container must also be able to resolve that
+        # UID.  Keep both host identity databases read-only and configurable.
+        container_identity_mounts=(
+            -v "${concolic_container_passwd_file}:/etc/passwd:ro"
+            -v "${concolic_container_group_file}:/etc/group:ro"
+        )
         isolated_test_properties=(
             -Dtest.build.data="${replay_work_in_container}/test-build-data"
             -Dtest.build.dir="${replay_work_in_container}/test-build-dir"
@@ -1366,6 +1445,13 @@ do_replay_concolic() {
     arg_line="-Dcausynth.trace.test=${test_name} -Dcausynth.concolic.activation.plan=${plan_in_container} -Dcausynth.concolic.activation.id=${activation_id} -Dcausynth.concolic.results=${result_in_container}"
     if [[ -n "${replay_work_in_container:-}" ]]; then
         arg_line+=" -Dtest.build.data=${replay_work_in_container}/test-build-data -Dtest.build.dir=${replay_work_in_container}/test-build-dir -Dtest.build.shared.data=${replay_work_in_container}/shared-data -Dhadoop.tmp.dir=${replay_work_in_container}/hadoop-tmp -Djava.io.tmpdir=${replay_work_in_container}/java-tmp -Duser.home=/tmp -Duser.name=$(id -un)"
+        local concolic_jvm_error_file
+        concolic_jvm_error_file="${CAUSYNTH_CONCOLIC_JVM_ERROR_FILE:-${replay_work_in_container}/java-tmp/${causynth_concolic_jvm_error_file_name:-hs_err_pid%p.log}}"
+        if [[ "${concolic_jvm_error_file}" == *[[:space:]]* ]]; then
+            echo "[ERROR] Concolic JVM error-file path cannot contain whitespace: ${concolic_jvm_error_file}" >&2
+            return 1
+        fi
+        arg_line+=" -XX:ErrorFile=${concolic_jvm_error_file}"
     fi
 
     local discovery_trace_dir=""
@@ -1456,6 +1542,7 @@ do_replay_concolic() {
 
     run_container run --rm --platform linux/amd64 \
         ${container_user_args[@]+"${container_user_args[@]}"} \
+        ${container_identity_mounts[@]+"${container_identity_mounts[@]}"} \
         -e HOME=/tmp \
         -e USER="$(id -un)" \
         -e LOGNAME="$(id -un)" \
@@ -4879,6 +4966,512 @@ EOF
     fi
 }
 
+# Run the HDFS-11741 experiment through the ordinary concolic composition
+# machinery.  The policy contains semantic method/cell selectors only;
+# Hdfs11741ReplaySelector turns those selectors into this trace's generated
+# region/activation identities.  No HDFS-specific formula is introduced here.
+do_hdfs_11741_compose_generic() {
+    verify_hadoop_source
+    local test_name="${1:-${causynth_workload_test}}"
+    local policy output_dir regions static_graph activation_plan runtime_edges
+    local runtime_instances summaries_raw required_roles bounded_roles
+    local expected_workload normalized_required_roles
+    local selection_subdir scheduler_subdir selection_dir scheduler_dir
+    local selection_file selection_manifest selector_stdout target_summary
+    local all_summaries branch_queries merge_plan scheduler_summary
+    local smt composition_manifest relationships composer_stdout
+    local solver_output solver_stderr solver_manifest
+    local target_region target_activation target_instance
+    local target_site target_required_outcome
+    local producer_chain_json solver_path solver_version solver_result
+    local component input summary_file target_summary_count bounded_region
+    local role
+    local -a summaries=() scheduler_args=() required_role_list=()
+    local -a bounded_role_list=() bounded_args=()
+
+    policy="${CAUSYNTH_HDFS_GENERIC_POLICY:-${causynth_hdfs_generic_policy}}"
+    output_dir="${CAUSYNTH_HDFS_GENERIC_OUTPUT_DIR:-${causynth_hdfs_generic_output_dir}}"
+    regions="${CAUSYNTH_HDFS_GENERIC_REGIONS:-${causynth_hdfs_generic_regions}}"
+    static_graph="${CAUSYNTH_HDFS_GENERIC_STATIC_GRAPH:-${causynth_hdfs_generic_static_graph}}"
+    activation_plan="${CAUSYNTH_HDFS_GENERIC_ACTIVATION_PLAN:-${causynth_hdfs_generic_activation_plan}}"
+    runtime_edges="${CAUSYNTH_HDFS_GENERIC_RUNTIME_EDGES:-${causynth_hdfs_generic_runtime_edges}}"
+    runtime_instances="${CAUSYNTH_HDFS_GENERIC_RUNTIME_REGION_INSTANCES:-${causynth_hdfs_generic_runtime_region_instances:-}}"
+    summaries_raw="${CAUSYNTH_HDFS_GENERIC_REPLAY_SUMMARIES:-${causynth_hdfs_generic_replay_summaries:-}}"
+    required_roles="${CAUSYNTH_HDFS_GENERIC_REQUIRED_PRODUCER_ROLES:-${causynth_hdfs_generic_required_producer_roles:-datanode,balancer}}"
+    bounded_roles="${CAUSYNTH_HDFS_GENERIC_BOUNDED_PRODUCER_ROLES:-${causynth_hdfs_generic_bounded_producer_roles:-}}"
+
+    selection_subdir="${CAUSYNTH_HDFS_GENERIC_SELECTION_SUBDIR:-${causynth_hdfs_generic_selection_subdir:-semantic-selection}}"
+    scheduler_subdir="${CAUSYNTH_HDFS_GENERIC_SCHEDULER_SUBDIR:-${causynth_hdfs_generic_scheduler_subdir:-directed-target-query}}"
+    selection_file="${CAUSYNTH_HDFS_GENERIC_SELECTION_FILE:-${causynth_hdfs_generic_selection_file:-replay_selection.jsonl}}"
+    selection_manifest="${CAUSYNTH_HDFS_GENERIC_SELECTION_MANIFEST_FILE:-${causynth_hdfs_generic_selection_manifest_file:-replay_selection_manifest.json}}"
+    selector_stdout="${CAUSYNTH_HDFS_GENERIC_SELECTOR_STDOUT_FILE:-${causynth_hdfs_generic_selector_stdout_file:-replay_selector.out}}"
+    target_summary="${CAUSYNTH_HDFS_GENERIC_TARGET_SUMMARY_FILE:-${causynth_hdfs_generic_target_summary_file:-target_summary.jsonl}}"
+    all_summaries="${CAUSYNTH_HDFS_GENERIC_ALL_SUMMARIES_FILE:-${causynth_hdfs_generic_all_summaries_file:-all_replay_summaries.jsonl}}"
+    branch_queries="${CAUSYNTH_HDFS_GENERIC_BRANCH_QUERIES_FILE:-${causynth_hdfs_generic_branch_queries_file:-branch_queries.jsonl}}"
+    merge_plan="${CAUSYNTH_HDFS_GENERIC_MERGE_PLAN_FILE:-${causynth_hdfs_generic_merge_plan_file:-symbolic_merge_plan.json}}"
+    scheduler_summary="${CAUSYNTH_HDFS_GENERIC_SCHEDULER_SUMMARY_FILE:-${causynth_hdfs_generic_scheduler_summary_file:-concolic_scheduler_summary.json}}"
+    smt="${CAUSYNTH_HDFS_GENERIC_SMT_FILE:-${causynth_hdfs_generic_smt_file:-hdfs_11741_generic.smt2}}"
+    composition_manifest="${CAUSYNTH_HDFS_GENERIC_COMPOSITION_MANIFEST_FILE:-${causynth_hdfs_generic_composition_manifest_file:-hdfs_11741_generic_manifest.json}}"
+    relationships="${CAUSYNTH_HDFS_GENERIC_RELATIONSHIPS_FILE:-${causynth_hdfs_generic_relationships_file:-hdfs_11741_generic_relationships.json}}"
+    composer_stdout="${CAUSYNTH_HDFS_GENERIC_COMPOSER_STDOUT_FILE:-${causynth_hdfs_generic_composer_stdout_file:-hdfs_11741_generic_composer.out}}"
+    solver_output="${CAUSYNTH_HDFS_GENERIC_SOLVER_OUTPUT_FILE:-${causynth_hdfs_generic_solver_output_file:-hdfs_11741_generic_z3.out}}"
+    solver_stderr="${CAUSYNTH_HDFS_GENERIC_SOLVER_STDERR_FILE:-${causynth_hdfs_generic_solver_stderr_file:-hdfs_11741_generic_z3.err}}"
+    solver_manifest="${CAUSYNTH_HDFS_GENERIC_SOLVER_MANIFEST_FILE:-${causynth_hdfs_generic_solver_manifest_file:-hdfs_11741_generic_z3_manifest.json}}"
+
+    # Every generated artifact is a single component below one fresh output
+    # root.  This both permits configurable names and prevents an override
+    # from escaping the isolated run directory.
+    for component in "${selection_subdir}" "${scheduler_subdir}" \
+            "${selection_file}" "${selection_manifest}" \
+            "${selector_stdout}" "${target_summary}" "${all_summaries}" \
+            "${branch_queries}" "${merge_plan}" "${scheduler_summary}" \
+            "${smt}" "${composition_manifest}" "${relationships}" \
+            "${composer_stdout}" "${solver_output}" "${solver_stderr}" \
+            "${solver_manifest}"; do
+        if [[ -z "${component}" || "${component}" == "." \
+                || "${component}" == ".." || "${component}" == */* ]]; then
+            echo "[ERROR] Generic composition output name must be one path component: ${component}" >&2
+            return 1
+        fi
+    done
+
+    require_nonempty_input "HDFS-11741 semantic selector policy" "${policy}"
+    expected_workload=$(jq -r '.workload // empty' "${policy}")
+    if [[ -z "${expected_workload}" || "${test_name}" != "${expected_workload}" ]]; then
+        echo "[ERROR] Generic HDFS-11741 policy is pinned to ${expected_workload}; requested ${test_name}" >&2
+        return 1
+    fi
+    if ! jq -e '.targetGuard.siteId | type == "string" and length > 0' \
+            "${policy}" >/dev/null \
+            || ! jq -e '.targetGuard.requiredOutcome | type == "boolean"' \
+            "${policy}" >/dev/null; then
+        echo "[ERROR] Generic HDFS-11741 policy has no exact target guard" >&2
+        return 1
+    fi
+    target_site=$(jq -r '.targetGuard.siteId' "${policy}")
+    target_required_outcome=$(jq -r '.targetGuard.requiredOutcome' \
+        "${policy}")
+    for input in "${regions}" "${static_graph}" "${activation_plan}" \
+            "${runtime_edges}" "${gc_jar}"; do
+        require_nonempty_input "generic HDFS-11741 input" "${input}"
+    done
+    if [[ -n "${runtime_instances}" ]]; then
+        require_nonempty_input "runtime region-instance catalog" \
+            "${runtime_instances}"
+    fi
+    if [[ -z "${summaries_raw}" ]]; then
+        echo "[ERROR] Generic HDFS-11741 replay summary list is empty" >&2
+        return 1
+    fi
+    IFS=':' read -r -a summaries <<< "${summaries_raw}"
+    if [[ "${#summaries[@]}" -lt 1 ]]; then
+        echo "[ERROR] Generic HDFS-11741 replay summary list is empty" >&2
+        return 1
+    fi
+    for summary_file in "${summaries[@]}"; do
+        require_nonempty_input "configured replay summary" "${summary_file}"
+    done
+    while IFS= read -r role; do
+        [[ -n "${role}" ]] && required_role_list+=("${role}")
+    done < <(printf '%s\n' "${required_roles}" \
+        | tr ',[:space:]' '\n' | sed '/^$/d' | sort -u)
+    if [[ "${#required_role_list[@]}" -lt 2 ]]; then
+        echo "[ERROR] Generic composition requires at least two semantic producer roles" >&2
+        return 1
+    fi
+    normalized_required_roles=$(IFS=,; printf '%s' \
+        "${required_role_list[*]}")
+    while IFS= read -r role; do
+        [[ -n "${role}" ]] && bounded_role_list+=("${role}")
+    done < <(printf '%s\n' "${bounded_roles}" \
+        | tr ',[:space:]' '\n' | sed '/^$/d' | sort -u)
+    for role in "${bounded_role_list[@]}"; do
+        if [[ ! ",${normalized_required_roles}," == *",${role},"* ]]; then
+            echo "[ERROR] Bounded producer role is not a required semantic role: ${role}" >&2
+            return 1
+        fi
+    done
+
+    require_workspace_output_path "generic HDFS-11741 output directory" \
+        "${output_dir}"
+    output_dir=$(realpath -m "${output_dir}")
+    require_absent_output "generic HDFS-11741 output directory" \
+        "${output_dir}"
+    mkdir -p "$(dirname "${output_dir}")"
+    mkdir "${output_dir}"
+    selection_dir="${output_dir}/${selection_subdir}"
+    scheduler_dir="${output_dir}/${scheduler_subdir}"
+    mkdir "${selection_dir}" "${scheduler_dir}"
+
+    selection_file="${selection_dir}/${selection_file}"
+    selection_manifest="${selection_dir}/${selection_manifest}"
+    selector_stdout="${selection_dir}/${selector_stdout}"
+    target_summary="${output_dir}/${target_summary}"
+    all_summaries="${output_dir}/${all_summaries}"
+    branch_queries="${scheduler_dir}/${branch_queries}"
+    merge_plan="${scheduler_dir}/${merge_plan}"
+    scheduler_summary="${scheduler_dir}/${scheduler_summary}"
+    smt="${output_dir}/${smt}"
+    composition_manifest="${output_dir}/${composition_manifest}"
+    relationships="${output_dir}/${relationships}"
+    composer_stdout="${output_dir}/${composer_stdout}"
+    solver_output="${output_dir}/${solver_output}"
+    solver_stderr="${output_dir}/${solver_stderr}"
+    solver_manifest="${output_dir}/${solver_manifest}"
+
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
+        edu.uva.liftlab.graphchecker.causynth.Hdfs11741ReplaySelector \
+        --policy "${policy}" \
+        --regions "${regions}" \
+        --activation-plan "${activation_plan}" \
+        --runtime-edges "${runtime_edges}" \
+        --output "${selection_file}" \
+        --manifest "${selection_manifest}" > "${selector_stdout}"
+    if ! jq -e --arg workload "${test_name}" '
+            .schemaVersion == 1
+            and .kind == "HDFS_11741_SEMANTIC_REPLAY_SELECTION_MANIFEST"
+            and .complete == true
+            and .workload == $workload
+            and .configuredGeneratedRegionIds == false
+            and .configuredGeneratedActivationIds == false
+            and (.selectedActivations.target.regionId | length) > 0
+            and (.selectedActivations.target.activationId | length) > 0
+            and (.selectedActivations.target.regionInstanceId | length) > 0
+            and .configuredTransportBindings.kind
+                == "CONFIGURED_TRANSPORT_BINDINGS"
+            and .configuredTransportBindings.bindingCount >= 2
+            and .configuredTransportBindings.policyDerived == true
+            and .configuredTransportBindings.configuredGeneratedRegionIds
+                == false
+            and .configuredTransportBindings.configuredGeneratedActivationIds
+                == false
+            and all(.configuredTransportBindings.bindings[];
+                .includeSourcePathGuards == true
+                and (.source.regionId | length) > 0
+                and (.source.regionInstanceId | length) > 0
+                and all(.targets[];
+                    (.portId | length) > 0
+                    and (.regionInstanceId | length) > 0))' \
+            "${selection_manifest}" >/dev/null; then
+        echo "[ERROR] Semantic selector did not publish one complete generated-id-free selection" >&2
+        return 1
+    fi
+
+    # Consolidation changes no summary semantics; it gives Scheduler and the
+    # composer one immutable run-local catalog and makes its hash explicit.
+    if ! jq -c -s '.[] | if type == "object" then .
+            else error("non-object replay summary") end' \
+            "${summaries[@]}" > "${all_summaries}"; then
+        echo "[ERROR] Cannot consolidate configured replay summaries" >&2
+        return 1
+    fi
+    require_nonempty_input "consolidated replay summaries" \
+        "${all_summaries}"
+
+    target_region=$(jq -r '.selectedActivations.target.regionId' \
+        "${selection_manifest}")
+    target_activation=$(jq -r '.selectedActivations.target.activationId' \
+        "${selection_manifest}")
+    target_instance=$(jq -r \
+        '.selectedActivations.target.regionInstanceId' \
+        "${selection_manifest}")
+    target_summary_count=$(jq -s --arg region "${target_region}" \
+        --arg instance "${target_instance}" '
+        [.[] | select(.valid == true and .regionId == $region
+            and .regionInstanceId == $instance)] | length' \
+        "${all_summaries}")
+    if [[ "${target_summary_count}" -ne 1 ]]; then
+        echo "[ERROR] Selected target has ${target_summary_count} exact replay summaries" >&2
+        return 1
+    fi
+    jq -c -s --arg region "${target_region}" \
+        --arg instance "${target_instance}" '
+        [.[] | select(.valid == true and .regionId == $region
+            and .regionInstanceId == $instance)][0]' \
+        "${all_summaries}" > "${target_summary}"
+
+    producer_chain_json=$(jq -n --arg roles "${normalized_required_roles}" \
+        --slurpfile selection "${selection_manifest}" \
+        --slurpfile summaries "${all_summaries}" '
+        [($roles | gsub("[[:space:]]"; "") | split(",")[]
+          | select(length > 0)) as $role
+         | ($selection[0].selectedActivations[$role]) as $chosen
+         | [$summaries[] | select(.valid == true
+              and .regionId == $chosen.regionId
+              and .regionInstanceId == $chosen.regionInstanceId)] as $matches
+         | {role:$role, regionId:($chosen.regionId // ""),
+            regionInstanceId:($chosen.regionInstanceId // ""),
+            summaryMatchCount:($matches | length),
+            summaryId:(if ($matches | length) == 1
+                       then $matches[0].summaryId else "" end)}]')
+    if ! jq -e 'length >= 2 and all(.[];
+            (.regionId | length) > 0
+            and (.regionInstanceId | length) > 0
+            and .summaryMatchCount == 1
+            and (.summaryId | length) > 0)' \
+            <<< "${producer_chain_json}" >/dev/null; then
+        echo "[ERROR] Required semantic producers do not each have one exact summary" >&2
+        jq . <<< "${producer_chain_json}" >&2
+        return 1
+    fi
+
+    for role in "${bounded_role_list[@]}"; do
+        bounded_region=$(jq -r --arg role "${role}" \
+            '.selectedActivations[$role].regionId // empty' \
+            "${selection_manifest}")
+        if [[ -z "${bounded_region}" ]]; then
+            echo "[ERROR] Bounded producer role has no selected region: ${role}" >&2
+            return 1
+        fi
+        # This role permits a certified bounded loop summary; it is not a
+        # whitelist that removes the exact RPC/SASL producer chain.
+        bounded_args+=(--bounded-relational-region "${bounded_region}")
+    done
+
+    scheduler_args=(
+        --regions "${regions}"
+        --activation-plan "${activation_plan}"
+        --edge-validations "${runtime_edges}"
+        --static-graph "${static_graph}"
+        --summaries "${target_summary}"
+        --output-dir "${scheduler_dir}"
+        --region-id "${target_region}"
+        --activation-id "${target_activation}"
+        --target-site "${target_site}"
+        --max-jobs 1
+    )
+    if [[ -n "${runtime_instances}" ]]; then
+        scheduler_args+=(--runtime-region-instances "${runtime_instances}")
+    fi
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
+        edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
+        "${scheduler_args[@]}"
+
+    # Scheduler owns its native filenames.  A configured publication name is
+    # a run-local copy, so scheduler provenance remains intact.
+    if [[ "${branch_queries}" != "${scheduler_dir}/branch_queries.jsonl" ]]; then
+        cp "${scheduler_dir}/branch_queries.jsonl" "${branch_queries}"
+    fi
+    if [[ "${merge_plan}" != "${scheduler_dir}/symbolic_merge_plan.json" ]]; then
+        cp "${scheduler_dir}/symbolic_merge_plan.json" "${merge_plan}"
+    fi
+    if [[ "${scheduler_summary}" != "${scheduler_dir}/concolic_scheduler_summary.json" ]]; then
+        cp "${scheduler_dir}/concolic_scheduler_summary.json" \
+            "${scheduler_summary}"
+    fi
+    for input in "${branch_queries}" "${merge_plan}" \
+            "${scheduler_summary}"; do
+        require_nonempty_input "directed target scheduler output" "${input}"
+    done
+    if ! jq -e -s --arg region "${target_region}" \
+            --arg activation "${target_activation}" \
+            --arg site "${target_site}" \
+            --argjson requiredOutcome "${target_required_outcome}" '
+            length == 1
+            and .[0].regionId == $region
+            and .[0].activationId == $activation
+            and .[0].siteId == $site
+            and .[0].readyForSolver == true
+            and .[0].targetPolicy == "NEGATE_TARGET_CONDITION"
+            and .[0].prefixPolicy == "KEEP_CONDITIONS_BEFORE_TARGET"
+            and .[0].suffixPolicy == "DROP_OLD_SUFFIX"
+            and .[0].desiredOutcome == $requiredOutcome
+            and .[0].desiredOutcome != .[0].observedOutcome
+            and (.[0].constraints | type == "array" and length > 0)' \
+            "${branch_queries}" >/dev/null; then
+        echo "[ERROR] Scheduler did not produce one exact fatal branch flip" >&2
+        return 1
+    fi
+
+    "${graphchecker_java_bin}" -cp "${gc_jar}" \
+        edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
+        --fatal-query "${branch_queries}" \
+        --summaries "${all_summaries}" \
+        --regions "${regions}" \
+        --merge-plan "${merge_plan}" \
+        --runtime-binding-catalog "${activation_plan}" \
+        --configured-transport-bindings "${selection_manifest}" \
+        --output "${smt}" \
+        --manifest "${composition_manifest}" \
+        --relationships "${relationships}" \
+        --fatal-region "${target_region}" \
+        --activation-id "${target_activation}" \
+        "${bounded_args[@]}" > "${composer_stdout}"
+    for input in "${smt}" "${composition_manifest}" "${relationships}"; do
+        require_nonempty_input "generic composition output" "${input}"
+    done
+
+    # complete=false is expected before a natural fatal replay, but only an
+    # otherwise closed bootstrap model may reach the solver.  The chain gate
+    # uses selector-derived roles and exact summary ids, never generated ids
+    # embedded in this script.
+    if ! jq -e --arg region "${target_region}" \
+            --arg activation "${target_activation}" \
+            --argjson chain "${producer_chain_json}" '
+            . as $manifest
+            | .kind == "CONCOLIC_COMPOSED_SMT"
+            and .fatalRegion == $region
+            and .fatalActivation == $activation
+            and .fatalConditionCount > 0
+            and .structurallyComplete == true
+            and (.complete == true or .eligibleForBootstrapModel == true)
+            and .domainSemanticAdapterUsed == false
+            and .explicitContractsIncluded == false
+            and .configuredTransportBindingsIncluded == true
+            and .configuredTransportProducerCount >= 1
+            and .configuredTransportBindingCount >= 2
+            and .configuredTransportConstraintCount >= 3
+            and .exactCausalInputAliasCount >= 1
+            and .causalMapRemoveMissBindingCount >= 1
+            and .causalMapRemoveMissConstraintCount >= 2
+            and all(.causalMapRemoveMissBindings[];
+                .preStateFatalKeyPresentAsserted == true
+                and .postStateFatalKeyAbsentAsserted == true
+                and .directKeyEqualityAsserted == false
+                and .derivedRelationshipKind
+                    == "DERIVED_MAP_REMOVE_FATAL_MISS_KEY_EQUALITY")
+            and .resolvedProducerCount >= ($chain | length)
+            and (.resolvedEdgeBindingCount
+                + .configuredTransportBindingCount) >= ($chain | length)
+            and .assertionCount > 0
+            and all($chain[];
+                . as $producer
+                | ($manifest.relevantRegions
+                    | index($producer.regionId)) != null
+                and ($manifest.includedSummaries
+                    | index($producer.summaryId)) != null)' \
+            "${composition_manifest}" >/dev/null; then
+        echo "[ERROR] Generic SMT is not a structurally closed fatal model with the required producer chain" >&2
+        jq '{status,complete,structurallyComplete,eligibleForBootstrapModel,
+             fatalConditionCount,relevantRegions,includedSummaries,
+             resolvedProducerCount,resolvedEdgeBindingCount,
+             configuredTransportProducerCount,
+             configuredTransportBindingCount,
+             configuredTransportConstraintCount,
+             exactCausalInputAliasCount,
+             causalMapRemoveMissBindingCount,
+             causalMapRemoveMissConstraintCount,
+             missingSummaryRegions,incompleteSummaryRegions,
+             unsupportedExpressions,unboundPorts}' \
+            "${composition_manifest}" >&2
+        return 1
+    fi
+
+    solver_path=$(configured_tool_path "${z3_bin}" || true)
+    if [[ -z "${solver_path}" || ! -x "${solver_path}" ]]; then
+        echo "[ERROR] Configured Z3 is not executable: ${solver_path}" >&2
+        return 1
+    fi
+    solver_version=$("${solver_path}" -version 2>&1 | head -1)
+    if [[ "${solver_version}" != Z3\ version* ]]; then
+        echo "[ERROR] Configured solver did not identify itself as Z3: ${solver_version}" >&2
+        return 1
+    fi
+    if ! "${solver_path}" -smt2 "${smt}" > "${solver_output}" \
+            2> "${solver_stderr}"; then
+        echo "[ERROR] Z3 exited unsuccessfully; see ${solver_stderr}" >&2
+        return 1
+    fi
+    solver_result=$(awk 'NF {print $1; exit}' "${solver_output}")
+    if [[ "${solver_result}" != "sat" ]] \
+            || grep -q '(error' "${solver_output}" \
+            || [[ -s "${solver_stderr}" ]]; then
+        echo "[ERROR] Generic fatal composition did not produce a clean sat result" >&2
+        return 1
+    fi
+
+    local composition_complete structurally_complete bootstrap_eligible
+    local solver_manifest_tmp
+    composition_complete=$(jq -r '.complete' "${composition_manifest}")
+    structurally_complete=$(jq -r '.structurallyComplete' \
+        "${composition_manifest}")
+    bootstrap_eligible=$(jq -r '.eligibleForBootstrapModel' \
+        "${composition_manifest}")
+    solver_manifest_tmp=$(mktemp \
+        "${output_dir}/.generic-z3-manifest.XXXXXX.tmp")
+    jq -n \
+        --arg workload "${test_name}" \
+        --arg hadoopCommit "${causynth_expected_hadoop_commit}" \
+        --arg solverResult "${solver_result}" \
+        --arg solver "$(realpath "${solver_path}")" \
+        --arg solverVersion "${solver_version}" \
+        --arg solverSha256 "$(sha256_file "${solver_path}")" \
+        --arg graphCheckerJar "$(realpath "${gc_jar}")" \
+        --arg graphCheckerJarSha256 "$(sha256_file "${gc_jar}")" \
+        --arg selectionManifest "$(realpath "${selection_manifest}")" \
+        --arg selectionManifestSha256 "$(sha256_file "${selection_manifest}")" \
+        --arg branchQueries "$(realpath "${branch_queries}")" \
+        --arg branchQueriesSha256 "$(sha256_file "${branch_queries}")" \
+        --arg compositionManifest "$(realpath "${composition_manifest}")" \
+        --arg compositionManifestSha256 "$(sha256_file "${composition_manifest}")" \
+        --arg smt "$(realpath "${smt}")" \
+        --arg smtSha256 "$(sha256_file "${smt}")" \
+        --arg solverOutput "$(realpath "${solver_output}")" \
+        --arg solverOutputSha256 "$(sha256_file "${solver_output}")" \
+        --arg solverStderr "$(realpath "${solver_stderr}")" \
+        --arg solverStderrSha256 "$(sha256_file "${solver_stderr}")" \
+        --argjson complete "${composition_complete}" \
+        --argjson structurallyComplete "${structurally_complete}" \
+        --argjson eligibleForBootstrapModel "${bootstrap_eligible}" \
+        --argjson fatalConditionCount \
+            "$(jq '.fatalConditionCount' "${composition_manifest}")" \
+        --argjson exactCausalInputAliasCount \
+            "$(jq '.exactCausalInputAliasCount' "${composition_manifest}")" \
+        --argjson causalMapRemoveMissBindingCount \
+            "$(jq '.causalMapRemoveMissBindingCount' "${composition_manifest}")" \
+        --argjson causalMapRemoveMissConstraintCount \
+            "$(jq '.causalMapRemoveMissConstraintCount' "${composition_manifest}")" \
+        --argjson configuredTransportProducerCount \
+            "$(jq '.configuredTransportProducerCount' "${composition_manifest}")" \
+        --argjson configuredTransportBindingCount \
+            "$(jq '.configuredTransportBindingCount' "${composition_manifest}")" \
+        --argjson configuredTransportConstraintCount \
+            "$(jq '.configuredTransportConstraintCount' "${composition_manifest}")" \
+        --argjson producerChain "${producer_chain_json}" '
+        {schemaVersion:1,
+         kind:"HDFS_11741_GENERIC_COMPOSITION_SOLVER_RUN",
+         status:"SAT_REACHABILITY_CONDITION_SOLVED",
+         workload:$workload,
+         hadoopCommit:$hadoopCommit,
+         complete:$complete,
+         structurallyComplete:$structurallyComplete,
+         eligibleForBootstrapModel:$eligibleForBootstrapModel,
+         approximate:($complete | not),
+         domainSemanticAdapterUsed:false,
+         caseFormulaInjected:false,
+         selectorDrivenGeneratedIds:true,
+         fatalConditionCount:$fatalConditionCount,
+         exactCausalInputAliasCount:$exactCausalInputAliasCount,
+         causalMapRemoveMissBindingCount:$causalMapRemoveMissBindingCount,
+         causalMapRemoveMissConstraintCount:$causalMapRemoveMissConstraintCount,
+         configuredTransportProducerCount:$configuredTransportProducerCount,
+         configuredTransportBindingCount:$configuredTransportBindingCount,
+         configuredTransportConstraintCount:$configuredTransportConstraintCount,
+         requiredProducerChain:$producerChain,
+         requiredProducerChainVerified:true,
+         solverActuallyInvoked:true,
+         solverResult:$solverResult,
+         modelRequested:false,
+         graphCheckerJar:{path:$graphCheckerJar,
+                          sha256:$graphCheckerJarSha256},
+         semanticSelection:{path:$selectionManifest,
+                            sha256:$selectionManifestSha256},
+         fatalBranchQuery:{path:$branchQueries,
+                           sha256:$branchQueriesSha256},
+         compositionManifest:{path:$compositionManifest,
+                              sha256:$compositionManifestSha256},
+         smtArtifact:{path:$smt,sha256:$smtSha256},
+         solver:{path:$solver,version:$solverVersion,
+                 sha256:$solverSha256,command:($solver + " -smt2 " + $smt)},
+         solverOutput:{path:$solverOutput,sha256:$solverOutputSha256},
+         solverStderr:{path:$solverStderr,sha256:$solverStderrSha256}}' \
+        > "${solver_manifest_tmp}"
+    mv "${solver_manifest_tmp}" "${solver_manifest}"
+    echo "[HDFS-11741 generic] Z3 result: ${solver_result}"
+    echo "[HDFS-11741 generic] composition: ${composition_manifest}"
+    echo "[HDFS-11741 generic] solver manifest: ${solver_manifest}"
+}
+
 do_hdfs_11741_bootstrap() {
     verify_hadoop_source
     local test_name="${1:-${causynth_workload_test}}"
@@ -4906,7 +5499,7 @@ do_hdfs_11741_bootstrap() {
     fi
 
     local regions static_graph region_edges runtime_edges runtime_summary
-    local activation_plan offline_provenance
+    local activation_plan offline_provenance target_query
     regions="${CAUSYNTH_HDFS_BOOTSTRAP_REGIONS:-${causynth_output_dir}/${causynth_hdfs_bootstrap_regions_file}}"
     static_graph="${CAUSYNTH_HDFS_BOOTSTRAP_STATIC_GRAPH:-${causynth_output_dir}/${causynth_hdfs_bootstrap_static_graph_file}}"
     region_edges="${CAUSYNTH_HDFS_BOOTSTRAP_REGION_EDGES:-${causynth_output_dir}/${causynth_hdfs_bootstrap_region_edges_file}}"
@@ -4914,6 +5507,13 @@ do_hdfs_11741_bootstrap() {
     runtime_summary="${CAUSYNTH_HDFS_BOOTSTRAP_RUNTIME_SUMMARY:-${trace_dir}/${causynth_hdfs_bootstrap_runtime_summary_file}}"
     activation_plan="${CAUSYNTH_HDFS_BOOTSTRAP_ACTIVATION_PLAN:-${trace_dir}/${causynth_hdfs_bootstrap_activation_plan_file}}"
     offline_provenance="${CAUSYNTH_HDFS_BOOTSTRAP_OFFLINE_PROVENANCE:-${trace_dir}/${causynth_hdfs_bootstrap_offline_provenance_file}}"
+    target_query="${CAUSYNTH_HDFS_BOOTSTRAP_TARGET_QUERY:-${causynth_hdfs_bootstrap_target_query:-}}"
+    local replay_raw replay_summary
+    local -a replay_summaries=()
+    replay_raw="${CAUSYNTH_HDFS_BOOTSTRAP_REPLAY_SUMMARIES:-${causynth_hdfs_bootstrap_replay_summaries:-}}"
+    if [[ -n "${replay_raw}" ]]; then
+        IFS=':' read -r -a replay_summaries <<< "${replay_raw}"
+    fi
     local required_input
     for required_input in "${regions}" "${static_graph}" "${region_edges}" \
             "${runtime_edges}" "${runtime_summary}" "${activation_plan}" \
@@ -4925,6 +5525,79 @@ do_hdfs_11741_bootstrap() {
     done
     if [[ ! -s "${gc_jar}" ]]; then
         echo "[ERROR] GraphChecker jar is missing: ${gc_jar}" >&2
+        return 1
+    fi
+    for replay_summary in "${replay_summaries[@]}"; do
+        [[ -n "${replay_summary}" ]] || continue
+        if [[ ! -s "${replay_summary}" ]]; then
+            echo "[ERROR] Configured replay summary is missing: ${replay_summary}" >&2
+            return 1
+        fi
+    done
+
+    # The concrete workload normally observes the successful lookup.  Build
+    # the fatal query with the existing concolic scheduler: retain the prefix,
+    # negate the exact target occurrence, and discard the old suffix.  Region
+    # and activation identities come from the policy-selected replay summary,
+    # never from generated ACT/REGION names embedded in this script.
+    if [[ -z "${target_query}" ]]; then
+        local target_root target_replay_summary target_match_count
+        local candidate_match_count target_region_id target_activation_id
+        local target_query_dir
+        target_root=$(jq -r '.regions.target.rootMethod // empty' "${policy}")
+        target_replay_summary=""
+        target_match_count=0
+        for replay_summary in "${replay_summaries[@]}"; do
+            [[ -n "${replay_summary}" ]] || continue
+            candidate_match_count=$(jq -s --arg root "${target_root}" '
+                [.[] | select(.valid == true and .rootMethod == $root)]
+                | length' "${replay_summary}")
+            if [[ "${candidate_match_count}" -gt 0 ]]; then
+                target_match_count=$((target_match_count + candidate_match_count))
+                target_replay_summary="${replay_summary}"
+            fi
+        done
+        if [[ -z "${target_root}" || "${target_match_count}" -ne 1 ]]; then
+            echo "[ERROR] Cannot uniquely select the target replay summary: matches=${target_match_count}" >&2
+            return 1
+        fi
+        target_region_id=$(jq -r --arg root "${target_root}" '
+            select(.valid == true and .rootMethod == $root)
+            | .regionId' "${target_replay_summary}")
+        target_activation_id=$(jq -r --arg root "${target_root}" '
+            select(.valid == true and .rootMethod == $root)
+            | .activationId' "${target_replay_summary}")
+        if [[ -z "${target_region_id}" || -z "${target_activation_id}" ]]; then
+            echo "[ERROR] Target replay summary lacks region/activation identity" >&2
+            return 1
+        fi
+        target_query_dir="${output_dir}/directed-target-query"
+        mkdir "${target_query_dir}" || return $?
+        "${graphchecker_java_bin}" -cp "${gc_jar}" \
+            edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
+            --regions "${regions}" \
+            --activation-plan "${activation_plan}" \
+            --edge-validations "${runtime_edges}" \
+            --static-graph "${static_graph}" \
+            --summaries "${target_replay_summary}" \
+            --output-dir "${target_query_dir}" \
+            --region-id "${target_region_id}" \
+            --activation-id "${target_activation_id}" \
+            --max-jobs 1 || return $?
+        target_query="${target_query_dir}/branch_queries.jsonl"
+        if [[ ! -s "${target_query}" ]] || ! jq -e -s '
+                length == 1
+                and .[0].readyForSolver == true
+                and .[0].targetPolicy == "NEGATE_TARGET_CONDITION"
+                and .[0].prefixPolicy == "KEEP_CONDITIONS_BEFORE_TARGET"
+                and .[0].suffixPolicy == "DROP_OLD_SUFFIX"' \
+                "${target_query}" >/dev/null; then
+            echo "[ERROR] Scheduler did not produce one solver-ready fatal branch query" >&2
+            return 1
+        fi
+        echo "[HDFS-11741] directed fatal query: ${target_query}"
+    elif [[ ! -s "${target_query}" ]]; then
+        echo "[ERROR] Configured directed fatal query is missing: ${target_query}" >&2
         return 1
     fi
 
@@ -4959,23 +5632,14 @@ do_hdfs_11741_bootstrap() {
         --runtime-summary "${runtime_summary}"
         --activation-plan "${activation_plan}"
         --offline-provenance "${offline_provenance}"
+        --target-query "${target_query}"
         --output "${smt}"
         --manifest "${manifest}"
     )
-    local replay_raw replay_summary
-    local -a replay_summaries=()
-    replay_raw="${CAUSYNTH_HDFS_BOOTSTRAP_REPLAY_SUMMARIES:-${causynth_hdfs_bootstrap_replay_summaries:-}}"
-    if [[ -n "${replay_raw}" ]]; then
-        IFS=':' read -r -a replay_summaries <<< "${replay_raw}"
-        for replay_summary in "${replay_summaries[@]}"; do
-            [[ -n "${replay_summary}" ]] || continue
-            if [[ ! -s "${replay_summary}" ]]; then
-                echo "[ERROR] Configured replay summary is missing: ${replay_summary}" >&2
-                return 1
-            fi
-            composer_args+=(--replay-summary "${replay_summary}")
-        done
-    fi
+    for replay_summary in "${replay_summaries[@]}"; do
+        [[ -n "${replay_summary}" ]] || continue
+        composer_args+=(--replay-summary "${replay_summary}")
+    done
 
     "${graphchecker_java_bin}" -cp "${gc_jar}" "${composer_class}" \
         "${composer_args[@]}" > "${composer_stdout}"
@@ -5101,6 +5765,9 @@ case "${cmd}" in
     build-hadoop)
         timing "build-hadoop" do_build_hadoop
         ;;
+    compile-hadoop-tests)
+        timing "compile-hadoop-tests" do_compile_hadoop_tests
+        ;;
     compile)
         timing "compile" do_compile
         ;;
@@ -5121,6 +5788,10 @@ case "${cmd}" in
         ;;
     hdfs-11741-bootstrap)
         timing "hdfs-11741-bootstrap" do_hdfs_11741_bootstrap "${1:-}"
+        ;;
+    hdfs-11741-compose-generic)
+        timing "hdfs-11741-compose-generic" \
+            do_hdfs_11741_compose_generic "${1:-}"
         ;;
     run)
         timing "process" do_process

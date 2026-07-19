@@ -2401,7 +2401,8 @@ public final class CausynthTraceRecorder {
         }
 
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
-                regionFile, regionEdgeFile, methods, runtimeEvents, fields);
+                regionFile, regionEdgeFile, staticGraph, methods,
+                runtimeEvents, fields);
         writeFile(new File(outputDir, "runtime_region_instances.jsonl"),
                 planned.instancesJsonl());
         writeFile(new File(outputDir, "runtime_region_validation.jsonl"),

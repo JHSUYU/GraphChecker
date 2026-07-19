@@ -17,6 +17,14 @@
         "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>"
       ]
     },
+    "keyUpdater": {
+      "rootMethod": "<org.apache.hadoop.hdfs.server.balancer.KeyManager$BlockKeyUpdater: void run()>",
+      "anchorMethod": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void addKeys(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys)>",
+      "requiredMethods": [
+        "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>",
+        "<org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys: org.apache.hadoop.hdfs.security.token.block.BlockKey getCurrentKey()>"
+      ]
+    },
     "datanode": {
       "rootMethod": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void run()>",
       "anchorMethod": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void addKeys(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys)>",
@@ -31,6 +39,23 @@
         "<org.apache.hadoop.hdfs.server.balancer.KeyManager: org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey newDataEncryptionKey()>",
         "<org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient: java.lang.String getUserNameFromEncryptionKey(org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey)>"
       ]
+    }
+  },
+  "replaySelection": {
+    "schemaVersion": 1,
+    "producerOutputs": {
+      "namenode": {
+        "cell": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>"
+      },
+      "keyUpdater": {
+        "cell": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: org.apache.hadoop.hdfs.security.token.block.BlockKey currentKey>"
+      },
+      "datanode": {
+        "cell": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>"
+      },
+      "balancer": {
+        "cell": "<org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient: org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair doSaslHandshake(java.net.InetAddress,java.io.OutputStream,java.io.InputStream,java.lang.String,java.util.Map,javax.security.auth.callback.CallbackHandler)>.param3:java.lang.String"
+      }
     }
   },
   "ports": {
@@ -99,6 +124,11 @@
       "collection": "symbolicInputs",
       "cell": "<org.apache.hadoop.util.Time: long now()>.return"
     },
+    "keyUpdaterCurrentKey": {
+      "region": "keyUpdater",
+      "collection": "outputs",
+      "cell": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: org.apache.hadoop.hdfs.security.token.block.BlockKey currentKey>"
+    },
     "balancerCachedKey": {
       "region": "balancer",
       "collection": "symbolicInputs",
@@ -109,6 +139,56 @@
       "collection": "outputs",
       "cell": "<org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient: org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair doSaslHandshake(java.net.InetAddress,java.io.OutputStream,java.io.InputStream,java.lang.String,java.util.Map,javax.security.auth.callback.CallbackHandler)>.param3:java.lang.String"
     }
+  },
+  "transportBindings": {
+    "schemaVersion": 1,
+    "authority": "POLICY_DERIVED_HDFS_RPC_SNAPSHOT_BINDING_V1",
+    "bindings": [
+      {
+        "bindingId": "NN_SNAPSHOT_KEY_FANOUT",
+        "source": {
+          "role": "namenode",
+          "kind": "UNIFORM_HEAP_EFFECT_EXPRESSION",
+          "effectKind": "MAP_PUT",
+          "expressionField": "keyExpression",
+          "expectedSort": "Int"
+        },
+        "targets": [
+          {
+            "role": "keyUpdater",
+            "portAlias": "keyUpdaterCurrentKey",
+            "fieldPath": ["keyId"],
+            "declaredFieldSignature": "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>",
+            "expectedSort": "Int"
+          },
+          {
+            "role": "datanode",
+            "portAlias": "datanodeEntryKey",
+            "expectedSort": "Int"
+          }
+        ],
+        "includeSourcePathGuards": true,
+        "approximation": "CONFIGURED_NN_SNAPSHOT_FANOUT"
+      },
+      {
+        "bindingId": "NN_SNAPSHOT_EXPIRY_FANOUT",
+        "source": {
+          "role": "namenode",
+          "kind": "PORT_ALIAS",
+          "portAlias": "namenodeExpiry",
+          "expectedSort": "Int"
+        },
+        "targets": [
+          {
+            "role": "datanode",
+            "portAlias": "datanodeEntryExpiry",
+            "expectedSort": "Int"
+          }
+        ],
+        "includeSourcePathGuards": true,
+        "approximation": "CONFIGURED_NN_SNAPSHOT_FANOUT"
+      }
+    ]
   },
   "targetGuard": {
     "siteId": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: byte[] retrieveDataEncryptionKey(int,byte[])>#u8",
@@ -157,6 +237,8 @@
     "allowPreFixCachePersistence": true,
     "allowSaslCodecRoundTrip": true,
     "allowMissingRuntimeEquality": true,
+    "allowOperationallyAdmittedPartialReplaySummaries": true,
+    "allowedPartialReplayRoles": ["namenode"],
     "outerLoopAuthority": "CONFIGURED_BOUNDED_EXTERNAL_LOOP_PATH_PREFIX_V1",
     "allowedOuterLoopRootMethods": [
       "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void run()>"

@@ -151,13 +151,16 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
      * TODO: skip native here. Need to confirm correctness
      */
     if (is_java_primitive(res_type) && !callee_method->is_native()) {
+      // An exceptional unwind has no Java return value on the callee
+      // operand stack, even when the method's declared result is primitive.
+      // Treating the declaration as an actual return shifts past stack_base
+      // and used to trip the guarantee below (or copy an invalid slot).
+      if (callee_istate->thread()->has_pending_exception()) {
+        delete s_frame;
+        return;
+      }
       // here `result` describes whatever returned
       int result_slots = type2size[res_type];
-//      if (!callee_istate->thread()->has_pending_exception()) {
-//        result_slots = type2size[res_type];
-//      } else {
-//        result_slots = 0;
-//      }
 
       intptr_t *callee_result = callee_istate->stack() + result_slots;
       /**

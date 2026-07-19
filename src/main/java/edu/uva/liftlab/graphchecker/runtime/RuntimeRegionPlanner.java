@@ -52,6 +52,13 @@ final class RuntimeRegionPlanner {
             "[^A-Za-z0-9_.-]+");
     private static final Pattern JSON_QUOTED_STRING = Pattern.compile(
             "\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
+    private static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
+            Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
+    private static final Pattern HDFS_HEARTBEAT_THREAD_NAME =
+            Pattern.compile("^(.*\\sheartbeating\\s+to\\s+.+):[0-9]+$");
+    private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
+            Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
+                    + "[0-9a-fA-F]+$");
     private static final String VM_INTRINSIC_DEFERRED_AUTHORITY =
             "EXACT_VM_INTRINSIC_PLACEHOLDER_SCHEDULER_VALIDATION_V1";
     private static final String CALL_RETURN_DEFERRED_AUTHORITY =
@@ -94,6 +101,17 @@ final class RuntimeRegionPlanner {
                     + "CONTAINED_FIELD_AND_CALL_EVENT_ORDER_V1";
     static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
             "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1";
+    static final String FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY =
+            "FROZEN_STATIC_GRAPH_UNIQUE_ACCESSOR_JOIN_V1";
+    static final String STATIC_INPUT_FIELD_PROJECTION_AUTHORITY =
+            "STATIC_EXACT_FIELD_PROJECTION_AND_RESOLVED_DECLARATION_V1";
+    static final String STATIC_INPUT_FIELD_PROJECTION_DECLARATION_AUTHORITY =
+            "SOOT_RESOLVED_DECLARATION_HIERARCHY";
+    static final String EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY =
+            "FROZEN_REGION_CATALOG_EXACT_OUTPUT_PORT_OR_CELL_V1";
+    static final String UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY =
+            "RUNTIME_COMPLETE_VALUE_FINGERPRINT_AND_ORDER_UNIQUE_AMONG_"
+                    + "EXACT_OUTPUT_PRODUCER_REGIONS_V1";
 
     private RuntimeRegionPlanner() {
     }
@@ -108,10 +126,28 @@ final class RuntimeRegionPlanner {
                        List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents) {
+        return plan(regionFile, regionEdgeFile, null, methods, runtimeEvents,
+                fieldEvents);
+    }
+
+    static Result plan(File regionFile, File regionEdgeFile,
+                       File staticGraphFile, List<MethodEvent> methods,
+                       List<RuntimeEvent> runtimeEvents,
+                       List<FieldAccessEvent> fieldEvents) {
         Result result = new Result();
         List<StaticRegion> regions = readRegions(regionFile, result.warnings);
         List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile,
                 result.warnings);
+        int staticRegionEdgeCatalogCount = regionEdges.size();
+        regionEdges = expandMappingOnlyProtocolProducerRegions(regions,
+                regionEdges);
+        int frozenStaticAccessorInputBindingCount =
+                applyFrozenStaticAccessorInputBindings(regions,
+                        readFrozenStaticAccessorEvidence(staticGraphFile,
+                                result.warnings));
+        StaticProjectionIndex staticProjections =
+                readStaticProjectionIndex(staticGraphFile,
+                        result.warnings);
         List<MethodEvent> methodEvents = sortedMethods(methods);
         List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
         List<FieldAccessEvent> fields = sortedFields(fieldEvents);
@@ -428,12 +464,18 @@ final class RuntimeRegionPlanner {
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, result, edgeBindings);
         int upstreamActivationCount = deriveUpstreamActivations(
-                edgeBindings, result);
+                edgeBindings, staticProjections, result);
         int mapValueElementProjectionCount =
                 refineMapValueElementProjectionActivations(result);
 
         result.summary.put("staticRegionCount", regions.size());
+        result.summary.put("staticRegionEdgeCatalogCount",
+                staticRegionEdgeCatalogCount);
         result.summary.put("staticRegionEdgeCount", regionEdges.size());
+        result.summary.put("frozenStaticAccessorInputBindingCount",
+                frozenStaticAccessorInputBindingCount);
+        result.summary.put("frozenStaticAccessorInputBindingAuthority",
+                FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY);
         result.summary.put("runtimeRegionInstanceCount", result.instances.size());
         result.summary.put("activationCount", result.activations.size());
         result.summary.put("upstreamActivationCount", upstreamActivationCount);
@@ -632,7 +674,11 @@ final class RuntimeRegionPlanner {
      * same-class worker roles such as producer and consumer executors. HDFS
      * DataXceiver names are execution-specific, so their selector omits the
      * name and uses the receiver-class-wide ordinal while retaining a stable
-     * role as activation metadata.
+     * role as activation metadata. The generation number in the JDK default
+     * executor name is normalized while preserving its logical worker index.
+     * HDFS BPServiceActor heartbeat names retain their block-pool/name-service
+     * and NameNode host context while normalizing only the ephemeral endpoint
+     * port.
      */
     private static int invocationOrdinalWithinContext(
             MethodEvent target, List<MethodEvent> methods) {
@@ -1009,7 +1055,7 @@ final class RuntimeRegionPlanner {
             }
             if (!Boolean.TRUE.equals(observation.get("observed"))) {
                 AccessorReturnObservation accessor =
-                        matchingPrimitiveAccessorReturn(region, port, events);
+                        matchingAccessorReturn(region, port, events);
                 if (accessor != null) {
                     // Older discovery overlays did not instrument every
                     // trivial inherited getter body, but they did record the
@@ -1027,10 +1073,29 @@ final class RuntimeRegionPlanner {
                             accessor.enter.objectId);
                     observation.put("primitiveValue",
                             accessor.returned.primitiveValue);
+                    observation.put("valueObjectId",
+                            accessor.returned.objectId);
+                    observation.put("runtimeType",
+                            accessor.returned.runtimeType);
+                    observation.put("valueFingerprint",
+                            accessor.returned.valueFingerprint);
+                    observation.put("valueFingerprintComplete",
+                            accessor.returned.valueFingerprintComplete);
+                    observation.put("valueFingerprintNodes",
+                            accessor.returned.valueFingerprintNodes);
+                    observation.put("valueFingerprintReason",
+                            accessor.returned.valueFingerprintReason);
                     observation.put("accessKind", "ACCESSOR_RETURN");
+                    String accessorEvidenceAuthority = string(
+                            port.materializationMetadata.get(
+                                    "accessorEvidenceAuthority"));
                     observation.put("observationAuthority",
-                            "RUNTIME_EXACT_ACCESSOR_CALL_RETURN_PLUS_"
-                                    + "STATIC_DIRECT_FIELD_ACCESSOR_V1");
+                            FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY.equals(
+                                    accessorEvidenceAuthority)
+                                    ? FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY
+                                    : "RUNTIME_EXACT_ACCESSOR_CALL_RETURN_"
+                                    + "PLUS_STATIC_DIRECT_FIELD_"
+                                    + "ACCESSOR_V1");
                     observation.put("accessorInvocationId",
                             accessor.enter.invocationId);
                     observation.put("accessorRuntimeType",
@@ -1303,21 +1368,21 @@ final class RuntimeRegionPlanner {
     }
 
     /**
-     * Recovers a promoted primitive declared-field observation from the
-     * unique exact accessor call when the discovery overlay did not emit the
-     * getter body's FIELD_READ.  This is intentionally narrower than a
-     * generic call-return fallback: all static accessor metadata must be
-     * present and authoritative, the caller/site/callee tuple must match one
-     * runtime invocation, the resolved implementation must belong to the
-     * selected static region, and exactly one well-typed return must pair
-     * with that invocation.
+     * Recovers a declared scalar-field observation from the unique exact
+     * accessor call when the discovery overlay did not emit the getter
+     * body's FIELD_READ.  This is intentionally narrower than a generic
+     * call-return fallback: all static accessor metadata must be present and
+     * authoritative, the caller/site/callee tuple must match one runtime
+     * invocation, and exactly one well-typed return must pair with it.
+     * Primitive returns require a parseable primitive value. String returns
+     * require an exact runtime type and a complete value fingerprint.
      */
-    private static AccessorReturnObservation matchingPrimitiveAccessorReturn(
+    private static AccessorReturnObservation matchingAccessorReturn(
             StaticRegion region, StaticPort port,
             List<RuntimeEvent> events) {
         FieldCell expected = fieldCell(port.cell);
         if (!expected.declaredSignature
-                || !primitiveType(expected.type)) {
+                || !accessorReturnObservableType(expected.type)) {
             return null;
         }
 
@@ -1358,10 +1423,7 @@ final class RuntimeRegionPlanner {
                 .concat("ACCESSOR_CALLSITE_V1").equals(callAuthority)
                 || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
                 .equals(implementationAuthority)
-                || !region.methods.contains(caller)
-                || !(region.methods.contains(implementation)
-                || accessorAdmittedByOutputSlice(region, port.portId,
-                caller, implementation))) {
+                || !region.methods.contains(caller)) {
             return null;
         }
 
@@ -1384,8 +1446,8 @@ final class RuntimeRegionPlanner {
                         || !caller.equals(returned.method)
                         || !site.equals(returned.siteId)
                         || !declaredCallee.equals(returned.declaredCallee)
-                        || !exactPrimitiveValue(expected.type,
-                        returned.primitiveValue)) {
+                        || !wellTypedAccessorReturn(expected.type,
+                        returned)) {
                     continue;
                 }
                 if (pairedReturn != null) {
@@ -1401,17 +1463,21 @@ final class RuntimeRegionPlanner {
         return selected;
     }
 
-    private static boolean accessorAdmittedByOutputSlice(
-            StaticRegion region, String inputPort, String caller,
-            String implementation) {
-        for (StaticOutputSlice slice : region.outputSlices.values()) {
-            if (slice.inputPorts.contains(safe(inputPort))
-                    && slice.methods.contains(safe(caller))
-                    && slice.methods.contains(safe(implementation))) {
-                return true;
-            }
+    private static boolean accessorReturnObservableType(String type) {
+        return primitiveType(type) || "java.lang.String".equals(safe(type));
+    }
+
+    private static boolean wellTypedAccessorReturn(
+            String type, RuntimeEvent returned) {
+        if (primitiveType(type)) {
+            return exactPrimitiveValue(type, returned.primitiveValue);
         }
-        return false;
+        return "java.lang.String".equals(type)
+                && type.equals(returned.runtimeType)
+                && returned.objectId != 0
+                && returned.valueFingerprintComplete
+                && !returned.valueFingerprint.isEmpty()
+                && returned.valueFingerprintNodes > 0;
     }
 
     private static boolean primitiveType(String type) {
@@ -1491,6 +1557,8 @@ final class RuntimeRegionPlanner {
             copy(observation, action, "index", "field", "objectId",
                     "fieldReceiverObjectId", "valueObjectId", "runtimeType",
                     "primitiveValue", "deferredResolution", "runtimeRebased",
+                    "valueFingerprint", "valueFingerprintComplete",
+                    "valueFingerprintNodes", "valueFingerprintReason",
                     "deferredResolutionAuthority",
                     "staticInputMethod", "runtimeInputMethod",
                     "rebaseAuthority", "crossMethodArgument",
@@ -2426,7 +2494,93 @@ final class RuntimeRegionPlanner {
                 validationRow.put("aliasProofComplete",
                         edge.aliasProofComplete);
             }
+            if (!edge.producerCandidateGroup.isEmpty()) {
+                validationRow.put("catalogFromRegion",
+                        edge.catalogFromRegion);
+                validationRow.put("producerRegionCandidateGroup",
+                        edge.producerCandidateGroup);
+                validationRow.put("producerRegionCandidateCount",
+                        edge.producerCandidateCount);
+                validationRow.put("producerRegionExpansionAuthority",
+                        edge.producerExpansionAuthority);
+            }
+            if (!edge.staticEvidence.isEmpty()) {
+                validationRow.put("staticEdgeEvidence",
+                        new ArrayList<>(edge.staticEvidence));
+            }
             result.edgeValidations.add(validationRow);
+        }
+        enforceUniqueExpandedProtocolProducer(result.edgeValidations);
+    }
+
+    /**
+     * Exact output identity enumerates candidates but does not prove which
+     * enclosing root executed the transfer.  Accept one producer only when a
+     * single candidate has the existing complete runtime fingerprint/order
+     * witness.  Multiple matching regions remain useful evidence, but none is
+     * admitted to recursive SMT composition.
+     */
+    private static void enforceUniqueExpandedProtocolProducer(
+            List<Map<String, Object>> validations) {
+        Map<String, List<Map<String, Object>>> byGroup =
+                new LinkedHashMap<>();
+        for (Map<String, Object> row : validations) {
+            String group = string(row.get("producerRegionCandidateGroup"));
+            if (!group.isEmpty()) {
+                add(byGroup, group, row);
+            }
+        }
+        for (List<Map<String, Object>> candidates : byGroup.values()) {
+            List<Map<String, Object>> confirmed = new ArrayList<>();
+            for (Map<String, Object> candidate : candidates) {
+                if (Boolean.TRUE.equals(candidate.get("composable"))
+                        && "CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
+                        string(candidate.get("status")))) {
+                    confirmed.add(candidate);
+                }
+            }
+            if (confirmed.size() == 1) {
+                for (Map<String, Object> candidate : candidates) {
+                    boolean selected = candidate == confirmed.get(0);
+                    candidate.put("producerRegionUniquelyConfirmed",
+                            selected);
+                    candidate.put("producerRegionConfirmationAuthority",
+                            selected
+                                    ? UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY
+                                    : "");
+                }
+                continue;
+            }
+            for (Map<String, Object> candidate : candidates) {
+                candidate.put("producerRegionUniquelyConfirmed", false);
+                candidate.put("producerRegionConfirmationAuthority", "");
+            }
+            if (confirmed.size() < 2) {
+                continue;
+            }
+            for (Map<String, Object> ambiguous : confirmed) {
+                ambiguous.put("candidateValueEqualityObserved", true);
+                ambiguous.put("candidateValueEqualityAuthority",
+                        ambiguous.get("valueEqualityAuthority"));
+                ambiguous.put("status",
+                        "AMBIGUOUS_RUNTIME_PRODUCER_REGION");
+                ambiguous.put("validation",
+                        "MULTIPLE_EXACT_OUTPUT_PRODUCER_REGIONS_HAVE_"
+                                + "COMPLETE_RUNTIME_VALUE_WITNESSES");
+                ambiguous.put("relation", "");
+                ambiguous.put("validatedRelation", "");
+                ambiguous.put("composable", false);
+                ambiguous.put("eligibleForAutomaticDerivation", false);
+                ambiguous.put("eligibleForAutomaticSmt", false);
+                ambiguous.put("mappingOnly", true);
+                ambiguous.put("semanticAssertionsAllowed", false);
+                ambiguous.put("exclusionReason",
+                        "RUNTIME_PRODUCER_REGION_NOT_UNIQUE");
+                ambiguous.put("valueEqualityObserved", false);
+                ambiguous.put("valueEqualityAuthority", "");
+                ambiguous.put("endpointOrderAuthority", "");
+                ambiguous.put("endpointCorrelationAuthority", "");
+            }
         }
     }
 
@@ -2437,7 +2591,8 @@ final class RuntimeRegionPlanner {
      * another region query.
      */
     private static int deriveUpstreamActivations(
-            List<UpstreamEdgeBinding> bindings, Result result) {
+            List<UpstreamEdgeBinding> bindings,
+            StaticProjectionIndex staticProjections, Result result) {
         Map<String, Map<String, Object>> baseByInstance = new LinkedHashMap<>();
         for (Map<String, Object> activation : result.activations) {
             baseByInstance.put(string(activation.get("regionInstanceId")),
@@ -2456,8 +2611,27 @@ final class RuntimeRegionPlanner {
                 continue;
             }
             binding.output = output;
-            binding.downstreamInput = binding.downstream.region.inputFor(
-                    binding.edge.toPort);
+            // A runtime edge records the concrete/raw consumer cell.  Lift
+            // that cell to the target region namespace only when the static
+            // catalog declares one exact matching symbolic input.  A
+            // same-field fallback is not sufficient here: projected fields
+            // can have a different SMT sort from their owning object, and an
+            // arbitrary first match would silently create a false in/out
+            // equality.
+            ConsumerInputResolution inputResolution =
+                    binding.downstream.region.resolveConsumerInput(
+                            binding.edge.toPort, staticProjections);
+            if (inputResolution != null
+                    && inputResolution.projection != null
+                    && (binding.readFrom.write.valueObjectId == 0
+                    || binding.readFrom.write.valueObjectId
+                    != binding.readFrom.read.valueObjectId)) {
+                inputResolution = null;
+            }
+            binding.downstreamInput = inputResolution == null
+                    ? null : inputResolution.port;
+            binding.downstreamInputProjection = inputResolution == null
+                    ? null : inputResolution.projection;
             String identity = binding.identity();
             if (!seen.add(identity)) {
                 continue;
@@ -3097,6 +3271,35 @@ final class RuntimeRegionPlanner {
     static int refineMapValueElementProjectionActivationsForTests(
             Result result) {
         return refineMapValueElementProjectionActivations(result);
+    }
+
+    static String uniqueExactInputPortForTests(String regionJson,
+                                               String rawInputCell) {
+        StaticPort input = StaticRegion.fromJson(regionJson)
+                .uniqueExactInputFor(rawInputCell);
+        return input == null ? "" : input.portId;
+    }
+
+    static Map<String, Object> evidenceBackedProjectedInputForTests(
+            String regionJson, String staticGraphJsonl,
+            String rawInputCell) {
+        StaticProjectionIndex projections = new StaticProjectionIndex();
+        for (String row : safe(staticGraphJsonl).split("\\r?\\n")) {
+            projections.add(StaticDataflowProjectionEdge.fromJson(row));
+        }
+        ConsumerInputResolution resolution = StaticRegion.fromJson(regionJson)
+                .resolveConsumerInput(rawInputCell, projections);
+        if (resolution == null || resolution.projection == null) {
+            return Collections.emptyMap();
+        }
+        StaticProjectionProof proof = resolution.projection;
+        return object("portId", resolution.port.portId,
+                "cell", resolution.port.cell,
+                "fieldPath", new ArrayList<>(proof.fieldPath),
+                "evidenceEdgeIds", new ArrayList<>(proof.evidenceEdgeIds),
+                "declaredFieldSignature", proof.declaredFieldSignature,
+                "declaredFieldType", proof.declaredFieldType,
+                "authority", STATIC_INPUT_FIELD_PROJECTION_AUTHORITY);
     }
 
     private static String captureGoalKind(Map<String, Object> activation) {
@@ -3922,6 +4125,112 @@ final class RuntimeRegionPlanner {
         counts.put(key, previous == null ? 1 : previous + 1);
     }
 
+    /**
+     * Enriches only old region rows that carry no accessor-site metadata.
+     * The frozen graph remains immutable: the exact tuple is attached to the
+     * in-memory StaticPort used by this aggregation. Zero or multiple exact
+     * graph rows deliberately leave the input unchanged.
+     */
+    private static int applyFrozenStaticAccessorInputBindings(
+            List<StaticRegion> regions,
+            List<FrozenStaticAccessorEvidence> evidenceRows) {
+        Map<String, List<FrozenStaticAccessorEvidence>> byField =
+                new LinkedHashMap<>();
+        for (FrozenStaticAccessorEvidence evidence : evidenceRows) {
+            add(byField, evidence.fromCell, evidence);
+        }
+        int count = 0;
+        for (StaticRegion region : regions) {
+            for (StaticPort port : region.inputs) {
+                if (hasAnyAccessorMetadata(port)) {
+                    continue;
+                }
+                FrozenStaticAccessorEvidence selected = null;
+                int matches = 0;
+                for (FrozenStaticAccessorEvidence evidence
+                        : values(byField.get(port.cell))) {
+                    if (!evidence.exactlyMatches(region, port)) {
+                        continue;
+                    }
+                    selected = evidence;
+                    matches++;
+                }
+                if (matches != 1 || selected == null) {
+                    continue;
+                }
+                selected.applyTo(port);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean hasAnyAccessorMetadata(StaticPort port) {
+        for (String field : new String[]{"accessMethod", "accessSiteId",
+                "accessUnitIndex", "accessSiteAuthority",
+                "accessorCallerMethod",
+                "accessorCallSiteId", "accessorCallUnitIndex",
+                "accessorDeclaredCallee", "accessorCallSiteAuthority",
+                "accessorImplementationMethod",
+                "accessorImplementationAuthority"}) {
+            if (port.materializationMetadata.containsKey(field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<FrozenStaticAccessorEvidence>
+    readFrozenStaticAccessorEvidence(File file, List<String> warnings) {
+        List<FrozenStaticAccessorEvidence> result = new ArrayList<>();
+        if (file == null) {
+            return result;
+        }
+        if (!file.isFile()) {
+            warnings.add("static data-flow graph file not found: "
+                    + file.getPath());
+            return result;
+        }
+        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.contains("accessor_field_return")
+                        || !line.contains("HEAP_READ")) {
+                    continue;
+                }
+                FrozenStaticAccessorEvidence evidence =
+                        FrozenStaticAccessorEvidence.fromJson(line);
+                if (evidence != null) {
+                    result.add(evidence);
+                }
+            }
+        } catch (IOException exception) {
+            warnings.add("failed to read static accessor evidence: "
+                    + exception);
+        }
+        return result;
+    }
+
+    private static StaticProjectionIndex readStaticProjectionIndex(
+            File file, List<String> warnings) {
+        StaticProjectionIndex result = new StaticProjectionIndex();
+        if (file == null || !file.isFile()) {
+            return result;
+        }
+        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                result.add(StaticDataflowProjectionEdge.fromJson(line));
+            }
+        } catch (IOException exception) {
+            warnings.add("failed to read static field projection evidence: "
+                    + exception);
+        }
+        return result;
+    }
+
     private static List<StaticRegion> readRegions(File file,
                                                    List<String> warnings) {
         List<StaticRegion> result = new ArrayList<>();
@@ -3979,6 +4288,50 @@ final class RuntimeRegionPlanner {
             }
         } catch (IOException exception) {
             warnings.add("failed to read symbolic region edges: " + exception);
+        }
+        return result;
+    }
+
+    /**
+     * Older frozen catalogs assigned a mapping-only protocol edge to the
+     * first region that enclosed its producer endpoint.  The endpoint can be
+     * enclosed by several roots, however, and the concrete workload is the
+     * authority for which root actually produced a transfer.  Recover all
+     * producer candidates using exact catalog identity only.  Runtime value
+     * fingerprint and ordering validation subsequently chooses a unique
+     * candidate; no region or protocol name participates in this expansion.
+     */
+    private static List<StaticRegionEdge>
+    expandMappingOnlyProtocolProducerRegions(
+            List<StaticRegion> regions, List<StaticRegionEdge> edges) {
+        List<StaticRegionEdge> result = new ArrayList<>();
+        int catalogOrdinal = 0;
+        for (StaticRegionEdge edge : edges) {
+            if (!edge.mappingOnlyProtocol()) {
+                result.add(edge);
+                catalogOrdinal++;
+                continue;
+            }
+            List<String> producerRegions = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (StaticRegion region : regions) {
+                if (edge.hasExactProducerOutput(region)
+                        && seen.add(region.regionId)) {
+                    producerRegions.add(region.regionId);
+                }
+            }
+            if (producerRegions.isEmpty()) {
+                result.add(edge);
+                catalogOrdinal++;
+                continue;
+            }
+            String group = "REGION_EDGE_PRODUCER_CANDIDATES."
+                    + catalogOrdinal;
+            for (String producerRegion : producerRegions) {
+                result.add(edge.forProducerRegion(producerRegion, group,
+                        producerRegions.size()));
+            }
+            catalogOrdinal++;
         }
         return result;
     }
@@ -4350,8 +4703,45 @@ final class RuntimeRegionPlanner {
             return portFor(outputs, endpoint, true);
         }
 
-        private StaticPort inputFor(String endpoint) {
-            return portFor(inputs, endpoint, true);
+        private StaticPort uniqueExactInputFor(String endpoint) {
+            String value = safe(endpoint);
+            StaticPort match = null;
+            for (StaticPort port : inputs) {
+                if (!value.equals(port.portId)
+                        && !value.equals(port.cell)) {
+                    continue;
+                }
+                if (match != null) {
+                    return null;
+                }
+                match = port;
+            }
+            return match;
+        }
+
+        private ConsumerInputResolution resolveConsumerInput(
+                String endpoint, StaticProjectionIndex projections) {
+            String value = safe(endpoint);
+            StaticPort exact = null;
+            int exactMatches = 0;
+            for (StaticPort port : inputs) {
+                if (!value.equals(port.portId)
+                        && !value.equals(port.cell)) {
+                    continue;
+                }
+                exact = port;
+                exactMatches++;
+            }
+            if (exactMatches == 1) {
+                return new ConsumerInputResolution(exact, null);
+            }
+            if (exactMatches > 1 || projections == null) {
+                return null;
+            }
+            StaticProjectionProof proof = projections.uniqueProof(value,
+                    inputs);
+            return proof == null ? null
+                    : new ConsumerInputResolution(proof.targetPort, proof);
         }
 
         private StaticPort exactInputFor(String endpoint) {
@@ -4446,6 +4836,504 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /** One exact immutable accessor row recovered from the frozen graph. */
+    private static final class FrozenStaticAccessorEvidence {
+        private final String edgeId;
+        private final String fromCell;
+        private final String toCell;
+        private final String method;
+        private final String siteId;
+        private final int unitIndex;
+        private final String declaredCallee;
+        private final String implementationMethod;
+        private final String declaredFieldSignature;
+        private final String declaredFieldOwner;
+        private final String declaredFieldType;
+        private final String declaredFieldName;
+        private final boolean exactAuthorities;
+
+        private FrozenStaticAccessorEvidence(String edgeId,
+                String fromCell, String toCell, String method,
+                String siteId, int unitIndex, String declaredCallee,
+                String implementationMethod, String declaredFieldSignature,
+                String declaredFieldOwner, String declaredFieldType,
+                String declaredFieldName, boolean exactAuthorities) {
+            this.edgeId = safe(edgeId);
+            this.fromCell = safe(fromCell);
+            this.toCell = safe(toCell);
+            this.method = safe(method);
+            this.siteId = safe(siteId);
+            this.unitIndex = unitIndex;
+            this.declaredCallee = safe(declaredCallee);
+            this.implementationMethod = safe(implementationMethod);
+            this.declaredFieldSignature = safe(declaredFieldSignature);
+            this.declaredFieldOwner = safe(declaredFieldOwner);
+            this.declaredFieldType = safe(declaredFieldType);
+            this.declaredFieldName = safe(declaredFieldName);
+            this.exactAuthorities = exactAuthorities;
+        }
+
+        private static FrozenStaticAccessorEvidence fromJson(String json) {
+            boolean exact = "accessor_field_return".equals(jsonString(json,
+                    "kind"))
+                    && "HEAP_READ".equals(jsonString(json,
+                    "transferKind"))
+                    && "value_flow".equals(jsonString(json, "relation"))
+                    && "backward_provenance".equals(jsonString(json,
+                    "direction"))
+                    && !jsonBoolean(json, "mappingOnly", false)
+                    && jsonBoolean(json, "semanticAssertionsAllowed", false)
+                    && jsonBoolean(json, "eligibleForAutomaticDerivation",
+                    false)
+                    && jsonBoolean(json, "eligibleForAutomaticSmt", false)
+                    && "SOOT_RESOLVED_DECLARATION_HIERARCHY".equals(
+                    jsonString(json, "declaredFieldAuthority"))
+                    && "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY".equals(
+                    jsonString(json,
+                            "accessorImplementationAuthority"));
+            return new FrozenStaticAccessorEvidence(
+                    jsonString(json, "id"), jsonString(json, "fromCell"),
+                    jsonString(json, "toCell"), jsonString(json, "method"),
+                    jsonString(json, "siteId"),
+                    jsonInt(json, "unitIndex", -1),
+                    jsonString(json, "invoke"),
+                    jsonString(json, "accessorImplementationMethod"),
+                    jsonString(json, "declaredFieldSignature"),
+                    jsonString(json, "declaredFieldOwner"),
+                    jsonString(json, "declaredFieldType"),
+                    jsonString(json, "declaredFieldName"), exact);
+        }
+
+        private boolean exactlyMatches(StaticRegion region,
+                                       StaticPort port) {
+            FieldCell field = fieldCell(port.cell);
+            String declaredSubSignature = methodSubSignature(declaredCallee);
+            return exactAuthorities && field.declaredSignature
+                    && accessorReturnObservableType(field.type)
+                    && edgeId.length() > 0 && toCell.length() > 0
+                    && fromCell.equals(port.cell)
+                    && declaredFieldSignature.equals(port.cell)
+                    && declaredFieldOwner.equals(field.owner)
+                    && declaredFieldType.equals(field.type)
+                    && declaredFieldName.equals(field.name)
+                    && region.methods.contains(method)
+                    && unitIndex >= 0
+                    && siteId.equals(method + "#u" + unitIndex)
+                    && field.type.equals(methodReturnType(declaredCallee))
+                    && field.type.equals(methodReturnType(
+                    implementationMethod))
+                    && !declaredSubSignature.isEmpty()
+                    && declaredSubSignature.equals(methodSubSignature(
+                    implementationMethod));
+        }
+
+        private void applyTo(StaticPort port) {
+            port.materializationMetadata.put("bindingMode", "FIELD_ACCESS");
+            port.materializationMetadata.put("javaType",
+                    declaredFieldType);
+            port.materializationMetadata.put("accessFieldSignature",
+                    declaredFieldSignature);
+            port.materializationMetadata.put("accessOwnerClass",
+                    declaredFieldOwner);
+            port.materializationMetadata.put("accessFieldType",
+                    declaredFieldType);
+            port.materializationMetadata.put("accessField",
+                    declaredFieldName);
+            port.materializationMetadata.put("accessorCallerMethod", method);
+            port.materializationMetadata.put("accessorCallSiteId", siteId);
+            port.materializationMetadata.put("accessorCallUnitIndex",
+                    unitIndex);
+            port.materializationMetadata.put("accessorDeclaredCallee",
+                    declaredCallee);
+            port.materializationMetadata.put("accessorImplementationMethod",
+                    implementationMethod);
+            port.materializationMetadata.put(
+                    "accessorImplementationAuthority",
+                    "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
+            port.materializationMetadata.put("accessorCallSiteAuthority",
+                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
+                            + "ACCESSOR_CALLSITE_V1");
+            port.materializationMetadata.put("accessorEvidenceAuthority",
+                    FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY);
+            port.materializationMetadata.put("fieldPath",
+                    Collections.singletonList(declaredFieldName));
+            port.materializationMetadata.put("leafFieldSignature",
+                    declaredFieldSignature);
+            port.materializationMetadata.put("leafOwnerClass",
+                    declaredFieldOwner);
+            port.materializationMetadata.put("leafField",
+                    declaredFieldName);
+        }
+    }
+
+    private static final class ConsumerInputResolution {
+        private final StaticPort port;
+        private final StaticProjectionProof projection;
+
+        private ConsumerInputResolution(StaticPort port,
+                                        StaticProjectionProof projection) {
+            this.port = port;
+            this.projection = projection;
+        }
+    }
+
+    /**
+     * Exact static proof that an object-valued edge endpoint may be consumed
+     * through one declared field projection.  Candidate discovery may inspect
+     * the target cell spelling, but admission requires all three immutable
+     * graph rows: the object-flow base edge, its field-sensitive projected
+     * edge, and a Soot-resolved accessor declaration for that exact projected
+     * receiver.
+     */
+    private static final class StaticProjectionProof {
+        private final StaticPort targetPort;
+        private final String baseCell;
+        private final String targetCell;
+        private final List<String> fieldPath;
+        private final List<String> evidenceEdgeIds;
+        private final String declaredFieldSignature;
+        private final String declaredFieldType;
+
+        private StaticProjectionProof(StaticPort targetPort,
+                String baseCell, String targetCell, List<String> fieldPath,
+                List<String> evidenceEdgeIds,
+                String declaredFieldSignature, String declaredFieldType) {
+            this.targetPort = targetPort;
+            this.baseCell = safe(baseCell);
+            this.targetCell = safe(targetCell);
+            this.fieldPath = new ArrayList<>(fieldPath);
+            this.evidenceEdgeIds = new ArrayList<>(evidenceEdgeIds);
+            this.declaredFieldSignature = safe(declaredFieldSignature);
+            this.declaredFieldType = safe(declaredFieldType);
+        }
+
+        private boolean sameDeclaration(StaticProjectionProof other) {
+            return other != null && baseCell.equals(other.baseCell)
+                    && targetCell.equals(other.targetCell)
+                    && fieldPath.equals(other.fieldPath)
+                    && declaredFieldSignature.equals(
+                    other.declaredFieldSignature)
+                    && declaredFieldType.equals(other.declaredFieldType);
+        }
+    }
+
+    private static final class StaticProjectionIndex {
+        private final Map<String, StaticDataflowProjectionEdge> byId =
+                new LinkedHashMap<>();
+        private final List<StaticDataflowProjectionEdge> projectedEdges =
+                new ArrayList<>();
+        private final Map<String, List<StaticDataflowProjectionEdge>>
+                declarationsByProjectedCell = new LinkedHashMap<>();
+
+        private void add(StaticDataflowProjectionEdge edge) {
+            if (edge == null || edge.edgeId.isEmpty()) {
+                return;
+            }
+            byId.put(edge.edgeId, edge);
+            if (edge.exactProjectedFieldEdge()) {
+                projectedEdges.add(edge);
+            }
+            if (edge.exactResolvedAccessorDeclaration()) {
+                RuntimeRegionPlanner.add(declarationsByProjectedCell,
+                        edge.fromCell, edge);
+            }
+        }
+
+        private StaticProjectionProof uniqueProof(String baseCell,
+                                                   List<StaticPort> ports) {
+            StaticProjectionProof selected = null;
+            for (StaticPort port : ports) {
+                StaticProjectionProof proof = proofFor(baseCell, port);
+                if (proof == null) {
+                    continue;
+                }
+                // Uniqueness is over target region input declarations, not
+                // merely cell text. Duplicate ports are ambiguous too.
+                if (selected != null) {
+                    return null;
+                }
+                selected = proof;
+            }
+            return selected;
+        }
+
+        private StaticProjectionProof proofFor(String baseCell,
+                                                StaticPort targetPort) {
+            StaticProjectionProof selected = null;
+            for (StaticDataflowProjectionEdge projected : projectedEdges) {
+                ProjectionOrientation orientation = projected.orientation(
+                        baseCell, targetPort.cell);
+                if (orientation == null) {
+                    continue;
+                }
+                StaticDataflowProjectionEdge base = byId.get(
+                        projected.projectionBaseEdgeId);
+                if (!projected.exactlyProjects(base, orientation)) {
+                    continue;
+                }
+                for (StaticDataflowProjectionEdge declaration : values(
+                        declarationsByProjectedCell.get(
+                                orientation.peerProjectedCell))) {
+                    if (!declaration.declares(orientation.peerObjectCell,
+                            orientation.peerProjectedCell,
+                            projected.fieldPath)) {
+                        continue;
+                    }
+                    StaticProjectionProof candidate =
+                            new StaticProjectionProof(targetPort, baseCell,
+                                    targetPort.cell, projected.fieldPath,
+                                    java.util.Arrays.asList(base.edgeId,
+                                            projected.edgeId,
+                                            declaration.edgeId),
+                                    declaration.declaredFieldSignature,
+                                    declaration.declaredFieldType);
+                    if (selected == null) {
+                        selected = candidate;
+                    } else if (!selected.sameDeclaration(candidate)) {
+                        // Conflicting resolved declarations make even one
+                        // target input unsafe to canonicalize.
+                        return null;
+                    }
+                }
+            }
+            return selected;
+        }
+    }
+
+    private static final class ProjectionOrientation {
+        private final boolean sourceAtFrom;
+        private final String peerObjectCell;
+        private final String peerProjectedCell;
+
+        private ProjectionOrientation(boolean sourceAtFrom,
+                String peerObjectCell, String peerProjectedCell) {
+            this.sourceAtFrom = sourceAtFrom;
+            this.peerObjectCell = safe(peerObjectCell);
+            this.peerProjectedCell = safe(peerProjectedCell);
+        }
+    }
+
+    private static final class StaticDataflowProjectionEdge {
+        private final String edgeId;
+        private final String kind;
+        private final String transferKind;
+        private final String relation;
+        private final String direction;
+        private final String fromCell;
+        private final String toCell;
+        private final String objectFromCell;
+        private final String objectToCell;
+        private final String projectionBaseEdgeId;
+        private final List<String> fieldPath;
+        private final boolean mappingOnly;
+        private final boolean semanticAssertionsAllowed;
+        private final boolean eligibleForAutomaticDerivation;
+        private final boolean eligibleForAutomaticSmt;
+        private final boolean fieldSensitive;
+        private final String declaredFieldSignature;
+        private final String declaredFieldOwner;
+        private final String declaredFieldType;
+        private final String declaredFieldName;
+        private final String declaredFieldAuthority;
+        private final String invoke;
+        private final String accessorImplementationMethod;
+        private final String accessorImplementationAuthority;
+
+        private StaticDataflowProjectionEdge(String edgeId, String kind,
+                String transferKind, String relation, String direction,
+                String fromCell, String toCell, String objectFromCell,
+                String objectToCell, String projectionBaseEdgeId,
+                List<String> fieldPath, boolean mappingOnly,
+                boolean semanticAssertionsAllowed,
+                boolean eligibleForAutomaticDerivation,
+                boolean eligibleForAutomaticSmt, boolean fieldSensitive,
+                String declaredFieldSignature, String declaredFieldOwner,
+                String declaredFieldType, String declaredFieldName,
+                String declaredFieldAuthority, String invoke,
+                String accessorImplementationMethod,
+                String accessorImplementationAuthority) {
+            this.edgeId = safe(edgeId);
+            this.kind = safe(kind);
+            this.transferKind = safe(transferKind);
+            this.relation = safe(relation);
+            this.direction = safe(direction);
+            this.fromCell = safe(fromCell);
+            this.toCell = safe(toCell);
+            this.objectFromCell = safe(objectFromCell);
+            this.objectToCell = safe(objectToCell);
+            this.projectionBaseEdgeId = safe(projectionBaseEdgeId);
+            this.fieldPath = new ArrayList<>(fieldPath);
+            this.mappingOnly = mappingOnly;
+            this.semanticAssertionsAllowed = semanticAssertionsAllowed;
+            this.eligibleForAutomaticDerivation =
+                    eligibleForAutomaticDerivation;
+            this.eligibleForAutomaticSmt = eligibleForAutomaticSmt;
+            this.fieldSensitive = fieldSensitive;
+            this.declaredFieldSignature = safe(declaredFieldSignature);
+            this.declaredFieldOwner = safe(declaredFieldOwner);
+            this.declaredFieldType = safe(declaredFieldType);
+            this.declaredFieldName = safe(declaredFieldName);
+            this.declaredFieldAuthority = safe(declaredFieldAuthority);
+            this.invoke = safe(invoke);
+            this.accessorImplementationMethod = safe(
+                    accessorImplementationMethod);
+            this.accessorImplementationAuthority = safe(
+                    accessorImplementationAuthority);
+        }
+
+        private static StaticDataflowProjectionEdge fromJson(String json) {
+            String id = jsonString(json, "id");
+            if (id.isEmpty()) {
+                return null;
+            }
+            return new StaticDataflowProjectionEdge(id,
+                    jsonString(json, "kind"),
+                    jsonString(json, "transferKind"),
+                    jsonString(json, "relation"),
+                    jsonString(json, "direction"),
+                    jsonString(json, "fromCell"),
+                    jsonString(json, "toCell"),
+                    jsonString(json, "objectFromCell"),
+                    jsonString(json, "objectToCell"),
+                    jsonString(json, "projectionBaseEdgeId"),
+                    exactFieldPath(jsonString(json, "fieldPath")),
+                    jsonBoolean(json, "mappingOnly", false),
+                    jsonBoolean(json, "semanticAssertionsAllowed", false),
+                    jsonBoolean(json, "eligibleForAutomaticDerivation",
+                            false),
+                    jsonBoolean(json, "eligibleForAutomaticSmt", false),
+                    jsonBoolean(json, "fieldSensitive", false),
+                    jsonString(json, "declaredFieldSignature"),
+                    jsonString(json, "declaredFieldOwner"),
+                    jsonString(json, "declaredFieldType"),
+                    jsonString(json, "declaredFieldName"),
+                    jsonString(json, "declaredFieldAuthority"),
+                    jsonString(json, "invoke"),
+                    jsonString(json, "accessorImplementationMethod"),
+                    jsonString(json, "accessorImplementationAuthority"));
+        }
+
+        private boolean exactProjectedFieldEdge() {
+            return ("projected_field_read".equals(kind)
+                    || "projected_field_write".equals(kind)
+                    || "projected_instance_field_read".equals(kind)
+                    || "projected_instance_field_write".equals(kind))
+                    && !projectionBaseEdgeId.isEmpty()
+                    && !fieldPath.isEmpty() && fieldSensitive
+                    && exactAutomaticValueFlow();
+        }
+
+        private boolean exactResolvedAccessorDeclaration() {
+            if (!"accessor_field_return".equals(kind)
+                    || !exactAutomaticValueFlow()
+                    || !fieldSensitive || fieldPath.isEmpty()
+                    || !STATIC_INPUT_FIELD_PROJECTION_DECLARATION_AUTHORITY
+                    .equals(declaredFieldAuthority)
+                    || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY".equals(
+                    accessorImplementationAuthority)) {
+                return false;
+            }
+            Matcher field = FIELD_SIGNATURE.matcher(
+                    declaredFieldSignature);
+            return field.matches()
+                    && field.group(1).trim().equals(declaredFieldOwner)
+                    && field.group(2).trim().equals(declaredFieldType)
+                    && field.group(3).trim().equals(declaredFieldName)
+                    && declaredFieldName.equals(fieldPath.get(
+                    fieldPath.size() - 1))
+                    && declaredFieldType.equals(methodReturnType(invoke))
+                    && declaredFieldType.equals(methodReturnType(
+                    accessorImplementationMethod));
+        }
+
+        private boolean exactAutomaticValueFlow() {
+            return !mappingOnly && semanticAssertionsAllowed
+                    && eligibleForAutomaticDerivation
+                    && eligibleForAutomaticSmt
+                    && "value_flow".equals(relation)
+                    && "backward_provenance".equals(direction);
+        }
+
+        private ProjectionOrientation orientation(String baseCell,
+                                                   String targetCell) {
+            String suffix = fieldPathSuffix(fieldPath);
+            if (suffix.isEmpty()
+                    || !targetCell.equals(baseCell + suffix)) {
+                return null;
+            }
+            boolean atFrom = baseCell.equals(objectFromCell)
+                    && targetCell.equals(fromCell);
+            boolean atTo = baseCell.equals(objectToCell)
+                    && targetCell.equals(toCell);
+            if (atFrom == atTo) {
+                return null;
+            }
+            return atFrom
+                    ? new ProjectionOrientation(true, objectToCell, toCell)
+                    : new ProjectionOrientation(false, objectFromCell,
+                    fromCell);
+        }
+
+        private boolean exactlyProjects(
+                StaticDataflowProjectionEdge base,
+                ProjectionOrientation orientation) {
+            if (base == null || orientation == null
+                    || !kind.substring("projected_".length()).equals(
+                    base.kind)
+                    || !transferKind.equals(base.transferKind)
+                    || !relation.equals(base.relation)
+                    || !direction.equals(base.direction)
+                    || !base.exactAutomaticValueFlow()) {
+                return false;
+            }
+            return fromCell.equals(objectFromCell
+                    + fieldPathSuffix(fieldPath))
+                    && toCell.equals(objectToCell
+                    + fieldPathSuffix(fieldPath))
+                    && base.fromCell.equals(objectFromCell)
+                    && base.toCell.equals(objectToCell);
+        }
+
+        private boolean declares(String objectCell, String projectedCell,
+                                 List<String> expectedPath) {
+            return exactResolvedAccessorDeclaration()
+                    && objectFromCell.equals(objectCell)
+                    && fromCell.equals(projectedCell)
+                    && fieldPath.equals(expectedPath);
+        }
+
+        private static List<String> exactFieldPath(String rawPath) {
+            String value = safe(rawPath);
+            List<String> result = new ArrayList<>();
+            Matcher matcher = FIELD_PROJECTION.matcher(value);
+            int cursor = 0;
+            while (matcher.find()) {
+                if (matcher.start() != cursor) {
+                    return Collections.emptyList();
+                }
+                String field = matcher.group(1).trim();
+                if (field.isEmpty()) {
+                    return Collections.emptyList();
+                }
+                result.add(field);
+                cursor = matcher.end();
+            }
+            return cursor == value.length() ? result
+                    : Collections.<String>emptyList();
+        }
+
+        private static String fieldPathSuffix(List<String> path) {
+            StringBuilder result = new StringBuilder();
+            for (String field : path) {
+                if (safe(field).isEmpty()) {
+                    return "";
+                }
+                result.append("#field:").append(field);
+            }
+            return result.toString();
+        }
+    }
+
     private static final class StaticRegionEdge {
         private String edgeId = "";
         private String fromRegion = "";
@@ -4466,7 +5354,13 @@ final class RuntimeRegionPlanner {
         private boolean requiresObjectIdentity;
         private String mappingKind = "";
         private String mappingAuthority = "";
+        private boolean mappingOnly;
         private boolean payloadEqualityCheckRequired;
+        private final List<String> staticEvidence = new ArrayList<>();
+        private String catalogFromRegion = "";
+        private String producerCandidateGroup = "";
+        private int producerCandidateCount;
+        private String producerExpansionAuthority = "";
 
         private static StaticRegionEdge fromJson(String json) {
             StaticRegionEdge edge = new StaticRegionEdge();
@@ -4499,10 +5393,73 @@ final class RuntimeRegionPlanner {
                     "requiresObjectIdentity", false);
             edge.mappingKind = jsonString(json, "mappingKind");
             edge.mappingAuthority = jsonString(json, "mappingAuthority");
+            edge.mappingOnly = jsonBoolean(json, "mappingOnly", false);
             edge.payloadEqualityCheckRequired = jsonBoolean(json,
                     "payloadEqualityCheckRequired",
                     "EQUALITY".equals(edge.candidateRelation));
+            edge.staticEvidence.addAll(jsonStringArray(json, "evidence"));
+            edge.catalogFromRegion = edge.fromRegion;
             return edge;
+        }
+
+        private boolean mappingOnlyProtocol() {
+            return mappingOnly && !kind.isEmpty()
+                    && !"SHARED_STATE".equals(kind);
+        }
+
+        private boolean hasExactProducerOutput(StaticRegion region) {
+            if (region == null) {
+                return false;
+            }
+            for (StaticPort output : region.outputs) {
+                if (!canonicalMetadataPresent) {
+                    if (fromPort.equals(output.portId)
+                            || fromPort.equals(output.cell)) {
+                        return true;
+                    }
+                    continue;
+                }
+                if (canonicalAliasValid()
+                        && fromOutputPort.equals(output.portId)
+                        && fromOutputCell.equals(output.cell)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private StaticRegionEdge forProducerRegion(String producerRegion,
+                                                   String candidateGroup,
+                                                   int candidateCount) {
+            StaticRegionEdge copy = new StaticRegionEdge();
+            copy.edgeId = edgeId;
+            copy.fromRegion = safe(producerRegion);
+            copy.toRegion = toRegion;
+            copy.fromPort = fromPort;
+            copy.fromOutputPort = fromOutputPort;
+            copy.fromOutputCell = fromOutputCell;
+            copy.aliasProofEdgeIds.addAll(aliasProofEdgeIds);
+            copy.aliasProofAuthority = aliasProofAuthority;
+            copy.aliasProofComplete = aliasProofComplete;
+            copy.canonicalMetadataPresent = canonicalMetadataPresent;
+            copy.toPort = toPort;
+            copy.kind = kind;
+            copy.relation = relation;
+            copy.candidateRelation = candidateRelation;
+            copy.siteId = siteId;
+            copy.requiresOrder = requiresOrder;
+            copy.requiresObjectIdentity = requiresObjectIdentity;
+            copy.mappingKind = mappingKind;
+            copy.mappingAuthority = mappingAuthority;
+            copy.mappingOnly = mappingOnly;
+            copy.payloadEqualityCheckRequired = payloadEqualityCheckRequired;
+            copy.staticEvidence.addAll(staticEvidence);
+            copy.catalogFromRegion = catalogFromRegion;
+            copy.producerCandidateGroup = safe(candidateGroup);
+            copy.producerCandidateCount = candidateCount;
+            copy.producerExpansionAuthority =
+                    EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY;
+            return copy;
         }
 
         /**
@@ -4834,6 +5791,7 @@ final class RuntimeRegionPlanner {
         private final SharedReadFrom readFrom;
         private StaticPort output;
         private StaticPort downstreamInput;
+        private StaticProjectionProof downstreamInputProjection;
 
         private UpstreamEdgeBinding(StaticRegionEdge edge,
                                     InstanceEvidence upstream,
@@ -4925,8 +5883,43 @@ final class RuntimeRegionPlanner {
                     "selectionAuthority",
                     "RUNTIME_CONFIRMED_READ_FROM");
             result.put("rawFromPort", edge.fromPort);
+            result.put("rawToInputCell", edge.toPort);
             result.put("canonicalOutputAliasUsed",
                     edge.usesCanonicalOutput());
+            result.put("canonicalInputResolutionUsed",
+                    downstreamInput != null);
+            result.put("canonicalInputResolutionAuthority",
+                    downstreamInput == null ? ""
+                            : downstreamInputProjection == null
+                            ? "UNIQUE_EXACT_TARGET_REGION_SYMBOLIC_INPUT_"
+                            + "CELL_V1"
+                            : STATIC_INPUT_FIELD_PROJECTION_AUTHORITY);
+            result.put("inputProjectionUsed",
+                    downstreamInputProjection != null);
+            if (downstreamInputProjection != null) {
+                result.put("inputProjectionComplete", true);
+                result.put("inputProjectionPath", new ArrayList<>(
+                        downstreamInputProjection.fieldPath));
+                result.put("inputProjectionEvidenceEdgeIds",
+                        new ArrayList<>(downstreamInputProjection
+                                .evidenceEdgeIds));
+                result.put("inputProjectionEvidenceAuthority",
+                        STATIC_INPUT_FIELD_PROJECTION_AUTHORITY);
+                result.put("inputProjectionBaseCell",
+                        downstreamInputProjection.baseCell);
+                result.put("inputProjectionTargetCell",
+                        downstreamInputProjection.targetCell);
+                result.put("inputProjectionDeclaredFieldSignature",
+                        downstreamInputProjection.declaredFieldSignature);
+                result.put("inputProjectionDeclaredFieldType",
+                        downstreamInputProjection.declaredFieldType);
+                result.put("inputProjectionDeclaredFieldAuthority",
+                        STATIC_INPUT_FIELD_PROJECTION_DECLARATION_AUTHORITY);
+                result.put("inputProjectionValueObjectIdentityConfirmed",
+                        readFrom.write.valueObjectId != 0
+                                && readFrom.write.valueObjectId
+                                == readFrom.read.valueObjectId);
+            }
             result.put("aliasProofEdgeIds",
                     new ArrayList<>(edge.aliasProofEdgeIds));
             result.put("aliasProofAuthority", edge.aliasProofAuthority);
@@ -6767,7 +7760,8 @@ final class RuntimeRegionPlanner {
                     "accessorDeclaredCallee",
                     "accessorCallSiteAuthority",
                     "accessorImplementationMethod",
-                    "accessorImplementationAuthority"}) {
+                    "accessorImplementationAuthority",
+                    "accessorEvidenceAuthority"}) {
                 String value = jsonString(json, field);
                 if (!value.isEmpty()) result.put(field, value);
             }
@@ -6928,6 +7922,14 @@ final class RuntimeRegionPlanner {
         return value.substring(colon + 1, methodSeparator).trim();
     }
 
+    private static String methodSubSignature(String signature) {
+        String value = safe(signature);
+        int colon = value.indexOf(':');
+        return value.startsWith("<") && value.endsWith(">") && colon > 0
+                ? value.substring(colon + 1, value.length() - 1).trim()
+                : "";
+    }
+
     private static boolean sameField(FieldCell left, FieldCell right) {
         if (left == null || right == null
                 || !left.materializable() || !right.materializable()
@@ -6971,14 +7973,33 @@ final class RuntimeRegionPlanner {
 
     /**
      * Returns the replay-stable portion of a root thread context. Ordinary
-     * worker names remain exact. HDFS DataXceiver names are deliberately
-     * omitted because both formats used by HDFS are execution-specific:
+     * worker names remain exact. The JDK default executor pool generation is
+     * process-global and therefore changes when unrelated pools are created;
+     * normalize that number while retaining the worker index. HDFS heartbeat
+     * names include a NameNode endpoint whose numeric port changes between
+     * MiniDFSCluster executions; retain the full prefix and host while
+     * normalizing only that final port. HDFS DataXceiver names are deliberately
+     * omitted because both formats are execution-specific:
      * {@code DataXceiver@<identityHash>} before the operation is decoded and
      * {@code DataXceiver for client <peer> [<operation/block>]} afterwards.
      */
     private static String stableRootThreadContext(String threadName) {
-        return hdfsDataXceiverDynamicThreadName(threadName)
-                ? "" : safe(threadName);
+        String value = safe(threadName);
+        if (hdfsDataXceiverDynamicThreadName(value)) {
+            return "";
+        }
+        Matcher executor = DEFAULT_EXECUTOR_THREAD_NAME.matcher(value);
+        if (executor.matches()) {
+            return "pool-*-thread-" + executor.group(1);
+        }
+        Matcher heartbeat = HDFS_HEARTBEAT_THREAD_NAME.matcher(value);
+        if (heartbeat.matches()) {
+            return heartbeat.group(1) + ":*";
+        }
+        Matcher objectIdentity = DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(
+                value);
+        return objectIdentity.matches()
+                ? objectIdentity.group(1) + "@*" : value;
     }
 
     private static boolean hdfsDataXceiverDynamicThreadName(

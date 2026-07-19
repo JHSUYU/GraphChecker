@@ -54,6 +54,19 @@ import java.util.regex.Pattern;
  */
 public final class ConcolicRegionRuntime {
     private static final int MAX_MAP_PROJECTION_ELEMENTS = 4096;
+    private static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
+            Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
+    private static final Pattern HDFS_HEARTBEAT_THREAD_NAME =
+            Pattern.compile("^(.*\\sheartbeating\\s+to\\s+.+):[0-9]+$");
+    private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
+            Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
+                    + "[0-9a-fA-F]+$");
+    private static final String CONTAINER_INPUT_OBSERVATION_MODE =
+            "CONTAINER_INPUT_OBSERVATION";
+    private static final String MAP_STATE_INPUT_OBSERVATION_MODE =
+            "MAP_STATE_INPUT_OBSERVATION";
+    private static final String FIRST_CONTAINER_OBSERVATION_AUTHORITY =
+            "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
     private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
             "EXACT_BASE_PORT_GETTER_SITE_OCCURRENCE_THEN_"
                     + "FRESH_ENTRY_REBIND_V1";
@@ -110,6 +123,15 @@ public final class ConcolicRegionRuntime {
     private static int concreteReplayActiveCount;
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
+    /**
+     * A selected logical service-loop activation whose native concolic engine
+     * start is intentionally delayed until the bounded state transformer is
+     * entered.  Selection and ownership still belong to the heartbeat root;
+     * only VM recording is deferred so unrelated loop prelude cannot pollute
+     * (or destabilize) the requested output slice.
+     */
+    private static final ThreadLocal<PendingBoundedActivation>
+            PENDING_BOUNDED_ACTIVATION = new ThreadLocal<>();
     /**
      * Dynamic root-invocation ownership used only by injected entry/exit
      * hooks.  Every injected root invocation owns a frame once its wrapper
@@ -290,6 +312,7 @@ public final class ConcolicRegionRuntime {
         }
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
+        PENDING_BOUNDED_ACTIVATION.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
         synchronized (EXECUTION_MODE_LOCK) {
@@ -367,6 +390,24 @@ public final class ConcolicRegionRuntime {
         if (activation.concreteReplayOnly) {
             return enterConcreteReplay(activation, receiver);
         }
+        if (activation.boundedOutputDeferredEngineStart) {
+            if (PENDING_BOUNDED_ACTIVATION.get() != null) {
+                writeSkipped(activation,
+                        "another deferred bounded activation is pending");
+                return 0L;
+            }
+            RootInvocationFrame ownerFrame =
+                    ROOT_INVOCATION_FRAMES.get().peek();
+            PENDING_BOUNDED_ACTIVATION.set(new PendingBoundedActivation(
+                    activation, receiver, Thread.currentThread(),
+                    ownerFrame));
+            return 0L;
+        }
+        return startSymbolicRegion(activation, receiver);
+    }
+
+    private static long startSymbolicRegion(Activation activation,
+                                            Object receiver) {
         if (!reserveSymbolicEngine()) {
             writeSkipped(activation, "another concolic region is active");
             return 0L;
@@ -423,6 +464,36 @@ public final class ConcolicRegionRuntime {
             releaseSymbolicEngine();
             writeSkipped(activation, "engine start failed: " + rootCause(throwable));
             return 0L;
+        }
+    }
+
+    /**
+     * Starts a previously selected bounded activation at the exact entry of
+     * its unique outermost requested-state transformer.  The activation id,
+     * logical root and receiver were fixed at the heartbeat entry; this hook
+     * is therefore not a second selector and cannot drift to another loop
+     * iteration or receiver.
+     */
+    public static void enterBoundedOutputTransformer(String method) {
+        try {
+            PendingBoundedActivation pending =
+                    PENDING_BOUNDED_ACTIVATION.get();
+            if (pending == null
+                    || pending.ownerThread != Thread.currentThread()
+                    || !pending.activation.boundedOutputCompletionMethod
+                    .equals(safe(method))) {
+                return;
+            }
+            PENDING_BOUNDED_ACTIVATION.remove();
+            long token = startSymbolicRegion(pending.activation,
+                    pending.receiver);
+            if (token != 0L && pending.ownerFrame != null
+                    && pending.ownerFrame.token == 0L) {
+                pending.ownerFrame.token = token;
+            }
+        } catch (Throwable ignored) {
+            // Instrumentation hooks must not perturb the workload.
+            PENDING_BOUNDED_ACTIVATION.remove();
         }
     }
 
@@ -753,7 +824,8 @@ public final class ConcolicRegionRuntime {
         }
         List<SymbolizeAction> matches = new ArrayList<>();
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (action.identifiesConsumedLeaf(leafOwner,
+            if (!action.containerInputObservationOnly()
+                    && action.identifiesConsumedLeaf(leafOwner,
                     leafFieldSignature, leafFieldName)) {
                 matches.add(action);
             }
@@ -862,11 +934,17 @@ public final class ConcolicRegionRuntime {
             Object consumedValue) {
         ActiveRegion active = activeRegion();
         if (active == null) return;
+        boolean observedContainer = active.observeConsumedContainerInput(
+                method, unitIndex, leafOwner, leafFieldSignature,
+                leafFieldName, consumedValue);
         String site = siteId(method, unitIndex);
         PendingArrayFieldMaterialization pending =
                 active.pendingArrayFieldMaterialization;
         active.pendingArrayFieldMaterialization = null;
         if (pending == null) {
+            if (observedContainer) {
+                return;
+            }
             active.addUnresolvedOnce(site
                     + ": ARRAY_VALUE_CONSUMED_WITHOUT_PREPARE");
             return;
@@ -981,6 +1059,11 @@ public final class ConcolicRegionRuntime {
                     "FIELD_ACCESS");
             active.observeContainerInput(action, exactFieldValue,
                     "FIELD_ACCESS");
+            if (action.mapStateInputObservationOnly()) {
+                active.observeMapStateInput(action, owner, exactFieldValue,
+                        method, unitIndex);
+                continue;
+            }
             ContainerFieldResolution containerResolution =
                     active.dynamicContainerFieldBinding(action, owner,
                             leafOwner, firstNonBlank(fieldSignature,
@@ -1646,12 +1729,174 @@ public final class ConcolicRegionRuntime {
             observation.addProperty("authority",
                     FINITE_MAP_SNAPSHOT_AUTHORITY);
             observation.addProperty("complete", true);
+            annotateMapStateInputBinding(observation, active, map);
             active.finiteMapSnapshots.add(observation);
         } catch (Throwable ignored) {
             // Optional finite-domain evidence is emitted only when every
             // check succeeds.  A failed snapshot must not be weakened into a
             // cardinality claim or invalidate ordinary MAP_ENTRY_READ rows.
         }
+    }
+
+    /**
+     * Captures the concrete pre-state selected by an observation-only Map
+     * input.  The entry snapshot is deliberately bounded and validated by a
+     * second same-hook traversal; identity binding remains usable even when a
+     * large or unsupported Map cannot provide this optional finite snapshot.
+     * No custom-JDK expression or symbolization API is called here.
+     */
+    private static JsonObject mapStateInputObservation(
+            ActiveRegion active, SymbolizeAction action, Object accessOwner,
+            Map<?, ?> map, String method, int unitIndex,
+            MapStateInputBinding binding) {
+        JsonObject observation = fieldObservation(active, action.symbol,
+                accessOwner, action.fieldPath, "AT_MAP_STATE_INPUT");
+        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("kind", "MAP_STATE_INPUT_OBSERVATION");
+        observation.addProperty("observationId", binding.observationId);
+        observation.addProperty("eventSequence",
+                active.nextRuntimeEventSequence());
+        observation.addProperty("originMethod", safe(method));
+        observation.addProperty("originUnitIndex", unitIndex);
+        observation.addProperty("siteId", siteId(method, unitIndex));
+        observation.addProperty("inputSymbol", action.symbol);
+        observation.addProperty("inputCell", action.cell);
+        observation.addProperty("bindingMode", action.bindingMode);
+        observation.addProperty("selectionAuthority",
+                action.containerObservationAuthority);
+        observation.addProperty("modelControllable", false);
+        observation.addProperty("vmReferenceSymbolized", false);
+        observation.addProperty("mapImplementationClass",
+                map.getClass().getName());
+        observation.addProperty("mapObjectToken", binding.mapObjectToken);
+        observation.addProperty("backingMapObjectToken",
+                binding.mapObjectToken);
+        observation.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        observation.addProperty("objectTokenScope",
+                active.activation.activationId);
+        observation.addProperty("identityBindingComplete", true);
+
+        boolean snapshotComplete = false;
+        String snapshotProblem = "";
+        JsonArray keys = new JsonArray();
+        JsonArray valueTokens = new JsonArray();
+        JsonArray entries = new JsonArray();
+        try {
+            int sizeBefore = map.size();
+            Object[] before = map.entrySet().toArray();
+            if (!supportedMapProjectionImplementation(map)) {
+                snapshotProblem = "unsupported exact Map implementation";
+            } else if (sizeBefore < 0
+                    || sizeBefore > MAX_MAP_PROJECTION_ELEMENTS
+                    || before.length != sizeBefore) {
+                snapshotProblem = "Map entry snapshot exceeds bound or size "
+                        + "changed before capture";
+            } else {
+                String[] selectors = new String[before.length];
+                Object[] values = new Object[before.length];
+                Set<String> distinct = new LinkedHashSet<>();
+                boolean valid = true;
+                for (int index = 0; index < before.length; index++) {
+                    if (!(before[index] instanceof Map.Entry<?, ?>)) {
+                        valid = false;
+                        snapshotProblem = "entrySet snapshot contains a "
+                                + "non-entry value";
+                        break;
+                    }
+                    Map.Entry<?, ?> entry = (Map.Entry<?, ?>) before[index];
+                    JsonElement key = immutableEntryKeyExpression(
+                            entry.getKey());
+                    String selector = stableMapProjectionKeySelector(key);
+                    if (key == null || selector.isEmpty()
+                            || !distinct.add(selector)) {
+                        valid = false;
+                        snapshotProblem = "entry key lacks one exact stable "
+                                + "immutable selector";
+                        break;
+                    }
+                    Object value = entry.getValue();
+                    selectors[index] = selector;
+                    values[index] = value;
+                    long valueToken = active.objectToken(value);
+                    keys.add(copyJsonTree(key));
+                    valueTokens.add(new JsonPrimitive(
+                            Long.valueOf(valueToken)));
+                    JsonObject row = new JsonObject();
+                    row.addProperty("index", index);
+                    row.add("keyExpression", copyJsonTree(key));
+                    row.addProperty("keyObjectToken",
+                            active.objectToken(entry.getKey()));
+                    row.addProperty("valueObjectToken", valueToken);
+                    row.addProperty("valueWasNull", value == null);
+                    entries.add(row);
+                }
+                Object[] after = valid ? map.entrySet().toArray()
+                        : new Object[0];
+                if (valid && (map.size() != sizeBefore
+                        || after.length != before.length)) {
+                    valid = false;
+                    snapshotProblem = "Map size changed during input "
+                            + "snapshot";
+                }
+                for (int index = 0; valid && index < after.length; index++) {
+                    if (!(after[index] instanceof Map.Entry<?, ?>)) {
+                        valid = false;
+                        snapshotProblem = "Map entry shape changed during "
+                                + "input snapshot";
+                        break;
+                    }
+                    Map.Entry<?, ?> entry = (Map.Entry<?, ?>) after[index];
+                    if (!selectors[index].equals(
+                            stableMapProjectionKeySelector(
+                                    immutableEntryKeyExpression(
+                                            entry.getKey())))
+                            || entry.getValue() != values[index]) {
+                        valid = false;
+                        snapshotProblem = "Map entry order or value identity "
+                                + "changed during input snapshot";
+                    }
+                }
+                snapshotComplete = valid;
+            }
+            observation.addProperty("entryCount", sizeBefore);
+        } catch (Throwable throwable) {
+            snapshotProblem = "Map input snapshot failed: "
+                    + rootCause(throwable);
+        }
+        observation.addProperty("finiteEntryBound",
+                MAX_MAP_PROJECTION_ELEMENTS);
+        observation.add("keyExpressions", keys);
+        observation.add("valueObjectTokens", valueTokens);
+        observation.add("entries", entries);
+        observation.addProperty("snapshotComplete", snapshotComplete);
+        observation.addProperty("snapshotAuthority",
+                "SAME_FIELD_HOOK_STABLE_BOUNDED_ENTRY_SET_SNAPSHOT_V1");
+        if (!snapshotComplete) {
+            observation.addProperty("snapshotProblem", snapshotProblem);
+        }
+        // The binding itself is exact even if the optional finite-domain
+        // expansion is unavailable.  Consumers must inspect snapshotComplete
+        // before deriving cardinality or individual entries.
+        observation.addProperty("complete", true);
+        annotateMapStateInputBinding(observation, active, map);
+        return observation;
+    }
+
+    private static void annotateMapStateInputBinding(
+            JsonObject target, ActiveRegion active, Object map) {
+        if (target == null || active == null || map == null) return;
+        MapStateInputBinding binding = active.mapStateInputs.get(map);
+        if (binding == null) return;
+        target.addProperty("mapStateInputSymbol", binding.action.symbol);
+        target.addProperty("mapStateInputCell", binding.action.cell);
+        target.addProperty("mapStateInputObservationId",
+                binding.observationId);
+        target.addProperty("mapStateInputObjectToken",
+                binding.mapObjectToken);
+        target.addProperty("mapStateInputBindingAuthority",
+                binding.action.containerObservationAuthority);
+        target.addProperty("mapStateInputBindingComplete", true);
     }
 
     private static JsonObject nullReferenceExpression() {
@@ -1786,6 +2031,7 @@ public final class ConcolicRegionRuntime {
             observation.add("entryExpression", cursor.entryExpression);
         }
 
+        annotateMapStateInputBinding(observation, active, map);
         active.runtimeHeapObservations.add(observation);
         cursor.entryObservationId = observationId;
         cursor.entryObservationSequence = sequence;
@@ -2439,6 +2685,7 @@ public final class ConcolicRegionRuntime {
             active.unresolved.add(originSite
                     + ": backed-view heap effect unresolved: " + unresolved);
         }
+        annotateMapStateInputBinding(effect, active, cursor.binding.map);
         active.runtimeHeapEffects.add(effect);
         active.lastPathConditionSize = Math.max(
                 active.lastPathConditionSize, end);
@@ -3401,6 +3648,7 @@ public final class ConcolicRegionRuntime {
                                        String primitiveValue) {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            clearPendingBoundedActivation(frame);
             if (frame != null && frame.token != 0L) {
                 exitRegion(frame.token, returnValue, primitiveValue);
             }
@@ -3415,6 +3663,30 @@ public final class ConcolicRegionRuntime {
         Long token = CURRENT_TOKEN.get();
         if (token != null) {
             exitRegion(token, returnValue, primitiveValue);
+        }
+    }
+
+    /**
+     * Completes one explicitly bounded service-loop iteration after the
+     * frozen output slice's unique outermost state transformer returns.
+     * The logical heartbeat/thread root remains the activation selector; this
+     * hook only shortens recording once the requested heap state is final for
+     * that iteration.
+     */
+    public static void completeBoundedOutputTransformer(String method) {
+        try {
+            Long token = CURRENT_TOKEN.get();
+            ActiveRegion active = token == null ? null : ownerRegion(token);
+            if (active == null
+                    || !active.activation.boundedOutputCompletionEnabled
+                    || !active.activation.boundedOutputCompletionMethod
+                    .equals(safe(method))) {
+                return;
+            }
+            active.recordBoundedOutputCompletion(method);
+            finish(token, "NORMAL", "", null, "");
+        } catch (Throwable ignored) {
+            // Completion is observational and must not alter workload logic.
         }
     }
 
@@ -3434,6 +3706,7 @@ public final class ConcolicRegionRuntime {
                                         Throwable throwable) {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            clearPendingBoundedActivation(frame);
             if (frame != null && frame.token != 0L) {
                 throwRegion(frame.token, throwable);
             }
@@ -3473,6 +3746,16 @@ public final class ConcolicRegionRuntime {
         return frame;
     }
 
+    private static void clearPendingBoundedActivation(
+            RootInvocationFrame frame) {
+        if (frame == null) return;
+        PendingBoundedActivation pending =
+                PENDING_BOUNDED_ACTIVATION.get();
+        if (pending != null && pending.ownerFrame == frame) {
+            PENDING_BOUNDED_ACTIVATION.remove();
+        }
+    }
+
     static int regionFrameDepthForTests() {
         return ROOT_INVOCATION_FRAMES.get().size();
     }
@@ -3484,6 +3767,23 @@ public final class ConcolicRegionRuntime {
         private RootInvocationFrame(String rootMethod, long token) {
             this.rootMethod = rootMethod;
             this.token = token;
+        }
+    }
+
+    private static final class PendingBoundedActivation {
+        private final Activation activation;
+        private final Object receiver;
+        private final Thread ownerThread;
+        private final RootInvocationFrame ownerFrame;
+
+        private PendingBoundedActivation(Activation activation,
+                                         Object receiver,
+                                         Thread ownerThread,
+                                         RootInvocationFrame ownerFrame) {
+            this.activation = activation;
+            this.receiver = receiver;
+            this.ownerThread = ownerThread;
+            this.ownerFrame = ownerFrame;
         }
     }
 
@@ -3951,6 +4251,8 @@ public final class ConcolicRegionRuntime {
                     active.engineArrayInputBindingsJson());
             result.add("outputCaptures",
                     GSON.toJsonTree(active.outputCaptures));
+            result.add("runtimeApproximations",
+                    GSON.toJsonTree(active.runtimeApproximations));
             JsonArray finalFields = new JsonArray();
             for (FieldObservationTarget target
                     : active.fieldTargets.values()) {
@@ -4067,6 +4369,8 @@ public final class ConcolicRegionRuntime {
                     active.engineArrayInputBindingsJson());
             result.add("outputCaptures",
                     GSON.toJsonTree(active.outputCaptures));
+            result.add("runtimeApproximations",
+                    GSON.toJsonTree(active.runtimeApproximations));
             JsonArray finalFields = new JsonArray();
             for (FieldObservationTarget target
                     : active.fieldTargets.values()) {
@@ -5323,6 +5627,20 @@ public final class ConcolicRegionRuntime {
     private enum MissingValue { INSTANCE }
 
     private enum UnsupportedReplayValue { INSTANCE }
+
+    private static final class MapStateInputBinding {
+        private final SymbolizeAction action;
+        private final long mapObjectToken;
+        private final String observationId;
+
+        private MapStateInputBinding(SymbolizeAction action,
+                                     long mapObjectToken,
+                                     String observationId) {
+            this.action = action;
+            this.mapObjectToken = mapObjectToken;
+            this.observationId = safe(observationId);
+        }
+    }
 
     private static final class MapViewBinding {
         private final Object map;
@@ -6899,6 +7217,8 @@ public final class ConcolicRegionRuntime {
         private final long startNanos;
         private final boolean engineBacked;
         private final AtomicBoolean finished = new AtomicBoolean();
+        private final AtomicBoolean boundedOutputCompletionRecorded =
+                new AtomicBoolean();
         private final List<String> symbolized = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
@@ -6918,6 +7238,10 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
         private final List<JsonObject> fieldObservations = new ArrayList<>();
         private final List<JsonObject> outputCaptures = new ArrayList<>();
+        private final List<JsonObject> runtimeApproximations =
+                new ArrayList<>();
+        private final Set<String> runtimeApproximationIdentities =
+                new LinkedHashSet<>();
         private final Map<String, FieldObservationTarget> fieldTargets =
                 new LinkedHashMap<>();
         private final Map<String, DynamicFieldBinding> dynamicFieldBindings =
@@ -6966,6 +7290,10 @@ public final class ConcolicRegionRuntime {
                 new IdentityHashMap<>();
         private final Map<String, ContainerInputObservation> containerInputs =
                 new LinkedHashMap<>();
+        private final Map<String, Object> firstObservedContainers =
+                new LinkedHashMap<>();
+        private final IdentityHashMap<Object, MapStateInputBinding>
+                mapStateInputs = new IdentityHashMap<>();
         private final Set<String> materializedContainerSnapshots =
                 new LinkedHashSet<>();
         private final Map<String, Object> logicalArrayRootsByPort =
@@ -7444,6 +7772,141 @@ public final class ConcolicRegionRuntime {
                             "root output identity validation incomplete"));
                 }
             }
+        }
+
+        /**
+         * Joins an observation-only array action to the value produced by the
+         * program's real getfield.  This mode is an explicit bounded-loop
+         * approximation: the first matching container instance is retained,
+         * repeated reads of that reference are aliases, and later distinct
+         * instances are ignored rather than widening one input port across
+         * outer-loop iterations.
+         */
+        private boolean observeConsumedContainerInput(
+                String method, int unitIndex, Object leafOwner,
+                String leafFieldSignature, String leafFieldName,
+                Object consumedValue) {
+            List<SymbolizeAction> matches = new ArrayList<>();
+            for (SymbolizeAction action : activation.symbolize) {
+                if (action.containerInputObservationOnly()
+                        && !activation.containerBindingsForInput(
+                        action.symbol).isEmpty()
+                        && action.identifiesConsumedLeaf(leafOwner,
+                        leafFieldSignature, leafFieldName)) {
+                    matches.add(action);
+                }
+            }
+            if (matches.isEmpty()) {
+                return false;
+            }
+            if (matches.size() != 1) {
+                addUnresolvedOnce(siteId(method, unitIndex)
+                        + ": CONTAINER_INPUT_OBSERVATION_ACTION_AMBIGUOUS:"
+                        + matches.size());
+                return true;
+            }
+
+            SymbolizeAction action = matches.get(0);
+            if (firstObservedContainers.containsKey(action.symbol)) {
+                Object selected = firstObservedContainers.get(action.symbol);
+                if (selected != consumedValue) {
+                    recordContainerObservationApproximation(action, method,
+                            unitIndex, selected, consumedValue,
+                            "LATER_DISTINCT_CONTAINER_IGNORED");
+                }
+                return true;
+            }
+
+            firstObservedContainers.put(action.symbol, consumedValue);
+            recordContainerObservationApproximation(action, method,
+                    unitIndex, consumedValue, null,
+                    "FIRST_MATCHING_CONTAINER_SELECTED");
+            observeMapProjectionInput(action, consumedValue,
+                    "EXACT_CONSUMED_LEAF_OBSERVATION");
+            observeContainerInput(action, consumedValue,
+                    "EXACT_CONSUMED_LEAF_OBSERVATION");
+            return true;
+        }
+
+        /** Selects the first concrete Map instance for one bounded input. */
+        private void observeMapStateInput(SymbolizeAction action,
+                                          Object accessOwner,
+                                          Object value,
+                                          String method,
+                                          int unitIndex) {
+            if (!(value instanceof Map)) {
+                addUnresolvedOnce(action.symbol
+                        + ": MAP_STATE_INPUT_OBSERVATION did not read a "
+                        + "non-null java.util.Map");
+                return;
+            }
+            if (firstObservedContainers.containsKey(action.symbol)) {
+                Object selected = firstObservedContainers.get(action.symbol);
+                if (selected != value) {
+                    recordContainerObservationApproximation(action, method,
+                            unitIndex, selected, value,
+                            "LATER_DISTINCT_CONTAINER_IGNORED");
+                }
+                return;
+            }
+
+            Map<?, ?> map = (Map<?, ?>) value;
+            firstObservedContainers.put(action.symbol, map);
+            recordContainerObservationApproximation(action, method,
+                    unitIndex, map, null,
+                    "FIRST_MATCHING_CONTAINER_SELECTED");
+            long token = objectToken(map);
+            MapStateInputBinding binding = new MapStateInputBinding(action,
+                    token, "MAP_STATE_INPUT:" + siteId(method, unitIndex)
+                    + "#" + action.symbol);
+            mapStateInputs.put(map, binding);
+            materialized.add(action.symbol);
+            fieldTargets.put(action.symbol, new FieldObservationTarget(
+                    action.symbol, accessOwner, action.fieldPath));
+            runtimeHeapObservations.add(mapStateInputObservation(this,
+                    action, accessOwner, map, method, unitIndex, binding));
+        }
+
+        private void recordContainerObservationApproximation(
+                SymbolizeAction action, String method, int unitIndex,
+                Object selected, Object ignored, String outcome) {
+            String identity = action.symbol + "\n" + safe(outcome);
+            if (!runtimeApproximationIdentities.add(identity)) {
+                return;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind",
+                    "BOUNDED_CONTAINER_INPUT_OBSERVATION");
+            row.addProperty("authority",
+                    action.containerObservationAuthority);
+            row.addProperty("inputSymbol", action.symbol);
+            row.addProperty("inputCell", action.cell);
+            row.addProperty("siteId", siteId(method, unitIndex));
+            row.addProperty("outcome", safe(outcome));
+            row.addProperty("selectedObjectToken", objectToken(selected));
+            if (ignored != null) {
+                row.addProperty("ignoredObjectToken", objectToken(ignored));
+            }
+            row.addProperty("complete", true);
+            runtimeApproximations.add(row);
+        }
+
+        private void recordBoundedOutputCompletion(String method) {
+            if (!boundedOutputCompletionRecorded.compareAndSet(false, true)) {
+                return;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", "BOUNDED_OUTPUT_COMPLETION");
+            row.addProperty("authority",
+                    "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
+                            + "IN_FROZEN_CALL_GRAPH_V1");
+            row.addProperty("method", safe(method));
+            row.addProperty("logicalRootMethod", activation.rootMethod);
+            row.addProperty("normalReturnOnly", true);
+            row.addProperty("complete", true);
+            runtimeApproximations.add(row);
         }
 
         private void observeContainerInput(SymbolizeAction action,
@@ -8419,6 +8882,9 @@ public final class ConcolicRegionRuntime {
         private final List<String> fields;
         private final List<List<String>> fieldPaths;
         private final String bindingMode;
+        private final boolean arrayFieldObservationOnly;
+        private final boolean mapStateObservationOnly;
+        private final String containerObservationAuthority;
         private final String method;
         private final String local;
         private final String leafField;
@@ -8455,6 +8921,12 @@ public final class ConcolicRegionRuntime {
             this.field = string(json, "field");
             this.index = integer(json, "index", -1);
             this.bindingMode = string(json, "bindingMode");
+            this.arrayFieldObservationOnly = bool(json,
+                    "arrayFieldObservationOnly", false);
+            this.mapStateObservationOnly = bool(json,
+                    "mapStateObservationOnly", false);
+            this.containerObservationAuthority = string(json,
+                    "containerObservationAuthority");
             this.javaType = firstNonBlank(string(json, "javaType"),
                     string(json, "inputJavaType"),
                     inputJavaTypeFromCell(this.cell));
@@ -8800,6 +9272,20 @@ public final class ConcolicRegionRuntime {
                     && !consumedFieldSiteId.isEmpty()
                     && consumedFieldSiteId.equals(siteId(actualMethod,
                     actualUnitIndex));
+        }
+
+        private boolean containerInputObservationOnly() {
+            return CONTAINER_INPUT_OBSERVATION_MODE.equals(bindingMode)
+                    && arrayFieldObservationOnly
+                    && FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
+                    containerObservationAuthority);
+        }
+
+        private boolean mapStateInputObservationOnly() {
+            return MAP_STATE_INPUT_OBSERVATION_MODE.equals(bindingMode)
+                    && mapStateObservationOnly
+                    && FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
+                    containerObservationAuthority);
         }
 
         private List<String> logicalPathForConsumedLeaf(
@@ -10375,7 +10861,7 @@ public final class ConcolicRegionRuntime {
             this.valid = valid;
             this.error = safe(error);
             this.receiverRuntimeClass = safe(receiverRuntimeClass);
-            this.threadName = safe(threadName);
+            this.threadName = stableReplayThreadContext(threadName);
             this.invocationOrdinalWithinContext =
                     invocationOrdinalWithinContext;
         }
@@ -10436,7 +10922,24 @@ public final class ConcolicRegionRuntime {
                 return false;
             }
             return threadName.isEmpty()
-                    || threadName.equals(safe(actualThreadName));
+                    || threadName.equals(stableReplayThreadContext(
+                    actualThreadName));
+        }
+
+        private static String stableReplayThreadContext(String value) {
+            String thread = safe(value);
+            Matcher executor = DEFAULT_EXECUTOR_THREAD_NAME.matcher(thread);
+            if (executor.matches()) {
+                return "pool-*-thread-" + executor.group(1);
+            }
+            Matcher heartbeat = HDFS_HEARTBEAT_THREAD_NAME.matcher(thread);
+            if (heartbeat.matches()) {
+                return heartbeat.group(1) + ":*";
+            }
+            Matcher objectIdentity =
+                    DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(thread);
+            return objectIdentity.matches()
+                    ? objectIdentity.group(1) + "@*" : thread;
         }
 
         private String identity() {
@@ -10683,6 +11186,9 @@ public final class ConcolicRegionRuntime {
         private final boolean requiresAllSelection;
         private final boolean concreteReplayOnly;
         private final boolean observationOnlyReplay;
+        private final boolean boundedOutputCompletionEnabled;
+        private final String boundedOutputCompletionMethod;
+        private final boolean boundedOutputDeferredEngineStart;
         private final List<SymbolizeAction> symbolize;
         private final Map<String, String> branchPolicies;
         private final List<ForcedBranch> forcedBranches;
@@ -10710,6 +11216,33 @@ public final class ConcolicRegionRuntime {
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
             this.observationOnlyReplay = bool(json,
                     "observationOnlyReplay", false);
+            JsonElement requestedSliceElement = json.get(
+                    "requestedOutputSlice");
+            JsonObject requestedSlice = requestedSliceElement != null
+                    && requestedSliceElement.isJsonObject()
+                    ? requestedSliceElement.getAsJsonObject()
+                    : new JsonObject();
+            String boundedMethod = string(requestedSlice,
+                    "boundedOutputCompletionMethod");
+            boolean boundedAuthority =
+                    "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
+                            .concat("IN_FROZEN_CALL_GRAPH_V1")
+                            .equals(string(requestedSlice,
+                                    "boundedOutputCompletionAuthority"));
+            this.boundedOutputCompletionEnabled = !boundedMethod.isEmpty()
+                    && boundedAuthority
+                    && bool(requestedSlice,
+                    "boundedOutputCompletionNormalReturnOnly", false);
+            this.boundedOutputCompletionMethod =
+                    boundedOutputCompletionEnabled ? boundedMethod : "";
+            this.boundedOutputDeferredEngineStart =
+                    boundedOutputCompletionEnabled
+                            && bool(requestedSlice,
+                            "boundedOutputDeferredEngineStart", false)
+                            && "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_"
+                            .concat("OUTERMOST_TRANSFORMER_ENTRY_V1")
+                            .equals(string(requestedSlice,
+                                    "boundedOutputDeferredEngineStartAuthority"));
             this.symbolize = new ArrayList<>();
             this.branchPolicies = new LinkedHashMap<>();
             this.forcedBranches = new ArrayList<>();
@@ -10722,7 +11255,8 @@ public final class ConcolicRegionRuntime {
             this.targetBranch = target != null && target.isJsonObject()
                     ? new ScheduledTarget(target.getAsJsonObject()) : null;
             JsonArray materializations = array(json, "materializations");
-            JsonArray actions = materializations.size() > 0
+            JsonArray actions = json.has("materializations")
+                    && json.get("materializations").isJsonArray()
                     ? materializations : array(json, "symbolize");
             for (JsonElement element : actions) {
                 if (element.isJsonObject()) {

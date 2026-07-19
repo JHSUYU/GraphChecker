@@ -619,6 +619,71 @@ public class CausynthPipelineTest {
                                     + "DECLARATION_AND_CONSUMED_SITE"));
                 }
             }
+
+            // The explicitly-authorized observation-only mode is different:
+            // it consumes the program's actual post-getfield array reference
+            // and never asks the VM to symbolize the whole array. Therefore
+            // repeated runtime reads do not need one unique consumed site.
+            JsonObject observation = missingComplete.deepCopy();
+            observation.addProperty("bindingMode",
+                    "CONTAINER_INPUT_OBSERVATION");
+            observation.addProperty("arrayFieldObservationOnly", true);
+            observation.addProperty("containerObservationAuthority",
+                    "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1");
+            JsonObject activation = new JsonObject();
+            activation.addProperty("activationId",
+                    "ACT.OBSERVE.REPEATED.ARRAY");
+            activation.addProperty("replayable", true);
+            JsonArray actions = new JsonArray();
+            actions.add(observation);
+            activation.add("materializations", actions);
+            Files.write(plan, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Object selection = concolicMaterializationSelection(plan,
+                    "ACT.OBSERVE.REPEATED.ARRAY");
+            assertTrue(concolicSelectionMatchesField(selection,
+                    method, 99, values));
+
+            SootField state = new SootField("state",
+                    RefType.v("java.util.Map"), Modifier.PUBLIC);
+            holder.addField(state);
+            String stateSignature = "<" + holder.getName()
+                    + ": java.util.Map state>";
+            JsonObject mapObservation = new JsonObject();
+            mapObservation.addProperty("symbol", "REGION.MAP.in.state");
+            mapObservation.addProperty("cell", stateSignature);
+            mapObservation.addProperty("field", stateSignature);
+            mapObservation.addProperty("location", "HEAP_OBJECT_FIELD");
+            mapObservation.addProperty("bindingMode",
+                    "MAP_STATE_INPUT_OBSERVATION");
+            mapObservation.addProperty("javaType", "java.util.Map");
+            mapObservation.addProperty("accessOwnerClass",
+                    holder.getName());
+            mapObservation.addProperty("accessField", "state");
+            mapObservation.addProperty("leafOwnerClass", holder.getName());
+            mapObservation.addProperty("leafField", "state");
+            mapObservation.add("fieldPath",
+                    JsonParser.parseString("[\"state\"]"));
+            mapObservation.addProperty("mapStateObservationOnly", true);
+            mapObservation.addProperty("modelControllable", false);
+            mapObservation.addProperty("containerObservationAuthority",
+                    "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1");
+            mapObservation.addProperty("mapStateInputCell", stateSignature);
+            mapObservation.addProperty("mapStateRequestedOutputCell",
+                    stateSignature);
+            activation = new JsonObject();
+            activation.addProperty("activationId",
+                    "ACT.OBSERVE.REPEATED.MAP");
+            activation.addProperty("replayable", true);
+            actions = new JsonArray();
+            actions.add(mapObservation);
+            activation.add("materializations", actions);
+            Files.write(plan, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            selection = concolicMaterializationSelection(plan,
+                    "ACT.OBSERVE.REPEATED.MAP");
+            assertTrue(concolicSelectionMatchesField(selection,
+                    method, 101, state));
         } finally {
             folder.delete();
         }
@@ -1445,6 +1510,9 @@ public class CausynthPipelineTest {
             action.addProperty("accessField", expiry.getName());
             action.addProperty("accessFieldSignature",
                     expiry.getSignature());
+            action.addProperty("accessFieldType", "long");
+            action.addProperty("accessFieldAuthority",
+                    "STATIC_CANONICAL_DECLARED_FIELD");
             action.addProperty("accessorCallerMethod",
                     caller.getSignature());
             action.addProperty("accessorCallUnitIndex", 1);
@@ -1473,6 +1541,7 @@ public class CausynthPipelineTest {
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
             Unit enter = null;
+            Unit materialize = null;
             List<Unit> exits = new ArrayList<>();
             for (Unit unit : units) {
                 InvokeExpr invoke = invokeExpression(unit);
@@ -1489,12 +1558,25 @@ public class CausynthPipelineTest {
                     assertEquals(accessor.getSignature(), invoke.getArg(3)
                             .toString().replace("\"", ""));
                     assertSame(owner, invoke.getArg(4));
+                } else if ("materializeField".equals(
+                        invoke.getMethodRef().name())) {
+                    materialize = unit;
+                    assertEquals(accessor.getSignature(), invoke.getArg(0)
+                            .toString().replace("\"", ""));
+                    assertEquals(-1,
+                            ((IntConstant) invoke.getArg(1)).value);
+                    assertSame(owner, invoke.getArg(2));
+                    assertEquals(expiry.getSignature(), invoke.getArg(3)
+                            .toString().replace("\"", ""));
+                    assertEquals(expiry.getName(), invoke.getArg(4)
+                            .toString().replace("\"", ""));
                 } else if ("exitAccessorCallContext".equals(
                         invoke.getMethodRef().name())) {
                     exits.add(unit);
                 }
             }
             assertNotNull(enter);
+            assertNotNull(materialize);
             assertEquals("one normal and one exceptional cleanup hook", 2,
                     exits.size());
             assertEquals("the same-callee call at the wrong site stays raw",
@@ -1508,6 +1590,9 @@ public class CausynthPipelineTest {
             assertTrue(cleanup.getHandlerUnit()
                     instanceof soot.jimple.IdentityStmt);
             assertTrue(units.indexOf(enter) < units.indexOf(selectedCall));
+            assertTrue(units.indexOf(enter) < units.indexOf(materialize));
+            assertTrue(units.indexOf(materialize)
+                    < units.indexOf(selectedCall));
             assertEquals(units.indexOf(selectedCall) + 1,
                     units.indexOf(cleanup.getEndUnit()));
             assertTrue("normal flow must jump over the catch-and-rethrow",
@@ -1520,6 +1605,31 @@ public class CausynthPipelineTest {
                             instanceof soot.jimple.ThrowStmt);
             assertTrue(units.indexOf(unselectedCall)
                     < units.indexOf(originalReturn));
+
+            SootField issued = new SootField("issued", LongType.v(),
+                    Modifier.PUBLIC);
+            valueClass.addField(issued);
+            JsonObject conflicting = action.deepCopy();
+            conflicting.addProperty("symbol", "REGION.TEST.in.issued");
+            conflicting.addProperty("cell", issued.getSignature());
+            conflicting.addProperty("field", issued.getSignature());
+            conflicting.addProperty("accessField", issued.getName());
+            conflicting.addProperty("accessFieldSignature",
+                    issued.getSignature());
+            actions.add(conflicting);
+            Files.write(plan, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Throwable conflict = null;
+            try {
+                concolicMaterializationSelection(plan, "ACT.ACCESSOR");
+            } catch (InvocationTargetException expected) {
+                conflict = expected;
+            }
+            assertNotNull("one accessor site cannot materialize two exact "
+                    + "backing fields", conflict);
+            assertTrue(deepMessage(conflict), deepMessage(conflict).contains(
+                    "ACCESSOR_CALL_CONTEXT_AMBIGUOUS_EXACT_"
+                            + "MATERIALIZATION_METADATA"));
         } finally {
             folder.delete();
         }

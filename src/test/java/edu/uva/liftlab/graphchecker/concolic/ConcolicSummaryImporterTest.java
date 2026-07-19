@@ -32,6 +32,171 @@ public class ConcolicSummaryImporterTest {
                 witness, "ACT.Q"));
     }
 
+    @Test
+    public void synthesizesOneEntryIteratorRemoveFromExactStaticPorts()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            Path summaries = root.resolve("summaries.jsonl");
+            Path activations = root.resolve("activations.jsonl");
+            Path regions = root.resolve("regions.jsonl");
+            Path graph = root.resolve("graph.jsonl");
+            Path output = root.resolve("bounded.jsonl");
+            String regionId = "REGION.B";
+            String activationId = "ACT.B";
+            String instance = "REGION.B@test#call9";
+            String method = "<example.Store: void sweep()>";
+            String mapCell = "<example.Store: java.util.Map entries>";
+            String keyCell = "<example.Entry: int key>";
+            String expiryCell = "<example.Entry: long expiry>";
+            String timeCell = "<example.Clock: long now()>";
+            String mutationSite = method + "#u5";
+
+            JsonObject requested = new JsonObject();
+            requested.addProperty("portId", regionId + ".out.0");
+            requested.addProperty("cell", mapCell);
+            requested.addProperty("kind", "HEAP_STATE");
+
+            JsonArray inputPorts = new JsonArray();
+            inputPorts.add(regionId + ".in.0");
+            inputPorts.add(regionId + ".in.1");
+            inputPorts.add(regionId + ".in.2");
+            inputPorts.add(regionId + ".in.3");
+            JsonArray causalEdges = new JsonArray();
+            for (String id : new String[]{"E.MUTATE", "E.GUARD",
+                    "E.CMP.L", "E.CMP.R", "E.EXPIRY", "E.TIME"}) {
+                JsonObject edge = new JsonObject();
+                edge.addProperty("edgeId", id);
+                causalEdges.add(edge);
+            }
+            JsonObject obligation = new JsonObject();
+            obligation.addProperty("siteId", mutationSite);
+            obligation.addProperty("targetCell", mapCell);
+            obligation.addProperty("transferKind", "HEAP_WRITE");
+            obligation.addProperty("authority", "EXACT_STATIC_TEST_PROOF");
+            JsonArray obligationEdges = new JsonArray();
+            obligationEdges.add("E.MUTATE");
+            obligation.add("causalEdgeIds", obligationEdges);
+            JsonArray obligations = new JsonArray();
+            obligations.add(obligation);
+            JsonObject slice = new JsonObject();
+            slice.addProperty("structuralComplete", true);
+            slice.addProperty("truncated", false);
+            slice.addProperty(
+                    "requestedStateTransformerContractApplicable", true);
+            slice.addProperty(
+                    "requestedStateTransformerContractComplete", true);
+            slice.add("inputPorts", inputPorts.deepCopy());
+            slice.add("causalEdges", causalEdges);
+            slice.add("requestedStateTransformerObligations", obligations);
+
+            JsonObject activation = new JsonObject();
+            activation.addProperty("activationId", activationId);
+            activation.addProperty("regionId", regionId);
+            activation.addProperty("regionInstanceId", instance);
+            activation.addProperty("boundedPartialOutputSliceAdmitted", true);
+            activation.add("requestedOutput", requested.deepCopy());
+            activation.add("requestedOutputSlice", slice);
+            write(activations, activation + "\n");
+
+            JsonObject region = new JsonObject();
+            region.addProperty("regionId", regionId);
+            JsonArray regionInputs = new JsonArray();
+            regionInputs.add(boundedInput(regionId + ".in.0", mapCell,
+                    "SHARED_HEAP", "java.util.Map"));
+            regionInputs.add(boundedInput(regionId + ".in.1", keyCell,
+                    "SHARED_HEAP", "int"));
+            regionInputs.add(boundedInput(regionId + ".in.2", expiryCell,
+                    "SHARED_HEAP", "long"));
+            regionInputs.add(boundedInput(regionId + ".in.3", timeCell,
+                    "ENVIRONMENT", "long"));
+            region.add("symbolicInputs", regionInputs);
+            write(regions, region + "\n");
+
+            JsonObject summary = new JsonObject();
+            summary.addProperty("activationId", activationId);
+            summary.addProperty("regionId", regionId);
+            summary.addProperty("regionInstanceId", instance);
+            summary.addProperty("rootCallId", 9);
+            summary.addProperty("rootMethod", "<example.Worker: void run()>");
+            summary.addProperty("valid", true);
+            summary.add("captureGoal",
+                    RegionCaptureGoal.outputClosure().toJson());
+            summary.add("requestedOutput", requested.deepCopy());
+            summary.add("edgeBindings", new JsonArray());
+            summary.add("heapEffects", new JsonArray());
+            JsonObject snapshot = new JsonObject();
+            snapshot.addProperty("snapshotId", "SNAP.EMPTY");
+            snapshot.addProperty("statePort", regionId + ".in.0");
+            snapshot.addProperty("cardinality", 0);
+            snapshot.addProperty("complete", true);
+            snapshot.addProperty("mapKeysFullyCaptured", true);
+            JsonArray snapshots = new JsonArray();
+            snapshots.add(snapshot);
+            summary.add("finiteMapSnapshots", snapshots);
+            write(summaries, summary + "\n");
+
+            JsonArray staticEdges = new JsonArray();
+            staticEdges.add(boundedEdge("E.MUTATE", method, mutationSite,
+                    "field_mutation", "", mapCell,
+                    "interfaceinvoke $it.<java.util.Iterator: void remove()>()"));
+            JsonObject mutation = staticEdges.get(0).getAsJsonObject();
+            mutation.addProperty("invoke",
+                    "<java.util.Iterator: void remove()>");
+            JsonObject guard = boundedEdge("E.GUARD", method,
+                    method + "#u4", "heap_mutation_path_guard", "$i0",
+                    "$i0", "if $i0 >= 0 goto label0");
+            guard.addProperty("guardedMutationSiteId", mutationSite);
+            guard.addProperty("requiredOutcome", false);
+            staticEdges.add(guard);
+            staticEdges.add(boundedEdge("E.CMP.L", method, method + "#u3",
+                    "local", "$l0", "$i0", "$i0 = $l0 cmp $l1"));
+            staticEdges.add(boundedEdge("E.CMP.R", method, method + "#u3",
+                    "local", "$l1", "$i0", "$i0 = $l0 cmp $l1"));
+            staticEdges.add(boundedEdge("E.EXPIRY", method,
+                    method + "#u2", "field_read", expiryCell, "$l0",
+                    "$l0 = $entry.<example.Entry: long expiry>"));
+            staticEdges.add(boundedEdge("E.TIME", method, method + "#u1",
+                    "environment", timeCell, "$l1",
+                    "$l1 = staticinvoke <example.Clock: long now()>()"));
+            StringBuilder graphLines = new StringBuilder();
+            for (JsonElement edge : staticEdges) {
+                graphLines.append(edge).append('\n');
+            }
+            write(graph, graphLines.toString());
+
+            ConcolicSummaryImporter.BoundedIteratorResult result =
+                    ConcolicSummaryImporter
+                            .synthesizeBoundedOneEntryMapIteratorSummaries(
+                                    summaries, activations, regions, graph,
+                                    output);
+            assertEquals(1, result.candidateCount);
+            assertEquals(1, result.generatedSummaryCount);
+            assertEquals(0, result.diagnostics.size());
+            JsonObject bounded = JsonParser.parseString(new String(
+                    Files.readAllBytes(output), StandardCharsets.UTF_8)
+                    .trim()).getAsJsonObject();
+            assertFalse(bounded.get("relationallyComplete").getAsBoolean());
+            assertTrue(bounded.get("boundedRelationallyComplete")
+                    .getAsBoolean());
+            assertEquals("<", bounded.getAsJsonArray("pathCondition").get(0)
+                    .getAsJsonObject().get("_op").getAsString());
+            assertEquals("MAP_REMOVE", bounded.getAsJsonArray("heapEffects")
+                    .get(0).getAsJsonObject().get("kind").getAsString());
+            assertEquals(4, bounded.getAsJsonObject("requestedOutputSlice")
+                    .getAsJsonArray("inputPorts").size());
+            assertEquals(0, bounded.getAsJsonObject("requestedOutputSlice")
+                    .getAsJsonArray("containerElementFieldBindings").size());
+            assertFalse(bounded.has("inputMaterializationAdmission"));
+            assertFalse(bounded.has(
+                    "vmIntrinsicPlaceholderBindingAdmission"));
+        } finally {
+            folder.delete();
+        }
+    }
+
     private static JsonObject valueRefWitnessRecord(boolean certified) {
         JsonObject record = new JsonObject();
         record.addProperty("valueExpressionAuthority",
@@ -309,7 +474,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void rejectsRawPathConditionFromRuntimeBookkeeping()
+    public void rejectsRuntimeBookkeepingRemainingAfterNormalization()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -379,9 +544,9 @@ public class ConcolicSummaryImporterTest {
             JsonObject detail = JsonParser.parseString(
                     diagnostic.get("detail").getAsString())
                     .getAsJsonObject();
-            assertEquals(2, detail.getAsJsonArray(
+            assertEquals(1, detail.getAsJsonArray(
                     "contaminatedConditionIndexes").size());
-            assertEquals(2, detail.getAsJsonArray(
+            assertEquals(1, detail.getAsJsonArray(
                     "runtimeCodePositions").size());
             assertEquals("REJECT_GRAPH_CHECKER_RUNTIME_CODE_POSITIONS",
                     detail.get("policy").getAsString());
@@ -672,8 +837,8 @@ public class ConcolicSummaryImporterTest {
             path.add(methodExpression("java/util/LinkedHashMap putAll", 13,
                     symbolCopy(map), source));
 
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path);
+            Path root = folder.getRoot().toPath();
+            MapFixture imported = importMapFixture(root, path);
             assertEquals("OUTPUT_CLOSURE", imported.summary
                     .getAsJsonObject("captureGoal").get("kind")
                     .getAsString());
@@ -746,6 +911,67 @@ public class ConcolicSummaryImporterTest {
             assertEquals("HEAP_STATE_VERSION", output.get("kind").getAsString());
             assertEquals(putAll.get("postState").getAsString(),
                     output.get("stateId").getAsString());
+
+            JsonObject boundedActivation = JsonParser.parseString(new String(
+                    Files.readAllBytes(root.resolve("activation.jsonl")),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            boundedActivation.addProperty("requestedOutputSliceComplete",
+                    false);
+            boundedActivation.addProperty(
+                    "boundedPartialOutputSliceAdmitted", true);
+            boundedActivation.getAsJsonObject("requestedOutputSlice")
+                    .addProperty("complete", false);
+            JsonObject fallback = new JsonObject();
+            fallback.addProperty("symbol", "REGION.P.in.0");
+            fallback.addProperty("bindingMode", "CONCRETE_PASSTHROUGH");
+            fallback.addProperty("concreteFallback", true);
+            JsonArray fallbacks = new JsonArray();
+            fallbacks.add(fallback);
+            boundedActivation.add("concreteFallbacks", fallbacks);
+            write(root.resolve("activation.jsonl"), boundedActivation
+                    + "\n");
+
+            JsonObject boundedRaw = JsonParser.parseString(new String(
+                    Files.readAllBytes(root.resolve("results.jsonl")),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            boundedRaw.add("symbolizedInputs", new JsonArray());
+            JsonArray unresolved = new JsonArray();
+            unresolved.add("REGION.P.in.0:concrete passthrough");
+            boundedRaw.add("unresolvedInputs", unresolved);
+            write(root.resolve("results.jsonl"), boundedRaw + "\n");
+
+            Path boundedOutput = root.resolve("bounded-summaries.jsonl");
+            Path boundedDiagnostics = root.resolve(
+                    "bounded-diagnostics.jsonl");
+            ConcolicSummaryImporter.importSummaries(
+                    root.resolve("results.jsonl"),
+                    root.resolve("activation.jsonl"),
+                    root.resolve("regions.jsonl"), boundedOutput,
+                    boundedDiagnostics, root.resolve("bounded-cache"));
+            JsonObject boundedSummary = JsonParser.parseString(new String(
+                    Files.readAllBytes(boundedOutput),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            assertFalse(boundedSummary.get("requestedOutputSliceComplete")
+                    .getAsBoolean());
+            assertTrue(boundedSummary.get(
+                    "boundedPartialOutputSliceAdmitted").getAsBoolean());
+            assertTrue(boundedSummary.get(
+                    "requestedOutputSliceOperationallyAdmitted")
+                    .getAsBoolean());
+            assertTrue(boundedSummary.get("relationallyComplete")
+                    .getAsBoolean());
+            JsonObject boundedInputAdmission = boundedSummary
+                    .getAsJsonObject("inputMaterializationAdmission");
+            assertTrue(boundedInputAdmission.get("complete")
+                    .getAsBoolean());
+            assertEquals("[\"REGION.P.in.0\"]", boundedInputAdmission
+                    .getAsJsonArray("admittedConcreteFallbackInputs")
+                    .toString());
+            assertEquals(0, boundedInputAdmission.getAsJsonArray(
+                    "requiredSliceInputs").size());
+            assertFalse(new String(Files.readAllBytes(boundedDiagnostics),
+                    StandardCharsets.UTF_8).contains(
+                    "INCOMPLETE_OUTPUT_INPUT_MATERIALIZATION"));
         } finally {
             folder.delete();
         }
@@ -2197,6 +2423,45 @@ public class ConcolicSummaryImporterTest {
                     effect.get("outputPort").getAsString());
             assertEquals("STATIC_FRESH_ALLOCATION_TO_REQUESTED_OUTPUT",
                     effect.get("outputBinding").getAsString());
+
+            MapFixture observed = importObservedMapStateFixture(
+                    folder.getRoot().toPath().resolve("observed"), true,
+                    true);
+            assertTrue(observed.diagnostics, observed.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals("[\"REGION.P.in.0\",\"REGION.P.in.1\"]",
+                    observed.summary.getAsJsonObject(
+                            "inputMaterializationAdmission")
+                            .getAsJsonArray("admittedObservedInputs")
+                            .toString());
+            assertEquals(1, observed.summary.getAsJsonObject(
+                    "heapEffectModel").getAsJsonObject(
+                    "runtimeHeapObservationImport").get(
+                    "mapStateInputObservationCount").getAsInt());
+            assertEquals("REGION.P.in.0", observed.summary
+                    .getAsJsonArray("finiteMapSnapshots").get(0)
+                    .getAsJsonObject().get("statePort").getAsString());
+            assertEquals("REGION.P.in.0", observed.summary
+                    .getAsJsonArray("heapEffects").get(0).getAsJsonObject()
+                    .get("inputPort").getAsString());
+            assertEquals("REGION.P.out.0", observed.summary
+                    .getAsJsonArray("heapEffects").get(0).getAsJsonObject()
+                    .get("outputPort").getAsString());
+
+            MapFixture badIdentity = importObservedMapStateFixture(
+                    folder.getRoot().toPath().resolve("bad-identity"),
+                    false, true);
+            MapFixture badSnapshot = importObservedMapStateFixture(
+                    folder.getRoot().toPath().resolve("bad-snapshot"),
+                    true, false);
+            assertFalse(badIdentity.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertFalse(badSnapshot.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(badIdentity.diagnostics.contains(
+                    "INCOMPLETE_RUNTIME_MAP_STATE_INPUT_OBSERVATION"));
+            assertTrue(badSnapshot.diagnostics.contains(
+                    "INCOMPLETE_RUNTIME_MAP_STATE_INPUT_OBSERVATION"));
         } finally {
             folder.delete();
         }
@@ -2986,6 +3251,54 @@ public class ConcolicSummaryImporterTest {
                     .getAsJsonObject("staticTransformerCoverage")
                     .getAsJsonArray("matches").toString().contains(
                             "RUNTIME_EXACT_FIELD_ASSIGNMENT_RHS_CAPTURE"));
+
+            MapFixture projected = importExactFieldAssignmentCaptureFixture(
+                    folder.getRoot().toPath().resolve("projected"),
+                    "NORMAL", true, true, JsonNull.INSTANCE);
+            assertTrue(projected.diagnostics, projected.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            JsonObject projectedExpression = projected.summary
+                    .getAsJsonObject("outputExpressions")
+                    .getAsJsonObject("REGION.FIELD.out.0");
+            assertEquals("SymbolExpression", projectedExpression.get(
+                    "_type").getAsString());
+            assertEquals("REGION.FIELD.in.0", projectedExpression.get(
+                    "_causynth_projection_input_port").getAsString());
+            assertEquals("[\"value\"]", projectedExpression.getAsJsonArray(
+                    "_causynth_projection_field_path").toString());
+            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_FROM_UNIQUE_PROJECTED_"
+                            + "INPUT_CARRIER",
+                    projected.summary.getAsJsonObject(
+                            "outputExpressionAdmission")
+                            .get("authority").getAsString());
+            assertEquals(0, projected.summary.getAsJsonObject(
+                    "inputMaterializationAdmission").getAsJsonArray(
+                    "observedSymbolizedInputs").size());
+            assertEquals("[\"REGION.FIELD.in.0\"]", projected.summary
+                    .getAsJsonObject("inputMaterializationAdmission")
+                    .getAsJsonArray("admittedConcreteFallbackInputs")
+                    .toString());
+            assertEquals(1, projected.summary.getAsJsonArray(
+                    "ignoredRuntimeHeapEvidence").size());
+            assertEquals("OUTSIDE_REQUESTED_OUTPUT_SLICE",
+                    projected.summary.getAsJsonArray(
+                            "ignoredRuntimeHeapEvidence").get(0)
+                            .getAsJsonObject().get("reason").getAsString());
+
+            MapFixture causalGuardObservation =
+                    importExactFieldAssignmentCaptureFixture(
+                            folder.getRoot().toPath().resolve(
+                                    "causal-map-observation"),
+                            "NORMAL", true, true,
+                            "<example.State: java.lang.String value>",
+                            JsonNull.INSTANCE, "CAUSAL_MAP_OBSERVATION");
+            assertFalse(causalGuardObservation.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals(0, causalGuardObservation.summary.getAsJsonArray(
+                    "ignoredRuntimeHeapEvidence").size());
+            assertTrue(causalGuardObservation.diagnostics,
+                    causalGuardObservation.diagnostics.contains(
+                            "INCOMPLETE_RUNTIME_HEAP_OBSERVATION"));
         } finally {
             folder.delete();
         }
@@ -4899,6 +5212,265 @@ public class ConcolicSummaryImporterTest {
         return effect;
     }
 
+    private static MapFixture importObservedMapStateFixture(
+            Path root, boolean identityComplete, boolean snapshotComplete)
+            throws Exception {
+        Files.createDirectories(root);
+        Path activations = root.resolve("activation.jsonl");
+        Path regions = root.resolve("regions.jsonl");
+        Path results = root.resolve("results.jsonl");
+        Path output = root.resolve("summaries.jsonl");
+        Path diagnostics = root.resolve("diagnostics.jsonl");
+        String method = "<example.Store: void update()>";
+        String site = method + "#u5";
+        String mapCell = "<example.Store: java.util.Map data>";
+        String containerCell = "<example.Batch: example.Value[] values>";
+        String authority =
+                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
+
+        JsonObject mapAction = observedContainerAction("REGION.P.in.0",
+                mapCell, "MAP_STATE_INPUT_OBSERVATION", authority);
+        JsonObject containerAction = observedContainerAction(
+                "REGION.P.in.1", containerCell,
+                "CONTAINER_INPUT_OBSERVATION", authority);
+        JsonArray actions = new JsonArray();
+        actions.add(mapAction);
+        actions.add(containerAction);
+
+        JsonObject edge = causalEdge("DF.MAP.WRITE", method, site,
+                "HEAP_WRITE", "field_mutation");
+        edge.addProperty("fromCell", method + "::$r1");
+        edge.addProperty("toCell", mapCell);
+        JsonObject obligation = exactTransformerObligation(
+                "DF.MAP.WRITE", method, site, mapCell);
+        JsonObject slice = exactTransformerSliceMetadata(mapCell,
+                singletonObject(obligation), new JsonArray());
+        slice.addProperty("requestedStateTransformerContractOutputPort",
+                "REGION.P.out.0");
+        slice.addProperty("outputPort", "REGION.P.out.0");
+        slice.addProperty("outputCell", mapCell);
+        JsonArray inputPorts = new JsonArray();
+        inputPorts.add("REGION.P.in.0");
+        inputPorts.add("REGION.P.in.1");
+        slice.add("inputPorts", inputPorts);
+        slice.add("causalEdges", singletonObject(edge));
+        slice.add("causalEdgeIds", singletonString("DF.MAP.WRITE"));
+        slice.add("methods", singletonString(method));
+        slice.addProperty("structuralComplete", true);
+        slice.addProperty("truncated", false);
+        slice.addProperty("complete", true);
+
+        JsonObject activation = new JsonObject();
+        activation.addProperty("activationId", "ACT.P");
+        activation.addProperty("regionId", "REGION.P");
+        activation.addProperty("rootMethod", method);
+        activation.add("captureGoal",
+                RegionCaptureGoal.outputClosure().toJson());
+        activation.addProperty("requestedOutputSliceComplete", true);
+        activation.add("requestedOutputMethods", singletonString(method));
+        activation.add("materializations", actions);
+        activation.add("symbolize", actions.deepCopy());
+        JsonObject requested = new JsonObject();
+        requested.addProperty("portId", "REGION.P.out.0");
+        requested.addProperty("cell", mapCell);
+        requested.addProperty("kind", "HEAP_STATE");
+        activation.add("requestedOutput", requested);
+        activation.add("requestedOutputSlice", slice);
+        JsonObject outputAction = new JsonObject();
+        outputAction.addProperty("symbol", "REGION.P.out.0");
+        outputAction.addProperty("cell", mapCell);
+        outputAction.addProperty("kind", "HEAP_STATE");
+        activation.add("outputs", singletonObject(outputAction));
+        JsonObject heapBinding = new JsonObject();
+        heapBinding.addProperty("inputPort", "REGION.P.in.0");
+        heapBinding.addProperty("outputPort", "REGION.P.out.0");
+        heapBinding.addProperty("cell", mapCell);
+        heapBinding.addProperty("bindingAuthority",
+                "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM");
+        activation.add("heapStateBindings", singletonObject(heapBinding));
+        write(activations, activation + "\n");
+
+        JsonObject region = new JsonObject();
+        region.addProperty("regionId", "REGION.P");
+        region.addProperty("rootMethod", method);
+        region.add("methods", singletonString(method));
+        write(regions, region + "\n");
+
+        JsonObject mapObservation = observedEmptyMapState(
+                mapAction, method + "#u1", authority,
+                identityComplete, snapshotComplete);
+        JsonArray approximations = new JsonArray();
+        approximations.add(firstContainerEvidence("REGION.P.in.0",
+                mapCell, method + "#u1", authority, 2));
+        approximations.add(firstContainerEvidence("REGION.P.in.1",
+                containerCell, "<example.Batch: example.Value[] get()>#u1",
+                authority, 5));
+        JsonObject raw = new JsonObject();
+        raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("activationId", "ACT.P");
+        raw.addProperty("regionId", "REGION.P");
+        raw.addProperty("exitKind", "NORMAL");
+        raw.add("symbolizedInputs", new JsonArray());
+        raw.add("unresolvedInputs", new JsonArray());
+        raw.add("runtimeApproximations", approximations);
+        raw.add("runtimeHeapEffects", new JsonArray());
+        raw.add("runtimeHeapObservations",
+                singletonObject(mapObservation));
+        raw.add("finalFieldObservations", singletonObject(
+                observedMapAtExit(mapObservation)));
+        JsonObject engine = new JsonObject();
+        engine.addProperty("active", true);
+        engine.addProperty("regionId", "REGION.P");
+        engine.addProperty("activationId", "ACT.P");
+        JsonArray path = new JsonArray();
+        path.add(methodExpression("java/util/HashMap put", 42,
+                symbol("M_L'java/util/HashMap'_25", "java/util/HashMap"),
+                symbol("key", "I"), symbol("value", "example/Value")));
+        engine.add("pathCondition", path);
+        raw.add("engineSummary", engine);
+        write(results, raw + "\n");
+
+        ConcolicSummaryImporter.importSummaries(results, activations,
+                regions, output, diagnostics, root.resolve("cache"));
+        JsonObject summary = JsonParser.parseString(new String(
+                Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
+                .getAsJsonObject();
+        return new MapFixture(summary, new String(
+                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+    }
+
+    private static JsonObject observedContainerAction(
+            String symbol, String cell, String mode, String authority) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", symbol);
+        action.addProperty("cell", cell);
+        action.addProperty("field", cell);
+        action.addProperty("observed", true);
+        action.addProperty("bindingMode", mode);
+        action.addProperty("modelControllable", false);
+        action.addProperty("containerObservationAuthority", authority);
+        return action;
+    }
+
+    private static JsonObject firstContainerEvidence(
+            String symbol, String cell, String site, String authority,
+            long token) {
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("schemaVersion", 1);
+        evidence.addProperty("kind",
+                "BOUNDED_CONTAINER_INPUT_OBSERVATION");
+        evidence.addProperty("authority", authority);
+        evidence.addProperty("inputSymbol", symbol);
+        evidence.addProperty("inputCell", cell);
+        evidence.addProperty("siteId", site);
+        evidence.addProperty("outcome",
+                "FIRST_MATCHING_CONTAINER_SELECTED");
+        evidence.addProperty("selectedObjectToken", token);
+        evidence.addProperty("complete", true);
+        return evidence;
+    }
+
+    private static JsonObject observedEmptyMapState(
+            JsonObject action, String site, String authority,
+            boolean identityComplete, boolean snapshotComplete) {
+        JsonObject observation = new JsonObject();
+        String symbol = action.get("symbol").getAsString();
+        String cell = action.get("cell").getAsString();
+        int marker = site.lastIndexOf("#u");
+        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("kind", "MAP_STATE_INPUT_OBSERVATION");
+        observation.addProperty("symbol", symbol);
+        observation.addProperty("phase", "AT_MAP_STATE_INPUT");
+        observation.add("path", singletonString("data"));
+        observation.addProperty("available", true);
+        observation.addProperty("accessOwnerObjectToken", 3);
+        observation.addProperty("accessOwnerObjectTokenKnown", true);
+        observation.addProperty("leafOwnerObjectToken", 3);
+        observation.addProperty("leafOwnerObjectTokenKnown", true);
+        observation.addProperty("valueClass", "java.util.HashMap");
+        observation.addProperty("valueObjectToken", 2);
+        observation.addProperty("valueObjectTokenKnown", true);
+        observation.addProperty("collectionSize", 0);
+        observation.addProperty("observationId",
+                "MAP_STATE_INPUT:" + site + "#" + symbol);
+        observation.addProperty("eventSequence", 1);
+        observation.addProperty("originMethod", site.substring(0, marker));
+        observation.addProperty("originUnitIndex", Integer.parseInt(
+                site.substring(marker + 2)));
+        observation.addProperty("siteId", site);
+        observation.addProperty("inputSymbol", symbol);
+        observation.addProperty("inputCell", cell);
+        observation.addProperty("bindingMode",
+                "MAP_STATE_INPUT_OBSERVATION");
+        observation.addProperty("selectionAuthority", authority);
+        observation.addProperty("modelControllable", false);
+        observation.addProperty("vmReferenceSymbolized", false);
+        observation.addProperty("mapImplementationClass",
+                "java.util.HashMap");
+        observation.addProperty("mapObjectToken", 2);
+        observation.addProperty("backingMapObjectToken", 2);
+        observation.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        observation.addProperty("objectTokenScope", "ACT.P");
+        observation.addProperty("identityBindingComplete",
+                identityComplete);
+        observation.addProperty("entryCount", 0);
+        observation.addProperty("finiteEntryBound", 4096);
+        observation.add("keyExpressions", new JsonArray());
+        observation.add("valueObjectTokens", new JsonArray());
+        observation.add("entries", new JsonArray());
+        observation.addProperty("snapshotComplete", snapshotComplete);
+        observation.addProperty("snapshotAuthority",
+                "SAME_FIELD_HOOK_STABLE_BOUNDED_ENTRY_SET_SNAPSHOT_V1");
+        observation.addProperty("complete", true);
+        observation.addProperty("mapStateInputSymbol", symbol);
+        observation.addProperty("mapStateInputCell", cell);
+        observation.addProperty("mapStateInputObservationId",
+                observation.get("observationId").getAsString());
+        observation.addProperty("mapStateInputObjectToken", 2);
+        observation.addProperty("mapStateInputBindingAuthority", authority);
+        observation.addProperty("mapStateInputBindingComplete", true);
+        return observation;
+    }
+
+    private static JsonObject observedMapAtExit(JsonObject input) {
+        JsonObject exit = new JsonObject();
+        exit.addProperty("symbol", input.get("symbol").getAsString());
+        exit.addProperty("phase", "AT_REGION_EXIT");
+        exit.add("path", input.get("path").deepCopy());
+        exit.addProperty("available", true);
+        exit.addProperty("leafOwnerObjectToken", 3);
+        exit.addProperty("leafOwnerObjectTokenKnown", true);
+        exit.addProperty("valueClass", "java.util.HashMap");
+        exit.addProperty("valueObjectToken", 2);
+        exit.addProperty("valueObjectTokenKnown", true);
+        exit.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        exit.addProperty("objectTokenScope", "ACT.P");
+        return exit;
+    }
+
+    private static JsonObject incompleteMapEntryObservation(String siteId) {
+        int marker = siteId.lastIndexOf("#u");
+        JsonObject observation = new JsonObject();
+        observation.addProperty("schemaVersion", 1);
+        observation.addProperty("kind", "MAP_ENTRY_READ");
+        observation.addProperty("operation", "java.util.Iterator.next");
+        observation.addProperty("originMethod", siteId.substring(0, marker));
+        observation.addProperty("originUnitIndex", Integer.parseInt(
+                siteId.substring(marker + 2)));
+        observation.addProperty("siteId", siteId);
+        observation.addProperty("occurrence", 1);
+        observation.addProperty("observationId",
+                "MAP_ENTRY_READ:" + siteId + "#1");
+        observation.addProperty("pcBoundary", 0);
+        observation.addProperty("rawPathConditionBoundary", 0);
+        observation.addProperty("complete", false);
+        observation.addProperty("unresolvedReason",
+                "symbolic expressions unavailable for [map]");
+        return observation;
+    }
+
     private static JsonObject causalEdge(String edgeId, String method,
                                          String siteId, String transferKind,
                                          String kind) {
@@ -4909,6 +5481,28 @@ public class ConcolicSummaryImporterTest {
         edge.addProperty("transferKind", transferKind);
         edge.addProperty("kind", kind);
         return edge;
+    }
+
+    private static JsonObject exactProjectedInputBinding(
+            String dependencyCell, String authority, String sinkSite) {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("dependencyCell", dependencyCell);
+        binding.addProperty("inputPort", "REGION.FIELD.in.0");
+        binding.addProperty("bindingAuthority", authority);
+        binding.add("dependencyMethods", singletonString(
+                "<example.Heartbeat: void install(example.Snapshot)>"));
+        binding.add("requestedStateTransformerSinkSites",
+                singletonString(sinkSite));
+        binding.add("requestedStateTransformerGuardSites", new JsonArray());
+        binding.addProperty(
+                "requestedStateTransformerSinkClosureComplete", true);
+        binding.addProperty("requestedStateTransformerSinkExclusive", true);
+        binding.add("requestedStateTransformerUnclassifiedEdgeIds",
+                new JsonArray());
+        binding.addProperty("requestedStateTransformerSinkAuthority",
+                "STATIC_FORWARD_CAUSAL_CLOSURE_TO_EXACT_"
+                        + "REQUESTED_STATE_TRANSFORMERS");
+        return binding;
     }
 
     private static JsonObject exactTransformerSliceMetadata(
@@ -5820,14 +6414,21 @@ public class ConcolicSummaryImporterTest {
             Path root, String exitKind, boolean identityVerified,
             boolean rhsRelationComplete, String field,
             JsonElement expression, String guardMode) throws Exception {
-        boolean exactVmGuard = !"NONE".equals(guardMode);
+        boolean causalMapObservation =
+                "CAUSAL_MAP_OBSERVATION".equals(guardMode);
+        boolean exactVmGuard = !"NONE".equals(guardMode)
+                && !causalMapObservation;
+        boolean projectedDischarge = expression == null
+                || expression.isJsonNull();
         Files.createDirectories(root);
         Path activations = root.resolve("activation.jsonl");
         Path regions = root.resolve("regions.jsonl");
         Path results = root.resolve("results.jsonl");
         Path output = root.resolve("summaries.jsonl");
         Path diagnostics = root.resolve("diagnostics.jsonl");
-        String method = "<example.Heartbeat: void install(java.lang.String)>";
+        String method = projectedDischarge
+                ? "<example.Heartbeat: void install(example.Snapshot)>"
+                : "<example.Heartbeat: void install(java.lang.String)>";
         String site = method + "#u3";
         String edgeId = "DF.FIELD.WRITE";
 
@@ -5877,22 +6478,59 @@ public class ConcolicSummaryImporterTest {
                 "field_write");
         causal.addProperty("fromCell", method + "::r1");
         causal.addProperty("toCell", field);
+        JsonArray inputBindings = new JsonArray();
+        JsonArray causalEdges = new JsonArray();
+        if (projectedDischarge) {
+            String baseCell = method + ".param0:example.Snapshot";
+            String projectedCell = baseCell + "#field:value";
+            JsonObject baseBinding = exactProjectedInputBinding(baseCell,
+                    "EXACT_CELL_IDENTITY", site);
+            JsonObject projectedBinding = exactProjectedInputBinding(
+                    projectedCell,
+                    "UNIQUE_EXACT_PROJECTED_VALUE_CARRIER", site);
+            inputBindings.add(baseBinding);
+            inputBindings.add(projectedBinding);
+            JsonObject projection = causalEdge("DF.FIELD.PROJECTION",
+                    method, method + "#synthetic:projected_local_def_use",
+                    "VALUE_PASS", "projected_local_def_use");
+            projection.addProperty("fromCell", projectedCell);
+            projection.addProperty("toCell", method + "::r1");
+            causalEdges.add(projection);
+            if (causalMapObservation) {
+                JsonObject guard = causalEdge("DF.FIELD.GUARD", method,
+                        method + "#u2", "GUARD",
+                        "path_guard_dependency");
+                guard.addProperty("fromCell", projectedCell);
+                guard.addProperty("toCell", method + "::guard");
+                causalEdges.add(guard);
+            }
+        }
+        causalEdges.add(causal);
         JsonObject slice = exactTransformerSliceMetadata(field,
-                singletonObject(obligation), new JsonArray());
+                singletonObject(obligation), inputBindings);
         slice.addProperty("requestedStateTransformerContractOutputPort",
                 "REGION.FIELD.out.0");
         slice.addProperty("outputPort", "REGION.FIELD.out.0");
         slice.addProperty("outputCell", field);
         slice.add("inputPorts", singletonString("REGION.FIELD.in.0"));
         slice.add("methods", singletonString(method));
-        slice.add("causalEdges", singletonObject(causal));
-        slice.add("causalEdgeIds", singletonString(edgeId));
-        slice.addProperty("causalEdgeCount", 1);
+        slice.add("causalEdges", causalEdges);
+        JsonArray causalEdgeIds = singletonString(edgeId);
+        if (projectedDischarge) {
+            causalEdgeIds.add("DF.FIELD.PROJECTION");
+            if (causalMapObservation) {
+                causalEdgeIds.add("DF.FIELD.GUARD");
+            }
+        }
+        slice.add("causalEdgeIds", causalEdgeIds);
+        slice.addProperty("causalEdgeCount", causalEdges.size());
         slice.add("captureBindings", singletonObject(capture));
         slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
         slice.add("captureBindingIssues", new JsonArray());
         slice.addProperty("complete", true);
+        slice.addProperty("structuralComplete", true);
+        slice.addProperty("truncated", false);
 
         JsonObject activation = new JsonObject();
         activation.addProperty("activationId", "ACT.FIELD");
@@ -5915,10 +6553,18 @@ public class ConcolicSummaryImporterTest {
         activation.add("requestedOutputCapture", singletonObject(capture));
         JsonObject input = new JsonObject();
         input.addProperty("symbol", "REGION.FIELD.in.0");
-        input.addProperty("cell",
-                method + ".param0:java.lang.String");
+        input.addProperty("cell", method + ".param0:"
+                + (projectedDischarge ? "example.Snapshot"
+                : "java.lang.String"));
         input.addProperty("location", "ARGUMENT");
         activation.add("symbolize", singletonObject(input));
+        if (projectedDischarge) {
+            JsonObject fallback = input.deepCopy();
+            fallback.addProperty("bindingMode", "CONCRETE_PASSTHROUGH");
+            fallback.addProperty("concreteFallback", true);
+            activation.add("concreteFallbacks", singletonObject(fallback));
+            activation.add("materializations", new JsonArray());
+        }
         JsonObject outputAction = new JsonObject();
         outputAction.addProperty("symbol", "REGION.FIELD.out.0");
         outputAction.addProperty("location", "RETURN_OR_HEAP_EFFECT");
@@ -5957,8 +6603,18 @@ public class ConcolicSummaryImporterTest {
         observed.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         observed.addProperty("objectTokenScope", "ACT.FIELD");
-        observed.addProperty("expressionCaptured", true);
-        observed.add("expression", expression.deepCopy());
+        observed.addProperty("assignedValueClass", "java.lang.String");
+        observed.addProperty("observedFieldValueClass", "java.lang.String");
+        observed.addProperty("assignedValueWasNull", false);
+        observed.addProperty("observedFieldValueWasNull", false);
+        observed.addProperty("assignmentIdentityMode",
+                "REFERENCE_IDENTITY");
+        observed.addProperty("assignmentIdentityAuthority",
+                "EXACT_DECLARED_FIELD_REFLECTION_AND_REFERENCE_IDENTITY");
+        observed.addProperty("expressionCaptured", !projectedDischarge);
+        if (!projectedDischarge) {
+            observed.add("expression", expression.deepCopy());
+        }
         if (exactVmGuard) {
             observed.addProperty("expressionEnvelopeSchemaVersion", 1);
             observed.addProperty("expressionEnvelopeActive",
@@ -5985,14 +6641,26 @@ public class ConcolicSummaryImporterTest {
         raw.addProperty("activationId", "ACT.FIELD");
         raw.addProperty("regionId", "REGION.FIELD");
         raw.addProperty("exitKind", exitKind);
-        raw.add("unresolvedInputs", new JsonArray());
-        raw.add("symbolizedInputs",
-                singletonString("REGION.FIELD.in.0"));
+        JsonArray unresolvedInputs = new JsonArray();
+        if (projectedDischarge) {
+            unresolvedInputs.add("REGION.FIELD.out.0.capture.0: "
+                    + "field-assignment expression capture failed");
+        }
+        raw.add("unresolvedInputs", unresolvedInputs);
+        raw.add("symbolizedInputs", projectedDischarge
+                ? new JsonArray()
+                : singletonString("REGION.FIELD.in.0"));
         raw.add("rootOutputExpression", constant("Y_L_NULL", "L"));
         raw.add("outputCaptures", singletonObject(observed));
-        if (exactVmGuard) {
+        if (exactVmGuard || projectedDischarge) {
             raw.add("runtimeHeapEffects", new JsonArray());
-            raw.add("runtimeHeapObservations", new JsonArray());
+            JsonArray runtimeHeapObservations = new JsonArray();
+            if (projectedDischarge) {
+                runtimeHeapObservations.add(incompleteMapEntryObservation(
+                        causalMapObservation ? method + "#u2"
+                                : "<example.UnrelatedMap: void scan()>#u7"));
+            }
+            raw.add("runtimeHeapObservations", runtimeHeapObservations);
         }
         JsonObject engine = new JsonObject();
         engine.addProperty("active", true);
@@ -6725,6 +7393,32 @@ public class ConcolicSummaryImporterTest {
             this.summary = summary;
             this.diagnostics = diagnostics;
         }
+    }
+
+    private static JsonObject boundedInput(String port, String cell,
+                                           String sourceKind,
+                                           String javaType) {
+        JsonObject result = new JsonObject();
+        result.addProperty("portId", port);
+        result.addProperty("cell", cell);
+        result.addProperty("sourceKind", sourceKind);
+        result.addProperty("javaType", javaType);
+        return result;
+    }
+
+    private static JsonObject boundedEdge(String id, String method,
+                                          String siteId, String kind,
+                                          String fromCell, String toCell,
+                                          String unit) {
+        JsonObject result = new JsonObject();
+        result.addProperty("id", id);
+        result.addProperty("method", method);
+        result.addProperty("siteId", siteId);
+        result.addProperty("kind", kind);
+        result.addProperty("fromCell", fromCell);
+        result.addProperty("toCell", toCell);
+        result.addProperty("unit", unit);
+        return result;
     }
 
     private static void write(Path path, String value) throws Exception {
