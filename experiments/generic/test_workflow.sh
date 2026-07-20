@@ -37,7 +37,7 @@ mkdir -p \
   "${fixture_root}/bin"
 
 for file in \
-  tool/fake.jar tool/env.jar tool/pom.xml target.yaml rpc.jsonl bin/z3 bin/java \
+  tool/fake.jar tool/env.jar tool/pom.xml target.yaml bin/z3 bin/java \
   artifacts/symbolic_regions.jsonl artifacts/static_dataflow_edges.jsonl \
   artifacts/symbolic_region_edges.jsonl \
   artifacts/runtime/concolic_activation_plan.jsonl \
@@ -105,7 +105,6 @@ printf '%s\n' \
   'causynth_target_spec=target.yaml' \
   'custom_jdk_home=custom-jdk' \
   'z3_bin=bin/z3' \
-  'rpc_mapping_file=rpc.jsonl' \
   'workload_work_dir=@repo/module' \
   'workload_command=echo workflow' \
   'runtime_activation_plan=artifacts/runtime/concolic_activation_plan.jsonl' \
@@ -132,6 +131,7 @@ assert_contains "${normalized}" \
   "reach_report=${fixture_root}/artifacts/reports/reach-condition.json"
 assert_contains "${normalized}" 'reach_max_inputs=7'
 assert_contains "${normalized}" 'reach_max_valuations=128'
+assert_contains "${normalized}" 'rpc_mapping_file='
 
 overridden=$(CAUSYNTH_OUTPUT_DIR=@config/env-output \
   GRAPH_CHECKER_JAR=@config/tool/env.jar \

@@ -5451,6 +5451,16 @@ final class SymbolicRegionPlanner {
                 if (isBoundary(edge)) {
                     continue;
                 }
+                // A global exception slice can cross a shared-field write
+                // into an upstream producer.  Calls made by that producer
+                // are inputs of the producer region, not of this consumer
+                // region.  Only a call whose result is consumed by one of
+                // the current region's methods can terminate this region's
+                // live-in walk.  Runtime later selects the concrete subset
+                // of these same-thread methods.
+                if (!draft.methods.contains(string(edge.get("method")))) {
+                    continue;
+                }
                 String candidate = string(edge.get("fromCell"));
                 if (!candidate.endsWith(">.return")) {
                     continue;
@@ -7407,16 +7417,21 @@ final class SymbolicRegionPlanner {
         if (cell.endsWith(".return")) {
             return "OPAQUE_CALL";
         }
+        // A field remains shared heap even when its declaring class happens
+        // to contain a transport-flavoured word such as "RpcBus".  Runtime
+        // can materialize an exact getfield and validate READ_FROM for this
+        // source; class-name classification would instead turn it into an
+        // unmaterializable generic protocol live-in.
+        if (cell.contains("#field:") || looksLikeField(cell)) {
+            return cell.contains("@this")
+                    ? "RECEIVER_FIELD" : "SHARED_HEAP";
+        }
         if (lower.contains("sasl") || lower.contains("namecallback")
                 || lower.contains("username")) {
             return "PROTOCOL_INPUT";
         }
         if (lower.contains("rpc")) {
             return "RPC_INPUT";
-        }
-        if (cell.contains("#field:") || looksLikeField(cell)) {
-            return cell.contains("@this")
-                    ? "RECEIVER_FIELD" : "SHARED_HEAP";
         }
         if (cell.contains(".param") && methodForCell(cell).equals(rootMethod)) {
             return "ROOT_ARGUMENT";

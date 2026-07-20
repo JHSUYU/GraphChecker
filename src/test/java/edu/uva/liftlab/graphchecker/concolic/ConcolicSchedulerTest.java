@@ -1172,6 +1172,31 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void boundedOutputDoesNotStartAfterAnUpstreamSymbolicInput()
+            throws Exception {
+        java.lang.reflect.Method safe = ConcolicScheduler.class
+                .getDeclaredMethod("boundedDeferredStartSafe",
+                        JsonObject.class, String.class);
+        safe.setAccessible(true);
+        String transformer = "<example.Bus: void publish(int)>";
+
+        JsonObject callReturn = JsonParser.parseString("{\"symbolize\":[{"
+                + "\"location\":\"CALL_RETURN\","
+                + "\"cell\":\"<example.Source: int get()>.return\"}]}")
+                .getAsJsonObject();
+        assertEquals(false, safe.invoke(null, callReturn, transformer));
+
+        JsonObject exactTransformerField = JsonParser.parseString(
+                "{\"symbolize\":[{"
+                        + "\"location\":\"HEAP_OBJECT_FIELD\","
+                        + "\"accessMethod\":\"" + transformer + "\"}]}")
+                .getAsJsonObject();
+        assertEquals(true, safe.invoke(null, exactTransformerField,
+                transformer));
+        assertEquals(true, safe.invoke(null, new JsonObject(), transformer));
+    }
+
+    @Test
     public void verifiedVmClockPlaceholderNeedsNoCaptureMaterialization() {
         JsonObject activation = JsonParser.parseString("{"
                 + "\"activationId\":\"ACT.ENV.0\","

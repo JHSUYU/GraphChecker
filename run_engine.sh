@@ -471,7 +471,7 @@ print_normalized_config() {
 validate_config() {
   local key
   local missing=0
-  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin rpc_mapping_file workload_command; do
+  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin workload_command; do
     if [[ -z "${!key}" ]]; then
       echo "Missing workflow config value: ${key}" >&2
       missing=1
