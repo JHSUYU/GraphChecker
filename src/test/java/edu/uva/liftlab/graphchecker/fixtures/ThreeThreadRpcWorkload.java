@@ -14,10 +14,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * Standalone three-thread target used by the generic concolic workflow.
  *
  * <p>The application has no dependency on GraphChecker.  Producer values cross
- * thread boundaries only through {@link RpcBus}; the topology file beside the
- * generic workflow declares which producer return reaches which consumer RPC
- * result.  Values and thread identities are still observed from this concrete
- * execution rather than declared in that topology.</p>
+ * thread boundaries only through {@link RpcBus}. GraphChecker discovers the
+ * producer-to-consumer relation from the shared-field write/read pair and
+ * validates receiver identity and ordering in this concrete execution.</p>
  *
  * <p>The two producers run concurrently.  The third, consumer thread starts
  * only after both producer threads have terminated.  The explicit

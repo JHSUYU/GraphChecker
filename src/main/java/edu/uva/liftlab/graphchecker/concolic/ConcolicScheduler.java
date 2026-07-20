@@ -1015,9 +1015,11 @@ public final class ConcolicScheduler {
                 continue;
             }
             RegionCaptureGoal captureGoal = RegionCaptureGoal.from(activation);
+            Set<String> definitionMethods = runtimeDefinitionMethods(
+                    activation, region.methods);
             if (captureGoal.isOutputClosure()) {
                 MaterializationPlan upstreamPlan = materializationPlan(
-                        activation, definitions, region.methods);
+                        activation, definitions, definitionMethods);
                 if (!requestedOutputSliceOperationallyAdmitted(activation)
                         || !upstreamPlan.complete
                         || !outputCaptureReady(activation)
@@ -1045,7 +1047,7 @@ public final class ConcolicScheduler {
                     result.add(new Candidate(activation, activationId,
                             region, target, true,
                             materializationPlan(activation, definitions,
-                                    region.methods),
+                                    definitionMethods),
                             false));
                 }
                 continue;
@@ -1087,10 +1089,26 @@ public final class ConcolicScheduler {
                 result.add(new Candidate(activation, activationId, region,
                         target, hasWitness,
                         materializationPlan(activation, definitions,
-                                region.methods), false));
+                                definitionMethods), false));
             }
         }
         return result;
+    }
+
+    /** Restricts static definition lookup to the concrete runtime call
+     * closure selected before the frozen-graph demand re-slice. */
+    private static Set<String> runtimeDefinitionMethods(
+            JsonObject activation, Set<String> staticRegionMethods) {
+        if (activation.has("runtimeDefinitionMethods")) {
+            return stringSet(activation, "runtimeDefinitionMethods");
+        }
+        if (activation.has("observedMethods")) {
+            return stringSet(activation, "observedMethods");
+        }
+        // Compatibility for activation catalogs created before runtime call
+        // closure selection was persisted.  New catalogs never take this
+        // broad method path.
+        return new LinkedHashSet<>(staticRegionMethods);
     }
 
     /**
@@ -1135,7 +1153,7 @@ public final class ConcolicScheduler {
                 "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
                         + "IN_FROZEN_CALL_GRAPH_V1");
         if (!outermost.equals(string(result, "rootMethod"))
-                && boundedDeferredStartSafe(result)) {
+                && boundedDeferredStartSafe(result, outermost)) {
             boundedSlice.addProperty("boundedOutputDeferredEngineStart",
                     true);
             boundedSlice.addProperty(
@@ -1148,7 +1166,8 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    private static boolean boundedDeferredStartSafe(JsonObject activation) {
+    private static boolean boundedDeferredStartSafe(JsonObject activation,
+                                                     String startMethod) {
         JsonArray actions = array(activation, "symbolize");
         if (actions.size() == 0) {
             actions = array(activation, "materializations");
@@ -1158,10 +1177,18 @@ public final class ConcolicScheduler {
                 continue;
             }
             String location = string(element.getAsJsonObject(), "location");
-            if ("ARGUMENT".equals(location)
-                    || "ARGUMENT_FIELD".equals(location)
-                    || "ARGUMENT_FIELD_PATH".equals(location)
-                    || "RECEIVER_FIELD".equals(location)) {
+            JsonObject action = element.getAsJsonObject();
+            // Delaying engine start is safe only when every input is
+            // materialized by an exact field read inside the completion
+            // transformer itself.  A call return/local/environment value may
+            // be consumed before that method is entered (as in the local RPC
+            // producers), so starting late would silently make the output
+            // concrete.
+            if (!("HEAP_OBJECT_FIELD".equals(location)
+                    || "FIELD_ACCESS".equals(
+                    string(action, "bindingMode")))
+                    || !safe(startMethod).equals(
+                    string(action, "accessMethod"))) {
                 return false;
             }
         }

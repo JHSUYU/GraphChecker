@@ -1,10 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.junit.Test;
 
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -167,39 +164,17 @@ public class ThreeThreadRpcScenarioWorkloadTest {
             Class<?> producerA, Class<?> producerB,
             Class<? extends Throwable> bugType) throws Exception {
         Path caseDirectory = CASES.resolve(variant.getDirectoryName());
-        Path topology = caseDirectory.resolve("rpc-topology.jsonl");
         Path target = caseDirectory.resolve("target.yaml");
         Path workflow = caseDirectory.resolve("workflow.properties");
-        assertTrue("case topology is missing: " + topology,
-                Files.isRegularFile(topology));
+        assertFalse("case must not declare an RPC topology",
+                Files.exists(caseDirectory.resolve("rpc-topology.jsonl")));
         assertTrue("case target is missing: " + target,
                 Files.isRegularFile(target));
         assertTrue("case workflow is missing: " + workflow,
                 Files.isRegularFile(workflow));
 
-        List<String> rows = Files.readAllLines(topology,
-                StandardCharsets.UTF_8);
-        assertEquals(2, rows.size());
-        Set<String> channels = new HashSet<>();
-        for (String row : rows) {
-            JsonObject mapping = JsonParser.parseString(row)
-                    .getAsJsonObject();
-            assertEquals("TEST_DECLARED_RPC_TOPOLOGY",
-                    mapping.get("authority").getAsString());
-            assertFalse(mapping.has("formula"));
-            assertFalse(mapping.has("smt"));
-            assertFalse(row.contains("REGION."));
-            String channel = mapping.get("channel").getAsString();
-            channels.add(channel);
-            Class<?> expectedProducer = "A".equals(channel)
-                    ? producerA : producerB;
-            assertEquals(expectedProducer.getName(), mapping
-                    .getAsJsonObject("producer").get("owner").getAsString());
-            assertMethod(mapping.getAsJsonObject("producer"));
-            assertMethod(mapping.getAsJsonObject("publisher"));
-            assertMethod(mapping.getAsJsonObject("consumer"));
-        }
-        assertEquals(values("A", "B"), channels);
+        assertNotNull(producerA.getDeclaredMethod("compute", Boolean.class));
+        assertNotNull(producerB.getDeclaredMethod("compute", Boolean.class));
 
         String targetText = new String(Files.readAllBytes(target),
                 StandardCharsets.UTF_8).trim();
@@ -211,28 +186,10 @@ public class ThreeThreadRpcScenarioWorkloadTest {
                 + ThreeThreadRpcScenarioWorkload.class.getName()));
         assertTrue(workflowText.contains("fixture_test_class="
                 + ThreeThreadRpcScenarioWorkloadTest.class.getName()));
+        assertFalse(workflowText.contains("rpc_mapping_file"));
         assertTrue(workflowText.contains("-D"
                 + ThreeThreadRpcScenarioWorkload.VARIANT_PROPERTY + "="
                 + variant.name()));
-    }
-
-    private static void assertMethod(JsonObject selector) throws Exception {
-        String owner = selector.get("owner").getAsString();
-        String name = selector.get("name").getAsString();
-        Class<?> type = Class.forName(owner);
-        Class<?>[] parameters;
-        if (selector.has("parameter")
-                && "java.lang.Boolean".equals(
-                selector.get("parameter").getAsString())) {
-            parameters = new Class<?>[]{Boolean.class};
-        } else if (selector.has("parameter")
-                && "int".equals(selector.get("parameter").getAsString())) {
-            parameters = new Class<?>[]{Integer.TYPE};
-        } else {
-            parameters = new Class<?>[0];
-        }
-        Method method = type.getDeclaredMethod(name, parameters);
-        assertNotNull(method);
     }
 
     private static Set<String> values(String... values) {

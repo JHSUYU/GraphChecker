@@ -24,6 +24,18 @@ public class SymbolicRegionPlannerTest {
             "<example.SecretManager: byte[] retrievePassword(example.Token)>";
 
     @Test
+    public void transportNamedDeclaredFieldIsStillSharedHeap()
+            throws Exception {
+        java.lang.reflect.Method sourceKind = SymbolicRegionPlanner.class
+                .getDeclaredMethod("sourceKind", String.class, String.class);
+        sourceKind.setAccessible(true);
+        String field = "<example.RpcBus: int a>";
+        assertEquals("SHARED_HEAP", sourceKind.invoke(null, field, HANDLE));
+        assertEquals("OPAQUE_CALL", sourceKind.invoke(null,
+                "<example.RpcBus: int getA()>.return", HANDLE));
+    }
+
+    @Test
     public void legacyStaticModelClassificationStillRequiresARegion() {
         String transform =
                 "<example.FormatBridge: example.Value decode(byte[])>";

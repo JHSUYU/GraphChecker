@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import org.junit.Test;
 
 import java.lang.reflect.Method;
@@ -20,8 +18,8 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ThreeThreadRpcWorkloadTest {
-    private static final Path TOPOLOGY = Paths.get("experiments", "generic",
-            "three-thread-rpc", "rpc-topology.jsonl");
+    private static final Path FIXTURE = Paths.get("experiments", "generic",
+            "three-thread-rpc");
 
     @Test
     public void executesEveryBooleanInputWithThreeRealWorkerThreads()
@@ -70,27 +68,17 @@ public class ThreeThreadRpcWorkloadTest {
     }
 
     @Test
-    public void declaredRpcTopologyNamesRealMethodsOnly() throws Exception {
-        assertTrue("RPC topology is missing: " + TOPOLOGY,
-                Files.isRegularFile(TOPOLOGY));
-        List<String> rows = Files.readAllLines(TOPOLOGY,
+    public void localChannelsRequireNoDeclaredRpcTopology() throws Exception {
+        Path workflow = FIXTURE.resolve("workflow.properties");
+        assertTrue(Files.isRegularFile(workflow));
+        String configuration = new String(Files.readAllBytes(workflow),
                 StandardCharsets.UTF_8);
-        assertEquals(2, rows.size());
-        Set<String> channels = new HashSet<>();
-        for (String row : rows) {
-            JsonObject mapping = JsonParser.parseString(row)
-                    .getAsJsonObject();
-            assertEquals("TEST_DECLARED_RPC_TOPOLOGY",
-                    mapping.get("authority").getAsString());
-            assertFalse(mapping.has("formula"));
-            assertFalse(mapping.has("smt"));
-            channels.add(mapping.get("channel").getAsString());
-            assertMethod(mapping.getAsJsonObject("producer"));
-            assertMethod(mapping.getAsJsonObject("publisher"));
-            assertMethod(mapping.getAsJsonObject("consumer"));
-        }
-        assertTrue(channels.contains("A"));
-        assertTrue(channels.contains("B"));
+        assertFalse(configuration.contains("rpc_mapping_file"));
+        assertFalse(Files.exists(FIXTURE.resolve("rpc-topology.jsonl")));
+        assertNotNull(ThreeThreadRpcWorkload.RpcBus.class
+                .getDeclaredField("a"));
+        assertNotNull(ThreeThreadRpcWorkload.RpcBus.class
+                .getDeclaredField("b"));
     }
 
     @Test
@@ -151,22 +139,4 @@ public class ThreeThreadRpcWorkloadTest {
         assertTrue(channels.contains("B"));
     }
 
-    private static void assertMethod(JsonObject selector) throws Exception {
-        String owner = selector.get("owner").getAsString();
-        String name = selector.get("name").getAsString();
-        Class<?> type = Class.forName(owner);
-        Class<?>[] parameters;
-        if (selector.has("parameter")
-                && "java.lang.Boolean".equals(
-                selector.get("parameter").getAsString())) {
-            parameters = new Class<?>[]{Boolean.class};
-        } else if (selector.has("parameter")
-                && "int".equals(selector.get("parameter").getAsString())) {
-            parameters = new Class<?>[]{Integer.TYPE};
-        } else {
-            parameters = new Class<?>[0];
-        }
-        Method method = type.getDeclaredMethod(name, parameters);
-        assertNotNull(method);
-    }
 }

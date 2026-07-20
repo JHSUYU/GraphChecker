@@ -17,10 +17,12 @@ the value and receiving thread at the actual call boundary; the fixture test
 checks those observations against the two real publisher threads and the one
 real consumer thread.
 
-The topology file hardcodes only the two allowed RPC channels. It contains no
-region identifiers, Boolean valuation, reachability condition, or SMT text.
-Concrete thread identities, region instances, producer/consumer bindings, and
-branch observations all come from the trace and custom-JDK executions.
+The fixture declares no RPC topology. The first Soot pass emits candidate
+regions, trace hooks, and a frozen static graph. Runtime then selects the exact
+root/class/thread descendant-call closure, and a small demand re-slice over
+that frozen graph chooses the concrete `REGION.IN` ports without rerunning
+Soot. Shared-field producer/consumer bindings come from receiver-identity,
+write-before-read runtime evidence.
 The JUnit truth-table sweep is only a concrete workload contract; it does not
 provide a reach formula to the composer or extractor.
 
@@ -47,7 +49,7 @@ CAUSYNTH_WORKFLOW_CONFIG=/path/to/workflow.properties \
 ```
 
 The script reads the fixture main/test classes, trace-test name, replay Docker
-image, GraphChecker JAR, class directories, topology, runtime evidence, and
+image, GraphChecker JAR, class directories, runtime evidence, and
 schedule paths from that properties file. Standard workflow paths follow
 `workflow_path_base`; the fixture work root is the parent of
 `causynth_output_dir`. Keep `workload_command` consistent with the same
@@ -63,9 +65,10 @@ The automatic command performs these evidence-gated stages:
 1. Run the three-thread JUnit contract, isolate the fixture classes, perform
    static analysis, instrument the trace, and execute a non-bug discovery
    seed.
-2. Resolve every producer and the common consumer target from
-   `rpc-topology.jsonl`, runtime activation evidence, and exact read-from edge
-   bindings. No generated `REGION.*` identity is assumed.
+2. Resolve every producer and the common consumer target from exact runtime
+   shared-field read-from bindings. Re-slice the frozen graph inside the
+   concrete call closure; unresolved dependencies stay concrete rather than
+   becoming free symbols. No generated `REGION.*` identity is assumed.
 3. Capture an unforced target seed and schedule its solver-ready bootstrap
    query. The seed schedule contains no forced branch.
 4. Capture every producer seed. For each producer,
@@ -103,7 +106,7 @@ target/three-thread-rpc/final/boolean_reach_condition.json
 
 The report contains the generated root-input catalog, complete truth table,
 canonical condition, and proof metadata. The script additionally checks that
-every topology-discovered producer Boolean is influential in that truth
+every runtime-discovered producer Boolean is influential in that truth
 table. The bootstrap report is replay-only and can never be substituted for
 this final artifact.
 
@@ -133,9 +136,54 @@ rejected rather than overwritten.
 
 Five additional no-`while` branch fixtures live under `cases/`. Each keeps the
 same two-Boolean, three-thread RPC shape and uses this runner with a separate
-work root, target, and topology. For example:
+work root and target. For example:
 
 ```bash
 CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/workflow.properties \
   experiments/generic/three-thread-rpc/run.sh all
 ```
+
+## TODO: HDFS validation handoff
+
+- The common demand re-slice is active but **not HDFS-validated**. Re-aggregate
+  the frozen trace with the current JAR into a fresh directory; do not rerun
+  Soot, instrumentation, or the workload.
+
+  ```bash
+  set -euo pipefail
+  mvn -q -DskipTests package
+  hdfs_catalog=causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4
+  hdfs_reslice_out=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1
+  test ! -e "$hdfs_reslice_out"
+  mkdir "$hdfs_reslice_out"
+  cp target/hdfs-runtime-final-reaggregate-v1/runtime_trace.jsonl "$hdfs_reslice_out/"
+  java -Xmx24g -cp target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar \
+    edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
+    --trace-dir "$hdfs_reslice_out" \
+    --static-graph "$hdfs_catalog/static_dataflow_edges.jsonl" \
+    --regions "$hdfs_catalog/symbolic_regions.jsonl" \
+    --region-edges "$hdfs_catalog/symbolic_region_edges.jsonl" \
+    --test 'org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1' \
+    --max-graph-edges 2000000 --max-context-pairs-per-edge 2000
+  ```
+- Baseline: 150,000 static edges, 64 regions, 8,728 catalog region edges
+  (8,738 after producer expansion), 430 instances, 499 activations, and 57
+  confirmed read-from edges. Compare elapsed time and the two summary re-slice
+  counters; aggregate instance-row `.concreteDemandSlice.gaps`, and audit
+  retained ports, `staticProvenanceComplete`, and `unresolvedValuePolicy`.
+- Compose with the new runtime catalog, not the configured old paths:
+
+  ```bash
+  CAUSYNTH_HDFS_GENERIC_ACTIVATION_PLAN=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1/concolic_activation_plan.jsonl \
+  CAUSYNTH_HDFS_GENERIC_RUNTIME_EDGES=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1/runtime_region_edge_validation.jsonl \
+  CAUSYNTH_HDFS_GENERIC_RUNTIME_REGION_INSTANCES=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1/runtime_region_instances.jsonl \
+  CAUSYNTH_HDFS_GENERIC_OUTPUT_DIR=/opt/GraphChecker/target/hdfs-11741-generic-demand-reslice-v1 \
+    experiments/hdfs/run_hdfs.sh hdfs-11741-compose-generic \
+    org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
+  ```
+
+  The five configured replay summaries are absent and have no in-repository
+  recovery source or per-file hashes; obtain them from the experiment owner.
+  The absent historical `hdfs-11741-generic-final-v7` is comparison evidence,
+  not an input. Preserve region IDs and the intentionally loose HDFS loop and
+  read-from policies; gaps stay concrete and never restore the wide frontier.

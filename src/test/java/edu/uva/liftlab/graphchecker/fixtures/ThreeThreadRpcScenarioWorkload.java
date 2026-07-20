@@ -18,7 +18,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * producers terminate, and one consumer then reads the two values and checks
  * a target branch.  The variant only changes producer relations and the final
  * branch.  Keeping all support classes nested lets the fixture runner isolate
- * the complete workload by one outer-class prefix.</p>
+ * the complete workload by one outer-class prefix. Producer-to-consumer
+ * channels are discovered from runtime-confirmed shared-field read-from
+ * evidence rather than a fixture-declared RPC mapping.</p>
  */
 public final class ThreeThreadRpcScenarioWorkload {
     public static final String PRODUCER_A_THREAD = "scenario-producer-a";

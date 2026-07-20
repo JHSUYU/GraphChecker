@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -65,6 +66,20 @@ public class RuntimeRegionPlannerTest {
         name.setAccessible(true);
         assertEquals("example.Payload", owner.get(parsed));
         assertEquals("entries", name.get(parsed));
+
+        Object carrier = fieldCell.invoke(null,
+                "<example.Consumer: example.RpcBus bus>#field:a");
+        java.lang.reflect.Field declared = carrier.getClass()
+                .getDeclaredField("declaredSignature");
+        declared.setAccessible(true);
+        assertEquals("example.Consumer", owner.get(carrier));
+        assertEquals("bus", name.get(carrier));
+        assertEquals(true, declared.get(carrier));
+        java.lang.reflect.Method exactDeclared = RuntimeRegionPlanner.class
+                .getDeclaredMethod("exactDeclaredFieldCell", String.class);
+        exactDeclared.setAccessible(true);
+        assertEquals(false, exactDeclared.invoke(null,
+                "<example.Consumer: example.RpcBus bus>#field:a"));
     }
 
     @Test
@@ -1142,6 +1157,116 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void prunedConcreteInputCannotReenterThroughReadFromLedger()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve("regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve("edges.jsonl");
+            Path graph = folder.getRoot().toPath().resolve("graph.jsonl");
+            String writer = "<example.Writer: void run()>";
+            String reader = "<example.Reader: void run()>";
+            String field = "<example.Bus: int value>";
+            String guardSite = reader + "#u3";
+            String writerRegion = "{\"regionId\":\"REGION.W\","
+                    + "\"rootMethod\":\"" + writer + "\","
+                    + "\"anchorMethod\":\"" + writer + "\","
+                    + "\"methods\":[\"" + writer + "\"],"
+                    + "\"symbolicInputs\":[],\"outputs\":[{"
+                    + "\"portId\":\"REGION.W.out.0\",\"cell\":\""
+                    + field + "\",\"kind\":\"SHARED_HEAP\"}],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            String readerRegion = "{\"regionId\":\"REGION.R\","
+                    + "\"rootMethod\":\"" + reader + "\","
+                    + "\"anchorMethod\":\"" + reader + "\","
+                    + "\"methods\":[\"" + reader + "\"],"
+                    + "\"symbolicInputs\":["
+                    + inputPort("REGION.R.in.0", field, "SHARED_HEAP")
+                    + "],\"outputs\":[{\"portId\":\"REGION.R.out.0\","
+                    + "\"cell\":\"" + guardSite
+                    + "#exception:example.Bug\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + guardSite
+                    + "\",\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"value == 0\","
+                    + "\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, (writerRegion + readerRegion).getBytes(
+                    StandardCharsets.UTF_8));
+            Files.write(edges, ("{\"edgeId\":\"E.PRUNED\","
+                    + "\"fromRegion\":\"REGION.W\","
+                    + "\"toRegion\":\"REGION.R\","
+                    + "\"fromPort\":\"" + field + "\","
+                    + "\"toPort\":\"" + field + "\","
+                    + "\"kind\":\"SHARED_STATE\","
+                    + "\"relation\":\"READ_FROM_CANDIDATE\","
+                    + "\"requiresOrder\":true,"
+                    + "\"requiresObjectIdentity\":true,"
+                    + "\"siteId\":\"\"}\n").getBytes(
+                    StandardCharsets.UTF_8));
+            Files.write(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
+                    "value_flow", "<example.Other: int x>",
+                    "<example.Other: int y>", "<example.Other: void f()>",
+                    "<example.Other: void f()>#u1", 1).getBytes(
+                    StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.RuntimeEvent branch =
+                    new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", reader,
+                            4, 0, 0, guardSite, -1, "", 0, "", true, true);
+            List<RuntimeRegionPlanner.MethodEvent> methodEvents = Arrays.asList(
+                    methodContext(1, writer, 1, "WORKER", "writer", 11L),
+                    methodContext(4, reader, 4, "WORKER", "reader", 12L));
+            List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents =
+                    Arrays.asList(
+                            new RuntimeRegionPlanner.FieldAccessEvent(2,
+                                    "FIELD_WRITE", writer, 1, field,
+                                    77, 88, "10"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(5,
+                                    "FIELD_READ", reader, 4, field,
+                                    77, 88, "10"));
+
+            // The identical trace is a valid runtime READ_FROM before the
+            // post-runtime frozen-graph slice removes its downstream port.
+            RuntimeRegionPlanner.Result legacyControl =
+                    RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                            null, methodEvents,
+                            Collections.singletonList(branch), fieldEvents);
+            assertEquals("CONFIRMED_READ_FROM",
+                    legacyControl.edgeValidations.get(0).get("status"));
+            assertEquals(Boolean.TRUE,
+                    legacyControl.edgeValidations.get(0).get("composable"));
+            assertEquals(1,
+                    legacyControl.summary.get("upstreamActivationCount"));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), edges.toFile(), graph.toFile(),
+                    methodEvents,
+                    Collections.singletonList(branch),
+                    fieldEvents);
+
+            Map<String, Object> validation = result.edgeValidations.get(0);
+            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
+                    validation.get("status"));
+            assertEquals(1, validation.get(
+                    "concreteDemandPrunedPairCount"));
+            assertEquals(0, validation.get("confirmedReadFromPairCount"));
+            assertEquals(0, validation.get("validatedBindingCount"));
+            assertEquals(Boolean.FALSE, validation.get("composable"));
+            assertEquals("", validation.get("relation"));
+            assertEquals(0, result.summary.get("upstreamActivationCount"));
+            assertEquals(1, result.summary.get(
+                    "concreteDemandPrunedRegionEdgeCount"));
+            for (Map<String, Object> activation : result.activations) {
+                assertFalse(String.valueOf(activation.get("activationId"))
+                        .startsWith("ACT.UPSTREAM."));
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void confirmsCompletedContainedMapMutationAcrossTruncatedLoopPath()
             throws Exception {
         RuntimeRegionPlanner.Result result = containerMutationReadFromResult(
@@ -1829,6 +1954,18 @@ public class RuntimeRegionPlannerTest {
         assertTrue(RuntimeRegionPlanner
                 .evidenceBackedProjectedInputForTests(ambiguous, graph, base)
                 .isEmpty());
+    }
+
+    @Test
+    public void projectedReadFromRequiresNonzeroRuntimeValueIdentity() {
+        assertTrue(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
+                false, 0, 0));
+        assertFalse(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
+                true, 0, 0));
+        assertFalse(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
+                true, 81, 82));
+        assertTrue(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
+                true, 81, 81));
     }
 
     @Test
@@ -4077,6 +4214,302 @@ public class RuntimeRegionPlannerTest {
                 "MAP_VIEW_RECEIVER_HAS_NO_EXACT_INPUT_PORT"));
         assertTrue(((List<?>) producer.get(
                 "mapValueElementFieldProjections")).isEmpty());
+    }
+
+    @Test
+    public void runtimeClosureReslicesFrozenGraphToTwoSharedFields()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path graph = folder.getRoot().toPath().resolve(
+                    "static_dataflow_edges.jsonl");
+            String root = "<example.Worker: void run()>";
+            String anchor = "<example.Consumer: void execute()>";
+            String getA = "<example.RpcBus: int getA()>";
+            String getB = "<example.RpcBus: int getB()>";
+            String other = "<example.OtherConsumer: void execute()>";
+            String fieldA = "<example.RpcBus: int a>";
+            String fieldB = "<example.RpcBus: int b>";
+            String aliasA = "<example.Consumer: example.RpcBus bus>#field:a";
+            String aliasB = "<example.Consumer: example.RpcBus bus>#field:b";
+            String localA = anchor + "::$i0";
+            String localB = anchor + "::$i1";
+            String getterLocalA = getA + "::i0";
+            String getterLocalB = getB + "::i0";
+            String getAReturn = getA + ".return";
+            String getBReturn = getB + ".return";
+            String booleanReturn =
+                    "<java.lang.Boolean: boolean booleanValue()>.return";
+            String guardSite = anchor + "#u8";
+            String failure = anchor + "#u11#exception:example.Bug";
+            String region = "{\"regionId\":\"REGION.0\","
+                    + "\"rootMethod\":\"" + root + "\","
+                    + "\"anchorMethod\":\"" + anchor + "\","
+                    + "\"methods\":[\"" + root + "\",\"" + anchor
+                    + "\",\"" + getA + "\",\"" + getB + "\",\""
+                    + other + "\"],\"symbolicInputs\":["
+                    + inputPort("REGION.0.in.0", fieldA, "SHARED_HEAP") + ","
+                    + inputPort("REGION.0.in.1", fieldB, "SHARED_HEAP") + ","
+                    + inputPort("REGION.0.in.2", getAReturn, "OPAQUE_CALL") + ","
+                    + inputPort("REGION.0.in.3", getBReturn, "OPAQUE_CALL") + ","
+                    + inputPort("REGION.0.in.4", aliasA, "SHARED_HEAP") + ","
+                    + inputPort("REGION.0.in.5", aliasB, "SHARED_HEAP") + ","
+                    + inputPort("REGION.0.in.6", booleanReturn,
+                    "OPAQUE_CALL") + "],"
+                    + "\"outputs\":[{\"portId\":\"REGION.0.out.0\","
+                    + "\"cell\":\"" + failure + "\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + guardSite
+                    + "\",\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"a <= b\",\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+
+            String frozen = frozenDemandEdge("DF.GA", "GUARD",
+                    "control_depends_on", localA, failure, anchor,
+                    guardSite, 8)
+                    + frozenDemandEdge("DF.GB", "GUARD",
+                    "control_depends_on", localB, failure, anchor,
+                    guardSite, 8)
+                    + frozenDemandEdge("DF.CA", "FUNCTION_RETURN",
+                    "value_flow", getAReturn, localA, anchor,
+                    anchor + "#u2", 2)
+                    + frozenDemandEdge("DF.CB", "FUNCTION_RETURN",
+                    "value_flow", getBReturn, localB, anchor,
+                    anchor + "#u4", 4)
+                    + frozenDemandEdge("DF.RA", "VALUE_PASS",
+                    "value_flow", getterLocalA, getAReturn, getA,
+                    getA + "#u16", 16)
+                    + frozenDemandEdge("DF.RB", "VALUE_PASS",
+                    "value_flow", getterLocalB, getBReturn, getB,
+                    getB + "#u16", 16)
+                    + frozenDemandEdge("DF.FA", "HEAP_READ", "value_flow",
+                    fieldA, getterLocalA, getA, getA + "#u8", 8)
+                    + frozenDemandEdge("DF.AA", "HEAP_READ", "value_flow",
+                    aliasA, getterLocalA, getA, getA + "#u8", 8)
+                    + frozenDemandEdge("DF.FB", "HEAP_READ", "value_flow",
+                    fieldB, getterLocalB, getB, getB + "#u8", 8)
+                    + frozenDemandEdge("DF.AB", "HEAP_READ", "value_flow",
+                    aliasB, getterLocalB, getB, getB + "#u8", 8);
+            Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
+
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    method(1, root, 1, 0, 0),
+                    method(2, anchor, 2, 1, 1),
+                    method(3, getA, 3, 2, 2),
+                    method(4, getB, 4, 2, 4));
+            RuntimeRegionPlanner.RuntimeEvent branch =
+                    new RuntimeRegionPlanner.RuntimeEvent(9, "BRANCH",
+                            anchor, 2, 0, 0, guardSite, -1, "", 0,
+                            "", true, true);
+            RuntimeRegionPlanner.FieldAccessEvent readA =
+                    new RuntimeRegionPlanner.FieldAccessEvent(5,
+                            "FIELD_READ", getA, 3, 8, getA + "#u8",
+                            fieldA, 77, 0, "-1", "", false, 0,
+                            "TEST_NO_FINGERPRINT");
+            RuntimeRegionPlanner.FieldAccessEvent readB =
+                    new RuntimeRegionPlanner.FieldAccessEvent(6,
+                            "FIELD_READ", getB, 4, 8, getB + "#u8",
+                            fieldB, 77, 0, "10", "", false, 0,
+                            "TEST_NO_FINGERPRINT");
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), null, graph.toFile(), methods,
+                    Collections.singletonList(branch),
+                    Arrays.asList(readA, readB));
+
+            assertEquals(1, result.activations.size());
+            Map<String, Object> activation = result.activations.get(0);
+            assertEquals(7, activation.get("staticInputPortCount"));
+            assertEquals(2, activation.get("concreteInputPortCount"));
+            assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
+                            + "STATIC_DEMAND_SLICE_V1",
+                    activation.get("concreteInputSelectionAuthority"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> demand = (Map<String, Object>) activation.get(
+                    "concreteDemandSlice");
+            assertEquals(Boolean.TRUE, demand.get("applied"));
+            assertEquals(Boolean.TRUE, demand.get("complete"));
+            assertEquals(Boolean.TRUE, demand.get("staticProvenanceComplete"));
+            assertEquals(Arrays.asList("REGION.0.in.0", "REGION.0.in.1"),
+                    demand.get("inputPorts"));
+            assertTrue(((List<?>) demand.get("concreteBoundCells")).isEmpty());
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> actions =
+                    (List<Map<String, Object>>) activation.get("symbolize");
+            assertEquals(2, actions.size());
+            assertEquals("HEAP_OBJECT_FIELD", actions.get(0).get("location"));
+            assertEquals("HEAP_OBJECT_FIELD", actions.get(1).get("location"));
+            assertEquals(fieldA, actions.get(0).get("cell"));
+            assertEquals(fieldB, actions.get(1).get("cell"));
+            assertFalse(String.valueOf(activation.get(
+                    "runtimeDefinitionMethods")).contains(other));
+            assertEquals(Boolean.TRUE, activation.get("symbolicReady"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void missingFrozenDemandSeedBindsConcreteWithoutWideFallback()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.Consumer: void run(int)>";
+            String input = root + ".param0:int";
+            String site = root + "#u3";
+            Path regions = folder.getRoot().toPath().resolve("regions.jsonl");
+            Path graph = folder.getRoot().toPath().resolve("graph.jsonl");
+            String region = "{\"regionId\":\"REGION.C\","
+                    + "\"rootMethod\":\"" + root + "\","
+                    + "\"anchorMethod\":\"" + root + "\","
+                    + "\"methods\":[\"" + root + "\"],"
+                    + "\"symbolicInputs\":["
+                    + inputPort("REGION.C.in.0", input, "ROOT_ARGUMENT")
+                    + "],\"outputs\":[{\"portId\":\"REGION.C.out.0\","
+                    + "\"cell\":\"" + root + "#u4#exception:example.Bug\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + site + "\","
+                    + "\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"x == 0\",\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+            Files.write(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
+                    "value_flow", "<example.Other: int x>",
+                    "<example.Other: int y>", "<example.Other: void f()>",
+                    "<example.Other: void f()>#u1", 1).getBytes(
+                    StandardCharsets.UTF_8));
+            RuntimeRegionPlanner.RuntimeEvent branch =
+                    new RuntimeRegionPlanner.RuntimeEvent(2, "BRANCH", root,
+                            1, 0, 0, site, -1, "", 0, "", true, true);
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), null, graph.toFile(),
+                    Collections.singletonList(method(1, root, 1, 0, 0)),
+                    Collections.singletonList(branch),
+                    Collections.emptyList());
+
+            Map<String, Object> activation = result.activations.get(0);
+            assertEquals(1, activation.get("staticInputPortCount"));
+            assertEquals(0, activation.get("concreteInputPortCount"));
+            assertEquals(Collections.singletonList("REGION.C.in.0"),
+                    activation.get("runtimePrunedInputPorts"));
+            assertEquals(Boolean.FALSE,
+                    activation.get("concreteDemandSymbolicPotential"));
+            assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> demand = (Map<String, Object>) activation.get(
+                    "concreteDemandSlice");
+            assertEquals(Boolean.TRUE, demand.get("applied"));
+            assertEquals(Boolean.TRUE, demand.get("complete"));
+            assertEquals(Boolean.FALSE,
+                    demand.get("staticProvenanceComplete"));
+            assertEquals(Collections.singletonList(input),
+                    demand.get("concreteBoundCells"));
+            assertTrue(String.valueOf(demand.get("gaps")).contains(
+                    "NO_EXACT_ANCHOR_GUARD_SEED"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void unusableProvidedFrozenGraphFailsConcreteNotWide()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.Consumer: void run(int)>";
+            String input = root + ".param0:int";
+            String site = root + "#u3";
+            Path regions = folder.getRoot().toPath().resolve("regions.jsonl");
+            Path emptyGraph = folder.getRoot().toPath().resolve(
+                    "empty-graph.jsonl");
+            String region = "{\"regionId\":\"REGION.C\","
+                    + "\"rootMethod\":\"" + root + "\","
+                    + "\"anchorMethod\":\"" + root + "\","
+                    + "\"methods\":[\"" + root + "\"],"
+                    + "\"symbolicInputs\":["
+                    + inputPort("REGION.C.in.0", input, "ROOT_ARGUMENT")
+                    + "],\"outputs\":[{\"portId\":\"REGION.C.out.0\","
+                    + "\"cell\":\"" + site + "#exception:example.Bug\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + site + "\","
+                    + "\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"x == 0\",\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+            Files.write(emptyGraph, new byte[0]);
+            RuntimeRegionPlanner.RuntimeEvent branch =
+                    new RuntimeRegionPlanner.RuntimeEvent(2, "BRANCH", root,
+                            1, 0, 0, site, -1, "", 0, "", true, true);
+
+            RuntimeRegionPlanner.Result empty = RuntimeRegionPlanner.plan(
+                    regions.toFile(), null, emptyGraph.toFile(),
+                    Collections.singletonList(method(1, root, 1, 0, 0)),
+                    Collections.singletonList(branch),
+                    Collections.emptyList());
+            assertConcreteFrozenGraphFailure(empty, input,
+                    "FROZEN_STATIC_GRAPH_EMPTY");
+
+            File missingGraph = folder.getRoot().toPath().resolve(
+                    "missing-graph.jsonl").toFile();
+            RuntimeRegionPlanner.Result missing = RuntimeRegionPlanner.plan(
+                    regions.toFile(), null, missingGraph,
+                    Collections.singletonList(method(1, root, 1, 0, 0)),
+                    Collections.singletonList(branch),
+                    Collections.emptyList());
+            assertConcreteFrozenGraphFailure(missing, input,
+                    "FROZEN_STATIC_GRAPH_NOT_FOUND");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void assertConcreteFrozenGraphFailure(
+            RuntimeRegionPlanner.Result result, String input,
+            String expectedGap) {
+        Map<String, Object> activation = result.activations.get(0);
+        assertEquals(0, activation.get("concreteInputPortCount"));
+        assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
+        assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
+                        + "STATIC_DEMAND_SLICE_V1",
+                activation.get("concreteInputSelectionAuthority"));
+        Map<String, Object> demand = (Map<String, Object>) activation.get(
+                "concreteDemandSlice");
+        assertEquals(Boolean.TRUE, demand.get("applied"));
+        assertEquals(Collections.singletonList(input),
+                demand.get("concreteBoundCells"));
+        assertTrue(String.valueOf(demand.get("gaps")).contains(expectedGap));
+    }
+
+    private static String inputPort(String id, String cell,
+                                    String sourceKind) {
+        return "{\"portId\":\"" + id + "\",\"cell\":\"" + cell
+                + "\",\"sourceKind\":\"" + sourceKind
+                + "\",\"projection\":\"value\"}";
+    }
+
+    private static String frozenDemandEdge(
+            String id, String transferKind, String relation,
+            String fromCell, String toCell, String method,
+            String siteId, int unitIndex) {
+        return "{\"id\":\"" + id + "\",\"kind\":\"test_edge\","
+                + "\"transferKind\":\"" + transferKind + "\","
+                + "\"relation\":\"" + relation + "\","
+                + "\"mappingOnly\":false,"
+                + "\"semanticAssertionsAllowed\":true,"
+                + "\"eligibleForAutomaticDerivation\":true,"
+                + "\"eligibleForAutomaticSmt\":true,"
+                + "\"direction\":\"backward_provenance\","
+                + "\"fromCell\":\"" + fromCell + "\","
+                + "\"toCell\":\"" + toCell + "\","
+                + "\"method\":\"" + method + "\","
+                + "\"siteId\":\"" + siteId + "\","
+                + "\"unitIndex\":" + unitIndex + "}\n";
     }
 
     private static RuntimeRegionPlanner.Result

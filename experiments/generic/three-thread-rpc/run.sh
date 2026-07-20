@@ -79,7 +79,6 @@ fixture_variant=$(workflow_property fixture_variant false)
 fixture_package=${fixture_class%.*}
 fixture_package=${fixture_package//./\/}
 fixture_simple_class=${fixture_class##*.}
-topology_file=$(configured_value rpc_mapping_file)
 activation_plan=$(configured_value runtime_activation_plan)
 target_schedule=$(configured_value schedule_output_dir)
 target_classes="${work_root}/concolic-target-classes"
@@ -107,7 +106,7 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   discover                Resolve channel producers and target from evidence
   schedule-target         Schedule one unforced consumer target seed
   seed-target             Capture/import the unforced target seed query
-  schedule-producer CH    Schedule one declared channel's OUTPUT_CLOSURE
+  schedule-producer CH    Schedule one discovered channel's OUTPUT_CLOSURE
   instrument CH           Instrument that producer's scheduled activation
   replay CH [b1 b2]       Run one real custom-JDK concolic capture
   import CH               Strictly import that producer capture
@@ -121,8 +120,9 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   all                     Run the complete clean-worktree workflow above
   clean                   Remove only the configured fixture work products
 
-No command writes SMT text or a reachability formula. RPC topology is declared
-by rpc_mapping_file; runtime read-from evidence still comes from the trace.
+No command writes SMT text or a reachability formula. Local channels are
+discovered from runtime-confirmed shared-field read-from evidence; this
+fixture has no declared RPC mapping.
 Only the validated final composition is allowed to publish the reach report;
 the bootstrap Boolean report is explicitly replay-only.
 EOF
@@ -140,21 +140,52 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+# The local fixture discovers its producer/consumer channels from the
+# concrete shared-field read-from bindings while the workflow below remains
+# channel-oriented.
+runtime_channel_rows() {
+  jq -c '
+    . as $activation
+    | select(
+        .captureGoal.kind == "OUTPUT_CLOSURE"
+        and .replayable == true
+        and .symbolicReady == true
+        and (.requestedOutput.cell | type == "string" and length > 0))
+    | .edgeBindings[]? as $edge
+    | select(
+        $edge.relation == "READ_FROM"
+        and $edge.selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        and $edge.fromRegion == $activation.regionId
+        and $edge.fromRegionInstance == $activation.regionInstanceId
+        and $edge.fromOutputCell == $activation.requestedOutput.cell
+        and $edge.rawFromPort == $activation.requestedOutput.cell
+        and $edge.canonicalOutputAliasUsed == false
+        and $edge.canonicalInputResolutionUsed == true
+        and $edge.objectIdentityConfirmed == true
+        and $edge.orderConfirmed == true
+        and ($edge.toInputCell | type == "string" and length > 0))
+    | ($activation.requestedOutput.cell
+        | capture("^<[^:]+:[[:space:]]+[^[:space:]]+"
+            + "[[:space:]]+(?<name>[^ >]+)>$").name
+        | ascii_upcase) as $channel
+    | {
+        channel: $channel,
+        fromCell: $activation.requestedOutput.cell,
+        toCell: $edge.toInputCell,
+        producerRegion: $activation.regionId,
+        producerActivation: $activation.activationId,
+        targetRegion: $edge.toRegion,
+        targetRegionInstance: $edge.toRegionInstance
+      }
+  ' "${activation_plan}" | LC_ALL=C sort
+}
+
 validate_discovery_inputs() {
   require_command jq
-  require_file "RPC topology" "${topology_file}"
+  require_command rg
   require_file "runtime activation plan" "${activation_plan}"
-  jq -e -s '
-    length > 0
-    and all(.[];
-      .kind == "RPC_TOPOLOGY"
-      and (.channel | type == "string" and length > 0)
-      and (.channel | test("^[A-Za-z0-9._-]+$"))
-      and (.fromCell | type == "string" and length > 0)
-      and (.toCell | type == "string" and length > 0))
-    and (([.[].channel | ascii_downcase] | unique | length) == length)
-  ' "${topology_file}" >/dev/null \
-    || die "RPC topology must contain unique, safe, complete channel rows"
+  require_file "runtime edge validations" "${runtime_edge_validations}"
+  require_file "static data-flow graph" "${static_graph}"
   jq -e -s '
     length > 0
     and all(.[];
@@ -164,128 +195,108 @@ validate_discovery_inputs() {
     and (([.[].activationId] | unique | length) == length)
   ' "${activation_plan}" >/dev/null \
     || die "runtime activation plan has missing or duplicate identities"
+  local channels
+  channels=$(runtime_channel_rows) \
+    || die "could not derive local channels from runtime read-from evidence"
+  jq -e -s '
+    length > 0
+    and all(.[];
+      (.channel | type == "string" and test("^[A-Za-z0-9._-]+$"))
+      and (.fromCell | type == "string" and length > 0)
+      and (.toCell | type == "string" and length > 0)
+      and (.producerRegion | type == "string" and length > 0)
+      and (.producerActivation | type == "string" and length > 0)
+      and (.targetRegion | type == "string" and length > 0)
+      and (.targetRegionInstance | type == "string" and length > 0))
+    and (([.[].channel | ascii_downcase] | unique | length) == length)
+    and (([.[].producerRegion] | unique | length) == length)
+    and (([.[].targetRegionInstance] | unique | length) == 1)
+  ' <<< "${channels}" >/dev/null \
+    || die "runtime read-from discovery did not produce unique local channels"
+  if rg -q '"kind":"configured_rpc_return_mapping"' "${static_graph}"; then
+    die "local fixture unexpectedly contains a configured RPC mapping"
+  fi
 }
 
-declared_channels() {
-  jq -r '.channel' "${topology_file}"
+discovered_channels() {
+  runtime_channel_rows | jq -r '.channel'
 }
 
-declared_channel() {
+discovered_channel() {
   local requested=$1
   local -a matches
-  mapfile -t matches < <(jq -r --arg requested "${requested}" '
+  mapfile -t matches < <(runtime_channel_rows | jq -r \
+    --arg requested "${requested}" '
     select((.channel | ascii_downcase) == ($requested | ascii_downcase))
     | .channel
-  ' "${topology_file}")
+  ')
   [[ ${#matches[@]} -eq 1 ]] \
-    || die "channel is not declared exactly once in rpc-topology.jsonl: ${requested}"
+    || die "channel is not discovered exactly once: ${requested}"
   printf '%s\n' "${matches[0]}"
 }
 
-topology_value() {
+channel_value() {
   local channel=$1
   local property=$2
   local value
-  value=$(jq -er -s --arg channel "${channel}" --arg property "${property}" '
+  value=$(runtime_channel_rows | jq -er -s \
+    --arg channel "${channel}" --arg property "${property}" '
     .[] | select(.channel == $channel) | .[$property]
-  ' "${topology_file}") \
-    || die "topology property ${property} is missing for channel ${channel}"
+  ') || die "runtime channel property ${property} is missing for ${channel}"
   [[ -n "${value}" ]] \
-    || die "topology property ${property} is empty for channel ${channel}"
+    || die "runtime channel property ${property} is empty for ${channel}"
   printf '%s\n' "${value}"
 }
 
 producer_binding() {
   local requested=$1
-  local channel from_cell to_cell
+  local channel
   local -a matches
-  channel=$(declared_channel "${requested}") || return $?
-  from_cell=$(topology_value "${channel}" fromCell) || return $?
-  to_cell=$(topology_value "${channel}" toCell) || return $?
-  mapfile -t matches < <(jq -r \
-    --arg fromCell "${from_cell}" --arg toCell "${to_cell}" '
-    . as $activation
-    | select(
-        .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .requestedOutput.cell == $fromCell
-        and any(.edgeBindings[]?;
-          .fromRegion == $activation.regionId
-          and .fromOutputCell == $fromCell
-          and .rawFromPort == $toCell
-          and .canonicalOutputAliasUsed == true
-          and .aliasProofComplete == true))
-    | [.regionId, .activationId] | @tsv
-  ' "${activation_plan}")
+  channel=$(discovered_channel "${requested}") || return $?
+  mapfile -t matches < <(runtime_channel_rows | jq -r \
+    --arg channel "${channel}" '
+    select(.channel == $channel)
+    | [.producerRegion, .producerActivation] | @tsv
+  ')
   [[ ${#matches[@]} -eq 1 ]] || die \
-    "expected one evidence-backed OUTPUT_CLOSURE for channel ${channel}; found ${#matches[@]}"
+    "expected one runtime-confirmed OUTPUT_CLOSURE for channel ${channel}; found ${#matches[@]}"
   printf '%s\n' "${matches[0]}"
 }
 
 target_binding() {
-  local channel producer_region producer_activation from_cell to_cell
-  local target_region target_activation
-  local binding
-  local -a channels downstream_regions target_regions target_activations
-  mapfile -t channels < <(declared_channels)
-  [[ ${#channels[@]} -gt 0 ]] || die "RPC topology declares no channels"
-  target_regions=()
-  for channel in "${channels[@]}"; do
-    binding=$(producer_binding "${channel}") || return $?
-    IFS=$'\t' read -r producer_region producer_activation \
-      <<< "${binding}"
-    from_cell=$(topology_value "${channel}" fromCell) || return $?
-    to_cell=$(topology_value "${channel}" toCell) || return $?
-    mapfile -t downstream_regions < <(jq -s -r \
-      --arg activation "${producer_activation}" \
-      --arg producerRegion "${producer_region}" \
-      --arg fromCell "${from_cell}" \
-      --arg toCell "${to_cell}" '
-      . as $plans
-      | $plans[]
-      | select(.activationId == $activation and .regionId == $producerRegion)
-      | .edgeBindings[]?
-      | select(.fromRegion == $producerRegion
-          and .fromOutputCell == $fromCell
-          and .rawFromPort == $toCell
-          and .canonicalOutputAliasUsed == true
-          and .aliasProofComplete == true)
-      | .toRegion as $candidate
-      | select(any($plans[];
-          .regionId == $candidate
-          and .captureGoal.kind == "TARGET_BRANCH"
-          and .replayable == true))
-      | $candidate
-    ' "${activation_plan}" | sort -u)
-    [[ ${#downstream_regions[@]} -eq 1 ]] || die \
-      "channel ${channel} must have one exact producer-to-target binding"
-    target_regions+=("${downstream_regions[0]}")
-  done
-  mapfile -t target_regions < <(printf '%s\n' "${target_regions[@]}" | sort -u)
-  [[ ${#target_regions[@]} -eq 1 ]] || die \
-    "declared RPC channels do not converge on one runtime target region"
-  target_region=${target_regions[0]}
-  mapfile -t target_activations < <(jq -r --arg region "${target_region}" '
+  local target_region target_instance
+  local -a target_activations
+  target_region=$(runtime_channel_rows | jq -er -s '
+    [.[].targetRegion] | unique
+    | if length == 1 then .[0] else error("ambiguous target region") end
+  ') || die "runtime channels do not converge on one target region"
+  target_instance=$(runtime_channel_rows | jq -er -s '
+    [.[].targetRegionInstance] | unique
+    | if length == 1 then .[0] else error("ambiguous target instance") end
+  ') || die "runtime channels do not converge on one target instance"
+  mapfile -t target_activations < <(jq -r \
+    --arg region "${target_region}" --arg instance "${target_instance}" '
     select(.regionId == $region
+        and .regionInstanceId == $instance
         and .captureGoal.kind == "TARGET_BRANCH"
         and .replayable == true)
     | .activationId
   ' "${activation_plan}")
   [[ ${#target_activations[@]} -eq 1 ]] || die \
-    "expected one TARGET_BRANCH activation for discovered target ${target_region}"
-  target_activation=${target_activations[0]}
-  printf '%s\t%s\n' "${target_region}" "${target_activation}"
+    "expected one TARGET_BRANCH activation for ${target_instance}"
+  printf '%s\t%s\n' "${target_region}" "${target_activations[0]}"
 }
 
 channel_schedule() {
   local channel
-  channel=$(declared_channel "$1") || return $?
+  channel=$(discovered_channel "$1") || return $?
   printf '%s/schedule-%s\n' "${work_root}" \
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
 
 channel_classes() {
   local channel
-  channel=$(declared_channel "$1") || return $?
+  channel=$(discovered_channel "$1") || return $?
   printf '%s/concolic-%s-classes\n' "${work_root}" \
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
@@ -294,11 +305,11 @@ scheduled_activation() {
   local requested=$1
   local channel region source_activation from_cell schedule binding
   local -a matches
-  channel=$(declared_channel "${requested}") || return $?
+  channel=$(discovered_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region source_activation \
     <<< "${binding}"
-  from_cell=$(topology_value "${channel}" fromCell) || return $?
+  from_cell=$(channel_value "${channel}" fromCell) || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   require_file "scheduled producer activation" \
     "${schedule}/scheduled_activation_plan.jsonl"
@@ -380,7 +391,7 @@ do_discover() {
   local binding
   local -a channels
   validate_discovery_inputs
-  mapfile -t channels < <(declared_channels)
+  mapfile -t channels < <(discovered_channels)
   printf 'kind\tchannel\tregion\tactivation\n'
   for channel in "${channels[@]}"; do
     binding=$(producer_binding "${channel}") || return $?
@@ -413,7 +424,7 @@ do_schedule_producer() {
   local channel
   local region activation output binding
   validate_discovery_inputs
-  channel=$(declared_channel "${requested}") || return $?
+  channel=$(discovered_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region activation <<< "${binding}"
   output=$(channel_schedule "${channel}") || return $?
@@ -428,7 +439,7 @@ do_instrument() {
   local requested=$1
   local channel schedule classes activation static_output channel_slug
   validate_discovery_inputs
-  channel=$(declared_channel "${requested}") || return $?
+  channel=$(discovered_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   activation=$(scheduled_activation "${channel}") || return $?
@@ -592,7 +603,7 @@ run_custom_java() {
   local b2=$3
   local channel schedule classes activation results
   validate_discovery_inputs
-  channel=$(declared_channel "${requested}") || return $?
+  channel=$(discovered_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   activation=$(scheduled_activation "${channel}") || return $?
@@ -606,7 +617,7 @@ do_import() {
   local channel
   local schedule
   validate_discovery_inputs
-  channel=$(declared_channel "${requested}") || return $?
+  channel=$(discovered_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   scheduled_activation "${channel}" >/dev/null
   import_plan "${schedule}/scheduled_activation_plan.jsonl" \
@@ -695,7 +706,7 @@ combine_jsonl_unique() {
 
 producer_campaign_directory() {
   local channel
-  channel=$(declared_channel "$1") || return $?
+  channel=$(discovered_channel "$1") || return $?
   printf '%s/%s\n' "${producer_campaign_root}" \
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
@@ -709,7 +720,7 @@ do_explore_producer() {
   local -A seen_queries=()
   local -a _replay_activations=()
   validate_discovery_inputs
-  channel=$(declared_channel "${requested}") || return $?
+  channel=$(discovered_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region _ <<< "${binding}"
   schedule=$(channel_schedule "${channel}") || return $?
@@ -916,7 +927,7 @@ do_explore_producer() {
 declared_producer_regions() {
   local channel binding region
   local -a channels
-  mapfile -t channels < <(declared_channels)
+  mapfile -t channels < <(discovered_channels)
   for channel in "${channels[@]}"; do
     binding=$(producer_binding "${channel}") || return $?
     IFS=$'\t' read -r region _ <<< "${binding}"
@@ -930,8 +941,8 @@ aggregate_producer_artifacts() {
   [[ ! -e "${bootstrap_root}" ]] \
     || die "bootstrap output already exists: ${bootstrap_root}"
   mkdir -p "${bootstrap_root}"
-  mapfile -t channels < <(declared_channels)
-  [[ ${#channels[@]} -gt 0 ]] || die "RPC topology declares no producers"
+  mapfile -t channels < <(discovered_channels)
+  [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
   merged_inputs=()
   summary_inputs=()
   activation_inputs=()
@@ -954,10 +965,10 @@ aggregate_producer_artifacts() {
   actual_regions=$(jq -r '.regionId' \
     "${bootstrap_root}/producer_merged_summaries.jsonl" | sort -u)
   [[ "${expected_regions}" == "${actual_regions}" ]] \
-    || die "merged producer regions differ from runtime topology discovery"
+    || die "merged producer regions differ from runtime read-from discovery"
   [[ "$(printf '%s\n' "${expected_regions}" | sed '/^$/d' | wc -l)" \
       -eq "${#channels[@]}" ]] \
-    || die "declared channels do not resolve to distinct producer regions"
+    || die "discovered channels do not resolve to distinct producer regions"
   jq -e -s --argjson expected "${#channels[@]}" '
     length == $expected
     and all(.[];
@@ -981,7 +992,7 @@ do_bootstrap_compose() {
   aggregate_producer_artifacts
   binding=$(target_binding) || return $?
   IFS=$'\t' read -r target_region target_activation <<< "${binding}"
-  mapfile -t channels < <(declared_channels)
+  mapfile -t channels < <(discovered_channels)
   bounded_args=()
   for channel in "${channels[@]}"; do
     producer_binding_row=$(producer_binding "${channel}") || return $?
@@ -1216,7 +1227,7 @@ do_campaign() {
     --solver-timeout-ms "${solver_timeout}"
     --summaries "${target_summary}"
   )
-  mapfile -t channels < <(declared_channels)
+  mapfile -t channels < <(discovered_channels)
   for channel in "${channels[@]}"; do
     campaign=$(producer_campaign_directory "${channel}") || return $?
     args+=(--resume-activations \
@@ -1407,7 +1418,7 @@ do_final() {
     and ((.[0].replayValidationAuthority // "") | length) > 0
   ' "${final_root}/schedule/branch_queries.jsonl" >/dev/null \
     || die "final scheduler lost target replay validation"
-  mapfile -t channels < <(declared_channels)
+  mapfile -t channels < <(discovered_channels)
   bounded_args=()
   for channel in "${channels[@]}"; do
     producer_binding_row=$(producer_binding "${channel}") || return $?
@@ -1579,7 +1590,7 @@ do_all() {
   do_discover
   do_schedule_target
   do_seed_target
-  mapfile -t channels < <(declared_channels)
+  mapfile -t channels < <(discovered_channels)
   for channel in "${channels[@]}"; do
     do_schedule_producer "${channel}"
     do_instrument "${channel}"
@@ -1606,14 +1617,14 @@ case "${command_name}" in
   discover) [[ $# -eq 0 ]] || die "discover takes no arguments"; do_discover ;;
   schedule-target) [[ $# -eq 0 ]] || die "schedule-target takes no arguments"; do_schedule_target ;;
   seed-target) [[ $# -eq 0 ]] || die "seed-target takes no arguments"; do_seed_target ;;
-  schedule-producer) [[ $# -eq 1 ]] || die "schedule-producer needs one declared channel"; do_schedule_producer "$1" ;;
-  instrument) [[ $# -eq 1 ]] || die "instrument needs one declared channel"; do_instrument "$1" ;;
+  schedule-producer) [[ $# -eq 1 ]] || die "schedule-producer needs one discovered channel"; do_schedule_producer "$1" ;;
+  instrument) [[ $# -eq 1 ]] || die "instrument needs one discovered channel"; do_instrument "$1" ;;
   replay)
     [[ $# -ge 1 && $# -le 3 ]] || die "replay needs CHANNEL [b1 b2]"
     run_custom_java "$1" "${2:-false}" "${3:-false}"
     ;;
-  import) [[ $# -eq 1 ]] || die "import needs one declared channel"; do_import "$1" ;;
-  explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one declared channel"; do_explore_producer "$1" ;;
+  import) [[ $# -eq 1 ]] || die "import needs one discovered channel"; do_import "$1" ;;
+  explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
   bootstrap-compose) [[ $# -eq 0 ]] || die "bootstrap-compose takes no arguments"; do_bootstrap_compose ;;
   bootstrap-project) [[ $# -eq 0 ]] || die "bootstrap-project takes no arguments"; do_bootstrap_project ;;
   bootstrap-replay) [[ $# -eq 0 ]] || die "bootstrap-replay takes no arguments"; do_bootstrap_replay ;;
