@@ -183,6 +183,9 @@ assert_contains "$(<"${debug_stdout}")" 'workflow'
 debug_text=$(<"${debug_stderr}")
 assert_contains "${debug_text}" 'artifact=runtime_instantiated_graph'
 assert_contains "${debug_text}" 'artifact=runtime_role_merged_graph'
+assert_contains "${debug_text}" 'artifact=runtime_instantiated_graph path='
+assert_contains "${debug_text}" 'status=shown'
+assert_not_contains "${debug_text}" 'status=invalid-json'
 
 GRAPH_CHECKER_DEBUG=true "${runner}" --config "${config}" schedule \
   >"${debug_stdout}" 2>"${debug_stderr}"
