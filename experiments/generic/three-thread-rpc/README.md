@@ -143,47 +143,23 @@ CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/
   experiments/generic/three-thread-rpc/run.sh all
 ```
 
-## TODO: HDFS validation handoff
+## HDFS validation checkpoint
 
-- The common demand re-slice is active but **not HDFS-validated**. Re-aggregate
-  the frozen trace with the current JAR into a fresh directory; do not rerun
-  Soot, instrumentation, or the workload.
+The frozen HDFS trace was re-aggregated without rerunning Soot, instrumentation,
+or the workload. `target/hdfs-runtime-demand-reslice-v4` completed in 2:16.54
+with 18,838,000 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
+All 430 instances used the runtime-guided re-slice; 63,673 candidate inputs
+were pruned, 384 confirmed external inputs were restored, and warnings are 0.
 
-  ```bash
-  set -euo pipefail
-  mvn -q -DskipTests package
-  hdfs_catalog=causynth-output/hdfs-11741-pre-fix-ece33208-auto-smt-v4
-  hdfs_reslice_out=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1
-  test ! -e "$hdfs_reslice_out"
-  mkdir "$hdfs_reslice_out"
-  cp target/hdfs-runtime-final-reaggregate-v1/runtime_trace.jsonl "$hdfs_reslice_out/"
-  java -Xmx24g -cp target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar \
-    edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-    --trace-dir "$hdfs_reslice_out" \
-    --static-graph "$hdfs_catalog/static_dataflow_edges.jsonl" \
-    --regions "$hdfs_catalog/symbolic_regions.jsonl" \
-    --region-edges "$hdfs_catalog/symbolic_region_edges.jsonl" \
-    --test 'org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1' \
-    --max-graph-edges 2000000 --max-context-pairs-per-edge 2000
-  ```
-- Baseline: 150,000 static edges, 64 regions, 8,728 catalog region edges
-  (8,738 after producer expansion), 430 instances, 499 activations, and 57
-  confirmed read-from edges. Compare elapsed time and the two summary re-slice
-  counters; aggregate instance-row `.concreteDemandSlice.gaps`, and audit
-  retained ports, `staticProvenanceComplete`, and `unresolvedValuePolicy`.
-- Compose with the new runtime catalog, not the configured old paths:
+The HDFS RPC/SASL mapping remains enabled for true transport boundaries.
+`REGION_EDGE.0` retains 10 SASL equality bindings, while edges 802 and 2076
+retain 50 and 10 exact read-from bindings. The v4 selector is complete and
+selects the same five runtime calls (NN, DN, KeyUpdater, Dispatcher, target)
+with all causal bounds verified.
 
-  ```bash
-  CAUSYNTH_HDFS_GENERIC_ACTIVATION_PLAN=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1/concolic_activation_plan.jsonl \
-  CAUSYNTH_HDFS_GENERIC_RUNTIME_EDGES=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1/runtime_region_edge_validation.jsonl \
-  CAUSYNTH_HDFS_GENERIC_RUNTIME_REGION_INSTANCES=/opt/GraphChecker/target/hdfs-runtime-demand-reslice-v1/runtime_region_instances.jsonl \
-  CAUSYNTH_HDFS_GENERIC_OUTPUT_DIR=/opt/GraphChecker/target/hdfs-11741-generic-demand-reslice-v1 \
-    experiments/hdfs/run_hdfs.sh hdfs-11741-compose-generic \
-    org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
-  ```
-
-  The five configured replay summaries are absent and have no in-repository
-  recovery source or per-file hashes; obtain them from the experiment owner.
-  The absent historical `hdfs-11741-generic-final-v7` is comparison evidence,
-  not an input. Preserve region IDs and the intentionally loose HDFS loop and
-  read-from policies; gaps stay concrete and never restore the wide frontier.
+TODO: final HDFS SMT composition still needs the five configured replay summary
+files, which are absent from this checkout and have no recoverable in-repository
+source. Obtain or regenerate those summaries, then compose against the v4
+activation/edge catalogs. Preserve the intentionally loose HDFS loop and
+read-from policies; unresolved gaps remain concrete and must not restore the
+old wide frontier.

@@ -272,6 +272,10 @@ target/three-thread-rpc/bootstrap/bootstrap_boolean_model.json
 用户报告。`run.sh all` 会继续执行无下游注入的自然回放，只有验证真实目标异常后才生成
 `target/three-thread-rpc/final` 下的最终报告。
 
+HDFS 冻结 trace 的同一聚合已由 demand re-slice 从 10:26.98 降到 2:16.54，
+关键 SASL/READ_FROM 边和五个 selector activation 均保留。最终 HDFS SMT 仍需补齐
+checkout 中缺失的五个 replay summary；详见 `experiments/generic/three-thread-rpc/README.md`。
+
 ## 核心抽象
 
 ### Region

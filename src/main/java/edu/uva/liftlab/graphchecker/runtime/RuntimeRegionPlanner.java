@@ -107,6 +107,8 @@ final class RuntimeRegionPlanner {
             "FROZEN_STATIC_GRAPH_UNIQUE_ACCESSOR_JOIN_V1";
     static final String STATIC_INPUT_FIELD_PROJECTION_AUTHORITY =
             "STATIC_EXACT_FIELD_PROJECTION_AND_RESOLVED_DECLARATION_V1";
+    static final String CONCRETE_DEMAND_DIRECT_DEFINITION_AUTHORITY =
+            "CONCRETE_DEMAND_SLICE_SELECTED_FROZEN_DIRECT_DEFINITION_V1";
     static final String STATIC_INPUT_FIELD_PROJECTION_DECLARATION_AUTHORITY =
             "SOOT_RESOLVED_DECLARATION_HIERARCHY";
     static final String EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY =
@@ -177,6 +179,7 @@ final class RuntimeRegionPlanner {
         Map<String, List<InstanceEvidence>> evidenceByRegion = new LinkedHashMap<>();
         Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion =
                 new LinkedHashMap<>();
+        List<InstanceEvidence> allInstanceEvidence = new ArrayList<>();
         Map<String, Integer> validationCounts = new LinkedHashMap<>();
 
         outer:
@@ -427,11 +430,12 @@ final class RuntimeRegionPlanner {
                         instanceId, region, root, containedCalls,
                         containedMethodEvents, containedRuntime,
                         containedFields, observedMethods,
-                        portIds(concreteInputs), demandSlice.applied,
+                        portIds(concreteInputs), demandSlice,
                         validationStatus,
                         runtimePathEvidenceComplete,
                         !callSelection.truncated,
                         !pathSelection.truncated);
+                allInstanceEvidence.add(instanceEvidence);
                 if (!callSelection.truncated && !containedFields.isEmpty()) {
                     // Exact shared-state event correlation does not consume
                     // the bounded branch signature. Keep these instances in a
@@ -486,6 +490,14 @@ final class RuntimeRegionPlanner {
                         region.inputSelectionComplete,
                         "staticInputPortCount", region.inputs.size(),
                         "concreteInputPortCount", concreteInputs.size(),
+                        "materializedInputPoolCount", concreteInputs.size(),
+                        "activationInputPortCount", symbolize.size(),
+                        "activationInputPorts", actionSymbols(symbolize),
+                        "activationInputSelectionAuthority",
+                        demandSlice.selectionAuthority(),
+                        "activationInputSelectionComplete",
+                        actionSymbols(symbolize).containsAll(
+                                portIds(concreteInputs)),
                         "runtimePrunedInputPorts",
                         region.excludedInputPorts(concreteInputs),
                         "concreteInputSelectionAuthority",
@@ -511,10 +523,20 @@ final class RuntimeRegionPlanner {
             }
         }
 
+        RuntimeRelationEvidenceCache relationEvidence =
+                new RuntimeRelationEvidenceCache();
+        int externalInputPromotionCount =
+                collectConfirmedExternalInputPromotions(regionEdges,
+                        evidenceByRegion, sharedStateEvidenceByRegion,
+                        staticProjections, relationEvidence);
+        refreshPromotedConcreteInputRows(allInstanceEvidence, result);
+        demandReslicePrunedInputCount = countConcretePrunedInputs(
+                allInstanceEvidence);
+
         List<UpstreamEdgeBinding> edgeBindings = new ArrayList<>();
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, staticProjections, result,
-                edgeBindings);
+                edgeBindings, relationEvidence);
         int upstreamActivationCount = deriveUpstreamActivations(
                 edgeBindings, staticProjections, result);
         int mapValueElementProjectionCount =
@@ -535,6 +557,10 @@ final class RuntimeRegionPlanner {
                 demandResliceAppliedCount);
         result.summary.put("concreteDemandReslicePrunedInputCount",
                 demandReslicePrunedInputCount);
+        result.summary.put("runtimeConfirmedExternalInputPromotionCount",
+                externalInputPromotionCount);
+        result.summary.put("runtimeConfirmedExternalInputPromotionAuthority",
+                "RUNTIME_CONFIRMED_EDGE_ENDPOINT_OR_REQUESTED_OUTPUT_SLICE_V1");
         result.summary.put("concreteDemandResliceAuthority",
                 ConcreteDemandSlice.AUTHORITY);
         result.summary.put("mapValueElementProjectionCount",
@@ -570,6 +596,12 @@ final class RuntimeRegionPlanner {
         result.summary.put("concreteDemandPrunedRegionEdgeCount",
                 countStatus(result.edgeValidations,
                         "PRUNED_BY_CONCRETE_DEMAND_SLICE"));
+        result.summary.put("consumerInputResolutionRequestCount",
+                staticProjections.consumerInputResolutionRequestCount);
+        result.summary.put("consumerInputResolutionCacheHitCount",
+                staticProjections.consumerInputResolutionCacheHitCount);
+        result.summary.put("consumerInputResolutionCacheMissCount",
+                staticProjections.consumerInputResolutionCacheMissCount);
         result.summary.put("unobservedRegionEdgeCount",
                 countStatus(result.edgeValidations, "UNOBSERVED"));
         result.summary.put("unobservedRegionIds", result.unobservedRegionIds);
@@ -2259,7 +2291,8 @@ final class RuntimeRegionPlanner {
             Map<String, List<InstanceEvidence>> evidenceByRegion,
             Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion,
             StaticProjectionIndex staticProjections, Result result,
-            List<UpstreamEdgeBinding> edgeBindings) {
+            List<UpstreamEdgeBinding> edgeBindings,
+            RuntimeRelationEvidenceCache relationEvidence) {
         for (StaticRegionEdge edge : staticEdges) {
             Map<String, List<InstanceEvidence>> selectedEvidence =
                     "SHARED_STATE".equals(edge.kind)
@@ -2286,6 +2319,13 @@ final class RuntimeRegionPlanner {
             Map<String, List<FingerprintMatch>> selectedValueMatches =
                     nearestEndpointFingerprintMatches(edge,
                             upstreamInstances, downstreamInstances);
+            boolean producerOutputResolvable = false;
+            for (InstanceEvidence upstream : upstreamInstances) {
+                if (edge.producerOutputFor(upstream.region) != null) {
+                    producerOutputResolvable = true;
+                    break;
+                }
+            }
             for (InstanceEvidence upstream : upstreamInstances) {
                 for (InstanceEvidence downstream : downstreamInstances) {
                     if (!upstream.root.test.equals(downstream.root.test)) {
@@ -2310,10 +2350,9 @@ final class RuntimeRegionPlanner {
                     // therefore do not enforce this gate.
                     ConsumerInputResolution retainedInputResolution = null;
                     if (downstream.concreteDemandSliceApplied) {
-                        retainedInputResolution =
-                                downstream.region.resolveConsumerInput(
-                                        edge.toPort, staticProjections,
-                                        downstream.concreteInputPortIds);
+                        retainedInputResolution = downstream
+                                .resolveConsumerInput(edge.toPort,
+                                        staticProjections);
                         if (retainedInputResolution == null) {
                             demandPrunedPairCount++;
                             continue;
@@ -2331,7 +2370,8 @@ final class RuntimeRegionPlanner {
                     FingerprintMatch valueMatch = valueMatches.isEmpty()
                             ? null : valueMatches.get(0);
                     SharedReadFrom readFrom = "SHARED_STATE".equals(edge.kind)
-                            ? sharedReadFrom(edge, upstream, downstream) : null;
+                            ? relationEvidence.sharedReadFrom(edge, upstream,
+                            downstream) : null;
                     if (readFrom != null
                             && !projectionReadFromIdentityConfirmed(
                             retainedInputResolution, readFrom)) {
@@ -2361,8 +2401,10 @@ final class RuntimeRegionPlanner {
                                 readFrom.writeEvidence.semanticAssumption);
                         addNonBlank(readFromAssumptions,
                                 readFrom.pathSignatureAssumption());
-                        edgeBindings.add(new UpstreamEdgeBinding(edge,
-                                upstream, downstream, readFrom));
+                        if (edge.producerOutputFor(upstream.region) != null) {
+                            edgeBindings.add(new UpstreamEdgeBinding(edge,
+                                    upstream, downstream, readFrom));
+                        }
                     }
                     valueEqualityPairs += valueMatches.size();
                     Map<String, Object> row = object(
@@ -2550,6 +2592,9 @@ final class RuntimeRegionPlanner {
                     "siteId", edge.siteId,
                     "status", status,
                     "validation", validation,
+                    "producerOutputResolvable", producerOutputResolvable,
+                    "automaticOutputClosureDerivable",
+                    readFromComposable && producerOutputResolvable,
                     "validatedRelation", readFromComposable ? "READ_FROM"
                             : equalityComposable ? "EQUALITY" : "",
                     "composable", composable,
@@ -2578,12 +2623,12 @@ final class RuntimeRegionPlanner {
                     "readFromAssumptions",
                     new ArrayList<>(readFromAssumptions),
                     "confirmedValueEqualityPairCount", valueEqualityPairs,
-                    "valueEqualityObserved", equalityComposable,
-                    "valueEqualityAuthority", equalityComposable
+                    "valueEqualityObserved", valueEqualityPairs > 0,
+                    "valueEqualityAuthority", valueEqualityPairs > 0
                             ? "RUNTIME_COMPLETE_VALUE_FINGERPRINT" : "",
-                    "endpointOrderAuthority", equalityComposable
+                    "endpointOrderAuthority", valueEqualityPairs > 0
                             ? "GLOBAL_TRACE_ENDPOINT_SEQUENCE" : "",
-                    "endpointCorrelationAuthority", equalityComposable
+                    "endpointCorrelationAuthority", valueEqualityPairs > 0
                             ? endpointCorrelationAuthority
                             : "",
                     "validatedBindingCount", validatedBindings.size(),
@@ -2616,6 +2661,284 @@ final class RuntimeRegionPlanner {
             result.edgeValidations.add(validationRow);
         }
         enforceUniqueExpandedProtocolProducer(result.edgeValidations);
+    }
+
+    /**
+     * Adds only externally confirmed boundary inputs to the provisional local
+     * demand slices.  This pass has no retained-input gate: the runtime
+     * relation is the evidence that authorizes the promotion.  Rendering then
+     * runs once against the final, monotonic input sets.
+     */
+    private static int collectConfirmedExternalInputPromotions(
+            List<StaticRegionEdge> staticEdges,
+            Map<String, List<InstanceEvidence>> evidenceByRegion,
+            Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion,
+            StaticProjectionIndex staticProjections,
+            RuntimeRelationEvidenceCache relationEvidence) {
+        int promoted = 0;
+        for (StaticRegionEdge edge : staticEdges) {
+            Map<String, List<InstanceEvidence>> selectedEvidence =
+                    "SHARED_STATE".equals(edge.kind)
+                            ? sharedStateEvidenceByRegion : evidenceByRegion;
+            List<InstanceEvidence> upstreamInstances = values(
+                    selectedEvidence.get(edge.fromRegion));
+            List<InstanceEvidence> downstreamInstances = values(
+                    selectedEvidence.get(edge.toRegion));
+            Map<String, List<FingerprintMatch>> valueMatches =
+                    "SHARED_STATE".equals(edge.kind)
+                            ? Collections.emptyMap()
+                            : nearestEndpointFingerprintMatches(edge,
+                            upstreamInstances, downstreamInstances);
+            for (InstanceEvidence upstream : upstreamInstances) {
+                for (InstanceEvidence downstream : downstreamInstances) {
+                    if (!upstream.root.test.equals(downstream.root.test)) {
+                        continue;
+                    }
+                    // A confirmed transport/shared-state value supplements a
+                    // runtime-selected region; it must not turn a merely
+                    // overlapping static candidate into a second concrete
+                    // region.  Truncated paths remain eligible when their
+                    // anchor was observed (important for long-running HDFS
+                    // workers), while wrong-subclass/wrong-exception
+                    // candidates fail closed here.
+                    if (!upstream.anchorObserved
+                            || !downstream.anchorObserved) {
+                        continue;
+                    }
+                    boolean siteObserved = observesSite(
+                            downstream.runtimeEvents, edge.siteId)
+                            || rpcPortMapping(edge)
+                            && observesMappedRpcInvocation(
+                            downstream.runtimeEvents, edge.fromPort,
+                            edge.toPort);
+                    if (!"SHARED_STATE".equals(edge.kind)
+                            && (!observesPortMethod(upstream, edge.fromPort)
+                            || (!observesPortMethod(downstream, edge.toPort)
+                            && !siteObserved))) {
+                        continue;
+                    }
+                    SharedReadFrom readFrom = "SHARED_STATE".equals(edge.kind)
+                            ? relationEvidence.sharedReadFrom(edge, upstream,
+                            downstream) : null;
+                    FingerprintMatch valueMatch = first(values(
+                            valueMatches.get(endpointInstancePairKey(
+                                    upstream, downstream))));
+                    if (readFrom == null && valueMatch == null) {
+                        continue;
+                    }
+
+                    ConsumerInputResolution resolution = downstream
+                            .resolveExternalCandidateInput(edge.toPort,
+                                    staticProjections);
+                    if (resolution == null
+                            || !projectionReadFromIdentityConfirmed(
+                            resolution, readFrom)) {
+                        continue;
+                    }
+                    Map<String, Object> endpointPromotion = object(
+                            "promotionKind",
+                            "RUNTIME_CONFIRMED_EXTERNAL_EDGE_ENDPOINT",
+                            "edgeId", edge.edgeId,
+                            "fromRegionInstance", upstream.instanceId,
+                            "toRegionInstance", downstream.instanceId,
+                            "rawEndpoint", edge.toPort,
+                            "resolutionAuthority", resolution.authority,
+                            "resolutionEvidenceEdgeIds",
+                            new ArrayList<>(resolution.evidenceEdgeIds),
+                            "runtimeWitnessAuthority", readFrom == null
+                                    ? "RUNTIME_COMPLETE_VALUE_FINGERPRINT"
+                                    : readFrom.writeEvidence.authority);
+                    if (downstream.promoteExternalInput(resolution.port,
+                            endpointPromotion)) {
+                        promoted++;
+                    }
+
+                    if (readFrom == null) {
+                        continue;
+                    }
+                    StaticPort output = edge.producerOutputFor(
+                            upstream.region);
+                    StaticOutputSlice staticSlice = output == null ? null
+                            : upstream.region.outputSliceFor(output.portId);
+                    StaticOutputSlice outputSlice = staticSlice == null ? null
+                            : staticSlice.runtimeRefined(upstream);
+                    if (outputSlice == null) {
+                        continue;
+                    }
+                    upstream.concreteDemandSlice.methods.addAll(
+                            outputSlice.methods);
+                    for (String inputPort : outputSlice.inputPorts) {
+                        StaticPort input = upstream.region.exactInputFor(
+                                inputPort);
+                        if (input == null) {
+                            continue;
+                        }
+                        Map<String, Object> outputPromotion = object(
+                                "promotionKind",
+                                "RUNTIME_CONFIRMED_REQUESTED_OUTPUT_SLICE",
+                                "edgeId", edge.edgeId,
+                                "fromRegionInstance", upstream.instanceId,
+                                "toRegionInstance", downstream.instanceId,
+                                "requestedOutputPort", output.portId,
+                                "runtimeWitnessAuthority",
+                                readFrom.writeEvidence.authority);
+                        if (upstream.promoteExternalInput(input,
+                                outputPromotion)) {
+                            promoted++;
+                        }
+                    }
+                }
+            }
+        }
+        return promoted;
+    }
+
+    private static <T> T first(List<T> values) {
+        return values == null || values.isEmpty() ? null : values.get(0);
+    }
+
+    private static int countConcretePrunedInputs(
+            List<InstanceEvidence> evidence) {
+        int result = 0;
+        for (InstanceEvidence instance : evidence) {
+            if (instance.concreteDemandSliceApplied) {
+                result += Math.max(0, instance.region.inputs.size()
+                        - instance.concreteInputPortIds.size());
+            }
+        }
+        return result;
+    }
+
+    /** Rebuilds all three in-memory row views from the same promoted set. */
+    private static void refreshPromotedConcreteInputRows(
+            List<InstanceEvidence> evidence, Result result) {
+        Map<String, Map<String, Object>> instances = rowsByInstanceId(
+                result.instances);
+        Map<String, Map<String, Object>> validations = rowsByInstanceId(
+                result.regionValidations);
+        Map<String, Map<String, Object>> activations = rowsByInstanceId(
+                result.activations);
+        for (InstanceEvidence instance : evidence) {
+            if (instance.concreteDemandSlice.externalInputPromotions
+                    .isEmpty()) {
+                continue;
+            }
+            List<StaticPort> concreteInputs =
+                    instance.concreteDemandSlice.inputs(instance.region);
+            List<Map<String, Object>> inputObjects = inputObservations(
+                    instance.region, concreteInputs, instance.root,
+                    instance.calls, instance.runtimeEvents,
+                    instance.fieldEvents, instance.methodEvents);
+            List<Map<String, Object>> symbolize = symbolizeActions(
+                    instance.region, concreteInputs, instance.root,
+                    inputObjects, instance.runtimeEvents,
+                    instance.fieldEvents);
+            List<Map<String, Object>> branches = branchActions(
+                    instance.region, instance.runtimeEvents);
+            int observedInputCount = countObserved(inputObjects);
+            int deferredInputCount = countDeferred(inputObjects);
+            boolean inputsResolved = observedInputCount + deferredInputCount
+                    == inputObjects.size();
+            boolean branchesResolved = countObservedBranches(branches)
+                    == branches.size();
+            boolean symbolizeReady = symbolizeActionsReady(symbolize);
+            boolean symbolicPotential = !concreteInputs.isEmpty()
+                    || instance.region.inputs.isEmpty()
+                    || instance.region.branches.isEmpty();
+            boolean boundaryReady = inputsResolved && branchesResolved
+                    && instance.region.inputSelectionComplete
+                    && instance.runtimePathEvidenceComplete
+                    && symbolizeReady;
+
+            Map<String, Object> activation = activations.get(
+                    instance.instanceId);
+            boolean replayable = activation != null
+                    && Boolean.TRUE.equals(activation.get("replayable"));
+            boolean symbolicReady = replayable && boundaryReady
+                    && symbolicPotential;
+            List<String> pruned = instance.region.excludedInputPorts(
+                    concreteInputs);
+            String authority = instance.concreteDemandSlice
+                    .selectionAuthority();
+            Map<String, Object> demand = instance.concreteDemandSlice.toMap();
+
+            Map<String, Object> instanceRow = instances.get(
+                    instance.instanceId);
+            if (instanceRow != null) {
+                instanceRow.put("inputObjects", inputObjects);
+                instanceRow.put("observedInputCount", observedInputCount);
+                instanceRow.put("deferredInputCount", deferredInputCount);
+                instanceRow.put("concreteInputPortCount",
+                        concreteInputs.size());
+                instanceRow.put("runtimePrunedInputPorts", pruned);
+                instanceRow.put("concreteInputSelectionAuthority",
+                        authority);
+                instanceRow.put("concreteDemandSymbolicPotential",
+                        symbolicPotential);
+                instanceRow.put("concreteDemandSlice", demand);
+                instanceRow.put("symbolizeActionsReady", symbolizeReady);
+                instanceRow.put("boundaryReady", boundaryReady);
+                instanceRow.put("symbolicReady", symbolicReady);
+            }
+
+            Map<String, Object> validation = validations.get(
+                    instance.instanceId);
+            if (validation != null) {
+                validation.put("inputPortCount", inputObjects.size());
+                validation.put("observedInputCount", observedInputCount);
+                validation.put("deferredInputCount", deferredInputCount);
+                validation.put("concreteInputPortCount",
+                        concreteInputs.size());
+                validation.put("runtimePrunedInputPorts", pruned);
+                validation.put("concreteInputSelectionAuthority",
+                        authority);
+                validation.put("concreteDemandSymbolicPotential",
+                        symbolicPotential);
+                validation.put("concreteDemandSlice", demand);
+                validation.put("symbolizeActionsReady", symbolizeReady);
+                validation.put("symbolicReady", symbolicReady);
+            }
+
+            if (activation != null) {
+                activation.put("symbolize", symbolize);
+                activation.put("materializedInputPoolCount",
+                        concreteInputs.size());
+                activation.put("activationInputPortCount", symbolize.size());
+                activation.put("activationInputPorts",
+                        actionSymbols(symbolize));
+                activation.put("activationInputSelectionAuthority",
+                        authority);
+                activation.put("activationInputSelectionComplete",
+                        actionSymbols(symbolize).containsAll(
+                                portIds(concreteInputs)));
+                activation.put("branches", branches);
+                activation.put("runtimeDefinitionMethods",
+                        instance.concreteDemandSlice.definitionMethods(
+                                instance.observedMethods));
+                activation.put("concreteInputPortCount",
+                        concreteInputs.size());
+                activation.put("runtimePrunedInputPorts", pruned);
+                activation.put("concreteInputSelectionAuthority",
+                        authority);
+                activation.put("concreteDemandSymbolicPotential",
+                        symbolicPotential);
+                activation.put("concreteDemandSlice", demand);
+                activation.put("boundaryReady", boundaryReady);
+                activation.put("symbolicReady", symbolicReady);
+            }
+        }
+    }
+
+    private static Map<String, Map<String, Object>> rowsByInstanceId(
+            List<Map<String, Object>> rows) {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            String id = string(row.get("regionInstanceId"));
+            if (!id.isEmpty()) {
+                result.put(id, row);
+            }
+        }
+        return result;
     }
 
     /**
@@ -2724,11 +3047,8 @@ final class RuntimeRegionPlanner {
             // arbitrary first match would silently create a false in/out
             // equality.
             ConsumerInputResolution inputResolution =
-                    binding.downstream.region.resolveConsumerInput(
-                            binding.edge.toPort, staticProjections,
-                            binding.downstream.concreteDemandSliceApplied
-                                    ? binding.downstream.concreteInputPortIds
-                                    : null);
+                    binding.downstream.resolveConsumerInput(
+                            binding.edge.toPort, staticProjections);
             if (!projectionReadFromIdentityConfirmed(inputResolution,
                     binding.readFrom)) {
                 inputResolution = null;
@@ -2744,6 +3064,12 @@ final class RuntimeRegionPlanner {
                     ? null : inputResolution.port;
             binding.downstreamInputProjection = inputResolution == null
                     ? null : inputResolution.projection;
+            binding.downstreamInputResolutionAuthority =
+                    inputResolution == null ? "" : inputResolution.authority;
+            binding.downstreamInputResolutionEvidenceEdgeIds =
+                    inputResolution == null
+                            ? Collections.emptyList()
+                            : new ArrayList<>(inputResolution.evidenceEdgeIds);
             String identity = binding.identity();
             if (!seen.add(identity)) {
                 continue;
@@ -2811,6 +3137,9 @@ final class RuntimeRegionPlanner {
                 activation.put("requestedOutputSlicePolicy",
                         "CONSERVATIVE_STATIC_REGION_FRONTIER");
                 activation.put("requestedOutputSliceComplete", false);
+                activation.put("activationInputSelectionAuthority",
+                        "NO_REQUESTED_OUTPUT_SLICE_FULL_MATERIALIZED_POOL");
+                activation.put("activationInputSelectionComplete", false);
                 activation.put("symbolicReady", false);
                 activation.put("boundaryReady", false);
                 result.warnings.add("upstream output has no static backward "
@@ -2859,6 +3188,16 @@ final class RuntimeRegionPlanner {
                         && symbolizeActionsReady(selectedInputs)
                         && branchActionsReady(selectedBranches);
                 activation.put("symbolize", selectedInputs);
+                activation.put("materializedInputPoolCount",
+                        base.get("concreteInputPortCount"));
+                activation.put("activationInputPortCount",
+                        selectedInputs.size());
+                activation.put("activationInputPorts",
+                        actionSymbols(selectedInputs));
+                activation.put("activationInputSelectionAuthority",
+                        "RUNTIME_REFINED_REQUESTED_OUTPUT_SLICE_V1");
+                activation.put("activationInputSelectionComplete",
+                        inputSelectionComplete);
                 activation.put("branches", selectedBranches);
                 activation.put("requestedOutputMethods",
                         new ArrayList<>(outputSlice.methods));
@@ -4118,21 +4457,21 @@ final class RuntimeRegionPlanner {
                 || !downstream.containedCallTreeComplete) {
             return null;
         }
-        FieldCell fromField = fieldCell(edge.fromPort);
-        FieldCell toField = fieldCell(edge.toPort);
+        FieldCell fromField = edge.fromField;
+        FieldCell toField = edge.toField;
         if (!fromField.materializable() || !toField.materializable()
                 || !sameField(fromField, toField)) {
             return null;
         }
         SharedReadFrom selected = null;
         for (FieldAccessEvent write : upstream.fieldEvents) {
-            if (!sameField(fromField, fieldCell(write.field))
+            if (!sameField(fromField, write.parsedField)
                     || write.receiverObjectId == 0) {
                 continue;
             }
             for (FieldAccessEvent read : downstream.fieldEvents) {
                 if (!"FIELD_READ".equals(read.kind)
-                        || !sameField(toField, fieldCell(read.field))
+                        || !sameField(toField, read.parsedField)
                         || read.receiverObjectId == 0
                         || write.receiverObjectId != read.receiverObjectId) {
                     continue;
@@ -4791,6 +5130,7 @@ final class RuntimeRegionPlanner {
         final int unitIndex;
         final String siteId;
         final String field;
+        final FieldCell parsedField;
         final int receiverObjectId;
         final int valueObjectId;
         final String primitiveValue;
@@ -4833,6 +5173,7 @@ final class RuntimeRegionPlanner {
             this.unitIndex = unitIndex;
             this.siteId = safe(siteId);
             this.field = safe(field);
+            this.parsedField = fieldCell(this.field);
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
             this.primitiveValue = safe(primitiveValue);
@@ -4907,6 +5248,15 @@ final class RuntimeRegionPlanner {
         private ConsumerInputResolution resolveConsumerInput(
                 String endpoint, StaticProjectionIndex projections,
                 Set<String> retainedPortIds) {
+            return resolveConsumerInput(endpoint, projections,
+                    retainedPortIds, Collections.emptySet(),
+                    Collections.emptySet());
+        }
+
+        private ConsumerInputResolution resolveConsumerInput(
+                String endpoint, StaticProjectionIndex projections,
+                Set<String> retainedPortIds, Set<String> demandEdgeIds,
+                Set<String> observedMethods) {
             String value = safe(endpoint);
             StaticPort exact = null;
             int exactMatches = 0;
@@ -4923,7 +5273,9 @@ final class RuntimeRegionPlanner {
                 exactMatches++;
             }
             if (exactMatches == 1) {
-                return new ConsumerInputResolution(exact, null);
+                return new ConsumerInputResolution(exact, null,
+                        "UNIQUE_EXACT_TARGET_REGION_SYMBOLIC_INPUT_CELL_V1",
+                        Collections.emptyList());
             }
             if (exactMatches > 1 || projections == null) {
                 return null;
@@ -4935,10 +5287,23 @@ final class RuntimeRegionPlanner {
                     retained.add(port);
                 }
             }
+            DirectDemandInputResolution direct =
+                    projections.uniqueDirectDemandDefinition(value,
+                            retained, demandEdgeIds, observedMethods);
+            if (direct.ambiguous) {
+                return null;
+            }
+            if (direct.port != null) {
+                return new ConsumerInputResolution(direct.port, null,
+                        CONCRETE_DEMAND_DIRECT_DEFINITION_AUTHORITY,
+                        direct.evidenceEdgeIds);
+            }
             StaticProjectionProof proof = projections.uniqueProof(value,
                     retained);
             return proof == null ? null
-                    : new ConsumerInputResolution(proof.targetPort, proof);
+                    : new ConsumerInputResolution(proof.targetPort, proof,
+                    STATIC_INPUT_FIELD_PROJECTION_AUTHORITY,
+                    proof.evidenceEdgeIds);
         }
 
         private StaticPort exactInputFor(String endpoint) {
@@ -5202,11 +5567,40 @@ final class RuntimeRegionPlanner {
     private static final class ConsumerInputResolution {
         private final StaticPort port;
         private final StaticProjectionProof projection;
+        private final String authority;
+        private final List<String> evidenceEdgeIds;
 
         private ConsumerInputResolution(StaticPort port,
-                                        StaticProjectionProof projection) {
+                                        StaticProjectionProof projection,
+                                        String authority,
+                                        Collection<String> evidenceEdgeIds) {
             this.port = port;
             this.projection = projection;
+            this.authority = safe(authority);
+            this.evidenceEdgeIds = new ArrayList<>(evidenceEdgeIds);
+        }
+    }
+
+    private static final class DirectDemandInputResolution {
+        private final StaticPort port;
+        private final List<String> evidenceEdgeIds;
+        private final boolean ambiguous;
+
+        private DirectDemandInputResolution(StaticPort port,
+                Collection<String> evidenceEdgeIds, boolean ambiguous) {
+            this.port = port;
+            this.evidenceEdgeIds = new ArrayList<>(evidenceEdgeIds);
+            this.ambiguous = ambiguous;
+        }
+
+        private static DirectDemandInputResolution absent() {
+            return new DirectDemandInputResolution(null,
+                    Collections.emptyList(), false);
+        }
+
+        private static DirectDemandInputResolution ambiguous() {
+            return new DirectDemandInputResolution(null,
+                    Collections.emptyList(), true);
         }
     }
 
@@ -5258,14 +5652,17 @@ final class RuntimeRegionPlanner {
         private String catalogFailure = "";
         private final Map<String, StaticDataflowProjectionEdge> byId =
                 new LinkedHashMap<>();
-        private final List<StaticDataflowProjectionEdge> projectedEdges =
-                new ArrayList<>();
+        private final Map<String, List<StaticDataflowProjectionEdge>>
+                projectedByObjectCell = new LinkedHashMap<>();
         private final Map<String, List<StaticDataflowProjectionEdge>>
                 declarationsByProjectedCell = new LinkedHashMap<>();
         private final Map<String, List<StaticDataflowProjectionEdge>>
                 incomingByCell = new LinkedHashMap<>();
         private final Map<String, List<StaticDataflowProjectionEdge>>
                 guardsBySite = new LinkedHashMap<>();
+        private int consumerInputResolutionRequestCount;
+        private int consumerInputResolutionCacheHitCount;
+        private int consumerInputResolutionCacheMissCount;
 
         private void add(StaticDataflowProjectionEdge edge) {
             if (edge == null || edge.edgeId.isEmpty()) {
@@ -5280,7 +5677,15 @@ final class RuntimeRegionPlanner {
                 RuntimeRegionPlanner.add(guardsBySite, edge.siteId, edge);
             }
             if (edge.exactProjectedFieldEdge()) {
-                projectedEdges.add(edge);
+                if (!edge.objectFromCell.isEmpty()) {
+                    RuntimeRegionPlanner.add(projectedByObjectCell,
+                            edge.objectFromCell, edge);
+                }
+                if (!edge.objectToCell.isEmpty()
+                        && !edge.objectToCell.equals(edge.objectFromCell)) {
+                    RuntimeRegionPlanner.add(projectedByObjectCell,
+                            edge.objectToCell, edge);
+                }
             }
             if (edge.exactResolvedAccessorDeclaration()) {
                 RuntimeRegionPlanner.add(declarationsByProjectedCell,
@@ -5309,7 +5714,8 @@ final class RuntimeRegionPlanner {
         private StaticProjectionProof proofFor(String baseCell,
                                                 StaticPort targetPort) {
             StaticProjectionProof selected = null;
-            for (StaticDataflowProjectionEdge projected : projectedEdges) {
+            for (StaticDataflowProjectionEdge projected : values(
+                    projectedByObjectCell.get(baseCell))) {
                 ProjectionOrientation orientation = projected.orientation(
                         baseCell, targetPort.cell);
                 if (orientation == null) {
@@ -5346,6 +5752,47 @@ final class RuntimeRegionPlanner {
                 }
             }
             return selected;
+        }
+
+        /**
+         * Resolves a raw runtime endpoint through one exact definition that
+         * the concrete demand slice itself selected.  This is deliberately
+         * narrower than arbitrary graph reachability: an unrelated frozen
+         * edge cannot revive a pruned candidate input, and two distinct
+         * retained inputs fail closed.
+         */
+        private DirectDemandInputResolution uniqueDirectDemandDefinition(
+                String endpoint, List<StaticPort> retainedPorts,
+                Set<String> demandEdgeIds, Set<String> observedMethods) {
+            if (endpoint.isEmpty() || retainedPorts.isEmpty()
+                    || demandEdgeIds == null || demandEdgeIds.isEmpty()
+                    || observedMethods == null || observedMethods.isEmpty()) {
+                return DirectDemandInputResolution.absent();
+            }
+            StaticPort selected = null;
+            Set<String> evidence = new LinkedHashSet<>();
+            for (StaticDataflowProjectionEdge edge : values(
+                    incomingByCell.get(endpoint))) {
+                if (!demandEdgeIds.contains(edge.edgeId)
+                        || !edge.toCell.equals(endpoint)
+                        || !edge.exactConcreteDefinition(observedMethods)) {
+                    continue;
+                }
+                for (StaticPort port : retainedPorts) {
+                    if (!edge.fromCell.equals(port.cell)) {
+                        continue;
+                    }
+                    if (selected != null && selected != port) {
+                        return DirectDemandInputResolution.ambiguous();
+                    }
+                    selected = port;
+                    evidence.add(edge.edgeId);
+                }
+            }
+            return selected == null
+                    ? DirectDemandInputResolution.absent()
+                    : new DirectDemandInputResolution(selected, evidence,
+                    false);
         }
 
         /**
@@ -5530,6 +5977,10 @@ final class RuntimeRegionPlanner {
         private final Set<String> edgeIds = new LinkedHashSet<>();
         private final Set<String> concreteBoundCells = new LinkedHashSet<>();
         private final List<String> gaps = new ArrayList<>();
+        private final List<Map<String, Object>> externalInputPromotions =
+                new ArrayList<>();
+        private final Set<String> externalInputPromotionKeys =
+                new LinkedHashSet<>();
 
         private static ConcreteDemandSlice legacyStatic(String reason) {
             ConcreteDemandSlice result = new ConcreteDemandSlice();
@@ -5572,8 +6023,33 @@ final class RuntimeRegionPlanner {
         }
 
         private String selectionAuthority() {
-            return applied ? AUTHORITY
+            return applied && !externalInputPromotions.isEmpty()
+                    ? AUTHORITY + "_PLUS_RUNTIME_CONFIRMED_EXTERNAL_INPUT_V2"
+                    : applied ? AUTHORITY
                     : "LEGACY_NO_FROZEN_GRAPH_STATIC_FRONTIER";
+        }
+
+        private void promoteExternalInput(StaticPort port,
+                                          Map<String, Object> provenance) {
+            if (port == null || port.portId.isEmpty()) {
+                return;
+            }
+            inputPortIds.add(port.portId);
+            concreteBoundCells.remove(port.cell);
+            String key = port.portId + "\n"
+                    + string(provenance == null ? null
+                    : provenance.get("promotionKind")) + "\n"
+                    + string(provenance == null ? null
+                    : provenance.get("edgeId"));
+            if (!externalInputPromotionKeys.add(key)) {
+                return;
+            }
+            Map<String, Object> row = provenance == null
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(provenance);
+            row.put("inputPort", port.portId);
+            row.put("inputCell", port.cell);
+            externalInputPromotions.add(row);
         }
 
         private Map<String, Object> toMap() {
@@ -5594,6 +6070,10 @@ final class RuntimeRegionPlanner {
                     "methods", sorted(methods),
                     "sites", sorted(sites),
                     "edgeIds", sorted(edgeIds),
+                    "externalInputPromotionCount",
+                    externalInputPromotions.size(),
+                    "externalInputPromotions",
+                    copyRows(externalInputPromotions),
                     "concreteBoundCells", sorted(concreteBoundCells),
                     "visitedCellCount", visitedCellCount,
                     "gaps", new ArrayList<>(gaps));
@@ -5899,6 +6379,8 @@ final class RuntimeRegionPlanner {
         private String producerCandidateGroup = "";
         private int producerCandidateCount;
         private String producerExpansionAuthority = "";
+        private FieldCell fromField = FieldCell.unresolved();
+        private FieldCell toField = FieldCell.unresolved();
 
         private static StaticRegionEdge fromJson(String json) {
             StaticRegionEdge edge = new StaticRegionEdge();
@@ -5921,6 +6403,8 @@ final class RuntimeRegionPlanner {
                     "aliasProofAuthority") || jsonHasField(json,
                     "aliasProofComplete");
             edge.toPort = jsonString(json, "toPort");
+            edge.fromField = fieldCell(edge.fromPort);
+            edge.toField = fieldCell(edge.toPort);
             edge.kind = jsonString(json, "kind");
             edge.relation = jsonString(json, "relation");
             edge.candidateRelation = firstNonBlank(jsonString(json,
@@ -5997,6 +6481,8 @@ final class RuntimeRegionPlanner {
             copy.producerCandidateCount = candidateCount;
             copy.producerExpansionAuthority =
                     EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY;
+            copy.fromField = fromField;
+            copy.toField = toField;
             return copy;
         }
 
@@ -6058,8 +6544,20 @@ final class RuntimeRegionPlanner {
         private final List<RuntimeEvent> runtimeEvents;
         private final List<FieldAccessEvent> fieldEvents;
         private final Set<String> observedMethods;
+        private final boolean anchorObserved;
         private final Set<String> concreteInputPortIds;
+        private final Set<String> concreteDemandEdgeIds;
+        private final ConcreteDemandSlice concreteDemandSlice;
         private final boolean concreteDemandSliceApplied;
+        private final Map<String, ConsumerInputResolution>
+                consumerInputResolutionCache = new LinkedHashMap<>();
+        private final Set<String> unresolvedConsumerInputCache =
+                new LinkedHashSet<>();
+        private final Map<String, ConsumerInputResolution>
+                externalCandidateInputResolutionCache =
+                new LinkedHashMap<>();
+        private final Set<String> unresolvedExternalCandidateInputCache =
+                new LinkedHashSet<>();
         private final String validationStatus;
         private final boolean runtimePathEvidenceComplete;
         private final boolean containedCallTreeComplete;
@@ -6072,7 +6570,7 @@ final class RuntimeRegionPlanner {
                                  List<FieldAccessEvent> fieldEvents,
                                  Set<String> observedMethods,
                                  Set<String> concreteInputPortIds,
-                                 boolean concreteDemandSliceApplied,
+                                 ConcreteDemandSlice concreteDemandSlice,
                                  String validationStatus,
                                  boolean runtimePathEvidenceComplete,
                                  boolean containedCallTreeComplete,
@@ -6085,13 +6583,91 @@ final class RuntimeRegionPlanner {
             this.runtimeEvents = new ArrayList<>(runtimeEvents);
             this.fieldEvents = new ArrayList<>(fieldEvents);
             this.observedMethods = new LinkedHashSet<>(observedMethods);
+            this.anchorObserved = this.observedMethods.contains(
+                    region.anchorMethod)
+                    || invokedAnchor(this.runtimeEvents,
+                    region.anchorMethod);
             this.concreteInputPortIds = new LinkedHashSet<>(
                     concreteInputPortIds);
-            this.concreteDemandSliceApplied = concreteDemandSliceApplied;
+            this.concreteDemandSlice = concreteDemandSlice;
+            this.concreteDemandEdgeIds = new LinkedHashSet<>(
+                    concreteDemandSlice.edgeIds);
+            this.concreteDemandSliceApplied = concreteDemandSlice.applied;
             this.validationStatus = validationStatus;
             this.runtimePathEvidenceComplete = runtimePathEvidenceComplete;
             this.containedCallTreeComplete = containedCallTreeComplete;
             this.pathSignatureComplete = pathSignatureComplete;
+        }
+
+        private boolean promoteExternalInput(StaticPort port,
+                                             Map<String, Object> provenance) {
+            if (port == null || port.portId.isEmpty()) {
+                return false;
+            }
+            boolean added = concreteInputPortIds.add(port.portId);
+            if (!added) {
+                return false;
+            }
+            concreteDemandSlice.promoteExternalInput(port, provenance);
+            consumerInputResolutionCache.clear();
+            unresolvedConsumerInputCache.clear();
+            return true;
+        }
+
+        /**
+         * Resolves a runtime-confirmed external endpoint against the full
+         * static candidate input set, but permits a local alias only when the
+         * already-selected concrete demand edges prove that exact direct
+         * definition.  This keeps RPC/SASL and shared-state boundary recovery
+         * independent of edge iteration order without reopening arbitrary
+         * frozen-graph reachability.
+         */
+        private ConsumerInputResolution resolveExternalCandidateInput(
+                String endpoint, StaticProjectionIndex projections) {
+            String key = safe(endpoint);
+            if (externalCandidateInputResolutionCache.containsKey(key)) {
+                return externalCandidateInputResolutionCache.get(key);
+            }
+            if (unresolvedExternalCandidateInputCache.contains(key)) {
+                return null;
+            }
+            ConsumerInputResolution resolution = region.resolveConsumerInput(
+                    key, projections, null, concreteDemandEdgeIds,
+                    observedMethods);
+            if (resolution == null) {
+                unresolvedExternalCandidateInputCache.add(key);
+            } else {
+                externalCandidateInputResolutionCache.put(key, resolution);
+            }
+            return resolution;
+        }
+
+        private ConsumerInputResolution resolveConsumerInput(
+                String endpoint, StaticProjectionIndex projections) {
+            String key = safe(endpoint);
+            projections.consumerInputResolutionRequestCount++;
+            if (consumerInputResolutionCache.containsKey(key)) {
+                projections.consumerInputResolutionCacheHitCount++;
+                return consumerInputResolutionCache.get(key);
+            }
+            if (unresolvedConsumerInputCache.contains(key)) {
+                projections.consumerInputResolutionCacheHitCount++;
+                return null;
+            }
+            projections.consumerInputResolutionCacheMissCount++;
+            ConsumerInputResolution resolution = region.resolveConsumerInput(
+                    key, projections,
+                    concreteDemandSliceApplied
+                            ? concreteInputPortIds : null,
+                    concreteDemandSliceApplied
+                            ? concreteDemandEdgeIds : Collections.emptySet(),
+                    observedMethods);
+            if (resolution == null) {
+                unresolvedConsumerInputCache.add(key);
+            } else {
+                consumerInputResolutionCache.put(key, resolution);
+            }
+            return resolution;
         }
 
         private long firstMethodSeq(String method) {
@@ -6230,6 +6806,33 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /** Reuses exact shared-state correlation across promotion and rendering. */
+    private static final class RuntimeRelationEvidenceCache {
+        private final Map<String, SharedReadFrom> confirmedReadFrom =
+                new LinkedHashMap<>();
+        private final Set<String> absentReadFrom = new LinkedHashSet<>();
+
+        private SharedReadFrom sharedReadFrom(StaticRegionEdge edge,
+                InstanceEvidence upstream, InstanceEvidence downstream) {
+            String key = edge.fromPort + "\n" + edge.toPort + "\n"
+                    + upstream.instanceId + "\n" + downstream.instanceId;
+            if (confirmedReadFrom.containsKey(key)) {
+                return confirmedReadFrom.get(key);
+            }
+            if (absentReadFrom.contains(key)) {
+                return null;
+            }
+            SharedReadFrom result = RuntimeRegionPlanner.sharedReadFrom(edge,
+                    upstream, downstream);
+            if (result == null) {
+                absentReadFrom.add(key);
+            } else {
+                confirmedReadFrom.put(key, result);
+            }
+            return result;
+        }
+    }
+
     private static final class SharedReadFrom {
         private final FieldAccessEvent write;
         private final FieldAccessEvent read;
@@ -6337,6 +6940,9 @@ final class RuntimeRegionPlanner {
         private StaticPort output;
         private StaticPort downstreamInput;
         private StaticProjectionProof downstreamInputProjection;
+        private String downstreamInputResolutionAuthority = "";
+        private List<String> downstreamInputResolutionEvidenceEdgeIds =
+                Collections.emptyList();
 
         private UpstreamEdgeBinding(StaticRegionEdge edge,
                                     InstanceEvidence upstream,
@@ -6435,10 +7041,10 @@ final class RuntimeRegionPlanner {
                     downstreamInput != null);
             result.put("canonicalInputResolutionAuthority",
                     downstreamInput == null ? ""
-                            : downstreamInputProjection == null
-                            ? "UNIQUE_EXACT_TARGET_REGION_SYMBOLIC_INPUT_"
-                            + "CELL_V1"
-                            : STATIC_INPUT_FIELD_PROJECTION_AUTHORITY);
+                            : downstreamInputResolutionAuthority);
+            result.put("canonicalInputResolutionEvidenceEdgeIds",
+                    new ArrayList<>(
+                            downstreamInputResolutionEvidenceEdgeIds));
             result.put("inputProjectionUsed",
                     downstreamInputProjection != null);
             if (downstreamInputProjection != null) {
@@ -8602,6 +9208,15 @@ final class RuntimeRegionPlanner {
             addNonBlank(result, port.portId);
         }
         return result;
+    }
+
+    private static List<String> actionSymbols(
+            List<Map<String, Object>> actions) {
+        Set<String> result = new LinkedHashSet<>();
+        for (Map<String, Object> action : values(actions)) {
+            addNonBlank(result, string(action.get("symbol")));
+        }
+        return sorted(result);
     }
 
     private static Set<String> stringSet(Object value) {
