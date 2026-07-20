@@ -1157,7 +1157,7 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void prunedConcreteInputCannotReenterThroughReadFromLedger()
+    public void confirmedReadFromPromotesOneExternalConcreteInput()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1167,6 +1167,7 @@ public class RuntimeRegionPlannerTest {
             Path graph = folder.getRoot().toPath().resolve("graph.jsonl");
             String writer = "<example.Writer: void run()>";
             String reader = "<example.Reader: void run()>";
+            String wrongAnchor = "<example.OtherFailure: void <init>()>";
             String field = "<example.Bus: int value>";
             String guardSite = reader + "#u3";
             String writerRegion = "{\"regionId\":\"REGION.W\","
@@ -1192,9 +1193,25 @@ public class RuntimeRegionPlannerTest {
                     + "\"guard\":\"value == 0\","
                     + "\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            String wrongRegion = "{\"regionId\":\"REGION.WRONG\","
+                    + "\"rootMethod\":\"" + reader + "\","
+                    + "\"anchorMethod\":\"" + wrongAnchor + "\","
+                    + "\"methods\":[\"" + reader + "\",\""
+                    + wrongAnchor + "\"],\"symbolicInputs\":["
+                    + inputPort("REGION.WRONG.in.0", field, "SHARED_HEAP")
+                    + "],\"outputs\":[{\"portId\":\"REGION.WRONG.out.0\","
+                    + "\"cell\":\"" + wrongAnchor
+                    + "#exception:example.OtherFailure\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + guardSite
+                    + "\",\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"value == 0\","
+                    + "\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, (writerRegion + readerRegion + wrongRegion)
+                    .getBytes(
                     StandardCharsets.UTF_8));
-            Files.write(edges, ("{\"edgeId\":\"E.PRUNED\","
+            String confirmedEdge = "{\"edgeId\":\"E.PRUNED\","
                     + "\"fromRegion\":\"REGION.W\","
                     + "\"toRegion\":\"REGION.R\","
                     + "\"fromPort\":\"" + field + "\","
@@ -1203,8 +1220,12 @@ public class RuntimeRegionPlannerTest {
                     + "\"relation\":\"READ_FROM_CANDIDATE\","
                     + "\"requiresOrder\":true,"
                     + "\"requiresObjectIdentity\":true,"
-                    + "\"siteId\":\"\"}\n").getBytes(
-                    StandardCharsets.UTF_8));
+                    + "\"siteId\":\"\"}\n";
+            String overlappingCandidateEdge = confirmedEdge
+                    .replace("E.PRUNED", "E.WRONG")
+                    .replace("REGION.R", "REGION.WRONG");
+            Files.write(edges, (confirmedEdge + overlappingCandidateEdge)
+                    .getBytes(StandardCharsets.UTF_8));
             Files.write(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
                     "value_flow", "<example.Other: int x>",
                     "<example.Other: int y>", "<example.Other: void f()>",
@@ -1226,8 +1247,9 @@ public class RuntimeRegionPlannerTest {
                                     "FIELD_READ", reader, 4, field,
                                     77, 88, "10"));
 
-            // The identical trace is a valid runtime READ_FROM before the
-            // post-runtime frozen-graph slice removes its downstream port.
+            // The exact runtime relation is authoritative external-boundary
+            // evidence even though the local frozen demand slice has no path
+            // to this input.
             RuntimeRegionPlanner.Result legacyControl =
                     RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
                             null, methodEvents,
@@ -1246,21 +1268,65 @@ public class RuntimeRegionPlannerTest {
                     fieldEvents);
 
             Map<String, Object> validation = result.edgeValidations.get(0);
-            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
+            assertEquals("CONFIRMED_READ_FROM",
                     validation.get("status"));
-            assertEquals(1, validation.get(
+            assertEquals(0, validation.get(
                     "concreteDemandPrunedPairCount"));
-            assertEquals(0, validation.get("confirmedReadFromPairCount"));
-            assertEquals(0, validation.get("validatedBindingCount"));
-            assertEquals(Boolean.FALSE, validation.get("composable"));
-            assertEquals("", validation.get("relation"));
-            assertEquals(0, result.summary.get("upstreamActivationCount"));
+            assertEquals(1, validation.get("confirmedReadFromPairCount"));
+            assertEquals(1, validation.get("validatedBindingCount"));
+            assertEquals(Boolean.TRUE, validation.get("composable"));
+            assertEquals("READ_FROM", validation.get("relation"));
+            assertEquals(1, result.summary.get("upstreamActivationCount"));
             assertEquals(1, result.summary.get(
                     "concreteDemandPrunedRegionEdgeCount"));
+            assertEquals(1, result.summary.get(
+                    "runtimeConfirmedExternalInputPromotionCount"));
+            boolean readerPromoted = false;
+            boolean upstreamDerived = false;
             for (Map<String, Object> activation : result.activations) {
-                assertFalse(String.valueOf(activation.get("activationId"))
-                        .startsWith("ACT.UPSTREAM."));
+                assertActivationInputContract(activation);
+                if ("REGION.R".equals(activation.get("regionId"))) {
+                    assertEquals(1,
+                            activation.get("concreteInputPortCount"));
+                    assertTrue(String.valueOf(activation.get(
+                            "concreteInputSelectionAuthority")).contains(
+                            "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
+                    readerPromoted = true;
+                }
+                if (String.valueOf(activation.get("activationId"))
+                        .startsWith("ACT.UPSTREAM.")) {
+                    upstreamDerived = true;
+                }
             }
+            assertTrue(readerPromoted);
+            assertTrue(upstreamDerived);
+            Map<String, Object> overlappingCandidate = null;
+            for (Map<String, Object> edgeValidation
+                    : result.edgeValidations) {
+                if ("E.WRONG".equals(edgeValidation.get("edgeId"))) {
+                    overlappingCandidate = edgeValidation;
+                    break;
+                }
+            }
+            assertTrue(overlappingCandidate != null);
+            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
+                    overlappingCandidate.get("status"));
+            assertEquals(0,
+                    overlappingCandidate.get("confirmedReadFromPairCount"));
+
+            List<RuntimeRegionPlanner.FieldAccessEvent> mismatchedReceiver =
+                    Arrays.asList(fieldEvents.get(0),
+                            new RuntimeRegionPlanner.FieldAccessEvent(5,
+                                    "FIELD_READ", reader, 4, field,
+                                    78, 88, "10"));
+            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
+                    regions.toFile(), edges.toFile(), graph.toFile(),
+                    methodEvents, Collections.singletonList(branch),
+                    mismatchedReceiver);
+            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
+                    rejected.edgeValidations.get(0).get("status"));
+            assertEquals(0, rejected.summary.get(
+                    "runtimeConfirmedExternalInputPromotionCount"));
         } finally {
             folder.delete();
         }
@@ -3425,6 +3491,60 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void selectedDirectDefinitionCanonicalizesRetainedSaslInput()
+            throws Exception {
+        RuntimeRegionPlanner.Result result =
+                demandSlicedSaslInputResult(false);
+
+        Map<String, Object> serverActivation = null;
+        for (Map<String, Object> activation : result.activations) {
+            if ("REGION.S".equals(activation.get("regionId"))) {
+                serverActivation = activation;
+                break;
+            }
+        }
+        assertTrue(serverActivation != null);
+        assertEquals(1, serverActivation.get("concreteInputPortCount"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> demand = (Map<String, Object>) serverActivation
+                .get("concreteDemandSlice");
+        assertEquals(Collections.singletonList("REGION.S.in.0"),
+                demand.get("inputPorts"));
+        assertTrue(String.valueOf(demand.get("edgeIds"))
+                .contains("DF.DIRECT.DEFAULT"));
+        assertEquals(0, demand.get("externalInputPromotionCount"));
+        assertEquals(0, result.summary.get(
+                "runtimeConfirmedExternalInputPromotionCount"));
+        assertFalse(String.valueOf(serverActivation.get(
+                "concreteInputSelectionAuthority")).contains(
+                "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
+
+        Map<String, Object> validation = edgeValidationFor(result,
+                "REGION.C");
+        assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
+                validation.get("status"));
+        assertEquals(1, validation.get("confirmedValueEqualityPairCount"));
+        assertEquals(0, validation.get("concreteDemandPrunedPairCount"));
+        assertEquals(1, result.summary.get(
+                "consumerInputResolutionCacheMissCount"));
+    }
+
+    @Test
+    public void ambiguousSelectedDirectDefinitionsFailClosed()
+            throws Exception {
+        RuntimeRegionPlanner.Result result =
+                demandSlicedSaslInputResult(true);
+
+        Map<String, Object> validation = edgeValidationFor(result,
+                "REGION.C");
+        assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
+                validation.get("status"));
+        assertEquals(1, validation.get("concreteDemandPrunedPairCount"));
+        assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
+        assertEquals(false, validation.get("composable"));
+    }
+
+    @Test
     public void saslUsernameRejectsReverseEndpointOrder()
             throws Exception {
         String fingerprint = "sha256:same-sasl-user";
@@ -5400,6 +5520,90 @@ public class RuntimeRegionPlannerTest {
         }
     }
 
+    private static RuntimeRegionPlanner.Result demandSlicedSaslInputResult(
+            boolean ambiguous) throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            Path graph = folder.getRoot().toPath().resolve(
+                    "static_dataflow_edges.jsonl");
+            String fromPort = SASL_CLIENT + ".param3:java.lang.String";
+            String rawEndpoint = SASL_SERVER + "::$r4";
+            String defaultField = "<javax.security.auth.callback."
+                    + "NameCallback: java.lang.String defaultName>";
+            String alternateField = "<example.OtherCallback: "
+                    + "java.lang.String defaultName>";
+            String guardSite = SASL_SERVER + "#u8";
+            String failure = SASL_SERVER + "#u11#exception:example.Bug";
+            String serverRegion = "{\"regionId\":\"REGION.S\","
+                    + "\"rootMethod\":\"" + SASL_SERVER + "\","
+                    + "\"anchorMethod\":\"" + SASL_SERVER + "\","
+                    + "\"methods\":[\"" + SASL_SERVER + "\"],"
+                    + "\"symbolicInputs\":["
+                    + inputPort("REGION.S.in.0", defaultField,
+                    "PROTOCOL_INPUT")
+                    + (ambiguous ? "," + inputPort("REGION.S.in.1",
+                    alternateField, "PROTOCOL_INPUT") : "")
+                    + "],\"outputs\":[{\"portId\":\"REGION.S.out.0\","
+                    + "\"cell\":\"" + failure + "\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + guardSite
+                    + "\",\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"name == null\","
+                    + "\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, (regionWithOutput("REGION.C", SASL_CLIENT,
+                    fromPort) + serverRegion).getBytes(
+                    StandardCharsets.UTF_8));
+            Files.write(edges, ("{\"edgeId\":\"E.SASL.DEMAND\","
+                    + "\"fromRegion\":\"REGION.C\","
+                    + "\"toRegion\":\"REGION.S\","
+                    + "\"fromPort\":\"" + fromPort + "\","
+                    + "\"toPort\":\"" + rawEndpoint + "\","
+                    + "\"kind\":\"SASL_TRANSFER\","
+                    + "\"candidateRelation\":\"EQUALITY\","
+                    + "\"mappingKind\":\"hdfs_sasl_username\","
+                    + "\"mappingAuthority\":"
+                    + "\"STATIC_HDFS_SASL_CONTRACT\","
+                    + "\"payloadEqualityCheckRequired\":true,"
+                    + "\"requiresOrder\":true,\"mappingOnly\":true,"
+                    + "\"siteId\":\"synthetic:hdfs_sasl_username\"}\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            String frozen = frozenDemandEdge("DF.GUARD", "GUARD",
+                    "control_depends_on", rawEndpoint, failure,
+                    SASL_SERVER, guardSite, 8)
+                    + frozenDemandEdge("DF.DIRECT.DEFAULT", "HEAP_READ",
+                    "value_flow", defaultField, rawEndpoint, SASL_SERVER,
+                    SASL_SERVER + "#u4", 4)
+                    + (ambiguous ? frozenDemandEdge(
+                    "DF.DIRECT.ALTERNATE", "HEAP_READ", "value_flow",
+                    alternateField, rawEndpoint, SASL_SERVER,
+                    SASL_SERVER + "#u5", 5) : "");
+            Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
+
+            String fingerprint = "sha256:same-sasl-user";
+            RuntimeRegionPlanner.RuntimeEvent branch =
+                    new RuntimeRegionPlanner.RuntimeEvent(55, "BRANCH",
+                            SASL_SERVER, 2, 0, 0, guardSite, -1, "", 0,
+                            "", true, true);
+            return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    graph.toFile(), Arrays.asList(
+                            methodContext(1, SASL_CLIENT, 1, "BALANCER",
+                                    "Dispatcher", 31L),
+                            methodContext(20, SASL_SERVER, 2, "DATANODE",
+                                    "DataXceiver", 41L)),
+                    Arrays.asList(saslArgument(10, 1, fingerprint),
+                            saslCallbackReturn(50, 2, fingerprint), branch),
+                    Collections.emptyList());
+        } finally {
+            folder.delete();
+        }
+    }
+
     private static Map<String, Object> edgeValidationFor(
             RuntimeRegionPlanner.Result result, String fromRegion) {
         for (Map<String, Object> validation : result.edgeValidations) {
@@ -5409,6 +5613,23 @@ public class RuntimeRegionPlannerTest {
         }
         throw new AssertionError("missing edge validation from "
                 + fromRegion);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void assertActivationInputContract(
+            Map<String, Object> activation) {
+        List<Map<String, Object>> symbolize =
+                (List<Map<String, Object>>) activation.get("symbolize");
+        List<String> inputPorts = (List<String>) activation.get(
+                "activationInputPorts");
+        assertEquals(symbolize.size(), activation.get(
+                "activationInputPortCount"));
+        assertEquals(symbolize.size(), inputPorts.size());
+        for (Map<String, Object> action : symbolize) {
+            assertTrue(inputPorts.contains(action.get("symbol")));
+        }
+        assertEquals(activation.get("concreteInputPortCount"),
+                activation.get("materializedInputPoolCount"));
     }
 
     private static String regionWithOutput(String id, String method,
