@@ -817,7 +817,7 @@ debug_runtime_graph() {
            to: ($by_id[($edge.to | tostring)] // {cell: ($edge.to // "")}),
            method: ($edge.method // ""),
            occurrences: ($edge.occurrences // 0),
-           mergedInstances: ($edge.mergedInstances // 0)}}]
+           mergedInstances: ($edge.mergedInstances // 0)}]
        | sort_by([.kind, .staticEdgeId, (.from | tojson), (.to | tojson)])) as $edges
     | {summary: ((.summary // {})
          | {test, traceEventCount, fieldEventCount, executionEventCount,
