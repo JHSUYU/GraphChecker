@@ -3403,6 +3403,13 @@ public final class ConcolicSummaryImporter {
     private static boolean validSemanticBranchCondition(JsonObject mapping,
                                                         JsonElement raw,
                                                         JsonElement semantic) {
+        if (isExactBooleanStringPredicate(raw)
+                || isExactBooleanStringPredicate(semantic)) {
+            return isExactBooleanStringPredicate(raw)
+                    && isExactBooleanStringPredicate(semantic)
+                    && string(mapping, "conditionNormalization").isEmpty()
+                    && GSON.toJson(raw).equals(GSON.toJson(semantic));
+        }
         if (!isBinaryCondition(raw) || !isBinaryCondition(semantic)) {
             return false;
         }
@@ -3433,6 +3440,65 @@ public final class ConcolicSummaryImporter {
         rawShape.remove("_op");
         semanticShape.remove("_op");
         return GSON.toJson(rawShape).equals(GSON.toJson(semanticShape));
+    }
+
+    /**
+     * Recognizes only Boolean-valued String IR nodes for which both concolic
+     * SMT encoders provide exact semantics.  A VM branch event may use one of
+     * these predicates directly while the corresponding Jimple branch tests
+     * the returned Java boolean against zero.  Requiring byte-for-byte equal
+     * raw and semantic nodes prevents this admission path from being used to
+     * rewrite an operation, its operands, or its polarity.
+     */
+    private static boolean isExactBooleanStringPredicate(JsonElement value) {
+        if (value == null || !value.isJsonObject()) return false;
+        JsonObject expression = value.getAsJsonObject();
+        if (!"OpStrExpression".equals(string(expression, "_type"))) {
+            return false;
+        }
+        String operation = string(expression, "_name");
+        int arity;
+        if ("isEmpty".equals(operation)) {
+            arity = 1;
+        } else if ("contains".equals(operation)
+                || "equals".equals(operation)
+                || "startsWith".equals(operation)
+                || "endsWith".equals(operation)) {
+            arity = 2;
+        } else {
+            return false;
+        }
+        JsonArray parameters = array(expression, "_param_list");
+        if (parameters.size() != arity) return false;
+        for (JsonElement parameter : parameters) {
+            if (!isStringExpression(parameter)) return false;
+        }
+        JsonElement polarity = expression.get("_is_not");
+        return polarity == null || polarity.isJsonNull()
+                || polarity.isJsonPrimitive()
+                && polarity.getAsJsonPrimitive().isBoolean();
+    }
+
+    private static boolean isStringExpression(JsonElement value) {
+        if (value == null || !value.isJsonObject()) return false;
+        JsonObject expression = value.getAsJsonObject();
+        String type = string(expression, "_type");
+        String javaType = string(expression, "_java_type");
+        if ("SymbolExpression".equals(type)
+                || "ConSymbolExp".equals(type)
+                || "ConStringSymbolExp".equals(type)) {
+            return "java/lang/String".equals(javaType)
+                    || "Ljava/lang/String;".equals(javaType)
+                    || "String".equals(javaType);
+        }
+        if (!"OpStrExpression".equals(type)) return false;
+        String operation = string(expression, "_name");
+        JsonArray parameters = array(expression, "_param_list");
+        if ("concat".equals(operation) && parameters.size() == 2) {
+            return isStringExpression(parameters.get(0))
+                    && isStringExpression(parameters.get(1));
+        }
+        return false;
     }
 
     private static boolean supportedBinaryComparator(String operator) {

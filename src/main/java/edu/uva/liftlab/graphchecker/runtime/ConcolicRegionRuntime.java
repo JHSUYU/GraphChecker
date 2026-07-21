@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicCodePosition;
+import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -4001,6 +4002,98 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * Exact multiway counterpart of {@link #resolveBranch}. Successor ids use
+     * the static case-key order followed by default; they are not collapsed
+     * into the VM event's case-vs-default Boolean envelope.
+     */
+    public static int resolveSwitchBranch(
+            long preparedHandle, long vmEventId, String method, int unitIndex,
+            String expression, String branchKind, String encodedCaseKeys,
+            int observedSuccessorIndex) {
+        SwitchExpectation expected;
+        try {
+            expected = SwitchExpectation.parse(branchKind, encodedCaseKeys,
+                    observedSuccessorIndex);
+        } catch (IllegalArgumentException malformed) {
+            ActiveRegion active = activeRegion();
+            if (active != null) {
+                active.addUnresolvedOnce(safe(method) + "#u" + unitIndex
+                        + ": invalid static switch contract: "
+                        + rootCause(malformed));
+            }
+            return observedSuccessorIndex;
+        }
+        ActiveRegion active = activeRegion();
+        if (active == null) return observedSuccessorIndex;
+        if (!active.engineBacked) {
+            recordConcreteSwitch(active, method, unitIndex, expression,
+                    expected);
+            return observedSuccessorIndex;
+        }
+        PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
+        if (prepared == null || !prepared.matches(method, unitIndex,
+                expression)) {
+            active.addUnresolvedOnce("missing or mismatched prepared switch "
+                    + preparedHandle + " for " + safe(method) + "#u"
+                    + unitIndex);
+            return observedSuccessorIndex;
+        }
+        EngineApi api = engine();
+        boolean paused = false;
+        try {
+            api.pausePathCondition();
+            paused = true;
+            ForcedBranch binaryForce = active.activation.force(
+                    prepared.siteId, prepared.occurrence);
+            if (binaryForce != null) {
+                active.addUnresolvedOnce(prepared.siteId + "#"
+                        + prepared.occurrence + ": Boolean forced-branch "
+                        + "target cannot identify a switch successor");
+            }
+            recordSwitchBranchPaused(active, api, method, unitIndex,
+                    expression, prepared.occurrence, expected, vmEventId);
+            return observedSuccessorIndex;
+        } catch (Throwable throwable) {
+            active.addUnresolvedOnce("switch/PC exact-event observation "
+                    + "failed: " + rootCause(throwable));
+            return observedSuccessorIndex;
+        } finally {
+            if (paused) resumePathCondition(active, api);
+        }
+    }
+
+    private static void recordConcreteSwitch(
+            ActiveRegion active, String method, int unitIndex,
+            String expression, SwitchExpectation expected) {
+        String siteId = safe(method) + "#u" + unitIndex;
+        int occurrence = active.nextBranchOccurrence(siteId);
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("siteId", siteId);
+        mapping.addProperty("method", safe(method));
+        mapping.addProperty("unitIndex", unitIndex);
+        mapping.addProperty("expression", safe(expression));
+        mapping.addProperty("occurrence", occurrence);
+        mapping.addProperty("branchKind", expected.branchKind);
+        mapping.add("switchCaseKeys", GSON.toJsonTree(expected.caseKeys));
+        mapping.addProperty("defaultSuccessorIndex",
+                expected.defaultSuccessorIndex());
+        mapping.addProperty("observedSuccessorIndex",
+                expected.observedSuccessorIndex);
+        mapping.addProperty("effectiveSuccessorIndex",
+                expected.observedSuccessorIndex);
+        mapping.addProperty("outcome", expected.caseArm());
+        mapping.addProperty("observedOutcome", expected.caseArm());
+        mapping.addProperty("effectiveOutcome", expected.caseArm());
+        mapping.addProperty("overrideApplied", false);
+        mapping.addProperty("conditionIndex", -1);
+        mapping.add("conditionIndices", new JsonArray());
+        mapping.addProperty("mappingPolicy",
+                "CONCRETE_SWITCH_OBSERVATION_WITHOUT_SYMBOLIC_PC");
+        addBranchPolicyResolution(active, mapping, siteId);
+        active.branchMappings.add(mapping);
+    }
+
     private static void recordConcreteBranch(
             ActiveRegion active, String method, int unitIndex,
             String expression, boolean observedOutcome) {
@@ -4037,7 +4130,7 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("rawConditionIndex", -1);
         mapping.addProperty("mappingPolicy",
                 "CONCRETE_OBSERVATION_WITHOUT_SYMBOLIC_PC");
-        mapping.addProperty("policy", active.activation.policy(siteId));
+        addBranchPolicyResolution(active, mapping, siteId);
         ScheduledTarget scheduledTarget = active.activation.target(
                 siteId, occurrence);
         mapping.addProperty("scheduledTarget", scheduledTarget != null);
@@ -4074,9 +4167,10 @@ public final class ConcolicRegionRuntime {
                 active, siteId, expression, observedOutcome, vmEventId,
                 occurrence, conditions, baseline);
         int conditionCandidates = vmAttestation.valid
-                && vmAttestation.conditionIndex >= 0 ? 1 : 0;
+                ? vmAttestation.conditionIndices.size() : 0;
         int conditionIndex = vmAttestation.valid
-                ? vmAttestation.conditionIndex : -1;
+                && vmAttestation.conditionIndices.size() == 1
+                ? vmAttestation.conditionIndices.get(0) : -1;
         int targetMethodConditions = conditionCandidates;
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", siteId);
@@ -4126,7 +4220,7 @@ public final class ConcolicRegionRuntime {
             mapping.add("vmConditionIndices",
                     array(vmAttestation.event, "conditionIndices"));
         }
-        mapping.addProperty("policy", active.activation.policy(siteId));
+        addBranchPolicyResolution(active, mapping, siteId);
         ScheduledTarget scheduledTarget = active.activation.target(
                 siteId, occurrence);
         boolean replayValidated = scheduledTarget != null
@@ -4194,10 +4288,171 @@ public final class ConcolicRegionRuntime {
         active.branchMappings.add(mapping);
     }
 
+    private static void recordSwitchBranchPaused(
+            ActiveRegion active, EngineApi api, String method, int unitIndex,
+            String expression, int occurrence, SwitchExpectation expected,
+            long vmEventId) throws Exception {
+        String siteId = safe(method) + "#u" + unitIndex;
+        JsonElement parsed = parseJson(api.pathCondition());
+        JsonArray conditions = parsed.isJsonArray()
+                ? parsed.getAsJsonArray() : new JsonArray();
+        int baseline = active.lastPathConditionSize;
+        VmBranchEventAttestation attestation = attestVmBranchEvent(api,
+                active, siteId, expression, expected.caseArm(), vmEventId,
+                occurrence, conditions, baseline, expected);
+        List<Integer> conditionIndices = attestation.valid
+                ? attestation.conditionIndices
+                : Collections.<Integer>emptyList();
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("siteId", siteId);
+        mapping.addProperty("method", safe(method));
+        mapping.addProperty("unitIndex", unitIndex);
+        mapping.addProperty("expression", safe(expression));
+        mapping.addProperty("occurrence", occurrence);
+        mapping.addProperty("branchKind", expected.branchKind);
+        mapping.add("switchCaseKeys", GSON.toJsonTree(expected.caseKeys));
+        mapping.addProperty("defaultSuccessorIndex",
+                expected.defaultSuccessorIndex());
+        mapping.addProperty("observedSuccessorIndex",
+                expected.observedSuccessorIndex);
+        mapping.addProperty("effectiveSuccessorIndex",
+                expected.observedSuccessorIndex);
+        mapping.addProperty("outcome", expected.caseArm());
+        mapping.addProperty("observedOutcome", expected.caseArm());
+        mapping.addProperty("effectiveOutcome", expected.caseArm());
+        mapping.addProperty("overrideApplied", false);
+        mapping.addProperty("overrideMode", "NONE");
+        mapping.addProperty("pathConditionSize", conditions.size());
+        mapping.addProperty("rawPathConditionSize", conditions.size());
+        mapping.addProperty("pathConditionBaseline", baseline);
+        mapping.addProperty("rawPathConditionBaseline", baseline);
+        mapping.addProperty("pathConditionsAdded",
+                Math.max(0, conditions.size() - baseline));
+        mapping.addProperty("rawPathConditionsAdded",
+                Math.max(0, conditions.size() - baseline));
+        mapping.addProperty("targetMethodConditionsAdded",
+                conditionIndices.size());
+        mapping.addProperty("branchConditionCandidateCount",
+                conditionIndices.size());
+        mapping.addProperty("conditionIndex",
+                conditionIndices.size() == 1
+                        ? conditionIndices.get(0) : -1);
+        mapping.addProperty("rawConditionIndex",
+                conditionIndices.size() == 1
+                        ? conditionIndices.get(0) : -1);
+        mapping.add("conditionIndices", GSON.toJsonTree(conditionIndices));
+        JsonArray ownedConditions = new JsonArray();
+        for (Integer conditionIndex : conditionIndices) {
+            ownedConditions.add(conditions.get(conditionIndex));
+        }
+        mapping.add("conditions", ownedConditions);
+        int exactSymbolicCount = expected.caseArm()
+                ? 1 : expected.caseKeys.size();
+        boolean symbolicArmComplete = attestation.valid
+                && conditionIndices.size() == exactSymbolicCount;
+        mapping.addProperty("symbolicSwitchArmComplete",
+                symbolicArmComplete);
+        mapping.addProperty("symbolicSwitchArmAuthority",
+                symbolicArmComplete
+                        ? "VM_EXACT_SWITCH_ARM_ORDERED_PC_SUFFIX_V1"
+                        : attestation.valid && conditionIndices.isEmpty()
+                        ? "VM_EXACT_CONCRETE_SWITCH_EVENT_NO_SYMBOLIC_PC"
+                        : "UNRESOLVED_VM_EXACT_SWITCH_ARM");
+        mapping.addProperty("mappingPolicy",
+                "VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_ID_AND_PC_INDICES");
+        mapping.addProperty("vmBranchEventExpected", true);
+        mapping.addProperty("vmBranchEventId", vmEventId);
+        mapping.addProperty("vmBranchEventValidated", attestation.valid);
+        mapping.addProperty("vmBranchEventAuthority",
+                attestation.authority);
+        if (attestation.event != null) {
+            mapping.add("vmConditionIndices",
+                    array(attestation.event, "conditionIndices"));
+            mapping.addProperty("vmOpcode",
+                    integer(attestation.event, "opcode", -1));
+            mapping.addProperty("vmCodePosition",
+                    string(attestation.event, "codePosition"));
+            mapping.addProperty("vmConditionCount", integer(
+                    attestation.event, "conditionCount", -1));
+        }
+        addBranchPolicyResolution(active, mapping, siteId);
+        if (!attestation.valid) {
+            mapping.addProperty("mappingWarning",
+                    "VM exact switch event rejected: "
+                            + attestation.error);
+            mapping.addProperty("conditionAuthority",
+                    "UNRESOLVED_VM_EXACT_SWITCH_EVENT");
+            active.addUnresolvedOnce(siteId
+                    + ": exact switch event attestation failed: "
+                    + attestation.error);
+        } else if (conditionIndices.isEmpty()) {
+            mapping.addProperty("conditionAuthority",
+                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_SWITCH_EVENT");
+            mapping.addProperty("mappingWarning",
+                    "switch selector was concrete; no symbolic arm guard "
+                            + "is available for path closure");
+            active.addUnresolvedOnce(siteId
+                    + ": exact switch event has no symbolic selector "
+                    + "conditions");
+        } else {
+            mapping.addProperty("conditionAuthority",
+                    "VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_PC_INDICES");
+        }
+        if ("EXPLORE".equals(active.activation.policy(siteId))) {
+            mapping.addProperty("successorAwarePathEnumerationComplete",
+                    false);
+            mapping.addProperty("successorAwarePathEnumerationGap",
+                    "MULTIWAY_SWITCH_SUCCESSOR_WORKLIST_REQUIRED");
+            active.addUnresolvedOnce(siteId
+                    + ": multiway switch requires successor-aware path "
+                    + "enumeration; Boolean outcome negation is prohibited");
+        }
+        active.lastPathConditionSize = conditions.size();
+        active.branchMappings.add(mapping);
+    }
+
+    /**
+     * Resolves the policy for one branch that was selected for concolic
+     * instrumentation.  Missing or malformed activation metadata must not
+     * silently turn such a branch into a path assumption: doing so can hide
+     * an output-affecting alternative from the worklist.  Conservatively
+     * expose it as EXPLORE and make the activation incomplete so downstream
+     * summary import fails closed until the planner supplies an exact policy.
+     */
+    private static void addBranchPolicyResolution(
+            ActiveRegion active, JsonObject mapping, String siteId) {
+        String policy = active.activation.policy(siteId);
+        mapping.addProperty("policy", policy);
+        if (active.activation.hasValidPolicy(siteId)) {
+            mapping.addProperty("policyResolutionComplete", true);
+            mapping.addProperty("policyAuthority",
+                    "ACTIVATION_PLAN_EXACT_BRANCH_POLICY_V1");
+            return;
+        }
+        String problem = active.activation.policyProblem(siteId);
+        mapping.addProperty("policyResolutionComplete", false);
+        mapping.addProperty("policyAuthority",
+                "RUNTIME_INSTRUMENTED_BRANCH_FAIL_CLOSED_TO_EXPLORE_V1");
+        mapping.addProperty("policyGap", problem);
+        active.addUnresolvedOnce(safe(siteId)
+                + ": branch policy resolution failed closed to EXPLORE: "
+                + problem);
+    }
+
     private static VmBranchEventAttestation attestVmBranchEvent(
             EngineApi api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
             int occurrence, JsonArray conditions, int baseline) {
+        return attestVmBranchEvent(api, active, siteId, expression,
+                observedOutcome, eventId, occurrence, conditions, baseline,
+                null);
+    }
+
+    private static VmBranchEventAttestation attestVmBranchEvent(
+            EngineApi api, ActiveRegion active, String siteId,
+            String expression, boolean observedOutcome, long eventId,
+            int occurrence, JsonArray conditions, int baseline,
+            SwitchExpectation switchExpectation) {
         if (eventId <= 0L) {
             return VmBranchEventAttestation.invalid(null, "",
                     "marker returned a non-positive event id");
@@ -4293,6 +4548,10 @@ public final class ConcolicRegionRuntime {
             return VmBranchEventAttestation.invalid(selected, authority,
                     "event condition count differs from its index vector");
         }
+        if (switchExpectation != null) {
+            return attestVmSwitchConditions(selected, authority,
+                    switchExpectation, indices, conditions, baseline);
+        }
         if (indices.size() > 1) {
             return VmBranchEventAttestation.invalid(selected, authority,
                     "instrumented IfStmt emitted multiple condition indices");
@@ -4320,7 +4579,128 @@ public final class ConcolicRegionRuntime {
             }
         }
         return VmBranchEventAttestation.valid(selected, authority,
-                conditionIndex);
+                conditionIndex < 0
+                        ? Collections.<Integer>emptyList()
+                        : Collections.singletonList(conditionIndex));
+    }
+
+    private static VmBranchEventAttestation attestVmSwitchConditions(
+            JsonObject event, String authority, SwitchExpectation expected,
+            JsonArray rawIndices, JsonArray conditions, int baseline) {
+        int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
+                ? 170 : 171;
+        if (integer(event, "opcode", -1) != expectedOpcode) {
+            return VmBranchEventAttestation.invalid(event, authority,
+                    "event opcode does not match static "
+                            + expected.branchKind);
+        }
+        if (string(event, "codePosition").isEmpty()) {
+            return VmBranchEventAttestation.invalid(event, authority,
+                    "switch event has no bytecode position");
+        }
+
+        int completeSymbolicCount = expected.caseArm()
+                ? 1 : expected.caseKeys.size();
+        // The VM still emits an exact event when the selector is concrete.
+        // Such an observation can validate replay identity, but it supplies
+        // no condition that a path worklist may negate or redirect.
+        if (rawIndices.size() == 0) {
+            if (conditions.size() != baseline) {
+                return VmBranchEventAttestation.invalid(event, authority,
+                        "conditionless switch event does not own an empty "
+                                + "path-condition suffix");
+            }
+            return VmBranchEventAttestation.valid(event, authority,
+                    Collections.<Integer>emptyList());
+        }
+        if (rawIndices.size() != completeSymbolicCount) {
+            return VmBranchEventAttestation.invalid(event, authority,
+                    "switch arm owns " + rawIndices.size()
+                            + " conditions; exact arm requires "
+                            + completeSymbolicCount);
+        }
+        if (conditions.size() != baseline + completeSymbolicCount) {
+            return VmBranchEventAttestation.invalid(event, authority,
+                    "switch conditions do not form the complete new "
+                            + "path-condition suffix");
+        }
+
+        List<Integer> indices = new ArrayList<>();
+        String selector = "";
+        String expectedPosition = string(event, "codePosition");
+        for (int offset = 0; offset < rawIndices.size(); offset++) {
+            final int conditionIndex;
+            try {
+                conditionIndex = rawIndices.get(offset).getAsInt();
+            } catch (RuntimeException malformed) {
+                return VmBranchEventAttestation.invalid(event, authority,
+                        "switch condition index is not an integer");
+            }
+            if (conditionIndex != baseline + offset) {
+                return VmBranchEventAttestation.invalid(event, authority,
+                        "switch condition indices are not the exact ordered "
+                                + "new path-condition suffix");
+            }
+            JsonElement condition = conditions.get(conditionIndex);
+            int key = expected.caseArm()
+                    ? expected.caseKeys.get(
+                    expected.observedSuccessorIndex)
+                    : expected.caseKeys.get(offset);
+            String operator = expected.caseArm() ? "==" : "!=";
+            String matchedSelector = switchSelectorIfMatches(condition,
+                    operator, key);
+            if (matchedSelector.isEmpty()) {
+                return VmBranchEventAttestation.invalid(event, authority,
+                        "switch condition " + offset
+                                + " is not selector " + operator + " "
+                                + key);
+            }
+            if (selector.isEmpty()) {
+                selector = matchedSelector;
+            } else if (!selector.equals(matchedSelector)) {
+                return VmBranchEventAttestation.invalid(event, authority,
+                        "switch conditions do not share one selector");
+            }
+            String conditionPosition = conditionCodePosition(condition);
+            if (!conditionPosition.isEmpty()
+                    && !expectedPosition.equals(conditionPosition)) {
+                return VmBranchEventAttestation.invalid(event, authority,
+                        "switch condition bytecode position differs from "
+                                + "its exact event");
+            }
+            indices.add(conditionIndex);
+        }
+        return VmBranchEventAttestation.valid(event, authority, indices);
+    }
+
+    private static String switchSelectorIfMatches(
+            JsonElement condition, String expectedOperator, int expectedKey) {
+        if (condition == null || !condition.isJsonObject()) return "";
+        JsonObject object = condition.getAsJsonObject();
+        if (!"BinaryExpression".equals(string(object, "_type"))
+                || !expectedOperator.equals(string(object, "_op"))) {
+            return "";
+        }
+        JsonElement left = object.get("_left");
+        JsonElement right = object.get("_right");
+        if (left == null || !left.isJsonObject()
+                || right == null || !right.isJsonObject()
+                || "ConstExpr".equals(string(left.getAsJsonObject(),
+                "_type"))) {
+            return "";
+        }
+        JsonObject constant = right.getAsJsonObject();
+        if (!"ConstExpr".equals(string(constant, "_type"))) return "";
+        Matcher encoded = Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$")
+                .matcher(string(constant, "_exp"));
+        if (!encoded.matches()) return "";
+        final int key;
+        try {
+            key = Integer.parseInt(encoded.group(1));
+        } catch (NumberFormatException malformed) {
+            return "";
+        }
+        return key == expectedKey ? left.toString() : "";
     }
 
     private static void finish(long token, String exitKind, String exceptionType,
@@ -4916,14 +5296,18 @@ public final class ConcolicRegionRuntime {
                 return Long.valueOf(raw);
             }
             if (requestedType == float.class || requestedType == Float.class) {
-                return Float.valueOf(rationalDecimal(raw));
+                String decimal = SmtModelValueCodec.realToJavaLiteral(raw);
+                return decimal == null ? UnsupportedReplayValue.INSTANCE
+                        : Float.valueOf(decimal);
             }
             if (requestedType == double.class || requestedType == Double.class
                     || "REAL".equals(type) && requestedType == null) {
-                return Double.valueOf(rationalDecimal(raw));
+                String decimal = SmtModelValueCodec.realToJavaLiteral(raw);
+                return decimal == null ? UnsupportedReplayValue.INSTANCE
+                        : Double.valueOf(decimal);
             }
             if (requestedType == String.class || "STRING".equals(type)) {
-                return unquoteSmtString(raw);
+                return SmtModelValueCodec.decodeString(raw);
             }
             if ((requestedType == null || !requestedType.isPrimitive())
                     && ("NULL".equals(type) || "null".equalsIgnoreCase(raw))) {
@@ -4935,26 +5319,8 @@ public final class ConcolicRegionRuntime {
         return UnsupportedReplayValue.INSTANCE;
     }
 
-    private static String rationalDecimal(String value) {
-        String raw = safe(value).trim();
-        if (raw.startsWith("(/ ") && raw.endsWith(")")) {
-            String[] pieces = raw.substring(3, raw.length() - 1).trim()
-                    .split("\\s+");
-            if (pieces.length == 2) {
-                return String.valueOf(Double.parseDouble(pieces[0])
-                        / Double.parseDouble(pieces[1]));
-            }
-        }
-        return raw;
-    }
-
     private static String unquoteSmtString(String value) {
-        String raw = safe(value);
-        if (raw.length() >= 2 && raw.startsWith("\"")
-                && raw.endsWith("\"")) {
-            raw = raw.substring(1, raw.length() - 1);
-        }
-        return raw.replace("\"\"", "\"");
+        return SmtModelValueCodec.decodeString(value);
     }
 
     private static boolean isPrimitiveBox(Object value) {
@@ -5510,7 +5876,11 @@ public final class ConcolicRegionRuntime {
         }
         JsonObject object = condition.getAsJsonObject();
         if (!"BinaryExpression".equals(jsonString(object, "_type"))) {
-            return false;
+            Boolean requiredValue = booleanValueRequiredByZeroBranch(
+                    expression, outcome);
+            Boolean representedValue = representedBooleanValue(object);
+            return requiredValue != null && representedValue != null
+                    && requiredValue.equals(representedValue);
         }
         Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
         if (!matcher.find()) {
@@ -5528,6 +5898,61 @@ public final class ConcolicRegionRuntime {
                     || symbolicNull(object.get("_right"));
         }
         return true;
+    }
+
+    /**
+     * Resolves the Java boolean value selected by a Jimple zero test.  JVM
+     * boolean-returning operations are consumed by {@code ifeq}/{@code ifne},
+     * while the engine can retain the original higher-level Boolean IR (for
+     * example an {@code OpStrExpression}) instead of manufacturing a numeric
+     * {@code BinaryExpression}.  Attestation must relate those two exact
+     * representations without treating arbitrary integer comparisons as
+     * Boolean predicates.
+     */
+    private static Boolean booleanValueRequiredByZeroBranch(
+            String expression, boolean outcome) {
+        String rendered = safe(expression).trim();
+        Matcher matcher = BRANCH_OPERATOR.matcher(rendered);
+        if (!matcher.find()) return null;
+        String declared = matcher.group(1);
+        if (!("==".equals(declared) || "!=".equals(declared))) {
+            return null;
+        }
+        String left = rendered.substring(0, matcher.start()).trim();
+        String right = rendered.substring(matcher.end()).trim();
+        boolean leftZero = "0".equals(left);
+        boolean rightZero = "0".equals(right);
+        if (leftZero == rightZero) return null;
+        String effective = outcome ? declared : opposite(declared);
+        return "!=".equals(effective);
+    }
+
+    /**
+     * Returns the underlying Java boolean represented by an asserted engine
+     * condition, or {@code null} when the IR node is value-producing or its
+     * semantics are not part of the exact codec.  The operation set mirrors
+     * the exact String predicate lowering in both SMT encoders.
+     */
+    private static Boolean representedBooleanValue(JsonObject condition) {
+        if (!"OpStrExpression".equals(jsonString(condition, "_type"))) {
+            return null;
+        }
+        String operation = jsonString(condition, "_name");
+        int expectedArity;
+        if ("isEmpty".equals(operation)) {
+            expectedArity = 1;
+        } else if ("contains".equals(operation)
+                || "equals".equals(operation)
+                || "startsWith".equals(operation)
+                || "endsWith".equals(operation)) {
+            expectedArity = 2;
+        } else {
+            return null;
+        }
+        if (array(condition, "_param_list").size() != expectedArity) {
+            return null;
+        }
+        return !bool(condition, "_is_not", false);
     }
 
     /**
@@ -7305,33 +7730,113 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    private static final class SwitchExpectation {
+        private final String branchKind;
+        private final List<Integer> caseKeys;
+        private final int observedSuccessorIndex;
+
+        private SwitchExpectation(String branchKind, List<Integer> caseKeys,
+                                  int observedSuccessorIndex) {
+            this.branchKind = branchKind;
+            this.caseKeys = Collections.unmodifiableList(
+                    new ArrayList<>(caseKeys));
+            this.observedSuccessorIndex = observedSuccessorIndex;
+        }
+
+        private static SwitchExpectation parse(
+                String branchKind, String encodedCaseKeys,
+                int observedSuccessorIndex) {
+            String kind = safe(branchKind);
+            if (!("TABLE_SWITCH".equals(kind)
+                    || "LOOKUP_SWITCH".equals(kind))) {
+                throw new IllegalArgumentException(
+                        "unsupported branch kind " + kind);
+            }
+            List<Integer> keys = new ArrayList<>();
+            String encoded = safe(encodedCaseKeys);
+            if (!encoded.isEmpty()) {
+                for (String token : encoded.split(",", -1)) {
+                    if (!token.matches("-?(?:0|[1-9][0-9]*)")) {
+                        throw new IllegalArgumentException(
+                                "malformed switch key " + token);
+                    }
+                    try {
+                        keys.add(Integer.parseInt(token));
+                    } catch (NumberFormatException malformed) {
+                        throw new IllegalArgumentException(
+                                "switch key outside int domain " + token,
+                                malformed);
+                    }
+                }
+            }
+            if (keys.isEmpty() || observedSuccessorIndex < 0
+                    || observedSuccessorIndex > keys.size()) {
+                throw new IllegalArgumentException(
+                        "successor " + observedSuccessorIndex
+                                + " outside switch domain [0,"
+                                + keys.size() + "]");
+            }
+            if ("TABLE_SWITCH".equals(kind)) {
+                for (int index = 1; index < keys.size(); index++) {
+                    if ((long) keys.get(index - 1) + 1L
+                            != (long) keys.get(index)) {
+                        throw new IllegalArgumentException(
+                                "tableswitch keys are not dense/ordered");
+                    }
+                }
+            } else {
+                Set<Integer> distinct = new LinkedHashSet<>(keys);
+                if (distinct.size() != keys.size()) {
+                    throw new IllegalArgumentException(
+                            "lookupswitch keys are not unique");
+                }
+            }
+            return new SwitchExpectation(kind, keys,
+                    observedSuccessorIndex);
+        }
+
+        private int defaultSuccessorIndex() {
+            return caseKeys.size();
+        }
+
+        private boolean caseArm() {
+            return observedSuccessorIndex < caseKeys.size();
+        }
+    }
+
     private static final class VmBranchEventAttestation {
         private final JsonObject event;
         private final String authority;
         private final int conditionIndex;
+        private final List<Integer> conditionIndices;
         private final boolean valid;
         private final String error;
 
         private VmBranchEventAttestation(JsonObject event, String authority,
-                                         int conditionIndex, boolean valid,
+                                         List<Integer> conditionIndices,
+                                         boolean valid,
                                          String error) {
             this.event = event;
             this.authority = safe(authority);
-            this.conditionIndex = conditionIndex;
+            this.conditionIndices = Collections.unmodifiableList(
+                    new ArrayList<>(conditionIndices));
+            this.conditionIndex = conditionIndices.size() == 1
+                    ? conditionIndices.get(0) : -1;
             this.valid = valid;
             this.error = safe(error);
         }
 
         private static VmBranchEventAttestation valid(
-                JsonObject event, String authority, int conditionIndex) {
+                JsonObject event, String authority,
+                List<Integer> conditionIndices) {
             return new VmBranchEventAttestation(event, authority,
-                    conditionIndex, true, "");
+                    conditionIndices, true, "");
         }
 
         private static VmBranchEventAttestation invalid(
                 JsonObject event, String authority, String error) {
             return new VmBranchEventAttestation(event, authority,
-                    -1, false, error);
+                    Collections.<Integer>emptyList(), false, error);
         }
     }
 
@@ -11720,7 +12225,24 @@ public final class ConcolicRegionRuntime {
 
         private String policy(String siteId) {
             String policy = branchPolicies.get(siteId);
-            return firstNonBlank(policy, "PATH_ASSUMPTION");
+            return validBranchPolicy(policy) ? policy : "EXPLORE";
+        }
+
+        private boolean hasValidPolicy(String siteId) {
+            return validBranchPolicy(branchPolicies.get(siteId));
+        }
+
+        private String policyProblem(String siteId) {
+            String policy = branchPolicies.get(siteId);
+            if (policy == null || policy.isEmpty()) {
+                return "activation has no policy for the instrumented site";
+            }
+            return "activation policy is unsupported: " + policy;
+        }
+
+        private static boolean validBranchPolicy(String policy) {
+            return "EXPLORE".equals(policy)
+                    || "PATH_ASSUMPTION".equals(policy);
         }
 
         private ForcedBranch force(String siteId, int occurrence) {

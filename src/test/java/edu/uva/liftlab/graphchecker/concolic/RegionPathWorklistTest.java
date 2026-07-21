@@ -115,6 +115,12 @@ public class RegionPathWorklistTest {
 
         assertTrue(result.tasks.isEmpty());
         assertEquals(0, result.manifest.get("candidateFlipCount").getAsInt());
+        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertEquals(2, result.manifest.get("gapCount").getAsInt());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("MISSING_BRANCH_POLICY"));
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("UNKNOWN_BRANCH_POLICY:UNKNOWN"));
     }
 
     @Test
@@ -468,6 +474,209 @@ public class RegionPathWorklistTest {
                 "engineArrayInputBindings"));
     }
 
+    @Test
+    public void boundedNumericLoopKeepsEveryOccurrenceAndFailsClosedWhenUnmapped() {
+        JsonObject summary = summary("ACT.NUMERIC.LOOP",
+                RegionCaptureGoal.outputClosure());
+        JsonArray conditions = new JsonArray();
+        conditions.add(typedBinary(">=", "J", 7));
+        conditions.add(typedBinary("<", "D", 3));
+        conditions.add(typedBinary("<", "I", 3));
+        conditions.add(typedBinary("<", "I", 3));
+        conditions.add(typedBinary(">=", "I", 3));
+        summary.add("pathCondition", conditions);
+        JsonArray mappings = new JsonArray();
+        mappings.add(mapping("NUMERIC.LONG", 0, 1));
+        mappings.add(mapping("NUMERIC.DOUBLE", 1, 1));
+        mappings.add(mapping("NUMERIC.LOOP.GUARD", 2, 1));
+        mappings.add(mapping("NUMERIC.LOOP.GUARD", 3, 2));
+        mappings.add(mapping("NUMERIC.LOOP.GUARD", 4, 3));
+        summary.add("branchMappings", mappings);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation("ACT.NUMERIC.LOOP",
+                        RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 5, result.tasks.size());
+        assertEquals("NUMERIC.LOOP.GUARD", result.tasks.get(0)
+                .get("flipSite").getAsString());
+        assertEquals(3, result.tasks.get(0).get("flipOccurrence").getAsInt());
+        assertEquals(2, result.tasks.get(1).get("flipOccurrence").getAsInt());
+        assertEquals(1, result.tasks.get(2).get("flipOccurrence").getAsInt());
+        assertEquals("D", result.tasks.get(3).getAsJsonObject(
+                "negatedCondition").getAsJsonObject("_left")
+                .get("_java_type").getAsString());
+        assertEquals("J", result.tasks.get(4).getAsJsonObject(
+                "negatedCondition").getAsJsonObject("_left")
+                .get("_java_type").getAsString());
+        assertEquals(5, result.tasks.stream().map(task -> task.get(
+                "queryKey").getAsString()).distinct().count());
+
+        JsonObject unmodeled = summary.deepCopy();
+        JsonArray onlyUnmapped = new JsonArray();
+        onlyUnmapped.add(mapping("NUMERIC.LOOP.GUARD", -1, 3));
+        unmodeled.add("branchMappings", onlyUnmapped);
+        RegionPathWorklist.Result rejected = RegionPathWorklist.plan(
+                Collections.singletonList(unmodeled),
+                Collections.singletonList(activation("ACT.NUMERIC.LOOP",
+                        RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertTrue(rejected.tasks.isEmpty());
+        assertFalse(rejected.manifest.get("complete").getAsBoolean());
+        JsonObject gap = rejected.manifest.getAsJsonArray("gaps").get(0)
+                .getAsJsonObject();
+        assertEquals("UNMAPPED_BRANCH", gap.get("kind").getAsString());
+        assertEquals("NO_NORMALIZED_CONDITION", gap.get("reason")
+                .getAsString());
+        assertEquals(3, gap.get("occurrence").getAsInt());
+    }
+
+    @Test
+    public void exactConcreteIfBorrowsOneExactSameSitePredicateAndOnlyUnsatClosesIt() {
+        JsonObject modeled = exactBranchTemplateSummary("ACT.MODELED",
+                false);
+        JsonObject concrete = exactBranchTemplateSummary("ACT.CONCRETE",
+                true);
+        List<JsonObject> summaries = Arrays.asList(modeled, concrete);
+        List<JsonObject> activations = Arrays.asList(
+                activation("ACT.MODELED", RegionCaptureGoal.outputClosure()),
+                activation("ACT.CONCRETE", RegionCaptureGoal.outputClosure()));
+
+        RegionPathWorklist.Result initial = RegionPathWorklist.plan(
+                summaries, activations, Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(initial.manifest.toString(), 1, initial.tasks.size());
+        JsonObject task = initial.tasks.get(0);
+        assertTrue(task.get("exactConcreteBranchRecovery").getAsBoolean());
+        assertEquals("EXACT_SAME_BINARY_IF_SITE_PREDICATE_PLUS_"
+                        + "CURRENT_VM_ATTESTED_CONCRETE_PREFIX_V1",
+                task.get("conditionTemplateAuthority").getAsString());
+        assertEquals("SUMMARY.ACT.MODELED", task.getAsJsonArray(
+                "conditionTemplateSourceSummaryIds").get(0).getAsString());
+        assertEquals(1, task.getAsJsonArray("prefix").size());
+        assertEquals("<", task.getAsJsonArray("prefix").get(0)
+                .getAsJsonObject().get("_op").getAsString());
+        assertEquals(2, task.getAsJsonArray("constraints").size());
+        assertEquals(">", task.getAsJsonObject("negatedCondition")
+                .get("_op").getAsString());
+        assertEquals(1, initial.manifest.get(
+                "exactConcreteTemplateFlipCount").getAsInt());
+        assertFalse(initial.manifest.get("complete").getAsBoolean());
+
+        JsonObject unsat = new JsonObject();
+        unsat.addProperty("queryKey", task.get("queryKey").getAsString());
+        unsat.addProperty("status", "UNSAT");
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                summaries, activations, Collections.singletonList(unsat),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertTrue(closed.tasks.toString(), closed.tasks.isEmpty());
+        assertEquals(closed.manifest.toString(), 0,
+                closed.manifest.get("gapCount").getAsInt());
+        assertEquals(1, closed.manifest.get("terminalFlipCount").getAsInt());
+        assertTrue(closed.manifest.toString(), closed.manifest.get(
+                "complete").getAsBoolean());
+    }
+
+    @Test
+    public void exactConcreteSwitchDoesNotBorrowBinaryIfPredicate() {
+        JsonObject modeled = exactBranchTemplateSummary("ACT.SWITCH.MODELED",
+                false);
+        JsonObject concrete = exactBranchTemplateSummary(
+                "ACT.SWITCH.CONCRETE", true);
+        JsonObject mapping = concrete.getAsJsonArray("branchMappings").get(1)
+                .getAsJsonObject();
+        mapping.addProperty("branchKind", "TABLE_SWITCH");
+        mapping.addProperty("observedSuccessorIndex", 2);
+        JsonArray keys = new JsonArray();
+        keys.add(0);
+        keys.add(1);
+        mapping.add("switchCaseKeys", keys);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(modeled, concrete), Arrays.asList(
+                        activation("ACT.SWITCH.MODELED",
+                                RegionCaptureGoal.outputClosure()),
+                        activation("ACT.SWITCH.CONCRETE",
+                                RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertTrue(result.tasks.isEmpty());
+        assertEquals(0, result.manifest.get(
+                "exactConcreteTemplateFlipCount").getAsInt());
+        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("NO_NORMALIZED_CONDITION"));
+    }
+
+    private static JsonObject exactBranchTemplateSummary(
+            String activationId, boolean concreteUpperGuard) {
+        JsonObject result = summary(activationId,
+                RegionCaptureGoal.outputClosure());
+        result.add("symbolicInputs", strings("REGION.3.in.0"));
+        JsonArray conditions = new JsonArray();
+        conditions.add(binary("<", 0));
+        if (!concreteUpperGuard) conditions.add(binary("<=", 4));
+        result.add("pathCondition", conditions);
+
+        JsonArray mappings = new JsonArray();
+        JsonObject lower = mapping("SITE.CLAMP.LOWER", 0);
+        lower.addProperty("policy", "PATH_ASSUMPTION");
+        mappings.add(lower);
+        JsonObject upper = exactVmIfMapping("SITE.CLAMP.UPPER",
+                concreteUpperGuard ? -1 : 1, true,
+                concreteUpperGuard ? 0 : 1);
+        upper.addProperty("policy", concreteUpperGuard
+                ? "EXPLORE" : "PATH_ASSUMPTION");
+        upper.addProperty("pathConditionBaseline", 1);
+        if (!concreteUpperGuard) {
+            upper.add("condition", conditions.get(1).deepCopy());
+        }
+        mappings.add(upper);
+        result.add("branchMappings", mappings);
+        return result;
+    }
+
+    private static JsonObject exactVmIfMapping(String site,
+                                               int conditionIndex,
+                                               boolean outcome,
+                                               int conditionCount) {
+        JsonObject mapping = mapping(site, conditionIndex);
+        mapping.addProperty("branchKind", "IF");
+        mapping.addProperty("method", "<example.Producer: int compute(int)>");
+        mapping.addProperty("unitIndex", 6);
+        mapping.addProperty("expression", "i3 <= 4");
+        mapping.addProperty("outcome", outcome);
+        mapping.addProperty("observedOutcome", outcome);
+        mapping.addProperty("effectiveOutcome", outcome);
+        mapping.addProperty("overrideApplied", false);
+        mapping.addProperty("overrideMode", "NONE");
+        mapping.addProperty("mappingPolicy",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
+        mapping.addProperty("vmBranchEventExpected", true);
+        mapping.addProperty("vmBranchEventId", 17);
+        mapping.addProperty("vmOccurrence", 1);
+        mapping.addProperty("vmBranchEventValidated", true);
+        mapping.addProperty("vmBranchEventAuthority",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+        mapping.addProperty("vmThreadContextId", 7L);
+        mapping.addProperty("vmOwnerJavaThreadId", 11L);
+        mapping.addProperty("vmOwnerOsThreadId", 13L);
+        JsonArray indices = new JsonArray();
+        if (conditionCount == 1) indices.add(1);
+        mapping.add("vmConditionIndices", indices);
+        mapping.addProperty("conditionAuthority", conditionCount == 0
+                ? "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT"
+                : "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
+        return mapping;
+    }
+
     private static void replaceConditionSymbol(JsonObject summary,
                                                String symbol) {
         for (com.google.gson.JsonElement element : summary.getAsJsonArray(
@@ -658,12 +867,31 @@ public class RegionPathWorklistTest {
     }
 
     private static JsonObject mapping(String site, int condition) {
+        return mapping(site, condition, 1);
+    }
+
+    private static JsonObject mapping(String site, int condition,
+                                      int occurrence) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", site);
         mapping.addProperty("conditionIndex", condition);
-        mapping.addProperty("occurrence", 1);
+        mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", true);
         return mapping;
+    }
+
+    private static JsonObject typedBinary(String operator, String javaType,
+                                          int constant) {
+        JsonObject expression = binary(operator, constant);
+        expression.getAsJsonObject("_left").addProperty("_java_type",
+                javaType);
+        expression.getAsJsonObject("_left").addProperty("_exp",
+                "M_" + javaType + "_field_REGION.3.in.0");
+        expression.getAsJsonObject("_right").addProperty("_java_type",
+                javaType);
+        expression.getAsJsonObject("_right").addProperty("_exp",
+                "Y_" + javaType + "_" + constant);
+        return expression;
     }
 
     private static JsonObject binary(String operator, int constant) {

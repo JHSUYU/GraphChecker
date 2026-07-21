@@ -3449,6 +3449,35 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void importsVmAttestedStringPredicateGuardedConstant()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importExactFieldAssignmentCaptureFixture(
+                    folder.getRoot().toPath(), "NORMAL", true, true,
+                    "<example.State: int value>",
+                    constant("Y_I_10", "I"),
+                    "EXACT_STRING_PREDICATE");
+
+            assertTrue(imported.diagnostics, imported.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                            + "PATH_GUARD",
+                    imported.summary.getAsJsonObject(
+                            "outputExpressionAdmission")
+                            .get("authority").getAsString());
+            JsonObject guard = imported.summary.getAsJsonArray(
+                    "pathCondition").get(0).getAsJsonObject();
+            assertEquals("OpStrExpression",
+                    guard.get("_type").getAsString());
+            assertEquals("contains", guard.get("_name").getAsString());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void importsExactMethodReturnValueExpression() throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -6926,9 +6955,17 @@ public class ConcolicSummaryImporterTest {
                     ? symbol("M_L_unrelated_guard", "L")
                     : symbol("M_L_field_REGION.FIELD.in.0_java/lang/String",
                     "L");
-            JsonObject condition = binaryCondition(
-                    codePosition, "!=", rawLeft,
-                    constant("Y_L_NULL", "L"));
+            JsonObject condition;
+            if ("EXACT_STRING_PREDICATE".equals(guardMode)) {
+                condition = stringPredicate(codePosition, "contains", false,
+                        symbol("M_L'String'_REGION.FIELD.in.0_example/State",
+                                "java/lang/String"),
+                        stringConstant("ready"));
+            } else {
+                condition = binaryCondition(
+                        codePosition, "!=", rawLeft,
+                        constant("Y_L_NULL", "L"));
+            }
             JsonObject semanticCondition = condition.deepCopy();
             if ("FORGED_SEMANTIC".equals(guardMode)) {
                 semanticCondition.add("_left", symbol(
@@ -7615,6 +7652,31 @@ public class ConcolicSummaryImporterTest {
         result.addProperty("_type", "ConstExpr");
         result.addProperty("_java_type", javaType);
         result.addProperty("_exp", expression);
+        return result;
+    }
+
+    private static JsonObject stringConstant(String value) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "ConStringSymbolExp");
+        result.addProperty("_java_type", "java/lang/String");
+        result.addProperty("_exp", "Y_L'String'_" + value);
+        return result;
+    }
+
+    private static JsonObject stringPredicate(String codePosition,
+                                              String operation,
+                                              boolean negated,
+                                              JsonElement... parameters) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_code_position", codePosition);
+        result.addProperty("_type", "OpStrExpression");
+        result.addProperty("_name", operation);
+        result.addProperty("_is_not", negated);
+        JsonArray arguments = new JsonArray();
+        for (JsonElement parameter : parameters) {
+            arguments.add(parameter);
+        }
+        result.add("_param_list", arguments);
         return result;
     }
 

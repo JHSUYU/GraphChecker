@@ -2134,7 +2134,7 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
-    public void scalarMethodReturnExploresOutputGuardButNotIteratorGuard() {
+    public void scalarAndIteratorOutputGuardsAreConservativelyExplored() {
         String compute = "<example.Producer: int compute(java.lang.Boolean)>";
         String booleanValue =
                 "<java.lang.Boolean: boolean booleanValue()>.return";
@@ -2181,8 +2181,93 @@ public class SymbolicRegionPlannerTest {
                 .filter(policy -> Integer.valueOf(4).equals(
                         policy.get("unitIndex")))
                 .findFirst().orElseThrow(AssertionError::new);
-        assertEquals("PATH_ASSUMPTION", iteratorPolicy.get("policy"));
+        assertEquals("EXPLORE", iteratorPolicy.get("policy"));
         assertEquals(Boolean.TRUE, iteratorPolicy.get("requiredOutcome"));
+    }
+
+    @Test
+    public void sameCellPathGuardExploresScalarInputRedefinition() {
+        String compute = "<example.Producer: int clampAndAdd(int)>";
+        String input = compute + ".param0:int";
+        String value = compute + "::value";
+        String output = compute + ".return";
+
+        List<Map<String, Object>> plans = Collections.singletonList(
+                plan(compute, Collections.singletonList(input),
+                        Collections.singletonList(output)));
+        List<Map<String, Object>> edges = new ArrayList<>();
+        edges.add(edge(compute, "IDENTITY_BINDING", "local_def_use",
+                input, value, 0));
+        Map<String, Object> genericGuard = edge(compute, "GUARD",
+                "guard_dependency", value, compute + "#u1", 1);
+        genericGuard.put("siteId", compute + "#u1");
+        edges.add(genericGuard);
+        Map<String, Object> guard = edge(compute, "GUARD",
+                "path_guard_dependency", value, value, 1);
+        guard.put("siteId", compute + "#u1");
+        guard.put("requiredOutcome", false);
+        guard.put("sameCellRedefinition", true);
+        guard.put("controlledDefinitionSiteId", compute + "#u2");
+        edges.add(guard);
+        edges.add(edge(compute, "VALUE_PASS", "local_def_use",
+                value, output, 3));
+
+        Map<String, Object> producer = regionForRoot(
+                SymbolicRegionPlanner.plan(edges, plans), compute);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> policies =
+                (List<Map<String, Object>>) producer.get("branchPolicies");
+        Map<String, Object> policy = policies.stream()
+                .filter(candidate -> Integer.valueOf(1).equals(
+                        candidate.get("unitIndex")))
+                .findFirst().orElseThrow(() -> new AssertionError(
+                        "same-cell scalar guard missing from region"));
+        assertEquals("EXPLORE", policy.get("policy"));
+        assertEquals(Boolean.FALSE, policy.get("requiredOutcome"));
+    }
+
+    @Test
+    public void oneBranchSiteAggregatesOppositeControlledDefinitions() {
+        String compute = "<example.Producer: int choose(boolean)>";
+        String input = compute + ".param0:boolean";
+        String predicate = compute + "::$z0";
+        String trueDefinition = compute + "::trueDefinition";
+        String falseDefinition = compute + "::falseDefinition";
+
+        List<Map<String, Object>> plans = Collections.singletonList(
+                plan(compute, Collections.singletonList(input),
+                        Arrays.asList(trueDefinition, falseDefinition)));
+        List<Map<String, Object>> edges = new ArrayList<>();
+        edges.add(edge(compute, "VALUE_PASS", "local_def_use",
+                input, predicate, 0));
+        Map<String, Object> trueGuard = edge(compute, "GUARD",
+                "path_guard_dependency", predicate, trueDefinition, 1);
+        trueGuard.put("requiredOutcome", true);
+        trueGuard.put("reachingSuccessorIndices",
+                Collections.singletonList(1));
+        edges.add(trueGuard);
+        Map<String, Object> falseGuard = edge(compute, "GUARD",
+                "path_guard_dependency", predicate, falseDefinition, 1);
+        falseGuard.put("requiredOutcome", false);
+        falseGuard.put("reachingSuccessorIndices",
+                Collections.singletonList(0));
+        edges.add(falseGuard);
+
+        Map<String, Object> producer = regionForRoot(
+                SymbolicRegionPlanner.plan(edges, plans), compute);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> policies =
+                (List<Map<String, Object>>) producer.get("branchPolicies");
+        assertEquals(1, policies.size());
+        Map<String, Object> policy = policies.get(0);
+        assertEquals("EXPLORE", policy.get("policy"));
+        assertEquals(null, policy.get("requiredOutcome"));
+        assertEquals(Arrays.asList(0, 1),
+                policy.get("requiredSuccessorIndices"));
+        assertEquals(2, ((List<?>) policy.get("sourceEdgeIds")).size());
+        assertEquals("STATIC_OUTPUT_CONTROL_DEPENDENCE_REQUIRES_"
+                        + "EXPLORATION_V1",
+                policy.get("policyAuthority"));
     }
 
     @Test
@@ -2288,7 +2373,7 @@ public class SymbolicRegionPlannerTest {
                         policy.get("unitIndex")))
                 .findFirst().orElseThrow(() -> new AssertionError(
                         "missing loop policy"));
-        assertEquals("PATH_ASSUMPTION", loopPolicy.get("policy"));
+        assertEquals("EXPLORE", loopPolicy.get("policy"));
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> slices =

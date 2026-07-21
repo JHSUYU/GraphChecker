@@ -1576,7 +1576,10 @@ run:
 
             Expression *left = ConcolicMngr::ctx->get_local_slot(pc[1]);
             if(left){
-              Expression *right = new ConExpression(pc[2]);
+              // iinc's immediate is a signed byte with Java int semantics.
+              // Passing the raw u1 selected ConExpression(jboolean) on this
+              // VM and serialized +1 as Y_Z_1, producing a mixed Z/I term.
+              Expression *right = new ConExpression((jint)(jbyte)pc[2]);
               Expression *new_exp = new OpSymExpression(left, right, op_add);
               ConcolicMngr::ctx->set_local_slot(pc[1], new_exp);
             }                                                                                         
@@ -1897,8 +1900,14 @@ run:
         ConcolicMngr::ctx->get_stack_slot(stack_offset + off);                 \
     Expression *right_exp = NULL;                                              \
     if (left_exp) {                                                            \
-      Expression *const_exp = new ConExpression(value);                        \
-      right_exp = new OpSymExpression(left_exp, const_exp, op, outcome);       \
+      if ((opcode == Bytecodes::_ifeq || opcode == Bytecodes::_ifne)           \
+          && left_exp->is_op_str_expression()) {                               \
+        /* String predicates already encode the observed truth polarity. */    \
+        right_exp = left_exp;                                                  \
+      } else {                                                                 \
+        Expression *const_exp = new ConExpression(value);                      \
+        right_exp = new OpSymExpression(left_exp, const_exp, op, outcome);     \
+      }                                                                        \
     }                                                                          \
     ConcolicMngr::record_branch_condition(right_exp, outcome, (int) opcode);   \
   }
@@ -1913,6 +1922,47 @@ run:
   }
 #else
 #define CONCOLIC_RECORD_UNMODELED_BRANCH(outcome)
+#endif
+
+#ifdef ENABLE_CONCOLIC
+#define CONCOLIC_OPC_REF_CMP(l_off, r_off, l_obj, r_obj, op, outcome)          \
+  if (ConcolicMngr::can_do_concolic()) {                                      \
+    int stack_offset = GET_STACK_OFFSET;                                      \
+    oop left_obj = (l_obj);                                                   \
+    oop right_obj = (r_obj);                                                  \
+    Expression *left = ConcolicMngr::ctx->get_stack_slot(                    \
+        stack_offset + (l_off));                                              \
+    Expression *right = ConcolicMngr::ctx->get_stack_slot(                   \
+        stack_offset + (r_off));                                              \
+    if (left == NULL && left_obj != NULL && left_obj->is_symbolic()) {        \
+      SymInstance *instance =                                                 \
+          ConcolicMngr::ctx->get_or_alloc_sym_inst(left_obj);                 \
+      if (instance != NULL) {                                                 \
+        left = instance->get_or_create_ref_exp(left_obj);                     \
+      }                                                                       \
+    }                                                                         \
+    if (right == NULL && right_obj != NULL && right_obj->is_symbolic()) {     \
+      SymInstance *instance =                                                 \
+          ConcolicMngr::ctx->get_or_alloc_sym_inst(right_obj);                \
+      if (instance != NULL) {                                                 \
+        right = instance->get_or_create_ref_exp(right_obj);                   \
+      }                                                                       \
+    }                                                                         \
+    if (left == NULL && left_obj == NULL && right != NULL) {                  \
+      left = SymbolExpression::get(Sym_NULL);                                 \
+    }                                                                         \
+    if (right == NULL && right_obj == NULL && left != NULL) {                 \
+      right = SymbolExpression::get(Sym_NULL);                                \
+    }                                                                         \
+    Expression *condition = NULL;                                             \
+    if (left != NULL && right != NULL) {                                      \
+      condition = new OpSymExpression(left, right, op, outcome);              \
+    }                                                                         \
+    ConcolicMngr::record_branch_condition(                                    \
+        condition, outcome, (int) opcode);                                    \
+  }
+#else
+#define CONCOLIC_OPC_REF_CMP(l_off, r_off, l_obj, r_obj, op, outcome)
 #endif
       /* comparison operators */
 
@@ -1952,7 +2002,8 @@ run:
           int skip = cmp                                                     \
                        ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;            \
           address branch_pc = pc;                                            \
-          CONCOLIC_RECORD_UNMODELED_BRANCH(cmp);                              \
+          CONCOLIC_OPC_REF_CMP(-2, -1, STACK_OBJECT(-2),                     \
+                               STACK_OBJECT(-1), op_##name, cmp);             \
           /* Profile branch. */                                              \
           BI_PROFILE_UPDATE_BRANCH(/*is_taken=*/cmp);                        \
           UPDATE_PC_AND_TOS(skip, -2);                                       \
@@ -1966,6 +2017,14 @@ run:
         int stack_offset = GET_STACK_OFFSET;                                 \
         Expression *left =                                                   \
             ConcolicMngr::ctx->get_stack_slot(stack_offset + off);           \
+        oop concrete = STACK_OBJECT(off);                                    \
+        if (left == NULL && concrete != NULL && concrete->is_symbolic()) {   \
+          SymInstance *instance =                                            \
+              ConcolicMngr::ctx->get_or_alloc_sym_inst(concrete);             \
+          if (instance != NULL) {                                            \
+            left = instance->get_or_create_ref_exp(concrete);                \
+          }                                                                  \
+        }                                                                    \
         Expression *condition = NULL;                                        \
         if (left) {                                                          \
           condition = new OpSymExpression(                                   \
@@ -2015,7 +2074,7 @@ run:
       NULL_COMPARISON_NOT_OP(nonnull);
 
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_OPC_BINARY_SWITCH(off, key, op)                               \
+#define CONCOLIC_APPEND_SWITCH_CONDITION(conditions, off, key, op)             \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *sym_exp =                                                      \
@@ -2024,11 +2083,11 @@ run:
       Expression *key_sym_exp = new ConExpression(key);                        \
       Expression *new_exp =                                                    \
           new OpSymExpression(sym_exp, key_sym_exp, op, true);                 \
-      ConcolicMngr::record_path_condition(new_exp);                            \
+      conditions.push_back(new_exp);                                           \
     }                                                                          \
   }
 #else
-#define CONCOLIC_OPC_BINARY_SWITCH(off, key, op)
+#define CONCOLIC_APPEND_SWITCH_CONDITION(conditions, off, key, op)
 #endif
       /* Goto pc at specified offset in switch table. */
 
@@ -2038,21 +2097,43 @@ run:
           int32_t  low  = Bytes::get_Java_u4((address)&lpc[1]);
           int32_t  high = Bytes::get_Java_u4((address)&lpc[2]);
           int32_t  skip;
+          int32_t  raw_key = key;
+#ifdef ENABLE_CONCOLIC
+          exp_list_t switch_conditions;
+#endif
           key -= low;
           if (((uint32_t) key > (uint32_t)(high - low))) {
             key = -1;
             skip = Bytes::get_Java_u4((address)&lpc[0]);
 #ifdef ENABLE_CONCOLIC
-            CONCOLIC_OPC_BINARY_SWITCH(-1, high, op_gt);
-            CONCOLIC_OPC_BINARY_SWITCH(-1, low, op_lt);
+            // The default arm is selector != key for every dense case key.
+            // This conjunction is exactly equivalent to
+            // (selector < low || selector > high), but it fits the path
+            // condition's conjunctive representation and gives the branch
+            // event an auditable index for every owned predicate.  Do not
+            // record only the concrete side (< low or > high): that would be
+            // a sound path strengthening, not the exact switch-arm guard.
+            int32_t condition_key = low;
+            while (true) {
+              CONCOLIC_APPEND_SWITCH_CONDITION(
+                  switch_conditions, -1, condition_key, op_ne);
+              if (condition_key == high) break;
+              condition_key++;
+            }
 #endif
           } else {
             skip = Bytes::get_Java_u4((address)&lpc[key + 3]);
 #ifdef ENABLE_CONCOLIC
-            int32_t real_key = STACK_INT(-1);
-            CONCOLIC_OPC_BINARY_SWITCH(-1, real_key, op_eq);
+            CONCOLIC_APPEND_SWITCH_CONDITION(
+                switch_conditions, -1, raw_key, op_eq);
 #endif
           }
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            ConcolicMngr::record_branch_conditions(
+                switch_conditions, key >= 0, (int) opcode);
+          }
+#endif
           // Profile switch.
           BI_PROFILE_UPDATE_SWITCH(/*switch_index=*/key);
           // Does this really need a full backedge check (osr)?
@@ -2075,21 +2156,45 @@ run:
           int      index = -1;
           int      newindex = 0;
           int32_t  npairs = Bytes::get_Java_u4((address) &lpc[1]);
-          while (--npairs >= 0) {
+          int32_t  remaining = npairs;
+          while (--remaining >= 0) {
             lpc += 2;
             if (key == (int32_t)Bytes::get_Java_u4((address)lpc)) {
-#ifdef ENABLE_CONCOLIC
-              CONCOLIC_OPC_BINARY_SWITCH(-1, key, op_eq);
-#endif
               skip = Bytes::get_Java_u4((address)&lpc[1]);
               index = newindex;
               break;
             }
-#ifdef ENABLE_CONCOLIC
-            CONCOLIC_OPC_BINARY_SWITCH(-1, (int32_t)Bytes::get_Java_u4((address)lpc), op_ne);
-#endif
             newindex += 1;
           }
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            exp_list_t switch_conditions;
+            if (index >= 0) {
+              // A selected lookup arm is exactly selector == selected key;
+              // preceding table entries are an implementation detail, not
+              // additional control-flow predicates.
+              CONCOLIC_APPEND_SWITCH_CONDITION(
+                  switch_conditions, -1, key, op_eq);
+            } else {
+              // The default arm is the conjunction of selector != key for
+              // every sparse case.  Preserve every exact PC index on the one
+              // BranchEvent so the Java side never has to infer ownership by
+              // expression shape or list position.
+              jint *condition_lpc = (jint*)VMalignWordUp(pc + 1);
+              int32_t condition_pairs =
+                  Bytes::get_Java_u4((address)&condition_lpc[1]);
+              while (--condition_pairs >= 0) {
+                condition_lpc += 2;
+                int32_t condition_key =
+                    Bytes::get_Java_u4((address)condition_lpc);
+                CONCOLIC_APPEND_SWITCH_CONDITION(
+                    switch_conditions, -1, condition_key, op_ne);
+              }
+            }
+            ConcolicMngr::record_branch_conditions(
+                switch_conditions, index >= 0, (int) opcode);
+          }
+#endif
           // Profile switch.
           BI_PROFILE_UPDATE_SWITCH(/*switch_index=*/index);
           address branch_pc = pc;
@@ -2803,29 +2908,27 @@ run:
 #ifdef ENABLE_CONCOLIC
           if (ConcolicMngr::can_do_concolic()) {
             if (obj->is_symbolic()) {
-              /**
-               * It seems that we do not need to handle Object (atos)
-               * TODO: check whether array belongs to atos
-               */
-              if (tos_type != atos) {
-                int stack_offset = GET_STACK_OFFSET;
-                sym_rid_t sym_rid = obj->get_sym_rid();
+              int stack_offset = GET_STACK_OFFSET;
+              sym_rid_t sym_rid = obj->get_sym_rid();
 
-                if (tos_type != ltos && tos_type != dtos) {
-                  stack_offset -= 1;
-                }
-
-                SymInstance* sym_inst = ConcolicMngr::ctx->get_sym_inst(sym_rid);
-                Expression* sym_exp = sym_inst->get(field_offset);
-                if (sym_exp == NULL
-                    && sym_inst->demand_symbolic_fields_enabled()) {
-                  BasicType field_type = as_BasicType(tos_type);
-                  sym_inst->init_sym_exp(field_offset, field_type);
-                  sym_exp = sym_inst->get(field_offset);
-                }
-                ConcolicMngr::ctx->set_stack_slot(stack_offset, sym_exp, 
-                                                  sym_rid, field_offset);
+              if (tos_type != ltos && tos_type != dtos) {
+                stack_offset -= 1;
               }
+
+              SymInstance* sym_inst = ConcolicMngr::ctx->get_sym_inst(sym_rid);
+              Expression* sym_exp = sym_inst->get(field_offset);
+              if (sym_exp == NULL
+                  && sym_inst->demand_symbolic_fields_enabled()) {
+                BasicType field_type = as_BasicType(tos_type);
+                sym_inst->init_sym_exp(field_offset, field_type);
+                sym_exp = sym_inst->get(field_offset);
+              }
+              // Reference-valued fields are branch inputs too.  Propagating
+              // their shadow through getfield/getstatic lets ifnull,
+              // ifnonnull and if_acmp* consume the same expression as scalar
+              // branches instead of silently emitting an unmodelled event.
+              ConcolicMngr::ctx->set_stack_slot(stack_offset, sym_exp,
+                                                sym_rid, field_offset);
             } else {
               CONCOLIC_CONST(-1);
             }
@@ -2950,22 +3053,30 @@ run:
 #ifdef ENABLE_CONCOLIC
           if (ConcolicMngr::can_do_concolic()) {
             int stack_offset = GET_STACK_OFFSET;
-
-            if (tos_type != atos) {
-              Expression *sym_exp =
-                  ConcolicMngr::ctx->get_and_detach_stack_slot(stack_offset -
-                                                               1);
-              if (sym_exp) {
-                SymInstance *sym_inst =
-                    ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
-                sym_inst->set_sym_exp(field_offset, sym_exp);
-              } else {
-                if (obj->is_symbolic()) {
-                  SymInstance *sym_inst =
-                      ConcolicMngr::ctx->get_sym_inst(obj);
-                      sym_inst->set_sym_exp(field_offset, NULL);
+            Expression *sym_exp =
+                ConcolicMngr::ctx->get_and_detach_stack_slot(stack_offset - 1);
+            bool shadow_relevant = sym_exp != NULL || obj->is_symbolic();
+            if (tos_type == atos && sym_exp == NULL) {
+              oop value = STACK_OBJECT(-1);
+              shadow_relevant = shadow_relevant
+                  || (value != NULL && value->is_symbolic());
+              if (shadow_relevant && value == NULL) {
+                sym_exp = SymbolExpression::get(Sym_NULL);
+              } else if (shadow_relevant && value->is_symbolic()) {
+                SymInstance *value_instance =
+                    ConcolicMngr::ctx->get_or_alloc_sym_inst(value);
+                if (value_instance != NULL) {
+                  sym_exp = value_instance->get_or_create_ref_exp(value);
                 }
               }
+            }
+            if (sym_exp && shadow_relevant) {
+              SymInstance *sym_inst =
+                  ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
+              sym_inst->set_sym_exp(field_offset, sym_exp);
+            } else if (obj->is_symbolic()) {
+              SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
+              sym_inst->set_sym_exp(field_offset, NULL);
             }
           }
 #endif

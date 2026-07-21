@@ -95,6 +95,11 @@ public:
     ctx->record_branch_condition(sym_exp, outcome, opcode);
   }
 
+  inline static void __attribute__((optimize("O0"))) record_branch_conditions(
+      const exp_list_t &expressions, bool outcome, int opcode) {
+    ctx->record_branch_conditions(expressions, outcome, opcode);
+  }
+
   inline static void __attribute__((optimize("O0"))) record_compare_witness(
       Expression *sym_exp) {
     ctx->record_compare_witness(sym_exp);

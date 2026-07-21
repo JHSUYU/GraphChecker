@@ -239,11 +239,13 @@ Expression *SymString::finish_method_helper(MethodSymbolizerHandle &handle) {
       }
       break;
     case T_BOOLEAN: {
-      // boolean operations on two strings are converted to equivalent path condition
+      // Keep the observed predicate on the shadow operand stack.  Normal
+      // istore/iload propagation then ties it to the Java boolean value that
+      // is actually tested, instead of leaving a context-global pending
+      // witness that an unrelated later branch could accidentally claim.
       jboolean resBool = handle.get_result<jboolean>(T_BOOLEAN);
-      ConcolicMngr::record_path_condition(
-          new OpStrExpression(callee_name, handle.get_param_list(), !resBool)
-      );
+      exp = new OpStrExpression(callee_name, handle.get_param_list(),
+                                !resBool);
       break;
     }
     default:

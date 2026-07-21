@@ -1,5 +1,12 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicOutputCaptureSelection;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicReplaySelection;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.OutputCaptureTarget;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ReplayTarget;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -52,17 +59,15 @@ import soot.jimple.ReturnVoidStmt;
 import soot.jimple.StaticFieldRef;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
+import soot.jimple.SwitchStmt;
 import soot.jimple.ThisRef;
 import soot.jimple.ThrowStmt;
-import soot.tagkit.LineNumberTag;
-import soot.tagkit.SourceLineNumberTag;
 import soot.tagkit.Tag;
 import soot.toolkits.graph.BriefUnitGraph;
 import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -70,8 +75,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -90,6 +93,24 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.readRuntimeSelectedRoots;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.resolveConcolicFieldTarget;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.CallbackRegistration;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorCallsite;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionConstruction;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionGuard;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MappedEndpoint;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MethodCallsite;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.RpcTarget;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.SeedLookupAnchor;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.StaticPortMapping;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
 
 /**
  * Exception/variable-seeded static backward data-flow analysis.
@@ -126,7 +147,7 @@ public final class CausynthPipeline {
     }
 
     public void run() throws IOException {
-        TargetContext target = TargetContext.resolve(options);
+        CausynthTargetContext target = CausynthTargetResolver.resolve(options);
         if (!target.hasSeed()) {
             LOG.info("Seed backward analysis skipped: no seed_exception or seed_variables in {}",
                     target.specPath);
@@ -149,21 +170,22 @@ public final class CausynthPipeline {
 
         LOG.info("Seed backward analysis starts in {} mode from {}",
                 target.seedMode(), target.seedDescription());
-        AnalysisResult result = new SeedBackwardStaticAnalyzer(target).analyze();
-        buildSymbolicExecutionPlan(result);
-        buildSymbolicRegions(result);
+        CausynthAnalysisResult result =
+                new SeedBackwardStaticAnalyzer(target).analyze();
+        SymbolicPlanningStage.build(result);
+        SymbolicRegionAssemblyStage.assemble(result);
         buildAutomaticDerivationBoundary(result);
         instrumentRuntimeTrace(result);
         instrumentConcolicRegions(result);
         boolean boundedOutputClosureCoverageReady =
                 recordSymbolicCoverageAuthority(result);
-        new OutputWriter(target, result).writeAll();
+        new CausynthArtifactWriter(target.outputDir, result).writeAll();
         enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
         LOG.info("Seed backward analysis wrote {} edges to {}",
                 result.edges.size(), target.outputDir);
     }
 
-    private void runWithFrozenConcolicCatalog(TargetContext target,
+    private void runWithFrozenConcolicCatalog(CausynthTargetContext target,
                                                Path manifest)
             throws IOException {
         String planValue = stringValue(firstNonBlank(
@@ -186,7 +208,7 @@ public final class CausynthPipeline {
                     + "directories must differ: " + output);
         }
 
-        AnalysisResult result = new AnalysisResult();
+        CausynthAnalysisResult result = new CausynthAnalysisResult();
         result.symbolicRegions.addAll(loaded.regions);
         result.symbolicCoverage.putAll(loaded.coverage);
         result.slices.put("staticCatalogReuse",
@@ -208,7 +230,7 @@ public final class CausynthPipeline {
     }
 
     private void verifyFrozenCatalogInstrumentation(
-            AnalysisResult result,
+            CausynthAnalysisResult result,
             ConcolicStaticCatalogReuse.LoadedCatalog loaded)
             throws IOException {
         int roots = intValue(result.slices.get("concolicRegionRootCount"), -1);
@@ -271,7 +293,8 @@ public final class CausynthPipeline {
         return "";
     }
 
-    private boolean recordSymbolicCoverageAuthority(AnalysisResult result) {
+    private boolean recordSymbolicCoverageAuthority(
+            CausynthAnalysisResult result) {
         boolean ready = selectedBoundedOutputClosureCoverageReady(result);
         result.slices.put("boundedOutputClosureCoverageReady", ready);
         result.slices.put("symbolicCoverageGateAuthority", ready
@@ -280,7 +303,7 @@ public final class CausynthPipeline {
         return ready;
     }
 
-    private void enforceSymbolicCoverage(AnalysisResult result,
+    private void enforceSymbolicCoverage(CausynthAnalysisResult result,
                                          boolean boundedOutputClosureCoverageReady) {
         boolean strictCoverage = Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.coverage.strict"),
@@ -301,8 +324,8 @@ public final class CausynthPipeline {
         }
     }
 
-    private void writeStaticReuseReport(TargetContext target,
-                                        AnalysisResult result,
+    private void writeStaticReuseReport(CausynthTargetContext target,
+                                        CausynthAnalysisResult result,
                                         ConcolicStaticCatalogReuse.LoadedCatalog loaded)
             throws IOException {
         Map<String, Object> report = new LinkedHashMap<>();
@@ -320,7 +343,8 @@ public final class CausynthPipeline {
                 ".concolic-instrumentation-", ".json.tmp");
         try {
             Files.write(temporary,
-                    (Json.write(report) + System.lineSeparator()).getBytes(
+                    (CausynthJson.write(report) + System.lineSeparator())
+                            .getBytes(
                             StandardCharsets.UTF_8),
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE);
@@ -337,7 +361,7 @@ public final class CausynthPipeline {
         }
     }
 
-    private void instrumentRuntimeTrace(AnalysisResult result) {
+    private void instrumentRuntimeTrace(CausynthAnalysisResult result) {
         if (!Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.trace"),
                 System.getenv("CAUSYNTH_INSTRUMENT_TRACE"),
@@ -424,7 +448,7 @@ public final class CausynthPipeline {
      * discovery, the runtime activation plan is authoritative and a replay
      * transformation inserts hooks at the runtime-selected roots.
      */
-    private void instrumentConcolicRegions(AnalysisResult result) {
+    private void instrumentConcolicRegions(CausynthAnalysisResult result) {
         if (!Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.concolic"),
                 System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
@@ -435,10 +459,14 @@ public final class CausynthPipeline {
         ConcolicBranchSelection branchSelection =
                 ConcolicBranchSelection.from(result.symbolicRegions);
         ConcolicMaterializationSelection materializationSelection =
-                concolicMaterializationSelection();
-        ConcolicReplaySelection replaySelection = concolicReplaySelection();
+                ConcolicInstrumentationSelections
+                        .materializationSelectionFromEnvironment();
+        ConcolicReplaySelection replaySelection =
+                ConcolicInstrumentationSelections
+                        .replaySelectionFromEnvironment();
         ConcolicOutputCaptureSelection outputCaptureSelection =
-                concolicOutputCaptureSelection();
+                ConcolicInstrumentationSelections
+                        .outputCaptureSelectionFromEnvironment();
         Set<String> roots = concolicRootMethods(result);
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
         backedViewMethods.addAll(roots);
@@ -700,7 +728,7 @@ public final class CausynthPipeline {
         return count;
     }
 
-    private Set<String> concolicRootMethods(AnalysisResult result) {
+    private Set<String> concolicRootMethods(CausynthAnalysisResult result) {
         String planValue = stringValue(firstNonBlank(
                 System.getProperty("causynth.concolic.activation.plan"),
                 System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
@@ -743,169 +771,8 @@ public final class CausynthPipeline {
         return staticCandidates;
     }
 
-    private ConcolicMaterializationSelection concolicMaterializationSelection() {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        if (planValue.isEmpty()) {
-            return new ConcolicMaterializationSelection();
-        }
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        try {
-            return ConcolicMaterializationSelection.from(
-                    Paths.get(planValue), selected);
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Could not load concolic materializations from "
-                            + planValue, exception);
-        }
-    }
-
-    private ConcolicReplaySelection concolicReplaySelection() {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        if (planValue.isEmpty()) {
-            return new ConcolicReplaySelection();
-        }
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        try {
-            return ConcolicReplaySelection.from(Paths.get(planValue), selected);
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Could not load concolic replay materializations from "
-                            + planValue, exception);
-        }
-    }
-
-    private ConcolicOutputCaptureSelection concolicOutputCaptureSelection() {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        if (planValue.isEmpty()) {
-            return new ConcolicOutputCaptureSelection();
-        }
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        try {
-            return ConcolicOutputCaptureSelection.from(Paths.get(planValue),
-                    selected);
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Could not load concolic output captures from "
-                            + planValue, exception);
-        }
-    }
-
-    static Set<String> readRuntimeSelectedRoots(Path activationPlan,
-                                                String selectedActivation)
-            throws IOException {
-        if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-            throw new IOException("Activation plan not found: " + activationPlan);
-        }
-        String selected = stringValue(firstNonBlank(selectedActivation));
-        Set<String> roots = new LinkedHashSet<>();
-        try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed = JsonParser.parseString(line);
-                if (!parsed.isJsonObject()) {
-                    continue;
-                }
-                JsonObject row = parsed.getAsJsonObject();
-                String activationId = jsonString(row, "activationId");
-                if (!selected.isEmpty()
-                        && "ALL".equals(jsonString(row,
-                        "activationSelectionRequired"))
-                        && selected.equals(activationId)) {
-                    throw new IOException("Activation " + selected
-                            + " belongs to a reachability bundle that "
-                            + "requires ALL plan rows");
-                }
-                if (!selected.isEmpty() && !selected.equals(activationId)) {
-                    continue;
-                }
-                // Activation plans produced before the scheduler existed did
-                // not carry an explicit readiness bit.  Preserve that format
-                // while allowing the scheduler to be the authority for newer
-                // plans.
-                boolean ready = jsonBoolean(row, "symbolicReady", true)
-                        || jsonBoolean(row, "schedulerReady", false);
-                if (!jsonBoolean(row, "replayable", true) || !ready) {
-                    continue;
-                }
-                String root = stringValue(firstNonBlank(
-                        jsonString(row, "rootMethod"),
-                        jsonString(row, "observedRootMethod")));
-                if (!root.isEmpty()) {
-                    roots.add(root);
-                }
-            }
-        }
-        return roots;
-    }
-
-    /**
-     * Returns whether one exact scheduler-selected activation carries all of
-     * the evidence needed to analyze only its bounded requested-output
-     * closure.  This is deliberately stricter than root selection: older
-     * discovery plans and branch-target plans must continue to require global
-     * symbolic-region coverage.
-     */
-    static boolean selectedBoundedOutputClosureCoverageReady(
-            Path activationPlan, String selectedActivation)
-            throws IOException {
-        if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-            return false;
-        }
-        String selected = stringValue(firstNonBlank(selectedActivation));
-        if (selected.isEmpty()) {
-            return false;
-        }
-
-        JsonObject selectedRow = null;
-        int selectedRowCount = 0;
-        try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed;
-                try {
-                    parsed = JsonParser.parseString(line);
-                } catch (RuntimeException malformed) {
-                    return false;
-                }
-                if (!parsed.isJsonObject()) {
-                    return false;
-                }
-                JsonObject row = parsed.getAsJsonObject();
-                if (!selected.equals(jsonString(row, "activationId"))) {
-                    continue;
-                }
-                selectedRowCount++;
-                selectedRow = row;
-            }
-        }
-        if (selectedRowCount != 1 || selectedRow == null) {
-            return false;
-        }
-        return boundedOutputClosureRowReady(selectedRow, selected);
-    }
-
     private boolean selectedBoundedOutputClosureCoverageReady(
-            AnalysisResult result) {
+            CausynthAnalysisResult result) {
         if (!Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.concolic"),
                 System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
@@ -922,7 +789,8 @@ public final class CausynthPipeline {
             return false;
         }
         try {
-            if (!selectedBoundedOutputClosureCoverageReady(
+            if (!ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(
                     Paths.get(planValue), selected)) {
                 return false;
             }
@@ -954,384 +822,6 @@ public final class CausynthPipeline {
                 && rootCount == 1
                 && instrumentedCount == rootCount
                 && skippedCount == 0;
-    }
-
-    private static boolean boundedOutputClosureRowReady(JsonObject row,
-                                                        String selected) {
-        JsonElement captureGoalElement = row.get("captureGoal");
-        if (captureGoalElement == null || !captureGoalElement.isJsonObject()) {
-            return false;
-        }
-        JsonObject captureGoal = captureGoalElement.getAsJsonObject();
-        if (!"OUTPUT_CLOSURE".equals(jsonString(captureGoal, "kind"))
-                || !"BOUNDED_OUTPUT_RELEVANT_PATHS".equals(
-                jsonString(captureGoal, "scope"))
-                || "TRANSITION_DISCOVERY_ONLY".equals(
-                jsonString(captureGoal, "purpose"))) {
-            return false;
-        }
-
-        String scheduleId = jsonString(row, "scheduleId");
-        if (!selected.equals(jsonString(row, "activationId"))
-                || !selected.equals(jsonString(row,
-                "activationSelectionRequired"))
-                || !selected.equals(jsonString(row,
-                "activationBundleRootActivationId"))
-                || scheduleId.isEmpty()
-                || !scheduleId.equals(jsonString(row,
-                "activationBundleScheduleId"))
-                || !strictJsonIntEquals(row, "activationBundleSize", 1)
-                || !strictJsonIntEquals(row, "activationBundleIndex", 0)
-                || !"PRIMARY".equals(jsonString(row,
-                "activationBundleMemberRole"))) {
-            return false;
-        }
-
-        if (!strictJsonBooleanEquals(row, "replayable", true)
-                || !strictJsonBooleanEquals(row, "boundaryReady", true)
-                || !strictJsonBooleanEquals(row, "symbolicReady", true)
-                || !strictJsonBooleanEquals(row, "schedulerReady", true)
-                || !strictJsonBooleanEquals(row,
-                "materializationComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "runtimePathEvidenceComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "requestedOutputSliceComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "requestedOutputSliceRefinementComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "requestedOutputCaptureComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "branchOverrideProhibited", true)
-                || !strictJsonBooleanEquals(row,
-                "targetReplayRequired", false)
-                || !strictJsonBooleanEquals(row,
-                "pathSignatureTruncated", false)
-                || !strictJsonBooleanEquals(row,
-                "containedCallTreeTruncated", false)
-                || !strictJsonIntEquals(row,
-                "deferredMaterializationCount", 0)
-                || !emptyJsonArray(row, "runtimeGaps")
-                || !absentOrEmptyJsonArray(row, "forcedBranches")
-                || !absentOrEmptyJsonArray(row, "replayMaterializations")
-                || row.has("transitionDiscovery")
-                || row.has("transitionOutputRefinement")) {
-            return false;
-        }
-        boolean seedReplay = "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
-                .equals(jsonString(row, "replayMode"))
-                && "CAPTURE_OUTPUT_PATH".equals(jsonString(row,
-                "executionPhase"))
-                && absentOrEmptyJsonArray(row, "modelAssignments");
-        boolean solverFlipReplay = solverOutputPathFlipReady(row, selected);
-        if (!seedReplay && !solverFlipReplay) {
-            return false;
-        }
-
-        JsonElement outputElement = row.get("requestedOutput");
-        JsonElement sliceElement = row.get("requestedOutputSlice");
-        if (outputElement == null || !outputElement.isJsonObject()
-                || sliceElement == null || !sliceElement.isJsonObject()) {
-            return false;
-        }
-        JsonObject output = outputElement.getAsJsonObject();
-        JsonObject slice = sliceElement.getAsJsonObject();
-        String outputPort = jsonString(output, "portId");
-        String outputCell = jsonString(output, "cell");
-        if (outputPort.isEmpty() || outputCell.isEmpty()
-                || !outputPort.equals(jsonString(slice, "outputPort"))
-                || !outputCell.equals(jsonString(slice, "outputCell"))
-                || !strictJsonBooleanEquals(slice, "complete", true)
-                || !strictJsonBooleanEquals(slice,
-                "structuralComplete", true)
-                || !strictJsonBooleanEquals(slice, "runtimeRefined", true)
-                || !strictJsonBooleanEquals(slice,
-                "runtimeRefinementComplete", true)
-                || jsonString(slice, "runtimeRefinementAuthority").isEmpty()
-                || !strictJsonBooleanEquals(slice,
-                "unresolvedInputProvenanceComplete", true)
-                || !strictJsonBooleanEquals(slice,
-                "captureBindingsComplete", true)
-                || !strictJsonBooleanEquals(slice,
-                "methodBudgetTruncated", false)
-                || !strictJsonBooleanEquals(slice,
-                "causalCellBudgetTruncated", false)
-                || !strictJsonBooleanEquals(slice,
-                "regionTruncated", false)
-                || !strictJsonBooleanEquals(slice, "truncated", false)) {
-            return false;
-        }
-        if (!emptyJsonArray(slice, "unresolvedInputs")
-                || !emptyJsonArray(slice, "unresolvedInputDetails")
-                || !emptyJsonArray(slice, "truncationReasons")
-                || !emptyJsonArray(slice, "captureBindingIssues")) {
-            return false;
-        }
-
-        JsonElement outputs = row.get("outputs");
-        int matchingOutputs = 0;
-        if (outputs == null || !outputs.isJsonArray()) {
-            return false;
-        }
-        for (JsonElement element : outputs.getAsJsonArray()) {
-            if (element.isJsonObject()
-                    && outputPort.equals(jsonString(element.getAsJsonObject(),
-                    "symbol"))
-                    && outputCell.equals(jsonString(element.getAsJsonObject(),
-                    "cell"))) {
-                matchingOutputs++;
-            }
-        }
-        if (matchingOutputs != 1) {
-            return false;
-        }
-
-        JsonElement captures = row.get("requestedOutputCapture");
-        if (captures == null || !captures.isJsonArray()) {
-            return false;
-        }
-        JsonElement captureRequiredElement = row.get(
-                "requestedOutputCaptureRequired");
-        if (captureRequiredElement == null
-                || !captureRequiredElement.isJsonPrimitive()
-                || !captureRequiredElement.getAsJsonPrimitive().isBoolean()) {
-            return false;
-        }
-        boolean captureRequired = captureRequiredElement.getAsBoolean();
-        if (captureRequired && captures.getAsJsonArray().size() == 0) {
-            return false;
-        }
-        if (!captureRequired && captures.getAsJsonArray().size() != 0) {
-            return false;
-        }
-        for (JsonElement element : captures.getAsJsonArray()) {
-            if (!element.isJsonObject()
-                    || !outputPort.equals(jsonString(element.getAsJsonObject(),
-                    "outputPort"))
-                    || !outputCell.equals(jsonString(element.getAsJsonObject(),
-                    "outputCell"))
-                    || jsonString(element.getAsJsonObject(),
-                    "captureBindingId").isEmpty()) {
-                return false;
-            }
-        }
-        if (!strictJsonBooleanEquals(slice,
-                "captureBindingsRequired", captureRequired)) {
-            return false;
-        }
-        if (!captureRequired
-                && !heapEffectCaptureDischargeReady(row, slice, outputPort,
-                outputCell)) {
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Admits the one non-seed replay shape that can soundly reuse a bounded
-     * requested-output closure: an input-model-only Z3 path flip.  The model
-     * may change concrete program inputs, but the branch remains an
-     * observation target; no forced edge or reference-result injection is
-     * authorized here.
-     */
-    private static boolean solverOutputPathFlipReady(JsonObject row,
-                                                     String selected) {
-        if (!selected.startsWith("ACT.PATH.")
-                || !"RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY".equals(
-                strictJsonString(row, "replayMode"))
-                || !"REPLAY_OUTPUT_PATH_FLIP".equals(
-                strictJsonString(row, "executionPhase"))
-                || !absentOrStrictJsonBooleanEquals(row,
-                "branchOverrideAllowed", false)) {
-            return false;
-        }
-
-        String queryKey = strictJsonString(row, "pathQueryKey");
-        String pathId = shortSha256(queryKey, 16);
-        if (!queryKey.matches("[0-9a-f]{64}")
-                || !selected.equals("ACT.PATH." + pathId)
-                || !("SCHEDULE.PATH." + pathId).equals(
-                strictJsonString(row, "scheduleId"))) {
-            return false;
-        }
-
-        JsonElement assignmentsElement = row.get("modelAssignments");
-        if (assignmentsElement == null || !assignmentsElement.isJsonArray()
-                || assignmentsElement.getAsJsonArray().size() == 0) {
-            return false;
-        }
-        Set<String> engineSymbols = new LinkedHashSet<>();
-        Set<String> solverSymbols = new LinkedHashSet<>();
-        for (JsonElement element : assignmentsElement.getAsJsonArray()) {
-            if (!element.isJsonObject()
-                    || !z3PathFlipAssignmentReady(element.getAsJsonObject(),
-                    engineSymbols, solverSymbols)) {
-                return false;
-            }
-        }
-
-        JsonElement targetElement = row.get("targetBranch");
-        if (targetElement == null || !targetElement.isJsonObject()) {
-            return false;
-        }
-        JsonObject target = targetElement.getAsJsonObject();
-        String targetSite = strictJsonString(target, "siteId");
-        int targetOccurrence = strictJsonInt(target, "occurrence", -1);
-        if (targetSite.isEmpty() || targetOccurrence <= 0
-                || !strictJsonBooleanPresent(target, "desiredOutcome")
-                || !strictJsonBooleanEquals(target, "validationOnly", true)
-                || !strictJsonBooleanEquals(target,
-                "branchOverrideAllowed", false)) {
-            return false;
-        }
-
-        JsonElement prefixElement = row.get("expectedBranchPrefix");
-        if (prefixElement == null || !prefixElement.isJsonArray()) {
-            return false;
-        }
-        int previousConditionIndex = -1;
-        Set<String> branchIdentities = new LinkedHashSet<>();
-        for (JsonElement element : prefixElement.getAsJsonArray()) {
-            if (!element.isJsonObject()) {
-                return false;
-            }
-            JsonObject expected = element.getAsJsonObject();
-            String site = strictJsonString(expected, "siteId");
-            int occurrence = strictJsonInt(expected, "occurrence", -1);
-            int conditionIndex = strictJsonInt(expected,
-                    "conditionIndex", -1);
-            String identity = site + "\u0000" + occurrence;
-            if (site.isEmpty() || occurrence <= 0 || conditionIndex < 0
-                    || conditionIndex <= previousConditionIndex
-                    || !strictJsonBooleanPresent(expected, "outcome")
-                    || !branchIdentities.add(identity)
-                    || targetSite.equals(site)
-                    && targetOccurrence == occurrence) {
-                return false;
-            }
-            previousConditionIndex = conditionIndex;
-        }
-        return true;
-    }
-
-    private static boolean z3PathFlipAssignmentReady(
-            JsonObject assignment, Set<String> engineSymbols,
-            Set<String> solverSymbols) {
-        String engineSymbol = strictJsonString(assignment,
-                "engineSymbol");
-        String solverSymbol = strictJsonString(assignment,
-                "solverSymbol");
-        String inputSymbol = strictJsonString(assignment,
-                "inputSymbol");
-        String valueType = strictJsonString(assignment, "valueType");
-        JsonElement value = assignment.get("value");
-        JsonElement targetElement = assignment.get("target");
-        if (engineSymbol.isEmpty() || solverSymbol.isEmpty()
-                || inputSymbol.isEmpty()
-                || !("BOOL".equals(valueType) || "INT".equals(valueType)
-                || "REAL".equals(valueType)
-                || "STRING".equals(valueType))
-                || value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isString()
-                || !"Z3_PATH_FLIP_MODEL".equals(strictJsonString(
-                assignment, "authority"))
-                || !strictJsonBooleanEquals(assignment,
-                "materializeAtRealDefinition", true)
-                || targetElement == null || !targetElement.isJsonObject()
-                || !inputSymbol.equals(strictJsonString(
-                targetElement.getAsJsonObject(), "symbol"))
-                || !engineSymbols.add(engineSymbol)
-                || !solverSymbols.add(solverSymbol)) {
-            return false;
-        }
-        String modelValue = value.getAsString();
-        return !"BOOL".equals(valueType)
-                || "true".equals(modelValue) || "false".equals(modelValue);
-    }
-
-    private static String shortSha256(String value, int length) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(
-                    StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.substring(0, length);
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
-
-    private static boolean heapEffectCaptureDischargeReady(
-            JsonObject row, JsonObject slice, String outputPort,
-            String outputCell) {
-        String inputPort = jsonString(slice, "captureDischargeInputPort");
-        if (!strictJsonBooleanEquals(slice,
-                "captureDischargedByHeapEffectTransformer", true)
-                || !"HEAP_EFFECT_STATE_TRANSFORMER".equals(jsonString(slice,
-                "captureDischargeAuthority"))
-                || inputPort.isEmpty()
-                || !outputPort.equals(jsonString(slice,
-                "captureDischargeOutputPort"))
-                || !outputCell.equals(jsonString(slice,
-                "captureDischargeOutputCell"))
-                || !strictJsonBooleanEquals(slice,
-                "requestedStateTransformerContractApplicable", true)
-                || !strictJsonBooleanEquals(slice,
-                "requestedStateTransformerContractComplete", true)
-                || !strictJsonIntEquals(slice,
-                "requestedStateTransformerContractVersion", 1)
-                || jsonString(slice,
-                "requestedStateTransformerContractAuthority").isEmpty()
-                || !outputPort.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputPort"))
-                || !outputCell.equals(jsonString(slice,
-                "requestedStateTransformerContractOutputCell"))
-                || !emptyJsonArray(slice,
-                "requestedStateTransformerContractIssues")) {
-            return false;
-        }
-
-        JsonElement obligations = slice.get(
-                "requestedStateTransformerObligations");
-        int obligationCount = strictJsonInt(slice,
-                "requestedStateTransformerObligationCount", -1);
-        if (obligations == null || !obligations.isJsonArray()
-                || obligationCount <= 0
-                || obligations.getAsJsonArray().size() != obligationCount) {
-            return false;
-        }
-        for (JsonElement element : obligations.getAsJsonArray()) {
-            if (!element.isJsonObject()
-                    || !outputCell.equals(jsonString(element.getAsJsonObject(),
-                    "targetCell"))
-                    || jsonString(element.getAsJsonObject(), "siteId").isEmpty()
-                    || jsonString(element.getAsJsonObject(), "method").isEmpty()
-                    || jsonString(element.getAsJsonObject(),
-                    "authority").isEmpty()) {
-                return false;
-            }
-        }
-
-        JsonElement bindings = row.get("heapStateBindings");
-        int matchingBindings = 0;
-        if (bindings == null || !bindings.isJsonArray()) {
-            return false;
-        }
-        for (JsonElement element : bindings.getAsJsonArray()) {
-            if (element.isJsonObject()
-                    && inputPort.equals(jsonString(element.getAsJsonObject(),
-                    "inputPort"))
-                    && outputPort.equals(jsonString(element.getAsJsonObject(),
-                    "outputPort"))
-                    && outputCell.equals(jsonString(element.getAsJsonObject(),
-                    "cell"))) {
-                matchingBindings++;
-            }
-        }
-        return matchingBindings == 1;
     }
 
     private static String jsonString(JsonObject object, String field) {
@@ -1371,71 +861,6 @@ public final class CausynthPipeline {
         } catch (RuntimeException ignored) {
             return fallback;
         }
-    }
-
-    private static boolean strictJsonBooleanEquals(JsonObject object,
-                                                   String field,
-                                                   boolean expected) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isBoolean()
-                && value.getAsBoolean() == expected;
-    }
-
-    private static boolean strictJsonBooleanPresent(JsonObject object,
-                                                    String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isBoolean();
-    }
-
-    private static boolean absentOrStrictJsonBooleanEquals(
-            JsonObject object, String field, boolean expected) {
-        return !object.has(field)
-                || strictJsonBooleanEquals(object, field, expected);
-    }
-
-    private static String strictJsonString(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString() : "";
-    }
-
-    private static boolean strictJsonIntEquals(JsonObject object,
-                                               String field, int expected) {
-        return strictJsonInt(object, field, Integer.MIN_VALUE) == expected;
-    }
-
-    private static int strictJsonInt(JsonObject object, String field,
-                                     int fallback) {
-        JsonElement value = object.get(field);
-        if (value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isNumber()) {
-            return fallback;
-        }
-        try {
-            String encoded = value.getAsString();
-            if (!encoded.matches("-?(0|[1-9][0-9]*)")) {
-                return fallback;
-            }
-            return Integer.parseInt(encoded);
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static boolean emptyJsonArray(JsonObject object, String field) {
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonArray()
-                && value.getAsJsonArray().size() == 0;
-    }
-
-    private static boolean absentOrEmptyJsonArray(JsonObject object,
-                                                  String field) {
-        JsonElement value = object.get(field);
-        return value == null || (value.isJsonArray()
-                && value.getAsJsonArray().size() == 0);
     }
 
     /**
@@ -2159,7 +1584,7 @@ public final class CausynthPipeline {
     }
 
     private static Set<String> concolicBackedViewMethods(
-            AnalysisResult result) {
+            CausynthAnalysisResult result) {
         Set<String> methods = new LinkedHashSet<>();
         for (Map<String, Object> region : result.symbolicRegions) {
             Object values = region.get("methods");
@@ -2291,12 +1716,15 @@ public final class CausynthPipeline {
                 Body body = method.retrieveActiveBody();
                 for (Integer unitIndex : selection.units(methodSignature)) {
                     Unit unit = originalUnit(body, unitIndex);
-                    if (!(unit instanceof IfStmt)) {
-                        continue;
+                    if (unit instanceof IfStmt) {
+                        instrumentConcolicBranch(body, method,
+                                (IfStmt) unit, unitIndex, refs);
+                        count++;
+                    } else if (unit instanceof SwitchStmt
+                            && instrumentConcolicSwitch(body, method,
+                            (SwitchStmt) unit, unitIndex, refs)) {
+                        count++;
                     }
-                    instrumentConcolicBranch(body, method, (IfStmt) unit,
-                            unitIndex, refs);
-                    count++;
                 }
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping concolic branch instrumentation for {}",
@@ -2411,6 +1839,95 @@ public final class CausynthPipeline {
         branch.setTarget(trueEntry);
     }
 
+    private boolean instrumentConcolicSwitch(
+            Body body, SootMethod method, SwitchStmt branch, int unitIndex,
+            ConcolicRegionRefs refs) {
+        CausynthBranchShape shape = CausynthBranchShape.from(body, branch);
+        if (shape == null || !shape.isSwitch()) return false;
+        String expression = branch.getKey().toString();
+        String encodedKeys = shape.encodedCaseKeys();
+
+        Local prepared = newTraceLocal(body, LongType.v(),
+                "$causynthPreparedSwitch");
+        Local vmEvent = newTraceLocal(body, LongType.v(),
+                "$causynthVmSwitchEvent");
+        Local vmOccurrence = newTraceLocal(body, IntType.v(),
+                "$causynthVmSwitchOccurrence");
+        Local effectiveSuccessor = newTraceLocal(body, IntType.v(),
+                "$causynthSwitchSuccessor");
+
+        Unit noMarkerPath = Jimple.v().newNopStmt();
+        List<Unit> beforeBranch = new ArrayList<>();
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.pauseVmPathCondition)));
+        beforeBranch.add(Jimple.v().newAssignStmt(prepared,
+                Jimple.v().newStaticInvokeExpr(refs.prepareBranch,
+                        StringConstant.v(method.getSignature()),
+                        IntConstant.v(unitIndex),
+                        StringConstant.v(expression))));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
+                LongConstant.v(0L)));
+        beforeBranch.add(Jimple.v().newIfStmt(
+                Jimple.v().newLeExpr(prepared, LongConstant.v(0L)),
+                noMarkerPath));
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
+                Jimple.v().newCastExpr(prepared, IntType.v())));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
+                Jimple.v().newStaticInvokeExpr(refs.markConcolicBranch,
+                        StringConstant.v(method.getSignature() + "#u"
+                                + unitIndex), vmOccurrence)));
+        Unit exactTransfer = Jimple.v().newGotoStmt(branch);
+        beforeBranch.add(exactTransfer);
+        beforeBranch.add(noMarkerPath);
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
+        insertBeforeSequence(body, branch, beforeBranch);
+        ((soot.jimple.GotoStmt) exactTransfer).setTarget(branch);
+
+        List<Unit> entries = new ArrayList<>();
+        for (int observed = 0; observed < shape.successorCount(); observed++) {
+            Unit entry = Jimple.v().newNopStmt();
+            entries.add(entry);
+            body.getUnits().add(entry);
+            body.getUnits().add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
+            body.getUnits().add(Jimple.v().newAssignStmt(effectiveSuccessor,
+                    Jimple.v().newStaticInvokeExpr(refs.resolveSwitchBranch,
+                            prepared, vmEvent,
+                            StringConstant.v(method.getSignature()),
+                            IntConstant.v(unitIndex),
+                            StringConstant.v(expression),
+                            StringConstant.v(shape.kind),
+                            StringConstant.v(encodedKeys),
+                            IntConstant.v(observed))));
+            body.getUnits().add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
+            for (int targetIndex = 0;
+                 targetIndex < shape.successorCount(); targetIndex++) {
+                body.getUnits().add(Jimple.v().newIfStmt(
+                        Jimple.v().newEqExpr(effectiveSuccessor,
+                                IntConstant.v(targetIndex)),
+                        shape.successors.get(targetIndex)));
+            }
+            // A malformed runtime result must retain the concrete Java
+            // execution rather than jumping to an unrelated arm.
+            body.getUnits().add(Jimple.v().newGotoStmt(
+                    shape.successors.get(observed)));
+        }
+        for (int successorIndex = 0;
+             successorIndex < shape.successorCount(); successorIndex++) {
+            if (successorIndex == shape.defaultSuccessorIndex) {
+                branch.setDefaultTarget(entries.get(successorIndex));
+            } else {
+                branch.setTarget(successorIndex,
+                        entries.get(successorIndex));
+            }
+        }
+        return true;
+    }
+
     private static Unit originalUnit(Body body, int requestedIndex) {
         List<Unit> current = snapshotUnits(body);
         boolean hasAuthoritativeOriginalTags = false;
@@ -2484,7 +2001,8 @@ public final class CausynthPipeline {
         }
     }
 
-    private static TraceSiteSelection traceSiteSelection(AnalysisResult result) {
+    private static TraceSiteSelection traceSiteSelection(
+            CausynthAnalysisResult result) {
         TraceSiteSelection selection = new TraceSiteSelection();
         for (Map<String, Object> row : result.symbolicPlan) {
             String method = stringValue(row.get("method"));
@@ -2560,10 +2078,17 @@ public final class CausynthPipeline {
                         refs, observationIsolation);
                 stats.callSites++;
             }
-            if (branchUnits.contains(unitIndex) && stmt instanceof IfStmt) {
-                instrumentBranch(body, method, (IfStmt) stmt, unitIndex,
-                        callId, refs, observationIsolation);
-                stats.branches++;
+            if (branchUnits.contains(unitIndex)) {
+                if (stmt instanceof IfStmt) {
+                    instrumentBranch(body, method, (IfStmt) stmt, unitIndex,
+                            callId, refs, observationIsolation);
+                    stats.branches++;
+                } else if (stmt instanceof SwitchStmt
+                        && instrumentSwitchBranch(body, method,
+                        (SwitchStmt) stmt, unitIndex, callId, refs,
+                        observationIsolation)) {
+                    stats.branches++;
+                }
             }
             if (stmt instanceof ReturnStmt) {
                 insertMethodExit(body, stmt, ((ReturnStmt) stmt).getOp(),
@@ -2698,6 +2223,42 @@ public final class CausynthPipeline {
             body.getUnits().add(unit);
         }
         branch.setTarget(trueEntry);
+    }
+
+    private boolean instrumentSwitchBranch(
+            Body body, SootMethod method, SwitchStmt branch, int unitIndex,
+            Local callId, RichTraceRefs refs,
+            ConcolicRegionRefs observationIsolation) {
+        CausynthBranchShape shape = CausynthBranchShape.from(body, branch);
+        if (shape == null || !shape.isSwitch()) return false;
+        String expression = branch.getKey().toString();
+        String keys = shape.encodedCaseKeys();
+        for (int successorIndex = 0;
+             successorIndex < shape.successorCount(); successorIndex++) {
+            Unit originalTarget = shape.successors.get(successorIndex);
+            Unit entry = Jimple.v().newNopStmt();
+            List<Unit> path = new ArrayList<>();
+            path.add(entry);
+            beginTraceObservationIsolation(path, observationIsolation);
+            path.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(refs.recordSwitchBranch,
+                            callId,
+                            StringConstant.v(method.getSignature()),
+                            IntConstant.v(unitIndex),
+                            StringConstant.v(expression),
+                            IntConstant.v(successorIndex),
+                            StringConstant.v(shape.kind),
+                            StringConstant.v(keys))));
+            endTraceObservationIsolation(path, observationIsolation);
+            path.add(Jimple.v().newGotoStmt(originalTarget));
+            for (Unit unit : path) body.getUnits().add(unit);
+            if (successorIndex == shape.defaultSuccessorIndex) {
+                branch.setDefaultTarget(entry);
+            } else {
+                branch.setTarget(successorIndex, entry);
+            }
+        }
+        return true;
     }
 
     private void insertMethodExit(Body body, Stmt returnUnit, Value returnValue,
@@ -2957,7 +2518,8 @@ public final class CausynthPipeline {
         return !fieldName.isEmpty() && traceFields.names.contains(fieldName);
     }
 
-    private static TraceFieldSelection traceFieldSelection(AnalysisResult result) {
+    private static TraceFieldSelection traceFieldSelection(
+            CausynthAnalysisResult result) {
         TraceFieldSelection selection = new TraceFieldSelection();
         for (Map<String, Object> edge : result.edges) {
             collectTraceFields(selection, String.valueOf(edge.get("fromCell")));
@@ -3189,6 +2751,7 @@ public final class CausynthPipeline {
         private final SootMethodRef recordCallArgument;
         private final SootMethodRef endCall;
         private final SootMethodRef recordBranch;
+        private final SootMethodRef recordSwitchBranch;
         private final SootMethodRef exitMethod;
         private final SootMethodRef throwMethod;
 
@@ -3198,6 +2761,7 @@ public final class CausynthPipeline {
                               SootMethodRef recordCallArgument,
                               SootMethodRef endCall,
                               SootMethodRef recordBranch,
+                              SootMethodRef recordSwitchBranch,
                               SootMethodRef exitMethod,
                               SootMethodRef throwMethod) {
             this.enterMethod = enterMethod;
@@ -3206,6 +2770,7 @@ public final class CausynthPipeline {
             this.recordCallArgument = recordCallArgument;
             this.endCall = endCall;
             this.recordBranch = recordBranch;
+            this.recordSwitchBranch = recordSwitchBranch;
             this.exitMethod = exitMethod;
             this.throwMethod = throwMethod;
         }
@@ -3232,6 +2797,10 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(recorder, "recordBranch",
                             Arrays.asList(LongType.v(), string, IntType.v(),
                                     string, BooleanType.v()), VoidType.v(), true),
+                    Scene.v().makeMethodRef(recorder, "recordSwitchBranch",
+                            Arrays.asList(LongType.v(), string, IntType.v(),
+                                    string, IntType.v(), string, string),
+                            VoidType.v(), true),
                     Scene.v().makeMethodRef(recorder, "exitActiveMethod",
                             Arrays.asList(object, string),
                             VoidType.v(), true),
@@ -3270,6 +2839,7 @@ public final class CausynthPipeline {
         private final SootMethodRef prepareBranch;
         private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
+        private final SootMethodRef resolveSwitchBranch;
         private final SootMethodRef enterBoundedOutputTransformer;
         private final SootMethodRef completeBoundedOutputTransformer;
         private final SootMethodRef exitRegionFrame;
@@ -3302,6 +2872,7 @@ public final class CausynthPipeline {
                                    SootMethodRef prepareBranch,
                                    SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
+                                   SootMethodRef resolveSwitchBranch,
                                    SootMethodRef enterBoundedOutputTransformer,
                                    SootMethodRef completeBoundedOutputTransformer,
                                    SootMethodRef exitRegionFrame,
@@ -3336,6 +2907,7 @@ public final class CausynthPipeline {
             this.prepareBranch = prepareBranch;
             this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
+            this.resolveSwitchBranch = resolveSwitchBranch;
             this.enterBoundedOutputTransformer =
                     enterBoundedOutputTransformer;
             this.completeBoundedOutputTransformer =
@@ -3461,6 +3033,10 @@ public final class CausynthPipeline {
                             Arrays.asList(LongType.v(), LongType.v(), string,
                                     IntType.v(), string,
                                     BooleanType.v()), BooleanType.v(), true),
+                    Scene.v().makeMethodRef(runtime, "resolveSwitchBranch",
+                            Arrays.asList(LongType.v(), LongType.v(), string,
+                                    IntType.v(), string, string, string,
+                                    IntType.v()), IntType.v(), true),
                     Scene.v().makeMethodRef(runtime,
                             "enterBoundedOutputTransformer",
                             Collections.<Type>singletonList(string),
@@ -3476,1027 +3052,6 @@ public final class CausynthPipeline {
                             Arrays.asList(string,
                                     RefType.v("java.lang.Throwable")),
                             VoidType.v(), true));
-        }
-    }
-
-    private static final class ConcolicBranchSelection {
-        private final Map<String, Set<Integer>> unitsByMethod =
-                new LinkedHashMap<>();
-
-        private static ConcolicBranchSelection from(
-                List<Map<String, Object>> regions) {
-            ConcolicBranchSelection result = new ConcolicBranchSelection();
-            for (Map<String, Object> region : regions) {
-                Object value = region.get("branchPolicies");
-                if (!(value instanceof Collection)) {
-                    continue;
-                }
-                for (Object item : (Collection<?>) value) {
-                    if (!(item instanceof Map)) {
-                        continue;
-                    }
-                    Map<?, ?> policy = (Map<?, ?>) item;
-                    String method = stringValue(policy.get("method"));
-                    int unit = intValue(policy.get("unitIndex"), -1);
-                    if (!method.isEmpty() && unit >= 0) {
-                        result.unitsByMethod.computeIfAbsent(method,
-                                ignored -> new LinkedHashSet<>()).add(unit);
-                    }
-                }
-            }
-            return result;
-        }
-
-        private Set<String> methods() {
-            return unitsByMethod.keySet();
-        }
-
-        private Set<Integer> units(String method) {
-            Set<Integer> units = unitsByMethod.get(method);
-            return units == null ? Collections.emptySet() : units;
-        }
-    }
-
-    /**
-     * Resolves the concrete field selected for a heap materialization hook.
-     * Runtime field evidence is authoritative when available.  A cell such as
-     * {@code <Owner: T method()>.return#field:x} names a projection from a
-     * method result; {@code Owner} does not declare {@code x} and must not be
-     * reused as the Soot field owner.
-     */
-    static String[] resolveConcolicFieldTarget(JsonObject action) {
-        String cell = jsonString(action, "cell");
-        String owner = jsonString(action, "accessOwnerClass");
-        String name = jsonString(action, "accessField");
-        JsonElement path = action.get("fieldPath");
-        if (name.isEmpty() && path != null && path.isJsonArray()
-                && path.getAsJsonArray().size() > 0) {
-            name = path.getAsJsonArray().get(0).getAsString();
-        }
-
-        Matcher observed = ConcolicMaterializationSelection.FIELD.matcher(
-                jsonString(action, "field"));
-        if (observed.matches() && !isMethodMember(observed.group(3))) {
-            owner = firstNonBlank(owner, observed.group(1));
-            name = firstNonBlank(name, observed.group(3));
-        }
-
-        Matcher declared = ConcolicMaterializationSelection.FIELD.matcher(cell);
-        if (declared.matches() && !isMethodMember(declared.group(3))) {
-            owner = firstNonBlank(owner, declared.group(1));
-            name = firstNonBlank(name, declared.group(3));
-        } else {
-            name = firstNonBlank(name,
-                    ConcolicMaterializationSelection.projectedField(cell),
-                    ConcolicMaterializationSelection.projectedField(
-                            jsonString(action, "field")));
-        }
-        String normalizedOwner = firstNonBlank(owner);
-        String normalizedName = firstNonBlank(name);
-        return new String[]{normalizedOwner == null ? "" : normalizedOwner,
-                normalizedName == null ? "" : normalizedName};
-    }
-
-    private static boolean isMethodMember(String member) {
-        return member != null && member.indexOf('(') >= 0;
-    }
-
-    /**
-     * The small set of concrete Jimple values that a scheduled activation
-     * asks Soot to expose to the VM.  This is intentionally activation-plan
-     * driven: the static region supplies candidates, while the runtime
-     * instance decides which concrete local/heap owner is authoritative.
-     */
-    private static final class ConcolicMaterializationSelection {
-        private static final Pattern LOCAL = Pattern.compile(
-                "^(<.+>)::([^#]+)(?:#.*)?$");
-        private static final Pattern FIELD = Pattern.compile(
-                "^<([^:]+):\\s+(.+)\\s+([^\\s>]+)>(?:#field:([^#]+))?.*$");
-        private static final String CONSUMED_SITE_AUTHORITY =
-                "RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
-                        + "OWNER_WITHIN_REGION_INSTANCE_V1";
-        private static final String CONSUMED_OCCURRENCE_AUTHORITY =
-                "UNIQUE_CONTAINED_RUNTIME_FIELD_READ_V1";
-        private static final String DIRECT_ROOT_AUTHORITY =
-                "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1";
-        private static final String ARGUMENT_ROOT_AUTHORITY =
-                "ROOT_ARGUMENT_IDENTITY_AT_REGION_ENTRY_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        private static final String RECEIVER_ROOT_AUTHORITY =
-                "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        private static final String LOCAL_ROOT_AUTHORITY =
-                "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
-        private static final String ACCESSOR_CALLSITE_AUTHORITY =
-                "STATIC_UNIQUE_EXACT_DECLARED_FIELD_ACCESSOR_CALLSITE_V1";
-        private static final String ACCESSOR_IMPLEMENTATION_AUTHORITY =
-                "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY";
-        private static final Set<String> EXACT_ACCESS_FIELD_AUTHORITIES =
-                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                        "RUNTIME_FIELD_ACCESS_DECLARATION",
-                        "STATIC_CANONICAL_DECLARED_FIELD",
-                        "STATIC_EXACT_CONTAINER_ELEMENT_FIELD_DECLARATION",
-                        "STATIC_EXACT_CONTAINER_INPUT_FIELD_DECLARATION")));
-        private static final String CONTAINER_INPUT_OBSERVATION_MODE =
-                "CONTAINER_INPUT_OBSERVATION";
-        private static final String MAP_STATE_INPUT_OBSERVATION_MODE =
-                "MAP_STATE_INPUT_OBSERVATION";
-        private static final String FIRST_CONTAINER_OBSERVATION_AUTHORITY =
-                "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
-
-        private final Map<String, Map<String, Set<Integer>>> localsByMethod =
-                new LinkedHashMap<>();
-        private final List<FieldTarget> fields = new ArrayList<>();
-        private final Map<String, AccessorCallTarget> accessorCallsBySite =
-                new LinkedHashMap<>();
-        private final Set<String> boundedOutputCompletionMethods =
-                new LinkedHashSet<>();
-        private final Set<String> boundedOutputDeferredStartMethods =
-                new LinkedHashSet<>();
-        private final List<String> unsupported = new ArrayList<>();
-
-        private static ConcolicMaterializationSelection from(
-                Path activationPlan, String selectedActivation)
-                throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
-            ConcolicMaterializationSelection result =
-                    new ConcolicMaterializationSelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                    StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) {
-                        continue;
-                    }
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        continue;
-                    }
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty()
-                            && !selected.equals(jsonString(row,
-                            "activationId"))) {
-                        continue;
-                    }
-                    if (!jsonBoolean(row, "replayable", true)) {
-                        continue;
-                    }
-                    JsonObject outputSlice = jsonObject(row,
-                            "requestedOutputSlice");
-                    String completionMethod = jsonString(outputSlice,
-                            "boundedOutputCompletionMethod");
-                    if (!completionMethod.isEmpty()
-                            && jsonBoolean(outputSlice,
-                            "boundedOutputCompletionNormalReturnOnly", false)
-                            && "UNIQUE_OUTERMOST_REQUESTED_STATE_"
-                            .concat("TRANSFORMER_IN_FROZEN_CALL_GRAPH_V1")
-                            .equals(jsonString(outputSlice,
-                                    "boundedOutputCompletionAuthority"))) {
-                        result.boundedOutputCompletionMethods.add(
-                                completionMethod);
-                        if (jsonBoolean(outputSlice,
-                                "boundedOutputDeferredEngineStart", false)
-                                && "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_"
-                                .concat("OUTERMOST_TRANSFORMER_ENTRY_V1")
-                                .equals(jsonString(outputSlice,
-                                        "boundedOutputDeferredEngineStartAuthority"))) {
-                            result.boundedOutputDeferredStartMethods.add(
-                                    completionMethod);
-                        }
-                    }
-                    JsonElement materializations = row.get("materializations");
-                    JsonElement legacy = row.get("symbolize");
-                    JsonElement actions = materializations != null
-                            && materializations.isJsonArray()
-                            ? materializations : legacy;
-                    if (actions == null || !actions.isJsonArray()) {
-                        continue;
-                    }
-                    for (JsonElement element : actions.getAsJsonArray()) {
-                        if (element.isJsonObject()) {
-                            result.add(element.getAsJsonObject());
-                        }
-                    }
-                }
-            }
-            if (!result.unsupported.isEmpty()) {
-                throw new IOException("Unsupported concolic materialization: "
-                        + result.unsupported);
-            }
-            return result;
-        }
-
-        private Set<String> boundedOutputCompletionMethods() {
-            return Collections.unmodifiableSet(
-                    boundedOutputCompletionMethods);
-        }
-
-        private Set<String> boundedOutputDeferredStartMethods() {
-            return Collections.unmodifiableSet(
-                    boundedOutputDeferredStartMethods);
-        }
-
-        private void add(JsonObject action) {
-            addAccessorCallTarget(action);
-            String mode = jsonString(action, "bindingMode");
-            String cell = jsonString(action, "cell");
-            if ("LOCAL_DEFINITION".equals(mode)) {
-                String method = jsonString(action, "method");
-                String local = jsonString(action, "local");
-                Matcher matcher = LOCAL.matcher(cell);
-                if (matcher.matches()) {
-                    method = firstNonBlank(method, matcher.group(1));
-                    local = firstNonBlank(local, matcher.group(2));
-                }
-                if (!method.isEmpty() && !local.isEmpty()) {
-                    Map<String, Set<Integer>> locals =
-                            localsByMethod.computeIfAbsent(method,
-                                    ignored -> new LinkedHashMap<>());
-                    Set<Integer> sites = locals.computeIfAbsent(local,
-                            ignored -> new LinkedHashSet<>());
-                    JsonElement definitions = action.get("definitionSites");
-                    if (definitions != null && definitions.isJsonArray()) {
-                        for (JsonElement element
-                                : definitions.getAsJsonArray()) {
-                            if (element.isJsonObject()) {
-                                int site = intJson(element.getAsJsonObject(),
-                                        "unitIndex", -1);
-                                if (site >= 0) {
-                                    sites.add(site);
-                                }
-                            }
-                        }
-                    }
-                }
-                if (declaresArrayValue(action)
-                        && !exactArrayFieldPath(action).isEmpty()) {
-                    addExactArrayLeafTarget(action);
-                }
-                return;
-            }
-            String location = jsonString(action, "location");
-            if (MAP_STATE_INPUT_OBSERVATION_MODE.equals(mode)) {
-                if (!jsonBoolean(action, "mapStateObservationOnly", false)
-                        || jsonBoolean(action, "modelControllable", true)
-                        || !FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
-                        jsonString(action,
-                                "containerObservationAuthority"))
-                        || !declaresMapValue(action)
-                        || !jsonString(action, "cell").equals(jsonString(
-                        action, "mapStateInputCell"))
-                        || !jsonString(action, "cell").equals(jsonString(
-                        action, "mapStateRequestedOutputCell"))) {
-                    unsupported.add("MAP_STATE_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXACT_BOUNDED_MAP_AUTHORITY:"
-                            + jsonString(action, "symbol"));
-                    return;
-                }
-                String[] target = resolveConcolicFieldTarget(action);
-                if (target[0].isEmpty() || target[1].isEmpty()) {
-                    unsupported.add("MAP_STATE_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXACT_DECLARED_FIELD:"
-                            + jsonString(action, "symbol"));
-                    return;
-                }
-                // Keep the ordinary getfield split.  Runtime consumes the
-                // exact field value as an identity/snapshot observation and
-                // deliberately does not invoke VM reference symbolization.
-                fields.add(new FieldTarget(target[0], target[1]));
-                return;
-            }
-            if (CONTAINER_INPUT_OBSERVATION_MODE.equals(mode)) {
-                if (!jsonBoolean(action, "arrayFieldObservationOnly", false)
-                        || !FIRST_CONTAINER_OBSERVATION_AUTHORITY.equals(
-                        jsonString(action,
-                                "containerObservationAuthority"))
-                        || !declaresArrayValue(action)) {
-                    unsupported.add("CONTAINER_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXPLICIT_ARRAY_AUTHORITY:"
-                            + jsonString(action, "symbol"));
-                    return;
-                }
-                String[] target = resolveConcolicFieldTarget(action);
-                if (target[0].isEmpty() || target[1].isEmpty()) {
-                    unsupported.add("CONTAINER_INPUT_OBSERVATION_REQUIRES_"
-                            + "EXACT_DECLARED_FIELD:"
-                            + jsonString(action, "symbol"));
-                    return;
-                }
-                // Observation-only arrays deliberately use the declaration
-                // as a field family.  Every concrete read is joined to its
-                // actual post-getfield value by the existing split hook; the
-                // runtime's explicit first-instance authority selects the
-                // bounded container and treats later reads as aliases or
-                // ignored outer-loop instances.
-                fields.add(new FieldTarget(target[0], target[1]));
-                return;
-            }
-            if (declaresArrayValue(action)) {
-                List<String> fieldPath = exactArrayFieldPath(action);
-                boolean fieldBacked = !fieldPath.isEmpty()
-                        || "FIELD_ACCESS".equals(mode)
-                        || "FIELD".equals(location)
-                        || "HEAP_OBJECT_FIELD".equals(location)
-                        || "RECEIVER_FIELD".equals(location)
-                        || "ARGUMENT_FIELD".equals(location)
-                        || "ARGUMENT_FIELD_PATH".equals(location);
-                if (fieldBacked) {
-                    addExactArrayLeafTarget(action);
-                }
-                // A field-backed ARRAY_VALUE action must be hooked at the
-                // actual leaf getfield, never at an earlier object-valued
-                // component of a nested path.  Direct array arguments and
-                // call returns have no getfield and remain handled by their
-                // existing boundary hooks.
-                return;
-            }
-            if (!"FIELD_ACCESS".equals(mode)
-                    && !"HEAP_OBJECT_FIELD".equals(location)) {
-                return;
-            }
-            String[] target = resolveConcolicFieldTarget(action);
-            if (!target[1].isEmpty()) {
-                fields.add(new FieldTarget(target[0], target[1]));
-            }
-        }
-
-        private void addAccessorCallTarget(JsonObject action) {
-            String caller = jsonString(action, "accessorCallerMethod");
-            String site = jsonString(action, "accessorCallSiteId");
-            int unitIndex = intJson(action, "accessorCallUnitIndex", -1);
-            String callee = jsonString(action, "accessorDeclaredCallee");
-            String authority = jsonString(action,
-                    "accessorCallSiteAuthority");
-            String implementation = jsonString(action,
-                    "accessorImplementationMethod");
-            String implementationAuthority = jsonString(action,
-                    "accessorImplementationAuthority");
-            boolean constrained = !caller.isEmpty() || !site.isEmpty()
-                    || unitIndex >= 0 || !callee.isEmpty()
-                    || !authority.isEmpty() || !implementation.isEmpty()
-                    || !implementationAuthority.isEmpty();
-            if (!constrained) return;
-            if (caller.isEmpty() || unitIndex < 0 || callee.isEmpty()
-                    || !site.equals(caller + "#u" + unitIndex)
-                    || !ACCESSOR_CALLSITE_AUTHORITY.equals(authority)
-                    || implementation.isEmpty()
-                    || !ACCESSOR_IMPLEMENTATION_AUTHORITY.equals(
-                    implementationAuthority)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_REQUIRES_EXACT_"
-                        + "CALLSITE_METADATA:" + jsonString(action,
-                        "symbol"));
-                return;
-            }
-
-            String fieldSignature = jsonString(action,
-                    "accessFieldSignature");
-            String fieldOwner = jsonString(action, "accessOwnerClass");
-            String fieldName = jsonString(action, "accessField");
-            String fieldType = jsonString(action, "accessFieldType");
-            String fieldAuthority = jsonString(action,
-                    "accessFieldAuthority");
-            Matcher declaredField = FIELD.matcher(fieldSignature);
-            if (!declaredField.matches()
-                    || isMethodMember(declaredField.group(3))
-                    || fieldOwner.isEmpty()
-                    || !fieldOwner.equals(declaredField.group(1))
-                    || fieldName.isEmpty()
-                    || !fieldName.equals(declaredField.group(3))
-                    || !fieldType.isEmpty()
-                    && !fieldType.equals(declaredField.group(2))
-                    || !EXACT_ACCESS_FIELD_AUTHORITIES.contains(
-                    fieldAuthority)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_REQUIRES_EXACT_"
-                        + "DECLARED_FIELD_METADATA:" + jsonString(action,
-                        "symbol"));
-                return;
-            }
-            AccessorCallTarget target = new AccessorCallTarget(caller,
-                    unitIndex, site, callee, implementation, fieldSignature,
-                    fieldOwner, fieldName, fieldAuthority);
-            AccessorCallTarget previous = accessorCallsBySite.get(
-                    target.siteIdentity());
-            if (previous != null && !previous.sameMaterialization(target)) {
-                unsupported.add("ACCESSOR_CALL_CONTEXT_AMBIGUOUS_EXACT_"
-                        + "MATERIALIZATION_METADATA:" + site);
-                return;
-            }
-            if (previous == null) {
-                accessorCallsBySite.put(target.siteIdentity(), target);
-            }
-        }
-
-        private void addExactArrayLeafTarget(JsonObject action) {
-            FieldTarget leaf = exactArrayLeafTarget(action);
-            if (leaf == null) {
-                unsupported.add("ARRAY_VALUE_FIELD_REQUIRES_EXACT_LEAF_"
-                        + "DECLARATION_AND_CONSUMED_SITE:"
-                        + jsonString(action, "symbol"));
-            } else {
-                fields.add(leaf);
-            }
-        }
-
-        private static boolean declaresArrayValue(JsonObject action) {
-            if (looksLikeArrayType(firstNonBlank(
-                    jsonString(action, "javaType"),
-                    jsonString(action, "inputJavaType")))) {
-                return true;
-            }
-            for (String field : Arrays.asList(
-                    jsonString(action, "leafFieldSignature"),
-                    jsonString(action, "field"),
-                    jsonString(action, "cell"))) {
-                Matcher matcher = FIELD.matcher(field);
-                if (matcher.matches() && looksLikeArrayType(matcher.group(2))) {
-                    return true;
-                }
-            }
-            JsonElement declarations = action.get(
-                    "fieldPathLeafDeclarations");
-            if (declarations != null && declarations.isJsonArray()) {
-                for (JsonElement element : declarations.getAsJsonArray()) {
-                    if (!element.isJsonObject()) continue;
-                    Matcher matcher = FIELD.matcher(jsonString(
-                            element.getAsJsonObject(), "fieldSignature"));
-                    if (matcher.matches()
-                            && looksLikeArrayType(matcher.group(2))) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        private static boolean declaresMapValue(JsonObject action) {
-            for (String type : Arrays.asList(
-                    jsonString(action, "javaType"),
-                    jsonString(action, "inputJavaType"),
-                    jsonString(action, "accessFieldType"))) {
-                if (looksLikeMapType(type)) {
-                    return true;
-                }
-            }
-            for (String field : Arrays.asList(
-                    jsonString(action, "leafFieldSignature"),
-                    jsonString(action, "accessFieldSignature"),
-                    jsonString(action, "field"),
-                    jsonString(action, "cell"))) {
-                Matcher matcher = FIELD.matcher(field);
-                if (matcher.matches() && looksLikeMapType(matcher.group(2))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static boolean looksLikeMapType(String type) {
-            String candidate = stringValue(firstNonBlank(type)).trim();
-            if (candidate.startsWith("L") && candidate.endsWith(";")) {
-                candidate = candidate.substring(1, candidate.length() - 1)
-                        .replace('/', '.');
-            }
-            if (candidate.isEmpty() || candidate.startsWith("[")
-                    || candidate.endsWith("[]")) {
-                return false;
-            }
-            try {
-                ClassLoader loader = Thread.currentThread()
-                        .getContextClassLoader();
-                Class<?> declared = Class.forName(candidate, false,
-                        loader == null ? CausynthPipeline.class
-                                .getClassLoader() : loader);
-                return Map.class.isAssignableFrom(declared);
-            } catch (Throwable ignored) {
-                return "java.util.Map".equals(candidate);
-            }
-        }
-
-        private static FieldTarget exactArrayLeafTarget(JsonObject action) {
-            String consumedMethod = jsonString(action,
-                    "consumedFieldMethod");
-            int consumedUnit = intJson(action, "consumedFieldUnitIndex", -1);
-            String consumedSite = jsonString(action, "consumedFieldSiteId");
-            String consumedAuthority = jsonString(action,
-                    "consumedFieldSiteAuthority");
-            if (!jsonBoolean(action, "consumedFieldBindingComplete", false)
-                    || intJson(action, "consumedFieldOccurrence", -1) != 1
-                    || !CONSUMED_OCCURRENCE_AUTHORITY.equals(jsonString(
-                    action, "consumedFieldOccurrenceAuthority"))
-                    || consumedMethod.isEmpty() || consumedUnit < 0
-                    || !consumedSite.equals(consumedMethod + "#u"
-                    + consumedUnit)
-                    || !CONSUMED_SITE_AUTHORITY.equals(consumedAuthority)) {
-                return null;
-            }
-            List<String> exactPath = exactArrayFieldPath(action);
-            String rootAuthority = jsonString(action,
-                    "consumedFieldRootAuthority");
-            String location = jsonString(action, "location");
-            String bindingMode = jsonString(action, "bindingMode");
-            boolean argumentRoot = "ARGUMENT_FIELD".equals(location)
-                    || "ARGUMENT_FIELD_PATH".equals(location);
-            boolean receiverRoot = "RECEIVER_FIELD".equals(location);
-            boolean localRoot = "LOCAL_DEFINITION".equals(bindingMode);
-            boolean fieldAccessRoot = !argumentRoot && !receiverRoot
-                    && !localRoot && ("FIELD_ACCESS".equals(bindingMode)
-                    || "FIELD".equals(location)
-                    || "HEAP_OBJECT_FIELD".equals(location));
-            // A generic HEAP_OBJECT_FIELD can still be proven to be rooted at
-            // the region receiver by runtime object identity.  The Runtime
-            // registers receiver-authority actions at enterRegion regardless
-            // of their observational location.  A direct field root has no
-            // such entry identity and is intentionally limited to one leaf.
-            boolean rootAuthorityMatches = argumentRoot
-                    ? ARGUMENT_ROOT_AUTHORITY.equals(rootAuthority)
-                    : receiverRoot
-                    ? RECEIVER_ROOT_AUTHORITY.equals(rootAuthority)
-                    : localRoot
-                    ? LOCAL_ROOT_AUTHORITY.equals(rootAuthority)
-                    : fieldAccessRoot && (RECEIVER_ROOT_AUTHORITY.equals(
-                    rootAuthority) || exactPath.size() == 1
-                    && DIRECT_ROOT_AUTHORITY.equals(rootAuthority));
-            boolean rootBindingComplete = !argumentRoot
-                    || intJson(action, "index", -1) >= 0;
-            if (localRoot) {
-                rootBindingComplete = hasOneExactLocalDefinition(action);
-            }
-            if (exactPath.isEmpty() || !rootAuthorityMatches
-                    || !rootBindingComplete) {
-                return null;
-            }
-            String expectedLeaf = jsonString(action, "leafField");
-            if (!exactPath.isEmpty()) {
-                expectedLeaf = exactPath.get(exactPath.size() - 1);
-            }
-
-            Set<String> signatures = new LinkedHashSet<>();
-            signatures.add(jsonString(action, "leafFieldSignature"));
-            signatures.add(jsonString(action, "field"));
-            signatures.add(jsonString(action, "cell"));
-            signatures.add(jsonString(action, "accessFieldSignature"));
-            JsonElement declarations = action.get("fieldPathLeafDeclarations");
-            if (declarations != null && declarations.isJsonArray()) {
-                for (JsonElement element : declarations.getAsJsonArray()) {
-                    if (element.isJsonObject()) {
-                        signatures.add(jsonString(element.getAsJsonObject(),
-                                "fieldSignature"));
-                    }
-                }
-            }
-
-            FieldTarget selected = null;
-            for (String signature : signatures) {
-                Matcher matcher = FIELD.matcher(stringValue(
-                        firstNonBlank(signature)));
-                if (!matcher.matches() || isMethodMember(matcher.group(3))
-                        || !looksLikeArrayType(matcher.group(2))
-                        || !expectedLeaf.isEmpty()
-                        && !expectedLeaf.equals(matcher.group(3))) {
-                    continue;
-                }
-                FieldTarget candidate = new FieldTarget(matcher.group(1),
-                        matcher.group(3), consumedMethod, consumedUnit, true);
-                if (selected != null
-                        && (!selected.owner.equals(candidate.owner)
-                        || !selected.name.equals(candidate.name)
-                        || !selected.method.equals(candidate.method)
-                        || selected.unitIndex != candidate.unitIndex)) {
-                    return null;
-                }
-                selected = candidate;
-            }
-            return selected;
-        }
-
-        private static boolean hasOneExactLocalDefinition(JsonObject action) {
-            String method = jsonString(action, "method");
-            String local = jsonString(action, "local");
-            Matcher localCell = LOCAL.matcher(jsonString(action, "cell"));
-            if (localCell.matches()) {
-                method = firstNonBlank(method, localCell.group(1));
-                local = firstNonBlank(local, localCell.group(2));
-            }
-            JsonElement definitions = action.get("definitionSites");
-            return !method.isEmpty() && !local.isEmpty()
-                    && definitions != null && definitions.isJsonArray()
-                    && definitions.getAsJsonArray().size() == 1
-                    && definitions.getAsJsonArray().get(0).isJsonObject()
-                    && intJson(definitions.getAsJsonArray().get(0)
-                    .getAsJsonObject(), "unitIndex", -1) >= 0;
-        }
-
-        private static List<String> exactArrayFieldPath(JsonObject action) {
-            List<String> path = new ArrayList<>();
-            JsonElement direct = action.get("fieldPath");
-            if (direct != null && direct.isJsonArray()) {
-                for (JsonElement segment : direct.getAsJsonArray()) {
-                    if (!segment.isJsonPrimitive()
-                            || segment.getAsString().trim().isEmpty()) {
-                        return Collections.emptyList();
-                    }
-                    path.add(segment.getAsString().trim());
-                }
-                if (!path.isEmpty()) return path;
-            }
-            JsonElement paths = action.get("fieldPaths");
-            if (paths == null || !paths.isJsonArray()
-                    || paths.getAsJsonArray().size() != 1
-                    || !paths.getAsJsonArray().get(0).isJsonArray()) {
-                return Collections.emptyList();
-            }
-            for (JsonElement segment : paths.getAsJsonArray().get(0)
-                    .getAsJsonArray()) {
-                if (!segment.isJsonPrimitive()
-                        || segment.getAsString().trim().isEmpty()) {
-                    return Collections.emptyList();
-                }
-                path.add(segment.getAsString().trim());
-            }
-            return path;
-        }
-
-        private static boolean looksLikeArrayType(String javaType) {
-            String normalized = firstNonBlank(javaType);
-            return normalized != null && (normalized.startsWith("[")
-                    || normalized.endsWith("[]"));
-        }
-
-        private static String projectedField(String value) {
-            if (value == null || value.isEmpty()) {
-                return "";
-            }
-            int projection = value.indexOf("#field:");
-            if (projection >= 0) {
-                int end = value.indexOf('#', projection + 7);
-                return value.substring(projection + 7,
-                        end < 0 ? value.length() : end).trim();
-            }
-            Matcher matcher = FIELD.matcher(value);
-            return matcher.matches() ? matcher.group(3) : "";
-        }
-
-        private boolean isEmpty() {
-            return localsByMethod.isEmpty() && fields.isEmpty()
-                    && accessorCallsBySite.isEmpty();
-        }
-
-        private Set<String> localMethods() {
-            return localsByMethod.keySet();
-        }
-
-        private Set<String> accessorCallerMethods() {
-            Set<String> methods = new LinkedHashSet<>();
-            for (AccessorCallTarget target : accessorCallsBySite.values()) {
-                methods.add(target.callerMethod);
-            }
-            return methods;
-        }
-
-        private Collection<AccessorCallTarget> accessorCalls() {
-            return accessorCallsBySite.values();
-        }
-
-        private boolean matches(String method, String local, int unitIndex) {
-            Map<String, Set<Integer>> locals = localsByMethod.get(method);
-            if (locals == null || !locals.containsKey(local)) {
-                return false;
-            }
-            Set<Integer> sites = locals.get(local);
-            return sites.isEmpty() || sites.contains(unitIndex);
-        }
-
-        private static int intJson(JsonObject object, String field,
-                                   int fallback) {
-            JsonElement value = object.get(field);
-            try {
-                return value == null || value.isJsonNull()
-                        ? fallback : value.getAsInt();
-            } catch (RuntimeException ignored) {
-                return fallback;
-            }
-        }
-
-        private boolean matches(String method, int unitIndex,
-                                SootFieldRef field) {
-            if (field == null) {
-                return false;
-            }
-            SootClass declaringClass = field.declaringClass();
-            String owner = declaringClass == null ? ""
-                    : stringValue(declaringClass.getName());
-            String fieldName = stringValue(field.name());
-            for (FieldTarget target : fields) {
-                if (target.name.equals(fieldName)
-                        && (target.owner.isEmpty()
-                        || target.owner.equals(owner))
-                        && (!target.exactSite
-                        || target.method.equals(method)
-                        && target.unitIndex == unitIndex)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-    }
-
-    /**
-     * Theory-neutral replay actions consumed by the bytecode transformer.
-     * At present the protocol supports reference-valued assignment results;
-     * additional value kinds can be added without importing project classes
-     * or solver-specific logic into this layer.
-     */
-    private static final class ConcolicReplaySelection {
-        private final Map<String, ReplayTarget> targetsBySite =
-                new LinkedHashMap<>();
-
-        private static ConcolicReplaySelection from(
-                Path activationPlan, String selectedActivation)
-                throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
-            ConcolicReplaySelection result = new ConcolicReplaySelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                    StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) {
-                        continue;
-                    }
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        continue;
-                    }
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty()
-                            && !selected.equals(jsonString(row,
-                            "activationId"))) {
-                        continue;
-                    }
-                    if (!jsonBoolean(row, "replayable", true)) {
-                        continue;
-                    }
-                    JsonElement actions = row.get("replayMaterializations");
-                    if (actions == null || !actions.isJsonArray()) {
-                        continue;
-                    }
-                    for (JsonElement element : actions.getAsJsonArray()) {
-                        if (!element.isJsonObject()) {
-                            continue;
-                        }
-                        JsonObject action = element.getAsJsonObject();
-                        if (!"REFERENCE_RESULT".equals(
-                                jsonString(action, "kind"))) {
-                            continue;
-                        }
-                        String method = jsonString(action, "method");
-                        int unitIndex = ConcolicMaterializationSelection.intJson(
-                                action, "unitIndex", -1);
-                        if (!method.isEmpty() && unitIndex >= 0) {
-                            ReplayTarget target = new ReplayTarget(method,
-                                    unitIndex);
-                            result.targetsBySite.put(
-                                    method + "#u" + unitIndex, target);
-                        }
-                    }
-                }
-            }
-            return result;
-        }
-
-        private Set<String> methods() {
-            Set<String> result = new LinkedHashSet<>();
-            for (ReplayTarget target : targetsBySite.values()) {
-                result.add(target.method);
-            }
-            return result;
-        }
-
-        private Collection<ReplayTarget> targets() {
-            return targetsBySite.values();
-        }
-    }
-
-    private static final class ReplayTarget {
-        private final String method;
-        private final int unitIndex;
-
-        private ReplayTarget(String method, int unitIndex) {
-            this.method = method;
-            this.unitIndex = unitIndex;
-        }
-    }
-
-    /** Exact activation-selected outbound argument sites. */
-    private static final class ConcolicOutputCaptureSelection {
-        private final Map<String, OutputCaptureTarget> targetsByIdentity =
-                new LinkedHashMap<>();
-
-        private static ConcolicOutputCaptureSelection from(
-                Path activationPlan, String selectedActivation)
-                throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(
-                    activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
-            ConcolicOutputCaptureSelection result =
-                    new ConcolicOutputCaptureSelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(
-                    activationPlan, StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) continue;
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) continue;
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty() && !selected.equals(jsonString(
-                            row, "activationId"))) continue;
-                    if (!jsonBoolean(row, "replayable", true)) continue;
-                    JsonElement captures = row.get(
-                            "requestedOutputCapture");
-                    if (captures == null || !captures.isJsonArray()) continue;
-                    for (JsonElement element : captures.getAsJsonArray()) {
-                        if (!element.isJsonObject()) continue;
-                        OutputCaptureTarget target = new OutputCaptureTarget(
-                                element.getAsJsonObject());
-                        if (!target.valid()) continue;
-                        result.targetsByIdentity.put(target.identity(), target);
-                    }
-                }
-            }
-            return result;
-        }
-
-        private Set<String> methods() {
-            Set<String> result = new LinkedHashSet<>();
-            for (OutputCaptureTarget target : targetsByIdentity.values()) {
-                result.add(target.instrumentedMethod());
-            }
-            return result;
-        }
-
-        private Collection<OutputCaptureTarget> targets() {
-            return targetsByIdentity.values();
-        }
-    }
-
-    private static final class OutputCaptureTarget {
-        private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
-        private static final String METHOD_RETURN_VALUE =
-                "METHOD_RETURN_VALUE";
-        private static final String FIELD_ASSIGNMENT_RHS =
-                "FIELD_ASSIGNMENT_RHS";
-
-        private final String captureKind;
-        private final String captureBindingId;
-        private final String outputPort;
-        private final String outputCell;
-        private final String method;
-        private final String callerMethod;
-        private final int unitIndex;
-        private final String siteId;
-        private final String calleeMethod;
-        private final int argumentIndex;
-        private final String fieldSignature;
-        private final int occurrence;
-
-        private OutputCaptureTarget(JsonObject json) {
-            this.captureKind = firstNonBlank(
-                    jsonString(json, "captureKind"), CALL_ARGUMENT);
-            this.captureBindingId = jsonString(json, "captureBindingId");
-            this.outputPort = jsonString(json, "outputPort");
-            this.outputCell = jsonString(json, "outputCell");
-            this.callerMethod = jsonString(json, "callerMethod");
-            this.method = stringValue(firstNonBlank(
-                    jsonString(json, "method"), this.callerMethod));
-            this.unitIndex = ConcolicMaterializationSelection.intJson(json,
-                    "unitIndex", -1);
-            this.siteId = jsonString(json, "siteId");
-            this.calleeMethod = jsonString(json, "calleeMethod");
-            this.argumentIndex = ConcolicMaterializationSelection.intJson(
-                    json, "argumentIndex", -1);
-            this.fieldSignature = stringValue(firstNonBlank(
-                    jsonString(json, "fieldSignature"),
-                    jsonString(json, "field")));
-            this.occurrence = ConcolicMaterializationSelection.intJson(json,
-                    "occurrence", 0);
-        }
-
-        private boolean valid() {
-            if (captureBindingId.isEmpty() || outputPort.isEmpty()
-                    || outputCell.isEmpty() || unitIndex < 0
-                    || siteId.isEmpty() || occurrence <= 0) {
-                return false;
-            }
-            if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
-                return !method.isEmpty() && !fieldSignature.isEmpty();
-            }
-            if (METHOD_RETURN_VALUE.equals(captureKind)) {
-                return !method.isEmpty();
-            }
-            return CALL_ARGUMENT.equals(captureKind)
-                    && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
-                    && argumentIndex >= 0;
-        }
-
-        private String identity() {
-            return captureKind + "\n" + instrumentedMethod() + "\n"
-                    + unitIndex + "\n" + siteId + "\n" + calleeMethod
-                    + "\n" + argumentIndex + "\n" + fieldSignature + "\n"
-                    + outputPort + "\n" + outputCell + "\n"
-                    + captureBindingId + "\n" + occurrence;
-        }
-
-        private boolean isFieldAssignmentRhs() {
-            return FIELD_ASSIGNMENT_RHS.equals(captureKind);
-        }
-
-        private boolean isMethodReturnValue() {
-            return METHOD_RETURN_VALUE.equals(captureKind);
-        }
-
-        private String instrumentedMethod() {
-            return isFieldAssignmentRhs() || isMethodReturnValue()
-                    ? method : callerMethod;
-        }
-    }
-
-    private static final class AccessorCallTarget {
-        private final String callerMethod;
-        private final int callUnitIndex;
-        private final String callSiteId;
-        private final String declaredCallee;
-        private final String implementationMethod;
-        private final String fieldSignature;
-        private final String fieldOwner;
-        private final String fieldName;
-        private final String fieldAuthority;
-
-        private AccessorCallTarget(String callerMethod, int callUnitIndex,
-                                   String callSiteId,
-                                   String declaredCallee,
-                                   String implementationMethod,
-                                   String fieldSignature,
-                                   String fieldOwner, String fieldName,
-                                   String fieldAuthority) {
-            this.callerMethod = callerMethod;
-            this.callUnitIndex = callUnitIndex;
-            this.callSiteId = callSiteId;
-            this.declaredCallee = declaredCallee;
-            this.implementationMethod = implementationMethod;
-            this.fieldSignature = fieldSignature;
-            this.fieldOwner = fieldOwner;
-            this.fieldName = fieldName;
-            this.fieldAuthority = fieldAuthority;
-        }
-
-        private String siteIdentity() {
-            return callerMethod + "#u" + callUnitIndex;
-        }
-
-        private boolean sameMaterialization(AccessorCallTarget other) {
-            return other != null
-                    && declaredCallee.equals(other.declaredCallee)
-                    && implementationMethod.equals(
-                    other.implementationMethod)
-                    && fieldSignature.equals(other.fieldSignature)
-                    && fieldOwner.equals(other.fieldOwner)
-                    && fieldName.equals(other.fieldName)
-                    && fieldAuthority.equals(other.fieldAuthority);
-        }
-    }
-
-    private static final class FieldTarget {
-        private final String owner;
-        private final String name;
-        private final String method;
-        private final int unitIndex;
-        private final boolean exactSite;
-
-        private FieldTarget(String owner, String name) {
-            this(owner, name, "", -1, false);
-        }
-
-        private FieldTarget(String owner, String name, String method,
-                            int unitIndex, boolean exactSite) {
-            String normalizedOwner = firstNonBlank(owner);
-            String normalizedName = firstNonBlank(name);
-            this.owner = normalizedOwner == null ? "" : normalizedOwner;
-            this.name = normalizedName == null ? "" : normalizedName;
-            String normalizedMethod = firstNonBlank(method);
-            this.method = normalizedMethod == null ? "" : normalizedMethod;
-            this.unitIndex = unitIndex;
-            this.exactSite = exactSite;
         }
     }
 
@@ -4594,197 +3149,6 @@ public final class CausynthPipeline {
         }
     }
 
-    private static final class TargetContext {
-        private final Path repoRoot;
-        private final Path moduleDir;
-        private final Path outputDir;
-        private final Path specPath;
-        private final List<String> seedVariables;
-        private final String seedFunction;
-        private final String seedException;
-        private final String analysisScope;
-        private final Path rpcMappingFile;
-        private TargetContext(Path repoRoot, Path moduleDir, Path outputDir,
-                              Path specPath, List<String> seedVariables,
-                              String seedFunction, String seedException,
-                              String analysisScope, Path rpcMappingFile) {
-            this.repoRoot = repoRoot;
-            this.moduleDir = moduleDir;
-            this.outputDir = outputDir;
-            this.specPath = specPath;
-            this.seedVariables = seedVariables;
-            this.seedFunction = seedFunction;
-            this.seedException = seedException;
-            this.analysisScope = analysisScope;
-            this.rpcMappingFile = rpcMappingFile;
-        }
-
-        static TargetContext resolve(GraphCheckerOptions options) throws IOException {
-            Map<String, String> config = readConfig(options.getConfigFilePath());
-            Path specPath = Paths.get(firstNonBlank(
-                    System.getProperty("causynth.target.spec"),
-                    config.get("causynth_target_spec"),
-                    "target.yaml")).toAbsolutePath().normalize();
-            TargetSpec spec = TargetSpec.load(specPath);
-            Path repo = Paths.get(firstNonBlank(
-                    System.getProperty("causynth.repo"),
-                    config.get("causynth_repo"),
-                    config.get("system_dir_path"),
-                    ".")).toAbsolutePath().normalize();
-            Path module = Paths.get(firstNonBlank(
-                    System.getProperty("causynth.module.dir"),
-                    config.get("causynth_module_dir"),
-                    repo.toString())).toAbsolutePath().normalize();
-            Path output = Paths.get(firstNonBlank(
-                    System.getProperty("causynth.output.dir"),
-                    config.get("causynth_output_dir"),
-                    "causynth-output/seed-backward")).toAbsolutePath().normalize();
-            String scope = firstNonBlank(
-                    System.getProperty("causynth.analysis.scope"),
-                    config.get("causynth_analysis_scope"),
-                    config.get("causynth_scope"),
-                    "");
-            String rpcMapping = firstNonBlank(
-                    System.getProperty("causynth.rpc.mapping.file"),
-                    System.getenv("CAUSYNTH_RPC_MAPPING_FILE"),
-                    config.get("rpc_mapping_file"),
-                    config.get("causynth_rpc_mapping_file"));
-            return new TargetContext(repo, module, output, specPath,
-                    spec.seedVariables, spec.seedFunction, spec.seedException,
-                    scope, rpcMapping == null ? null : Paths.get(rpcMapping)
-                    .toAbsolutePath().normalize());
-        }
-
-        boolean hasSeed() {
-            return seedException != null && !seedException.trim().isEmpty()
-                    || !seedVariables.isEmpty();
-        }
-
-        boolean exceptionSeeded() {
-            return seedException != null && !seedException.trim().isEmpty();
-        }
-
-        String seedMode() {
-            return exceptionSeeded() ? "EXCEPTION_AUTO" : "VARIABLE_COMPATIBILITY";
-        }
-
-        String seedDescription() {
-            return exceptionSeeded() ? seedException : String.valueOf(seedVariables);
-        }
-
-        String seedPredicate() {
-            if (exceptionSeeded()) {
-                return "throws " + seedException;
-            }
-            if (seedVariables.size() >= 2) {
-                return seedVariables.get(0) + ".get(" + seedVariables.get(1) + ") == null";
-            }
-            return seedVariables.isEmpty() ? "" : seedVariables.get(0);
-        }
-
-        String seedMapName() {
-            return seedVariables.isEmpty() ? "" : seedVariables.get(0);
-        }
-
-        String seedKeyExpression() {
-            return seedVariables.size() < 2 ? "" : seedVariables.get(1);
-        }
-
-        String seedKeyMethodName() {
-            Matcher dottedCall = Pattern.compile("\\.\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(")
-                    .matcher(seedKeyExpression());
-            if (dottedCall.find()) {
-                return dottedCall.group(1);
-            }
-            Matcher bareCall = Pattern.compile("^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(")
-                    .matcher(seedKeyExpression());
-            if (bareCall.find()) {
-                return bareCall.group(1);
-            }
-            return "";
-        }
-    }
-
-    private static final class TargetSpec {
-        private final List<String> seedVariables;
-        private final String seedFunction;
-        private final String seedException;
-
-        private TargetSpec(List<String> seedVariables, String seedFunction,
-                           String seedException) {
-            this.seedVariables = seedVariables;
-            this.seedFunction = seedFunction;
-            this.seedException = seedException;
-        }
-
-        static TargetSpec load(Path path) throws IOException {
-            if (!Files.isRegularFile(path)) {
-                return new TargetSpec(Collections.emptyList(), null, null);
-            }
-            List<String> variables = new ArrayList<>();
-            String seedFunction = null;
-            String seedException = null;
-            boolean inSeedVariables = false;
-            for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    continue;
-                }
-                if (!line.startsWith(" ") && trimmed.contains(":")
-                        && !trimmed.endsWith(":")) {
-                    String key = trimmed.substring(0, trimmed.indexOf(':')).trim();
-                    String value = unquote(trimmed.substring(trimmed.indexOf(':') + 1)
-                            .trim());
-                    if ("seed_function".equals(key) || "seed_method".equals(key)) {
-                        seedFunction = value;
-                    }
-                    if ("seed_exception".equals(key)
-                            || "target_exception".equals(key)
-                            || "exception".equals(key)) {
-                        seedException = value;
-                    }
-                    inSeedVariables = false;
-                    continue;
-                }
-                if (!line.startsWith(" ") && trimmed.endsWith(":")) {
-                    inSeedVariables = "seed_variables".equals(trimmed.substring(0,
-                            trimmed.length() - 1));
-                    continue;
-                }
-                if (inSeedVariables && trimmed.startsWith("- ")) {
-                    String variable = trimmed.substring(2).trim();
-                    if (!variable.isEmpty()) {
-                        variables.add(variable);
-                    }
-                }
-            }
-            return new TargetSpec(variables, seedFunction, seedException);
-        }
-
-        private static String unquote(String value) {
-            if ((value.startsWith("\"") && value.endsWith("\""))
-                    || (value.startsWith("'") && value.endsWith("'"))) {
-                return value.substring(1, value.length() - 1);
-            }
-            return value;
-        }
-    }
-
-    private static final class AnalysisResult {
-        private final List<Map<String, Object>> seeds = new ArrayList<>();
-        private final List<Map<String, Object>> cells = new ArrayList<>();
-        private final List<Map<String, Object>> edges = new ArrayList<>();
-        private final List<Map<String, Object>> traceMethods = new ArrayList<>();
-        private final List<Map<String, Object>> symbolicPlan = new ArrayList<>();
-        private final List<Map<String, Object>> symbolicRegions = new ArrayList<>();
-        private final List<Map<String, Object>> symbolicRegionEdges = new ArrayList<>();
-        private final List<Map<String, Object>> symbolicModels = new ArrayList<>();
-        private final Map<String, Object> symbolicCoverage = object();
-        private final Map<String, Object> automaticDerivationBoundary = object();
-        private final Map<String, Object> slices = object();
-        private final Map<String, Object> targetResolved = object();
-    }
-
     private static final class SeedBackwardStaticAnalyzer {
         private static final int MAX_ROUNDS = 96;
         private static final int DEFAULT_MAX_METHODS = 1000;
@@ -4811,7 +3175,7 @@ public final class CausynthPipeline {
         private static final String COMMON_SECRET_MANAGER =
                 "org.apache.hadoop.security.token.SecretManager";
 
-        private final TargetContext target;
+        private final CausynthTargetContext target;
         private final int maxMethods;
         private final int maxEdges;
         private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
@@ -4874,7 +3238,7 @@ public final class CausynthPipeline {
         private int projectedPassCandidates;
         private int projectedPassEmitted;
 
-        private SeedBackwardStaticAnalyzer(TargetContext target) {
+        private SeedBackwardStaticAnalyzer(CausynthTargetContext target) {
             this.target = target;
             this.maxMethods = positiveSystemProperty(MAX_METHODS_PROPERTY,
                     DEFAULT_MAX_METHODS);
@@ -5757,8 +4121,8 @@ public final class CausynthPipeline {
             return false;
         }
 
-        AnalysisResult analyze() throws IOException {
-            AnalysisResult result = new AnalysisResult();
+        CausynthAnalysisResult analyze() throws IOException {
+            CausynthAnalysisResult result = new CausynthAnalysisResult();
             result.targetResolved.put("seedMode", target.seedMode());
             result.targetResolved.put("seedException", target.seedException);
             result.targetResolved.put("seedVariables", target.seedVariables);
@@ -5875,7 +4239,8 @@ public final class CausynthPipeline {
             return result;
         }
 
-        private void addStaticAnalysisBudgetSummary(AnalysisResult result) {
+        private void addStaticAnalysisBudgetSummary(
+                CausynthAnalysisResult result) {
             boolean methodCapReached = selectedMethods.size() >= maxMethods;
             boolean edgeCapReached = edges.size() >= maxEdges;
             Map<String, Object> budget = object(
@@ -6057,7 +4422,7 @@ public final class CausynthPipeline {
             return returnsString && readsKeyId;
         }
 
-        private void finishSeedDiscovery(AnalysisResult result) {
+        private void finishSeedDiscovery(CausynthAnalysisResult result) {
             result.seeds.addAll(discoveredExceptionSeeds);
             result.targetResolved.put("discoveredSeedCount",
                     discoveredExceptionSeeds.size());
@@ -6653,6 +5018,21 @@ public final class CausynthPipeline {
                                     "dominating branch requires Jimple outcome "
                                             + guard.requiredOutcome
                                             + " to reach target throw");
+                            Map<String, Object> edge = emittedEdgeRows.get(
+                                    edgeKey("exception_guard", node,
+                                            exceptionNode, method,
+                                            guard.fact));
+                            if (edge != null) {
+                                ControlDependenceEdgeSupport
+                                        .annotatePathGuard(edge, method,
+                                                guard.fact.unitIndex,
+                                                throwFact.unitIndex,
+                                                throwFact.unitText,
+                                                guard.requiredOutcome,
+                                                guard.reachingSuccessorIndices,
+                                                node, exceptionNode);
+                                guard.branchShape.annotate(edge);
+                            }
                         }
                         pathGuards.add(object(
                                 "siteId", stableSiteId(method,
@@ -6662,7 +5042,14 @@ public final class CausynthPipeline {
                                 "jimpleCondition", guard.condition,
                                 "requiredOutcome", guard.requiredOutcome,
                                 "reachingSuccessorIndices",
-                                guard.reachingSuccessorIndices));
+                                guard.reachingSuccessorIndices,
+                                "branchKind", guard.branchShape.kind,
+                                "switchCaseKeys",
+                                guard.branchShape.caseKeys,
+                                "defaultSuccessorIndex",
+                                guard.branchShape.defaultSuccessorIndex,
+                                "successorIndexAuthority",
+                                "STATIC_BRANCH_CASE_ORDER_THEN_DEFAULT_V1"));
                     }
 
                     selectedMethods.add(method);
@@ -6793,10 +5180,13 @@ public final class CausynthPipeline {
                 if (!candidate.isBranch || !dominators.contains(candidate.unit)) {
                     continue;
                 }
-                List<Unit> successors = graph.getSuccsOf(candidate.unit);
-                if (successors.size() < 2) {
+                CausynthBranchShape branchShape =
+                        CausynthBranchShape.from(body, candidate.unit);
+                if (branchShape == null
+                        || branchShape.successorCount() < 2) {
                     continue;
                 }
+                List<Unit> successors = branchShape.successors;
                 int reachingSuccessors = 0;
                 List<Integer> reachingIndices = new ArrayList<>();
                 for (int successorIndex = 0;
@@ -6830,7 +5220,8 @@ public final class CausynthPipeline {
                             }
                         }
                         guards.add(new ExceptionGuard(guard, condition,
-                                requiredOutcome, reachingIndices));
+                                requiredOutcome, reachingIndices,
+                                branchShape));
                     }
                 }
             }
@@ -7265,12 +5656,26 @@ public final class CausynthPipeline {
                         continue;
                     }
                     for (String def : relevantDefs) {
-                        changed |= addEdge("path_guard_dependency", guardNode, def,
-                                method, guard.fact,
+                        changed |= addEdge(
+                                ControlDependenceEdgeSupport.PATH_GUARD_KIND,
+                                guardNode, def, method, guard.fact,
                                 "dominating branch requires Jimple outcome "
                                         + guard.requiredOutcome
                                         + " to reach relevant definition at u"
                                         + targetFact.unitIndex);
+                        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
+                                ControlDependenceEdgeSupport.PATH_GUARD_KIND,
+                                guardNode, def, method, guard.fact));
+                        if (edge != null) {
+                            ControlDependenceEdgeSupport.annotatePathGuard(
+                                    edge, method, guard.fact.unitIndex,
+                                    targetFact.unitIndex,
+                                    targetFact.unitText,
+                                    guard.requiredOutcome,
+                                    guard.reachingSuccessorIndices,
+                                    guardNode, def);
+                            guard.branchShape.annotate(edge);
+                        }
                     }
                     changed |= relevant.add(guardNode);
                 }
@@ -7437,59 +5842,17 @@ public final class CausynthPipeline {
             boolean changed = addEdge("heap_mutation_path_guard", guardNode,
                     mutatedCell, method, guard.fact, evidence);
             String key = edgeKey("heap_mutation_path_guard", guardNode,
-                    mutatedCell, method);
+                    mutatedCell, method, guard.fact);
             Map<String, Object> edge = emittedEdgeRows.get(key);
             if (edge == null) {
                 return changed;
             }
-
-            String guardSiteId = stableSiteId(method,
-                    guard.fact.unitIndex, "heap_mutation_path_guard");
-            String mutationSiteId = stableSiteId(method,
-                    mutation.unitIndex, "field_mutation");
-            edge.put("guardSiteId", guardSiteId);
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> guardedMutations =
-                    edge.get("guardedMutations") instanceof List
-                            ? (List<Map<String, Object>>) edge.get(
-                            "guardedMutations") : new ArrayList<>();
-            if (!edge.containsKey("guardedMutations")) {
-                edge.put("guardedMutations", guardedMutations);
-            }
-            boolean present = false;
-            for (Map<String, Object> item : guardedMutations) {
-                if (mutationSiteId.equals(stringValue(
-                        item.get("guardedMutationSiteId")))
-                        && java.util.Objects.equals(guard.requiredOutcome,
-                        item.get("requiredOutcome"))) {
-                    present = true;
-                    break;
-                }
-            }
-            if (!present) {
-                guardedMutations.add(object(
-                        "guardSiteId", guardSiteId,
-                        "guardedMutationSiteId", mutationSiteId,
-                        "method", method,
-                        "unitIndex", mutation.unitIndex,
-                        "requiredOutcome", guard.requiredOutcome));
-                changed = true;
-            }
-            edge.put("guardedMutationCount", guardedMutations.size());
-            edge.put("guardedMutationsAuthority",
-                    "STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE");
-            if (guardedMutations.size() == 1) {
-                edge.put("guardedMutationSiteId", mutationSiteId);
-                edge.put("requiredOutcome", guard.requiredOutcome);
-            } else {
-                // The array is authoritative when one guard/state dependency
-                // represents several mutation sites (possibly on opposite
-                // successors). A singular alias would silently discard that
-                // distinction, so remove it once cardinality exceeds one.
-                edge.remove("guardedMutationSiteId");
-                edge.remove("requiredOutcome");
-            }
-            return changed;
+            boolean annotated = ControlDependenceEdgeSupport
+                    .annotateGuardedMutation(
+                    edge, method, guard.fact.unitIndex, mutation.unitIndex,
+                    guard.requiredOutcome, guard.reachingSuccessorIndices);
+            guard.branchShape.annotate(edge);
+            return annotated || changed;
         }
 
         private boolean processFieldWrite(String method, Fact fact, Set<String> relevant,
@@ -7859,53 +6222,18 @@ public final class CausynthPipeline {
                     "dominating branch controls relevant receiver field effect at call u"
                             + callsite.fact.unitIndex);
             Map<String, Object> edge = emittedEdgeRows.get(edgeKey(kind,
-                    guardNode, effectField, callsite.method));
+                    guardNode, effectField, callsite.method, guard.fact));
             if (edge == null) {
                 return changed;
             }
-            String guardSiteId = stableSiteId(callsite.method,
-                    guard.fact.unitIndex, kind);
-            String effectSiteId = stableSiteId(callsite.method,
-                    callsite.fact.unitIndex,
-                    "method_receiver_field_effect");
-            edge.put("guardSiteId", guardSiteId);
-            edge.put("calleeMethod", calleeMethod);
-            edge.put("effectField", effectField);
-            edge.put("effectSiteId", effectSiteId);
-            edge.put("effectAuthority",
-                    "GLOBAL_WRITER_INDEX_AND_EXACT_CALLSITE_CONTROL_DEPENDENCE_V1");
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> effects =
-                    edge.get("guardedEffects") instanceof List
-                            ? (List<Map<String, Object>>) edge.get(
-                            "guardedEffects") : new ArrayList<>();
-            if (!edge.containsKey("guardedEffects")) {
-                edge.put("guardedEffects", effects);
-            }
-            boolean present = effects.stream().anyMatch(item ->
-                    effectSiteId.equals(stringValue(item.get("effectSiteId")))
-                            && java.util.Objects.equals(
-                            guard.requiredOutcome,
-                            item.get("requiredOutcome")));
-            if (!present) {
-                effects.add(object(
-                        "guardSiteId", guardSiteId,
-                        "effectSiteId", effectSiteId,
-                        "calleeMethod", calleeMethod,
-                        "effectField", effectField,
-                        "unitIndex", callsite.fact.unitIndex,
-                        "requiredOutcome", guard.requiredOutcome));
-                changed = true;
-            }
-            edge.put("guardedEffectCount", effects.size());
-            edge.put("guardedEffectsAuthority",
-                    "STATIC_CONTROL_DEPENDENCE_PER_RECEIVER_EFFECT_SITE_V1");
-            if (effects.size() == 1) {
-                edge.put("requiredOutcome", guard.requiredOutcome);
-            } else {
-                edge.remove("requiredOutcome");
-            }
-            return changed;
+            boolean annotated = ControlDependenceEdgeSupport
+                    .annotateGuardedReceiverEffect(
+                    edge, callsite.method, guard.fact.unitIndex,
+                    callsite.fact.unitIndex, guard.requiredOutcome,
+                    guard.reachingSuccessorIndices, calleeMethod,
+                    effectField);
+            guard.branchShape.annotate(edge);
+            return annotated || changed;
         }
 
         private ConstructorParam constructorParam(String node) {
@@ -10053,12 +8381,27 @@ public final class CausynthPipeline {
                     if (ignoreNode(guardNode)) {
                         continue;
                     }
-                    changed |= addEdge("synchronous_callback_path_guard",
+                    String kind = "synchronous_callback_path_guard";
+                    changed |= addEdge(kind,
                             guardNode, dataflow.targetCell,
                             dataflow.pathSite.method, guard.fact,
                             "synchronous callback invocation requires Jimple outcome "
                                     + guard.requiredOutcome + " at callback site u"
                                     + dataflow.pathSite.unitIndex);
+                    Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
+                            kind, guardNode, dataflow.targetCell,
+                            dataflow.pathSite.method, guard.fact));
+                    if (edge != null) {
+                        ControlDependenceEdgeSupport.annotatePathGuard(
+                                edge, dataflow.pathSite.method,
+                                guard.fact.unitIndex,
+                                dataflow.pathSite.unitIndex,
+                                dataflow.pathSite.unitText,
+                                guard.requiredOutcome,
+                                guard.reachingSuccessorIndices,
+                                guardNode, dataflow.targetCell);
+                        guard.branchShape.annotate(edge);
+                    }
                     changed |= pathRelevant.add(guardNode);
                 }
             }
@@ -10864,10 +9207,14 @@ public final class CausynthPipeline {
             }
             String fromText = String.valueOf(from);
             String toText = String.valueOf(to);
-            if (ignoreNode(fromText) || ignoreNode(toText) || fromText.equals(toText)) {
+            boolean sameCellPathGuard =
+                    ControlDependenceEdgeSupport.permitsSameCellEdge(kind,
+                            fromText, toText, fact != null);
+            if (ignoreNode(fromText) || ignoreNode(toText)
+                    || fromText.equals(toText) && !sameCellPathGuard) {
                 return false;
             }
-            String key = edgeKey(kind, fromText, toText, method);
+            String key = edgeKey(kind, fromText, toText, method, fact);
             boolean changed = false;
             Map<String, Object> edge = emittedEdgeRows.get(key);
             if (edge == null) {
@@ -10907,7 +9254,8 @@ public final class CausynthPipeline {
                             "mappingAuthority"))
                             : "STATIC_FORMAT_AND_PORT_MAPPING";
                 }
-                String edgeTransferKind = transferKind(kind,
+                String edgeTransferKind = SymbolicPlanningStage.transferKind(
+                        kind,
                         fact == null ? "" : fact.unitText,
                         fact == null ? null : fact.invoke,
                         fromText, toText);
@@ -11072,8 +9420,16 @@ public final class CausynthPipeline {
 
         private String edgeKey(String kind, Object from, Object to,
                                String method) {
+            return edgeKey(kind, from, to, method, null);
+        }
+
+        private String edgeKey(String kind, Object from, Object to,
+                               String method, Fact fact) {
+            String site = ControlDependenceEdgeSupport.requiresSiteIdentity(
+                    kind) && fact != null
+                    ? "\n" + stableSiteId(method, fact.unitIndex, kind) : "";
             return kind + "\n" + String.valueOf(from) + "\n"
-                    + String.valueOf(to) + "\n" + method;
+                    + String.valueOf(to) + "\n" + method + site;
         }
 
         private boolean isStaticPortMappingKind(String kind) {
@@ -11227,484 +9583,6 @@ public final class CausynthPipeline {
         }
     }
 
-    private static final class SeedLookupAnchor {
-        private final List<Fact> seedFieldFacts;
-        private final Set<String> seedValues;
-
-        private SeedLookupAnchor(List<Fact> seedFieldFacts, Set<String> seedValues) {
-            this.seedFieldFacts = seedFieldFacts;
-            this.seedValues = seedValues;
-        }
-    }
-
-    private static final class RpcTarget {
-        private final String sourceSignature;
-        private final String targetSignature;
-        private final String kind;
-
-        private RpcTarget(String sourceSignature, String targetSignature, String kind) {
-            this.sourceSignature = sourceSignature;
-            this.targetSignature = targetSignature;
-            this.kind = kind;
-        }
-    }
-
-    private static final class StaticPortMapping {
-        private final String kind;
-        private final String sourceMethod;
-        private final String sourceCell;
-        private final String targetMethod;
-        private final String targetCell;
-        private final String evidence;
-        private final String activationMethod;
-        private final String edgeMethod;
-        private final Fact pathSite;
-        private final String pathCell;
-
-        private StaticPortMapping(String kind, String sourceMethod, String sourceCell,
-                                  String targetMethod, String targetCell,
-                                  String evidence, String activationMethod,
-                                  String edgeMethod, Fact pathSite,
-                                  String pathCell) {
-            this.kind = kind;
-            this.sourceMethod = sourceMethod;
-            this.sourceCell = sourceCell;
-            this.targetMethod = targetMethod;
-            this.targetCell = targetCell;
-            this.evidence = evidence;
-            this.activationMethod = activationMethod;
-            this.edgeMethod = edgeMethod;
-            this.pathSite = pathSite;
-            this.pathCell = pathCell;
-        }
-    }
-
-    private static final class CallbackRegistration {
-        private final String handlerCell;
-        private final String implementationCell;
-        private final String implementationMethod;
-
-        private CallbackRegistration(String handlerCell,
-                                     String implementationCell,
-                                     String implementationMethod) {
-            this.handlerCell = handlerCell;
-            this.implementationCell = implementationCell;
-            this.implementationMethod = implementationMethod;
-        }
-    }
-
-    private static final class MappedEndpoint {
-        private final String method;
-        private final String cell;
-
-        private MappedEndpoint(String method, String cell) {
-            this.method = method;
-            this.cell = cell;
-        }
-    }
-
-    private static final class FieldWrite {
-        private final String method;
-        private final String field;
-        private final Fact fact;
-        private final String kind;
-        private final List<String> sources;
-        private final String evidence;
-
-        private FieldWrite(String method, String field, Fact fact, String kind,
-                           List<String> sources, String evidence) {
-            this.method = method;
-            this.field = field;
-            this.fact = fact;
-            this.kind = kind;
-            this.sources = sources;
-            this.evidence = evidence;
-        }
-    }
-
-    private static final class ConstructorCallsite {
-        private final String method;
-        private final String constructor;
-        private final Fact fact;
-        private final String receiver;
-        private final List<String> actuals;
-
-        private ConstructorCallsite(String method, String constructor, Fact fact,
-                                    String receiver, List<String> actuals) {
-            this.method = method;
-            this.constructor = constructor;
-            this.fact = fact;
-            this.receiver = receiver;
-            this.actuals = actuals;
-        }
-    }
-
-    private static final class MethodCallsite {
-        private final String method;
-        private final String callee;
-        private final Fact fact;
-        private final String receiver;
-        private final List<String> actuals;
-        private final List<String> defs;
-
-        private MethodCallsite(String method, String callee, Fact fact,
-                               String receiver, List<String> actuals, List<String> defs) {
-            this.method = method;
-            this.callee = callee;
-            this.fact = fact;
-            this.receiver = receiver;
-            this.actuals = actuals;
-            this.defs = defs;
-        }
-    }
-
-    private static final class ConstructorParam {
-        private final String constructor;
-        private final int index;
-        private final String formal;
-
-        private ConstructorParam(String constructor, int index, String formal) {
-            this.constructor = constructor;
-            this.index = index;
-            this.formal = formal;
-        }
-    }
-
-    private static final class ExceptionConstruction {
-        private final Fact fact;
-        private final List<String> actuals;
-
-        private ExceptionConstruction(Fact fact, List<String> actuals) {
-            this.fact = fact;
-            this.actuals = actuals;
-        }
-    }
-
-    /**
-     * Exact runtime interface-dispatch observations used by an optional
-     * second static/refinement pass.  The file is never discovered by walking
-     * old output directories: callers must pass one explicit artifact via
-     * causynth.runtime.call.edges (or CAUSYNTH_RUNTIME_CALL_EDGES).
-     */
-    private static final class RuntimeDispatchEvidence {
-        private final String source;
-        private final Map<String, RuntimeDispatchObservation> observations;
-        private final int rowCount;
-        private final int rejectedRowCount;
-
-        private RuntimeDispatchEvidence(
-                String source,
-                Map<String, RuntimeDispatchObservation> observations,
-                int rowCount, int rejectedRowCount) {
-            this.source = source;
-            this.observations = observations;
-            this.rowCount = rowCount;
-            this.rejectedRowCount = rejectedRowCount;
-        }
-
-        private static RuntimeDispatchEvidence fromConfiguration()
-                throws IOException {
-            String configured = stringValue(firstNonBlank(
-                    System.getProperty("causynth.runtime.call.edges"),
-                    System.getenv("CAUSYNTH_RUNTIME_CALL_EDGES")));
-            if (configured.isEmpty()) {
-                return new RuntimeDispatchEvidence("",
-                        new LinkedHashMap<>(), 0, 0);
-            }
-            Path path = Paths.get(configured).toAbsolutePath().normalize();
-            if (!Files.isRegularFile(path)) {
-                throw new IOException("Runtime call-edge evidence not found: "
-                        + path);
-            }
-            Map<String, RuntimeDispatchObservation> observations =
-                    new LinkedHashMap<>();
-            int rows = 0;
-            int rejected = 0;
-            try (BufferedReader reader = Files.newBufferedReader(path,
-                    StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String trimmed = line.trim();
-                    if (trimmed.isEmpty()) {
-                        continue;
-                    }
-                    rows++;
-                    JsonObject row;
-                    try {
-                        JsonElement parsed = JsonParser.parseString(trimmed);
-                        if (!parsed.isJsonObject()) {
-                            rejected++;
-                            continue;
-                        }
-                        row = parsed.getAsJsonObject();
-                    } catch (RuntimeException malformed) {
-                        rejected++;
-                        continue;
-                    }
-                    String event = jsonString(row, "event");
-                    String caller = jsonString(row, "caller");
-                    String siteId = jsonString(row, "siteId");
-                    String declared = jsonString(row, "declaredCallee");
-                    String actual = jsonString(row, "actualCallee");
-                    String level = jsonString(row, "evidenceLevel");
-                    if (!"RUNTIME_CALL_EDGE".equals(event)
-                            || !"CALLSITE_CORRELATED".equals(level)
-                            || caller.isEmpty() || siteId.isEmpty()
-                            || declared.isEmpty() || actual.isEmpty()
-                            || !siteId.startsWith(caller + "#u")) {
-                        rejected++;
-                        continue;
-                    }
-                    String key = key(caller, siteId, declared);
-                    RuntimeDispatchObservation observation =
-                            observations.computeIfAbsent(key,
-                                    ignored -> new RuntimeDispatchObservation(
-                                            caller, siteId, declared));
-                    observation.actualCallees.add(actual);
-                }
-            }
-            return new RuntimeDispatchEvidence(path.toString(),
-                    observations, rows, rejected);
-        }
-
-        private RuntimeDispatchObservation lookup(String caller,
-                                                   String siteId,
-                                                   String declared) {
-            return observations.get(key(caller, siteId, declared));
-        }
-
-        private static String key(String caller, String siteId,
-                                  String declared) {
-            return stringValue(caller) + "\n" + stringValue(siteId) + "\n"
-                    + stringValue(declared);
-        }
-
-        private boolean configured() {
-            return !source.isEmpty();
-        }
-
-        private String source() {
-            return source;
-        }
-
-        private int rowCount() {
-            return rowCount;
-        }
-
-        private int siteCount() {
-            return observations.size();
-        }
-
-        private int rejectedRowCount() {
-            return rejectedRowCount;
-        }
-    }
-
-    private static final class RuntimeDispatchObservation {
-        private final String caller;
-        private final String siteId;
-        private final String declaredCallee;
-        private final Set<String> actualCallees = new LinkedHashSet<>();
-
-        private RuntimeDispatchObservation(String caller, String siteId,
-                                           String declaredCallee) {
-            this.caller = caller;
-            this.siteId = siteId;
-            this.declaredCallee = declaredCallee;
-        }
-    }
-
-    private static final class RuntimeDispatchSelection {
-        private final String siteId;
-        private final List<String> targets;
-        private final Set<String> actualCallees;
-        private final String source;
-        private final String reason;
-        private final boolean runtimeSelected;
-
-        private RuntimeDispatchSelection(String siteId,
-                                         Collection<String> targets,
-                                         Collection<String> actualCallees,
-                                         String source, String reason,
-                                         boolean runtimeSelected) {
-            this.siteId = stringValue(siteId);
-            this.targets = new ArrayList<>(targets);
-            this.actualCallees = new LinkedHashSet<>(actualCallees);
-            this.source = stringValue(source);
-            this.reason = stringValue(reason);
-            this.runtimeSelected = runtimeSelected;
-        }
-
-        private static RuntimeDispatchSelection staticFallback(
-                String siteId, Collection<String> targets) {
-            return new RuntimeDispatchSelection(siteId, targets,
-                    Collections.emptySet(), "", "", false);
-        }
-
-        private static RuntimeDispatchSelection runtimeUnique(
-                String siteId, String target, String source) {
-            return new RuntimeDispatchSelection(siteId,
-                    Collections.singletonList(target),
-                    Collections.singleton(target), source, "", true);
-        }
-
-        private static RuntimeDispatchSelection blocked(
-                String siteId, Collection<String> actualCallees,
-                String reason) {
-            return new RuntimeDispatchSelection(siteId,
-                    Collections.emptyList(), actualCallees, "", reason,
-                    true);
-        }
-
-        private RuntimeDispatchSelection withReason(String updatedReason) {
-            return new RuntimeDispatchSelection(siteId, targets,
-                    actualCallees, source, updatedReason, runtimeSelected);
-        }
-
-        private boolean unique() {
-            return runtimeSelected && reason.isEmpty()
-                    && targets.size() == 1;
-        }
-
-        private boolean blocked() {
-            return !reason.isEmpty();
-        }
-    }
-
-    private static final class ExceptionGuard {
-        private final Fact fact;
-        private final String condition;
-        private final Boolean requiredOutcome;
-        private final List<Integer> reachingSuccessorIndices;
-
-        private ExceptionGuard(Fact fact, String condition,
-                               Boolean requiredOutcome,
-                               List<Integer> reachingSuccessorIndices) {
-            this.fact = fact;
-            this.condition = condition;
-            this.requiredOutcome = requiredOutcome;
-            this.reachingSuccessorIndices = reachingSuccessorIndices;
-        }
-    }
-
-    private static final class Fact {
-        private final Unit unit;
-        private final String method;
-        private final int unitIndex;
-        private final int line;
-        private final String unitText;
-        private final List<String> defs;
-        private final List<String> uses;
-        private final List<String> fields;
-        private final List<String> fieldDefs;
-        private final List<String> fieldUses;
-        private final List<InstanceFieldAccess> instanceFieldDefs;
-        private final List<InstanceFieldAccess> instanceFieldUses;
-        private final String invoke;
-        private final boolean isReturn;
-        private final boolean isThrow;
-        private final boolean isBranch;
-
-        private Fact(String method, int unitIndex, Unit unit) {
-            this.unit = unit;
-            this.method = method;
-            this.unitIndex = unitIndex;
-            this.line = lineOf(unit);
-            this.unitText = unit.toString();
-            this.defs = valueStrings(unit.getDefBoxes());
-            this.uses = valueStrings(unit.getUseBoxes());
-            this.fields = fieldRefs(unit);
-            this.fieldDefs = fieldRefs(unit.getDefBoxes());
-            this.fieldUses = fieldRefs(unit.getUseBoxes());
-            this.instanceFieldDefs = instanceFieldRefs(unit.getDefBoxes());
-            this.instanceFieldUses = instanceFieldRefs(unit.getUseBoxes());
-            this.invoke = invokeSignature(unit);
-            String lower = unitText.trim().toLowerCase(Locale.ROOT);
-            this.isReturn = lower.startsWith("return");
-            this.isThrow = lower.startsWith("throw ");
-            this.isBranch = lower.startsWith("if ")
-                    || lower.startsWith("tableswitch")
-                    || lower.startsWith("lookupswitch");
-        }
-
-        private static String invokeSignature(Unit unit) {
-            if (unit instanceof Stmt && ((Stmt) unit).containsInvokeExpr()) {
-                return ((Stmt) unit).getInvokeExpr().getMethodRef().getSignature();
-            }
-            return null;
-        }
-
-        private static List<String> fieldRefs(Unit unit) {
-            Set<String> fields = new LinkedHashSet<>();
-            for (ValueBox box : unit.getUseAndDefBoxes()) {
-                Value value = box.getValue();
-                if (value instanceof FieldRef) {
-                    fields.add(((FieldRef) value).getFieldRef().getSignature());
-                }
-            }
-            return new ArrayList<>(fields);
-        }
-
-        private static List<String> fieldRefs(List<ValueBox> boxes) {
-            Set<String> fields = new LinkedHashSet<>();
-            for (ValueBox box : boxes) {
-                Value value = box.getValue();
-                if (value instanceof FieldRef) {
-                    fields.add(((FieldRef) value).getFieldRef().getSignature());
-                }
-            }
-            return new ArrayList<>(fields);
-        }
-
-        private static List<InstanceFieldAccess> instanceFieldRefs(List<ValueBox> boxes) {
-            List<InstanceFieldAccess> accesses = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
-            for (ValueBox box : boxes) {
-                Value value = box.getValue();
-                if (value instanceof InstanceFieldRef) {
-                    InstanceFieldRef ref = (InstanceFieldRef) value;
-                    String base = ref.getBase().toString();
-                    String field = ref.getFieldRef().getSignature();
-                    String key = base + "\n" + field;
-                    if (seen.add(key)) {
-                        accesses.add(new InstanceFieldAccess(base, field));
-                    }
-                }
-            }
-            return accesses;
-        }
-
-        private static List<String> valueStrings(List<ValueBox> boxes) {
-            List<String> values = new ArrayList<>();
-            for (ValueBox box : boxes) {
-                values.add(box.getValue().toString());
-            }
-            return values;
-        }
-
-        private static int lineOf(Unit unit) {
-            for (Tag tag : unit.getTags()) {
-                if (tag instanceof SourceLineNumberTag) {
-                    return ((SourceLineNumberTag) tag).getStartLineNumber();
-                }
-                if (tag instanceof LineNumberTag) {
-                    return ((LineNumberTag) tag).getLineNumber();
-                }
-            }
-            return unit.getJavaSourceStartLineNumber();
-        }
-    }
-
-    private static final class InstanceFieldAccess {
-        private final String base;
-        private final String field;
-
-        private InstanceFieldAccess(String base, String field) {
-            this.base = base;
-            this.field = field;
-        }
-    }
-
     private static final class MethodSig {
         private final String raw;
         private final String owner;
@@ -11744,407 +9622,8 @@ public final class CausynthPipeline {
         return sig == null ? "" : sig.owner;
     }
 
-    private static String fieldOwner(String fieldSignature) {
-        if (fieldSignature == null) {
-            return "";
-        }
-        Matcher matcher = Pattern.compile("<([^:]+):").matcher(fieldSignature);
-        return matcher.find() ? matcher.group(1) : "";
-    }
-
-    private static List<String> actualInvokeArgs(String unit) {
-        if (unit == null) {
-            return Collections.emptyList();
-        }
-        int start = unit.lastIndexOf(">(");
-        int end = unit.lastIndexOf(')');
-        if (start < 0 || end <= start + 2) {
-            return Collections.emptyList();
-        }
-        return splitTopLevelArgs(unit.substring(start + 2, end));
-    }
-
-    private static List<String> splitTopLevelArgs(String args) {
-        if (args == null || args.trim().isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<String> values = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        int depth = 0;
-        for (int i = 0; i < args.length(); i++) {
-            char ch = args.charAt(i);
-            if (ch == '(' || ch == '<' || ch == '[') {
-                depth++;
-            } else if (ch == ')' || ch == '>' || ch == ']') {
-                depth = Math.max(0, depth - 1);
-            }
-            if (ch == ',' && depth == 0) {
-                String value = current.toString().trim();
-                if (!value.isEmpty()) {
-                    values.add(value);
-                }
-                current.setLength(0);
-            } else {
-                current.append(ch);
-            }
-        }
-        String value = current.toString().trim();
-        if (!value.isEmpty()) {
-            values.add(value);
-        }
-        return values;
-    }
-
-    private static void buildSymbolicExecutionPlan(AnalysisResult result) {
-        Map<String, SymbolicPlanBuilder> builders = new LinkedHashMap<>();
-        for (Map<String, Object> edge : result.edges) {
-            String method = stringValue(edge.get("method"));
-            if (method.isEmpty()) {
-                continue;
-            }
-            String kind = stringValue(edge.get("kind"));
-            String unit = stringValue(edge.get("unit"));
-            String invoke = stringValue(edge.get("invoke"));
-            String from = stringValue(edge.get("fromCell"));
-            String to = stringValue(edge.get("toCell"));
-            String transfer = stringValue(edge.get("transferKind"));
-            if (transfer.isEmpty()) {
-                transfer = transferKind(kind, unit, invoke, from, to);
-                edge.put("transferKind", transfer);
-            }
-            String siteId = stringValue(edge.get("siteId"));
-            if (siteId.isEmpty()) {
-                siteId = stableSiteId(method, intValue(edge.get("unitIndex"), -1), kind);
-                edge.put("siteId", siteId);
-            }
-            SymbolicPlanBuilder builder = builders.get(method);
-            if (builder == null) {
-                builder = new SymbolicPlanBuilder(method);
-                builders.put(method, builder);
-            }
-            builder.observe(edge, transfer, siteId);
-        }
-
-        List<SymbolicPlanBuilder> ordered = new ArrayList<>(builders.values());
-        ordered.sort(Comparator.comparing(builder -> builder.method));
-        int index = 0;
-        for (SymbolicPlanBuilder builder : ordered) {
-            result.symbolicPlan.add(builder.toRow("SP." + index++));
-        }
-        result.slices.put("symbolicPlanMethodCount", result.symbolicPlan.size());
-        result.slices.put("symbolicPlanClassifications",
-                summarizePlanClassifications(result.symbolicPlan));
-    }
-
-    /**
-     * Groups method summaries into same-thread concolic regions. Protocol,
-     * asynchronous, and thread-handoff edges deliberately remain between
-     * regions so the later composer can bind their symbolic ports without
-     * pretending that one JVM invocation crosses those execution contexts.
-     */
-    private static void buildSymbolicRegions(AnalysisResult result) {
-        SymbolicRegionPlanner.Result planned = SymbolicRegionPlanner.plan(
-                result.edges, result.symbolicPlan);
-        enrichHeapMutationGuardMetadata(planned.regions, result.edges);
-        addArgumentPathFieldContracts(planned.regions);
-        result.symbolicRegions.addAll(planned.regions);
-        result.symbolicRegionEdges.addAll(planned.regionEdges);
-        result.symbolicModels.addAll(planned.modelSummaries);
-        result.symbolicCoverage.putAll(planned.coverage);
-        result.slices.put("symbolicRegions", planned.summary);
-        result.slices.put("symbolicCoverage", planned.coverage);
-    }
-
-    /**
-     * The region planner keeps compact causal-edge references in each output
-     * slice. Reattach the structured control-dependence proof required to
-     * distinguish a path which executes a may-write from a path which proves
-     * the guarded mutation unreachable. This is a lossless id join; no
-     * project-specific method or field names participate.
-     */
-    static void enrichHeapMutationGuardMetadata(
-            List<Map<String, Object>> regions,
-            List<Map<String, Object>> analysisEdges) {
-        Map<String, Map<String, Object>> byId = new LinkedHashMap<>();
-        for (Map<String, Object> edge : analysisEdges) {
-            if ("heap_mutation_path_guard".equals(
-                    stringValue(edge.get("kind")))) {
-                byId.put(stringValue(edge.get("id")), edge);
-            }
-        }
-        for (Map<String, Object> region : regions) {
-            Object slicesValue = region.get("outputSlices");
-            if (!(slicesValue instanceof Collection)) {
-                continue;
-            }
-            for (Object sliceValue : (Collection<?>) slicesValue) {
-                if (!(sliceValue instanceof Map)) {
-                    continue;
-                }
-                Map<?, ?> slice = (Map<?, ?>) sliceValue;
-                Object referencesValue = slice.get("causalEdges");
-                if (!(referencesValue instanceof Collection)) {
-                    continue;
-                }
-                for (Object referenceValue
-                        : (Collection<?>) referencesValue) {
-                    if (!(referenceValue instanceof Map)) {
-                        continue;
-                    }
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> reference =
-                            (Map<String, Object>) referenceValue;
-                    Map<String, Object> source = byId.get(stringValue(
-                            reference.get("edgeId")));
-                    if (source == null) {
-                        continue;
-                    }
-                    copyIfPresent(source, reference, "guardSiteId");
-                    copyIfPresent(source, reference,
-                            "guardedMutationSiteId");
-                    copyIfPresent(source, reference, "requiredOutcome");
-                    copyIfPresent(source, reference,
-                            "guardedMutationCount");
-                    copyIfPresent(source, reference,
-                            "guardedMutationsAuthority");
-                    copyIfPresent(source, reference, "guardedMutations");
-                }
-            }
-        }
-    }
-
-    private static void copyIfPresent(Map<String, Object> source,
-                                      Map<String, Object> target,
-                                      String field) {
-        if (source.containsKey(field)) {
-            target.put(field, source.get(field));
-        }
-    }
-
-    /**
-     * Records root-argument fields that can influence a branch executed after
-     * a candidate region entry.
-     *
-     * <p>The seed-directed slice is deliberately narrow and can omit an
-     * earlier path gate.  For example, the HDFS missing-key seed retains
-     * {@code getKeyId()} but not the preceding expiry check.  A concolic
-     * region nevertheless starts before both checks, so every external field
-     * feeding either branch is part of its input frontier.  This small
-     * intraprocedural pass supplies that entry contract without widening the
-     * whole symbolic region.</p>
-     */
-    private static void addArgumentPathFieldContracts(
-            List<Map<String, Object>> regions) {
-        for (Map<String, Object> region : regions) {
-            Object methodsValue = region.get("methods");
-            if (!(methodsValue instanceof Collection)) {
-                continue;
-            }
-            List<Map<String, Object>> contracts = new ArrayList<>();
-            for (Object methodValue : (Collection<?>) methodsValue) {
-                String signature = stringValue(methodValue);
-                if (signature.isEmpty()) {
-                    continue;
-                }
-                try {
-                    SootMethod method = Scene.v().getMethod(signature);
-                    if (method != null && method.isConcrete()) {
-                        contracts.addAll(argumentPathFieldContracts(method));
-                    }
-                } catch (RuntimeException ignored) {
-                    // Runtime root selection may still use the dynamic getter
-                    // observations when a candidate body is unavailable.
-                }
-            }
-            if (!contracts.isEmpty()) {
-                region.put("argumentPathFields", contracts);
-            }
-        }
-    }
-
-    private static List<Map<String, Object>> argumentPathFieldContracts(
-            SootMethod method) {
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return Collections.emptyList();
-        }
-        List<Unit> units = snapshotUnits(body);
-        Map<Local, Set<Integer>> argumentAliases = new LinkedHashMap<>();
-        Map<Local, Set<ArgumentFieldOrigin>> fieldOrigins = new LinkedHashMap<>();
-        for (Unit unit : units) {
-            if (!(unit instanceof IdentityStmt)) {
-                continue;
-            }
-            IdentityStmt identity = (IdentityStmt) unit;
-            if (identity.getLeftOp() instanceof Local
-                    && identity.getRightOp() instanceof ParameterRef) {
-                addValue(argumentAliases, (Local) identity.getLeftOp(),
-                        ((ParameterRef) identity.getRightOp()).getIndex());
-            }
-        }
-
-        // Iterate to a fixed point so aliases and value flow remain correct
-        // for non-linear Jimple bodies as well as the common straight-line
-        // getter -> helper -> branch shape.
-        boolean changed = true;
-        int rounds = 0;
-        while (changed && rounds++ <= units.size() + 1) {
-            changed = false;
-            for (Unit unit : units) {
-                if (!(unit instanceof AssignStmt)) {
-                    continue;
-                }
-                AssignStmt assignment = (AssignStmt) unit;
-                if (!(assignment.getLeftOp() instanceof Local)) {
-                    continue;
-                }
-                Local left = (Local) assignment.getLeftOp();
-                Value right = assignment.getRightOp();
-                changed |= addValues(argumentAliases, left,
-                        directArgumentAliases(right, argumentAliases));
-
-                Set<ArgumentFieldOrigin> origins = new LinkedHashSet<>();
-                for (ValueBox box : right.getUseBoxes()) {
-                    if (box.getValue() instanceof Local) {
-                        origins.addAll(values(fieldOrigins,
-                                (Local) box.getValue()));
-                    }
-                }
-                if (right instanceof InstanceFieldRef) {
-                    InstanceFieldRef field = (InstanceFieldRef) right;
-                    if (field.getBase() instanceof Local) {
-                        for (Integer index : values(argumentAliases,
-                                (Local) field.getBase())) {
-                            origins.add(new ArgumentFieldOrigin(index,
-                                    field.getFieldRef().name()));
-                        }
-                    }
-                }
-                if (right instanceof InstanceInvokeExpr) {
-                    InstanceInvokeExpr invoke = (InstanceInvokeExpr) right;
-                    if (invoke.getBase() instanceof Local) {
-                        String field = getterFieldName(invoke);
-                        if (!field.isEmpty()) {
-                            for (Integer index : values(argumentAliases,
-                                    (Local) invoke.getBase())) {
-                                origins.add(new ArgumentFieldOrigin(index, field));
-                            }
-                        }
-                    }
-                }
-                changed |= addValues(fieldOrigins, left, origins);
-            }
-        }
-
-        Map<Integer, Set<String>> fieldsByArgument = new LinkedHashMap<>();
-        Map<Integer, Set<String>> sitesByArgument = new LinkedHashMap<>();
-        for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
-            Unit unit = units.get(unitIndex);
-            if (!(unit instanceof IfStmt)) {
-                continue;
-            }
-            Set<ArgumentFieldOrigin> origins = new LinkedHashSet<>();
-            for (ValueBox box : ((IfStmt) unit).getCondition().getUseBoxes()) {
-                if (box.getValue() instanceof Local) {
-                    origins.addAll(values(fieldOrigins, (Local) box.getValue()));
-                }
-            }
-            for (ArgumentFieldOrigin origin : origins) {
-                addValue(fieldsByArgument, origin.argumentIndex, origin.field);
-                addValue(sitesByArgument, origin.argumentIndex,
-                        stableSiteId(method.getSignature(), unitIndex, "branch"));
-            }
-        }
-
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Integer argumentIndex : fieldsByArgument.keySet()) {
-            result.add(object(
-                    "method", method.getSignature(),
-                    "argumentIndex", argumentIndex,
-                    "fields", sortedLimited(fieldsByArgument.get(argumentIndex),
-                            MAX_ROOT_ARGUMENT_PATH_FIELDS),
-                    "branchSites", sortedLimited(sitesByArgument.get(argumentIndex),
-                            MAX_ROOT_ARGUMENT_PATH_FIELDS),
-                    "authority", "STATIC_ROOT_BRANCH_DATAFLOW"));
-        }
-        return result;
-    }
-
-    private static final int MAX_ROOT_ARGUMENT_PATH_FIELDS = 64;
-
-    private static Set<Integer> directArgumentAliases(
-            Value value, Map<Local, Set<Integer>> aliases) {
-        if (value instanceof Local) {
-            return values(aliases, (Local) value);
-        }
-        if (value instanceof CastExpr
-                && ((CastExpr) value).getOp() instanceof Local) {
-            return values(aliases, (Local) ((CastExpr) value).getOp());
-        }
-        return Collections.emptySet();
-    }
-
-    private static String getterFieldName(InstanceInvokeExpr invoke) {
-        if (invoke.getArgCount() != 0) {
-            return "";
-        }
-        String name = invoke.getMethodRef().name();
-        String stem;
-        if (name.startsWith("get") && name.length() > 3) {
-            stem = name.substring(3);
-        } else if (name.startsWith("is") && name.length() > 2) {
-            stem = name.substring(2);
-        } else {
-            return "";
-        }
-        return Character.toLowerCase(stem.charAt(0)) + stem.substring(1);
-    }
-
-    private static <K, V> Set<V> values(Map<K, Set<V>> values, K key) {
-        Set<V> result = values.get(key);
-        return result == null ? Collections.emptySet() : result;
-    }
-
-    private static <K, V> boolean addValue(Map<K, Set<V>> values,
-                                            K key, V value) {
-        return values.computeIfAbsent(key, ignored -> new LinkedHashSet<>())
-                .add(value);
-    }
-
-    private static <K, V> boolean addValues(Map<K, Set<V>> values,
-                                             K key, Collection<V> additions) {
-        return additions != null && !additions.isEmpty()
-                && values.computeIfAbsent(key, ignored -> new LinkedHashSet<>())
-                .addAll(additions);
-    }
-
-    private static final class ArgumentFieldOrigin {
-        private final int argumentIndex;
-        private final String field;
-
-        private ArgumentFieldOrigin(int argumentIndex, String field) {
-            this.argumentIndex = argumentIndex;
-            this.field = field;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (!(other instanceof ArgumentFieldOrigin)) {
-                return false;
-            }
-            ArgumentFieldOrigin that = (ArgumentFieldOrigin) other;
-            return argumentIndex == that.argumentIndex && field.equals(that.field);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * argumentIndex + field.hashCode();
-        }
-    }
-
-    private static void buildAutomaticDerivationBoundary(AnalysisResult result) {
+    private static void buildAutomaticDerivationBoundary(
+            CausynthAnalysisResult result) {
         Map<String, Object> boundary = result.automaticDerivationBoundary;
         boundary.put("schemaVersion", 1);
         boundary.put("kind", "AUTOMATIC_DERIVATION_BOUNDARY");
@@ -12161,174 +9640,11 @@ public final class CausynthPipeline {
         result.slices.put("automaticDerivationBoundary", boundary);
     }
 
-    private static String transferKind(String kind, String unit, String invoke,
-                                       String from, String to) {
-        String normalizedKind = lower(kind);
-        String text = lower(firstNonBlank(unit, "") + "\n"
-                + firstNonBlank(invoke, "") + "\n"
-                + firstNonBlank(from, "") + "\n"
-                + firstNonBlank(to, ""));
-        if (normalizedKind.contains("seed")) {
-            return "SEED";
-        }
-        if (normalizedKind.contains("guard")) {
-            return "GUARD";
-        }
-        if (normalizedKind.contains("throw")) {
-            return "EXCEPTION";
-        }
-        if (normalizedKind.contains("hdfs_sasl")
-                || normalizedKind.contains("hdfs_heartbeat")
-                || normalizedKind.contains("rpc")) {
-            return "PROTOCOL_TRANSFER";
-        }
-        if (normalizedKind.contains("dispatch")) {
-            return "DYNAMIC_DISPATCH";
-        }
-        if (normalizedKind.contains("field_write")
-                || normalizedKind.contains("field_mutation")
-                || normalizedKind.contains("field_effect")) {
-            return "HEAP_WRITE";
-        }
-        if (normalizedKind.contains("field_read")) {
-            return "HEAP_READ";
-        }
-        if (normalizedKind.startsWith("container_")) {
-            return "MODEL_TRANSFORM";
-        }
-        if (normalizedKind.contains("accessor")
-                && from != null
-                && from.matches("<[^:]+:\\s+.+\\s+[^\\s()]+>")
-                && parseMethodSig(from) == null) {
-            // An accessor backed by a Soot-resolved declared field is a real
-            // heap read. Receiver-local projections of the same access remain
-            // PROJECTION edges below so object-sensitive runtime provenance is
-            // preserved without losing the canonical field frontier.
-            return "HEAP_READ";
-        }
-        if (looksLikeMapMutation(text)) {
-            return "HEAP_WRITE";
-        }
-        if (looksLikeMapLookup(text)) {
-            return "HEAP_LOOKUP";
-        }
-        if (looksLikeModeledTransform(text)) {
-            return "MODEL_TRANSFORM";
-        }
-        if (normalizedKind.contains("constructor")) {
-            return "CONSTRUCT";
-        }
-        if (normalizedKind.contains("accessor")
-                || normalizedKind.contains("receiver_field")) {
-            return "PROJECTION";
-        }
-        if (normalizedKind.contains("argument")
-                || normalizedKind.endsWith("receiver")
-                || normalizedKind.contains("caller_receiver")) {
-            return "IDENTITY_BINDING";
-        }
-        if (normalizedKind.contains("return")) {
-            return "FUNCTION_RETURN";
-        }
-        if (normalizedKind.contains("local_def_use")) {
-            if (invoke != null && !invoke.trim().isEmpty()) {
-                return "FUNCTION_RETURN";
-            }
-            return looksLikeComputation(unit) ? "COMPUTE" : "VALUE_PASS";
-        }
-        if (normalizedKind.contains("projected")) {
-            return "PROJECTION";
-        }
-        return "UNKNOWN";
-    }
-
-    private static boolean looksLikeMapMutation(String text) {
-        return looksLikeMapOperation(text, "put")
-                || looksLikeMapOperation(text, "putall")
-                || looksLikeMapOperation(text, "remove")
-                || looksLikeMapOperation(text, "clear")
-                || looksLikeMapOperation(text, "replace")
-                || looksLikeMapOperation(text, "replaceall")
-                || looksLikeMapOperation(text, "compute")
-                || looksLikeMapOperation(text, "computeifabsent")
-                || looksLikeMapOperation(text, "computeifpresent")
-                || looksLikeMapOperation(text, "merge");
-    }
-
-    private static boolean looksLikeMapLookup(String text) {
-        return looksLikeMapOperation(text, "get")
-                || looksLikeMapOperation(text, "getordefault")
-                || looksLikeMapOperation(text, "containskey")
-                || looksLikeMapOperation(text, "containsvalue");
-    }
-
-    private static boolean looksLikeMapOperation(String text, String operation) {
-        if (text == null || text.isEmpty()) {
-            return false;
-        }
-        String marker = operation + "(";
-        boolean namedMap = text.contains(" map." + marker)
-                || text.contains(" allkeys." + marker)
-                || text.contains(" keymap." + marker)
-                || text.contains(" cache." + marker);
-        boolean mapOwner = text.contains("<java.util.map:")
-                || text.contains("<java.util.hashmap:")
-                || text.contains("<java.util.linkedhashmap:")
-                || text.contains("<java.util.treemap:")
-                || text.contains("<java.util.concurrent.concurrentmap:")
-                || text.contains("<java.util.concurrent.concurrenthashmap:");
-        return namedMap || (mapOwner && (text.contains(" " + marker)
-                || text.contains("." + marker)));
-    }
-
-    private static boolean looksLikeModeledTransform(String text) {
-        return text.contains("stringbuilder")
-                || text.contains("stringbuffer")
-                || text.contains("java.lang.string: java.lang.string concat")
-                || text.contains("java.lang.string: java.lang.string[] split")
-                || text.contains("integer: int parseint")
-                || text.contains("long: long parselong")
-                || text.contains("base64")
-                || text.contains(" encode")
-                || text.contains(" decode")
-                || text.contains("serialize")
-                || text.contains("deserialize")
-                || text.contains("readfields")
-                || text.contains("writefields");
-    }
-
-    private static boolean looksLikeComputation(String unit) {
-        String text = lower(firstNonBlank(unit, ""));
-        return text.contains(" + ")
-                || text.contains(" - ")
-                || text.contains(" * ")
-                || text.contains(" / ")
-                || text.contains(" % ")
-                || text.contains(" & ")
-                || text.contains(" | ")
-                || text.contains(" ^ ")
-                || text.contains(" cmp")
-                || text.contains(" new ")
-                || text.startsWith("new ");
-    }
-
     private static String stableSiteId(String method, int unitIndex, String kind) {
         if (unitIndex >= 0) {
             return method + "#u" + unitIndex;
         }
         return method + "#synthetic:" + firstNonBlank(kind, "edge");
-    }
-
-    private static Map<String, Object> summarizePlanClassifications(
-            List<Map<String, Object>> plan) {
-        Map<String, Object> counts = object();
-        for (Map<String, Object> row : plan) {
-            String classification = stringValue(row.get("classification"));
-            Object previous = counts.get(classification);
-            counts.put(classification, previous instanceof Number
-                    ? ((Number) previous).intValue() + 1 : 1);
-        }
-        return counts;
     }
 
     private static String stringValue(Object value) {
@@ -12358,303 +9674,6 @@ public final class CausynthPipeline {
             return sorted;
         }
         return new ArrayList<>(sorted.subList(0, limit));
-    }
-
-    private static final class SymbolicPlanBuilder {
-        private static final int MAX_PLAN_VALUES = 256;
-
-        private final String method;
-        private final Set<String> inputs = new LinkedHashSet<>();
-        private final Set<String> defined = new LinkedHashSet<>();
-        private final Set<String> outputs = new LinkedHashSet<>();
-        private final Set<String> heapInputs = new LinkedHashSet<>();
-        private final Set<String> environmentInputs = new LinkedHashSet<>();
-        private final Set<String> guards = new LinkedHashSet<>();
-        private final Set<String> exceptions = new LinkedHashSet<>();
-        private final Set<String> possibleCallees = new LinkedHashSet<>();
-        private final Set<String> transferKinds = new LinkedHashSet<>();
-        private final Set<String> siteIds = new LinkedHashSet<>();
-        private final Set<String> requiredModels = new LinkedHashSet<>();
-        private final Set<String> reasons = new LinkedHashSet<>();
-        private int edgeCount;
-
-        private SymbolicPlanBuilder(String method) {
-            this.method = method;
-        }
-
-        private void observe(Map<String, Object> edge, String transfer,
-                             String siteId) {
-            edgeCount++;
-            String from = stringValue(edge.get("fromCell"));
-            String to = stringValue(edge.get("toCell"));
-            String unit = stringValue(edge.get("unit"));
-            String invoke = stringValue(edge.get("invoke"));
-            if (!from.isEmpty()) {
-                inputs.add(from);
-            }
-            if (!to.isEmpty()) {
-                outputs.add(to);
-                defined.add(to);
-            }
-            transferKinds.add(transfer);
-            siteIds.add(siteId);
-            if (!invoke.isEmpty()) {
-                possibleCallees.add(invoke);
-            }
-            if ("HEAP_READ".equals(transfer) || "HEAP_LOOKUP".equals(transfer)
-                    || from.contains("#field:") || looksLikeFieldSignature(from)) {
-                heapInputs.add(from);
-            }
-            if ("GUARD".equals(transfer)) {
-                guards.add(firstNonBlank(unit, to, siteId));
-                reasons.add("relevant branch guard");
-            }
-            if ("EXCEPTION".equals(transfer)) {
-                exceptions.add(firstNonBlank(unit, to, siteId));
-                reasons.add("relevant exceptional path");
-            }
-            if ("HEAP_WRITE".equals(transfer)) {
-                reasons.add("writes coordination-relevant heap state");
-            }
-            if ("HEAP_LOOKUP".equals(transfer)) {
-                requiredModels.add("symbolic_map_state");
-                reasons.add("selects or looks up state by symbolic key");
-            }
-            if ("MODEL_TRANSFORM".equals(transfer)) {
-                reasons.add("requires an observed region summary for the "
-                        + "transformation");
-                if (edge.containsKey("containerProjectionContractVersion")) {
-                    requiredModels.add("symbolic_container_projection");
-                    reasons.add("preserves collection elements through an "
-                            + "exact Java collection API contract");
-                }
-            }
-            if ("PROTOCOL_TRANSFER".equals(transfer)) {
-                reasons.add("crosses a format or protocol boundary that "
-                        + "requires region capture and runtime mapping");
-            }
-            if ("DYNAMIC_DISPATCH".equals(transfer)) {
-                requiredModels.add("dynamic_dispatch_resolution");
-                reasons.add("selects a runtime callee or receiver state");
-            }
-            if ("COMPUTE".equals(transfer)) {
-                reasons.add("computes a new tracked value");
-            }
-            String lowerUnit = lower(unit);
-            if (lowerUnit.contains("time.now")
-                    || lowerUnit.contains("currenttimemillis")
-                    || lowerUnit.contains("nanotime")) {
-                environmentInputs.add("environment.now");
-                reasons.add("reads symbolic time");
-            }
-        }
-
-        private Map<String, Object> toRow(String id) {
-            Set<String> liveIns = new LinkedHashSet<>(inputs);
-            liveIns.removeAll(defined);
-            for (String value : inputs) {
-                if (value.contains(".param") || value.contains("@this")
-                        || value.contains("#field:") || looksLikeFieldSignature(value)) {
-                    liveIns.add(value);
-                }
-            }
-            liveIns.addAll(heapInputs);
-            liveIns.addAll(environmentInputs);
-
-            String classification = classification();
-            if (reasons.isEmpty()) {
-                reasons.add("tracked projection is forwarded without a local semantic transform");
-            }
-            boolean truncated = inputs.size() > MAX_PLAN_VALUES
-                    || outputs.size() > MAX_PLAN_VALUES
-                    || siteIds.size() > MAX_PLAN_VALUES;
-            return object(
-                    "id", id,
-                    "method", method,
-                    "classification", classification,
-                    "requiresSymbolicExecution", "SYMBOLIC_EXECUTION".equals(classification),
-                    "reason", joinReasons(reasons),
-                    "edgeCount", edgeCount,
-                    "symbolicInputs", sortedLimited(liveIns, MAX_PLAN_VALUES),
-                    "heapInputs", sortedLimited(heapInputs, MAX_PLAN_VALUES),
-                    "environmentInputs", sortedLimited(environmentInputs, MAX_PLAN_VALUES),
-                    "outputs", sortedLimited(outputs, MAX_PLAN_VALUES),
-                    "guards", sortedLimited(guards, MAX_PLAN_VALUES),
-                    "exceptions", sortedLimited(exceptions, MAX_PLAN_VALUES),
-                    "transferKinds", sortedLimited(transferKinds, MAX_PLAN_VALUES),
-                    "possibleCallees", sortedLimited(possibleCallees, MAX_PLAN_VALUES),
-                    "runtimeObservedCallees", Collections.emptyList(),
-                    "requiredModels", sortedLimited(requiredModels, MAX_PLAN_VALUES),
-                    "siteIds", sortedLimited(siteIds, MAX_PLAN_VALUES),
-                    "truncated", truncated,
-                    "precision", "graph_directed_static_slice");
-        }
-
-        private String classification() {
-            if (transferKinds.contains("COMPUTE")
-                    || transferKinds.contains("GUARD")
-                    || transferKinds.contains("EXCEPTION")
-                    || transferKinds.contains("HEAP_WRITE")
-                    || transferKinds.contains("MODEL_TRANSFORM")
-                    || transferKinds.contains("PROTOCOL_TRANSFER")
-                    || transferKinds.contains("CONSTRUCT")
-                    || transferKinds.contains("UNKNOWN")
-                    || (transferKinds.contains("HEAP_LOOKUP")
-                    && (!guards.isEmpty() || !exceptions.isEmpty()))) {
-                return "SYMBOLIC_EXECUTION";
-            }
-            if (transferKinds.contains("HEAP_LOOKUP")
-                    || transferKinds.contains("DYNAMIC_DISPATCH")) {
-                return "ROUTE_SUMMARY";
-            }
-            return "FUNCTION_PASS";
-        }
-
-        private static boolean looksLikeFieldSignature(String value) {
-            return value != null && value.matches("<[^:]+:\\s+.+\\s+[^\\s()]+>");
-        }
-
-        private static String joinReasons(Set<String> values) {
-            StringBuilder builder = new StringBuilder();
-            for (String value : values) {
-                if (builder.length() > 0) {
-                    builder.append("; ");
-                }
-                builder.append(value);
-            }
-            return builder.toString();
-        }
-    }
-
-    private static final class OutputWriter {
-        private final TargetContext target;
-        private final AnalysisResult result;
-        private int fileCount;
-
-        private OutputWriter(TargetContext target, AnalysisResult result) {
-            this.target = target;
-            this.result = result;
-        }
-
-        private void writeAll() throws IOException {
-            Files.createDirectories(target.outputDir);
-            Files.deleteIfExists(target.outputDir.resolve("static_rpc_mappings.jsonl"));
-            Files.deleteIfExists(target.outputDir.resolve("static_hardcoded_dataflows.jsonl"));
-            writeJson("target_resolved.json", result.targetResolved);
-            writeJson("seeds.json", object("seeds", result.seeds));
-            writeJsonl("static_cells.jsonl", result.cells);
-            writeJsonl("static_dataflow_edges.jsonl", result.edges);
-            writeJsonl("static_trace_methods.jsonl", result.traceMethods);
-            writeJsonl("symbolic_execution_plan.jsonl", result.symbolicPlan);
-            writeJsonl("symbolic_regions.jsonl", result.symbolicRegions);
-            writeJsonl("symbolic_region_edges.jsonl", result.symbolicRegionEdges);
-            writeJsonl("symbolic_models.jsonl", result.symbolicModels);
-            writeJson("symbolic_coverage.json", result.symbolicCoverage);
-            writeJson("automatic_derivation_boundary.json",
-                    result.automaticDerivationBoundary);
-            writeJson("static_slices.json", result.slices);
-        }
-
-        private void writeJson(String fileName, Object value) throws IOException {
-            Files.write(target.outputDir.resolve(fileName),
-                    Json.write(value).getBytes(StandardCharsets.UTF_8));
-            fileCount++;
-        }
-
-        private void writeJsonl(String fileName, List<Map<String, Object>> values)
-                throws IOException {
-            Path output = target.outputDir.resolve(fileName);
-            try (BufferedWriter writer = Files.newBufferedWriter(output,
-                    StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE)) {
-                for (Object value : values) {
-                    writer.write(Json.write(value));
-                    // Keep artifact hashes stable across host platforms.
-                    writer.write('\n');
-                }
-            }
-            fileCount++;
-        }
-    }
-
-    private static final class Json {
-        static String write(Object value) {
-            if (value == null) {
-                return "null";
-            }
-            if (value instanceof String) {
-                return quote((String) value);
-            }
-            if (value instanceof Number || value instanceof Boolean) {
-                return String.valueOf(value);
-            }
-            if (value instanceof Map) {
-                StringBuilder builder = new StringBuilder();
-                builder.append('{');
-                boolean first = true;
-                for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-                    if (!first) {
-                        builder.append(',');
-                    }
-                    first = false;
-                    builder.append(quote(String.valueOf(entry.getKey())));
-                    builder.append(':');
-                    builder.append(write(entry.getValue()));
-                }
-                builder.append('}');
-                return builder.toString();
-            }
-            if (value instanceof Collection) {
-                StringBuilder builder = new StringBuilder();
-                builder.append('[');
-                boolean first = true;
-                for (Object item : (Collection<?>) value) {
-                    if (!first) {
-                        builder.append(',');
-                    }
-                    first = false;
-                    builder.append(write(item));
-                }
-                builder.append(']');
-                return builder.toString();
-            }
-            return quote(String.valueOf(value));
-        }
-
-        private static String quote(String value) {
-            StringBuilder builder = new StringBuilder(value.length() + 16);
-            builder.append('"');
-            for (int i = 0; i < value.length(); i++) {
-                char ch = value.charAt(i);
-                switch (ch) {
-                    case '"':
-                        builder.append("\\\"");
-                        break;
-                    case '\\':
-                        builder.append("\\\\");
-                        break;
-                    case '\n':
-                        builder.append("\\n");
-                        break;
-                    case '\r':
-                        builder.append("\\r");
-                        break;
-                    case '\t':
-                        builder.append("\\t");
-                        break;
-                    default:
-                        if (ch < 0x20) {
-                            builder.append(String.format("\\u%04x", (int) ch));
-                        } else {
-                            builder.append(ch);
-                        }
-                }
-            }
-            builder.append('"');
-            return builder.toString();
-        }
     }
 
     private static Map<String, Object> summarizeEdgeKinds(List<Map<String, Object>> edges) {
@@ -12721,30 +9740,6 @@ public final class CausynthPipeline {
             }
         }
         return true;
-    }
-
-    private static Map<String, String> readConfig(String configPath) throws IOException {
-        if (configPath == null || configPath.trim().isEmpty()) {
-            return Collections.emptyMap();
-        }
-        Path path = Paths.get(configPath);
-        if (!Files.isRegularFile(path)) {
-            return Collections.emptyMap();
-        }
-        Map<String, String> values = new LinkedHashMap<>();
-        try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#") || !trimmed.contains("=")) {
-                    continue;
-                }
-                int index = trimmed.indexOf('=');
-                values.put(trimmed.substring(0, index).trim(),
-                        trimmed.substring(index + 1).trim());
-            }
-        }
-        return values;
     }
 
     private static String firstNonBlank(String... values) {

@@ -157,7 +157,23 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
   switch (type) {
   case T_OBJECT: {
     oop fld_oop = obj->obj_field(fd->offset());
-    if (fld_oop == NULL) return false;
+    if (fld_oop == NULL) {
+      // A selected nullable reference is still a symbolic input when its
+      // concrete seed happens to be null.  Keep its field expression on the
+      // owner; getfield will propagate that expression to ifnull/ifnonnull.
+      // Recursive whole-object symbolization remains unchanged: it cannot
+      // traverse a missing child and does not invent one.
+      if (!_selected_field.empty()) {
+        sym_inst = this->_ctx.get_sym_inst(obj);
+        assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
+               "should be equal");
+        if (sym_inst->get(fd->offset()) == NULL) {
+          sym_inst->init_sym_exp(fd->offset(), new FieldSymbolExp(
+              sym_inst->get_sym_rid(), symbolic_name, T_OBJECT));
+        }
+      }
+      return false;
+    }
     if (fld_oop->klass()->name() == vmSymbols::java_lang_String()) {
       sym_inst = this->_ctx.get_sym_inst(obj);
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),

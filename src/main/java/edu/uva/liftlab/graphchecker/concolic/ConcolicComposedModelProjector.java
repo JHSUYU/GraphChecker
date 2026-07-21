@@ -1580,18 +1580,41 @@ public final class ConcolicComposedModelProjector {
     }
 
     private static JsonObject dynamicScalarAssignment(
-            DynamicTermProjection projection, String value) {
+            DynamicTermProjection projection, String value)
+            throws IOException {
         String solverSort = string(projection.binding, "solverSort");
         String valueType;
+        String floatingDescriptor = "";
         if ("Int".equals(solverSort)) valueType = "INT";
-        else if ("Real".equals(solverSort)) valueType = "REAL";
+        else if ("(_ FloatingPoint 8 24)".equals(solverSort)) {
+            valueType = "REAL";
+            floatingDescriptor = "F";
+        } else if ("(_ FloatingPoint 11 53)".equals(solverSort)) {
+            valueType = "REAL";
+            floatingDescriptor = "D";
+        }
         else if ("Bool".equals(solverSort)) valueType = "BOOL";
         else if ("String".equals(solverSort)) valueType = "STRING";
         else valueType = "INT";
+        String replayValue = value;
+        if (!floatingDescriptor.isEmpty()) {
+            replayValue = SmtModelValueCodec
+                    .floatingPointTermToJavaLiteral(value,
+                            floatingDescriptor);
+            if (replayValue == null) {
+                throw projectionGap("FLOATING_MODEL_TERM_UNSUPPORTED:"
+                        + projection.solverTerm + ":" + value);
+            }
+        }
         JsonObject assignment = assignmentBase(projection.rawEngineSymbol,
                 projection.solverTerm, string(projection.binding,
-                        "baseInputSymbol"), valueType, value,
+                        "baseInputSymbol"), valueType, replayValue,
                 projection.targetAction);
+        if (!floatingDescriptor.isEmpty()) {
+            assignment.addProperty("floatingPointFormat",
+                    floatingDescriptor);
+            assignment.addProperty("modelFloatingPointTerm", value);
+        }
         assignment.add("materializationPath", array(projection.binding,
                 "fieldPath").deepCopy());
         assignment.addProperty("projectionRefinement",
@@ -3195,11 +3218,7 @@ public final class ConcolicComposedModelProjector {
     }
 
     private static String normalizeModelValue(String value) {
-        String trimmed = firstNonBlank(value);
-        if (trimmed.startsWith("(- ") && trimmed.endsWith(")")) {
-            return "-" + trimmed.substring(3, trimmed.length() - 1).trim();
-        }
-        return trimmed;
+        return SmtModelValueCodec.normalizeScalar(value);
     }
 
     private static String firstLine(String value) {

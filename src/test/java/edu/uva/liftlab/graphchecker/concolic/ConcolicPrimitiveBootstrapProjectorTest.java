@@ -156,6 +156,164 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     }
 
     @Test
+    public void selectedProducerProjectsMixedSupplementalScalarInputs()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installSupplementalStaticScalars(fixture);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        JsonObject producerA = producer(result, "REGION.A");
+        JsonArray assignments = producerA.getAsJsonArray(
+                "modelAssignments");
+        assertEquals(5, assignments.size());
+        assertSupplemental(assignments, "REGION.A.in.1", "INT", "37");
+        assertSupplemental(assignments, "REGION.A.in.2", "INT",
+                "5000000000");
+        assertEquals("D", assertSupplemental(assignments,
+                "REGION.A.in.3", "REAL", "2.5")
+                .get("floatingPointFormat").getAsString());
+        assertSupplemental(assignments, "REGION.A.in.4", "STRING",
+                "\"needle\"");
+        assertEquals(6, result.manifest.get(
+                "totalProjectedPrimitiveInputCount").getAsInt());
+        assertEquals(4, result.manifest.get(
+                "supplementalPrimitiveAssignmentCount").getAsInt());
+        assertEquals(4, result.manifest.getAsJsonArray(
+                "supplementalPrimitiveAssignments").size());
+        assertTrue(result.manifest.get("projectionComplete").getAsBoolean());
+    }
+
+    @Test
+    public void exactDoubleRootCatalogProjectsIeeeModelForReplay()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installSupplementalStaticScalars(fixture);
+        JsonArray roots = new JsonArray();
+        roots.add(scalarRoot("REGION.A", "REGION.A.in.3", "td",
+                "double", "D", "(_ FloatingPoint 11 53)", 0));
+        fixture.reach.addProperty("existentialNonBooleanRootInputCount", 1);
+        fixture.reach.add("existentialNonBooleanRootInputs", roots);
+        fixture.reach.addProperty(
+                "existentialNonBooleanRootInputDiscoveryAuthority",
+                "STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_CANONICAL_"
+                        + "TERM_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
+        refreshBootstrapArtifacts(fixture);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        JsonObject assignment = assertSupplemental(producer(result,
+                "REGION.A").getAsJsonArray("modelAssignments"),
+                "REGION.A.in.3", "REAL", "2.5");
+        assertEquals("D", assignment.get("floatingPointFormat")
+                .getAsString());
+        assertEquals(1, result.manifest.get(
+                "existentialNonBooleanRootAssignmentCount").getAsInt());
+    }
+
+    @Test
+    public void booleanAndStringOnlyProducersUseExactRootCatalog()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        // This legacy-looking scalar is intentionally not in the new root
+        // catalog and therefore must not leak into REGION.A's replay.
+        installSupplementalStaticInt(fixture);
+        installScalarOnlyProducerCatalog(fixture, false);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        assertEquals(1, producer(result, "REGION.A").getAsJsonArray(
+                "modelAssignments").size());
+        JsonArray stringAssignments = producer(result, "REGION.B")
+                .getAsJsonArray("modelAssignments");
+        assertEquals(1, stringAssignments.size());
+        assertSupplemental(stringAssignments, "REGION.B.in.0", "STRING",
+                "\"needle\"");
+        assertEquals(1, result.manifest.get("rootBooleanInputCount")
+                .getAsInt());
+        assertEquals(1, result.manifest.get(
+                "existentialNonBooleanRootInputCount").getAsInt());
+        assertEquals(1, result.manifest.get(
+                "existentialNonBooleanRootAssignmentCount").getAsInt());
+        JsonArray roots = result.manifest.getAsJsonArray(
+                "existentialNonBooleanRootAssignments");
+        assertEquals(1, roots.size());
+        assertEquals("EXISTENTIAL_NON_BOOLEAN_ROOT", roots.get(0)
+                .getAsJsonObject().get("projectionRole").getAsString());
+        assertEquals("REGION.B.in.0", roots.get(0).getAsJsonObject()
+                .get("inputPort").getAsString());
+        assertFalse(result.manifest.getAsJsonArray(
+                "supplementalPrimitiveAssignments").toString().contains(
+                "REGION.A.in.1"));
+    }
+
+    @Test
+    public void pureScalarCatalogAllowsEmptyBooleanValuation()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installScalarOnlyProducerCatalog(fixture, true);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        assertEquals(0, result.manifest.get("rootBooleanInputCount")
+                .getAsInt());
+        assertEquals(2, result.manifest.get(
+                "existentialNonBooleanRootInputCount").getAsInt());
+        assertEquals(2, result.manifest.get(
+                "existentialNonBooleanRootAssignmentCount").getAsInt());
+        assertEquals(2, result.manifest.get(
+                "producerReplayActivationCount").getAsInt());
+        assertSupplemental(producer(result, "REGION.A").getAsJsonArray(
+                "modelAssignments"), "REGION.A.in.0", "INT", "37");
+        assertSupplemental(producer(result, "REGION.B").getAsJsonArray(
+                "modelAssignments"), "REGION.B.in.0", "STRING",
+                "\"needle\"");
+    }
+
+    @Test
+    public void supplementalScalarSortTypeMismatchFailsClosed()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installSupplementalStaticScalars(fixture);
+        JsonObject composition = JsonParser.parseString(new String(
+                Files.readAllBytes(fixture.composition),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        for (com.google.gson.JsonElement caseElement : composition
+                .getAsJsonArray("caseProjectionCatalog")) {
+            for (com.google.gson.JsonElement mappingElement : caseElement
+                    .getAsJsonObject().getAsJsonArray(
+                            "rawEngineSymbolMappings")) {
+                JsonObject mapping = mappingElement.getAsJsonObject();
+                if (mapping.has("canonicalPort")
+                        && "REGION.A.in.3".equals(mapping.get(
+                        "canonicalPort").getAsString())) {
+                    mapping.addProperty("sort", "INT");
+                    mapping.addProperty("solverSort", "Int");
+                }
+            }
+        }
+        Files.write(fixture.composition, composition.toString().getBytes(
+                StandardCharsets.UTF_8));
+        refreshBootstrapArtifacts(fixture);
+
+        expectFailure(fixture.arguments(),
+                "SUPPLEMENTAL_PRIMITIVE_SORT_TYPE_MISMATCH:REGION.A.in.3");
+    }
+
+    @Test
     public void selectedArrayElementBooleanRetainsExactContainerSelector()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -584,16 +742,41 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     private static JsonObject producerAssignment(
             ConcolicPrimitiveBootstrapProjector.Result result,
             String region) {
+        JsonArray assignments = producer(result, region).getAsJsonArray(
+                "modelAssignments");
+        assertEquals(1, assignments.size());
+        return assignments.get(0).getAsJsonObject();
+    }
+
+    private static JsonObject producer(
+            ConcolicPrimitiveBootstrapProjector.Result result,
+            String region) {
         for (JsonObject activation : result.activations) {
-            if (!region.equals(activation.get("regionId").getAsString())) {
-                continue;
+            if (region.equals(activation.get("regionId").getAsString())) {
+                return activation;
             }
-            JsonArray assignments = activation.getAsJsonArray(
-                    "modelAssignments");
-            assertEquals(1, assignments.size());
-            return assignments.get(0).getAsJsonObject();
         }
         throw new AssertionError("missing producer activation " + region);
+    }
+
+    private static JsonObject assertSupplemental(JsonArray assignments,
+                                                 String port,
+                                                 String valueType,
+                                                 String value) {
+        for (com.google.gson.JsonElement element : assignments) {
+            JsonObject assignment = element.getAsJsonObject();
+            if (!port.equals(assignment.get("inputSymbol").getAsString())) {
+                continue;
+            }
+            assertEquals(valueType, assignment.get("valueType")
+                    .getAsString());
+            assertEquals(value, assignment.get("value").getAsString());
+            assertEquals("FIELD_ACCESS", assignment.getAsJsonObject(
+                    "target").get("bindingMode").getAsString());
+            return assignment;
+        }
+        fail("missing supplemental assignment " + port);
+        return null;
     }
 
     private static void installSupplementalStaticInt(Fixture fixture)
@@ -676,6 +859,259 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 activation);
 
         refreshBootstrapArtifacts(fixture);
+    }
+
+    private static void installSupplementalStaticScalars(Fixture fixture)
+            throws Exception {
+        String declarations = "(declare-const ti Int)\n"
+                + "(declare-const tl Int)\n"
+                + "(declare-const td (_ FloatingPoint 11 53))\n"
+                + "(declare-const ts String)\n"
+                + "(assert (= ti 37))\n"
+                + "(assert (= tl 5000000000))\n"
+                + "(assert (fp.eq td ((_ to_fp 11 53)"
+                + " #x4004000000000000)))\n"
+                + "(assert (= ts \"needle\"))\n";
+        String smt = new String(Files.readAllBytes(fixture.smt),
+                StandardCharsets.UTF_8).replace("(check-sat)\n",
+                declarations + "(check-sat)\n");
+        Files.write(fixture.smt, smt.getBytes(StandardCharsets.UTF_8));
+
+        JsonObject composition = JsonParser.parseString(new String(
+                Files.readAllBytes(fixture.composition),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        for (com.google.gson.JsonElement element : composition
+                .getAsJsonArray("caseProjectionCatalog")) {
+            JsonObject pathCase = element.getAsJsonObject();
+            if (!"CASE.A.1".equals(pathCase.get("caseId").getAsString())) {
+                continue;
+            }
+            JsonArray mappings = pathCase.getAsJsonArray(
+                    "rawEngineSymbolMappings");
+            mappings.add(scalarMapping("REGION.A.in.1", "ti", "INT",
+                    "Int", "M_I_field_REGION.A.in.1_java/lang/Integer"));
+            mappings.add(scalarMapping("REGION.A.in.2", "tl", "INT",
+                    "Int", "M_J_field_REGION.A.in.2_java/lang/Long"));
+            mappings.add(scalarMapping("REGION.A.in.3", "td", "FLOAT64",
+                    "(_ FloatingPoint 11 53)",
+                    "M_D_field_REGION.A.in.3_java/lang/Double"));
+            mappings.add(scalarMapping("REGION.A.in.4", "ts", "STRING",
+                    "String",
+                    "M_L'String'_field_REGION.A.in.4_java/lang/String"));
+            pathCase.addProperty("rawEngineSymbolMappingCount",
+                    mappings.size());
+        }
+        Files.write(fixture.composition, composition.toString().getBytes(
+                StandardCharsets.UTF_8));
+
+        JsonObject summary = jsonlRow(fixture.summaries, "summaryId",
+                "SUMMARY.A.1");
+        JsonObject admission = summary.getAsJsonObject(
+                "inputMaterializationAdmission");
+        for (int index = 1; index <= 4; index++) {
+            String port = "REGION.A.in." + index;
+            for (String member : new String[]{"globalSliceInputs",
+                    "requiredSliceInputs", "observedSymbolizedInputs"}) {
+                admission.getAsJsonArray(member).add(port);
+            }
+        }
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        activation.getAsJsonArray("materializations").add(
+                staticScalarAction("REGION.A.in.1", "int", "i", 7));
+        activation.getAsJsonArray("materializations").add(
+                staticScalarAction("REGION.A.in.2", "long", "l", 8));
+        activation.getAsJsonArray("materializations").add(
+                staticScalarAction("REGION.A.in.3", "double", "d", 9));
+        activation.getAsJsonArray("materializations").add(
+                staticScalarAction("REGION.A.in.4", "java.lang.String",
+                        "s", 10));
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+        refreshBootstrapArtifacts(fixture);
+    }
+
+    private static void installScalarOnlyProducerCatalog(Fixture fixture,
+                                                         boolean pureScalar)
+            throws Exception {
+        String declarations = "(declare-const scalar_b String)\n"
+                + "(assert (= scalar_b \"needle\"))\n";
+        if (pureScalar) {
+            declarations += "(declare-const scalar_a Int)\n"
+                    + "(assert (= scalar_a 37))\n";
+        }
+        String smt = new String(Files.readAllBytes(fixture.smt),
+                StandardCharsets.UTF_8).replace("(check-sat)\n",
+                declarations + "(check-sat)\n");
+        Files.write(fixture.smt, smt.getBytes(StandardCharsets.UTF_8));
+
+        JsonObject composition = JsonParser.parseString(new String(
+                Files.readAllBytes(fixture.composition),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        for (com.google.gson.JsonElement element : composition
+                .getAsJsonArray("caseProjectionCatalog")) {
+            JsonObject pathCase = element.getAsJsonObject();
+            String region = pathCase.get("regionId").getAsString();
+            if ("REGION.B".equals(region)) {
+                JsonArray mappings = new JsonArray();
+                mappings.add(scalarMapping("REGION.B.in.0", "scalar_b",
+                        "STRING", "String",
+                        "M_L'String'_field_REGION.B.in.0_java/lang/String"));
+                pathCase.add("rawEngineSymbolMappings", mappings);
+                pathCase.addProperty("rawEngineSymbolMappingCount", 1);
+            } else if (pureScalar && "REGION.A".equals(region)) {
+                JsonArray mappings = new JsonArray();
+                mappings.add(scalarMapping("REGION.A.in.0", "scalar_a",
+                        "INT", "Int",
+                        "M_I_field_REGION.A.in.0_java/lang/Integer"));
+                pathCase.add("rawEngineSymbolMappings", mappings);
+                pathCase.addProperty("rawEngineSymbolMappingCount", 1);
+            }
+        }
+        Files.write(fixture.composition, composition.toString().getBytes(
+                StandardCharsets.UTF_8));
+
+        JsonArray booleanRoots = new JsonArray();
+        JsonArray valuationAssignments = new JsonArray();
+        if (!pureScalar) {
+            booleanRoots.add(root("REGION.A", "REGION.A.in.0", "xa"));
+            valuationAssignments.add(valuation("REGION.A.in.0", "xa",
+                    true));
+        }
+        fixture.reach.add("rootBooleanInputs", booleanRoots);
+        JsonObject valuation = fixture.reach.getAsJsonArray("truthTable")
+                .get(0).getAsJsonObject();
+        valuation.addProperty("ordinal", pureScalar ? 0 : 1);
+        valuation.addProperty("valuationKey", pureScalar ? "" : "1");
+        valuation.add("assignments", valuationAssignments);
+
+        JsonArray scalarRoots = new JsonArray();
+        int ordinal = 0;
+        if (pureScalar) {
+            scalarRoots.add(scalarRoot("REGION.A", "REGION.A.in.0",
+                    "scalar_a", "int", "I", "Int", ordinal++));
+        }
+        scalarRoots.add(scalarRoot("REGION.B", "REGION.B.in.0",
+                "scalar_b", "java.lang.String", "Ljava/lang/String;",
+                "String", ordinal));
+        fixture.reach.addProperty("existentialNonBooleanRootInputCount",
+                scalarRoots.size());
+        fixture.reach.add("existentialNonBooleanRootInputs", scalarRoots);
+        fixture.reach.addProperty(
+                "existentialNonBooleanRootInputDiscoveryAuthority",
+                "STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_CANONICAL_"
+                        + "TERM_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
+
+        JsonObject bActivation = jsonlRow(fixture.activations,
+                "activationId", "ACT.B.1");
+        JsonArray bActions = new JsonArray();
+        bActions.add(staticScalarAction("REGION.B", "REGION.B.in.0",
+                "java.lang.String", "text", 7));
+        bActivation.add("materializations", bActions);
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.B.1",
+                bActivation);
+        if (pureScalar) {
+            JsonObject aActivation = jsonlRow(fixture.activations,
+                    "activationId", "ACT.A.1");
+            JsonArray aActions = new JsonArray();
+            aActions.add(staticScalarAction("REGION.A", "REGION.A.in.0",
+                    "int", "number", 7));
+            aActivation.add("materializations", aActions);
+            replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                    aActivation);
+        }
+        refreshBootstrapArtifacts(fixture);
+    }
+
+    private static JsonObject scalarRoot(String region, String port,
+                                         String solver, String javaType,
+                                         String descriptor, String sort,
+                                         int ordinal) {
+        JsonObject result = new JsonObject();
+        result.addProperty("portId", port);
+        result.addProperty("regionId", region);
+        result.addProperty("cell", "<fixture.Globals: " + javaType
+                + " root>");
+        result.addProperty("javaType", javaType);
+        result.addProperty("javaTypeDescriptor", descriptor);
+        result.addProperty("solverTerm", solver);
+        result.addProperty("solverSort", sort);
+        result.addProperty("root", true);
+        result.addProperty("upstreamSupplied", false);
+        result.addProperty("projectionRole",
+                "EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION");
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("regionId", region);
+        evidence.addProperty("caseId", "CASE.EVIDENCE");
+        evidence.addProperty("solverTerm", solver);
+        JsonArray evidenceRows = new JsonArray();
+        evidenceRows.add(evidence);
+        result.add("caseProjectionEvidence", evidenceRows);
+        result.addProperty("authority",
+                "STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_CANONICAL_"
+                        + "BINDING_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
+        result.addProperty("ordinal", ordinal);
+        return result;
+    }
+
+    private static JsonObject scalarMapping(String port, String solver,
+                                            String sort, String solverSort,
+                                            String engine) {
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("rawEngineSymbol", engine);
+        mapping.addProperty("solverTerm", solver);
+        mapping.addProperty("sort", sort);
+        mapping.addProperty("solverSort", solverSort);
+        mapping.addProperty("termKind", "CANONICAL_PORT_TERM");
+        mapping.addProperty("canonicalPort", port);
+        mapping.add("dynamicBindingIds", new JsonArray());
+        mapping.addProperty("authority", "EMITTER_ACTUAL_TERM");
+        return mapping;
+    }
+
+    private static JsonObject staticScalarAction(String port,
+                                                 String javaType,
+                                                 String fieldName,
+                                                 int unitIndex) {
+        return staticScalarAction("REGION.A", port, javaType, fieldName,
+                unitIndex);
+    }
+
+    private static JsonObject staticScalarAction(String region, String port,
+                                                 String javaType,
+                                                 String fieldName,
+                                                 int unitIndex) {
+        String signature = "<fixture.Globals: " + javaType + " "
+                + fieldName + ">";
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", port);
+        action.addProperty("cell", signature);
+        action.addProperty("sourceKind", "SHARED_HEAP");
+        action.addProperty("projection", "value");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("observed", true);
+        action.addProperty("javaType", javaType);
+        action.addProperty("field", signature);
+        action.addProperty("accessKind", "FIELD_READ");
+        action.addProperty("accessMethod",
+                "<fixture." + region + ": int compute()>");
+        action.addProperty("accessUnitIndex", unitIndex);
+        action.addProperty("accessSiteId",
+                "<fixture." + region + ": int compute()>#u" + unitIndex);
+        action.addProperty("accessSiteAuthority",
+                "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+        action.addProperty("accessOwnerClass", "fixture.Globals");
+        action.addProperty("accessField", fieldName);
+        action.addProperty("accessFieldType", javaType);
+        action.addProperty("accessFieldSignature", signature);
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        JsonArray path = new JsonArray();
+        path.add(fieldName);
+        action.add("fieldPath", path);
+        return action;
     }
 
     private static JsonObject installDynamicLeaf(Fixture fixture,

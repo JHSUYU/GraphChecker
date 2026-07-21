@@ -75,6 +75,7 @@ fixture_class=$(workflow_property fixture_class)
 fixture_test_class=$(workflow_property fixture_test_class)
 trace_test=$(workflow_property trace_test)
 custom_jdk_docker_image=$(workflow_property custom_jdk_docker_image)
+custom_jdk_library_path=$(workflow_property custom_jdk_library_path false)
 fixture_variant=$(workflow_property fixture_variant false)
 fixture_package=${fixture_class%.*}
 fixture_package=${fixture_package//./\/}
@@ -113,19 +114,20 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   import CH               Strictly import that producer capture
   explore-producer CH     Close and merge one producer path worklist
   bootstrap-compose       Compose producer relations with the target seed
-  bootstrap-project       Derive the SAT Boolean model and replay ALL bundle
+  bootstrap-project       Derive a SAT replay bundle or prove bootstrap UNSAT
   bootstrap-replay        Naturally reach/import/reschedule the target bug
   campaign                Close the bounded fixed-runtime concolic campaign
   final                   Final compose + relationship proof + reach report
-  smoke                   test + prepare + analyze + trace + discovery + target
+  smoke                   prepare + analyze + trace + discovery + target
   all                     Run the complete clean-worktree workflow above
   clean                   Remove only the configured fixture work products
 
 No command writes SMT text or a reachability formula. Local channels are
 discovered from runtime-confirmed shared-field read-from evidence; this
 fixture has no declared RPC mapping.
-Only the validated final composition is allowed to publish the reach report;
-the bootstrap Boolean report is explicitly replay-only.
+Only a replay-validated composition, or a structurally complete bootstrap
+composition proved UNSAT, is allowed to publish a final reach report.  An
+UNSAT terminal is explicitly marked as having no fatal replay.
 EOF
 }
 
@@ -545,6 +547,9 @@ run_custom_plan() {
   local b2=$6
   local accept_nonzero=$7
   local jdk java_path selected replay_status select_all=false
+  local resolved_library_path="" java_library_path=""
+  local -a java_env
+  java_env=()
   require_file "concolic activation plan" "${plan}"
   require_directory "concolic fixture classes" "${classes}"
   [[ ! -e "${results}" ]] || die "capture output already exists: ${results}"
@@ -552,6 +557,17 @@ run_custom_plan() {
   jdk=$(configured_value custom_jdk_home) || return $?
   java_path="${jdk}/bin/java"
   [[ -x "${java_path}" ]] || die "custom JDK is not built: ${java_path}"
+  if [[ -n "${custom_jdk_library_path}" ]]; then
+    resolved_library_path=${custom_jdk_library_path}
+    if [[ "${resolved_library_path}" != /* ]]; then
+      resolved_library_path="${graphchecker_dir}/${resolved_library_path}"
+    fi
+    resolved_library_path=$(realpath -m -- "${resolved_library_path}")
+    [[ -d "${resolved_library_path}" ]] \
+      || die "custom JDK native library directory not found: ${resolved_library_path}"
+    java_library_path="${resolved_library_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    java_env+=(LD_LIBRARY_PATH="${java_library_path}")
+  fi
   selected="${selection}"
   if plan_requires_all "${plan}"; then
     select_all=true
@@ -585,8 +601,9 @@ run_custom_plan() {
       "${java_args[@]:3}"
     )
   fi
-  if "${java_path}" -version >/dev/null 2>&1; then
+  if env "${java_env[@]}" "${java_path}" -version >/dev/null 2>&1; then
     if (cd "${graphchecker_dir}" && env -u CAUSYNTH_CONCOLIC_ACTIVATION_ID \
+        "${java_env[@]}" \
         "${java_path}" "${java_args[@]}"); then
       replay_status=0
     else
@@ -1091,7 +1108,7 @@ do_bootstrap_project() {
     CAUSYNTH_REACH_REPORT="${bootstrap_root}/bootstrap_boolean_model.json" \
     "${runner}" --config "${config}" reach \
       --mode BOOTSTRAP_REPLAY_MODEL)
-  jq -e '
+  if jq -e '
     .complete == true
     and .status == "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
     and .extractionMode == "BOOTSTRAP_REPLAY_MODEL"
@@ -1099,8 +1116,27 @@ do_bootstrap_project() {
     and .reportableFinalReachCondition == false
     and .truthTableComplete == true
     and .satisfyingValuationCount > 0
-  ' "${bootstrap_root}/bootstrap_boolean_model.json" >/dev/null \
-    || die "bootstrap Boolean projection has no complete SAT replay model"
+  ' "${bootstrap_root}/bootstrap_boolean_model.json" >/dev/null; then
+    :
+  elif jq -e '
+    .complete == true
+    and .status == "COMPLETE_BOOTSTRAP_UNREACHABLE"
+    and .extractionMode == "BOOTSTRAP_REPLAY_MODEL"
+    and .replayBootstrapOnly == true
+    and .reportableFinalReachCondition == false
+    and .truthTableComplete == true
+    and .exactFiniteProjection == true
+    and .bootstrapReplayModelAvailable == false
+    and .reachabilityStatus == "UNREACHABLE"
+    and .satisfyingValuationCount == 0
+    and .unsatisfyingValuationCount == .valuationCount
+    and .reachConditionSmtLib == "false"
+  ' "${bootstrap_root}/bootstrap_boolean_model.json" >/dev/null; then
+    echo "[three-thread-rpc] bootstrap composition is UNSAT; no replay model exists"
+    return 0
+  else
+    die "bootstrap Boolean projection is neither a complete SAT replay model nor a complete UNSAT result"
+  fi
   run_graphchecker_main \
     edu.uva.liftlab.graphchecker.concolic.ConcolicPrimitiveBootstrapProjector \
     --smt "${bootstrap_root}/composed_fatal.smt2" \
@@ -1119,10 +1155,15 @@ do_bootstrap_project() {
     and .projectionComplete == true
     and .compositionStage == "BOOTSTRAP"
     and .activationSelection == "ALL"
-    and .producerReplayActivationCount == .rootBooleanInputCount
     and .producerReplayActivationCount > 0
+    and .producerReplayActivationCount
+      <= .totalProjectedPrimitiveInputCount
     and .totalProjectedPrimitiveInputCount
       == .upstreamModelAssignmentCount
+    and .existentialNonBooleanRootAssignmentCount
+      == .existentialNonBooleanRootInputCount
+    and .existentialNonBooleanRootAssignmentCount
+      == ((.existentialNonBooleanRootAssignments // []) | length)
     and .supplementalPrimitiveAssignmentCount
       == (.upstreamModelAssignmentCount - .rootBooleanInputCount)
     and .upstreamModelAssignmentCount >= .producerReplayActivationCount
@@ -1161,12 +1202,29 @@ do_bootstrap_project() {
     || die "primitive bootstrap activation bundle violates replay policy"
 }
 
+bootstrap_is_unreachable() {
+  [[ -f "${bootstrap_root}/bootstrap_boolean_model.json" ]] \
+    && jq -e '
+      .complete == true
+      and .status == "COMPLETE_BOOTSTRAP_UNREACHABLE"
+      and .truthTableComplete == true
+      and .exactFiniteProjection == true
+      and .bootstrapReplayModelAvailable == false
+      and .satisfyingValuationCount == 0
+      and .unsatisfyingValuationCount == .valuationCount
+      and .reachConditionSmtLib == "false"
+    ' "${bootstrap_root}/bootstrap_boolean_model.json" >/dev/null
+}
+
 do_bootstrap_replay() {
   local plan="${bootstrap_root}/activation_plan.jsonl"
   local results="${bootstrap_root}/concolic_region_results.jsonl"
   local summaries="${bootstrap_root}/concolic_region_summaries.jsonl"
   local validated_schedule="${bootstrap_root}/validated-target-schedule"
   local binding target_region target_activation
+  if bootstrap_is_unreachable; then
+    die "bootstrap composition is UNSAT; a fatal replay must not be attempted"
+  fi
   require_file "primitive bootstrap activation plan" "${plan}"
   binding=$(target_binding) || return $?
   IFS=$'\t' read -r target_region target_activation <<< "${binding}"
@@ -1441,6 +1499,10 @@ do_final() {
   local binding target_region target_activation channel producer_binding_row
   local producer_region expected_regions actual_regions
   local -a channels bounded_args
+  if bootstrap_is_unreachable; then
+    do_unreachable_final
+    return
+  fi
   [[ ! -e "${final_root}" ]] \
     || die "final output already exists: ${final_root}"
   validate_campaign_snapshot
@@ -1525,10 +1587,14 @@ do_final() {
     "${runner}" --config "${config}" reach \
       --mode FINAL_REPORT)
   expected_regions=$(declared_producer_regions | sort -u)
-  actual_regions=$(jq -r '.rootBooleanInputs[].regionId' \
+  actual_regions=$(jq -r '
+    [(.rootBooleanInputs // [])[],
+      (.existentialNonBooleanRootInputs // [])[]]
+    | .[].regionId
+  ' \
     "${final_root}/boolean_reach_condition.json" | sort -u)
   [[ "${expected_regions}" == "${actual_regions}" ]] \
-    || die "final condition roots do not match both discovered producers"
+    || die "final scalar roots do not match all discovered producers"
   jq -e --argjson expected "${#channels[@]}" '
     .complete == true
     and .status == "COMPLETE_EXACT_BOOLEAN_REACH_CONDITION"
@@ -1537,13 +1603,141 @@ do_final() {
     and .reportableFinalReachCondition == true
     and .truthTableComplete == true
     and .exactFiniteProjection == true
-    and .rootBooleanInputCount == $expected
+    and .rootBooleanInputCount == ((.rootBooleanInputs // []) | length)
+    and .existentialNonBooleanRootInputCount
+      == ((.existentialNonBooleanRootInputs // []) | length)
+    and (.rootBooleanInputCount
+      + .existentialNonBooleanRootInputCount) >= $expected
     and .satisfyingValuationCount > 0
     and (.satisfyingValuationCount + .unsatisfyingValuationCount
       == .valuationCount)
   ' "${final_root}/boolean_reach_condition.json" >/dev/null \
     || die "final exact Boolean projection is incomplete"
   echo "[three-thread-rpc] final reach condition: ${final_root}/boolean_reach_condition.json"
+}
+
+do_unreachable_final() {
+  local z3 smt_result smt_hash smt_size report_hash report_size
+  local composition_hash composition_size relationships_hash
+  local relationships_size source_report_hash source_report_size
+  local final_smt final_composition final_relationships final_report
+  [[ ! -e "${final_root}" ]] \
+    || die "final output already exists: ${final_root}"
+  require_file "bootstrap SMT" "${bootstrap_root}/composed_fatal.smt2"
+  require_file "bootstrap composition manifest" \
+    "${bootstrap_root}/composed_smt_manifest.json"
+  require_file "bootstrap relationship candidates" \
+    "${bootstrap_root}/symbolic_relationship_candidates.json"
+  require_file "bootstrap reach result" \
+    "${bootstrap_root}/bootstrap_boolean_model.json"
+  bootstrap_is_unreachable \
+    || die "unreachable finalization requires one complete UNSAT bootstrap report"
+
+  mkdir -p "${final_root}"
+  final_smt="${final_root}/composed_fatal.smt2"
+  final_composition="${final_root}/composed_smt_manifest.json"
+  final_relationships="${final_root}/symbolic_relationship_candidates.json"
+  final_report="${final_root}/boolean_reach_condition.json"
+  cp -- "${bootstrap_root}/composed_fatal.smt2" "${final_smt}"
+  cp -- "${bootstrap_root}/composed_smt_manifest.json" \
+    "${final_composition}"
+  cp -- "${bootstrap_root}/symbolic_relationship_candidates.json" \
+    "${final_relationships}"
+
+  (cd "${graphchecker_dir}" && \
+    CAUSYNTH_STATIC_REGIONS="${static_regions}" \
+    CAUSYNTH_COMPOSED_SMT="${bootstrap_root}/composed_fatal.smt2" \
+    CAUSYNTH_COMPOSITION_MANIFEST="${bootstrap_root}/composed_smt_manifest.json" \
+    CAUSYNTH_RELATIONSHIP_CANDIDATES="${bootstrap_root}/symbolic_relationship_candidates.json" \
+    CAUSYNTH_REACH_REPORT="${final_report}" \
+    "${runner}" --config "${config}" reach \
+      --mode FINAL_UNREACHABLE_REPORT)
+  jq -e '
+    .complete == true
+    and .status == "COMPLETE_EXACT_UNREACHABLE_REACH_CONDITION"
+    and .extractionMode == "FINAL_UNREACHABLE_REPORT"
+    and .replayBootstrapOnly == false
+    and .reportableFinalReachCondition == true
+    and .fatalReplayValidated == false
+    and .fatalReplaySkippedBecauseUnreachable == true
+    and .truthTableComplete == true
+    and .exactFiniteProjection == true
+    and .bootstrapReplayModelAvailable == false
+    and .reachabilityStatus == "UNREACHABLE"
+    and .satisfyingValuationCount == 0
+    and .unsatisfyingValuationCount == .valuationCount
+    and .reachConditionSmtLib == "false"
+  ' "${final_report}" >/dev/null \
+    || die "final unreachable reach report is incomplete"
+
+  z3=$(configured_value z3_bin) || return $?
+  smt_result="${final_root}/z3_result.txt"
+  "${z3}" "${final_smt}" >"${smt_result}"
+  [[ "$(sed -n '1p' "${smt_result}")" == "unsat" ]] \
+    || die "final unreachable SMT did not produce unsat"
+
+  smt_hash=$(sha256_file "${final_smt}")
+  smt_size=$(stat -c '%s' "${final_smt}")
+  composition_hash=$(sha256_file "${final_composition}")
+  composition_size=$(stat -c '%s' "${final_composition}")
+  relationships_hash=$(sha256_file "${final_relationships}")
+  relationships_size=$(stat -c '%s' "${final_relationships}")
+  report_hash=$(sha256_file "${final_report}")
+  report_size=$(stat -c '%s' "${final_report}")
+  source_report_hash=$(sha256_file \
+    "${bootstrap_root}/bootstrap_boolean_model.json")
+  source_report_size=$(stat -c '%s' \
+    "${bootstrap_root}/bootstrap_boolean_model.json")
+  jq -n \
+    --arg smt "$(realpath -m -- "${final_smt}")" \
+    --arg smtHash "${smt_hash}" --argjson smtSize "${smt_size}" \
+    --arg composition "$(realpath -m -- "${final_composition}")" \
+    --arg compositionHash "${composition_hash}" \
+    --argjson compositionSize "${composition_size}" \
+    --arg relationships "$(realpath -m -- "${final_relationships}")" \
+    --arg relationshipsHash "${relationships_hash}" \
+    --argjson relationshipsSize "${relationships_size}" \
+    --arg report "$(realpath -m -- "${final_report}")" \
+    --arg reportHash "${report_hash}" \
+    --argjson reportSize "${report_size}" \
+    --arg sourceReport "$(realpath -m -- "${bootstrap_root}/bootstrap_boolean_model.json")" \
+    --arg sourceReportHash "${source_report_hash}" \
+    --argjson sourceReportSize "${source_report_size}" \
+    --arg z3Result "$(realpath -m -- "${smt_result}")" '
+    {
+      schemaVersion: 1,
+      kind: "CONCOLIC_UNREACHABLE_FINAL",
+      status: "COMPLETE_EXACT_UNREACHABLE",
+      complete: true,
+      reachabilityStatus: "UNREACHABLE",
+      fatalReplayAttempted: false,
+      fatalReplayValidated: false,
+      campaignAttempted: false,
+      finalizationAuthority:
+        "STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION_PLUS_EXHAUSTIVE_BOOLEAN_PROJECTION_AND_Z3_UNSAT_V1",
+      z3ReadySmtArtifact: {path: $smt, sha256: $smtHash,
+        sizeBytes: $smtSize},
+      compositionManifestArtifact: {path: $composition,
+        sha256: $compositionHash, sizeBytes: $compositionSize},
+      relationshipCandidatesArtifact: {path: $relationships,
+        sha256: $relationshipsHash, sizeBytes: $relationshipsSize},
+      finalReachReportArtifact: {path: $report, sha256: $reportHash,
+        sizeBytes: $reportSize},
+      bootstrapDecisionReportArtifact: {path: $sourceReport,
+        sha256: $sourceReportHash, sizeBytes: $sourceReportSize},
+      z3ResultArtifact: {path: $z3Result, status: "unsat"}
+    }
+  ' >"${final_root}/final_result_manifest.json"
+  jq -e '
+    .complete == true
+    and .status == "COMPLETE_EXACT_UNREACHABLE"
+    and .reachabilityStatus == "UNREACHABLE"
+    and .fatalReplayAttempted == false
+    and .fatalReplayValidated == false
+    and .campaignAttempted == false
+  ' "${final_root}/final_result_manifest.json" >/dev/null \
+    || die "final unreachable manifest is incomplete"
+  echo "[three-thread-rpc] final reach condition is UNSAT: ${final_report}"
 }
 
 do_seed_target() {
@@ -1620,7 +1814,6 @@ do_all() {
   local channel
   local -a channels
   require_clean_work_root
-  do_test
   do_prepare
   do_analyze
   do_trace
@@ -1637,6 +1830,11 @@ do_all() {
   done
   do_bootstrap_compose
   do_bootstrap_project
+  if bootstrap_is_unreachable; then
+    do_final
+    echo "[three-thread-rpc] complete end-to-end workflow (bug unreachable)"
+    return
+  fi
   do_bootstrap_replay
   do_campaign
   do_final
@@ -1669,7 +1867,6 @@ case "${command_name}" in
   campaign-capture) [[ $# -eq 0 ]] || die "campaign-capture takes no arguments"; do_campaign_capture ;;
   final) [[ $# -eq 0 ]] || die "final takes no arguments"; do_final ;;
   smoke)
-    do_test
     do_prepare
     do_analyze
     do_trace

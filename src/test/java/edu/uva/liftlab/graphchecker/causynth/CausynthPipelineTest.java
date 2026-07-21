@@ -124,14 +124,14 @@ public class CausynthPipelineTest {
         path.add("allKeys");
         action.add("fieldPath", path);
 
-        String[] target = CausynthPipeline.resolveConcolicFieldTarget(action);
+        String[] target = ConcolicInstrumentationSelections.resolveConcolicFieldTarget(action);
 
         assertEquals("example.Manager", target[0]);
         assertEquals("allKeys", target[1]);
 
         action.remove("field");
         action.addProperty("accessOwnerClass", "   ");
-        target = CausynthPipeline.resolveConcolicFieldTarget(action);
+        target = ConcolicInstrumentationSelections.resolveConcolicFieldTarget(action);
         assertEquals("", target[0]);
         assertEquals("allKeys", target[1]);
     }
@@ -640,10 +640,8 @@ public class CausynthPipelineTest {
                     concolicMaterializationSelection(plan, activationId);
                     throw new AssertionError("invalid root authority case "
                             + index + " must fail closed");
-                } catch (InvocationTargetException expected) {
-                    assertTrue(expected.getCause()
-                            instanceof java.io.IOException);
-                    assertTrue(expected.getCause().getMessage().contains(
+                } catch (java.io.IOException expected) {
+                    assertTrue(expected.getMessage().contains(
                             "ARRAY_VALUE_FIELD_REQUIRES_EXACT_LEAF_"
                                     + "DECLARATION_AND_CONSUMED_SITE"));
                 }
@@ -703,10 +701,8 @@ public class CausynthPipelineTest {
                     concolicMaterializationSelection(plan, activationId);
                     throw new AssertionError("incomplete runtime consumed "
                             + "read evidence must fail closed: " + index);
-                } catch (InvocationTargetException expected) {
-                    assertTrue(expected.getCause()
-                            instanceof java.io.IOException);
-                    assertTrue(expected.getCause().getMessage().contains(
+                } catch (java.io.IOException expected) {
+                    assertTrue(expected.getMessage().contains(
                             "ARRAY_VALUE_FIELD_REQUIRES_EXACT_LEAF_"
                                     + "DECLARATION_AND_CONSUMED_SITE"));
                 }
@@ -800,13 +796,13 @@ public class CausynthPipelineTest {
                     + "\"replayable\":false,\"symbolicReady\":true}\n";
             Files.write(plan, rows.getBytes(StandardCharsets.UTF_8));
 
-            Set<String> roots = CausynthPipeline.readRuntimeSelectedRoots(plan, "");
+            Set<String> roots = ConcolicInstrumentationSelections.readRuntimeSelectedRoots(plan, "");
 
             assertEquals(Collections.singleton(selectedRoot), roots);
             assertEquals(Collections.singleton(selectedRoot),
-                    CausynthPipeline.readRuntimeSelectedRoots(plan, "ACT.0"));
+                    ConcolicInstrumentationSelections.readRuntimeSelectedRoots(plan, "ACT.0"));
             assertEquals(Collections.emptySet(),
-                    CausynthPipeline.readRuntimeSelectedRoots(plan, "ACT.1"));
+                    ConcolicInstrumentationSelections.readRuntimeSelectedRoots(plan, "ACT.1"));
         } finally {
             folder.delete();
         }
@@ -824,7 +820,7 @@ public class CausynthPipelineTest {
                     + "\"replayable\":true,\"symbolicReady\":true,"
                     + "\"activationSelectionRequired\":\"ALL\"}\n";
             Files.write(plan, row.getBytes(StandardCharsets.UTF_8));
-            CausynthPipeline.readRuntimeSelectedRoots(plan, "ACT.BUNDLE");
+            ConcolicInstrumentationSelections.readRuntimeSelectedRoots(plan, "ACT.BUNDLE");
         } finally {
             folder.delete();
         }
@@ -843,7 +839,7 @@ public class CausynthPipelineTest {
             row.addProperty("staticInputSelectionComplete", false);
             Files.write(plan, (row + "\n").getBytes(StandardCharsets.UTF_8));
 
-            assertTrue(CausynthPipeline
+            assertTrue(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.OUTPUT.0"));
         } finally {
@@ -861,7 +857,7 @@ public class CausynthPipelineTest {
             JsonObject row = readySolverOutputPathFlip();
             Files.write(plan, (row + "\n").getBytes(StandardCharsets.UTF_8));
 
-            assertTrue(CausynthPipeline
+            assertTrue(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.PATH.3a35b5ac15765178"));
         } finally {
@@ -882,7 +878,7 @@ public class CausynthPipelineTest {
             stringBoolean.getAsJsonObject("targetBranch")
                     .addProperty("validationOnly", "true");
             writePlanRow(plan, stringBoolean);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -893,7 +889,7 @@ public class CausynthPipelineTest {
                     "Z3_BOUNDED_COMPOSED_MODEL_PROJECTION");
             mixedAuthority.getAsJsonArray("modelAssignments").add(composed);
             writePlanRow(plan, mixedAuthority);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -901,14 +897,14 @@ public class CausynthPipelineTest {
             targetOverride.getAsJsonObject("targetBranch")
                     .addProperty("branchOverrideAllowed", true);
             writePlanRow(plan, targetOverride);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
             JsonObject topLevelOverride = readySolverOutputPathFlip();
             topLevelOverride.addProperty("branchOverrideAllowed", true);
             writePlanRow(plan, topLevelOverride);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -917,7 +913,7 @@ public class CausynthPipelineTest {
             forced.addProperty("siteId", "<example.Manager: void add()>#u14");
             forcedOverride.add("forcedBranches", singletonJsonArray(forced));
             writePlanRow(plan, forcedOverride);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -925,7 +921,7 @@ public class CausynthPipelineTest {
             bundleMismatch.addProperty("activationBundleRootActivationId",
                     "ACT.PATH.other");
             writePlanRow(plan, bundleMismatch);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -934,7 +930,7 @@ public class CausynthPipelineTest {
             scheduleMismatch.addProperty("activationBundleScheduleId",
                     "SCHEDULE.PATH.other");
             writePlanRow(plan, scheduleMismatch);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -942,7 +938,7 @@ public class CausynthPipelineTest {
             queryMismatch.addProperty("pathQueryKey",
                     "d3577f7f5002a09920e54b51105590f1093a902d0fcf8bdee74ce4516109f7b3");
             writePlanRow(plan, queryMismatch);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
@@ -950,7 +946,7 @@ public class CausynthPipelineTest {
             malformedPrefix.getAsJsonArray("expectedBranchPrefix")
                     .get(0).getAsJsonObject().addProperty("outcome", "true");
             writePlanRow(plan, malformedPrefix);
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
         } finally {
@@ -971,7 +967,7 @@ public class CausynthPipelineTest {
                     .addProperty("kind", "TARGET_BRANCH");
             Files.write(plan, (targetBranch + "\n").getBytes(
                     StandardCharsets.UTF_8));
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
 
@@ -980,7 +976,7 @@ public class CausynthPipelineTest {
                     .addProperty("runtimeRefinementComplete", false);
             Files.write(plan, (incomplete + "\n").getBytes(
                     StandardCharsets.UTF_8));
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
 
@@ -988,14 +984,14 @@ public class CausynthPipelineTest {
             stringBoolean.addProperty("schedulerReady", "true");
             Files.write(plan, (stringBoolean + "\n").getBytes(
                     StandardCharsets.UTF_8));
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
 
             JsonObject ready = readyBoundedOutputClosure("ACT.BAD");
             Files.write(plan, ((ready + "\n") + (ready + "\n")).getBytes(
                     StandardCharsets.UTF_8));
-            assertFalse(CausynthPipeline
+            assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
         } finally {
@@ -1245,24 +1241,21 @@ public class CausynthPipelineTest {
             System.setProperty("causynth.concolic.activation.id",
                     "ACT.CAPTURE");
 
-            Class<?> selectionClass = Class.forName(
-                    CausynthPipeline.class.getName()
-                            + "$ConcolicOutputCaptureSelection");
-            Method from = selectionClass.getDeclaredMethod("from",
-                    Path.class, String.class);
-            from.setAccessible(true);
-            Object selection = from.invoke(null, plan, "ACT.CAPTURE");
-            Method targets = selectionClass.getDeclaredMethod("targets");
-            targets.setAccessible(true);
-            assertEquals(1, ((java.util.Collection<?>) targets.invoke(
-                    selection)).size());
+            ConcolicInstrumentationSelections
+                    .ConcolicOutputCaptureSelection selection =
+                    ConcolicInstrumentationSelections
+                            .ConcolicOutputCaptureSelection.from(
+                            plan, "ACT.CAPTURE");
+            assertEquals(1, selection.targets().size());
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName() + "$ConcolicRegionRefs");
             Method create = refsClass.getDeclaredMethod("create");
             create.setAccessible(true);
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                    "instrumentConcolicOutputCaptures", selectionClass,
+                    "instrumentConcolicOutputCaptures",
+                    ConcolicInstrumentationSelections
+                            .ConcolicOutputCaptureSelection.class,
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
@@ -1353,14 +1346,11 @@ public class CausynthPipelineTest {
             Files.write(plan, (activation + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
-            Class<?> selectionClass = Class.forName(
-                    CausynthPipeline.class.getName()
-                            + "$ConcolicOutputCaptureSelection");
-            Method from = selectionClass.getDeclaredMethod("from",
-                    Path.class, String.class);
-            from.setAccessible(true);
-            Object selection = from.invoke(null, plan,
-                    "ACT.FIELD.CAPTURE");
+            ConcolicInstrumentationSelections
+                    .ConcolicOutputCaptureSelection selection =
+                    ConcolicInstrumentationSelections
+                            .ConcolicOutputCaptureSelection.from(
+                            plan, "ACT.FIELD.CAPTURE");
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName()
                             + "$ConcolicRegionRefs");
@@ -1368,7 +1358,9 @@ public class CausynthPipelineTest {
             create.setAccessible(true);
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                    "instrumentConcolicOutputCaptures", selectionClass,
+                    "instrumentConcolicOutputCaptures",
+                    ConcolicInstrumentationSelections
+                            .ConcolicOutputCaptureSelection.class,
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
@@ -1464,14 +1456,11 @@ public class CausynthPipelineTest {
             Files.write(plan, (activation + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
-            Class<?> selectionClass = Class.forName(
-                    CausynthPipeline.class.getName()
-                            + "$ConcolicOutputCaptureSelection");
-            Method from = selectionClass.getDeclaredMethod("from",
-                    Path.class, String.class);
-            from.setAccessible(true);
-            Object selection = from.invoke(null, plan,
-                    "ACT.RETURN.CAPTURE");
+            ConcolicInstrumentationSelections
+                    .ConcolicOutputCaptureSelection selection =
+                    ConcolicInstrumentationSelections
+                            .ConcolicOutputCaptureSelection.from(
+                            plan, "ACT.RETURN.CAPTURE");
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName()
                             + "$ConcolicRegionRefs");
@@ -1479,7 +1468,9 @@ public class CausynthPipelineTest {
             create.setAccessible(true);
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                    "instrumentConcolicOutputCaptures", selectionClass,
+                    "instrumentConcolicOutputCaptures",
+                    ConcolicInstrumentationSelections
+                            .ConcolicOutputCaptureSelection.class,
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
@@ -1714,7 +1705,7 @@ public class CausynthPipelineTest {
             Throwable conflict = null;
             try {
                 concolicMaterializationSelection(plan, "ACT.ACCESSOR");
-            } catch (InvocationTargetException expected) {
+            } catch (java.io.IOException expected) {
                 conflict = expected;
             }
             assertNotNull("one accessor site cannot materialize two exact "
@@ -3808,6 +3799,252 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void sameLocalConditionalRedefinitionRetainsItsPathGuard()
+            throws Exception {
+        G.reset();
+        SootClass owner = new SootClass(
+                "example.SameLocalConditionalRedefinition",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod method = new SootMethod("clampAndAdd",
+                Collections.singletonList(IntType.v()), IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local value = Jimple.v().newLocal("value", IntType.v());
+        Local result = Jimple.v().newLocal("result", IntType.v());
+        body.getLocals().addAll(Arrays.asList(value, result));
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef(IntType.v(), 0)));
+        AssignStmt add = Jimple.v().newAssignStmt(result,
+                Jimple.v().newAddExpr(value, IntConstant.v(1)));
+        IfStmt guard = Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(value, IntConstant.v(10)), add);
+        AssignStmt clamp = Jimple.v().newAssignStmt(value,
+                IntConstant.v(10));
+        body.getUnits().add(guard);
+        body.getUnits().add(clamp);
+        body.getUnits().add(add);
+        body.getUnits().add(Jimple.v().newReturnStmt(result));
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, method);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> relevantCells = (Set<String>) relevant.invoke(
+                analyzer, method.getSignature());
+        relevantCells.add(method.getSignature() + ".return");
+
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 4; round++) {
+            processMethod.invoke(analyzer, method.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String valueCell = method.getSignature() + "::value";
+        Map<String, Object> pathGuard = edges.stream().filter(edge ->
+                "path_guard_dependency".equals(edge.get("kind"))
+                        && valueCell.equals(edge.get("fromCell"))
+                        && valueCell.equals(edge.get("toCell")))
+                .findFirst().orElseThrow(() -> new AssertionError(
+                        "same-local clamp guard was dropped"));
+
+        assertEquals("GUARD", pathGuard.get("transferKind"));
+        assertEquals("control_depends_on", pathGuard.get("relation"));
+        assertEquals(Boolean.FALSE, pathGuard.get("requiredOutcome"));
+        assertEquals(Boolean.TRUE,
+                pathGuard.get("sameCellRedefinition"));
+        assertEquals(method.getSignature() + "#u1",
+                pathGuard.get("guardSiteId"));
+        assertEquals(method.getSignature() + "#u2",
+                pathGuard.get("controlledDefinitionSiteId"));
+        assertEquals(2, pathGuard.get("controlledDefinitionUnitIndex"));
+        assertEquals(clamp.toString(),
+                pathGuard.get("controlledDefinitionUnit"));
+        assertEquals("SOOT_CFG_REQUIRED_OUTCOME_TO_EXACT_RELEVANT_"
+                        + "DEFINITION_V1",
+                pathGuard.get("controlDependenceAuthority"));
+    }
+
+    @Test
+    public void distinctSameCellGuardsRetainDistinctControlSites()
+            throws Exception {
+        G.reset();
+        SootClass owner = new SootClass(
+                "example.MultipleSameCellConditionalRedefinitions",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod method = new SootMethod("normalize",
+                Collections.singletonList(IntType.v()), IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local value = Jimple.v().newLocal("value", IntType.v());
+        Local result = Jimple.v().newLocal("result", IntType.v());
+        body.getLocals().addAll(Arrays.asList(value, result));
+        body.getUnits().add(Jimple.v().newIdentityStmt(value,
+                Jimple.v().newParameterRef(IntType.v(), 0)));
+        AssignStmt firstClamp = Jimple.v().newAssignStmt(value,
+                IntConstant.v(10));
+        AssignStmt secondClamp = Jimple.v().newAssignStmt(value,
+                IntConstant.v(20));
+        AssignStmt add = Jimple.v().newAssignStmt(result,
+                Jimple.v().newAddExpr(value, IntConstant.v(1)));
+        IfStmt secondGuard = Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(value, IntConstant.v(20)), add);
+        IfStmt firstGuard = Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(value, IntConstant.v(10)),
+                secondGuard);
+        body.getUnits().add(firstGuard);
+        body.getUnits().add(firstClamp);
+        body.getUnits().add(secondGuard);
+        body.getUnits().add(secondClamp);
+        body.getUnits().add(add);
+        body.getUnits().add(Jimple.v().newReturnStmt(result));
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, method);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> relevantCells = (Set<String>) relevant.invoke(
+                analyzer, method.getSignature());
+        relevantCells.add(method.getSignature() + ".return");
+
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 6; round++) {
+            processMethod.invoke(analyzer, method.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String valueCell = method.getSignature() + "::value";
+        List<Map<String, Object>> guards = new ArrayList<>();
+        for (Map<String, Object> edge : edges) {
+            if ("path_guard_dependency".equals(edge.get("kind"))
+                    && valueCell.equals(edge.get("fromCell"))
+                    && valueCell.equals(edge.get("toCell"))) {
+                guards.add(edge);
+            }
+        }
+        assertEquals("control dependence is per branch site", 2,
+                guards.size());
+        assertTrue(guards.stream().anyMatch(edge ->
+                (method.getSignature() + "#u1").equals(
+                        edge.get("guardSiteId"))));
+        assertTrue(guards.stream().anyMatch(edge ->
+                (method.getSignature() + "#u3").equals(
+                        edge.get("guardSiteId"))));
+        assertTrue(guards.stream().allMatch(edge ->
+                Boolean.FALSE.equals(edge.get("requiredOutcome"))));
+    }
+
+    @Test
+    public void tableSwitchRetainsMultiwaySuccessorControlProof()
+            throws Exception {
+        G.reset();
+        SootClass owner = new SootClass("example.MultiwaySwitch",
+                Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod method = new SootMethod("score",
+                Collections.singletonList(IntType.v()), IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local key = Jimple.v().newLocal("key", IntType.v());
+        Local result = Jimple.v().newLocal("result", IntType.v());
+        body.getLocals().addAll(Arrays.asList(key, result));
+        IdentityStmt identity = Jimple.v().newIdentityStmt(key,
+                Jimple.v().newParameterRef(IntType.v(), 0));
+        AssignStmt zero = Jimple.v().newAssignStmt(result,
+                IntConstant.v(10));
+        AssignStmt one = Jimple.v().newAssignStmt(result,
+                IntConstant.v(20));
+        AssignStmt other = Jimple.v().newAssignStmt(result,
+                IntConstant.v(30));
+        ReturnStmt returnResult = Jimple.v().newReturnStmt(result);
+        GotoStmt zeroDone = Jimple.v().newGotoStmt(returnResult);
+        GotoStmt oneDone = Jimple.v().newGotoStmt(returnResult);
+        Stmt branch = Jimple.v().newTableSwitchStmt(key, 0, 1,
+                Arrays.asList(zero, one), other);
+        body.getUnits().add(identity);
+        body.getUnits().add(branch);
+        body.getUnits().add(zero);
+        body.getUnits().add(zeroDone);
+        body.getUnits().add(one);
+        body.getUnits().add(oneDone);
+        body.getUnits().add(other);
+        body.getUnits().add(returnResult);
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, method);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> relevantCells = (Set<String>) relevant.invoke(
+                analyzer, method.getSignature());
+        relevantCells.add(method.getSignature() + ".return");
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 6; round++) {
+            processMethod.invoke(analyzer, method.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String keyCell = method.getSignature() + "::key";
+        String resultCell = method.getSignature() + "::result";
+        Map<String, Object> switchGuard = edges.stream().filter(edge ->
+                "path_guard_dependency".equals(edge.get("kind"))
+                        && keyCell.equals(edge.get("fromCell"))
+                        && resultCell.equals(edge.get("toCell")))
+                .findFirst().orElseThrow(() -> new AssertionError(
+                        "missing switch control-dependence edge"));
+        assertEquals(method.getSignature() + "#u1",
+                switchGuard.get("guardSiteId"));
+        assertFalse("a multiway successor set is not a Boolean outcome",
+                switchGuard.containsKey("requiredOutcome"));
+        assertEquals("SOOT_CFG_REQUIRED_SUCCESSORS_TO_EXACT_RELEVANT_"
+                        + "DEFINITION_V1",
+                switchGuard.get("controlDependenceAuthority"));
+        assertEquals(3, switchGuard.get("controlledDefinitionCount"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> definitions =
+                (List<Map<String, Object>>) switchGuard.get(
+                        "controlledDefinitions");
+        assertEquals(3, definitions.size());
+        assertTrue(definitions.stream().allMatch(definition ->
+                definition.get("reachingSuccessorIndices") instanceof List
+                        && !((List<?>) definition.get(
+                        "reachingSuccessorIndices")).isEmpty()));
+    }
+
+    @Test
     public void voidIteratorMutationRetainsItsDominatingHeapGuard()
             throws Exception {
         IteratorMutationFixture fixture = iteratorMutationFixture();
@@ -3880,7 +4117,7 @@ public class CausynthPipelineTest {
                 Collections.singletonList(compactReference));
         Map<String, Object> region = new LinkedHashMap<>();
         region.put("outputSlices", Collections.singletonList(outputSlice));
-        CausynthPipeline.enrichHeapMutationGuardMetadata(
+        SymbolicRegionAssemblyStage.enrichHeapMutationGuardMetadata(
                 Collections.singletonList(region), edges);
         assertEquals(method + "#u" + fixture.guardUnitIndex,
                 compactReference.get("guardSiteId"));
@@ -4454,21 +4691,16 @@ public class CausynthPipelineTest {
     private static Object newStaticAnalyzer(String analysisScope,
                                             Path rpcMappingFile)
             throws Exception {
-        Class<?> targetClass = Class.forName(
-                CausynthPipeline.class.getName() + "$TargetContext");
-        Constructor<?> targetConstructor = targetClass.getDeclaredConstructor(
-                Path.class, Path.class, Path.class, Path.class, List.class,
-                String.class, String.class, String.class, Path.class);
-        targetConstructor.setAccessible(true);
         Path current = Paths.get(".").toAbsolutePath().normalize();
-        Object target = targetConstructor.newInstance(current, current,
+        CausynthTargetContext target = new CausynthTargetContext(
+                current, current,
                 current, current, Collections.emptyList(), null, null,
                 analysisScope, rpcMappingFile);
         Class<?> analyzerClass = Class.forName(
                 CausynthPipeline.class.getName()
                         + "$SeedBackwardStaticAnalyzer");
         Constructor<?> constructor = analyzerClass.getDeclaredConstructor(
-                targetClass);
+                CausynthTargetContext.class);
         constructor.setAccessible(true);
         return constructor.newInstance(target);
     }
@@ -5317,13 +5549,8 @@ public class CausynthPipelineTest {
 
     private static Object concolicMaterializationSelection(
             Path plan, String activationId) throws Exception {
-        Class<?> selectionClass = Class.forName(
-                CausynthPipeline.class.getName()
-                        + "$ConcolicMaterializationSelection");
-        Method from = selectionClass.getDeclaredMethod("from", Path.class,
-                String.class);
-        from.setAccessible(true);
-        return from.invoke(null, plan, activationId);
+        return ConcolicInstrumentationSelections
+                .ConcolicMaterializationSelection.from(plan, activationId);
     }
 
     private static JsonObject exactArrayLeafAction(
@@ -5380,11 +5607,9 @@ public class CausynthPipelineTest {
     private static boolean concolicSelectionMatchesField(
             Object selection, String method, int unitIndex, SootField field)
             throws Exception {
-        Method matches = selection.getClass().getDeclaredMethod("matches",
-                String.class, int.class, soot.SootFieldRef.class);
-        matches.setAccessible(true);
-        return (Boolean) matches.invoke(selection, method, unitIndex,
-                field.makeRef());
+        return ((ConcolicInstrumentationSelections
+                .ConcolicMaterializationSelection) selection).matches(
+                method, unitIndex, field.makeRef());
     }
 
     private static Object concolicRegionRefs() throws Exception {
@@ -5521,20 +5746,10 @@ public class CausynthPipelineTest {
 
     private static Object newAnalysisResultWithRoot(String rootSignature)
             throws Exception {
-        Class<?> resultClass = Class.forName(
-                CausynthPipeline.class.getName() + "$AnalysisResult");
-        Constructor<?> constructor = resultClass.getDeclaredConstructor();
-        constructor.setAccessible(true);
-        Object result = constructor.newInstance();
-
-        Field regionsField = resultClass.getDeclaredField("symbolicRegions");
-        regionsField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> regions =
-                (List<Map<String, Object>>) regionsField.get(result);
+        CausynthAnalysisResult result = new CausynthAnalysisResult();
         Map<String, Object> region = new LinkedHashMap<>();
         region.put("staticRootCandidate", rootSignature);
-        regions.add(region);
+        result.symbolicRegions.add(region);
         return result;
     }
 

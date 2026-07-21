@@ -343,6 +343,29 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
+    /** Records one exact case/default successor of a JVM switch. */
+    public static void recordSwitchBranch(long callId, String method,
+                                          int unitIndex, String expression,
+                                          int successorIndex,
+                                          String branchKind,
+                                          String encodedCaseKeys) {
+        ExecutionEvent event = newExecutionEvent("BRANCH",
+                firstNonBlank(method, methodForCall(callId)), callId);
+        event.unitIndex = unitIndex;
+        event.siteId = siteId(event.method, unitIndex);
+        event.expression = safe(expression);
+        event.branchKind = safe(branchKind);
+        event.switchCaseKeys = safe(encodedCaseKeys);
+        event.successorIndex = successorIndex;
+        event.hasSuccessorIndex = successorIndex >= 0;
+        int caseCount = encodedCaseKeys == null
+                || encodedCaseKeys.isEmpty() ? 0
+                : encodedCaseKeys.split(",", -1).length;
+        event.outcome = successorIndex >= 0 && successorIndex < caseCount;
+        event.hasOutcome = event.hasSuccessorIndex;
+        emitExecutionEvent(event);
+    }
+
     public static void exitMethod(long callId, Object returnValue,
                                   String primitiveValue) {
         ActiveCall call = activeCall(callId);
@@ -1061,6 +1084,11 @@ public final class CausynthTraceRecorder {
                     "expression", event.expression,
                     "hasOutcome", event.hasOutcome,
                     "outcome", event.hasOutcome ? event.outcome : null,
+                    "branchKind", event.branchKind,
+                    "switchCaseKeys", event.switchCaseKeys,
+                    "hasSuccessorIndex", event.hasSuccessorIndex,
+                    "successorIndex", event.hasSuccessorIndex
+                            ? event.successorIndex : null,
                     "exceptionType", event.exceptionType,
                     "timeNanos", event.timeNanos));
             traceWriter.newLine();
@@ -2423,7 +2451,9 @@ public final class CausynthTraceRecorder {
                     event.valueFingerprint,
                     event.valueFingerprintComplete,
                     event.valueFingerprintNodes,
-                    event.valueFingerprintReason));
+                    event.valueFingerprintReason,
+                    event.hasSuccessorIndex, event.successorIndex,
+                    event.branchKind, event.switchCaseKeys));
         }
         List<RuntimeRegionPlanner.FieldAccessEvent> fields = new ArrayList<>();
         for (FieldEvent event : FIELD_EVENTS) {
@@ -3146,6 +3176,10 @@ public final class CausynthTraceRecorder {
         private String expression = "";
         private boolean outcome;
         private boolean hasOutcome;
+        private String branchKind = "";
+        private String switchCaseKeys = "";
+        private boolean hasSuccessorIndex;
+        private int successorIndex = -1;
         private String exceptionType = "";
         private long timeNanos;
 
@@ -3182,6 +3216,12 @@ public final class CausynthTraceRecorder {
             event.hasOutcome = jsonBooleanField(line, "hasOutcome",
                     "BRANCH".equals(eventKind));
             event.outcome = jsonBooleanField(line, "outcome", false);
+            event.branchKind = jsonField(line, "branchKind");
+            event.switchCaseKeys = jsonField(line, "switchCaseKeys");
+            event.hasSuccessorIndex = jsonBooleanField(line,
+                    "hasSuccessorIndex", false);
+            event.successorIndex = jsonIntField(line,
+                    "successorIndex", -1);
             event.exceptionType = jsonField(line, "exceptionType");
             event.timeNanos = jsonLongField(line, "timeNanos", 0L);
             return event;

@@ -15,10 +15,15 @@ mkdir -p "$OUT"
   test/causynth/RegionFieldApiSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
+  test/causynth/RegionNumericLoopApiSmoke.java \
   test/causynth/RegionObjectArrayMapApiSmoke.java \
   test/causynth/RegionPausedSymbolizationSmoke.java \
+  test/causynth/RegionLookupSwitchApiSmoke.java \
+  test/causynth/RegionReferenceBranchApiSmoke.java \
+  test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
+  test/causynth/RegionTableSwitchApiSmoke.java \
   test/causynth/RegionThreadIsolationSmoke.java
 
 for smoke in \
@@ -30,10 +35,15 @@ for smoke in \
   RegionFieldApiSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
+  RegionNumericLoopApiSmoke \
   RegionObjectArrayMapApiSmoke \
   RegionPausedSymbolizationSmoke \
+  RegionLookupSwitchApiSmoke \
+  RegionReferenceBranchApiSmoke \
+  RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
   RegionStringSplitParseMapApiSmoke \
+  RegionTableSwitchApiSmoke \
   RegionThreadIsolationSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done

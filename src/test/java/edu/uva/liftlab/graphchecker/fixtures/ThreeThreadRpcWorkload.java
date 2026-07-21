@@ -28,7 +28,6 @@ public final class ThreeThreadRpcWorkload {
     public static final String PRODUCER_A_THREAD = "rpc-producer-a";
     public static final String PRODUCER_B_THREAD = "rpc-producer-b";
     public static final String CONSUMER_THREAD = "rpc-consumer";
-    public static int t=10;
     private static final long JOIN_TIMEOUT_MILLIS = 10_000L;
 
     private ThreeThreadRpcWorkload() {
@@ -37,25 +36,24 @@ public final class ThreeThreadRpcWorkload {
     public static final class ProducerA {
         public int compute(Boolean b1) {
             int a = 0;
-            int c=-9;
-            if(b1){
-                c=10;
-            }
             if (b1.booleanValue()) {
                 a = 1;
             } else {
                 a = -1;
             }
-            return a+t-9;
+            return a;
         }
     }
 
     public static final class ProducerB {
-        public int compute(Boolean b2) {
+        public int compute(Boolean b2, int var) {
             int b = 10;
             if (b2.booleanValue()) {
                 b = 0;
             }
+            if(var<10) var = 10;
+            b=b+var;
+
             return b;
         }
     }
@@ -183,6 +181,7 @@ public final class ThreeThreadRpcWorkload {
         private final Boolean input;
         private final RpcBus bus;
         private final ProducerConcurrencyGate concurrencyGate;
+        private final int var;
 
         ProducerBThread(Boolean input, RpcBus bus, CountDownLatch start,
                         ProducerConcurrencyGate concurrencyGate) {
@@ -190,12 +189,13 @@ public final class ThreeThreadRpcWorkload {
             this.input = input;
             this.bus = bus;
             this.concurrencyGate = concurrencyGate;
+            this.var =0;
         }
 
         @Override
         void executeWorker() throws InterruptedException {
             concurrencyGate.enterAndAwaitPeer();
-            int b = new ProducerB().compute(input);
+            int b = new ProducerB().compute(input, var);
             bus.publishB(b);
         }
     }

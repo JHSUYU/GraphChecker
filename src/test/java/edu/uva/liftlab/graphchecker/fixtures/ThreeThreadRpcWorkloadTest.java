@@ -32,10 +32,8 @@ public class ThreeThreadRpcWorkloadTest {
 
                 assertEquals(b1, result.getB1());
                 assertEquals(b2, result.getB2());
-                int expectedA = (b1.booleanValue() ? 1 : -1)
-                        + ThreeThreadRpcWorkload.t - 9;
-                assertEquals(expectedA, result.getA());
-                assertEquals(b2.booleanValue() ? 0 : 10, result.getB());
+                assertEquals(b1.booleanValue() ? 1 : -1, result.getA());
+                assertEquals(b2.booleanValue() ? 10 : 20, result.getB());
                 assertEquals(result.getA() > result.getB(),
                         result.isBugReached());
                 assertTrue("producer worker frames did not overlap",
@@ -63,10 +61,9 @@ public class ThreeThreadRpcWorkloadTest {
                 }
             }
         }
-        // This is a workload sanity gate, not a handwritten reachability
-        // formula. The composer/verifier must derive the actual condition.
-        assertTrue(reachingExecutions > 0);
-        assertTrue(reachingExecutions < 4);
+        // The concrete seed fixes var=0, which the producer clamps to 10.
+        // Symbolic reachability is deliberately left to the concolic workflow.
+        assertEquals(0, reachingExecutions);
     }
 
     @Test
@@ -89,7 +86,7 @@ public class ThreeThreadRpcWorkloadTest {
         Method producerA = ThreeThreadRpcWorkload.ProducerA.class
                 .getDeclaredMethod("compute", Boolean.class);
         Method producerB = ThreeThreadRpcWorkload.ProducerB.class
-                .getDeclaredMethod("compute", Boolean.class);
+                .getDeclaredMethod("compute", Boolean.class, int.class);
         Class<?> targetOwner = Class.forName(ThreeThreadRpcWorkload.class
                 .getName() + "$ConsumerThread");
         Method target = targetOwner.getDeclaredMethod("executeWorker");

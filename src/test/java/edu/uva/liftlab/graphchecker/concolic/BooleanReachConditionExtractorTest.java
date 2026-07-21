@@ -149,6 +149,104 @@ public class BooleanReachConditionExtractorTest {
     }
 
     @Test
+    public void reportsNonBooleanScalarRootsAsExistentialWithoutEnumerating()
+            throws Exception {
+        Fixture fixture = fixture();
+        String integer = "ROOT.A.in.1";
+        String longValue = "ROOT.A.in.2";
+        String text = "ROOT.A.in.3";
+        String unused = "ROOT.A.in.4";
+        String supplied = "SUPPLIED.C.in.1";
+        String suppliedOutput = "PRODUCER.C.out.1";
+        JsonArray rootInputs = fixture.regions.get(0).getAsJsonArray(
+                "symbolicInputs");
+        rootInputs.add(input(integer, "int"));
+        rootInputs.add(input(longValue, "long"));
+        rootInputs.add(input(text, "java.lang.String"));
+        rootInputs.add(input(unused, "double"));
+        fixture.regions.get(2).getAsJsonArray("symbolicInputs").add(
+                input(supplied, "int"));
+        fixture.regions.get(3).getAsJsonArray("outputs").add(
+                output(suppliedOutput, "int"));
+
+        JsonArray mappings = fixture.manifest.getAsJsonArray(
+                "caseProjectionCatalog").get(0).getAsJsonObject()
+                .getAsJsonArray("rawEngineSymbolMappings");
+        mappings.add(scalarMapping(integer, "INT", "Int", "int"));
+        mappings.add(scalarMapping(longValue, "INT", "Int", "int"));
+        mappings.add(scalarMapping(text, "STRING", "String", "string"));
+        mappings.add(scalarMapping(supplied, "INT", "Int", "int"));
+
+        JsonObject relation = new JsonObject();
+        JsonObject roles = new JsonObject();
+        roles.addProperty("left", suppliedOutput);
+        roles.addProperty("right", supplied);
+        relation.add("roles", roles);
+        JsonArray relationshipRows = fixture.relationships.getAsJsonArray(
+                "relationships");
+        relationshipRows.add(relation);
+        fixture.relationships.addProperty("candidateCount",
+                relationshipRows.size());
+
+        StringBuilder scalarSmt = new StringBuilder();
+        appendScalarPort(scalarSmt, integer, "Int", "int", "VInt");
+        appendScalarPort(scalarSmt, longValue, "Int", "int", "VInt");
+        appendScalarPort(scalarSmt, text, "String", "string", "VString");
+        appendScalarPort(scalarSmt, supplied, "Int", "int", "VInt");
+        scalarSmt.append("(declare-const port__")
+                .append(smtName(suppliedOutput)).append(" Value)\n");
+        String smt = fixture.smt.replace(
+                "(declare-datatypes () ((Value (VInt (v Int)))))",
+                "(declare-datatypes () ((Value (VInt (v Int)) "
+                        + "(VString (s String)))))")
+                .replace("(check-sat)\n",
+                        scalarSmt + "(check-sat)\n");
+
+        BooleanReachConditionExtractor.Extraction extraction =
+                BooleanReachConditionExtractor.extract(smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships, query -> query.contains(
+                                "(assert (not true))")
+                                ? new BooleanReachConditionExtractor
+                                .SolverResult("unsat", "unsat")
+                                : new BooleanReachConditionExtractor
+                                .SolverResult("sat", "sat"),
+                        8, 256);
+
+        JsonObject report = extraction.report;
+        assertTrue(report.toString(), report.get("complete").getAsBoolean());
+        assertEquals(2, report.get("rootBooleanInputCount").getAsInt());
+        assertEquals(4, report.get("valuationCount").getAsInt());
+        assertEquals(4, report.getAsJsonArray("truthTable").size());
+        assertEquals(5, report.get(
+                "staticNonBooleanScalarInputCount").getAsInt());
+        assertEquals(4, report.get(
+                "usedNonBooleanScalarInputCount").getAsInt());
+        assertEquals(1, report.get(
+                "upstreamSuppliedNonBooleanScalarInputCount").getAsInt());
+        assertEquals(3, report.get(
+                "existentialNonBooleanRootInputCount").getAsInt());
+
+        JsonArray existential = report.getAsJsonArray(
+                "existentialNonBooleanRootInputs");
+        assertScalarInput(existential.get(0).getAsJsonObject(), integer,
+                "I", "Int", "int");
+        assertScalarInput(existential.get(1).getAsJsonObject(), longValue,
+                "J", "Int", "int");
+        assertScalarInput(existential.get(2).getAsJsonObject(), text,
+                "Ljava/lang/String;", "String", "string");
+        assertFalse(existential.toString().contains(unused));
+        assertFalse(existential.toString().contains(supplied));
+        for (JsonElement row : report.getAsJsonArray("truthTable")) {
+            assertEquals(2, row.getAsJsonObject().getAsJsonArray(
+                    "assignments").size());
+            assertFalse(row.toString().contains(integer));
+            assertFalse(row.toString().contains(longValue));
+            assertFalse(row.toString().contains(text));
+        }
+    }
+
+    @Test
     public void incompleteCompositionFailsBeforeAnySolverInvocation()
             throws Exception {
         Fixture fixture = fixture();
@@ -216,6 +314,60 @@ public class BooleanReachConditionExtractorTest {
         assertTrue(extraction.report.getAsJsonArray("discoveryGaps")
                 .toString().contains(
                         "COMPOSITION_MANIFEST_NOT_COMPLETE_AND_ELIGIBLE"));
+    }
+
+    @Test
+    public void completeUnsatBootstrapHasExplicitNonReplayTerminalStatus()
+            throws Exception {
+        Fixture fixture = fixture();
+        configureBootstrap(fixture);
+
+        BooleanReachConditionExtractor.Extraction bootstrap =
+                BooleanReachConditionExtractor.extract(fixture.smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships, alwaysUnsatSolver(),
+                        8, 256,
+                        BooleanReachConditionExtractor.Mode
+                                .BOOTSTRAP_REPLAY_MODEL);
+
+        JsonObject bootstrapReport = bootstrap.report;
+        assertTrue(bootstrapReport.toString(), bootstrapReport.get(
+                "complete").getAsBoolean());
+        assertEquals("COMPLETE_BOOTSTRAP_UNREACHABLE",
+                bootstrapReport.get("status").getAsString());
+        assertEquals("UNREACHABLE", bootstrapReport.get(
+                "reachabilityStatus").getAsString());
+        assertEquals(0, bootstrapReport.get(
+                "satisfyingValuationCount").getAsInt());
+        assertEquals(4, bootstrapReport.get(
+                "unsatisfyingValuationCount").getAsInt());
+        assertFalse(bootstrapReport.get(
+                "bootstrapReplayModelAvailable").getAsBoolean());
+        assertFalse(bootstrapReport.get(
+                "reportableFinalReachCondition").getAsBoolean());
+        assertFalse(bootstrapReport.get(
+                "fatalReplayValidated").getAsBoolean());
+
+        BooleanReachConditionExtractor.Extraction finalReport =
+                BooleanReachConditionExtractor.extract(fixture.smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships, alwaysUnsatSolver(),
+                        8, 256,
+                        BooleanReachConditionExtractor.Mode
+                                .FINAL_UNREACHABLE_REPORT);
+
+        JsonObject report = finalReport.report;
+        assertTrue(report.toString(), report.get("complete").getAsBoolean());
+        assertEquals("COMPLETE_EXACT_UNREACHABLE_REACH_CONDITION",
+                report.get("status").getAsString());
+        assertTrue(report.get("reportableFinalReachCondition")
+                .getAsBoolean());
+        assertTrue(report.get("fatalReplaySkippedBecauseUnreachable")
+                .getAsBoolean());
+        assertFalse(report.get("fatalReplayValidated").getAsBoolean());
+        assertEquals("false", report.get("reachConditionSmtLib")
+                .getAsString());
+        assertTrue(report.has("finalizationAuthority"));
     }
 
     @Test
@@ -456,6 +608,27 @@ public class BooleanReachConditionExtractorTest {
                         "BOOLEAN_CASE_TERM_MISMATCH:ROOT.A.in.0"));
     }
 
+    private static void configureBootstrap(Fixture fixture) {
+        fixture.manifest.addProperty("compositionStage", "BOOTSTRAP");
+        fixture.manifest.addProperty("structurallyComplete", true);
+        fixture.manifest.addProperty("eligibleForBootstrapModel", true);
+        fixture.manifest.addProperty("fatalReplayValidated", false);
+        fixture.manifest.addProperty("complete", false);
+        fixture.manifest.addProperty(
+                "eligibleToReportAutomaticRelationship", false);
+        fixture.relationships.addProperty("compositionStage", "BOOTSTRAP");
+        fixture.relationships.addProperty("structurallyComplete", true);
+        fixture.relationships.addProperty("fatalReplayValidated", false);
+        fixture.relationships.addProperty("eligibleForBootstrapModel", true);
+        fixture.relationships.addProperty(
+                "eligibleForAutomaticVerification", false);
+    }
+
+    private static BooleanReachConditionExtractor.Solver alwaysUnsatSolver() {
+        return query -> new BooleanReachConditionExtractor.SolverResult(
+                "unsat", "unsat");
+    }
+
     private static void bindCliArtifacts(JsonObject manifest,
                                          JsonObject relationships,
                                          Path smt, Path regions,
@@ -649,6 +822,55 @@ public class BooleanReachConditionExtractorTest {
                 .append("(declare-const ").append(term).append(" Int)\n")
                 .append("(assert (= port__").append(normalized)
                 .append(" (VInt ").append(term).append(")))\n");
+    }
+
+    private static void appendScalarPort(StringBuilder smt, String port,
+                                         String sort, String suffix,
+                                         String constructor) {
+        String normalized = smtName(port);
+        String term = "sym__port__" + normalized + "__" + suffix;
+        smt.append("(declare-const port__").append(normalized)
+                .append(" Value)\n")
+                .append("(declare-const ").append(term).append(' ')
+                .append(sort).append(")\n")
+                .append("(assert (= port__").append(normalized)
+                .append(" (").append(constructor).append(' ')
+                .append(term).append(")))\n");
+    }
+
+    private static JsonObject scalarMapping(String port, String sort,
+                                            String solverSort,
+                                            String suffix) {
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("rawEngineSymbol", "M_" + sort + "_"
+                + smtName(port));
+        mapping.addProperty("canonicalPort", port);
+        mapping.addProperty("solverTerm", "sym__port__" + smtName(port)
+                + "__" + suffix);
+        mapping.addProperty("sort", sort);
+        mapping.addProperty("solverSort", solverSort);
+        mapping.addProperty("termKind", "CANONICAL_PORT_TERM");
+        mapping.addProperty("authority", "EMITTER_ACTUAL_TERM");
+        return mapping;
+    }
+
+    private static void assertScalarInput(JsonObject input, String port,
+                                          String descriptor,
+                                          String solverSort,
+                                          String suffix) {
+        assertEquals(port, input.get("portId").getAsString());
+        assertEquals(descriptor,
+                input.get("javaTypeDescriptor").getAsString());
+        assertEquals("sym__port__" + smtName(port) + "__" + suffix,
+                input.get("solverTerm").getAsString());
+        assertEquals(solverSort, input.get("solverSort").getAsString());
+        assertTrue(input.get("root").getAsBoolean());
+        assertFalse(input.get("upstreamSupplied").getAsBoolean());
+        assertEquals("EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION",
+                input.get("projectionRole").getAsString());
+        assertEquals("STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_CANONICAL_"
+                        + "BINDING_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1",
+                input.get("authority").getAsString());
     }
 
     private static String solverTerm(String port) {

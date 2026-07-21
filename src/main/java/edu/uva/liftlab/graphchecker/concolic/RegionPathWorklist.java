@@ -112,6 +112,7 @@ public final class RegionPathWorklist {
         private int terminalFlipCount;
         private int observedCoveredFlipCount;
         private int duplicateTaskCount;
+        private int exactConcreteTemplateFlipCount;
         private int transitionDiscoverySeedCount;
         private int transitionDiscoveryTaskCount;
         private boolean wallClockReached;
@@ -199,9 +200,6 @@ public final class RegionPathWorklist {
             for (JsonElement element : mappings) {
                 if (!element.isJsonObject()) continue;
                 JsonObject mapping = element.getAsJsonObject();
-                if (policyAware && !isExplorePolicy(mapping)) {
-                    continue;
-                }
                 String site = string(mapping, "siteId");
                 if (!outputSites.isEmpty() && !outputSites.contains(site)) {
                     continue;
@@ -215,8 +213,29 @@ public final class RegionPathWorklist {
                         false))) {
                     continue;
                 }
+                if (policyAware && !validBranchPolicy(mapping)) {
+                    String policy = string(mapping, "policy");
+                    gap("INVALID_BRANCH_POLICY", policy.isEmpty()
+                                    ? "MISSING_BRANCH_POLICY"
+                                    : "UNKNOWN_BRANCH_POLICY:" + policy,
+                            string(summary, "regionId"), pathKey, site,
+                            integer(mapping, "occurrence", -1));
+                    continue;
+                }
+                if (policyAware && !isExplorePolicy(mapping)) {
+                    continue;
+                }
                 int conditionIndex = integer(mapping, "conditionIndex", -1);
                 if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
+                    ConcreteBranchTemplate template =
+                            recoverExactConcreteIfTemplate(summary,
+                                    activation, mapping, conditions);
+                    if (template.complete) {
+                        exactConcreteTemplateFlipCount++;
+                        emitTemplateTask(summary, activation, pathKey,
+                                conditions, mapping, template);
+                        continue;
+                    }
                     gap("UNMAPPED_BRANCH", "NO_NORMALIZED_CONDITION", string(
                                     summary, "regionId"), pathKey, site,
                             integer(mapping, "occurrence", -1));
@@ -254,6 +273,284 @@ public final class RegionPathWorklist {
             }
         }
 
+        /**
+         * Recovers a solver query for an exact VM-attested concrete IF only
+         * from one unambiguous predicate observed at the same static branch
+         * site on another path.  The current prefix remains authoritative;
+         * the borrowed predicate merely asks Z3 whether the opposite edge is
+         * feasible under that prefix.  Switch events are deliberately
+         * excluded because a case/default Boolean envelope does not identify
+         * one unique multiway successor.
+         */
+        private ConcreteBranchTemplate recoverExactConcreteIfTemplate(
+                JsonObject summary, JsonObject activation,
+                JsonObject concrete, JsonArray conditions) {
+            if (!exactConcreteIf(concrete)) {
+                return ConcreteBranchTemplate.missing();
+            }
+            int baseline = integer(concrete, "pathConditionBaseline", -1);
+            if (baseline < 0 || baseline > conditions.size()
+                    || !completeMappedPrefix(summary, concrete, baseline)) {
+                return ConcreteBranchTemplate.missing();
+            }
+            Set<String> currentInputs = inputPorts(summary, activation);
+            if (currentInputs.isEmpty()) {
+                return ConcreteBranchTemplate.missing();
+            }
+
+            Map<String, JsonElement> predicates = new LinkedHashMap<>();
+            Map<String, Set<String>> sources = new LinkedHashMap<>();
+            for (JsonObject candidateSummary : summaries) {
+                if (!string(summary, "regionId").equals(string(
+                        candidateSummary, "regionId"))
+                        || !canonical(summary.get("requestedOutput")).equals(
+                        canonical(candidateSummary.get("requestedOutput")))) {
+                    continue;
+                }
+                JsonArray candidateConditions = array(candidateSummary,
+                        "pathCondition");
+                for (JsonElement element : array(candidateSummary,
+                        "branchMappings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject candidate = element.getAsJsonObject();
+                    if (!sameBinaryIfSite(concrete, candidate)
+                            || !exactModeledIf(candidate,
+                            candidateConditions)) {
+                        continue;
+                    }
+                    JsonElement observed = candidateConditions.get(integer(
+                            candidate, "conditionIndex", -1));
+                    JsonElement truePredicate = bool(candidate, "outcome",
+                            false) ? observed.deepCopy() : negate(observed);
+                    if (!solverPredicateShape(truePredicate)
+                            || !closedOverInputs(truePredicate,
+                            currentInputs)) {
+                        continue;
+                    }
+                    String identity = canonical(truePredicate);
+                    predicates.put(identity, truePredicate);
+                    Set<String> predicateSources = sources.get(identity);
+                    if (predicateSources == null) {
+                        predicateSources = new LinkedHashSet<>();
+                        sources.put(identity, predicateSources);
+                    }
+                    predicateSources.add(string(candidateSummary,
+                            "summaryId"));
+                }
+            }
+            if (predicates.size() != 1) {
+                return ConcreteBranchTemplate.missing();
+            }
+            String identity = predicates.keySet().iterator().next();
+            return ConcreteBranchTemplate.complete(predicates.get(identity),
+                    baseline, sources.get(identity));
+        }
+
+        private void emitTemplateTask(JsonObject summary,
+                                      JsonObject activation,
+                                      String pathKey, JsonArray conditions,
+                                      JsonObject concrete,
+                                      ConcreteBranchTemplate template) {
+            JsonArray recovered = new JsonArray();
+            for (int index = 0; index < template.prefixSize; index++) {
+                recovered.add(conditions.get(index).deepCopy());
+            }
+            JsonElement observed = bool(concrete, "outcome", false)
+                    ? template.truePredicate.deepCopy()
+                    : negate(template.truePredicate);
+            recovered.add(observed);
+            JsonObject synthetic = concrete.deepCopy();
+            synthetic.addProperty("conditionIndex", template.prefixSize);
+            synthetic.addProperty("conditionTemplateAuthority",
+                    "EXACT_SAME_BINARY_IF_SITE_PREDICATE_PLUS_"
+                            + "CURRENT_VM_ATTESTED_CONCRETE_PREFIX_V1");
+            synthetic.add("conditionTemplateSourceSummaryIds",
+                    GSON.toJsonTree(template.sourceSummaryIds));
+            emitTask(summary, activation, pathKey, recovered, synthetic);
+        }
+
+        private boolean completeMappedPrefix(JsonObject summary,
+                                             JsonObject concrete,
+                                             int baseline) {
+            Set<Integer> indices = new LinkedHashSet<>();
+            boolean reachedConcrete = false;
+            for (JsonElement element : array(summary, "branchMappings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject mapping = element.getAsJsonObject();
+                if (mapping == concrete) {
+                    reachedConcrete = true;
+                    break;
+                }
+                int index = integer(mapping, "conditionIndex", -1);
+                if (index >= 0 && index < baseline) indices.add(index);
+            }
+            if (!reachedConcrete || indices.size() != baseline) return false;
+            for (int index = 0; index < baseline; index++) {
+                if (!indices.contains(index)) return false;
+            }
+            return true;
+        }
+
+        private boolean exactConcreteIf(JsonObject mapping) {
+            return binaryIf(mapping)
+                    && integer(mapping, "conditionIndex", -1) < 0
+                    && "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT"
+                    .equals(string(mapping, "conditionAuthority"))
+                    && exactVmIfEnvelope(mapping, 0);
+        }
+
+        private boolean exactModeledIf(JsonObject mapping,
+                                       JsonArray conditions) {
+            int index = integer(mapping, "conditionIndex", -1);
+            return binaryIf(mapping) && index >= 0
+                    && index < conditions.size()
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
+                    .equals(string(mapping, "conditionAuthority"))
+                    && exactVmIfEnvelope(mapping, 1)
+                    && mapping.has("condition")
+                    && canonical(mapping.get("condition")).equals(canonical(
+                    conditions.get(index)));
+        }
+
+        private boolean exactVmIfEnvelope(JsonObject mapping,
+                                          int conditionCount) {
+            return bool(mapping, "vmBranchEventExpected", false)
+                    && bool(mapping, "vmBranchEventValidated", false)
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
+                    string(mapping, "vmBranchEventAuthority"))
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
+                    .equals(string(mapping, "mappingPolicy"))
+                    && integer(mapping, "vmBranchEventId", 0) > 0
+                    && integer(mapping, "vmOccurrence", -1)
+                    == integer(mapping, "occurrence", -2)
+                    && longInteger(mapping, "vmThreadContextId", 0L) > 0L
+                    && longInteger(mapping, "vmOwnerJavaThreadId", 0L) > 0L
+                    && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
+                    && array(mapping, "vmConditionIndices").size()
+                    == conditionCount
+                    && !bool(mapping, "overrideApplied", true)
+                    && "NONE".equals(string(mapping, "overrideMode"))
+                    && bool(mapping, "outcome", false)
+                    == bool(mapping, "observedOutcome", !bool(mapping,
+                    "outcome", false))
+                    && bool(mapping, "outcome", false)
+                    == bool(mapping, "effectiveOutcome", !bool(mapping,
+                    "outcome", false));
+        }
+
+        private boolean binaryIf(JsonObject mapping) {
+            String kind = string(mapping, "branchKind");
+            return (kind.isEmpty() || "IF".equals(kind))
+                    && !mapping.has("observedSuccessorIndex")
+                    && array(mapping, "switchCaseKeys").size() == 0;
+        }
+
+        private boolean sameBinaryIfSite(JsonObject left,
+                                         JsonObject right) {
+            return binaryIf(left) && binaryIf(right)
+                    && string(left, "siteId").equals(string(right,
+                    "siteId"))
+                    && string(left, "method").equals(string(right,
+                    "method"))
+                    && integer(left, "unitIndex", -1) == integer(right,
+                    "unitIndex", -2)
+                    && integer(left, "occurrence", -1) == integer(right,
+                    "occurrence", -2)
+                    && string(left, "expression").equals(string(right,
+                    "expression"));
+        }
+
+        private Set<String> inputPorts(JsonObject summary,
+                                       JsonObject activation) {
+            Set<String> ports = new LinkedHashSet<>();
+            collectStrings(ports, array(summary, "symbolicInputs"));
+            collectStrings(ports, array(object(summary,
+                    "requestedOutputSlice"), "inputPorts"));
+            collectStrings(ports, array(object(activation,
+                    "requestedOutputSlice"), "inputPorts"));
+            for (JsonElement action : array(activation, "symbolize")) {
+                if (action.isJsonObject()) {
+                    String symbol = string(action.getAsJsonObject(),
+                            "symbol");
+                    if (!symbol.isEmpty()) ports.add(symbol);
+                }
+            }
+            return ports;
+        }
+
+        private boolean closedOverInputs(JsonElement expression,
+                                         Set<String> inputs) {
+            Set<String> symbols = new LinkedHashSet<>();
+            collectSymbols(expression, symbols);
+            if (symbols.isEmpty()) return false;
+            for (String symbol : symbols) {
+                int matches = 0;
+                for (String input : inputs) {
+                    if (containsPort(symbol, input)) matches++;
+                }
+                if (matches != 1) return false;
+            }
+            return true;
+        }
+
+        private void collectSymbols(JsonElement value, Set<String> output) {
+            if (value == null || value.isJsonNull()) return;
+            if (value.isJsonArray()) {
+                for (JsonElement element : value.getAsJsonArray()) {
+                    collectSymbols(element, output);
+                }
+                return;
+            }
+            if (!value.isJsonObject()) return;
+            JsonObject object = value.getAsJsonObject();
+            String type = string(object, "_type");
+            if (("SymbolExpression".equals(type)
+                    || "ConSymbolExp".equals(type))
+                    && object.has("_exp")) {
+                output.add(string(object, "_exp"));
+            }
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                if (!"_exp".equals(entry.getKey())
+                        && !"_code_position".equals(entry.getKey())) {
+                    collectSymbols(entry.getValue(), output);
+                }
+            }
+        }
+
+        private boolean containsPort(String symbol, String port) {
+            int start = symbol.indexOf(port);
+            while (start >= 0) {
+                int end = start + port.length();
+                boolean left = start == 0 || symbol.charAt(start - 1) == '_';
+                boolean right = end == symbol.length()
+                        || symbol.charAt(end) == '_';
+                if (left && right) return true;
+                start = symbol.indexOf(port, start + 1);
+            }
+            return false;
+        }
+
+        private boolean solverPredicateShape(JsonElement value) {
+            if (value == null || !value.isJsonObject()) return false;
+            JsonObject expression = value.getAsJsonObject();
+            String type = string(expression, "_type");
+            if ("BinaryExpression".equals(type)) {
+                return !opposite(string(expression, "_op")).isEmpty();
+            }
+            if ("NotExpression".equals(type)) {
+                return solverPredicateShape(expression.get("_operand"));
+            }
+            if (!"OpStrExpression".equals(type)) return false;
+            String operation = string(expression, "_name");
+            int arity = "isEmpty".equals(operation) ? 1
+                    : "contains".equals(operation)
+                    || "equals".equals(operation)
+                    || "startsWith".equals(operation)
+                    || "endsWith".equals(operation) ? 2 : -1;
+            return arity > 0
+                    && array(expression, "_param_list").size() == arity;
+        }
+
         private boolean hasBranchPolicy(JsonArray mappings) {
             for (JsonElement element : mappings) {
                 if (element.isJsonObject()
@@ -269,6 +566,12 @@ public final class RegionPathWorklist {
             return policy != null && policy.isJsonPrimitive()
                     && policy.getAsJsonPrimitive().isString()
                     && "EXPLORE".equals(policy.getAsString());
+        }
+
+        private boolean validBranchPolicy(JsonObject mapping) {
+            String policy = string(mapping, "policy");
+            return "EXPLORE".equals(policy)
+                    || "PATH_ASSUMPTION".equals(policy);
         }
 
         private void emitTask(JsonObject summary, JsonObject activation,
@@ -368,6 +671,13 @@ public final class RegionPathWorklist {
                     "engineArrayInputBindings").deepCopy());
             task.addProperty("status", "PENDING_SOLVE");
             task.addProperty("dynamicIdsExcludedFromQueryKey", true);
+            if (mapping.has("conditionTemplateAuthority")) {
+                task.addProperty("conditionTemplateAuthority", string(
+                        mapping, "conditionTemplateAuthority"));
+                task.add("conditionTemplateSourceSummaryIds", array(mapping,
+                        "conditionTemplateSourceSummaryIds").deepCopy());
+                task.addProperty("exactConcreteBranchRecovery", true);
+            }
             tasks.add(task);
         }
 
@@ -500,6 +810,8 @@ public final class RegionPathWorklist {
                     observedCoveredFlipCount);
             result.addProperty("pendingTaskCount", tasks.size());
             result.addProperty("duplicateTaskCount", duplicateTaskCount);
+            result.addProperty("exactConcreteTemplateFlipCount",
+                    exactConcreteTemplateFlipCount);
             result.addProperty("transitionDiscoverySeedCount",
                     transitionDiscoverySeedCount);
             result.addProperty("transitionDiscoveryTaskCount",
@@ -601,6 +913,39 @@ public final class RegionPathWorklist {
         private Result(List<JsonObject> tasks, JsonObject manifest) {
             this.tasks = tasks;
             this.manifest = manifest;
+        }
+    }
+
+    private static final class ConcreteBranchTemplate {
+        private final boolean complete;
+        private final JsonElement truePredicate;
+        private final int prefixSize;
+        private final Set<String> sourceSummaryIds;
+
+        private ConcreteBranchTemplate(boolean complete,
+                                       JsonElement truePredicate,
+                                       int prefixSize,
+                                       Set<String> sourceSummaryIds) {
+            this.complete = complete;
+            this.truePredicate = truePredicate;
+            this.prefixSize = prefixSize;
+            this.sourceSummaryIds = sourceSummaryIds;
+        }
+
+        private static ConcreteBranchTemplate missing() {
+            return new ConcreteBranchTemplate(false, JsonNull.INSTANCE, -1,
+                    Collections.<String>emptySet());
+        }
+
+        private static ConcreteBranchTemplate complete(
+                JsonElement truePredicate, int prefixSize,
+                Set<String> sourceSummaryIds) {
+            return new ConcreteBranchTemplate(true,
+                    truePredicate.deepCopy(), prefixSize,
+                    Collections.unmodifiableSet(new LinkedHashSet<>(
+                            sourceSummaryIds == null
+                                    ? Collections.<String>emptySet()
+                                    : sourceSummaryIds)));
         }
     }
 
@@ -1093,6 +1438,18 @@ public final class RegionPathWorklist {
         try {
             return value == null || value.isJsonNull()
                     ? fallback : value.getAsInt();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static long longInteger(JsonObject object, String name,
+                                    long fallback) {
+        if (object == null) return fallback;
+        JsonElement value = object.get(name);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsLong();
         } catch (RuntimeException ignored) {
             return fallback;
         }

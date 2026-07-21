@@ -99,6 +99,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
         JsonObject valuation = selectedValuation(reach);
         Map<String, JsonObject> assignmentByPort = valuationAssignments(
                 valuation, array(reach, "rootBooleanInputs"));
+        ScalarRootCatalog scalarRoots = scalarRootCatalog(reach,
+                assignmentByPort.keySet());
         List<JsonObject> cases = objects(array(composition,
                 "caseProjectionCatalog"));
         List<String> selectors = selectors(cases);
@@ -109,7 +111,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
         LinkedHashSet<String> queried = new LinkedHashSet<>();
         queried.addAll(selectors);
         queried.addAll(rootTerms);
-        queried.addAll(canonicalIntegralInputTerms(cases));
+        queried.addAll(scalarRoots.present
+                ? scalarRoots.solverTerms()
+                : canonicalScalarInputTerms(cases));
         String solverInput = solverInput(smt, assignmentByPort.values(),
                 queried);
         SolverIdentity solverIdentity = attestSolver(arguments.z3,
@@ -144,6 +148,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         List<JsonObject> producerRows = new ArrayList<>();
         JsonArray caseManifest = new JsonArray();
         JsonArray supplementalManifest = new JsonArray();
+        JsonArray existentialScalarManifest = new JsonArray();
         Set<String> usedActivationIds = new LinkedHashSet<>();
         Map<String, List<Map.Entry<String, JsonObject>>> rootsByRegion =
                 new LinkedHashMap<>();
@@ -158,8 +163,15 @@ public final class ConcolicPrimitiveBootstrapProjector {
             }
             regionRoots.add(entry);
         }
+        for (String region : scalarRoots.regionIds()) {
+            if (!rootsByRegion.containsKey(region)) {
+                rootsByRegion.put(region,
+                        new ArrayList<Map.Entry<String, JsonObject>>());
+            }
+        }
         int projectedPrimitiveInputCount = 0;
         int supplementalPrimitiveAssignmentCount = 0;
+        int existentialNonBooleanRootAssignmentCount = 0;
         for (Map.Entry<String, List<Map.Entry<String, JsonObject>>>
                 regionEntry : rootsByRegion.entrySet()) {
             String region = regionEntry.getKey();
@@ -213,6 +225,67 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 projection.addProperty("projectionRole", "ROOT_BOOLEAN");
                 rootProjectionRows.add(projection);
             }
+            List<JsonObject> scalarMappings = scalarRoots.present
+                    ? catalogScalarMappings(selectedCase,
+                    scalarRoots.rootsForRegion(region), rootPorts, smt)
+                    : supplementalScalarMappings(selectedCase, rootPorts,
+                    smt);
+            for (JsonObject mapping : scalarMappings) {
+                String port = string(mapping, "canonicalPort");
+                String solverTerm = canonicalProjectionTerm(mapping);
+                String modelValue = values.get(solverTerm);
+                if (modelValue == null) {
+                    throw gap("Z3_SUPPLEMENTAL_VALUE_MISSING:" + port);
+                }
+                JsonObject dynamicBinding = exactDynamicLeafBinding(
+                        selectedCase, summary, mapping, port);
+                JsonObject action = exactAction(summary, source, port,
+                        dynamicBinding);
+                JsonObject scalarRoot = scalarRoots.rootForPort(port);
+                String valueType = scalarPrimitiveValueType(action, mapping,
+                        port, string(scalarRoot, "javaType"),
+                        string(scalarRoot, "javaTypeDescriptor"));
+                String floatingDescriptor = scalarFloatingDescriptor(action,
+                        mapping, string(scalarRoot, "javaType"),
+                        string(scalarRoot, "javaTypeDescriptor"));
+                String normalizedValue = normalizePrimitiveModelValue(
+                        valueType, modelValue, port, floatingDescriptor);
+                String actionIdentity = actionIdentitySha256(action);
+                JsonObject modelAssignment = primitiveModelAssignment(mapping,
+                        port, valueType, normalizedValue, action,
+                        actionIdentity);
+                if (!floatingDescriptor.isEmpty()) {
+                    modelAssignment.addProperty("floatingPointFormat",
+                            floatingDescriptor);
+                    modelAssignment.addProperty("modelFloatingPointTerm",
+                            modelValue);
+                }
+                if (dynamicBinding != null) {
+                    retainDynamicLeafSelector(modelAssignment,
+                            dynamicBinding);
+                }
+                replayAssignments.add(modelAssignment);
+                projectedPrimitiveInputCount++;
+                supplementalPrimitiveAssignmentCount++;
+
+                JsonObject projection = projectedInputManifest(region, port,
+                        selectedCase, mapping, solverTerm, normalizedValue,
+                        action, actionIdentity);
+                if (scalarRoots.present) {
+                    projection.addProperty("projectionRole",
+                            "EXISTENTIAL_NON_BOOLEAN_ROOT");
+                    rootProjectionRows.add(projection.deepCopy());
+                    existentialScalarManifest.add(projection.deepCopy());
+                    existentialNonBooleanRootAssignmentCount++;
+                } else {
+                    projection.addProperty("projectionRole",
+                            "SUPPLEMENTAL_PRIMITIVE");
+                }
+                // Retain the legacy aggregate for consumers that treat every
+                // non-Boolean model value as a supplemental primitive.
+                supplementalManifest.add(projection);
+            }
+
             if (rootProjectionRows.size() == 0) {
                 throw gap("SELECTED_PRODUCER_CASE_HAS_NO_ROOT_INPUT:"
                         + region);
@@ -234,42 +307,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     "materializationActionIdentity").deepCopy());
             selected.add("rootInputProjections", rootProjectionRows);
 
-            for (JsonObject mapping : supplementalIntegralMappings(
-                    selectedCase, rootPorts, smt)) {
-                String port = string(mapping, "canonicalPort");
-                String solverTerm = canonicalProjectionTerm(mapping);
-                String modelValue = values.get(solverTerm);
-                if (modelValue == null) {
-                    throw gap("Z3_SUPPLEMENTAL_VALUE_MISSING:" + port);
-                }
-                JsonObject dynamicBinding = exactDynamicLeafBinding(
-                        selectedCase, summary, mapping, port);
-                JsonObject action = exactAction(summary, source, port,
-                        dynamicBinding);
-                String valueType = scalarPrimitiveValueType(action, mapping,
-                        port);
-                String normalizedValue = normalizePrimitiveModelValue(
-                        valueType, modelValue, port);
-                String actionIdentity = actionIdentitySha256(action);
-                JsonObject modelAssignment = primitiveModelAssignment(mapping,
-                        port, valueType, normalizedValue, action,
-                        actionIdentity);
-                if (dynamicBinding != null) {
-                    retainDynamicLeafSelector(modelAssignment,
-                            dynamicBinding);
-                }
-                replayAssignments.add(modelAssignment);
-                projectedPrimitiveInputCount++;
-                supplementalPrimitiveAssignmentCount++;
-
-                JsonObject projection = projectedInputManifest(region, port,
-                        selectedCase, mapping, solverTerm, normalizedValue,
-                        action, actionIdentity);
-                projection.addProperty("projectionRole",
-                        "SUPPLEMENTAL_PRIMITIVE");
-                supplementalManifest.add(projection);
-            }
-
             JsonObject replay = producerReplay(source, replayAssignments);
             if (!usedActivationIds.add(activationId)) {
                 throw gap("ONE_PRODUCER_ACTIVATION_CONTROLS_MULTIPLE_ROOTS:"
@@ -277,6 +314,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
             }
             producerRows.add(replay);
             caseManifest.add(selected);
+        }
+        if (scalarRoots.present
+                && existentialNonBooleanRootAssignmentCount
+                != scalarRoots.size()) {
+            throw gap("EXISTENTIAL_NON_BOOLEAN_ROOT_CARDINALITY_MISMATCH");
         }
         Collections.sort(producerRows, Comparator.comparing(
                 row -> string(row, "regionId")));
@@ -325,6 +367,12 @@ public final class ConcolicPrimitiveBootstrapProjector {
         manifest.addProperty("selectedValuationKey", string(valuation,
                 "valuationKey"));
         manifest.addProperty("rootBooleanInputCount", assignmentByPort.size());
+        manifest.addProperty("existentialNonBooleanRootInputCount",
+                scalarRoots.size());
+        manifest.addProperty("existentialNonBooleanRootAssignmentCount",
+                existentialNonBooleanRootAssignmentCount);
+        manifest.add("existentialNonBooleanRootAssignments",
+                existentialScalarManifest);
         manifest.addProperty("totalProjectedPrimitiveInputCount",
                 projectedPrimitiveInputCount);
         manifest.addProperty("supplementalPrimitiveAssignmentCount",
@@ -587,10 +635,109 @@ public final class ConcolicPrimitiveBootstrapProjector {
             JsonObject enriched = result.get(port);
             enriched.addProperty("regionId", string(root, "regionId"));
         }
-        if (result.size() != rootByPort.size() || result.isEmpty()) {
+        if (result.size() != rootByPort.size()) {
             throw gap("BOOTSTRAP_VALUATION_ROOT_CARDINALITY_MISMATCH");
         }
         return result;
+    }
+
+    /**
+     * Reads the extractor-owned catalog of non-Boolean root inputs.  Presence
+     * of this catalog changes projection from the legacy selected-case scan to
+     * an allow-list: only catalogued roots may be materialized.  A report that
+     * predates the catalog keeps the old supplemental behavior.
+     */
+    private static ScalarRootCatalog scalarRootCatalog(
+            JsonObject reach, Set<String> booleanRootPorts)
+            throws IOException {
+        boolean hasInputs = reach.has("existentialNonBooleanRootInputs");
+        boolean hasCount = reach.has("existentialNonBooleanRootInputCount");
+        if (!hasInputs && !hasCount) {
+            return ScalarRootCatalog.legacy();
+        }
+        if (!hasInputs || !hasCount
+                || !isArray(reach, "existentialNonBooleanRootInputs")) {
+            throw gap("EXISTENTIAL_NON_BOOLEAN_ROOT_CATALOG_MALFORMED");
+        }
+        JsonArray inputs = array(reach,
+                "existentialNonBooleanRootInputs");
+        if (integer(reach, "existentialNonBooleanRootInputCount", -1)
+                != inputs.size()
+                || !"STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_"
+                .concat("CANONICAL_TERM_AND_RUNTIME_RELATIONSHIP_"
+                        + "DIRECTION_V1").equals(string(reach,
+                        "existentialNonBooleanRootInputDiscoveryAuthority"))) {
+            throw gap("EXISTENTIAL_NON_BOOLEAN_ROOT_CATALOG_MALFORMED");
+        }
+        Map<String, JsonObject> byPort = new LinkedHashMap<>();
+        Map<String, List<JsonObject>> byRegion = new LinkedHashMap<>();
+        Set<String> solverTerms = new LinkedHashSet<>();
+        int ordinal = 0;
+        for (JsonElement element : inputs) {
+            if (!element.isJsonObject()) {
+                throw gap("INVALID_EXISTENTIAL_NON_BOOLEAN_ROOT:");
+            }
+            JsonObject root = element.getAsJsonObject();
+            String port = string(root, "portId");
+            String region = string(root, "regionId");
+            String descriptor = string(root, "javaTypeDescriptor");
+            String solverTerm = string(root, "solverTerm");
+            String solverSort = string(root, "solverSort");
+            if (port.isEmpty() || region.isEmpty()
+                    || !port.startsWith(region + ".in.")
+                    || booleanRootPorts.contains(port)
+                    || byPort.put(port, root.deepCopy()) != null
+                    || !bool(root, "root", false)
+                    || bool(root, "upstreamSupplied", true)
+                    || !safeSmtAtom(solverTerm)
+                    || !solverTerms.add(solverTerm)
+                    || !scalarDescriptorMatchesSort(descriptor, solverSort)
+                    || string(root, "cell").isEmpty()
+                    || string(root, "javaType").isEmpty()
+                    || integer(root, "ordinal", -1) != ordinal
+                    || !"EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION"
+                    .equals(string(root, "projectionRole"))
+                    || !"STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_"
+                    .concat("CANONICAL_BINDING_AND_RUNTIME_RELATIONSHIP_"
+                            + "DIRECTION_V1").equals(string(root,
+                            "authority"))
+                    || !isArray(root, "caseProjectionEvidence")
+                    || array(root, "caseProjectionEvidence").size() == 0) {
+                throw gap("INVALID_EXISTENTIAL_NON_BOOLEAN_ROOT:" + port);
+            }
+            List<JsonObject> regionRoots = byRegion.get(region);
+            if (regionRoots == null) {
+                regionRoots = new ArrayList<>();
+                byRegion.put(region, regionRoots);
+            }
+            regionRoots.add(root.deepCopy());
+            ordinal++;
+        }
+        return new ScalarRootCatalog(true, byPort, byRegion);
+    }
+
+    private static boolean scalarDescriptorMatchesSort(String descriptor,
+                                                       String solverSort) {
+        if ("Int".equals(solverSort)) {
+            return "B".equals(descriptor) || "C".equals(descriptor)
+                    || "S".equals(descriptor) || "I".equals(descriptor)
+                    || "J".equals(descriptor)
+                    || "Ljava/lang/Byte;".equals(descriptor)
+                    || "Ljava/lang/Character;".equals(descriptor)
+                    || "Ljava/lang/Short;".equals(descriptor)
+                    || "Ljava/lang/Integer;".equals(descriptor)
+                    || "Ljava/lang/Long;".equals(descriptor);
+        }
+        if ("(_ FloatingPoint 8 24)".equals(solverSort)) {
+            return "F".equals(descriptor)
+                    || "Ljava/lang/Float;".equals(descriptor);
+        }
+        if ("(_ FloatingPoint 11 53)".equals(solverSort)) {
+            return "D".equals(descriptor)
+                    || "Ljava/lang/Double;".equals(descriptor);
+        }
+        return "String".equals(solverSort)
+                && "Ljava/lang/String;".equals(descriptor);
     }
 
     private static List<String> selectors(List<JsonObject> cases)
@@ -700,12 +847,13 @@ public final class ConcolicPrimitiveBootstrapProjector {
     }
 
     /**
-     * Includes canonical integral terms in the original Z3 query so a model
-     * value is available after the selected case is known.  Boolean roots are
+     * Includes canonical scalar terms in the original Z3 query so a model
+     * value is available after the selected case is known. Boolean roots are
      * already present in this set; additional entries are ordinary primitive
-     * live-ins such as an {@code int} consumed at an exact field-read site.
+     * live-ins such as {@code int}, {@code long}, {@code double}, or
+     * {@code String} values consumed at exact materialization sites.
      */
-    private static Set<String> canonicalIntegralInputTerms(
+    private static Set<String> canonicalScalarInputTerms(
             List<JsonObject> cases) throws IOException {
         Set<String> result = new LinkedHashSet<>();
         for (JsonObject pathCase : cases) {
@@ -713,7 +861,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     "rawEngineSymbolMappings")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject mapping = element.getAsJsonObject();
-                if (!integralCanonicalMapping(mapping)) continue;
+                if (!scalarCanonicalMapping(mapping)) continue;
                 String term = canonicalProjectionTerm(mapping);
                 if (!safeSmtAtom(term)) {
                     throw gap("CANONICAL_PRIMITIVE_TERM_IS_NOT_AN_ATOM:"
@@ -725,7 +873,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return result;
     }
 
-    private static List<JsonObject> supplementalIntegralMappings(
+    private static List<JsonObject> supplementalScalarMappings(
             JsonObject selectedCase, Set<String> rootPorts, String smt)
             throws IOException {
         Map<String, JsonObject> byPort = new LinkedHashMap<>();
@@ -733,7 +881,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 "rawEngineSymbolMappings")) {
             if (!element.isJsonObject()) continue;
             JsonObject candidate = element.getAsJsonObject();
-            if (!integralCanonicalMapping(candidate)) continue;
+            if (!scalarCanonicalMapping(candidate)) continue;
             String port = string(candidate, "canonicalPort");
             if (rootPorts.contains(port)) continue;
             if (byPort.put(port, candidate) != null) {
@@ -749,12 +897,53 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return result;
     }
 
-    private static boolean integralCanonicalMapping(JsonObject mapping) {
+    private static List<JsonObject> catalogScalarMappings(
+            JsonObject selectedCase, List<JsonObject> catalogRoots,
+            Set<String> booleanRootPorts, String smt) throws IOException {
+        List<JsonObject> result = new ArrayList<>();
+        Set<String> selectedPorts = new LinkedHashSet<>();
+        for (JsonObject root : catalogRoots) {
+            String port = string(root, "portId");
+            if (booleanRootPorts.contains(port)
+                    || !selectedPorts.add(port)) {
+                throw gap("DUPLICATE_SELECTED_SCALAR_ROOT:" + port);
+            }
+            JsonObject mapping = exactPortMapping(selectedCase, port, smt);
+            String solverTerm = canonicalProjectionTerm(mapping);
+            String solverSort = string(root, "solverSort");
+            String expectedMappingSort = "Int".equals(solverSort)
+                    ? "INT" : "(_ FloatingPoint 8 24)".equals(solverSort)
+                    ? "FLOAT32" : "(_ FloatingPoint 11 53)".equals(
+                    solverSort) ? "FLOAT64" : "String".equals(solverSort)
+                    ? "STRING" : "";
+            if (!scalarCanonicalMapping(mapping)
+                    || !string(root, "solverTerm").equals(solverTerm)
+                    || !solverSort.equals(string(mapping, "solverSort"))
+                    || !expectedMappingSort.equals(string(mapping,
+                    "sort"))) {
+                throw gap("EXISTENTIAL_SCALAR_ROOT_MAPPING_MISMATCH:"
+                        + port);
+            }
+            result.add(mapping);
+        }
+        Collections.sort(result, Comparator.comparing(
+                value -> string(value, "canonicalPort")));
+        return result;
+    }
+
+    private static boolean scalarCanonicalMapping(JsonObject mapping) {
         String port = string(mapping, "canonicalPort");
         String termKind = string(mapping, "termKind");
+        String sort = string(mapping, "sort");
+        String solverSort = string(mapping, "solverSort");
+        boolean scalarSort = "INT".equals(sort) && "Int".equals(solverSort)
+                || "FLOAT32".equals(sort)
+                && "(_ FloatingPoint 8 24)".equals(solverSort)
+                || "FLOAT64".equals(sort)
+                && "(_ FloatingPoint 11 53)".equals(solverSort)
+                || "STRING".equals(sort) && "String".equals(solverSort);
         return !port.isEmpty()
-                && "INT".equals(string(mapping, "sort"))
-                && "Int".equals(string(mapping, "solverSort"))
+                && scalarSort
                 && ("CANONICAL_PORT_TERM".equals(termKind)
                 || "SCOPED_DYNAMIC_FIELD".equals(termKind));
     }
@@ -1090,7 +1279,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         if (!port.equals(string(action, "symbol"))
                 || !"FIELD_ACCESS".equals(string(action, "bindingMode"))
                 || !"HEAP_OBJECT_FIELD".equals(string(action, "location"))
-                || !isIntegralPrimitiveType(type)
+                || !isSupportedScalarJavaType(type)
                 || !signature.equals(firstNonBlank(string(action, "field"),
                 string(action, "cell")))
                 || !owner.equals(string(action, "accessOwnerClass"))
@@ -1387,35 +1576,81 @@ public final class ConcolicPrimitiveBootstrapProjector {
 
     private static String scalarPrimitiveValueType(JsonObject action,
                                                    JsonObject mapping,
-                                                   String port)
+                                                   String port,
+                                                   String catalogJavaType,
+                                                   String catalogDescriptor)
             throws IOException {
-        if (!"INT".equals(string(mapping, "sort"))
-                || !"Int".equals(string(mapping, "solverSort"))) {
-            throw gap("SUPPLEMENTAL_PRIMITIVE_SORT_UNSUPPORTED:" + port);
-        }
+        String sort = string(mapping, "sort");
+        String solverSort = string(mapping, "solverSort");
         String type = firstNonBlank(string(action, "accessFieldType"),
-                string(action, "javaType"));
-        if ("boolean".equals(type) || "java.lang.Boolean".equals(type)
-                || "Ljava/lang/Boolean;".equals(type) || "Z".equals(type)) {
-            return "BOOL";
+                string(action, "javaType"), catalogJavaType,
+                catalogDescriptor);
+        if ("INT".equals(sort) && "Int".equals(solverSort)) {
+            if ("boolean".equals(type) || "java.lang.Boolean".equals(type)
+                    || "Ljava/lang/Boolean;".equals(type)
+                    || "Z".equals(type)) {
+                return "BOOL";
+            }
+            if (isIntegralPrimitiveType(type)) return "INT";
+        } else if (("FLOAT32".equals(sort)
+                && "(_ FloatingPoint 8 24)".equals(solverSort)
+                || "FLOAT64".equals(sort)
+                && "(_ FloatingPoint 11 53)".equals(solverSort))) {
+            if (isRealPrimitiveType(type)) return "REAL";
+        } else if ("STRING".equals(sort)
+                && "String".equals(solverSort)) {
+            if (isStringType(type)) return "STRING";
+        } else {
+            throw gap("SUPPLEMENTAL_PRIMITIVE_SORT_UNSUPPORTED:" + port
+                    + ":" + sort + "/" + solverSort);
         }
-        if (isIntegralPrimitiveType(type)) return "INT";
-        throw gap("SUPPLEMENTAL_PRIMITIVE_JAVA_TYPE_UNSUPPORTED:" + port
-                + ":" + type);
+        throw gap("SUPPLEMENTAL_PRIMITIVE_SORT_TYPE_MISMATCH:" + port
+                + ":" + sort + "/" + solverSort + ":" + type);
     }
 
     private static boolean isIntegralPrimitiveType(String type) {
         return "boolean".equals(type) || "byte".equals(type)
                 || "char".equals(type) || "short".equals(type)
                 || "int".equals(type) || "long".equals(type)
+                || "java.lang.Byte".equals(type)
+                || "java.lang.Character".equals(type)
+                || "java.lang.Short".equals(type)
+                || "java.lang.Integer".equals(type)
+                || "java.lang.Long".equals(type)
                 || "Z".equals(type) || "B".equals(type)
                 || "C".equals(type) || "S".equals(type)
-                || "I".equals(type) || "J".equals(type);
+                || "I".equals(type) || "J".equals(type)
+                || "Ljava/lang/Byte;".equals(type)
+                || "Ljava/lang/Character;".equals(type)
+                || "Ljava/lang/Short;".equals(type)
+                || "Ljava/lang/Integer;".equals(type)
+                || "Ljava/lang/Long;".equals(type);
+    }
+
+    private static boolean isRealPrimitiveType(String type) {
+        return "float".equals(type) || "double".equals(type)
+                || "java.lang.Float".equals(type)
+                || "java.lang.Double".equals(type)
+                || "Ljava/lang/Float;".equals(type)
+                || "Ljava/lang/Double;".equals(type)
+                || "F".equals(type) || "D".equals(type);
+    }
+
+    private static boolean isStringType(String type) {
+        return "String".equals(type) || "java.lang.String".equals(type)
+                || "java/lang/String".equals(type)
+                || "Ljava/lang/String;".equals(type);
+    }
+
+    private static boolean isSupportedScalarJavaType(String type) {
+        return isIntegralPrimitiveType(type) || isRealPrimitiveType(type)
+                || isStringType(type);
     }
 
     private static String normalizePrimitiveModelValue(String valueType,
                                                        String value,
-                                                       String port)
+                                                       String port,
+                                                       String floatingDescriptor)
             throws IOException {
         String normalized = value == null ? "" : value.trim();
         if ("BOOL".equals(valueType)) {
@@ -1428,9 +1663,68 @@ public final class ConcolicPrimitiveBootstrapProjector {
         } else if ("INT".equals(valueType)
                 && normalized.matches("-?(?:0|[1-9][0-9]*)")) {
             return normalized;
+        } else if ("REAL".equals(valueType)) {
+            String decoded = SmtModelValueCodec
+                    .floatingPointTermToJavaLiteral(normalized,
+                            floatingDescriptor);
+            if (decoded != null) return decoded;
+        } else if ("STRING".equals(valueType)
+                && validSmtStringValue(normalized)) {
+            return normalized;
         }
         throw gap("SUPPLEMENTAL_PRIMITIVE_MODEL_VALUE_UNSUPPORTED:" + port
                 + ":" + normalized);
+    }
+
+    private static String scalarFloatingDescriptor(JsonObject action,
+                                                   JsonObject mapping,
+                                                   String catalogJavaType,
+                                                   String catalogDescriptor) {
+        String sort = string(mapping, "sort");
+        String type = firstNonBlank(string(action, "accessFieldType"),
+                string(action, "javaType"), catalogJavaType,
+                catalogDescriptor);
+        if ("FLOAT32".equals(sort) && isFloatType(type)) return "F";
+        if ("FLOAT64".equals(sort) && isDoubleType(type)) return "D";
+        return "";
+    }
+
+    private static boolean isFloatType(String type) {
+        return "float".equals(type) || "java.lang.Float".equals(type)
+                || "java/lang/Float".equals(type)
+                || "Ljava/lang/Float;".equals(type) || "F".equals(type);
+    }
+
+    private static boolean isDoubleType(String type) {
+        return "double".equals(type) || "java.lang.Double".equals(type)
+                || "java/lang/Double".equals(type)
+                || "Ljava/lang/Double;".equals(type) || "D".equals(type);
+    }
+
+    private static boolean validSmtRealValue(String value) {
+        String atom = "-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?";
+        if (value.matches(atom)) return true;
+        if (value.matches("\\(/\\s+" + atom + "\\s+" + atom + "\\)")) {
+            return !value.matches(".*\\s-?0(?:\\.0+)?\\)");
+        }
+        return value.matches("\\(-\\s+" + atom + "\\)")
+                || value.matches("\\(-\\s+\\(/\\s+" + atom + "\\s+"
+                + atom + "\\)\\)")
+                && !value.matches(".*\\s-?0(?:\\.0+)?\\)\\)");
+    }
+
+    private static boolean validSmtStringValue(String value) {
+        if (value == null || value.length() < 2 || value.charAt(0) != '"'
+                || value.charAt(value.length() - 1) != '"') {
+            return false;
+        }
+        for (int index = 1; index < value.length() - 1; index++) {
+            if (value.charAt(index) != '"') continue;
+            if (index + 1 >= value.length() - 1
+                    || value.charAt(index + 1) != '"') return false;
+            index++;
+        }
+        return true;
     }
 
     private static JsonObject projectedInputManifest(
@@ -1815,23 +2109,121 @@ public final class ConcolicPrimitiveBootstrapProjector {
         Map<String, String> result = new LinkedHashMap<>();
         for (String term : terms) {
             Pattern pattern = Pattern.compile("\\(\\s*"
-                    + Pattern.quote(term)
-                    + "\\s+(true|false|-?[0-9]+|\\(-\\s+[0-9]+\\))\\s*\\)");
+                    + Pattern.quote(term) + "(?=\\s)");
             Matcher matcher = pattern.matcher(output);
             if (!matcher.find()) {
                 throw gap("Z3_VALUE_MISSING_OR_DUPLICATE:" + term);
             }
-            String value = matcher.group(1);
+            SmtValue value = smtValue(output, matcher.end());
+            if (value == null || !closesValuePair(output, value.end)) {
+                throw gap("Z3_VALUE_MISSING_OR_DUPLICATE:" + term);
+            }
             if (matcher.find()) {
                 throw gap("Z3_VALUE_MISSING_OR_DUPLICATE:" + term);
             }
-            value = value.replaceAll("\\s+", "");
-            if (value.startsWith("(-") && value.endsWith(")")) {
-                value = "-" + value.substring(2, value.length() - 1);
+            String normalized = normalizeSmtValue(value.text);
+            if (normalized.startsWith("(- ")
+                    && normalized.endsWith(")")
+                    && normalized.substring(3,
+                    normalized.length() - 1).matches("[0-9]+")) {
+                normalized = "-" + normalized.substring(3,
+                        normalized.length() - 1);
             }
-            result.put(term, value);
+            result.put(term, normalized);
         }
         return result;
+    }
+
+    private static SmtValue smtValue(String text, int start) {
+        int cursor = start;
+        while (cursor < text.length()
+                && Character.isWhitespace(text.charAt(cursor))) cursor++;
+        if (cursor >= text.length()) return null;
+        int begin = cursor;
+        char first = text.charAt(cursor);
+        if (first == '"') {
+            cursor++;
+            while (cursor < text.length()) {
+                if (text.charAt(cursor) != '"') {
+                    cursor++;
+                    continue;
+                }
+                if (cursor + 1 < text.length()
+                        && text.charAt(cursor + 1) == '"') {
+                    cursor += 2;
+                    continue;
+                }
+                cursor++;
+                return new SmtValue(text.substring(begin, cursor), cursor);
+            }
+            return null;
+        }
+        if (first == '(') {
+            int depth = 0;
+            boolean quoted = false;
+            for (; cursor < text.length(); cursor++) {
+                char value = text.charAt(cursor);
+                if (value == '"') {
+                    if (quoted && cursor + 1 < text.length()
+                            && text.charAt(cursor + 1) == '"') {
+                        cursor++;
+                    } else {
+                        quoted = !quoted;
+                    }
+                } else if (!quoted && value == '(') {
+                    depth++;
+                } else if (!quoted && value == ')' && --depth == 0) {
+                    cursor++;
+                    return new SmtValue(text.substring(begin, cursor),
+                            cursor);
+                }
+            }
+            return null;
+        }
+        while (cursor < text.length()
+                && !Character.isWhitespace(text.charAt(cursor))
+                && text.charAt(cursor) != ')') cursor++;
+        return cursor == begin ? null
+                : new SmtValue(text.substring(begin, cursor), cursor);
+    }
+
+    private static boolean closesValuePair(String text, int start) {
+        int cursor = start;
+        while (cursor < text.length()
+                && Character.isWhitespace(text.charAt(cursor))) cursor++;
+        return cursor < text.length() && text.charAt(cursor) == ')';
+    }
+
+    private static String normalizeSmtValue(String value) {
+        if (value == null || value.isEmpty() || value.charAt(0) == '"') {
+            return value == null ? "" : value;
+        }
+        StringBuilder result = new StringBuilder(value.length());
+        boolean whitespace = false;
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (Character.isWhitespace(character)) {
+                whitespace = true;
+            } else {
+                if (whitespace && result.length() > 0
+                        && result.charAt(result.length() - 1) != '(') {
+                    result.append(' ');
+                }
+                result.append(character);
+                whitespace = false;
+            }
+        }
+        return result.toString();
+    }
+
+    private static final class SmtValue {
+        private final String text;
+        private final int end;
+
+        private SmtValue(String text, int end) {
+            this.text = text;
+            this.end = end;
+        }
     }
 
     private static String read(InputStream stream) throws IOException {
@@ -2057,6 +2449,53 @@ public final class ConcolicPrimitiveBootstrapProjector {
             if (value != null && !value.trim().isEmpty()) return value;
         }
         return "";
+    }
+
+    private static final class ScalarRootCatalog {
+        private final boolean present;
+        private final Map<String, JsonObject> byPort;
+        private final Map<String, List<JsonObject>> byRegion;
+
+        private ScalarRootCatalog(boolean present,
+                                  Map<String, JsonObject> byPort,
+                                  Map<String, List<JsonObject>> byRegion) {
+            this.present = present;
+            this.byPort = byPort;
+            this.byRegion = byRegion;
+        }
+
+        private static ScalarRootCatalog legacy() {
+            return new ScalarRootCatalog(false,
+                    Collections.<String, JsonObject>emptyMap(),
+                    Collections.<String, List<JsonObject>>emptyMap());
+        }
+
+        private int size() {
+            return byPort.size();
+        }
+
+        private Set<String> regionIds() {
+            return byRegion.keySet();
+        }
+
+        private List<JsonObject> rootsForRegion(String region) {
+            List<JsonObject> roots = byRegion.get(region);
+            return roots == null ? Collections.<JsonObject>emptyList()
+                    : roots;
+        }
+
+        private JsonObject rootForPort(String port) {
+            JsonObject root = byPort.get(port);
+            return root == null ? new JsonObject() : root;
+        }
+
+        private Set<String> solverTerms() {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonObject root : byPort.values()) {
+                result.add(string(root, "solverTerm"));
+            }
+            return result;
+        }
     }
 
     static final class Result {

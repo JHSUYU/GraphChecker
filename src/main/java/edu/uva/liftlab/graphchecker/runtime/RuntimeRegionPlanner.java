@@ -1032,7 +1032,10 @@ final class RuntimeRegionPlanner {
             if ("BRANCH".equals(event.kind) && event.hasOutcome) {
                 total++;
                 if (result.size() < MAX_PATH_SIGNATURE_EVENTS) {
-                    result.add(event.siteId + "=" + event.outcome);
+                    result.add(event.siteId + "="
+                            + (event.hasSuccessorIndex
+                            ? "successor:" + event.successorIndex
+                            : Boolean.toString(event.outcome)));
                 }
             }
         }
@@ -2256,12 +2259,25 @@ final class RuntimeRegionPlanner {
         for (BranchPolicy policy : region.branches) {
             List<RuntimeEvent> occurrences = values(observed.get(policy.siteId));
             RuntimeEvent event = selectBranchOccurrence(occurrences,
-                    policy.requiredOutcome);
+                    policy.requiredOutcome,
+                    policy.requiredSuccessorIndices);
+            if (policy.isSwitch() && event != null
+                    && (!event.hasSuccessorIndex
+                    || !policy.branchKind.equals(event.branchKind))) {
+                event = null;
+            }
             Boolean observedOutcome = event != null && event.hasOutcome
                     ? event.outcome : null;
+            Integer observedSuccessor = event != null
+                    && event.hasSuccessorIndex
+                    ? event.successorIndex : null;
             Boolean matchesRequired = observedOutcome != null
                     && policy.requiredOutcome != null
                     ? observedOutcome.equals(policy.requiredOutcome) : null;
+            Boolean matchesRequiredSuccessor = observedSuccessor != null
+                    && !policy.requiredSuccessorIndices.isEmpty()
+                    ? policy.requiredSuccessorIndices.contains(
+                    observedSuccessor) : null;
             List<Map<String, Object>> occurrenceRows = new ArrayList<>();
             int selectedOccurrence = -1;
             for (int index = 0; index < occurrences.size(); index++) {
@@ -2269,6 +2285,11 @@ final class RuntimeRegionPlanner {
                 Boolean occurrenceMatches = occurrence.hasOutcome
                         && policy.requiredOutcome != null
                         ? occurrence.outcome == policy.requiredOutcome : null;
+                Boolean occurrenceSuccessorMatches =
+                        occurrence.hasSuccessorIndex
+                                && !policy.requiredSuccessorIndices.isEmpty()
+                                ? policy.requiredSuccessorIndices.contains(
+                                occurrence.successorIndex) : null;
                 if (occurrence == event) {
                     selectedOccurrence = index + 1;
                 }
@@ -2278,17 +2299,33 @@ final class RuntimeRegionPlanner {
                         "callId", occurrence.callId,
                         "outcome", occurrence.hasOutcome
                                 ? occurrence.outcome : null,
-                        "matchesRequiredOutcome", occurrenceMatches));
+                        "matchesRequiredOutcome", occurrenceMatches,
+                        "successorIndex", occurrence.hasSuccessorIndex
+                                ? occurrence.successorIndex : null,
+                        "matchesRequiredSuccessor",
+                        occurrenceSuccessorMatches));
             }
             result.add(object(
                     "siteId", policy.siteId,
                     "policy", policy.policy,
                     "guard", policy.guard,
                     "requiredOutcome", policy.requiredOutcome,
+                    "requiredSuccessorIndices",
+                    policy.requiredSuccessorIndices,
+                    "branchKind", policy.branchKind,
+                    "switchCaseKeys", policy.switchCaseKeys,
+                    "defaultSuccessorIndex",
+                    policy.defaultSuccessorIndex,
+                    "successorCount", policy.successorCount,
+                    "successorIndexAuthority",
+                    policy.successorIndexAuthority,
                     "role", policy.role,
                     "observed", event != null,
                     "observedOutcome", observedOutcome,
                     "matchesRequiredOutcome", matchesRequired,
+                    "observedSuccessorIndex", observedSuccessor,
+                    "matchesRequiredSuccessor",
+                    matchesRequiredSuccessor,
                     "occurrenceCount", occurrences.size(),
                     "selectedOccurrence", selectedOccurrence,
                     "occurrences", occurrenceRows,
@@ -2307,10 +2344,17 @@ final class RuntimeRegionPlanner {
      * candidate.
      */
     private static RuntimeEvent selectBranchOccurrence(
-            List<RuntimeEvent> occurrences, Boolean requiredOutcome) {
+            List<RuntimeEvent> occurrences, Boolean requiredOutcome,
+            List<Integer> requiredSuccessorIndices) {
         RuntimeEvent selected = null;
         for (RuntimeEvent occurrence : occurrences) {
             selected = occurrence;
+            if (occurrence.hasSuccessorIndex
+                    && requiredSuccessorIndices != null
+                    && requiredSuccessorIndices.contains(
+                    occurrence.successorIndex)) {
+                return occurrence;
+            }
             if (requiredOutcome != null && occurrence.hasOutcome
                     && occurrence.outcome == requiredOutcome) {
                 return occurrence;
@@ -5151,6 +5195,10 @@ final class RuntimeRegionPlanner {
         final boolean valueFingerprintComplete;
         final int valueFingerprintNodes;
         final String valueFingerprintReason;
+        final boolean hasSuccessorIndex;
+        final int successorIndex;
+        final String branchKind;
+        final String switchCaseKeys;
 
         RuntimeEvent(long seq, String kind, String method, long callId,
                      long invocationId, long parentSiteId, String siteId,
@@ -5184,6 +5232,25 @@ final class RuntimeRegionPlanner {
                      boolean valueFingerprintComplete,
                      int valueFingerprintNodes,
                      String valueFingerprintReason) {
+            this(seq, kind, method, callId, invocationId, parentSiteId,
+                    siteId, declaredCallee, argumentIndex, runtimeType,
+                    objectId, primitiveValue, hasOutcome, outcome,
+                    valueFingerprint, valueFingerprintComplete,
+                    valueFingerprintNodes, valueFingerprintReason,
+                    false, -1, "", "");
+        }
+
+        RuntimeEvent(long seq, String kind, String method, long callId,
+                     long invocationId, long parentSiteId, String siteId,
+                     String declaredCallee, int argumentIndex,
+                     String runtimeType, int objectId,
+                     String primitiveValue, boolean hasOutcome,
+                     boolean outcome, String valueFingerprint,
+                     boolean valueFingerprintComplete,
+                     int valueFingerprintNodes,
+                     String valueFingerprintReason,
+                     boolean hasSuccessorIndex, int successorIndex,
+                     String branchKind, String switchCaseKeys) {
             this.seq = seq;
             this.kind = safe(kind);
             this.method = safe(method);
@@ -5202,6 +5269,10 @@ final class RuntimeRegionPlanner {
             this.valueFingerprintComplete = valueFingerprintComplete;
             this.valueFingerprintNodes = valueFingerprintNodes;
             this.valueFingerprintReason = safe(valueFingerprintReason);
+            this.hasSuccessorIndex = hasSuccessorIndex;
+            this.successorIndex = successorIndex;
+            this.branchKind = safe(branchKind);
+            this.switchCaseKeys = safe(switchCaseKeys);
         }
     }
 
@@ -5764,6 +5835,13 @@ final class RuntimeRegionPlanner {
                         jsonString(object, "policy"),
                         jsonString(object, "guard"),
                         jsonOptionalBoolean(object, "requiredOutcome"),
+                        jsonIntArray(object,
+                                "requiredSuccessorIndices"),
+                        jsonString(object, "branchKind"),
+                        jsonIntArray(object, "switchCaseKeys"),
+                        jsonInt(object, "defaultSuccessorIndex", -1),
+                        jsonInt(object, "successorCount", -1),
+                        jsonString(object, "successorIndexAuthority"),
                         jsonString(object, "role")));
             }
             for (String object : jsonObjectArray(json, "argumentPathFields")) {
@@ -9588,15 +9666,41 @@ final class RuntimeRegionPlanner {
         private final String policy;
         private final String guard;
         private final Boolean requiredOutcome;
+        private final List<Integer> requiredSuccessorIndices;
+        private final String branchKind;
+        private final List<Integer> switchCaseKeys;
+        private final int defaultSuccessorIndex;
+        private final int successorCount;
+        private final String successorIndexAuthority;
         private final String role;
 
         private BranchPolicy(String siteId, String policy, String guard,
-                             Boolean requiredOutcome, String role) {
+                             Boolean requiredOutcome,
+                             List<Integer> requiredSuccessorIndices,
+                             String branchKind,
+                             List<Integer> switchCaseKeys,
+                             int defaultSuccessorIndex,
+                             int successorCount,
+                             String successorIndexAuthority,
+                             String role) {
             this.siteId = safe(siteId);
             this.policy = safe(policy);
             this.guard = safe(guard);
             this.requiredOutcome = requiredOutcome;
+            this.requiredSuccessorIndices = Collections.unmodifiableList(
+                    new ArrayList<>(requiredSuccessorIndices));
+            this.branchKind = safe(branchKind);
+            this.switchCaseKeys = Collections.unmodifiableList(
+                    new ArrayList<>(switchCaseKeys));
+            this.defaultSuccessorIndex = defaultSuccessorIndex;
+            this.successorCount = successorCount;
+            this.successorIndexAuthority = safe(successorIndexAuthority);
             this.role = safe(role);
+        }
+
+        private boolean isSwitch() {
+            return "TABLE_SWITCH".equals(branchKind)
+                    || "LOOKUP_SWITCH".equals(branchKind);
         }
     }
 
@@ -10055,6 +10159,20 @@ final class RuntimeRegionPlanner {
         Matcher matcher = JSON_QUOTED_STRING.matcher(raw);
         while (matcher.find()) {
             result.add(unescape(matcher.group(1)));
+        }
+        return result;
+    }
+
+    private static List<Integer> jsonIntArray(String json, String field) {
+        String raw = jsonArray(json, field);
+        if (raw.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Integer> result = new ArrayList<>();
+        Matcher matcher = Pattern.compile("-?(?:0|[1-9][0-9]*)")
+                .matcher(raw);
+        while (matcher.find()) {
+            result.add(parseInt(matcher.group(), 0));
         }
         return result;
     }

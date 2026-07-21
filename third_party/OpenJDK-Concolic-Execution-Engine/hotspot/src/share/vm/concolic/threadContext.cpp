@@ -92,13 +92,24 @@ void ThreadContext::record_compare_witness(Expression *expression) {
 
 void ThreadContext::record_branch_condition(Expression *expression,
                                              bool outcome, int opcode) {
+  exp_list_t expressions;
+  if (expression != NULL) {
+    expressions.push_back(expression);
+  }
+  record_branch_conditions(expressions, outcome, opcode);
+}
+
+void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
+                                              bool outcome, int opcode) {
   if (!_path_condition_enabled || _path_condition_pause_depth > 0) {
     return;
   }
 
-  int direct_index = -1;
-  if (expression != NULL) {
-    direct_index = _path_condition.add(expression);
+  std::vector<int> direct_indices;
+  for (size_t index = 0; index < expressions.size(); ++index) {
+    if (expressions[index] != NULL) {
+      direct_indices.push_back(_path_condition.add(expressions[index]));
+    }
   }
 
   if (_pending_branch_active) {
@@ -114,8 +125,8 @@ void ThreadContext::record_branch_condition(Expression *expression,
     event.outcome = outcome;
     event.opcode = opcode;
     event.code_position = get_current_code_pos();
-    if (direct_index >= 0) {
-      event.condition_indices.push_back(direct_index);
+    if (!direct_indices.empty()) {
+      event.condition_indices = direct_indices;
     } else if (_pending_compare_condition_index >= 0) {
       event.condition_indices.push_back(_pending_compare_condition_index);
     }

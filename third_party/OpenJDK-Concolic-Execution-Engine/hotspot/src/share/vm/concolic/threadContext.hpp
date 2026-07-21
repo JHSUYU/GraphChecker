@@ -115,6 +115,8 @@ public:
   jlong mark_branch(const char *site_id, int occurrence);
   void record_branch_condition(Expression *expression, bool outcome,
                                int opcode);
+  void record_branch_conditions(const exp_list_t &expressions, bool outcome,
+                                int opcode);
   void record_compare_witness(Expression *expression);
   std::string get_branch_events() const;
 

@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -12,6 +15,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -31,10 +36,10 @@ import java.util.concurrent.TimeUnit;
  * Solves one normalized concolic branch-flip query and maps scalar model values
  * back to region input materialization actions.
  *
- * <p>Unknown library calls are encoded as deterministic uninterpreted
- * functions.  Such a SAT result is only a candidate input: the subsequent
- * unforced concrete replay must observe the requested prefix before the path
- * is admitted into a merged region summary.</p>
+ * <p>Unknown library calls retain a deterministic uninterpreted-function
+ * rendering only for diagnostic SMT inspection.  They are also recorded as
+ * unsupported, so the solver cannot turn missing Java semantics into a replay
+ * candidate.</p>
  */
 public final class ConcolicConstraintSolver {
     private static final Gson GSON = new GsonBuilder()
@@ -57,6 +62,16 @@ public final class ConcolicConstraintSolver {
         record.addProperty("solverInputHash", sha256(smt));
         record.addProperty("uninterpretedFunctionCount",
                 encoder.uninterpretedFunctions.size());
+        record.addProperty("integralInputRangeConstraintCount",
+                encoder.integralRangeConstrainedSymbols.size());
+        record.addProperty("numericEncodingAuthority",
+                "JAVA_PRIMITIVE_INPUT_BOUNDS_WITH_TWOS_COMPLEMENT_"
+                        + "INT_LONG_ARITHMETIC_V2");
+        record.addProperty("javaIntegralOverflowModeled", true);
+        record.addProperty("ieee754FloatingPointModeled", true);
+        record.addProperty("floatingPointEncodingAuthority",
+                "JAVA_IEEE_754_BINARY32_BINARY64_RNE_WITH_"
+                        + "UNSUPPORTED_OPERATIONS_FAIL_CLOSED_V1");
         record.addProperty("uncontrolledEnvironmentTermCount",
                 encoder.uncontrolledEnvironmentTerms.size());
         record.add("uncontrolledEnvironmentTerms",
@@ -118,6 +133,45 @@ public final class ConcolicConstraintSolver {
             return new Result(record, smt, new JsonArray());
         }
 
+        // Replaying a later path flip must reproduce every symbolic prefix
+        // decision naturally.  Projecting only symbols mentioned by the
+        // flipped condition is insufficient when the source path itself was
+        // reached with a model (rather than the workload's original concrete
+        // arguments): the omitted prefix input then falls back to an unrelated
+        // seed value and the exact-prefix replay is guaranteed to drift.
+        // Require a real materialization target for every solver-controlled
+        // region input before invoking Z3.  Environment terms remain
+        // deliberately unforced and are validated separately.
+        Set<String> unmaterializableControlledSymbols =
+                new LinkedHashSet<>();
+        Set<String> controlledResolutionGaps = new LinkedHashSet<>();
+        for (String raw : encoder.controlledSymbols) {
+            MaterializationResolution resolution =
+                    materializationResolution(raw, actions,
+                            dynamicBindings);
+            if (!resolution.resolved()) {
+                unmaterializableControlledSymbols.add(raw);
+                if (!resolution.gap.isEmpty()) {
+                    controlledResolutionGaps.add(raw + ":"
+                            + resolution.gap);
+                }
+            }
+        }
+        if (!unmaterializableControlledSymbols.isEmpty()) {
+            record.addProperty("status", "MATERIALIZATION_GAP");
+            record.addProperty("reason",
+                    "PATH_CONSTRAINT_DEPENDS_ON_UNMATERIALIZABLE_"
+                            + "CONTROLLED_SYMBOLS");
+            record.add("unmaterializableControlledSymbols",
+                    GSON.toJsonTree(unmaterializableControlledSymbols));
+            if (!controlledResolutionGaps.isEmpty()) {
+                record.add("dynamicBindingResolutionGaps",
+                        GSON.toJsonTree(controlledResolutionGaps));
+            }
+            record.addProperty("solverInvoked", false);
+            return new Result(record, smt, new JsonArray());
+        }
+
         Path executable = z3 == null ? Paths.get("z3") : z3;
         SolverOutput output = run(executable, smt,
                 Math.max(1L, timeoutMillis));
@@ -151,32 +205,32 @@ public final class ConcolicConstraintSolver {
                 encoder.controlledSymbols);
         unforcedPrefixSymbols.removeAll(targetControlledSymbols);
         JsonArray assignments = modelAssignments(encoder, values,
-                activation, dynamicBindings, targetControlledSymbols);
+                activation, dynamicBindings, encoder.controlledSymbols);
         record.add("modelAssignments", assignments.deepCopy());
         record.addProperty("modelAssignmentCount", assignments.size());
         record.addProperty("modelProjectionPolicy",
-                "FLIP_CONDITION_DELTA_ONLY_V1");
+                "FULL_PATH_CONTROLLED_INPUTS_V2");
         record.addProperty("controlledSymbolCount",
                 encoder.controlledSymbols.size());
         record.addProperty("targetControlledSymbolCount",
                 targetControlledSymbols.size());
-        record.addProperty("unforcedPrefixControlledSymbolCount",
+        record.addProperty("materializedPrefixControlledSymbolCount",
                 unforcedPrefixSymbols.size());
-        record.add("unforcedPrefixControlledSymbols",
+        record.add("materializedPrefixControlledSymbols",
                 GSON.toJsonTree(unforcedPrefixSymbols));
         record.addProperty("modelUsedOnlyForReplay", true);
         record.addProperty("branchOverrideAllowed", false);
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
-        } else if (assignments.size() < targetControlledSymbols.size()) {
+        } else if (assignments.size() < encoder.controlledSymbols.size()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
-                    "NOT_ALL_FLIP_INPUT_SYMBOLS_HAVE_MATERIALIZATION_TARGETS");
+                    "NOT_ALL_PATH_INPUT_SYMBOLS_HAVE_MATERIALIZATION_TARGETS");
             record.add("unmappedInputSymbols", GSON.toJsonTree(
-                    unmapped(targetControlledSymbols, assignments)));
+                    unmapped(encoder.controlledSymbols, assignments)));
             Set<String> resolutionGaps = new LinkedHashSet<>();
-            for (String raw : unmapped(targetControlledSymbols,
+            for (String raw : unmapped(encoder.controlledSymbols,
                     assignments)) {
                 MaterializationResolution resolution =
                         materializationResolution(raw, actions,
@@ -212,12 +266,20 @@ public final class ConcolicConstraintSolver {
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
         private final Map<String, String> rawToName = new LinkedHashMap<>();
         private final Map<String, Sort> rawToSort = new LinkedHashMap<>();
+        private final Map<String, IntegralWidth> rawToIntegralWidth =
+                new LinkedHashMap<>();
+        private final Map<String, String> rawToModelName =
+                new LinkedHashMap<>();
+        private final Map<String, String> rawToModelNaNName =
+                new LinkedHashMap<>();
         private final List<String> assertions = new ArrayList<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> uninterpretedFunctions =
                 new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
         private final Set<String> uncontrolledEnvironmentTerms =
+                new LinkedHashSet<>();
+        private final Set<String> integralRangeConstrainedSymbols =
                 new LinkedHashSet<>();
         private final Map<String, FunctionSignature> functions =
                 new LinkedHashMap<>();
@@ -259,12 +321,18 @@ public final class ConcolicConstraintSolver {
                     || "ConSymbolExp".equals(type)) {
                 return symbol(object, expected);
             }
-            if ("ConstExpr".equals(type)) return constant(object, expected);
+            if ("ConstExpr".equals(type)
+                    || "ConStringSymbolExp".equals(type)) {
+                return constant(object, expected, origin);
+            }
             if ("PlaceholderExpression".equals(type)) {
                 return placeholder(object, origin);
             }
             if ("BinaryExpression".equals(type)) {
                 return binary(object, origin);
+            }
+            if ("OpStrExpression".equals(type)) {
+                return stringOperation(object, origin);
             }
             if ("NotExpression".equals(type)) {
                 Term operand = term(object.get("_operand"), Sort.BOOL,
@@ -276,8 +344,7 @@ public final class ConcolicConstraintSolver {
                 return new Term("(not " + operand.text + ")", Sort.BOOL);
             }
             if ("TypeCastExpression".equals(type)) {
-                return term(object.get("_exp"), sortOfJava(string(object,
-                        "_java_type")), origin + ":cast");
+                return typeCast(object, origin);
             }
             if ("MethodExpression".equals(type)) {
                 return methodTerm(object, origin);
@@ -291,19 +358,50 @@ public final class ConcolicConstraintSolver {
             String raw = string(expression, "_exp");
             if ("N".equals(raw)) return new Term("nullRef", Sort.REF);
             if ("V".equals(raw)) return new Term("true", Sort.BOOL);
-            Sort sort = expected == null ? sortOfJava(string(expression,
-                    "_java_type")) : expected;
+            String javaType = string(expression, "_java_type");
+            Sort declaredSort = sortOfJava(javaType);
+            Sort sort = declaredSort != Sort.UNKNOWN ? declaredSort
+                    : expected == null ? Sort.UNKNOWN : expected;
             if (sort == Sort.UNKNOWN) sort = Sort.REF;
+            IntegralWidth width = JavaPrimitiveSmtSemantics
+                    .widthOfJavaType(javaType);
             String name = rawToName.get(raw);
             if (name == null) {
                 name = "sym__" + safeName(raw) + "__"
                         + sha256(raw).substring(0, 10);
                 rawToName.put(raw, name);
                 rawToSort.put(raw, sort);
+                rawToIntegralWidth.put(raw, width);
                 declarations.put(name, sort);
                 if (regionInput(raw)) controlledSymbols.add(raw);
+                constrainIntegralInput(raw, name, javaType, sort);
+            } else {
+                Sort previousSort = rawToSort.get(raw);
+                IntegralWidth previousWidth = rawToIntegralWidth.get(raw);
+                if (previousSort != sort) {
+                    unsupported.add("SYMBOL_SORT_CONFLICT:" + raw + ":"
+                            + previousSort + "->" + sort);
+                }
+                if (previousWidth != null && width != IntegralWidth.NONE
+                        && previousWidth != IntegralWidth.NONE
+                        && previousWidth != width) {
+                    unsupported.add("SYMBOL_INTEGRAL_WIDTH_CONFLICT:" + raw
+                            + ":" + previousWidth + "->" + width);
+                }
             }
-            return new Term(name, rawToSort.get(raw));
+            IntegralWidth actualWidth = rawToIntegralWidth.get(raw);
+            return new Term(name, rawToSort.get(raw), actualWidth);
+        }
+
+        private void constrainIntegralInput(String raw, String name,
+                                            String javaType, Sort sort) {
+            if (sort != Sort.INT) return;
+            JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                    JavaPrimitiveSmtSemantics.domainOfJavaType(javaType);
+            if (domain == null
+                    || !integralRangeConstrainedSymbols.add(raw)) return;
+            assertions.add("(and (<= " + domain.lower + " " + name
+                    + ") (<= " + name + " " + domain.upper + "))");
         }
 
         private Term placeholder(JsonObject expression, String origin) {
@@ -321,10 +419,15 @@ public final class ConcolicConstraintSolver {
                     + sha256(identity).substring(0, 10);
             declarations.put(name, Sort.INT);
             uncontrolledEnvironmentTerms.add(identity);
-            return new Term(name, Sort.INT);
+            JavaPrimitiveSmtSemantics.IntegralDomain longDomain =
+                    JavaPrimitiveSmtSemantics.domainOfJavaType("J");
+            assertions.add("(and (<= " + longDomain.lower + " " + name
+                    + ") (<= " + name + " " + longDomain.upper + "))");
+            return new Term(name, Sort.INT, IntegralWidth.JAVA_LONG);
         }
 
-        private Term constant(JsonObject expression, Sort expected) {
+        private Term constant(JsonObject expression, Sort expected,
+                              String origin) {
             String raw = string(expression, "_exp");
             String payload = constantPayload(raw);
             Sort sort = sortOfJava(string(expression, "_java_type"));
@@ -342,10 +445,26 @@ public final class ConcolicConstraintSolver {
                         Sort.BOOL);
             }
             if (sort == Sort.INT) {
-                return new Term(integerLiteral(payload), Sort.INT);
+                String literal = integerLiteral(payload);
+                if (literal == null) {
+                    unsupported.add(origin + ":INVALID_INTEGER_LITERAL:"
+                            + firstNonBlank(raw, "MISSING"));
+                    return null;
+                }
+                return new Term(literal, Sort.INT,
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                string(expression, "_java_type")));
             }
-            if (sort == Sort.REAL) {
-                return new Term(realLiteral(payload), Sort.REAL);
+            if (sort.floating()) {
+                FloatingKind kind = floatingKind(sort);
+                String literal = JavaPrimitiveSmtSemantics.floatingLiteral(
+                        payload, kind);
+                if (literal == null) {
+                    unsupported.add(origin + ":INVALID_FLOATING_LITERAL:"
+                            + firstNonBlank(raw, "MISSING"));
+                    return null;
+                }
+                return new Term(literal, sort);
             }
             if (sort == Sort.STRING) {
                 return new Term(quote(payload), Sort.STRING);
@@ -357,8 +476,89 @@ public final class ConcolicConstraintSolver {
             return new Term(name, Sort.REF);
         }
 
+        /**
+         * Lowers only casts whose value relation is the identity in the
+         * current mathematical primitive model.  In particular, an expected
+         * sort must never be used to redeclare the source symbol: doing so
+         * turns a Java conversion into an unrelated free value.
+         */
+        private Term typeCast(JsonObject expression, String origin) {
+            JsonElement sourceExpression = expression.get("_exp");
+            Term source = term(sourceExpression, null, origin + ":castSource");
+            String sourceType = castDescriptor(
+                    expressionJavaType(sourceExpression));
+            String targetType = castTargetDescriptor(string(expression,
+                    "_java_type"), sourceType);
+            Sort targetSort = castSort(targetType);
+            if (source != null && exactIdentityOrIntegralWidening(
+                    sourceType, targetType) && source.sort == targetSort) {
+                return new Term(source.text, source.sort,
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                targetType));
+            }
+            FloatingKind sourceFloating = JavaPrimitiveSmtSemantics
+                    .floatingKindOfJavaType(sourceType);
+            FloatingKind targetFloating = JavaPrimitiveSmtSemantics
+                    .floatingKindOfJavaType(targetType);
+            if (source != null && source.sort.floating()
+                    && targetSort.floating()) {
+                String conversion = JavaPrimitiveSmtSemantics
+                        .floatingConversion(source.text, sourceFloating,
+                                targetFloating);
+                if (conversion != null) return new Term(conversion,
+                        targetSort);
+            }
+            if (source != null && source.sort == Sort.INT
+                    && targetSort.floating()
+                    && source.integralWidth != IntegralWidth.NONE) {
+                String conversion = JavaPrimitiveSmtSemantics
+                        .integralToFloating(source.text, targetFloating);
+                if (conversion != null) return new Term(conversion,
+                        targetSort);
+            }
+            unsupported.add(origin + ":UNSUPPORTED_JAVA_CAST:"
+                    + firstNonBlank(sourceType, "UNKNOWN") + "->"
+                    + firstNonBlank(targetType, "UNKNOWN"));
+            return diagnosticTerm("unsupported_cast", origin,
+                    targetSort == Sort.UNKNOWN ? Sort.REF : targetSort);
+        }
+
+        private Term diagnosticTerm(String prefix, String origin, Sort sort) {
+            String material = prefix + "\u0000" + origin + "\u0000" + sort;
+            String name = prefix + "__" + safeName(origin) + "__"
+                    + sha256(material).substring(0, 10);
+            declarations.put(name, sort);
+            return new Term(name, sort);
+        }
+
         private Term binary(JsonObject expression, String origin) {
             String operator = string(expression, "_op");
+            JsonElement leftExpression = expression.get("_left");
+            if (leftExpression == null || leftExpression.isJsonNull()) {
+                Term operand = term(expression.get("_right"), null,
+                        origin + ":operand");
+                if ("-".equals(operator) && operand != null
+                        && numeric(operand.sort)) {
+                    if (operand.sort.floating()) {
+                        return new Term(JavaPrimitiveSmtSemantics
+                                .floatingNegate(operand.text), operand.sort);
+                    }
+                    if (operand.integralWidth != IntegralWidth.NONE) {
+                        return new Term(JavaPrimitiveSmtSemantics.wrap(
+                                "(- " + operand.text + ")",
+                                operand.integralWidth), Sort.INT,
+                                operand.integralWidth);
+                    }
+                    unsupported.add(origin
+                            + ":AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH");
+                    return diagnosticTerm("ambiguous_integral_unary",
+                            origin, Sort.INT);
+                }
+                unsupported.add(origin + ":NON_NUMERIC_OR_UNKNOWN_UNARY:"
+                        + firstNonBlank(operator, "MISSING"));
+                return operand == null ? null : diagnosticTerm(
+                        "unsupported_unary", origin, operand.sort);
+            }
             Term left = term(expression.get("_left"), null,
                     origin + ":left");
             Term right = term(expression.get("_right"),
@@ -371,11 +571,51 @@ public final class ConcolicConstraintSolver {
                     && right.sort == Sort.REF) {
                 left = new Term("nullRef", Sort.REF);
             }
+            if ("--".equals(operator)) {
+                if (left.sort == Sort.INT && right.sort == Sort.INT
+                        && left.integralWidth == IntegralWidth.JAVA_LONG
+                        && right.integralWidth == IntegralWidth.JAVA_LONG) {
+                    return new Term(JavaPrimitiveSmtSemantics
+                            .integralCompareResult(left.text, right.text),
+                            Sort.INT, IntegralWidth.JAVA_INT);
+                }
+                unsupported.add(origin + ":MALFORMED_JVM_LCMP_OPERANDS:"
+                        + left.sort + ":" + left.integralWidth + ":"
+                        + right.sort + ":" + right.integralWidth);
+                return diagnosticTerm("malformed_lcmp", origin, Sort.INT);
+            }
+            if ("--l".equals(operator) || "--g".equals(operator)) {
+                if (left.sort == right.sort && left.sort.floating()) {
+                    return new Term(JavaPrimitiveSmtSemantics
+                            .floatingCompareResult(left.text, right.text,
+                                    "--g".equals(operator)), Sort.INT,
+                            IntegralWidth.JAVA_INT);
+                }
+                unsupported.add(origin + ":MALFORMED_JVM_FP_CMP_OPERANDS:"
+                        + operator + ":" + left.sort + ":" + right.sort);
+                return diagnosticTerm("malformed_fp_cmp", origin, Sort.INT);
+            }
+            if (left.sort != right.sort && numeric(left.sort)
+                    && numeric(right.sort)
+                    && (left.sort.floating() || right.sort.floating())) {
+                Sort promoted = left.sort == Sort.FLOAT64
+                        || right.sort == Sort.FLOAT64
+                        ? Sort.FLOAT64 : Sort.FLOAT32;
+                left = floatingPromotion(left, promoted, origin + ":left");
+                right = floatingPromotion(right, promoted,
+                        origin + ":right");
+                if (left == null || right == null) return null;
+            }
             if ("==".equals(operator) || "!=".equals(operator)) {
                 if (left.sort != right.sort) {
                     unsupported.add(origin + ":SORT_MISMATCH:" + left.sort
                             + ":" + right.sort);
                     return null;
+                }
+                if (left.sort.floating()) {
+                    return new Term(JavaPrimitiveSmtSemantics
+                            .floatingComparison(operator, left.text,
+                                    right.text), Sort.BOOL);
                 }
                 String equals = "(= " + left.text + " " + right.text + ")";
                 return new Term("!=".equals(operator)
@@ -396,22 +636,213 @@ public final class ConcolicConstraintSolver {
                     unsupported.add(origin + ":NON_NUMERIC_COMPARISON");
                     return null;
                 }
+                if (left.sort != right.sort) {
+                    unsupported.add(origin + ":NUMERIC_SORT_MISMATCH:"
+                            + left.sort + ":" + right.sort);
+                    return null;
+                }
+                if (left.sort.floating()) {
+                    return new Term(JavaPrimitiveSmtSemantics
+                            .floatingComparison(operator, left.text,
+                                    right.text), Sort.BOOL);
+                }
                 return new Term("(" + comparison + " " + left.text + " "
                         + right.text + ")", Sort.BOOL);
             }
-            String arithmetic = arithmetic(operator);
-            if (!arithmetic.isEmpty()) {
+            if (arithmeticOperator(operator)) {
                 if (!numeric(left.sort) || !numeric(right.sort)) {
                     unsupported.add(origin + ":NON_NUMERIC_ARITHMETIC");
                     return null;
                 }
-                Sort result = left.sort == Sort.REAL || right.sort == Sort.REAL
-                        ? Sort.REAL : Sort.INT;
-                return new Term("(" + arithmetic + " " + left.text + " "
-                        + right.text + ")", result);
+                if (left.sort != right.sort) {
+                    unsupported.add(origin + ":NUMERIC_SORT_MISMATCH:"
+                            + left.sort + ":" + right.sort);
+                    return null;
+                }
+                Sort result = left.sort;
+                if ("%".equals(operator)) {
+                    unsupported.add(origin + (result.floating()
+                            ? ":JAVA_FLOATING_REMAINDER_UNMODELED"
+                            : ":JAVA_INTEGRAL_REMAINDER_UNMODELED"));
+                    return diagnosticTerm("unsupported_remainder", origin,
+                            result);
+                }
+                if (result.floating()) {
+                    String arithmetic = JavaPrimitiveSmtSemantics
+                            .floatingArithmetic(operator, left.text,
+                                    right.text);
+                    if (arithmetic != null) {
+                        return new Term(arithmetic, result);
+                    }
+                    unsupported.add(origin
+                            + ":JAVA_FLOATING_OPERATOR_UNMODELED:"
+                            + operator);
+                    return diagnosticTerm("unsupported_floating_arithmetic",
+                            origin, result);
+                }
+                if ("@".equals(operator) || "/".equals(operator)) {
+                    unsupported.add(origin
+                            + ":JAVA_INTEGRAL_DIVISION_UNMODELED");
+                    return diagnosticTerm("unsupported_division", origin,
+                            Sort.INT);
+                }
+                String arithmetic = arithmetic(operator);
+                String arithmeticExpression = "(" + arithmetic + " "
+                        + left.text + " " + right.text + ")";
+                IntegralWidth resultWidth = JavaPrimitiveSmtSemantics
+                        .promote(left.integralWidth, right.integralWidth);
+                if (resultWidth == IntegralWidth.NONE) {
+                    unsupported.add(origin
+                            + ":AMBIGUOUS_JAVA_INTEGRAL_BINARY_WIDTH:"
+                            + operator + ":" + left.integralWidth + ":"
+                            + right.integralWidth);
+                    return diagnosticTerm("ambiguous_integral_arithmetic",
+                            origin, Sort.INT);
+                }
+                return new Term(JavaPrimitiveSmtSemantics.wrap(
+                        arithmeticExpression, resultWidth), Sort.INT,
+                        resultWidth);
             }
             unsupported.add(origin + ":BINARY_OPERATOR:" + operator);
             return null;
+        }
+
+        private Term floatingPromotion(Term term, Sort target,
+                                       String origin) {
+            FloatingKind targetKind = floatingKind(target);
+            if (term.sort == target) return term;
+            if (term.sort.floating()) {
+                String converted = JavaPrimitiveSmtSemantics
+                        .floatingConversion(term.text,
+                                floatingKind(term.sort), targetKind);
+                if (converted != null) return new Term(converted, target);
+            } else if (term.sort == Sort.INT
+                    && term.integralWidth != IntegralWidth.NONE) {
+                String converted = JavaPrimitiveSmtSemantics
+                        .integralToFloating(term.text, targetKind);
+                if (converted != null) return new Term(converted, target);
+            }
+            unsupported.add(origin + ":UNSUPPORTED_JAVA_NUMERIC_PROMOTION:"
+                    + term.sort + "->" + target);
+            return null;
+        }
+
+        private Term stringOperation(JsonObject expression, String origin) {
+            String operation = string(expression, "_name");
+            JsonArray parameters = array(expression, "_param_list");
+            boolean negated = bool(expression, "_is_not", false);
+            if ("isEmpty".equals(operation)) {
+                List<Term> strings = stringParameters(parameters, 1, origin,
+                        operation);
+                if (strings == null) return null;
+                Term receiver = strings.get(0);
+                return booleanStringResult("(= (str.len " + receiver.text
+                        + ") 0)", negated);
+            }
+            if ("length".equals(operation)) {
+                if (negated) {
+                    unsupported.add(origin + ":NEGATED_STRING_VALUE_"
+                            + "OPERATION:length");
+                    return null;
+                }
+                List<Term> strings = stringParameters(parameters, 1, origin,
+                        operation);
+                if (strings == null) return null;
+                Term length = new Term("(str.len "
+                        + strings.get(0).text + ")", Sort.INT,
+                        IntegralWidth.JAVA_INT);
+                JavaPrimitiveSmtSemantics.IntegralDomain intDomain =
+                        JavaPrimitiveSmtSemantics.domainOfJavaType("I");
+                assertions.add("(and (<= " + intDomain.lower + " "
+                        + length.text + ") (<= " + length.text + " "
+                        + intDomain.upper + "))");
+                return length;
+            }
+            if ("concat".equals(operation)) {
+                if (negated) {
+                    unsupported.add(origin + ":NEGATED_STRING_VALUE_"
+                            + "OPERATION:concat");
+                    return null;
+                }
+                if (parameters.size() < 1) {
+                    unsupported.add(origin + ":STRING_CONCAT_ARITY:"
+                            + parameters.size());
+                    return null;
+                }
+                List<Term> strings = stringParameters(parameters,
+                        parameters.size(), origin, operation);
+                if (strings == null) return null;
+                if (strings.size() == 1) return strings.get(0);
+                StringBuilder result = new StringBuilder("(str.++");
+                for (Term value : strings) {
+                    result.append(' ').append(value.text);
+                }
+                return new Term(result.append(')').toString(), Sort.STRING);
+            }
+            if (!("contains".equals(operation)
+                    || "equals".equals(operation)
+                    || "startsWith".equals(operation)
+                    || "endsWith".equals(operation))) {
+                unsupported.add(origin + ":OP_STRING_OPERATOR:"
+                        + firstNonBlank(operation, "MISSING"));
+                return null;
+            }
+            List<Term> strings = stringParameters(parameters, 2, origin,
+                    operation);
+            if (strings == null) return null;
+            Term receiver = strings.get(0);
+            Term argument = strings.get(1);
+            String predicate;
+            if ("contains".equals(operation)) {
+                predicate = "(str.contains " + receiver.text + " "
+                        + argument.text + ")";
+            } else if ("equals".equals(operation)) {
+                predicate = "(= " + receiver.text + " " + argument.text
+                        + ")";
+            } else if ("startsWith".equals(operation)) {
+                predicate = "(str.prefixof " + argument.text + " "
+                        + receiver.text + ")";
+            } else {
+                predicate = "(str.suffixof " + argument.text + " "
+                        + receiver.text + ")";
+            }
+            return booleanStringResult(predicate, negated);
+        }
+
+        private List<Term> stringParameters(JsonArray parameters,
+                                            int expectedArity,
+                                            String origin,
+                                            String operation) {
+            if (parameters.size() != expectedArity) {
+                unsupported.add(origin + ":STRING_"
+                        + operation.toUpperCase(java.util.Locale.ROOT)
+                        + "_ARITY:" + parameters.size());
+                return null;
+            }
+            List<Term> result = new ArrayList<>();
+            for (int index = 0; index < parameters.size(); index++) {
+                // Do not pass STRING as an expected sort here. Symbol terms
+                // use that hint when choosing their declaration sort, which
+                // would silently coerce a malformed numeric operand into a
+                // string and make an inexact lowering look well-sorted.
+                Term value = term(parameters.get(index), null,
+                        origin + ":" + operation + ":parameter" + index);
+                if (value == null) return null;
+                if (value.sort != Sort.STRING) {
+                    unsupported.add(origin + ":STRING_"
+                            + operation.toUpperCase(java.util.Locale.ROOT)
+                            + "_SORT_MISMATCH:" + index + ":" + value.sort);
+                    return null;
+                }
+                result.add(value);
+            }
+            return result;
+        }
+
+        private Term booleanStringResult(String predicate,
+                                         boolean negated) {
+            return new Term(negated ? "(not " + predicate + ")"
+                    : predicate, Sort.BOOL);
         }
 
         private String methodConstraint(JsonObject expression,
@@ -455,6 +886,10 @@ public final class ConcolicConstraintSolver {
             }
             functions.put(function, signature);
             uninterpretedFunctions.add(function);
+            // Retain the UF only so the diagnostic SMT remains inspectable.
+            // No arbitrary Java call is an exact semantic adapter here, so a
+            // replay candidate must never be confused with admitted meaning.
+            unsupported.add(origin + ":METHOD_SEMANTICS_MISSING:" + method);
             StringBuilder call = new StringBuilder("(").append(function);
             for (Term argument : arguments) {
                 call.append(' ').append(argument.text);
@@ -491,6 +926,10 @@ public final class ConcolicConstraintSolver {
             result.append("(set-logic ALL)\n");
             result.append("(declare-sort Ref 0)\n");
             result.append("(declare-const nullRef Ref)\n");
+            result.append(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION)
+                    .append('\n');
+            result.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
+                    .append('\n');
             for (Map.Entry<String, Sort> declaration
                     : declarations.entrySet()) {
                 result.append("(declare-const ").append(declaration.getKey())
@@ -509,6 +948,30 @@ public final class ConcolicConstraintSolver {
                 result.append(") ").append(entry.getValue().result.smt)
                         .append(")\n");
             }
+            // Ask Z3 for both the IEEE bits and an explicit NaN discriminator.
+            // SMT deliberately leaves fp.to_ieee_bv(NaN) unspecified (Z3
+            // 4.8 may return all-zero bits), so replay must never interpret
+            // that bit-vector unless the discriminator is false.
+            for (String raw : controlledSymbols) {
+                String name = rawToName.get(raw);
+                Sort sort = rawToSort.get(raw);
+                if (name == null || sort == null || !sort.floating()) {
+                    continue;
+                }
+                String bits = "sym__fpbits__" + name.substring("sym__".length());
+                String isNaN = "sym__fpisnan__"
+                        + name.substring("sym__".length());
+                rawToModelName.put(raw, bits);
+                rawToModelNaNName.put(raw, isNaN);
+                result.append("(define-fun ").append(bits)
+                        .append(" () (_ BitVec ")
+                        .append(sort == Sort.FLOAT32 ? 32 : 64)
+                        .append(") (fp.to_ieee_bv ").append(name)
+                        .append("))\n");
+                result.append("(define-fun ").append(isNaN)
+                        .append(" () Bool (fp.isNaN ").append(name)
+                        .append("))\n");
+            }
             for (int index = 0; index < assertions.size(); index++) {
                 result.append("(assert (! ").append(assertions.get(index))
                         .append(" :named pc_").append(index).append("))\n");
@@ -518,8 +981,14 @@ public final class ConcolicConstraintSolver {
             for (String raw : controlledSymbols) {
                 String name = rawToName.get(raw);
                 Sort sort = rawToSort.get(raw);
-                if (name != null && sort != Sort.REF
-                        && !sort.isArray()) modelNames.add(name);
+                if (name != null && sort != Sort.REF && !sort.isArray()) {
+                    if (sort.floating()) {
+                        modelNames.add(rawToModelName.get(raw));
+                        modelNames.add(rawToModelNaNName.get(raw));
+                    } else {
+                        modelNames.add(name);
+                    }
+                }
             }
             Collections.sort(modelNames);
             if (!modelNames.isEmpty()) {
@@ -535,9 +1004,13 @@ public final class ConcolicConstraintSolver {
     }
 
     private enum Sort {
-        BOOL("Bool"), INT("Int"), REAL("Real"), STRING("String"),
+        BOOL("Bool"), INT("Int"),
+        FLOAT32("(_ FloatingPoint 8 24)"),
+        FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
         REF("Ref"), INT_ARRAY("(Array Int Int)"),
-        REAL_ARRAY("(Array Int Real)"), BOOL_ARRAY("(Array Int Bool)"),
+        FLOAT32_ARRAY("(Array Int (_ FloatingPoint 8 24))"),
+        FLOAT64_ARRAY("(Array Int (_ FloatingPoint 11 53))"),
+        BOOL_ARRAY("(Array Int Bool)"),
         STRING_ARRAY("(Array Int String)"), REF_ARRAY("(Array Int Ref)"),
         UNKNOWN("");
 
@@ -549,7 +1022,8 @@ public final class ConcolicConstraintSolver {
 
         private Sort arraySort() {
             if (this == INT) return INT_ARRAY;
-            if (this == REAL) return REAL_ARRAY;
+            if (this == FLOAT32) return FLOAT32_ARRAY;
+            if (this == FLOAT64) return FLOAT64_ARRAY;
             if (this == BOOL) return BOOL_ARRAY;
             if (this == STRING) return STRING_ARRAY;
             if (this == REF) return REF_ARRAY;
@@ -559,15 +1033,27 @@ public final class ConcolicConstraintSolver {
         private boolean isArray() {
             return name().endsWith("_ARRAY");
         }
+
+        private boolean floating() {
+            return this == FLOAT32 || this == FLOAT64;
+        }
     }
 
     private static final class Term {
         private final String text;
         private final Sort sort;
+        private final IntegralWidth integralWidth;
 
         private Term(String text, Sort sort) {
+            this(text, sort, IntegralWidth.NONE);
+        }
+
+        private Term(String text, Sort sort,
+                     IntegralWidth integralWidth) {
             this.text = text;
             this.sort = sort;
+            this.integralWidth = sort == Sort.INT && integralWidth != null
+                    ? integralWidth : IntegralWidth.NONE;
         }
 
         private boolean isZero() {
@@ -621,8 +1107,15 @@ public final class ConcolicConstraintSolver {
             if (!projectedSymbols.contains(raw)) continue;
             String solverName = encoder.rawToName.get(raw);
             Sort sort = encoder.rawToSort.get(raw);
-            String value = values.get(solverName);
-            if (value == null || sort == Sort.REF || sort.isArray()) continue;
+            String modelName = firstNonBlank(encoder.rawToModelName.get(raw),
+                    solverName);
+            String value = values.get(modelName);
+            String nanModelName = encoder.rawToModelNaNName.get(raw);
+            String nanValue = nanModelName == null ? ""
+                    : values.get(nanModelName);
+            if (value == null || sort == Sort.REF || sort.isArray()
+                    || sort.floating() && !("true".equals(nanValue)
+                    || "false".equals(nanValue))) continue;
             MaterializationResolution resolution =
                     materializationResolution(raw, actions, registry);
             if (!resolution.resolved()) continue;
@@ -632,14 +1125,38 @@ public final class ConcolicConstraintSolver {
             assignment.addProperty("solverSymbol", solverName);
             assignment.addProperty("inputSymbol", string(match.action,
                     "symbol"));
-            assignment.addProperty("valueType", sort.name());
-            assignment.addProperty("value", normalizeModelValue(value));
+            if (sort.floating()) {
+                String descriptor = sort == Sort.FLOAT32 ? "F" : "D";
+                boolean isNaN = "true".equals(nanValue);
+                String decoded = isNaN ? "NaN" : SmtModelValueCodec
+                        .floatingPointBitsToJavaLiteral(value, descriptor);
+                if (decoded == null) continue;
+                assignment.addProperty("valueType", "REAL");
+                assignment.addProperty("floatingPointFormat", descriptor);
+                assignment.addProperty("modelNaNSymbol", nanModelName);
+                assignment.addProperty("modelIsNaN", isNaN);
+                if (isNaN) {
+                    assignment.addProperty("nanReplayAuthority",
+                            "SMT_FP_IS_NAN_TO_JAVA_CANONICAL_NAN_V1");
+                } else {
+                    assignment.addProperty("modelBitSymbol", modelName);
+                    assignment.addProperty("modelIeeeBits", value);
+                }
+                assignment.addProperty("value", decoded);
+            } else {
+                assignment.addProperty("valueType", sort.name());
+                assignment.addProperty("value", normalizeModelValue(value));
+            }
             assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
             assignment.addProperty("materializeAtRealDefinition", true);
             assignment.add("target", match.action.deepCopy());
-            if (!match.path.isEmpty()) {
+            List<String> actionPath = stringList(array(match.action,
+                    "fieldPath"));
+            List<String> replayPath = !match.path.isEmpty()
+                    ? match.path : actionPath;
+            if (!replayPath.isEmpty()) {
                 assignment.add("materializationPath",
-                        GSON.toJsonTree(match.path));
+                        GSON.toJsonTree(replayPath));
             }
             if (resolution.binding != null) {
                 resolution.binding.copySelectorTo(assignment);
@@ -1506,10 +2023,12 @@ public final class ConcolicConstraintSolver {
                 || "byte".equals(value) || "char".equals(value)
                 || "short".equals(value) || "int".equals(value)
                 || "long".equals(value)) return Sort.INT;
-        if ("F".equals(value) || "D".equals(value)
-                || "float".equals(value) || "double".equals(value)) {
-            return Sort.REAL;
-        }
+        if ("F".equals(value) || "float".equals(value)
+                || "java/lang/Float".equals(value)
+                || "java.lang.Float".equals(value)) return Sort.FLOAT32;
+        if ("D".equals(value) || "double".equals(value)
+                || "java/lang/Double".equals(value)
+                || "java.lang.Double".equals(value)) return Sort.FLOAT64;
         if (value.contains("String")) return Sort.STRING;
         if (value.startsWith("L") || value.startsWith("[")
                 || value.contains("/") || value.contains(".")) {
@@ -1519,7 +2038,7 @@ public final class ConcolicConstraintSolver {
     }
 
     private static boolean numeric(Sort sort) {
-        return sort == Sort.INT || sort == Sort.REAL;
+        return sort == Sort.INT || sort.floating();
     }
 
     private static String comparison(String operator) {
@@ -1534,45 +2053,132 @@ public final class ConcolicConstraintSolver {
         if ("+".equals(operator)) return "+";
         if ("-".equals(operator)) return "-";
         if ("*".equals(operator)) return "*";
-        if ("/".equals(operator)) return "div";
-        if ("%".equals(operator)) return "mod";
         return "";
+    }
+
+    private static boolean arithmeticOperator(String operator) {
+        return "+".equals(operator) || "-".equals(operator)
+                || "*".equals(operator) || "@".equals(operator)
+                || "/".equals(operator) || "%".equals(operator);
+    }
+
+    private static Sort castSort(String descriptor) {
+        if ("Z".equals(descriptor)) return Sort.BOOL;
+        if ("B".equals(descriptor) || "C".equals(descriptor)
+                || "S".equals(descriptor) || "I".equals(descriptor)
+                || "J".equals(descriptor)) return Sort.INT;
+        if ("F".equals(descriptor)) return Sort.FLOAT32;
+        if ("D".equals(descriptor)) return Sort.FLOAT64;
+        return descriptor.startsWith("L") || descriptor.startsWith("[")
+                ? Sort.REF : Sort.UNKNOWN;
+    }
+
+    private static String castDescriptor(String javaType) {
+        String value = firstNonBlank(javaType).trim().replace('.', '/');
+        if ("boolean".equals(value)) return "Z";
+        if ("byte".equals(value)) return "B";
+        if ("char".equals(value)) return "C";
+        if ("short".equals(value)) return "S";
+        if ("int".equals(value)) return "I";
+        if ("long".equals(value)) return "J";
+        if ("float".equals(value)) return "F";
+        if ("double".equals(value)) return "D";
+        return value;
+    }
+
+    /** The VM uses bare L for primitive long conversions, while other IR
+     * nodes also use it as a legacy reference tag.  The primitive source
+     * disambiguates conversion bytecodes without mistyping a reference cast. */
+    private static String castTargetDescriptor(String javaType,
+                                               String sourceType) {
+        String target = castDescriptor(javaType);
+        return "L".equals(target) && primitiveNumericDescriptor(sourceType)
+                ? "J" : target;
+    }
+
+    private static boolean primitiveNumericDescriptor(String descriptor) {
+        return descriptor != null && descriptor.length() == 1
+                && "BCSIJFD".contains(descriptor);
+    }
+
+    private static boolean exactIdentityOrIntegralWidening(String source,
+                                                            String target) {
+        if (source.isEmpty() || target.isEmpty()) return false;
+        if (source.equals(target) && "ZBCSIJFD".contains(source)) {
+            return true;
+        }
+        if (("B".equals(source) || "C".equals(source)
+                || "S".equals(source))
+                && ("I".equals(target) || "J".equals(target))) {
+            return true;
+        }
+        return "I".equals(source) && "J".equals(target);
+    }
+
+    private static FloatingKind floatingKind(Sort sort) {
+        if (sort == Sort.FLOAT32) return FloatingKind.JAVA_FLOAT;
+        if (sort == Sort.FLOAT64) return FloatingKind.JAVA_DOUBLE;
+        return FloatingKind.NONE;
+    }
+
+    private static String expressionJavaType(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return "";
+        JsonObject object = expression.getAsJsonObject();
+        String type = string(object, "_type");
+        if ("TypeCastExpression".equals(type)) {
+            return string(object, "_java_type");
+        }
+        if ("MethodExpression".equals(type)) {
+            return string(object(object, "_res_exp"), "_java_type");
+        }
+        return string(object, "_java_type");
     }
 
     private static String constantPayload(String raw) {
         if (raw == null) return "0";
-        int marker = raw.lastIndexOf('_');
-        return marker >= 0 && marker + 1 < raw.length()
-                ? raw.substring(marker + 1) : raw;
+        int first = raw.indexOf('_');
+        int second = first < 0 ? -1 : raw.indexOf('_', first + 1);
+        return second < 0 ? raw : raw.substring(second + 1);
     }
 
     private static String integerLiteral(String value) {
+        String raw = firstNonBlank(value).trim();
+        if (raw.isEmpty() || raw.length() > 1024) return null;
         try {
-            long parsed = Long.parseLong(value);
-            return parsed < 0 ? "(- " + Math.abs(parsed) + ")"
-                    : String.valueOf(parsed);
-        } catch (RuntimeException ignored) {
-            return "0";
+            BigInteger parsed = new BigInteger(raw);
+            return parsed.signum() < 0
+                    ? "(- " + parsed.negate().toString() + ")"
+                    : parsed.toString();
+        } catch (NumberFormatException ignored) {
+            return null;
         }
     }
 
     private static String realLiteral(String value) {
+        String raw = firstNonBlank(value).trim();
+        if (raw.isEmpty() || raw.length() > 1024
+                || "nan".equalsIgnoreCase(raw)
+                || "inf".equalsIgnoreCase(raw)
+                || "+inf".equalsIgnoreCase(raw)
+                || "-inf".equalsIgnoreCase(raw)
+                || "infinity".equalsIgnoreCase(raw)
+                || "+infinity".equalsIgnoreCase(raw)
+                || "-infinity".equalsIgnoreCase(raw)) {
+            return null;
+        }
         try {
-            double parsed = Double.parseDouble(value);
-            if (Double.isInfinite(parsed) || Double.isNaN(parsed)) return "0.0";
-            return parsed < 0 ? "(- " + Math.abs(parsed) + ")"
-                    : String.valueOf(parsed);
-        } catch (RuntimeException ignored) {
-            return "0.0";
+            BigDecimal parsed = new BigDecimal(raw);
+            if (Math.abs((long) parsed.scale()) > 1024L
+                    || parsed.precision() > 1024) return null;
+            String plain = parsed.abs().toPlainString();
+            return parsed.signum() < 0 ? "(- " + plain + ")" : plain;
+        } catch (NumberFormatException ignored) {
+            return null;
         }
     }
 
     private static String normalizeModelValue(String value) {
-        String trimmed = value == null ? "" : value.trim();
-        if (trimmed.startsWith("(- ") && trimmed.endsWith(")")) {
-            return "-" + trimmed.substring(3, trimmed.length() - 1).trim();
-        }
-        return trimmed;
+        return SmtModelValueCodec.normalizeScalar(value);
     }
 
     private static String quote(String value) {
@@ -1634,6 +2240,22 @@ public final class ConcolicConstraintSolver {
         JsonElement value = parent.get(name);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
+    }
+
+    private static List<String> stringList(JsonArray values) {
+        List<String> result = new ArrayList<>();
+        for (JsonElement value : values) {
+            try {
+                if (value.isJsonPrimitive()
+                        && value.getAsJsonPrimitive().isString()
+                        && !value.getAsString().isEmpty()) {
+                    result.add(value.getAsString());
+                }
+            } catch (RuntimeException ignored) {
+                // A malformed path is not usable as replay identity.
+            }
+        }
+        return result;
     }
 
     private static String string(JsonObject object, String name) {

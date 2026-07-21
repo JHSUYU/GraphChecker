@@ -528,6 +528,37 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void mapsExactBooleanStringPredicateToJimpleZeroTest() {
+        JsonElement containsFalse = JsonParser.parseString(
+                "{\"_type\":\"OpStrExpression\","
+                        + "\"_name\":\"contains\",\"_is_not\":true,"
+                        + "\"_param_list\":[{},{}]}");
+        JsonElement containsTrue = JsonParser.parseString(
+                "{\"_type\":\"OpStrExpression\","
+                        + "\"_name\":\"contains\",\"_is_not\":false,"
+                        + "\"_param_list\":[{},{}]}");
+        JsonElement stringLength = JsonParser.parseString(
+                "{\"_type\":\"OpStrExpression\","
+                        + "\"_name\":\"length\",\"_is_not\":false,"
+                        + "\"_param_list\":[{}]}");
+
+        assertTrue(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 == 0", true, containsFalse));
+        assertTrue(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 == 0", false, containsTrue));
+        assertTrue(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 != 0", true, containsTrue));
+        assertFalse(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 == 0", true, containsTrue));
+        assertFalse(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 > 0", true, containsTrue));
+        assertFalse(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 == 1", true, containsTrue));
+        assertFalse(ConcolicRegionRuntime.branchConditionMatches(
+                "$z0 == 0", true, stringLength));
+    }
+
+    @Test
     public void exactVmEventSelectsOneOfTwoSameShapeBranchConditions()
             throws Exception {
         JsonObject mapping = runExactBranchEvent(false);
@@ -609,6 +640,125 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void selectedLookupSwitchOwnsExactCaseEquality() throws Exception {
+        JsonObject mapping = runExactSwitchEvent("LOOKUP_SWITCH",
+                "-100,7,1000", 1, 171, true,
+                new int[]{7}, new String[]{"=="}, new int[]{0});
+
+        assertTrue(mapping.get("vmBranchEventValidated").getAsBoolean());
+        assertEquals(1, mapping.get("observedSuccessorIndex").getAsInt());
+        assertEquals(0, mapping.get("conditionIndex").getAsInt());
+        assertEquals(1, mapping.getAsJsonArray("conditionIndices").size());
+        assertTrue(mapping.get("symbolicSwitchArmComplete").getAsBoolean());
+        assertEquals("VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_PC_INDICES",
+                mapping.get("conditionAuthority").getAsString());
+    }
+
+    @Test
+    public void tableSwitchDefaultOwnsAllOrderedInequalities()
+            throws Exception {
+        JsonObject mapping = runExactSwitchEvent("TABLE_SWITCH", "1,2,3",
+                3, 170, false, new int[]{1, 2, 3},
+                new String[]{"!=", "!=", "!="}, new int[]{0, 1, 2});
+
+        assertTrue(mapping.get("vmBranchEventValidated").getAsBoolean());
+        assertEquals(-1, mapping.get("conditionIndex").getAsInt());
+        assertEquals(3, mapping.getAsJsonArray("conditionIndices").size());
+        assertEquals(3, mapping.getAsJsonArray("conditions").size());
+        assertTrue(mapping.get("symbolicSwitchArmComplete").getAsBoolean());
+        assertFalse(mapping.get(
+                "successorAwarePathEnumerationComplete").getAsBoolean());
+        assertEquals("MULTIWAY_SWITCH_SUCCESSOR_WORKLIST_REQUIRED",
+                mapping.get("successorAwarePathEnumerationGap")
+                        .getAsString());
+    }
+
+    @Test
+    public void switchDefaultWithWrongKeyOrderFailsClosed()
+            throws Exception {
+        JsonObject mapping = runExactSwitchEvent("LOOKUP_SWITCH", "1,7,30",
+                3, 171, false, new int[]{7, 1, 30},
+                new String[]{"!=", "!=", "!="}, new int[]{0, 1, 2});
+
+        assertFalse(mapping.get("vmBranchEventValidated").getAsBoolean());
+        assertFalse(mapping.get("symbolicSwitchArmComplete").getAsBoolean());
+        assertEquals("UNRESOLVED_VM_EXACT_SWITCH_EVENT",
+                mapping.get("conditionAuthority").getAsString());
+        assertTrue(mapping.get("mappingWarning").getAsString().contains(
+                "selector != 1"));
+    }
+
+    @Test
+    public void concreteSwitchEventIsExactButNotSymbolicClosure()
+            throws Exception {
+        JsonObject mapping = runExactSwitchEvent("LOOKUP_SWITCH", "1,7,30",
+                1, 171, true, new int[0], new String[0], new int[0]);
+
+        assertTrue(mapping.get("vmBranchEventValidated").getAsBoolean());
+        assertFalse(mapping.get("symbolicSwitchArmComplete").getAsBoolean());
+        assertEquals("VM_THREAD_CONTEXT_EXACT_CONCRETE_SWITCH_EVENT",
+                mapping.get("conditionAuthority").getAsString());
+        assertTrue(mapping.get("mappingWarning").getAsString().contains(
+                "selector was concrete"));
+    }
+
+    private static JsonObject runExactSwitchEvent(
+            String branchKind, String caseKeys, int observedSuccessor,
+            int opcode, boolean outcome, int[] conditionKeys,
+            String[] conditionOperators, int[] conditionIndices)
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String method = "<example.Target: int choose(int)>";
+        String siteId = method + "#u7";
+        JsonObject activation = concreteActivation("ACT.EXACT.SWITCH",
+                method, 1);
+        activation.addProperty("regionId", "REGION.EXACT.SWITCH");
+        activation.addProperty("test", "exact-switch-test");
+        activation.addProperty("concreteReplayOnly", false);
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", siteId);
+        branch.addProperty("policy", "EXPLORE");
+        JsonArray branches = new JsonArray();
+        branches.add(branch);
+        activation.add("branches", branches);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "exact-switch-test");
+        try {
+            ExactSwitchEngine.configure(opcode, outcome, conditionKeys,
+                    conditionOperators, conditionIndices);
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    ExactSwitchEngine.class);
+            long token = ConcolicRegionRuntime.enterRegion(method,
+                    new Object());
+            assertTrue(token > 0L);
+            long handle = ConcolicRegionRuntime.prepareBranch(method, 7,
+                    "selector");
+            assertTrue(handle > 0L);
+            long eventId = ExactSwitchEngine.markBranch(siteId,
+                    (int) handle);
+            assertEquals(observedSuccessor,
+                    ConcolicRegionRuntime.resolveSwitchBranch(handle,
+                            eventId, method, 7, "selector", branchKind,
+                            caseKeys, observedSuccessor));
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonObject row = resultRows(results).get(0);
+            assertEquals(1, row.getAsJsonArray("branchMappings").size());
+            return row.getAsJsonArray("branchMappings").get(0)
+                    .getAsJsonObject();
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void referenceReplayProtocolIsTheoryNeutral() {
         Object concrete = new Object();
         assertEquals(null, ConcolicRegionRuntime.modeledReferenceResult(
@@ -627,6 +777,10 @@ public class ConcolicRegionRuntimeTest {
                 "BOOL", "true", boolean.class));
         assertEquals("hello", ConcolicRegionRuntime.coerceModelValue(
                 "STRING", "\"hello\"", String.class));
+        assertEquals(2.5d, ConcolicRegionRuntime.coerceModelValue(
+                "REAL", "(/ 5.0 2.0)", double.class));
+        assertEquals(-2.5d, ConcolicRegionRuntime.coerceModelValue(
+                "REAL", "(- (/ 5.0 2.0))", double.class));
     }
 
     @Test
@@ -3680,6 +3834,89 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void missingOrInvalidInstrumentedBranchPolicyFailsClosedToExplore()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.PolicyTarget: void run()>";
+        String declaredSite = root + "#u3";
+        String invalidSite = root + "#u5";
+        String missingSite = root + "#u7";
+        JsonObject activation = concreteActivation(
+                "ACT.BRANCH.POLICY.FAIL.CLOSED", root, 1);
+        JsonArray branches = new JsonArray();
+        JsonObject declared = new JsonObject();
+        declared.addProperty("siteId", declaredSite);
+        declared.addProperty("policy", "PATH_ASSUMPTION");
+        branches.add(declared);
+        JsonObject invalid = new JsonObject();
+        invalid.addProperty("siteId", invalidSite);
+        invalid.addProperty("policy", "IGNORE");
+        branches.add(invalid);
+        activation.add("branches", branches);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "concrete-overlap-test");
+        try {
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertTrue(token > 0L);
+            assertTrue(ConcolicRegionRuntime.resolveBranch(0L, 0L,
+                    root, 3, "declared", true));
+            assertFalse(ConcolicRegionRuntime.resolveBranch(0L, 0L,
+                    root, 5, "invalid", false));
+            assertTrue(ConcolicRegionRuntime.resolveBranch(0L, 0L,
+                    root, 7, "missing", true));
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonObject result = resultRows(results).get(0);
+            JsonArray mappings = result.getAsJsonArray("branchMappings");
+            assertEquals(3, mappings.size());
+
+            JsonObject declaredMapping = mappings.get(0).getAsJsonObject();
+            assertEquals("PATH_ASSUMPTION",
+                    declaredMapping.get("policy").getAsString());
+            assertTrue(declaredMapping.get("policyResolutionComplete")
+                    .getAsBoolean());
+            assertEquals("ACTIVATION_PLAN_EXACT_BRANCH_POLICY_V1",
+                    declaredMapping.get("policyAuthority").getAsString());
+            assertFalse(declaredMapping.has("policyGap"));
+
+            JsonObject invalidMapping = mappings.get(1).getAsJsonObject();
+            assertEquals("EXPLORE",
+                    invalidMapping.get("policy").getAsString());
+            assertFalse(invalidMapping.get("policyResolutionComplete")
+                    .getAsBoolean());
+            assertTrue(invalidMapping.get("policyGap").getAsString()
+                    .contains("unsupported"));
+
+            JsonObject missingMapping = mappings.get(2).getAsJsonObject();
+            assertEquals("EXPLORE",
+                    missingMapping.get("policy").getAsString());
+            assertFalse(missingMapping.get("policyResolutionComplete")
+                    .getAsBoolean());
+            assertEquals(
+                    "RUNTIME_INSTRUMENTED_BRANCH_FAIL_CLOSED_TO_EXPLORE_V1",
+                    missingMapping.get("policyAuthority").getAsString());
+            assertTrue(missingMapping.get("policyGap").getAsString()
+                    .contains("no policy"));
+
+            JsonArray unresolved = result.getAsJsonArray(
+                    "unresolvedInputs");
+            assertEquals(2, unresolved.size());
+            assertTrue(unresolved.get(0).getAsString().contains(invalidSite));
+            assertTrue(unresolved.get(1).getAsString().contains(missingSite));
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void capturesExactEngineArrayIdsForArgumentReceiverAndFieldInputs()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -5913,6 +6150,154 @@ public class ConcolicRegionRuntimeTest {
             events.add(event);
             envelope.add("events", events);
             return envelope.toString();
+        }
+
+        @SuppressWarnings("unused")
+        private static void endRegion() {
+        }
+    }
+
+    /** Exact-event stand-in for selected and default switch arms. */
+    private static final class ExactSwitchEngine {
+        private static final long EVENT_ID = 73L;
+        private static final long CONTEXT_ID = 91L;
+        private static final long OS_THREAD_ID = 9002L;
+        private static final String CODE_POSITION =
+                "example.Target.choose:(I)I:42";
+        private static String regionId = "";
+        private static String activationId = "";
+        private static String siteId = "";
+        private static int markerSequence;
+        private static long ownerThreadId;
+        private static int opcode;
+        private static boolean outcome;
+        private static int[] conditionKeys = new int[0];
+        private static String[] conditionOperators = new String[0];
+        private static int[] conditionIndices = new int[0];
+
+        private static void configure(
+                int configuredOpcode, boolean configuredOutcome,
+                int[] keys, String[] operators, int[] indices) {
+            if (keys.length != operators.length) {
+                throw new IllegalArgumentException(
+                        "switch mock condition arrays differ");
+            }
+            opcode = configuredOpcode;
+            outcome = configuredOutcome;
+            conditionKeys = keys.clone();
+            conditionOperators = operators.clone();
+            conditionIndices = indices.clone();
+            regionId = "";
+            activationId = "";
+            siteId = "";
+            markerSequence = 0;
+            ownerThreadId = 0L;
+        }
+
+        @SuppressWarnings("unused")
+        private static long startRegion(String region, String activation) {
+            regionId = region;
+            activationId = activation;
+            ownerThreadId = Thread.currentThread().getId();
+            return 0L;
+        }
+
+        @SuppressWarnings("unused")
+        private static void symbolize(Object value, String prefix) {
+        }
+
+        @SuppressWarnings("unused")
+        private static void symbolizeField(Object owner, String field,
+                                           String prefix) {
+        }
+
+        @SuppressWarnings("unused")
+        private static String expression(Object value) {
+            return "{\"schemaVersion\":1,\"active\":true,"
+                    + "\"symbolic\":false,\"expression\":null}";
+        }
+
+        @SuppressWarnings("unused")
+        private static String finishRegion() {
+            return "{\"schemaVersion\":1,\"engine\":\"switch-mock\","
+                    + "\"active\":true,\"pathCondition\":"
+                    + pathCondition() + "}";
+        }
+
+        @SuppressWarnings("unused")
+        private static String pathCondition() {
+            StringBuilder result = new StringBuilder("[");
+            for (int index = 0; index < conditionKeys.length; index++) {
+                if (index > 0) result.append(',');
+                result.append(switchCondition(conditionOperators[index],
+                        conditionKeys[index]));
+            }
+            return result.append(']').toString();
+        }
+
+        @SuppressWarnings("unused")
+        private static void pausePathCondition() {
+        }
+
+        @SuppressWarnings("unused")
+        private static void resumePathCondition() {
+        }
+
+        @SuppressWarnings("unused")
+        private static long markBranch(String site, int sequence) {
+            siteId = site;
+            markerSequence = sequence;
+            return EVENT_ID;
+        }
+
+        @SuppressWarnings("unused")
+        private static String branchEvents() {
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", EVENT_ID);
+            event.addProperty("contextId", CONTEXT_ID);
+            event.addProperty("ownerJavaThreadId", ownerThreadId);
+            event.addProperty("ownerOsThreadId", OS_THREAD_ID);
+            event.addProperty("regionId", regionId);
+            event.addProperty("activationId", activationId);
+            event.addProperty("siteId", siteId);
+            event.addProperty("occurrence", markerSequence);
+            event.addProperty("outcome", outcome);
+            event.addProperty("opcode", opcode);
+            event.addProperty("codePosition", CODE_POSITION);
+            JsonArray indices = new JsonArray();
+            for (int index : conditionIndices) indices.add(index);
+            event.add("conditionIndices", indices);
+            event.addProperty("conditionCount", conditionIndices.length);
+            event.addProperty("authority",
+                    "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+
+            JsonObject envelope = new JsonObject();
+            envelope.addProperty("schemaVersion", 1);
+            envelope.addProperty("kind",
+                    "CONCOLIC_THREAD_BRANCH_EVENTS");
+            envelope.addProperty("active", true);
+            envelope.addProperty("contextId", CONTEXT_ID);
+            envelope.addProperty("ownerJavaThreadId", ownerThreadId);
+            envelope.addProperty("ownerOsThreadId", OS_THREAD_ID);
+            envelope.addProperty("regionId", regionId);
+            envelope.addProperty("activationId", activationId);
+            JsonArray events = new JsonArray();
+            events.add(event);
+            envelope.add("events", events);
+            return envelope.toString();
+        }
+
+        private static String switchCondition(String operator, int key) {
+            return "{\"_type\":\"BinaryExpression\","
+                    + "\"_left\":{\"_type\":\"SymbolExpression\","
+                    + "\"_java_type\":\"I\","
+                    + "\"_exp\":\"switch_selector\"},"
+                    + "\"_op\":\"" + operator + "\","
+                    + "\"_right\":{\"_type\":\"ConstExpr\","
+                    + "\"_java_type\":\"I\","
+                    + "\"_exp\":\"Y_I_" + key + "\"},"
+                    + "\"_code_position\":\"" + CODE_POSITION
+                    + "\"}";
         }
 
         @SuppressWarnings("unused")

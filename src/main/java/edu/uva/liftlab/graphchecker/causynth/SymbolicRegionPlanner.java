@@ -1422,10 +1422,27 @@ final class SymbolicRegionPlanner {
                     }
                 }
             }
+            // A PATH_ASSUMPTION proof must cover every output candidate, not
+            // merely the one edge on which the proof happened to be stored.
+            // Include mandatory seed and configured producer outputs before
+            // evaluating those proofs.
+            addSeedOutputs(draft.methods, outputCandidates);
+            addConfiguredProducerReturnOutputs(draft, outputCandidates);
             // Preserve the edge-level guard/site association.  A method plan's
             // independent guards and siteIds sets cannot tell the concolic
             // scheduler which path-condition entry belongs to which branch.
-            Set<String> emittedBranchSites = new LinkedHashSet<>();
+            // A branch site can have both the broad "branch consumes a
+            // relevant value" edge and a more precise control-dependence
+            // edge proving that one outcome reaches an output definition.
+            // Edge ids are deterministic, but their order is not a semantic
+            // priority.  Selecting the first edge used to let a generic
+            // guard_dependency hide a later path_guard_dependency for the
+            // same site, incorrectly pinning an output-changing scalar
+            // branch as PATH_ASSUMPTION.  Aggregate all exact control edges
+            // for a site before deriving its outcome/successor contract, and
+            // retain one strongest edge only for compatibility metadata.
+            Map<String, List<Map<String, Object>>> branchEdgesBySite =
+                    new LinkedHashMap<>();
             for (Map<String, Object> edge : edges) {
                 String method = string(edge.get("method"));
                 if (!draft.methods.contains(method)
@@ -1435,28 +1452,86 @@ final class SymbolicRegionPlanner {
                     continue;
                 }
                 String site = string(edge.get("siteId"));
-                if (site.isEmpty() || !emittedBranchSites.add(site)) {
+                if (site.isEmpty()) {
                     continue;
                 }
+                branchEdgesBySite.computeIfAbsent(site,
+                        ignored -> new ArrayList<>()).add(edge);
+            }
+            for (List<Map<String, Object>> siteEdges
+                    : branchEdgesBySite.values()) {
+                List<Map<String, Object>> policyEdges =
+                        authoritativeBranchPolicyEdges(siteEdges);
+                Map<String, Object> edge = strongestBranchPolicyEdge(
+                        policyEdges, draft);
+                String method = string(edge.get("method"));
+                String site = string(edge.get("siteId"));
                 String guard = firstNonEmpty(string(edge.get("unit")),
                         string(edge.get("toCell")), site);
-                String policy = exploreGuard(edge, draft, guard)
-                        ? "EXPLORE" : "PATH_ASSUMPTION";
+                Map<String, Object> independenceProof =
+                        outputIndependenceProof(policyEdges,
+                                outputCandidates);
+                boolean outputIndependent = independenceProof != null;
+                String policy = outputIndependent
+                        ? "PATH_ASSUMPTION" : "EXPLORE";
                 if ("EXPLORE".equals(policy)) {
                     exploreBranches.add(site);
                 } else {
                     pathAssumptions.add(site);
                 }
                 sites.add(site);
-                Boolean requiredOutcome = requiredOutcome(edge);
-                branchPolicies.add(object(
+                Boolean requiredOutcome = commonRequiredOutcome(policyEdges);
+                Map<String, Object> branchPolicy = object(
                         "siteId", site,
                         "method", method,
                         "unitIndex", integer(edge.get("unitIndex"), -1),
                         "policy", policy,
                         "guard", guard,
                         "requiredOutcome", requiredOutcome,
-                        "role", "REACHABILITY"));
+                        "requiredSuccessorIndices",
+                        requiredSuccessorIndices(policyEdges),
+                        "branchKind", string(edge.get("branchKind")),
+                        "switchCaseKeys", integerValues(edge.get(
+                                "switchCaseKeys")),
+                        "defaultSuccessorIndex", integer(edge.get(
+                                "defaultSuccessorIndex"), -1),
+                        "successorCount", integer(edge.get(
+                                "successorCount"), -1),
+                        "successorIndexAuthority", string(edge.get(
+                                "successorIndexAuthority")),
+                        "switchArmIdentityAuthority", string(edge.get(
+                                "switchArmIdentityAuthority")),
+                        "role", "REACHABILITY",
+                        "sourceEdgeId", string(edge.get("id")),
+                        "sourceEdgeIds", branchPolicyEdgeValues(policyEdges,
+                                "id"),
+                        "sourceEdgeKind", string(edge.get("kind")),
+                        "sourceEdgeKinds", branchPolicyEdgeValues(
+                                policyEdges, "kind"),
+                        "controlDependenceAuthority", string(edge.get(
+                                "controlDependenceAuthority")),
+                        "controlDependenceAuthorities",
+                        branchPolicyEdgeValues(policyEdges,
+                                "controlDependenceAuthority"),
+                        "policyAuthority", outputIndependent
+                                ? string(independenceProof.get(
+                                "outputPathIndependenceAuthority"))
+                                : explorationAuthority(policyEdges, draft));
+                if (outputIndependent) {
+                    branchPolicy.put("pathAssumptionProof", object(
+                            "outputPathIndependenceProven", true,
+                            "authority", string(independenceProof.get(
+                                    "outputPathIndependenceAuthority")),
+                            "reason", string(independenceProof.get(
+                                    "outputPathIndependenceReason")),
+                            "checkedOutputs", strings(independenceProof.get(
+                                    "outputPathIndependenceCheckedOutputs"))));
+                } else {
+                    branchPolicy.put("explorationReason",
+                            "OUTPUT_OR_PATH_INFLUENCE_PRESENT_OR_NOT_PROVEN_"
+                                    + "ABSENT");
+                }
+                branchPolicies.add(branchPolicy);
             }
             InputSelection inputSelection = selectExternalInputs(draft,
                     inputCandidates, produced);
@@ -1493,8 +1568,6 @@ final class SymbolicRegionPlanner {
             boolean broadInputPortTruncated =
                     selectedExternalInputCount > broadInputPortCount;
 
-            addSeedOutputs(draft.methods, outputCandidates);
-            addConfiguredProducerReturnOutputs(draft, outputCandidates);
             Set<String> prioritySeedOutputs = seedInterfaceCells(draft);
             List<Map<String, Object>> outputPorts = new ArrayList<>();
             int outputIndex = 0;
@@ -7860,37 +7933,198 @@ final class SymbolicRegionPlanner {
             if (explicit instanceof Boolean) {
                 return (Boolean) explicit;
             }
+            Boolean nested = commonNestedRequiredOutcome(edge);
+            if (nested != null) {
+                return nested;
+            }
+            if (hasNestedControlRows(edge)) {
+                // Multiple controlled definitions/effects may require
+                // opposite outcomes.  The evidence string describes only
+                // the first emitted row and must not be promoted to a common
+                // Boolean contract for the whole branch site.
+                return null;
+            }
             Matcher matcher = REQUIRED_OUTCOME_PATTERN.matcher(string(
                     edge.get("evidence")));
             return matcher.find()
                     ? Boolean.valueOf(matcher.group(1)) : null;
         }
 
-        /**
-         * A Jimple guard often contains only compiler temporaries (for
-         * example {@code $i3 >= 0}), so keyword inspection alone cannot tell
-         * that it is the expiry predicate controlling a heap mutation.  When
-         * static control dependence proves a concrete required outcome, walk
-         * that guard's backward dependencies.  A scalar declared heap field
-         * or environment source makes the branch a solver-controlled effect
-         * branch.  An output-relevant path guard may additionally close at a
-         * scalar method return (for example {@code Boolean.booleanValue()});
-         * structural loop gates backed by iterator calls remain path
-         * assumptions.
-         */
-        private boolean exploreGuard(Map<String, Object> edge,
-                                     RegionDraft draft, String guard) {
-            if (SymbolicRegionPlanner.exploreGuard(guard)) {
-                return true;
+        private Boolean commonNestedRequiredOutcome(
+                Map<String, Object> edge) {
+            Boolean common = null;
+            boolean found = false;
+            for (String field : Arrays.asList("controlledDefinitions",
+                    "guardedMutations", "guardedEffects")) {
+                Object rows = edge.get(field);
+                if (!(rows instanceof Collection)) {
+                    continue;
+                }
+                for (Object row : (Collection<?>) rows) {
+                    if (!(row instanceof Map)) {
+                        continue;
+                    }
+                    Object outcome = ((Map<?, ?>) row).get(
+                            "requiredOutcome");
+                    if (!(outcome instanceof Boolean)) {
+                        return null;
+                    }
+                    if (!found) {
+                        common = (Boolean) outcome;
+                        found = true;
+                    } else if (!common.equals(outcome)) {
+                        return null;
+                    }
+                }
             }
+            return found ? common : null;
+        }
+
+        private boolean hasNestedControlRows(Map<String, Object> edge) {
+            for (String field : Arrays.asList("controlledDefinitions",
+                    "guardedMutations", "guardedEffects")) {
+                Object rows = edge.get(field);
+                if (rows instanceof Collection
+                        && !((Collection<?>) rows).isEmpty()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Orders duplicate GUARD edges for one concrete branch site by the
+         * strength of their output-causality evidence.  The causal slice and
+         * exact control-dependence variants must dominate the generic
+         * operand-consumption edge; otherwise file/edge ordering can change
+         * whether a real output branch is explored.
+         */
+        private int branchPolicyEvidenceRank(Map<String, Object> edge,
+                                             RegionDraft draft) {
+            int rank = draft.causalEdges.contains(edge) ? 16 : 0;
             String kind = string(edge.get("kind"));
-            boolean outputRelevantPathGuard =
-                    "path_guard_dependency".equals(kind);
-            if (!(outputRelevantPathGuard
-                    || "heap_mutation_path_guard".equals(kind))
-                    || requiredOutcome(edge) == null) {
+            if (ControlDependenceEdgeSupport.requiresSiteIdentity(kind)) {
+                rank += 32;
+            }
+            if (requiredOutcome(edge) != null) {
+                rank += 8;
+            }
+            if (Boolean.TRUE.equals(edge.get("sameCellRedefinition"))) {
+                rank += 4;
+            }
+            if (!string(edge.get("controlledDefinitionSiteId")).isEmpty()) {
+                rank += 2;
+            }
+            return rank;
+        }
+
+        private List<Map<String, Object>> authoritativeBranchPolicyEdges(
+                List<Map<String, Object>> siteEdges) {
+            List<Map<String, Object>> exact = new ArrayList<>();
+            for (Map<String, Object> edge : siteEdges) {
+                if (ControlDependenceEdgeSupport.requiresSiteIdentity(
+                        string(edge.get("kind")))) {
+                    exact.add(edge);
+                }
+            }
+            return exact.isEmpty() ? siteEdges : exact;
+        }
+
+        private Map<String, Object> strongestBranchPolicyEdge(
+                List<Map<String, Object>> siteEdges, RegionDraft draft) {
+            Map<String, Object> strongest = siteEdges.get(0);
+            for (int index = 1; index < siteEdges.size(); index++) {
+                Map<String, Object> candidate = siteEdges.get(index);
+                if (branchPolicyEvidenceRank(candidate, draft)
+                        > branchPolicyEvidenceRank(strongest, draft)) {
+                    strongest = candidate;
+                }
+            }
+            return strongest;
+        }
+
+        private Boolean commonRequiredOutcome(
+                Collection<Map<String, Object>> siteEdges) {
+            Boolean common = null;
+            boolean found = false;
+            for (Map<String, Object> edge : siteEdges) {
+                Boolean candidate = requiredOutcome(edge);
+                if (candidate == null) {
+                    return null;
+                }
+                if (!found) {
+                    common = candidate;
+                    found = true;
+                } else if (!common.equals(candidate)) {
+                    return null;
+                }
+            }
+            return found ? common : null;
+        }
+
+        private Map<String, Object> outputIndependenceProof(
+                Collection<Map<String, Object>> siteEdges,
+                Collection<String> outputs) {
+            for (Map<String, Object> edge : siteEdges) {
+                if (ControlDependenceEdgeSupport
+                        .hasAuditableOutputIndependenceProof(edge)
+                        && outputIndependenceCovers(edge, outputs)) {
+                    return edge;
+                }
+            }
+            return null;
+        }
+
+        private List<String> branchPolicyEdgeValues(
+                Collection<Map<String, Object>> siteEdges, String field) {
+            Set<String> values = new LinkedHashSet<>();
+            for (Map<String, Object> edge : siteEdges) {
+                String value = string(edge.get(field));
+                if (!value.isEmpty()) {
+                    values.add(value);
+                }
+            }
+            List<String> result = new ArrayList<>(values);
+            Collections.sort(result);
+            return result;
+        }
+
+        private String explorationAuthority(
+                Collection<Map<String, Object>> siteEdges,
+                RegionDraft draft) {
+            for (Map<String, Object> edge : siteEdges) {
+                if (ControlDependenceEdgeSupport.requiresSiteIdentity(
+                        string(edge.get("kind")))) {
+                    return "STATIC_OUTPUT_CONTROL_DEPENDENCE_REQUIRES_"
+                            + "EXPLORATION_V1";
+                }
+            }
+            for (Map<String, Object> edge : siteEdges) {
+                if (guardHasSolverControlledFrontier(edge, draft)) {
+                    return "SYMBOLIC_FRONTIER_REQUIRES_EXPLORATION_V1";
+                }
+            }
+            return "CONSERVATIVE_UNPROVEN_OUTPUT_INDEPENDENCE_V1";
+        }
+
+        private boolean outputIndependenceCovers(
+                Map<String, Object> edge, Collection<String> outputs) {
+            if (outputs == null || outputs.isEmpty()) {
                 return false;
             }
+            Set<String> checked = new LinkedHashSet<>(strings(edge.get(
+                    "outputPathIndependenceCheckedOutputs")));
+            return checked.containsAll(outputs);
+        }
+
+        /**
+         * Provides audit metadata for an EXPLORE decision.  This provenance
+         * walk is deliberately not a gate: an unresolved frontier means the
+         * branch remains conservatively explorable, never that it can be
+         * pinned to the concrete trace.
+         */
+        private boolean guardHasSolverControlledFrontier(
+                Map<String, Object> edge, RegionDraft draft) {
             String start = string(edge.get("fromCell"));
             if (start.isEmpty()) {
                 return false;
@@ -7914,12 +8148,10 @@ final class SymbolicRegionPlanner {
             work.add(start);
             while (!work.isEmpty() && seen.size() < 4096) {
                 String current = work.removeFirst();
-                if (!current.equals(start)
-                        && solverControlledScalarFrontier(current)) {
+                if (solverControlledScalarFrontier(current)) {
                     return true;
                 }
-                if (!current.equals(start) && outputRelevantPathGuard
-                        && scalarMethodReturnFrontier(current)) {
+                if (scalarMethodReturnFrontier(current)) {
                     return true;
                 }
                 List<Map<String, Object>> dependencies = incoming.get(current);
@@ -7934,6 +8166,50 @@ final class SymbolicRegionPlanner {
                 }
             }
             return false;
+        }
+
+        private List<Integer> requiredSuccessorIndices(
+                Collection<Map<String, Object>> edges) {
+            Set<Integer> indices = new LinkedHashSet<>();
+            for (Map<String, Object> edge : edges) {
+                collectIntegerValues(indices, edge.get(
+                        "reachingSuccessorIndices"));
+                for (String field : Arrays.asList("controlledDefinitions",
+                        "guardedMutations", "guardedEffects")) {
+                    Object rows = edge.get(field);
+                    if (!(rows instanceof Collection)) {
+                        continue;
+                    }
+                    for (Object row : (Collection<?>) rows) {
+                        if (row instanceof Map) {
+                            collectIntegerValues(indices,
+                                    ((Map<?, ?>) row).get(
+                                            "reachingSuccessorIndices"));
+                        }
+                    }
+                }
+            }
+            List<Integer> result = new ArrayList<>(indices);
+            Collections.sort(result);
+            return result;
+        }
+
+        private void collectIntegerValues(Set<Integer> target,
+                                          Object values) {
+            if (!(values instanceof Collection)) {
+                return;
+            }
+            for (Object value : (Collection<?>) values) {
+                if (value instanceof Number) {
+                    target.add(((Number) value).intValue());
+                }
+            }
+        }
+
+        private List<Integer> integerValues(Object values) {
+            Set<Integer> result = new LinkedHashSet<>();
+            collectIntegerValues(result, values);
+            return new ArrayList<>(result);
         }
 
         private boolean solverControlledScalarFrontier(String cell) {
@@ -7955,18 +8231,7 @@ final class SymbolicRegionPlanner {
             }
             String method = methodForCell(value);
             return !method.isEmpty()
-                    && scalarType(declaredReturnType(method))
-                    && !structuralMethodReturn(method);
-        }
-
-        private boolean structuralMethodReturn(String method) {
-            String declaringType = lower(owner(method));
-            String name = methodName(method);
-            return declaringType.contains("iterator")
-                    || declaringType.endsWith(".enumeration")
-                    || declaringType.endsWith(".spliterator")
-                    || "hasNext".equals(name)
-                    || "hasMoreElements".equals(name);
+                    && scalarType(declaredReturnType(method));
         }
 
         private boolean scalarType(String type) {
@@ -8347,23 +8612,6 @@ final class SymbolicRegionPlanner {
         }
         return methodForCell(output).equals(anchorMethod)
                 ? "SINK_STATE" : "REGION_OUTPUT";
-    }
-
-    private static boolean exploreGuard(String guard) {
-        String value = lower(guard);
-        if (value.contains("instanceof") || value.contains("callback")
-                || value.matches(".*\\b(pc|nc|ac)\\b.*")
-                || value.contains("debug") || value.contains("logger")) {
-            return false;
-        }
-        return value.contains("allkeys")
-                || value.contains("key")
-                || value.contains("expired")
-                || value.contains("stale")
-                || value.contains("timeout")
-                || value.contains("failure")
-                || value.contains("currentkey")
-                || value.contains("encryptionkey");
     }
 
     private static String projection(String cell) {
