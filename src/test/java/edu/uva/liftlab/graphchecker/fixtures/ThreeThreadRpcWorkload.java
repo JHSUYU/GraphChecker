@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -46,11 +48,14 @@ public final class ThreeThreadRpcWorkload {
     }
 
     public static final class ProducerB {
-        public int compute(Boolean b2) {
+        public int compute(Boolean b2, int var) {
             int b = 10;
             if (b2.booleanValue()) {
                 b = 0;
             }
+            if(var<10) var = 10;
+            b=b+var;
+
             return b;
         }
     }
@@ -178,6 +183,7 @@ public final class ThreeThreadRpcWorkload {
         private final Boolean input;
         private final RpcBus bus;
         private final ProducerConcurrencyGate concurrencyGate;
+        private final int var;
 
         ProducerBThread(Boolean input, RpcBus bus, CountDownLatch start,
                         ProducerConcurrencyGate concurrencyGate) {
@@ -185,12 +191,13 @@ public final class ThreeThreadRpcWorkload {
             this.input = input;
             this.bus = bus;
             this.concurrencyGate = concurrencyGate;
+            this.var =0;
         }
 
         @Override
         void executeWorker() throws InterruptedException {
             concurrencyGate.enterAndAwaitPeer();
-            int b = new ProducerB().compute(input);
+            int b = new ProducerB().compute(input, var);
             bus.publishB(b);
         }
     }
@@ -214,7 +221,8 @@ public final class ThreeThreadRpcWorkload {
             receivedB = b;
             received = true;
             if (a > b) {
-                throw new BugReachedException(a, b);
+                throw new @CausynthExceptionTarget("three-thread-rpc")
+                        BugReachedException(a, b);
             }
         }
     }

@@ -22,6 +22,14 @@ void ThreadContext::set_stack_slot_if_possible(int offset, Expression *exp) {
   }
 }
 
+void ThreadContext::set_stack_value_if_possible(int anchor_offset,
+                                                int slot_count,
+                                                Expression *exp) {
+  if (this->get_last_stack().size() > 0) {
+    this->set_stack_value(anchor_offset, slot_count, exp);
+  }
+}
+
 
 void ThreadContext::set_stack_slot(int offset, Expression *exp,
                                    sym_rid_t sym_rid, int index) {
@@ -38,6 +46,60 @@ void ThreadContext::set_stack_slot(int offset, Expression *exp,
  */
 void ThreadContext::clear_stack_slot(int offset) {
   return this->get_last_stack().clear_slot(offset);
+}
+
+void ThreadContext::clear_stack_words(int first_offset, int slot_count) {
+  ShadowTable &opr_stack = this->get_last_stack();
+  if (opr_stack.size() == 0 || slot_count == 0) return;
+  opr_stack.clear_slots(first_offset, slot_count);
+}
+
+void ThreadContext::clear_stack_value(int anchor_offset, int slot_count) {
+  assert(slot_count == 1 || slot_count == 2,
+         "a JVM value occupies one or two shadow slots");
+  this->get_last_stack().clear_slots(anchor_offset - slot_count + 1,
+                                     slot_count);
+}
+
+void ThreadContext::set_stack_value(int anchor_offset, int slot_count,
+                                    Expression *exp) {
+  clear_stack_value(anchor_offset, slot_count);
+  if (exp != NULL) set_stack_slot(anchor_offset, exp);
+}
+
+void ThreadContext::set_stack_value(int anchor_offset, int slot_count,
+                                    Expression *exp, sym_rid_t sym_rid,
+                                    int index) {
+  clear_stack_value(anchor_offset, slot_count);
+  if (exp != NULL) set_stack_slot(anchor_offset, exp, sym_rid, index);
+}
+
+void ThreadContext::clear_operand_stack() {
+  this->get_last_stack().clear_all();
+}
+
+void ThreadContext::copy_local_value_to_stack(int local_anchor_offset,
+                                              int stack_anchor_offset,
+                                              int slot_count) {
+  assert(slot_count == 1 || slot_count == 2,
+         "a JVM value occupies one or two shadow slots");
+  ShadowTable::Entry source;
+  source = this->get_local_entry(local_anchor_offset);
+  clear_stack_value(stack_anchor_offset, slot_count);
+  this->get_last_stack().set_slot(stack_anchor_offset, source);
+}
+
+void ThreadContext::move_stack_value_to_local(int stack_anchor_offset,
+                                              int local_anchor_offset,
+                                              int slot_count) {
+  assert(slot_count == 1 || slot_count == 2,
+         "a JVM value occupies one or two shadow slots");
+  ShadowTable::Entry source;
+  source = this->get_stack_entry(stack_anchor_offset);
+  this->get_last_local().clear_slots(local_anchor_offset - slot_count + 1,
+                                    slot_count);
+  this->get_last_local().set_slot(local_anchor_offset, source);
+  clear_stack_value(stack_anchor_offset, slot_count);
 }
 
 void ThreadContext::copy_stack_slot(int src_off, int dst_off, int size) {

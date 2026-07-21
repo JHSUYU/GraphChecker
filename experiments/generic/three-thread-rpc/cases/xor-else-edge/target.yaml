@@ -1,1 +1,1 @@
-seed_exception: edu.uva.liftlab.graphchecker.fixtures.ThreeThreadRpcScenarioWorkload$XorElseEdgeBugReachedException
+exception_target_id: xor-else-edge

@@ -19,6 +19,21 @@ void ShadowTable::copy_entries(ShadowTable &src_tbl, int src_begin,
   }
 }
 
+void ShadowTable::clear_slots(int first_offset, int slot_count) {
+  assert(first_offset >= 0, "first shadow slot must be non-negative");
+  assert(slot_count >= 0, "shadow slot count must be non-negative");
+  assert(first_offset + slot_count <= size(),
+         "shadow slot range must fit the table");
+  for (int offset = first_offset;
+       offset < first_offset + slot_count; ++offset) {
+    clear_slot(offset);
+  }
+}
+
+void ShadowTable::clear_all() {
+  clear_slots(0, size());
+}
+
 void ShadowTable::print() {
   int size = _tbl.size();
   tty->print_cr(" size: %d", size);

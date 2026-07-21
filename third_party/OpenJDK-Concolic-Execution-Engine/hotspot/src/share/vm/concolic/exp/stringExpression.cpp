@@ -6,7 +6,8 @@
 
 OpStrExpression::OpStrExpression(const std::string &method,
                                  exp_list_t &param_list)
-    : _name(method), _param_cache(NULL), _is_not(false) {
+    : _name(method), _param_cache(NULL), _is_not(false),
+      _is_boolean(false) {
   // all exp must be not null
 
   _param_list.swap(param_list);
@@ -21,7 +22,8 @@ OpStrExpression::OpStrExpression(const std::string &method,
 
 OpStrExpression::OpStrExpression(const std::string &method,
                                  exp_list_t &param_list, bool is_not)
-    : _name(method), _param_cache(NULL), _is_not(is_not) {
+    : _name(method), _param_cache(NULL), _is_not(is_not),
+      _is_boolean(true) {
   // all exp must be not null
 
   _param_list.swap(param_list);
@@ -35,7 +37,8 @@ OpStrExpression::OpStrExpression(const std::string &method,
 }
 
 OpStrExpression::OpStrExpression(const std::string &method, Expression *exp)
-    : _name(method), _param_cache(NULL), _is_not(false) {
+    : _name(method), _param_cache(NULL), _is_not(false),
+      _is_boolean(false) {
   if (exp) {
     exp->inc_ref();
   }

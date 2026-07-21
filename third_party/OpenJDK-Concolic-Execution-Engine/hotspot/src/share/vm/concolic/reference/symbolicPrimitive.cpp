@@ -388,8 +388,8 @@ Expression *primitive_finish_method_helper(MethodSymbolizerHandle &handle, Basic
         exp_list_t &params = handle.get_param_list();
         guarantee(!params.empty(), "primitive string conversion needs provenance");
         oop res_obj = handle.get_result<oop>(T_OBJECT);
-        guarantee(!res_obj->is_symbolic(),"res obj is symbolic!");
-        SymString *sym_res_str = (SymString *)ConcolicMngr::ctx->alloc_sym_inst(res_obj);
+        guarantee(res_obj != NULL,
+                  "primitive string conversion returned null");
         Expression *string_exp;
         if (is_supported_decimal_integer_to_string(handle)) {
           // These are the only two conversions whose current downstream model
@@ -408,17 +408,22 @@ Expression *primitive_finish_method_helper(MethodSymbolizerHandle &handle, Basic
           string_exp = new OpStrExpression(
               unsupported_primitive_string_operation(handle), params);
         }
-        if (sym_res_str != NULL) {
-          sym_res_str->set_ref_exp(string_exp);
-        } else {
-          // Some wrapper conversions (for example Boolean.toString) may return
-          // an interned String, which the engine deliberately cannot mutate.
-          // Retain the unsupported provenance in the path condition so the
-          // region fails closed instead of silently becoming concrete.
-          ConcolicMngr::record_path_condition(string_exp);
+        // The result expression always travels on the caller's operand edge.
+        // A fresh String may additionally retain it as object state, but a
+        // VM-global/interned String must remain alias-specific: attaching the
+        // expression to that shared oop would also symbolize unrelated
+        // literals in this context.  Merely computing a conversion is not a
+        // path decision, so unsupported provenance is reported only if a
+        // later symbolic operation actually consumes this returned edge.
+        if (!ConcolicMngr::ctx->requires_detached_object_shadow(res_obj)) {
+          SymString *sym_res_str = static_cast<SymString *>(
+              ConcolicMngr::ctx->get_or_alloc_sym_inst(res_obj));
+          if (sym_res_str != NULL) {
+            sym_res_str->set_ref_exp(string_exp);
+          }
         }
 
-        return NULL;
+        return string_exp;
     }
 
     switch (type) {

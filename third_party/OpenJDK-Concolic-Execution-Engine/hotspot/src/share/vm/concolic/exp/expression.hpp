@@ -33,6 +33,11 @@ public:
   virtual void print();
   void print_cr();
   virtual bool is_op_str_expression() { return false; }
+  // JVM booleans occupy int-shaped operand-stack slots, but their symbolic
+  // semantics must remain Boolean.  Consumers use this bit to choose a
+  // Boolean constant (rather than an integer 0/1) and to preserve Java
+  // boolean &, | and ^ when the bytecode is shared with integer operations.
+  virtual bool is_boolean_expression() { return false; }
 
   static void print_on_maybe_null(Expression *exp) {
     if (exp) {
@@ -86,6 +91,7 @@ public:
   OpSymExpression(Expression *r, SymbolicOp op);
   ~OpSymExpression();
   virtual std::string get_name();
+  virtual bool is_boolean_expression();
 
 public:
   void print();
@@ -113,6 +119,8 @@ public:
 
 public:
   void print();
+
+  virtual bool is_boolean_expression();
 
   void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };

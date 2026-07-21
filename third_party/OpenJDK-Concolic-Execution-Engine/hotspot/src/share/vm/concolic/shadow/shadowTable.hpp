@@ -48,6 +48,12 @@ public:
 
   void clear_slot(int offset) { _tbl[offset].reset(); }
 
+  /** Clear an exact JVM-word range in this table. */
+  void clear_slots(int first_offset, int slot_count);
+
+  /** Clear every entry owned by the current frame. */
+  void clear_all();
+
   Expression *get_slot(int offset);
 
   inline Entry &get_entry(int offset) { return _tbl[offset]; }

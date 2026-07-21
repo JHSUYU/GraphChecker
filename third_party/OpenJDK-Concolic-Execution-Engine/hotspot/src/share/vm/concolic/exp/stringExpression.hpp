@@ -20,6 +20,7 @@ class OpStrExpression : public Expression {
     exp_list_t _param_list;
     char *_param_cache;
     bool _is_not;
+    bool _is_boolean;
 
 public:
 
@@ -33,6 +34,7 @@ public:
 
     static OpStrExpression* to_string(Expression* exp);
     bool is_op_str_expression() { return true; }
+    bool is_boolean_expression() { return _is_boolean; }
     std::string get_name();
     std::string get_op_name() { return _name; }
 

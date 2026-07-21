@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -370,7 +372,8 @@ public final class ThreeThreadRpcScenarioWorkload {
             int b = bus.getRPCFromB();
             recordReceived(a, b);
             if (a + b > -2) {
-                throw new AdditiveOrBugReachedException(a, b);
+                throw new @CausynthExceptionTarget("additive-or")
+                        AdditiveOrBugReachedException(a, b);
             }
         }
     }
@@ -419,7 +422,8 @@ public final class ThreeThreadRpcScenarioWorkload {
             if (a + b != 1) {
                 return;
             }
-            throw new XorElseEdgeBugReachedException(a, b);
+            throw new @CausynthExceptionTarget("xor-else-edge")
+                    XorElseEdgeBugReachedException(a, b);
         }
     }
 
@@ -465,7 +469,8 @@ public final class ThreeThreadRpcScenarioWorkload {
             int b = bus.getRPCFromB();
             recordReceived(a, b);
             if (a > b) {
-                throw new GreaterOneHotBugReachedException(a, b);
+                throw new @CausynthExceptionTarget("greater-one-hot")
+                        GreaterOneHotBugReachedException(a, b);
             }
         }
     }
@@ -512,7 +517,8 @@ public final class ThreeThreadRpcScenarioWorkload {
             int b = bus.getRPCFromB();
             recordReceived(a, b);
             if (a < b) {
-                throw new LessOneHotBugReachedException(a, b);
+                throw new @CausynthExceptionTarget("less-one-hot")
+                        LessOneHotBugReachedException(a, b);
             }
         }
     }
@@ -559,7 +565,8 @@ public final class ThreeThreadRpcScenarioWorkload {
             int b = bus.getRPCFromB();
             recordReceived(a, b);
             if (a + b > 7) {
-                throw new DependentMergeBugReachedException(a, b);
+                throw new @CausynthExceptionTarget("dependent-merge")
+                        DependentMergeBugReachedException(a, b);
             }
         }
     }

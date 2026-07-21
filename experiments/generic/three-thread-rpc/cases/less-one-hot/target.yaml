@@ -1,1 +1,1 @@
-seed_exception: edu.uva.liftlab.graphchecker.fixtures.ThreeThreadRpcScenarioWorkload$LessOneHotBugReachedException
+exception_target_id: less-one-hot

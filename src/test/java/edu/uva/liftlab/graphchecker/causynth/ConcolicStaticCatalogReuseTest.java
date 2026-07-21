@@ -298,7 +298,7 @@ public class ConcolicStaticCatalogReuseTest {
             throws Exception {
         Fixture fixture = fixture();
         Files.write(fixture.targetSpec,
-                "seed_exception: example.OtherInvalid\n".getBytes(
+                "exception_target_id: other-invalid\n".getBytes(
                         StandardCharsets.UTF_8),
                 StandardOpenOption.TRUNCATE_EXISTING);
 
@@ -482,7 +482,7 @@ public class ConcolicStaticCatalogReuseTest {
             Files.write(regionEdges,
                     "{\"edgeId\":\"RE.0\"}\n".getBytes(StandardCharsets.UTF_8));
             Files.write(targetSpec,
-                    "seed_exception: example.Invalid\n".getBytes(
+                    "exception_target_id: invalid\n".getBytes(
                             StandardCharsets.UTF_8));
             Files.write(producerJar, new byte[]{7, 8, 9});
             writeProcessProvenance();

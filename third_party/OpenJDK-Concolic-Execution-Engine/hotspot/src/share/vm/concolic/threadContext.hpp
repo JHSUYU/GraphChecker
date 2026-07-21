@@ -28,6 +28,11 @@ class ThreadContext {
   // current oop.  Raw arrayOop keys become stale at the first safepoint and
   // cannot safely back concrete-array shadows.
   typedef std::map<jobject, ArrayInternal *> ArrayStore;
+  // Some VM-managed objects, most notably interned Strings, must never have
+  // their shared oop header marked symbolic.  Keep their per-region symbolic
+  // identity behind a GC-stable handle instead.  SymStore remains the sole
+  // owner of the SymInstance; this map is only an identity lookup index.
+  typedef std::map<jobject, SymInstance *> DetachedObjectStore;
 
   struct BranchEvent {
     jlong event_id;
@@ -53,12 +58,20 @@ private:
   MethodSymbolizer _method_symbolizer;
   JdbcMngr _jdbc_mngr;
   ArrayStore _array_store;
+  DetachedObjectStore _detached_object_store;
 
   sym_rid_t _sym_rid_counter;
   sym_tmp_id_t _sym_tmp_id_counter;
 
   bool _path_condition_enabled;
   int _path_condition_pause_depth;
+  // Once the Java stack that existed at region start has completely
+  // unwound, there is no sound caller frame onto which symbolic values can
+  // be rebased.  Keep the context allocated only long enough for a caller to
+  // query/finish it (or for JavaThread::exit to release it), but make every
+  // symbolic operation fail closed.
+  bool _aborted;
+  std::string _abort_reason;
   std::string _region_id;
   std::string _activation_id;
   jlong _context_id;
@@ -67,9 +80,9 @@ private:
   jlong _branch_sequence;
   bool _pending_branch_active;
   jlong _pending_branch_event_id;
+  const ZeroFrame *_pending_branch_owner_frame;
   std::string _pending_branch_site_id;
   int _pending_branch_occurrence;
-  int _pending_compare_condition_index;
   std::vector<BranchEvent> _branch_events;
 //  std::set<oop> _allocated_objs;
 public:
@@ -108,6 +121,10 @@ public:
 
   inline jlong get_context_id() const { return _context_id; }
 
+  inline bool is_aborted() const { return _aborted; }
+  inline const std::string &get_abort_reason() const { return _abort_reason; }
+  void abort_symbolic_execution(const char *reason);
+
   // The Soot hook reserves an activation-local event immediately before the
   // original conditional bytecode.  The Zero interpreter finalizes that
   // exact event when the bytecode executes, so Java never has to guess from
@@ -115,7 +132,8 @@ public:
   jlong mark_branch(const char *site_id, int occurrence);
   void record_branch_condition(Expression *expression, bool outcome,
                                int opcode);
-  void record_compare_witness(Expression *expression);
+  void record_branch_conditions(const exp_list_t &expressions, bool outcome,
+                                int opcode);
   std::string get_branch_events() const;
 
   void set_pc_enabled(bool pathConditionEnabled);
@@ -128,9 +146,9 @@ public:
 public:
   void __attribute__((optimize("O0"))) printSymExp(oop obj) {
     obj->print();
-    tty->print_cr("is symbolic: %d", (int)obj->is_symbolic());
-    if (obj->is_symbolic()) {
-      SymInstance* sym_inst = this->get_sym_inst(obj);
+    SymInstance *sym_inst = this->find_sym_inst(obj);
+    tty->print_cr("is symbolic: %d", sym_inst == NULL ? 0 : 1);
+    if (sym_inst != NULL) {
       sym_inst->print();
     }
   }
@@ -165,11 +183,18 @@ public:
   SymInstance *get_or_alloc_sym_inst(oop obj);
   SymInstance *alloc_sym_inst(oop obj);
   inline SymInstance *get_sym_inst(oop obj) {
-    return get_sym_inst(obj->get_sym_rid());
+    if (obj != NULL && obj->is_array() && obj->is_symbolic()) {
+      return get_sym_inst(obj->get_sym_rid());
+    }
+    SymInstance *instance = find_sym_inst(obj);
+    guarantee(instance != NULL,
+              "Unexpected null symbolic object lookup");
+    return instance;
   }
 
   SymInstance *get_sym_inst(sym_rid_t sym_rid);
   SymInstance *find_sym_inst(oop obj) const;
+  bool requires_detached_object_shadow(oop obj) const;
 
   SymArr *get_or_alloc_sym_array(arrayOop array, Expression *length_exp = NULL);
   SymArr *alloc_sym_array(arrayOop array, Expression *length_exp = NULL);
@@ -183,7 +208,8 @@ public:
   void detach_tmp_exp(sym_tmp_id_t sym_tmp_id);
 
   inline void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
-    if (!_path_condition_enabled || _path_condition_pause_depth > 0) {
+    if (_aborted || !_path_condition_enabled
+        || _path_condition_pause_depth > 0) {
       return;
     }
 
@@ -209,11 +235,18 @@ public:
    */
   void set_stack_slot(int offset, Expression *sym_exp);
   void set_stack_slot_if_possible(int offset, Expression *sym_exp);
+  void set_stack_value_if_possible(int anchor_offset, int slot_count,
+                                   Expression *sym_exp);
   void set_stack_slot(int offset, Expression *sym_exp, sym_rid_t sym_rid,
                       int index);
 
   inline Expression *get_stack_slot(int offset) {
     return this->get_stack_entry(offset).exp;
+  }
+
+  inline Expression *find_stack_slot(int offset) {
+    return offset < 0 || offset >= this->get_last_stack().size()
+        ? NULL : this->get_stack_entry(offset).exp;
   }
 
   inline Expression *get_and_detach_stack_slot(int offset) {
@@ -232,12 +265,27 @@ public:
    * TODO: document when to clear the stack
    */
   void clear_stack_slot(int offset);
+  void clear_stack_words(int first_offset, int slot_count);
+  // A category-1 value owns its anchor only.  A category-2 value owns the
+  // anchor plus the immediately preceding NULL companion word.  These APIs
+  // make that layout explicit for every value-producing/consuming bytecode.
+  void clear_stack_value(int anchor_offset, int slot_count);
+  void set_stack_value(int anchor_offset, int slot_count, Expression *exp);
+  void set_stack_value(int anchor_offset, int slot_count, Expression *exp,
+                       sym_rid_t sym_rid, int index);
+  void clear_operand_stack();
+  void copy_local_value_to_stack(int local_anchor_offset,
+                                 int stack_anchor_offset, int slot_count);
+  void move_stack_value_to_local(int stack_anchor_offset,
+                                 int local_anchor_offset, int slot_count);
   void copy_stack_slot(int src_off, int dst_off, int size);
   void swap_two_stack_slot(int off1, int off2);
   void copy_entry_from_local_to_stack(int local_offset, int stack_offset);
   void copy_entry_from_stack_to_local(int stack_offset, int local_offset);
   void symbolize_recursive(oop obj);
   void symbolize_recursive(oop obj, std::string prefix);
+  void cancel_pending_branch();
+  void cancel_pending_branch_for_frame(const ZeroFrame *owner_frame);
 
 private:
   inline ShadowTable &get_last_stack() {

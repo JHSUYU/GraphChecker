@@ -125,6 +125,11 @@ public:
 
   Expression *get_primitive_exp(int offset, BasicType type);
 
+  // Returns an alias-specific operand shadow when one reached this call, or
+  // the ThreadContext-local object shadow otherwise.  It never allocates a
+  // symbolic object merely by observing an argument.
+  Expression *get_reference_exp(int offset, oop obj);
+
   void general_prepare_param(int max_param_num = 100);
 
   int general_prepare_param_helper(BasicType type, int locals_offset, bool is_this);

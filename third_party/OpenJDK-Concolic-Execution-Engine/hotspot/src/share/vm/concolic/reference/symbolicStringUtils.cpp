@@ -105,7 +105,8 @@ int SymStrUtils::prepare_param_helper(MethodSymbolizerHandle &handle,
   } else if (type == T_OBJECT) {
     oop obj = handle.get_param<oop>(locals_offset);
     guarantee(obj != NULL, "should be");
-    exp = SymString::get_exp_of(obj);
+    exp = handle.get_reference_exp(locals_offset, obj);
+    if (exp == NULL) exp = SymString::get_exp_of(obj);
   } else if (type == T_ARRAY) {
     tty->print_cr("record string method having a array param: ");
     handle.get_callee_method()->print_name(tty);
@@ -144,14 +145,25 @@ Expression *SymStrUtils::finish_method_helper(MethodSymbolizerHandle &handle) {
         if (obj != NULL) {
           guarantee(obj->klass()->name()->equals(SymString::TYPE_NAME),
                     "should be");
-          ConcolicMngr::ctx->get_or_alloc_sym_inst(obj)->set_ref_exp(
-              new OpStrExpression(callee_name, handle.get_param_list()));
+          SymInstance *sym_inst =
+              ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
+          if (sym_inst != NULL) {
+            sym_inst->set_ref_exp(
+                new OpStrExpression(callee_name,
+                                    handle.get_param_list()));
+          }
         } else {
         exp = SymbolExpression::get(Sym_NULL);
         }
         break;
       case T_ARRAY:
         ShouldNotCallThis();
+        break;
+      case T_BOOLEAN:
+        // Use the Boolean-result constructor so the type-erased JVM int slot
+        // is compared with Boolean constants at its eventual branch.
+        exp = new OpStrExpression(callee_name, handle.get_param_list(),
+                                  false);
         break;
       default:
         exp = new OpStrExpression(callee_name, handle.get_param_list());

@@ -2,11 +2,15 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import org.junit.Assume;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -525,6 +529,840 @@ public class ConcolicSmtComposerTest {
                     "uf__java_lang_Integer_parseInt"));
             assertFalse(result.smtLib.contains(
                     "uf__java_lang_String_splitElement"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void lowersCapturedStringContainsPredicatesExactly()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonObject positive = opString("contains", receiver.deepCopy(),
+                    conString("needle_with_underscore"));
+            JsonObject negative = opString("contains", receiver.deepCopy(),
+                    conString("absent"));
+            negative.addProperty("_is_not", true);
+            JsonArray constraints = new JsonArray();
+            constraints.add(positive);
+            constraints.add(negative);
+            for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertFalse(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "OpStrExpression.contains"));
+            assertTrue(fatalPath, fatalPath.contains("(str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "\"needle_with_underscore\""));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(not (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains("\"absent\""));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void lowersComposedStringPredicatesAsBooleanLogic()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray constraints = new JsonArray();
+            constraints.add(binaryCondition(
+                    opString("contains", receiver.deepCopy(),
+                            conString("ready")),
+                    "&&",
+                    opString("contains", receiver.deepCopy(),
+                            conString("stable"))));
+            constraints.add(binaryCondition(
+                    opString("contains", receiver.deepCopy(),
+                            conString("primary")),
+                    "||",
+                    opString("contains", receiver.deepCopy(),
+                            conString("fallback"))));
+            constraints.add(binaryCondition(
+                    opString("contains", receiver.deepCopy(),
+                            conString("enabled")),
+                    "==", constant("Z", "Y_Z_1")));
+            for (JsonElement constraint : fatal.getAsJsonArray(
+                    "constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(and (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(or (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(= (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(" true)"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void lowersCoreStringOperationsWithBothPredicatePolarities()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray constraints = new JsonArray();
+            constraints.add(opString("equals", receiver.deepCopy(),
+                    conString("prefix_tail")));
+            constraints.add(negatedOpString("equals", receiver.deepCopy(),
+                    conString("other")));
+            constraints.add(opString("startsWith", receiver.deepCopy(),
+                    conString("prefix")));
+            constraints.add(negatedOpString("startsWith",
+                    receiver.deepCopy(), conString("tail")));
+            constraints.add(opString("endsWith", receiver.deepCopy(),
+                    conString("tail")));
+            constraints.add(negatedOpString("endsWith",
+                    receiver.deepCopy(), conString("prefix")));
+            constraints.add(opString("isEmpty", conString("")));
+            constraints.add(negatedOpString("isEmpty",
+                    receiver.deepCopy()));
+            constraints.add(binaryCondition(opString("length",
+                    receiver.deepCopy()), "==", constant("I", "Y_I_11")));
+            constraints.add(opString("equals",
+                    opString("concat", conString("prefix"),
+                            conString("_tail")),
+                    conString("prefix_tail")));
+            for (JsonElement constraint : fatal.getAsJsonArray(
+                    "constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(fatalPath, fatalPath.contains("(= sym__"));
+            assertTrue(fatalPath,
+                    fatalPath.contains("(not (= sym__"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(str.prefixof \"prefix\" sym__"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(not (str.prefixof \"tail\" sym__"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(str.suffixof \"tail\" sym__"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(not (str.suffixof \"prefix\" sym__"));
+            assertTrue(fatalPath,
+                    fatalPath.contains("(= (str.len \"\") 0)"));
+            assertTrue(fatalPath,
+                    fatalPath.contains("(not (= (str.len sym__"));
+            assertTrue(fatalPath,
+                    fatalPath.contains("(= (str.len sym__"));
+            assertTrue(fatalPath, fatalPath.contains(") 11)"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(str.++ \"prefix\" \"_tail\")"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void modelsNullableStringPortsAndNullGuardsExactly()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray constraints = new JsonArray();
+            constraints.add(binaryCondition(receiver.deepCopy(), "!=",
+                    symbol("", "N")));
+            constraints.add(negatedOpString("equals", receiver.deepCopy(),
+                    symbol("", "N")));
+            constraints.add(opString("contains", receiver.deepCopy(),
+                    conString("ready")));
+            for (JsonElement constraint : fatal.getAsJsonArray(
+                    "constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String companion =
+                    "sym__port__REGION_F_in_2__string_is_null";
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(result.manifest.get(
+                    "nullableJavaStringModeled").getAsBoolean());
+            assertEquals("JAVA_STRING_CONTENT_PLUS_EXPLICIT_"
+                            + "NULLNESS_BOOL_V1",
+                    result.manifest.get(
+                            "nullableStringEncodingAuthority").getAsString());
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(declare-const " + companion + " Bool)"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(ite " + companion + " (VRef nullRef) (VString "
+                            + "sym__port__REGION_F_in_2__string))"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(not " + companion + ")"));
+            assertTrue(fatalPath, fatalPath.contains("(str.contains "
+                    + "sym__port__REGION_F_in_2__string \"ready\")"));
+            assertZ3Status(result.smtLib, "sat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void nullableStringShortCircuitAndDereferenceDefinednessMatchJava()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject original = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonElement isNull = binaryCondition(receiver.deepCopy(), "==",
+                    symbol("", "N"));
+            JsonArray shortCircuitConstraints = new JsonArray();
+            shortCircuitConstraints.add(binaryCondition(isNull, "||",
+                    opString("contains", receiver.deepCopy(),
+                            conString("ready"))));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) {
+                shortCircuitConstraints.add(constraint.deepCopy());
+            }
+            JsonObject shortCircuit = original.deepCopy();
+            shortCircuit.add("constraints", shortCircuitConstraints);
+            Files.write(fixture.fatal, (shortCircuit + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result shortCircuitResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String companion =
+                    "sym__port__REGION_F_in_2__string_is_null";
+            String forceNull = shortCircuitResult.smtLib.replace(
+                    "(check-sat)", "(assert " + companion
+                            + ")\n(check-sat)");
+            assertEquals(shortCircuitResult.manifest.toString(), 0,
+                    shortCircuitResult.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertZ3Status(forceNull, "sat");
+
+            JsonArray invalidDereferenceConstraints = new JsonArray();
+            invalidDereferenceConstraints.add(binaryCondition(
+                    receiver.deepCopy(), "==", symbol("", "N")));
+            invalidDereferenceConstraints.add(opString("contains",
+                    receiver.deepCopy(), conString("ready")));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) {
+                invalidDereferenceConstraints.add(constraint.deepCopy());
+            }
+            JsonObject invalidDereference = original.deepCopy();
+            invalidDereference.add("constraints",
+                    invalidDereferenceConstraints);
+            Files.write(fixture.fatal, (invalidDereference + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result invalidDereferenceResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertZ3Status(invalidDereferenceResult.smtLib, "unsat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void javaStringReferenceEqualityRequiresExactProvenance()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject original = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray sameConstraints = new JsonArray();
+            sameConstraints.add(binaryCondition(receiver.deepCopy(), "==",
+                    receiver.deepCopy()));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) sameConstraints.add(constraint.deepCopy());
+            JsonObject same = original.deepCopy();
+            same.add("constraints", sameConstraints);
+            Files.write(fixture.fatal, (same + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result sameResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertEquals(sameResult.manifest.toString(), 0,
+                    sameResult.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+
+            JsonArray distinctConstraints = new JsonArray();
+            distinctConstraints.add(binaryCondition(receiver.deepCopy(),
+                    "==", symbol("java/lang/String",
+                            "M_L'String'_distinct_reference")));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) {
+                distinctConstraints.add(constraint.deepCopy());
+            }
+            JsonObject distinct = original.deepCopy();
+            distinct.add("constraints", distinctConstraints);
+            Files.write(fixture.fatal, (distinct + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result distinctResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertFalse(distinctResult.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertTrue(distinctResult.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString(),
+                    distinctResult.manifest.getAsJsonArray(
+                            "unsupportedExpressions").toString().contains(
+                            "MODEL_SEMANTICS_MISSING:"
+                                    + "JAVA_STRING_REFERENCE_IDENTITY:=="));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void inexactStringVariantsAndNonStringOperandsFailClosed()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray constraints = new JsonArray();
+            constraints.add(opString("startsWith", receiver.deepCopy(),
+                    conString("prefix"), constant("I", "Y_I_1")));
+            constraints.add(opString("equalsIgnoreCase",
+                    receiver.deepCopy(), conString("PREFIX_TAIL")));
+            constraints.add(opString("matches", receiver.deepCopy(),
+                    conString("prefix.*")));
+            constraints.add(opString("equals", symbol("I",
+                    "M_I_non_string_parameter"), conString("1")));
+            for (JsonElement constraint : fatal.getAsJsonArray(
+                    "constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String unsupported = result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString();
+
+            assertFalse(result.manifest.get("structurallyComplete")
+                    .getAsBoolean());
+            assertTrue(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:"
+                            + "OpStrExpression.startsWith:ARITY"));
+            assertTrue(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:"
+                            + "OpStrExpression.equalsIgnoreCase:"
+                            + "UNSUPPORTED_OPERATION"));
+            assertTrue(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:OpStrExpression.matches:"
+                            + "UNSUPPORTED_OPERATION"));
+            assertTrue(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:OpStrExpression.equals:"
+                            + "NON_STRING_PARAMETER"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void normalizesVmExponentAndLongMinLiteralsWithoutRounding()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonArray constraints = new JsonArray();
+            constraints.add(binaryCondition(
+                    constant("J", "Y_J_-9223372036854775808"), "==",
+                    constant("J", "Y_J_-9223372036854775808")));
+            constraints.add(binaryCondition(
+                    constant("F", "Y_F_1.250000000e-03"), "<",
+                    constant("D", "Y_D_1.25000000000000000e+02")));
+            for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(fatalPath,
+                    fatalPath.contains("(- 9223372036854775808)"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "((_ to_fp 8 24) #x3aa3d70a)"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "((_ to_fp 11 53) #x405f400000000000)"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "((_ to_fp 11 53) RNE ((_ to_fp 8 24)"));
+            assertFalse(fatalPath, fatalPath.contains("e-03"));
+            assertFalse(fatalPath, fatalPath.contains("e+02"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void nonFiniteVmFloatingLiteralsRetainExactIeeeSemantics()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonArray constraints = new JsonArray();
+            constraints.add(binaryCondition(constant("D", "Y_D_nan"),
+                    "==", constant("D", "Y_D_0.0")));
+            constraints.add(binaryCondition(constant("F", "Y_F_inf"),
+                    "==", constant("F", "Y_F_0.0")));
+            constraints.add(binaryCondition(constant("D", "Y_D_-0.0"),
+                    "==", constant("D", "Y_D_0.0")));
+            for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(result.manifest.get("ieee754FloatingPointModeled")
+                    .getAsBoolean());
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "#x7ff8000000000000"));
+            assertTrue(result.smtLib, result.smtLib.contains("#x7f800000"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "#x8000000000000000"));
+            assertTrue(result.smtLib, result.smtLib.contains("(fp.eq "));
+            assertZ3Status(result.smtLib, "unsat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void jvmCompareResultsPreserveNanVariantAndLongTrichotomy()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            prependFatalConstraints(fixture,
+                    binaryCondition(binaryCondition(
+                            constant("D", "Y_D_nan"), "--l",
+                            constant("D", "Y_D_0.0")), "==",
+                            constant("I", "Y_I_-1")),
+                    binaryCondition(binaryCondition(
+                            constant("D", "Y_D_nan"), "--g",
+                            constant("D", "Y_D_0.0")), "==",
+                            constant("I", "Y_I_1")),
+                    binaryCondition(binaryCondition(
+                            constant("J", "Y_J_1"), "--",
+                            constant("J", "Y_J_2")), "==",
+                            constant("I", "Y_I_-1")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(ite (or (fp.isNaN "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    ") (- 1) (ite (fp.lt "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    ") 1 (ite (fp.lt "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(ite (< 1 2) (- 1) (ite (> 1 2) 1 0))"));
+            assertZ3Status(result.smtLib, "sat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void canonicalPortFloatDoubleConflictsFailClosed()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.F", "symbolicInputs",
+                    port("REGION.F.in.8",
+                            "<example.Signal: float value>"));
+            prependFatalConstraints(fixture, binaryCondition(
+                    symbol("D", "M_D_field_REGION.F.in.8_example/Signal"),
+                    "==", constant("D", "Y_D_0.0")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String unsupported = result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString();
+
+            assertFalse(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertTrue(unsupported, unsupported.contains(
+                    "CanonicalPortFloatingSortConflict:REGION.F.in.8:"));
+            assertTrue(unsupported, unsupported.contains(
+                    "CanonicalPortFloatingTypeConflict:REGION.F.in.8:"));
+            assertZ3Parses(result.smtLib);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void exactWideningRealDivisionAndUnaryNegationRemainComplete()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            prependFatalConstraints(fixture,
+                    binaryCondition(cast(constant("B", "Y_B_7"), "I"),
+                            "==", constant("I", "Y_I_7")),
+                    binaryCondition(cast(constant("I", "Y_I_7"), "L"),
+                            "==", constant("J", "Y_J_7")),
+                    binaryCondition(binaryCondition(
+                            constant("D", "Y_D_-7.5"), "@",
+                            constant("D", "Y_D_2.5")), "==",
+                            constant("D", "Y_D_-3.0")),
+                    binaryCondition(unaryNegation(
+                            constant("I", "Y_I_4")), "==",
+                            constant("I", "Y_I_-4")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(fatalPath, fatalPath.contains("(fp.div RNE "));
+            assertTrue(fatalPath, fatalPath.contains("(- 4)"));
+            assertFalse(fatalPath, fatalPath.contains("(div "));
+            assertFalse(fatalPath, fatalPath.contains("(mod "));
+            assertZ3Parses(result.smtLib);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void primitiveCastsPreserveJavaBoundarySemanticsInComposition()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            prependFatalConstraints(fixture,
+                    binaryCondition(explicitCast(
+                            constant("J", "Y_J_4294967297"), "J", "I"),
+                            "==", constant("I", "Y_I_1")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_257"), "I", "B"),
+                            "==", constant("B", "Y_B_1")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_65535"), "I", "S"),
+                            "==", constant("S", "Y_S_-1")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_-1"), "I", "C"),
+                            "==", constant("C", "Y_C_65535")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_-1"), "I", "J"),
+                            "==", constant("J", "Y_J_-1")),
+                    binaryCondition(explicitCast(
+                            constant("J", "Y_J_4294967297"), "J", "D"),
+                            "==", constant("D", "Y_D_4294967297.0")),
+                    binaryCondition(explicitCast(
+                            constant("F", "Y_F_1.5"), "F", "D"),
+                            "==", constant("D", "Y_D_1.5")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_1.5"), "D", "F"),
+                            "==", constant("F", "Y_F_1.5")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_NaN"), "D", "I"),
+                            "==", constant("I", "Y_I_0")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_Infinity"), "D", "I"),
+                            "==", constant("I", "Y_I_2147483647")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_-Infinity"), "D", "I"),
+                            "==", constant("I", "Y_I_-2147483648")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_-2.9"), "D", "I"),
+                            "==", constant("I", "Y_I_-2")),
+                    binaryCondition(explicitCast(
+                            constant("F", "Y_F_Infinity"), "F", "J"),
+                            "==", constant("J",
+                                    "Y_J_9223372036854775807")),
+                    // Old captures carry only _java_type; retain that path.
+                    binaryCondition(cast(constant("I", "Y_I_257"), "B"),
+                            "==", constant("B", "Y_B_1")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(java_int_wrap 4294967297)"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(fp.isNaN "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "((_ fp.to_sbv 32) RTZ "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "((_ fp.to_sbv 64) RTZ "));
+            assertZ3Status(result.smtLib, "sat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void composedIntAndLongArithmeticWrapsAtJavaWidths()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject intInput = symbol("I",
+                    "M_I_field_REGION.F.in.1_example/Request");
+            JsonObject longInput = symbol("J",
+                    "M_J_field_REGION.F.in.4_example/Clock");
+            prependFatalConstraints(fixture,
+                    binaryCondition(binaryCondition(
+                            constant("I", "Y_I_10"), "+",
+                            intInput.deepCopy()), "<",
+                            constant("I", "Y_I_0")),
+                    binaryCondition(longInput.deepCopy(), "==",
+                            constant("J", "Y_J_9223372036854775807")),
+                    binaryCondition(binaryCondition(longInput.deepCopy(),
+                            "+", constant("J", "Y_J_1")), "==",
+                            constant("J", "Y_J_-9223372036854775808")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(java_int_wrap (+ 10 sym__port__REGION_F_in_1__int))"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(java_long_wrap (+ sym__port__REGION_F_in_4__int 1))"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    ":named java_integral_domain_"));
+            assertZ3Status(result.smtLib, "sat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void unknownMethodsCastsAndNonNumericOperatorsFailClosed()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            prependFatalConstraints(fixture,
+                    method("example/Codec mystery",
+                            constant("I", "Y_I_0"),
+                            constant("I", "Y_I_1")),
+                    method("example/Codec mystery", conString("result"),
+                            conString("argument")),
+                    binaryCondition(cast(constant("I", "Y_I_257"), "B"),
+                            "==", constant("I", "Y_I_1")),
+                    binaryCondition(cast(constant("I", "Y_I_1"), "D"),
+                            "==", constant("D", "Y_D_1.0")),
+                    binaryCondition(cast(conString("payload"),
+                            "Ljava/lang/Object;"), "==",
+                            symbol("Ljava/lang/Object;", "N")),
+                    binaryCondition(conString("a"), "<", conString("b")),
+                    binaryCondition(binaryCondition(conString("a"), "+",
+                            conString("b")), "==", conString("ab")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String unsupported = result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString();
+
+            assertFalse(result.manifest.get("structurallyComplete")
+                    .getAsBoolean());
+            assertTrue(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:MethodExpression:"
+                            + "example/Codec mystery"));
+            assertFalse(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:TypeCastExpression:I->B"));
+            assertFalse(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:TypeCastExpression:I->D"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "((_ to_fp 11 53) RNE (to_real 1))"));
+            assertTrue(unsupported, unsupported.contains(
+                    "MODEL_SEMANTICS_MISSING:TypeCastExpression:"
+                            + "java/lang/String->Ljava/lang/Object;"));
+            assertTrue(unsupported, unsupported.contains(
+                    "NonNumericComparison:<:STRING"));
+            assertTrue(unsupported, unsupported.contains(
+                    "NonNumericArithmetic:+:STRING"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(declare-fun uf__example_Codec_mystery"));
+            assertZ3Parses(result.smtLib);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void javaIntegralDivisionAndRemainderNeverUseSmtEuclideanOps()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            prependFatalConstraints(fixture,
+                    binaryCondition(binaryCondition(
+                            constant("I", "Y_I_-7"), "@",
+                            constant("I", "Y_I_2")), "==",
+                            constant("I", "Y_I_-3")),
+                    binaryCondition(binaryCondition(
+                            constant("I", "Y_I_-7"), "%",
+                            constant("I", "Y_I_2")), "==",
+                            constant("I", "Y_I_-1")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String unsupported = result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString();
+
+            assertFalse(result.manifest.get("structurallyComplete")
+                    .getAsBoolean());
+            assertTrue(unsupported, unsupported.contains(
+                    "JavaIntegralDivisionUnmodeled"));
+            assertTrue(unsupported, unsupported.contains(
+                    "JavaIntegralRemainderUnmodeled"));
+            assertFalse(result.smtLib, result.smtLib.contains("(div "));
+            assertFalse(result.smtLib, result.smtLib.contains(
+                    "(mod (- 7) 2)"));
+            assertZ3Parses(result.smtLib);
         } finally {
             folder.delete();
         }
@@ -1622,6 +2460,16 @@ public class ConcolicSmtComposerTest {
             assertEquals("SCOPED_DYNAMIC_FIELD",
                     removeMapping.get("termKind").getAsString());
             assertEquals("Int", removeMapping.get("solverSort").getAsString());
+            assertEquals("REGION.P.in.3", removeMapping.get(
+                    "canonicalPort").getAsString());
+            assertEquals("sym__port__REGION_P_in_3__int",
+                    removeMapping.get("canonicalSolverTerm").getAsString());
+            assertEquals("CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                            + "GUARDED_EQUALITY_V1",
+                    removeMapping.get("canonicalBridgeAuthority")
+                            .getAsString());
+            assertEquals(1, linesContaining(result.smtLib, removeMapping.get(
+                    "canonicalBridgeAssertion").getAsString()).size());
             assertFalse(removeTerm.equals(noRemoveTerm));
             assertTrue(removeProjection.get(
                     "selectorGuardFormula").getAsString().contains(removeTerm));
@@ -1645,6 +2493,54 @@ public class ConcolicSmtComposerTest {
                     + noRemoveProjection.get(
                     "selectorSolverSymbol").getAsString()
                     + " (<= " + noRemoveTerm + " 0))"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void twoDynamicMapEntriesWithOneBaseCannotBecomeOneRoot()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            String first = "REGION.P.in.3.field.firstentry.occ.1";
+            String second = "REGION.P.in.3.field.secondentry.occ.2";
+            JsonObject summary = producerSummary(singlePutEffect(), true);
+            prepareDynamicOutputCase(summary, ">", "OBS.ENTRY.FIRST",
+                    "entry_value_first", first);
+            summary.getAsJsonArray("dynamicFieldBindings").add(
+                    runtimeDynamicFieldBinding("OBS.ENTRY.SECOND", second,
+                            "ACT.P"));
+            summary.getAsJsonArray("heapObservations").add(
+                    dynamicHeapObservation("OBS.ENTRY.SECOND",
+                            "entry_value_second", second));
+            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                    java.util.Collections.singletonList(summary),
+                    closedPathManifest());
+            writeSummary(fixture, merged.summaries.get(0));
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertFalse(result.manifest.get(
+                    "caseProjectionCatalogComplete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "AMBIGUOUS_DYNAMIC_BASE_ROOT:REGION.P.in.3:2"));
+            JsonObject projection = result.manifest.getAsJsonArray(
+                    "caseProjectionCatalog").get(0).getAsJsonObject();
+            assertTrue(projection.getAsJsonArray("validationGaps")
+                    .toString().contains("AMBIGUOUS_DYNAMIC_BASE_ROOT"));
+            assertFalse(rawSymbolMapping(projection,
+                    "M_J_field_" + first + "_expiry").has(
+                    "canonicalPort"));
+            assertFalse(rawSymbolMapping(projection,
+                    "M_J_field_" + second + "_expiry").has(
+                    "canonicalPort"));
         } finally {
             folder.delete();
         }
@@ -1698,6 +2594,13 @@ public class ConcolicSmtComposerTest {
             assertEquals(projected.get("solverTerm").getAsString(),
                     rawSymbolMapping(projection, raw).get(
                             "solverTerm").getAsString());
+            JsonObject mapping = rawSymbolMapping(projection, raw);
+            assertEquals("REGION.P.in.3", mapping.get(
+                    "canonicalPort").getAsString());
+            assertEquals("sym__port__REGION_P_in_3__int", mapping.get(
+                    "canonicalSolverTerm").getAsString());
+            assertEquals(1, linesContaining(result.smtLib, mapping.get(
+                    "canonicalBridgeAssertion").getAsString()).size());
         } finally {
             folder.delete();
         }
@@ -2025,6 +2928,48 @@ public class ConcolicSmtComposerTest {
                 "selectorAuthority", "DISCOVER_UNIQUE_IDENTITY_INDEX");
         assertFalse(ConcolicSmtComposer.completeContainerSelectorForTests(
                 discovery));
+
+        JsonObject deep = valid.deepCopy();
+        JsonArray deepPath = new JsonArray();
+        deepPath.add("state");
+        deepPath.add("guard");
+        deepPath.add("enabled");
+        deep.add("fieldPath", deepPath);
+        deep.addProperty("leafOwnerObjectToken", 303L);
+        deep.addProperty("actualHookSiteId",
+                "CONTAINER_SNAPSHOT:BIND.ARRAY.1");
+        deep.addProperty("actualHookOccurrence", 1);
+        deep.addProperty("effectiveMaterializationSiteId",
+                "SITE.CONTAINER");
+        deep.addProperty("effectiveMaterializationOccurrence", 1);
+        deep.addProperty("materializationSiteBridgeAuthority",
+                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
+                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1");
+        deep.addProperty("materializationSiteBridgeBindingId",
+                "BIND.ARRAY.1");
+        deep.addProperty("materializationSiteBridgeElementObjectToken",
+                302L);
+        deep.addProperty("materializationSiteBridgeObjectTokenScope",
+                "ACT.P");
+        assertTrue(ConcolicSmtComposer.completeContainerSelectorForTests(
+                deep));
+        JsonObject metadata = ConcolicSmtComposer
+                .projectionDynamicMetadataForTests(deep);
+        assertEquals(deep, metadata.getAsJsonObject("runtimeBinding"));
+        for (String member : new String[]{
+                "resolvedFromSelectorAuthority", "actualHookSiteId",
+                "actualHookOccurrence", "effectiveMaterializationSiteId",
+                "effectiveMaterializationOccurrence",
+                "materializationSiteBridgeAuthority",
+                "materializationSiteBridgeBindingId",
+                "materializationSiteBridgeElementObjectToken",
+                "materializationSiteBridgeObjectTokenScope"}) {
+            assertEquals(member, deep.get(member), metadata.get(member));
+        }
+        deep.addProperty("materializationSiteBridgeElementObjectToken",
+                304L);
+        assertFalse(ConcolicSmtComposer.completeContainerSelectorForTests(
+                deep));
     }
 
     @Test
@@ -2146,6 +3091,259 @@ public class ConcolicSmtComposerTest {
                 assertFalse(line, line.contains(
                         "port__REGION_P_in_3"));
             }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void composesNonMutatingMapReadFromSyntheticObservationState()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.9",
+                            "<example.Value: boolean enabled>"));
+            JsonObject summary = producerSummary(new JsonArray(), true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            String dynamic =
+                    "REGION.P.in.9.field.nonmutating.occ.1";
+            JsonObject observation = nonMutatingDynamicHeapObservation(
+                    "OBS.NON_MUTATING", "entry_value_non_mutating",
+                    dynamic, "REGION.P.in.9");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            String statePort = observation.get("statePort").getAsString();
+            String digestPrefix = statePort.substring(
+                    statePort.lastIndexOf('.') + 1);
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString(),
+                    result.manifest.get("structurallyComplete")
+                            .getAsBoolean());
+            assertEquals(1, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertEquals(1, result.manifest.get(
+                    "heapObservationFieldBindingCount").getAsInt());
+            assertTrue(lineContaining(result.smtLib, digestPrefix)
+                    .contains("MapState"));
+            String keyPresent = lineContaining(result.smtLib,
+                    ":named heap_observation_key_present_OBS_NON_MUTATING");
+            assertTrue(keyPresent.contains(digestPrefix));
+            assertFalse(keyPresent.contains("port__REGION_P_in_9"));
+            assertTrue(lineContaining(result.smtLib,
+                    ":named heap_observation_value_OBS_NON_MUTATING")
+                    .contains(digestPrefix));
+            assertTrue(lineContaining(result.smtLib,
+                    ":named heap_observation_field_OBS_NON_MUTATING_0")
+                    .contains("dynamic_field"));
+            assertFalse(result.smtLib.contains(
+                    "(declare-const port__REGION_P_in_9 MapState)"));
+            for (String line : linesContaining(result.smtLib,
+                    digestPrefix)) {
+                assertFalse(line, line.contains("emptyMapState"));
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void mergedCasesUseSourceActivationForObservationStateProof()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            String observationId = "OBS.MERGED.NON_MUTATING";
+            String dynamic =
+                    "REGION.P.in.3.field.mergednonmutating.occ.1";
+
+            JsonObject positive = producerSummary(new JsonArray(), true);
+            prepareDynamicOutputCase(positive, ">", observationId,
+                    "entry_value_merged_non_mutating", dynamic);
+            positive.add("heapObservations", singleton(
+                    nonMutatingDynamicHeapObservation(observationId,
+                            "entry_value_merged_non_mutating", dynamic)));
+            positive.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+
+            JsonObject negative = producerSummary(new JsonArray(), true);
+            negative.addProperty("summaryId",
+                    "SUMMARY.P.NON_MUTATING.NEGATIVE");
+            prepareDynamicOutputCase(negative, "<=", observationId,
+                    "entry_value_merged_non_mutating", dynamic);
+            negative.add("heapObservations", singleton(
+                    nonMutatingDynamicHeapObservation(observationId,
+                            "entry_value_merged_non_mutating", dynamic)));
+            negative.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+
+            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                    java.util.Arrays.asList(positive, negative),
+                    closedPathManifest());
+            JsonArray cases = merged.summaries.get(0).getAsJsonObject(
+                    "regionRelation").getAsJsonArray("cases");
+            assertEquals(2, cases.size());
+            for (JsonElement element : cases) {
+                JsonObject item = element.getAsJsonObject();
+                assertFalse(item.has("activationId"));
+                assertEquals("ACT.P",
+                        item.get("sourceActivationId").getAsString());
+            }
+            writeSummary(fixture, merged.summaries.get(0));
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            String statePort = cases.get(0).getAsJsonObject()
+                    .getAsJsonArray("heapObservations").get(0)
+                    .getAsJsonObject().get("statePort").getAsString();
+            String digestPrefix = statePort.substring(
+                    statePort.lastIndexOf('.') + 1);
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString(),
+                    result.manifest.get("structurallyComplete")
+                            .getAsBoolean());
+            assertEquals(2, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertEquals(2, countDeclarationLines(result.smtLib,
+                    digestPrefix));
+            assertEquals(2, linesContaining(result.smtLib,
+                    ":named heap_observation_key_present_"
+                            + "OBS_MERGED_NON_MUTATING").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void canonicalDynamicFieldBaseCannotMasqueradeAsMapReadState()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.9",
+                            "<example.Value: boolean enabled>"));
+            JsonObject summary = producerSummary(new JsonArray(), true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            JsonObject observation = nonMutatingDynamicHeapObservation(
+                    "OBS.CANONICAL.BASE", "entry_value_bad_base",
+                    "REGION.P.in.9.field.badbase.occ.1",
+                    "REGION.P.in.9");
+            observation.addProperty("statePort", "REGION.P.in.9");
+            observation.getAsJsonObject("stateBaseProof").addProperty(
+                    "statePort", "REGION.P.in.9");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "InvalidOrAmbiguousHeapObservationStateBase"));
+            assertEquals(0, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_CANONICAL_BASE"));
+            assertFalse(result.smtLib.contains(
+                    "(declare-const port__REGION_P_in_9 MapState)"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void emptyMapInitializerCannotAuthenticateObservationStateBase()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonArray initializers = new JsonArray();
+            initializers.add(emptyMapInitializer());
+            JsonObject summary = producerSummary(new JsonArray(),
+                    initializers, true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            JsonObject observation = nonMutatingDynamicHeapObservation(
+                    "OBS.EMPTY.INIT", "entry_value_empty_init",
+                    "REGION.P.in.3.field.emptyinit.occ.1");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "InvalidOrAmbiguousHeapObservationStateBase"));
+            assertEquals(0, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_EMPTY_INIT"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void duplicateSyntheticObservationStateProofsFailClosed()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject summary = producerSummary(new JsonArray(), true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            JsonObject first = nonMutatingDynamicHeapObservation(
+                    "OBS.PROOF.1", "entry_value_proof_1",
+                    "REGION.P.in.3.field.proof.occ.1");
+            JsonObject second = nonMutatingDynamicHeapObservation(
+                    "OBS.PROOF.2", "entry_value_proof_2",
+                    "REGION.P.in.3.field.proof.occ.2");
+            String duplicatedPort = first.get("statePort").getAsString();
+            String duplicatedDigest = first.getAsJsonObject(
+                    "stateBaseProof").get("selectorDigest").getAsString();
+            second.addProperty("statePort", duplicatedPort);
+            second.getAsJsonObject("stateBaseProof").addProperty(
+                    "statePort", duplicatedPort);
+            second.getAsJsonObject("stateBaseProof").addProperty(
+                    "selectorDigest", duplicatedDigest);
+            JsonArray observations = new JsonArray();
+            observations.add(first);
+            observations.add(second);
+            summary.add("heapObservations", observations);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "InvalidOrAmbiguousHeapObservationStateBase"));
+            assertEquals(0, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_PROOF_1"));
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_PROOF_2"));
+            assertFalse(result.smtLib.contains(duplicatedPort.replace('.',
+                    '_') + " MapState"));
         } finally {
             folder.delete();
         }
@@ -2520,6 +3718,84 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.smtLib.contains("exact_field__"));
             assertTrue(result.smtLib.contains(
                     "sym__port__REGION_P_in_3__int"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void deepContainerSnapshotProjectsPrimitiveLeafFromArrayRoot()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.9",
+                            "<example.Guard: boolean enabled>"));
+            JsonObject summary = containerFieldSummary(fixture,
+                    "EXACT_ARRAY_INDEX", 1, 1, false);
+            JsonObject slice = summary.getAsJsonObject(
+                    "requestedOutputSlice");
+            slice.getAsJsonArray("inputPorts").add("REGION.P.in.9");
+            JsonObject declaration = slice.getAsJsonArray(
+                    "containerElementFieldBindings").get(0)
+                    .getAsJsonObject();
+            declaration.addProperty("schemaVersion", 2);
+            declaration.addProperty("materializationMode",
+                    "CONTAINER_SNAPSHOT");
+            declaration.addProperty("baseInputSymbol", "REGION.P.in.9");
+            JsonArray path = new JsonArray();
+            path.add("state");
+            path.add("guard");
+            path.add("enabled");
+            declaration.add("fieldPath", path);
+            declaration.addProperty("declaredFieldSignature",
+                    "<example.Guard: boolean enabled>");
+            declaration.addProperty("declaredFieldOwnerClass",
+                    "example.Guard");
+            declaration.addProperty("declaredFieldType", "boolean");
+            declaration.addProperty("declaredFieldName", "enabled");
+            declaration.addProperty("proofAuthority",
+                    "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
+                            + "CHAIN_V1");
+            String method = declaration.get("method").getAsString();
+            JsonArray methods = new JsonArray();
+            methods.add(method);
+            slice.add("methods", methods);
+            JsonArray sites = new JsonArray();
+            sites.add(declaration.get("arrayLoadSiteId").getAsString());
+            sites.add(declaration.get(
+                    "fieldMaterializationSiteId").getAsString());
+            slice.add("sites", sites);
+            JsonArray proof = new JsonArray();
+            JsonArray causalEdges = new JsonArray();
+            for (int index = 0; index < 12; index++) {
+                String edgeId = "DEEP." + index;
+                proof.add(edgeId);
+                JsonObject edge = new JsonObject();
+                edge.addProperty("edgeId", edgeId);
+                causalEdges.add(edge);
+            }
+            declaration.add("proofCausalEdgeIds", proof.deepCopy());
+            slice.add("causalEdgeIds", proof.deepCopy());
+            slice.add("causalEdges", causalEdges);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            String projection = lineContaining(result.smtLib,
+                    ":named container_element_field_BIND_ARRAY_0");
+            assertTrue(projection.contains("exact_field__"));
+            assertTrue(projection, projection.contains(
+                    "sym__port__REGION_P_in_9__int"));
+            assertTrue(result.smtLib.contains(
+                    "(declare-fun exact_field__"));
+            assertTrue(lineContaining(result.smtLib,
+                    "(declare-fun exact_field__").endsWith("(Ref) Int)"));
         } finally {
             folder.delete();
         }
@@ -4260,6 +5536,13 @@ public class ConcolicSmtComposerTest {
         return result;
     }
 
+    private static JsonObject negatedOpString(String operation,
+                                              JsonElement... params) {
+        JsonObject result = opString(operation, params);
+        result.addProperty("_is_not", true);
+        return result;
+    }
+
     private static JsonObject method(String name, JsonElement resultValue,
                                      JsonElement... params) {
         JsonObject result = new JsonObject();
@@ -4270,6 +5553,43 @@ public class ConcolicSmtComposerTest {
         result.add("_param_list", arguments);
         result.add("_res_exp", resultValue);
         return result;
+    }
+
+    private static JsonObject cast(JsonElement source, String javaType) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "TypeCastExpression");
+        result.addProperty("_java_type", javaType);
+        result.add("_exp", source);
+        return result;
+    }
+
+    private static JsonObject explicitCast(JsonElement source,
+                                           String sourceJavaType,
+                                           String targetJavaType) {
+        JsonObject result = cast(source, targetJavaType);
+        result.addProperty("sourceJavaType", sourceJavaType);
+        result.addProperty("targetJavaType", targetJavaType);
+        return result;
+    }
+
+    private static JsonObject unaryNegation(JsonElement operand) {
+        return binaryCondition(JsonNull.INSTANCE, "-", operand);
+    }
+
+    private static void prependFatalConstraints(Fixture fixture,
+                                                JsonElement... added)
+            throws Exception {
+        JsonObject fatal = JsonParser.parseString(new String(
+                Files.readAllBytes(fixture.fatal),
+                StandardCharsets.UTF_8).trim()).getAsJsonObject();
+        JsonArray constraints = new JsonArray();
+        for (JsonElement constraint : added) constraints.add(constraint);
+        for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+            constraints.add(constraint);
+        }
+        fatal.add("constraints", constraints);
+        Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                StandardCharsets.UTF_8));
     }
 
     private static JsonObject codecUsername(JsonElement integer,
@@ -4551,6 +5871,110 @@ public class ConcolicSmtComposerTest {
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
         result.add("entryFieldBindings", bindings);
+        return result;
+    }
+
+    private static JsonObject nonMutatingDynamicHeapObservation(
+            String id, String valueSymbol, String dynamicFieldSymbol) {
+        return nonMutatingDynamicHeapObservation(id, valueSymbol,
+                dynamicFieldSymbol, "REGION.P.in.3");
+    }
+
+    private static JsonObject nonMutatingDynamicHeapObservation(
+            String id, String valueSymbol, String dynamicFieldSymbol,
+            String baseInputSymbol) {
+        JsonObject result = dynamicHeapObservation(id, valueSymbol,
+                dynamicFieldSymbol);
+        String region = "REGION.P";
+        String activationId = "ACT.P";
+        String dynamicBindingId = "DYNAMIC_FIELD:" + dynamicFieldSymbol;
+        String selectorDigest = ConcolicSmtComposer
+                .heapObservationStateSelectorDigestForTests(id,
+                        baseInputSymbol, dynamicBindingId);
+        String statePort = ConcolicSmtComposer
+                .heapObservationStatePortForTests(region, id,
+                        baseInputSymbol, dynamicBindingId);
+        long mapToken = 101L;
+        String mapWitness = "CAUSYNTH_REF_WITNESS_V1_A10_4143542e50_T"
+                + mapToken;
+        JsonObject mapExpression = symbol("L", mapWitness);
+        result.addProperty("statePort", statePort);
+        result.addProperty("stateBindingAuthority",
+                "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1");
+        result.addProperty("stateBaseComplete", true);
+        result.add("mapExpression", mapExpression.deepCopy());
+        result.addProperty("expressionAuthority",
+                "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
+        result.addProperty("backingMapObjectToken", mapToken);
+        result.addProperty("objectTokenScope", activationId);
+        result.addProperty("mapExpressionWitnessSchemaVersion", 1);
+        result.addProperty("mapExpressionWitnessKind",
+                "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
+        result.addProperty("mapExpressionWitnessObjectToken", mapToken);
+        result.addProperty("mapExpressionWitnessObjectTokenScope",
+                activationId);
+        result.addProperty("mapExpressionWitnessAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
+                        + "SCOPED_REF_SYMBOL_V1");
+
+        JsonObject binding = result.getAsJsonArray("entryFieldBindings")
+                .get(0).getAsJsonObject();
+        binding.addProperty("baseInputSymbol", baseInputSymbol);
+        if ("REGION.P.in.9".equals(baseInputSymbol)) {
+            binding.add("fieldExpression", symbol("Z",
+                    "M_Z_field_" + dynamicFieldSymbol + "_enabled"));
+            binding.addProperty("fieldSignature",
+                    "<example.Value: boolean enabled>");
+            binding.addProperty("fieldJavaType", "boolean");
+            JsonArray fieldPath = new JsonArray();
+            fieldPath.add("enabled");
+            binding.add("fieldPath", fieldPath);
+        }
+        binding.addProperty("fieldExpressionAuthority",
+                "EXACT_VM_BRANCH_MAPPING_DYNAMIC_SYMBOL_AND_REQUESTED_"
+                        + "SLICE_BASE_V1");
+        binding.addProperty("observationStateBindingAuthority",
+                "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1");
+
+        JsonObject proof = new JsonObject();
+        proof.addProperty("schemaVersion", 1);
+        proof.addProperty("kind",
+                "NON_MUTATING_MAP_ENTRY_READ_STATE_BASE");
+        proof.addProperty("statePort", statePort);
+        proof.addProperty("observationId", id);
+        proof.addProperty("entryReadObservationId", id);
+        proof.addProperty("regionId", region);
+        proof.addProperty("activationId", activationId);
+        proof.addProperty("baseInputSymbol", baseInputSymbol);
+        proof.addProperty("dynamicBindingId", dynamicBindingId);
+        proof.addProperty("dynamicFieldSymbol", dynamicFieldSymbol);
+        proof.add("mapExpression", mapExpression.deepCopy());
+        proof.addProperty("expressionAuthority",
+                "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
+        proof.addProperty("backingMapObjectToken", mapToken);
+        proof.addProperty("objectTokenScope", activationId);
+        proof.addProperty("mapExpressionWitnessSchemaVersion", 1);
+        proof.addProperty("mapExpressionWitnessKind",
+                "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
+        proof.addProperty("mapExpressionWitnessObjectToken", mapToken);
+        proof.addProperty("mapExpressionWitnessObjectTokenScope",
+                activationId);
+        proof.addProperty("mapExpressionWitnessAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
+                        + "SCOPED_REF_SYMBOL_V1");
+        proof.addProperty("candidateMutationCount", 0);
+        proof.addProperty("heapEffectCount", 0);
+        proof.addProperty("associatedHeapEffectCount", 0);
+        proof.addProperty("runtimeHeapEffectRecordCount", 0);
+        proof.addProperty("runtimeHeapEffectJoinedCount", 0);
+        proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
+        proof.addProperty("selectorDigest", selectorDigest);
+        proof.addProperty("statePortDerivationAuthority",
+                "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1");
+        proof.addProperty("authority",
+                "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1");
+        proof.addProperty("complete", true);
+        result.add("stateBaseProof", proof);
         return result;
     }
 
@@ -5129,6 +6553,56 @@ public class ConcolicSmtComposerTest {
         }
         return ConcolicSmtComposer.Arguments.parse(
                 values.toArray(new String[0]));
+    }
+
+    private static boolean z3Available() {
+        try {
+            Process process = new ProcessBuilder("z3", "-version").start();
+            return process.waitFor() == 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void assertZ3Parses(String smt) throws Exception {
+        Process process = new ProcessBuilder("z3", "-in")
+                .redirectErrorStream(true).start();
+        try (OutputStream input = process.getOutputStream()) {
+            input.write(smt.getBytes(StandardCharsets.UTF_8));
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        int count;
+        while ((count = process.getInputStream().read(buffer)) >= 0) {
+            output.write(buffer, 0, count);
+        }
+        int exit = process.waitFor();
+        String text = new String(output.toByteArray(),
+                StandardCharsets.UTF_8);
+        assertEquals(text, 0, exit);
+        assertFalse(text, text.contains("(error"));
+    }
+
+    private static void assertZ3Status(String smt, String expected)
+            throws Exception {
+        Process process = new ProcessBuilder("z3", "-in")
+                .redirectErrorStream(true).start();
+        try (OutputStream input = process.getOutputStream()) {
+            input.write(smt.getBytes(StandardCharsets.UTF_8));
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        int count;
+        while ((count = process.getInputStream().read(buffer)) >= 0) {
+            output.write(buffer, 0, count);
+        }
+        int exit = process.waitFor();
+        String text = new String(output.toByteArray(),
+                StandardCharsets.UTF_8).trim();
+        assertEquals(text, 0, exit);
+        assertFalse(text, text.contains("(error"));
+        assertTrue(text, text.equals(expected)
+                || text.startsWith(expected + "\n"));
     }
 
     private static Fixture fixture(Path root, boolean includeProducerSummary)

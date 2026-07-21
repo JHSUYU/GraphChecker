@@ -178,7 +178,10 @@ public class ThreeThreadRpcScenarioWorkloadTest {
 
         String targetText = new String(Files.readAllBytes(target),
                 StandardCharsets.UTF_8).trim();
-        assertEquals("seed_exception: " + bugType.getName(), targetText);
+        assertEquals("exception_target_id: " + variant.getDirectoryName(),
+                targetText);
+        assertTrue(ThreeThreadRpcScenarioWorkload.ScenarioBug.class
+                .isAssignableFrom(bugType));
         String workflowText = new String(Files.readAllBytes(workflow),
                 StandardCharsets.UTF_8);
         assertTrue(workflowText.contains("fixture_variant=" + variant.name()));

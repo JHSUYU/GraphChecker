@@ -8,6 +8,16 @@ Every execution creates exactly three application worker threads:
 - the consumer calls `getRPCFromA()` and `getRPCFromB()`, then throws
   `BugReachedException` on the target comparison edge.
 
+The target construction itself is the static-analysis entry point:
+
+```java
+throw new @CausynthExceptionTarget("three-thread-rpc")
+        BugReachedException(a, b);
+```
+
+The fixture target file contains only the marker id. It does not repeat the
+exception class or ask static analysis to search every throw site.
+
 The producer workers rendezvous inside their worker frames, proving that both
 are concurrently live before either computation proceeds. The harness joins
 both producer threads to `TERMINATED` while the consumer is still `NEW`, and
@@ -48,7 +58,7 @@ CAUSYNTH_WORKFLOW_CONFIG=/path/to/workflow.properties \
   experiments/generic/three-thread-rpc/run.sh all
 ```
 
-The script reads the fixture main/test classes, trace-test name, replay Docker
+The script reads the fixture main class, trace-test name, replay Docker
 image, GraphChecker JAR, class directories, runtime evidence, and
 schedule paths from that properties file. Standard workflow paths follow
 `workflow_path_base`; the fixture work root is the parent of
@@ -60,11 +70,13 @@ project's `target` directory (`target/three-thread-rpc` by default). It does
 not clean Maven output, the repository, or the custom JDK. `all` refuses to
 start when that fixture directory is non-empty.
 
-The automatic command performs these evidence-gated stages:
+The runner deliberately has no Maven/JUnit command. `run.sh all` recompiles
+the selected fixture and performs only these evidence-gated end-to-end stages:
 
-1. Run the three-thread JUnit contract, isolate the fixture classes, perform
-   static analysis, instrument the trace, and execute a non-bug discovery
-   seed.
+1. Compile GraphChecker and the fixture, isolate the selected fixture classes,
+   resolve the exact classfile exception marker, perform a backward static
+   slice from that construction, instrument the trace, and execute a non-bug
+   discovery seed.
 2. Resolve every producer and the common consumer target from exact runtime
    shared-field read-from bindings. Re-slice the frozen graph inside the
    concrete call closure; unresolved dependencies stay concrete rather than
@@ -105,10 +117,11 @@ target/three-thread-rpc/final/boolean_reach_condition.json
 ```
 
 The report contains the generated root-input catalog, complete truth table,
-canonical condition, and proof metadata. The script additionally checks that
-every runtime-discovered producer Boolean is influential in that truth
-table. The bootstrap report is replay-only and can never be substituted for
-this final artifact.
+canonical condition, and proof metadata. A discovered root may legitimately
+be non-influential after existential projection of other scalar inputs, so the
+workflow reports the exact rows rather than requiring every Boolean bit to
+change the result. The bootstrap report is replay-only and can never be
+substituted for this final artifact.
 
 ## Inspecting or resuming stages
 
@@ -143,23 +156,102 @@ CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/
   experiments/generic/three-thread-rpc/run.sh all
 ```
 
+`containers/` runs the same end-to-end workflow with live-ins at
+`array[0].state.guard.enabled` and a map-entry value's nested Boolean leaf.
+`dependent-scalar/` exercises a non-Boolean free scalar that affects a
+producer relation. `cross-method-fields/` crosses several helper calls and
+reads genuine instance/static field live-ins. `multitype/` combines Boolean,
+`int`, `long`, `double`, `String.contains`, and a bounded `for` loop.  Each
+uses the same runner through `CAUSYNTH_WORKFLOW_CONFIG`; none changes the
+workflow or declares fixture-specific SMT.
+`FourThreadSharedFieldWorkloadTest` is the compact recursive fork/merge
+regression for `1 -> 2 -> 3` and `1 -> 4 -> 3`. Neither workload has a
+`while` loop.
+
+## Core end-to-end robustness gate
+
+The normal robustness gate is deliberately limited to these three concrete
+three-thread workloads.  All three use two concurrently-live producers, a
+deterministic runtime-confirmed read-from relation, and a consumer that starts
+after both producers terminate.  They exercise the same generic workflow; no
+workload supplies fixture-specific SMT or a declared RPC mapping.
+
+1. `ThreeThreadRpcWorkload`, configured by `workflow.properties`, is the
+   baseline Boolean-plus-`int` workload.  It covers two Boolean producer paths,
+   an external integer producer live-in, Java integer arithmetic/overflow, RPC
+   composition, and the consumer comparison.
+2. `CrossMethodExternalFieldThreeThreadWorkload`, configured by
+   `cross-method-fields/workflow.properties`, covers nullable Boolean/String
+   inputs, `String.contains`, several helper-call hops, and genuine instance
+   and static integer fields.  Helper return values must remain internal
+   definitions rather than being promoted to root inputs.
+3. `MixedTypeThreeThreadRpcWorkload`, configured by
+   `multitype/workflow.properties`, covers Boolean, `int`, `long`, `double`,
+   nullable `String.contains`, Java floating-point comparison semantics, and a
+   bounded deterministic `for` loop.
+
+Run exactly this core gate with:
+
+```bash
+experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
+```
+
+The matrix recompiles each selected workload, runs the complete concolic
+workflow, invokes Z3 on the emitted SMT, and validates the expected root-input
+catalog and truth-table profile.  Unit tests are not run by this command.
+
+## TODO: unify branch and replay semantics
+
+The current JSON protocol still carries overlapping representations such as
+`outcome`/`observedOutcome`/`effectiveOutcome`, raw/engine/normalized condition
+indices, and original/negated/replay conditions.  This is compatible with
+existing artifacts, but it makes polarity and proof handling unnecessarily
+fragile.  Migrate it incrementally to one typed binary-branch replay contract:
+
+- introduce one `BranchPredicateAlgebra` as the only implementation of a
+  canonical predicate complement; remove the independent worklist and
+  scheduler negation implementations;
+- represent an observed branch by its stable site/occurrence identity,
+  `sourceTakenOutcome`, and one canonical `sourceSatisfiedPredicate` that is
+  true on the concrete path;
+- let only `BranchReplayContract.flip()` derive
+  `requiredTakenOutcome = !sourceTakenOutcome` and
+  `requiredSatisfiedPredicate = negate(sourceSatisfiedPredicate)`; runtime,
+  importer, scheduler, solver, and replay validation must not infer polarity
+  independently;
+- keep VM-PC and summary-PC indices in separate namespaces, and represent
+  replay evidence as the exclusive union `VM_PC` or `CERTIFIED_NO_PC` instead
+  of a Boolean marker plus duplicated certificate fields;
+- make replay preserve the ordered prefix, drop the old suffix, prohibit
+  branch override, and validate that the newly observed satisfied predicate is
+  exactly the required predicate;
+- retain a strict legacy adapter while existing artifacts are migrated, then
+  remove the duplicated aliases and validators.  Multiway `switch` must use a
+  separate successor-aware contract rather than being encoded as a binary
+  Boolean outcome.
+
+The migration is complete only when all three workloads in the core gate
+produce replay-validated final SMT and their expected exact reach profiles.
+
 ## HDFS validation checkpoint
 
 The frozen HDFS trace was re-aggregated without rerunning Soot, instrumentation,
-or the workload. `target/hdfs-runtime-demand-reslice-v4` completed in 2:16.54
-with 18,838,000 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
+or the workload. `target/hdfs-runtime-demand-reslice-v5` completed in 2:20.25
+with 19,043,412 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
 All 430 instances used the runtime-guided re-slice; 63,673 candidate inputs
-were pruned, 384 confirmed external inputs were restored, and warnings are 0.
+were pruned, 385 confirmed external inputs were restored, and warnings are 0.
 
 The HDFS RPC/SASL mapping remains enabled for true transport boundaries.
 `REGION_EDGE.0` retains 10 SASL equality bindings, while edges 802 and 2076
-retain 50 and 10 exact read-from bindings. The v4 selector is complete and
+retain 50 and 10 exact read-from bindings. The v5 selector is complete and
 selects the same five runtime calls (NN, DN, KeyUpdater, Dispatcher, target)
 with all causal bounds verified.
 
 TODO: final HDFS SMT composition still needs the five configured replay summary
 files, which are absent from this checkout and have no recoverable in-repository
-source. Obtain or regenerate those summaries, then compose against the v4
+source. Obtain or regenerate those summaries, then compose against the v5
 activation/edge catalogs. Preserve the intentionally loose HDFS loop and
 read-from policies; unresolved gaps remain concrete and must not restore the
-old wide frontier.
+old wide frontier. Fresh full-HDFS static-catalog timing and indexing the exact
+direct-field-path proof scans also remain TODO; v5 measures only the frozen-graph
+runtime re-slice.

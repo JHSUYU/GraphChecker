@@ -13,7 +13,33 @@ const char *SymString::TYPE_NAME = "java/lang/String";
 method_set_t SymString::handle_method_names = init_handle_method_names();
 std::map<std::string, bool> SymString::skip_method_names =
     init_skip_method_names();
-std::map<std::string, oop> SymString::INTERN_MAP;
+
+namespace {
+
+bool result_aliases_reference_input(MethodSymbolizerHandle &handle,
+                                    oop result) {
+  if (result == NULL) return false;
+  Method *method = handle.get_callee_method();
+  int offset = handle.get_callee_local_begin_offset();
+  if (!method->is_static()) {
+    if (handle.get_param<oop>(offset) == result) return true;
+    ++offset;
+  }
+  ResourceMark rm;
+  SignatureStream signature(method->signature());
+  while (!signature.at_return_type()) {
+    BasicType type = signature.type();
+    if ((type == T_OBJECT || type == T_ARRAY)
+        && handle.get_param<oop>(offset) == result) {
+      return true;
+    }
+    offset += type2size[type];
+    signature.next();
+  }
+  return false;
+}
+
+}  // namespace
 
 method_set_t SymString::init_handle_method_names() {
   method_set_t m_set;
@@ -146,7 +172,11 @@ int SymString::prepare_param_helper(MethodSymbolizerHandle &handle,
     if (obj == NULL) {
       exp = SymbolExpression::get(Sym_NULL);
     } else {
-      if (obj->klass()->name()->equals("sun/nio/cs/UTF_8")) {
+      exp = handle.get_reference_exp(locals_offset, obj);
+      if (exp != NULL) {
+        // Preserve an owner-field alias shadow even when obj is an interned
+        // literal with an intentionally concrete oop header.
+      } else if (obj->klass()->name()->equals("sun/nio/cs/UTF_8")) {
         // no need to symbolize parameter of {public byte[] getBytes(Charset charset)}
         exp = NULL;
       } else {
@@ -199,29 +229,29 @@ Expression *SymString::finish_method_helper(MethodSymbolizerHandle &handle) {
         obj = handle.get_result<oop>(type);
       }
       if (obj != NULL) {
-        ResourceMark rm;
-        if (callee_name == "intern") {
-          assert(handle.get_callee_method()->is_native(), "should be native");
-          std::string str(java_lang_String::as_utf8_string(obj));
-          if (INTERN_MAP.find(str) == INTERN_MAP.end()) {
-            JavaThread* thread = JavaThread::current();
-            JavaThreadState lastState = thread->thread_state();
-            // must transfer thread state to state_VM
-            thread->set_thread_state(_thread_in_vm);
-            INTERN_MAP.insert(
-                std::make_pair(str,
-                               java_lang_String::create_oop_from_str(str.c_str(), thread))
-            );
-            thread->set_thread_state(lastState);
-          }
-          obj = INTERN_MAP[str];
-          // replace the obj in native stack
-          handle.get_callee_frame()->as_interpreter_frame()->interpreter_state()->set_oop_temp(obj);
-        }
         guarantee(obj->klass()->name()->equals(SymString::TYPE_NAME), "should be");
-        SymInstance *sym_inst = ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
-        if (sym_inst != NULL) {
-          sym_inst->set_ref_exp(new OpStrExpression(callee_name, handle.get_param_list()));
+        // Always return the derived value through the caller's operand edge.
+        // Object-wide state is safe only for a fresh, non-detached result:
+        // several String APIs legally return their receiver, another input,
+        // or a VM-global interned object for this concrete execution.
+        // In particular, String.intern keeps the exact oop chosen by the JVM.
+        // Its symbolic content follows only the returned operand edge; this
+        // engine does not attempt to model or rewrite intern-table identity.
+        bool identity_result = callee_name == "toString"
+            || callee_name == "intern";
+        exp = identity_result
+            ? handle.get_param_list()[0]
+            : static_cast<Expression *>(new OpStrExpression(
+                  callee_name, handle.get_param_list()));
+        bool aliases_input = result_aliases_reference_input(handle, obj);
+        bool may_return_shared_alias = callee_name == "intern";
+        if (!aliases_input && !may_return_shared_alias
+            && !ConcolicMngr::ctx->requires_detached_object_shadow(obj)) {
+          SymInstance *sym_inst =
+              ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
+          if (sym_inst != NULL) {
+            sym_inst->set_ref_exp(exp);
+          }
         }
       } else {
         exp = SymbolExpression::get(Sym_NULL);
@@ -239,11 +269,14 @@ Expression *SymString::finish_method_helper(MethodSymbolizerHandle &handle) {
       }
       break;
     case T_BOOLEAN: {
-      // boolean operations on two strings are converted to equivalent path condition
-      jboolean resBool = handle.get_result<jboolean>(T_BOOLEAN);
-      ConcolicMngr::record_path_condition(
-          new OpStrExpression(callee_name, handle.get_param_list(), !resBool)
-      );
+      // Keep the *unpolarized* predicate on the shadow operand stack.  The
+      // concrete method result says nothing about the identity of this value:
+      // it is only one observation.  istore/iload and Boolean operations must
+      // therefore carry contains(receiver, needle), never an expression that
+      // has already been rewritten to the observed path.  ifeq/ifne applies
+      // the actual branch polarity when the value is finally consumed.
+      exp = new OpStrExpression(callee_name, handle.get_param_list(),
+                                false);
       break;
     }
     default:
@@ -260,19 +293,8 @@ void SymString::symbolize_split_elements(MethodSymbolizerHandle &handle,
   exp_list_t &split_params = handle.get_param_list();
   for (int index = 0; index < result->length(); ++index) {
     oop element = result->obj_at(index);
-    if (element == NULL || element->is_symbolic()) {
-      // split may return its receiver when no delimiter matches.  Preserve an
-      // existing symbolic identity instead of rewriting the source object.
-      continue;
-    }
+    if (element == NULL) continue;
     if (!element->klass()->name()->equals(SymString::TYPE_NAME)) {
-      continue;
-    }
-
-    SymInstance *sym_element =
-        ConcolicMngr::ctx->get_or_alloc_sym_inst(element);
-    if (sym_element == NULL) {
-      // Interned strings deliberately cannot be symbolized by this engine.
       continue;
     }
 
@@ -283,26 +305,35 @@ void SymString::symbolize_split_elements(MethodSymbolizerHandle &handle,
     }
     element_params.push_back(new ConExpression((jint) index));
 
-    // MethodExpression is intentionally used instead of OpStrExpression.  It
-    // is an existing value-expression schema that preserves the receiver,
-    // regex, optional limit, and element index when nested in parseInt or any
-    // later consumer.  Keeping the result array concrete also prevents aaload
-    // from replacing this provenance with an unbound ElementSymbolExp.
-    Expression *element_result = sym_element->get_ref_exp();
-    sym_element->set_ref_exp(new MethodExpression(
+    // Keep split provenance on the concrete array edge first.  A split
+    // element may be the receiver, an existing symbolic alias, or an interned
+    // String; none of those identities may be overwritten object-wide.
+    SymInstance *existing = ConcolicMngr::ctx->find_sym_inst(element);
+    Expression *element_result = existing == NULL
+        ? static_cast<Expression *>(new ConStringSymbolExp(element))
+        : existing->get_or_create_ref_exp(element);
+    Expression *derived = new MethodExpression(
         handle.get_callee_holder_name(), "splitElement", element_params,
-        element_result, false));
+        element_result, false);
+    ConcolicMngr::ctx->store_array_element_shadow(
+        result, index, derived, "STRING_SPLIT_ELEMENT");
+
+    bool aliases_input = result_aliases_reference_input(handle, element);
+    if (existing == NULL && !aliases_input
+        && !ConcolicMngr::ctx->requires_detached_object_shadow(element)) {
+      SymInstance *fresh = ConcolicMngr::ctx->get_or_alloc_sym_inst(element);
+      if (fresh != NULL) fresh->set_ref_exp(derived);
+    }
   }
 }
 
 Expression *SymString::get_exp_of(oop obj) {
   if (obj == NULL) return SymbolExpression::get(Sym_NULL);
 
-  if (obj->is_symbolic()) {
-    return ConcolicMngr::ctx->get_sym_inst(obj)->get_ref_exp();
-  } else {
-    return new ConStringSymbolExp(obj);
-  }
+  SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+  return sym_inst == NULL
+      ? static_cast<Expression *>(new ConStringSymbolExp(obj))
+      : sym_inst->get_ref_exp();
 }
 
 void SymString::set_sym_exp(int field_offset, Expression *exp) {

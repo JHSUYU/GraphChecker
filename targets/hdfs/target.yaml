@@ -1,1 +1,3 @@
-seed_exception: org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException
+# Requires the corresponding construction in the analyzed checkout to carry
+# @CausynthExceptionTarget("hdfs-invalid-encryption-key").
+exception_target_id: hdfs-invalid-encryption-key

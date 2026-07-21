@@ -38,6 +38,14 @@ import java.util.Set;
 public final class ConcolicCampaignRunner {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
+    private static final String CONCRETE_GUARD_PROOF_KIND =
+            "REFERENCE_NULL_CONCRETE_GUARD_REPLAY_PROOF";
+    private static final String CONCRETE_GUARD_PROOF_AUTHORITY =
+            "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1";
+    private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
+            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
+    private static final String REFERENCE_NULLNESS_ENCODING_AUTHORITY =
+            "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1";
 
     private ConcolicCampaignRunner() {
     }
@@ -2256,15 +2264,413 @@ public final class ConcolicCampaignRunner {
                 "desiredOutcome", false));
         target.addProperty("validationOnly", true);
         target.addProperty("branchOverrideAllowed", false);
+        if (hasBoolean(task, "concreteGuardReplayProofRequired")) {
+            target.addProperty("concreteGuardReplayProofRequired",
+                    bool(task, "concreteGuardReplayProofRequired", false));
+        }
         result.add("targetBranch", target);
         result.add("expectedBranchPrefix", array(task,
                 "expectedBranchPrefix").deepCopy());
         result.addProperty("pathQueryKey", string(task, "queryKey"));
+        result.add("pathReplayConstraints", array(task,
+                "constraints").deepCopy());
+        JsonElement negated = task.get("negatedCondition");
+        if (negated != null && negated.isJsonObject()) {
+            result.add("pathReplayNegatedCondition", negated.deepCopy());
+        } else {
+            result.remove("pathReplayNegatedCondition");
+        }
+        result.addProperty("pathReplayTargetConditionIndex", integer(task,
+                "conditionIndex", -1));
+        result.add("concreteGuardReplayProofs",
+                concreteGuardReplayProofs(task, activationId,
+                        assignments));
+        // A single scheduled-target proof cannot certify NULL-dependent
+        // prefix guards.  Do not emit or trust the superseded singleton
+        // envelope.
+        result.remove("concreteGuardReplayProof");
         result.addProperty("branchOverrideProhibited", true);
         result.remove("forcedBranches");
         result.remove("replayMaterializations");
         result.remove("summaryMode");
         return result;
+    }
+
+    /**
+     * Issues a narrowly scoped proof catalog for every replay guard that can
+     * legitimately have no symbolic VM path-condition element: an exact
+     * solver assignment changed a declared reference input to Java null and
+     * the satisfied prefix/target constraint is the exact equality between
+     * that engine symbol and the VM null literal.  Semantic path constraints
+     * without a branch event remain in {@code constraints} but deliberately
+     * receive no proof.  The runtime independently joins each proof to its
+     * exact VM event and applied model-assignment row before the importer can
+     * treat it as path evidence.
+     */
+    private static JsonArray concreteGuardReplayProofs(
+            JsonObject task, String activationId, JsonArray assignments) {
+        JsonArray result = new JsonArray();
+        if (task == null || assignments == null
+                || activationId == null || activationId.isEmpty()
+                || string(task, "queryKey").isEmpty()) {
+            return result;
+        }
+
+        // Duplicate assignment keys make an applied-row join ambiguous even
+        // when only one of the duplicate rows happens to mention a guard.
+        Set<String> assignmentKeys = new LinkedHashSet<>();
+        for (JsonElement element : assignments) {
+            if (!element.isJsonObject()) return result;
+            String key = modelAssignmentKey(element.getAsJsonObject());
+            if (key.isEmpty() || !assignmentKeys.add(key)) return result;
+        }
+
+        JsonArray constraints = array(task, "constraints");
+        JsonArray prefix = array(task, "prefix");
+        JsonArray expectedPrefix = array(task, "expectedBranchPrefix");
+        JsonElement targetElement = task.get("negatedCondition");
+        int targetConditionIndex = integer(task, "conditionIndex", -1);
+        if (targetElement == null || !targetElement.isJsonObject()
+                || constraints.size() != prefix.size() + 1
+                || targetConditionIndex != prefix.size()
+                || !sameJson(constraints.get(constraints.size() - 1),
+                targetElement)) {
+            return result;
+        }
+        for (int index = 0; index < prefix.size(); index++) {
+            if (!sameJson(prefix.get(index), constraints.get(index))) {
+                return new JsonArray();
+            }
+        }
+
+        Set<String> proofEvents = new LinkedHashSet<>();
+        Set<Integer> mappedPrefixConditions = new LinkedHashSet<>();
+        int previousSourceCondition = -1;
+        for (int ordinal = 0; ordinal < expectedPrefix.size(); ordinal++) {
+            JsonElement expectedElement = expectedPrefix.get(ordinal);
+            if (!expectedElement.isJsonObject()) {
+                return new JsonArray();
+            }
+            JsonObject expected = expectedElement.getAsJsonObject();
+            String siteId = string(expected, "siteId");
+            int occurrence = integer(expected, "occurrence", -1);
+            int sourceConditionIndex = integer(expected,
+                    "conditionIndex", -1);
+            if (siteId.isEmpty() || occurrence <= 0
+                    || sourceConditionIndex < 0
+                    || sourceConditionIndex >= prefix.size()
+                    || sourceConditionIndex <= previousSourceCondition
+                    || !mappedPrefixConditions.add(sourceConditionIndex)
+                    || !hasBoolean(expected, "outcome")
+                    || expected.has("concreteGuardReplayProofRequired")
+                    && !hasBoolean(expected,
+                    "concreteGuardReplayProofRequired")) {
+                return new JsonArray();
+            }
+            previousSourceCondition = sourceConditionIndex;
+            if (!exactBoolean(expected,
+                    "concreteGuardReplayProofRequired", true)) {
+                // Ordinary VM-symbolic guards already carry their exact path
+                // condition.  A concrete-guard certificate is reserved for
+                // a mapping that the importer previously synthesized from a
+                // conditionless, exactly attested NULL branch event.
+                continue;
+            }
+            JsonElement conditionElement = constraints.get(
+                    sourceConditionIndex);
+            if (!conditionElement.isJsonObject()) return new JsonArray();
+            int witnessCount = exactNullGuardWitnessCount(
+                    conditionElement.getAsJsonObject(), assignments);
+            if (witnessCount > 1) return new JsonArray();
+            JsonObject proof = concreteGuardReplayProof(
+                    conditionElement.getAsJsonObject(), task,
+                    activationId, assignments, "PREFIX", siteId,
+                    occurrence, bool(expected, "outcome", false),
+                    sourceConditionIndex, sourceConditionIndex, ordinal);
+            if (proof != null) {
+                String event = siteId + "\u0000" + occurrence;
+                if (!proofEvents.add(event)) return new JsonArray();
+                result.add(proof);
+            }
+        }
+        for (int index = 0; index < prefix.size(); index++) {
+            JsonElement condition = constraints.get(index);
+            if (condition.isJsonObject()
+                    && exactNullGuardWitnessCount(
+                    condition.getAsJsonObject(), assignments) > 0
+                    && !mappedPrefixConditions.contains(index)) {
+                // Even a VM-symbolic NULL condition must map to one exact
+                // branch event.  The per-event marker decides whether that
+                // event needs a concrete-guard certificate; it does not make
+                // an unmapped path constraint admissible.
+                return new JsonArray();
+            }
+        }
+        String targetSite = string(task, "flipSite");
+        int targetOccurrence = integer(task, "flipOccurrence", -1);
+        if (targetSite.isEmpty() || targetOccurrence <= 0
+                || !hasBoolean(task, "desiredOutcome")
+                || task.has("concreteGuardReplayProofRequired")
+                && !hasBoolean(task,
+                "concreteGuardReplayProofRequired")) {
+            return new JsonArray();
+        }
+        if (!exactBoolean(task, "concreteGuardReplayProofRequired", true)) {
+            return result;
+        }
+        if (exactNullGuardWitnessCount(targetElement.getAsJsonObject(),
+                assignments) > 1) {
+            return new JsonArray();
+        }
+        JsonObject targetProof = concreteGuardReplayProof(
+                targetElement.getAsJsonObject(), task, activationId,
+                assignments, "TARGET", targetSite, targetOccurrence,
+                bool(task, "desiredOutcome", false),
+                targetConditionIndex, constraints.size() - 1, -1);
+        if (targetProof != null) {
+            String event = targetSite + "\u0000" + targetOccurrence;
+            if (!proofEvents.add(event)) return new JsonArray();
+            result.add(targetProof);
+        }
+        return result;
+    }
+
+    private static int exactNullGuardWitnessCount(
+            JsonObject condition, JsonArray assignments) {
+        int count = 0;
+        for (JsonElement element : assignments) {
+            if (!element.isJsonObject()) continue;
+            JsonObject assignment = element.getAsJsonObject();
+            if (!exactNullModelAssignment(assignment)) continue;
+            String engineSymbol = string(assignment, "engineSymbol");
+            if (!exactSatisfiedNullEquality(condition, engineSymbol)) {
+                continue;
+            }
+            JsonObject target = object(assignment, "target");
+            if (!declaresReferenceValue(target)
+                    || !string(assignment, "inputSymbol").equals(
+                    string(target, "symbol"))) {
+                continue;
+            }
+            boolean stringTarget = declaresJavaString(target);
+            String encodingAuthority = string(assignment, stringTarget
+                    ? "nullableStringEncodingAuthority"
+                    : "referenceNullnessEncodingAuthority");
+            if ((stringTarget ? NULLABLE_STRING_ENCODING_AUTHORITY
+                    : REFERENCE_NULLNESS_ENCODING_AUTHORITY).equals(
+                    encodingAuthority)
+                    && bool(assignment, "modelIsNull", false)
+                    && !string(assignment,
+                    "nullnessSolverSymbol").isEmpty()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static JsonObject concreteGuardReplayProof(
+            JsonObject condition, JsonObject task, String activationId,
+            JsonArray assignments, String proofRole, String siteId,
+            int occurrence, boolean outcome, int sourceConditionIndex,
+            int constraintIndex, int expectedPrefixOrdinal) {
+        JsonObject selected = null;
+        JsonObject selectedTarget = null;
+        String selectedSymbol = "";
+        for (JsonElement element : assignments) {
+            if (!element.isJsonObject()) continue;
+            JsonObject assignment = element.getAsJsonObject();
+            if (!exactNullModelAssignment(assignment)) continue;
+            String engineSymbol = string(assignment, "engineSymbol");
+            if (!exactSatisfiedNullEquality(condition, engineSymbol)) {
+                continue;
+            }
+            JsonObject target = object(assignment, "target");
+            if (!declaresReferenceValue(target)
+                    || !string(assignment, "inputSymbol").equals(
+                    string(target, "symbol"))) {
+                continue;
+            }
+            boolean stringTarget = declaresJavaString(target);
+            String encodingAuthority = string(assignment, stringTarget
+                    ? "nullableStringEncodingAuthority"
+                    : "referenceNullnessEncodingAuthority");
+            if (!(stringTarget ? NULLABLE_STRING_ENCODING_AUTHORITY
+                    : REFERENCE_NULLNESS_ENCODING_AUTHORITY).equals(
+                    encodingAuthority)
+                    || !bool(assignment, "modelIsNull", false)
+                    || string(assignment,
+                    "nullnessSolverSymbol").isEmpty()) {
+                continue;
+            }
+            if (selected != null) {
+                // More than one NULL assignment capable of witnessing the
+                // same guard is ambiguous and must remain ordinary
+                // conditionless concrete execution, not certified evidence.
+                return null;
+            }
+            selected = assignment;
+            selectedTarget = target;
+            selectedSymbol = engineSymbol;
+        }
+        if (selected == null) return null;
+
+        String pathQueryKey = string(task, "queryKey");
+        if (activationId.isEmpty() || siteId.isEmpty()
+                || occurrence <= 0 || pathQueryKey.isEmpty()
+                || !("PREFIX".equals(proofRole)
+                || "TARGET".equals(proofRole))
+                || sourceConditionIndex < 0 || constraintIndex < 0
+                || "PREFIX".equals(proofRole)
+                && expectedPrefixOrdinal < 0
+                || "TARGET".equals(proofRole)
+                && expectedPrefixOrdinal != -1) {
+            return null;
+        }
+        String assignmentKey = modelAssignmentKey(selected);
+        if (assignmentKey.isEmpty()) return null;
+
+        JsonObject proof = new JsonObject();
+        proof.addProperty("schemaVersion", 1);
+        proof.addProperty("kind", CONCRETE_GUARD_PROOF_KIND);
+        proof.addProperty("authority", CONCRETE_GUARD_PROOF_AUTHORITY);
+        proof.addProperty("activationId", activationId);
+        proof.addProperty("pathQueryKey", pathQueryKey);
+        proof.addProperty("proofRole", proofRole);
+        proof.addProperty("sourceConditionIndex", sourceConditionIndex);
+        proof.addProperty("constraintIndex", constraintIndex);
+        proof.addProperty("expectedBranchPrefixOrdinal",
+                expectedPrefixOrdinal);
+        proof.addProperty("siteId", siteId);
+        proof.addProperty("occurrence", occurrence);
+        proof.addProperty("outcome", outcome);
+        proof.addProperty("modelAssignmentKey", assignmentKey);
+        proof.addProperty("engineSymbol", selectedSymbol);
+        proof.addProperty("inputSymbol", string(selected, "inputSymbol"));
+        proof.addProperty("targetActionSha256", sha256(selectedTarget
+                .toString().getBytes(StandardCharsets.UTF_8)));
+        proof.add("condition", condition.deepCopy());
+        proof.addProperty("conditionSha256", sha256(condition.toString()
+                .getBytes(StandardCharsets.UTF_8)));
+        proof.addProperty("requiresExactVmBranchEvent", true);
+        proof.addProperty("requiresZeroPathConditionSuffix", true);
+        proof.addProperty("requiresUniqueAppliedNullModelAssignment", true);
+        proof.addProperty("branchOverrideProhibited", true);
+        return proof;
+    }
+
+    private static boolean sameJson(JsonElement left, JsonElement right) {
+        return left != null && right != null
+                && left.toString().equals(right.toString());
+    }
+
+    private static boolean exactNullModelAssignment(JsonObject assignment) {
+        return assignment != null
+                && "NULL".equals(string(assignment, "valueType"))
+                && "null".equals(string(assignment, "value"))
+                && "Z3_PATH_FLIP_MODEL".equals(string(assignment,
+                "authority"))
+                && bool(assignment, "materializeAtRealDefinition", false)
+                && !string(assignment, "engineSymbol").isEmpty()
+                && !string(assignment, "solverSymbol").isEmpty()
+                && !string(assignment, "inputSymbol").isEmpty();
+    }
+
+    private static boolean exactSatisfiedNullEquality(
+            JsonObject condition, String engineSymbol) {
+        if (condition == null || engineSymbol == null
+                || engineSymbol.isEmpty()
+                || !"BinaryExpression".equals(string(condition, "_type"))
+                || !"==".equals(string(condition, "_op"))) {
+            return false;
+        }
+        JsonObject left = object(condition, "_left");
+        JsonObject right = object(condition, "_right");
+        return exactEngineSymbol(left, engineSymbol) && exactNull(right)
+                || exactNull(left) && exactEngineSymbol(right, engineSymbol);
+    }
+
+    private static boolean exactEngineSymbol(JsonObject expression,
+                                             String engineSymbol) {
+        return expression != null
+                && "SymbolExpression".equals(string(expression, "_type"))
+                && engineSymbol.equals(string(expression, "_exp"));
+    }
+
+    private static boolean exactNull(JsonObject expression) {
+        return expression != null
+                && "SymbolExpression".equals(string(expression, "_type"))
+                && "N".equals(string(expression, "_exp"));
+    }
+
+    private static boolean declaresReferenceValue(JsonObject action) {
+        String type = firstNonBlank(string(action, "javaType"),
+                string(action, "inputJavaType"),
+                declaredCellType(string(action, "cell")));
+        if (type.isEmpty()) return false;
+        String normalized = type.trim();
+        if (normalized.startsWith("[") || normalized.endsWith("[]")
+                || normalized.startsWith("L")
+                && normalized.endsWith(";")) {
+            return true;
+        }
+        if (normalized.length() == 1
+                && "ZBCSIJFDV".contains(normalized)) {
+            return false;
+        }
+        if (Arrays.asList("boolean", "byte", "char", "short", "int",
+                "long", "float", "double", "void").contains(normalized)) {
+            return false;
+        }
+        // Planner-authored Java reference types are fully qualified binary,
+        // internal, or source names.  Do not treat an unknown empty/scalar
+        // label as reference evidence.
+        return normalized.indexOf('.') >= 0 || normalized.indexOf('/') >= 0
+                || normalized.indexOf('$') >= 0;
+    }
+
+    private static boolean declaresJavaString(JsonObject action) {
+        String type = firstNonBlank(string(action, "javaType"),
+                string(action, "inputJavaType"),
+                declaredCellType(string(action, "cell")))
+                .replace('.', '/');
+        return "java/lang/String".equals(type)
+                || "Ljava/lang/String;".equals(type);
+    }
+
+    private static String declaredCellType(String cell) {
+        String value = cell == null ? "" : cell.trim();
+        if (!value.startsWith("<")) return "";
+        int colon = value.indexOf(':');
+        int space = colon < 0 ? -1 : value.indexOf(' ', colon + 2);
+        return colon < 0 || space < 0 ? ""
+                : value.substring(colon + 1, space).trim();
+    }
+
+    private static String modelAssignmentKey(JsonObject assignment) {
+        String dynamic = string(assignment, "dynamicBindingId");
+        if (!dynamic.isEmpty()) return dynamic;
+        String engine = string(assignment, "engineSymbol");
+        if (!engine.isEmpty()) return engine;
+        String input = string(assignment, "inputSymbol");
+        if (input.isEmpty()) return "";
+        StringBuilder path = new StringBuilder();
+        for (JsonElement element : array(assignment,
+                "materializationPath")) {
+            if (!element.isJsonPrimitive()) return "";
+            if (path.length() > 0) path.append('.');
+            path.append(element.getAsString());
+        }
+        return input + ":" + path;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return "";
     }
 
     static JsonObject replayValidationPlan(JsonObject task,

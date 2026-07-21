@@ -1036,11 +1036,14 @@ run:
           UPDATE_PC_AND_CONTINUE(1);
 
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_CONST(off)                                                    \
-  if (ConcolicMngr::can_do_concolic()) {                                       \
-    ConcolicMngr::ctx->clear_stack_slot(GET_STACK_OFFSET + (off));               \
+#define CONCOLIC_CONST_VALUE(anchor_off, slot_count)                          \
+  if (ConcolicMngr::can_do_concolic()) {                                      \
+    ConcolicMngr::ctx->set_stack_value(                                       \
+        GET_STACK_OFFSET + (anchor_off), (slot_count), NULL);                 \
   }
+#define CONCOLIC_CONST(off) CONCOLIC_CONST_VALUE((off), 1)
 #else
+#define CONCOLIC_CONST_VALUE(anchor_off, slot_count)
 #define CONCOLIC_CONST(off)
 #endif
 
@@ -1072,7 +1075,7 @@ run:
 #define OPC_CONST2_n(opcname, value, key, kind)                         \
       CASE(_##opcname):                                                 \
       {                                                                 \
-          CONCOLIC_CONST(1);                                            \
+          CONCOLIC_CONST_VALUE(1, 2);                                   \
           SET_STACK_ ## kind(VM##key##Const##value(), 1);               \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, 2);                         \
       }
@@ -1098,57 +1101,57 @@ run:
 
           /* load from local variable */
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_LOAD(local_off, delta_stack_off)                              \
+#define CONCOLIC_LOAD(local_anchor, stack_anchor, slot_count)                  \
   if (ConcolicMngr::can_do_concolic()) {                                       \
-    ConcolicMngr::ctx->copy_entry_from_local_to_stack(                         \
-        local_off, GET_STACK_OFFSET + (delta_stack_off));                        \
+    ConcolicMngr::ctx->copy_local_value_to_stack(                              \
+        (local_anchor), GET_STACK_OFFSET + (stack_anchor), (slot_count));      \
   }
 #else
-#define CONCOLIC_LOAD(local_off, stack_off)
+#define CONCOLIC_LOAD(local_anchor, stack_anchor, slot_count)
 #endif
 
       CASE(_aload):
           VERIFY_OOP(LOCALS_OBJECT(pc[1]));
-          CONCOLIC_LOAD(pc[1], 0);
+          CONCOLIC_LOAD(pc[1], 0, 1);
           SET_STACK_OBJECT(LOCALS_OBJECT(pc[1]), 0);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, 1);
 
       CASE(_iload):
       CASE(_fload):
-          CONCOLIC_LOAD(pc[1], 0);
+          CONCOLIC_LOAD(pc[1], 0, 1);
           SET_STACK_SLOT(LOCALS_SLOT(pc[1]), 0);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, 1);
 
       CASE(_lload):
-          CONCOLIC_LOAD(pc[1] + 1, 1);
+          CONCOLIC_LOAD(pc[1] + 1, 1, 2);
           SET_STACK_LONG_FROM_ADDR(LOCALS_LONG_AT(pc[1]), 1);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, 2);
 
       CASE(_dload):
-          CONCOLIC_LOAD(pc[1] + 1, 1);
+          CONCOLIC_LOAD(pc[1] + 1, 1, 2);
           SET_STACK_DOUBLE_FROM_ADDR(LOCALS_DOUBLE_AT(pc[1]), 1);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, 2);
 
 #undef  OPC_LOAD_n
 #define OPC_LOAD_n(num)                                                 \
       CASE(_aload_##num):                                               \
-          CONCOLIC_LOAD(num, 0);                                        \
+          CONCOLIC_LOAD(num, 0, 1);                                     \
           VERIFY_OOP(LOCALS_OBJECT(num));                               \
           SET_STACK_OBJECT(LOCALS_OBJECT(num), 0);                      \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, 1);                         \
                                                                         \
       CASE(_iload_##num):                                               \
       CASE(_fload_##num):                                               \
-          CONCOLIC_LOAD(num, 0);                                        \
+          CONCOLIC_LOAD(num, 0, 1);                                     \
           SET_STACK_SLOT(LOCALS_SLOT(num), 0);                          \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, 1);                         \
                                                                         \
       CASE(_lload_##num):                                               \
-          CONCOLIC_LOAD(num + 1, 1);                                    \
+          CONCOLIC_LOAD(num + 1, 1, 2);                                 \
           SET_STACK_LONG_FROM_ADDR(LOCALS_LONG_AT(num), 1);             \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, 2);                         \
       CASE(_dload_##num):                                               \
-          CONCOLIC_LOAD(num + 1, 1);                                    \
+          CONCOLIC_LOAD(num + 1, 1, 2);                                 \
           SET_STACK_DOUBLE_FROM_ADDR(LOCALS_DOUBLE_AT(num), 1);         \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, 2);
 
@@ -1159,40 +1162,37 @@ run:
 
           /* store to a local variable */
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_STORE(delta_stack_off, local_off)                             \
+#define CONCOLIC_STORE(stack_anchor, local_anchor, slot_count)                 \
   if (ConcolicMngr::can_do_concolic()) {                                       \
-    ConcolicMngr::ctx->copy_entry_from_stack_to_local(                         \
-        GET_STACK_OFFSET + (delta_stack_off), local_off);                        \
+    ConcolicMngr::ctx->move_stack_value_to_local(                              \
+        GET_STACK_OFFSET + (stack_anchor), (local_anchor), (slot_count));      \
   }
 #else
-#define CONCOLIC_STORE(stack_off, local_off)
+#define CONCOLIC_STORE(stack_anchor, local_anchor, slot_count)
 #endif
 
       CASE(_astore):
-          CONCOLIC_STORE(-1, pc[1]);
+          CONCOLIC_STORE(-1, pc[1], 1);
           astore(topOfStack, -1, locals, pc[1]);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, -1);
 
       CASE(_istore):
       CASE(_fstore):
-          CONCOLIC_STORE(-1, pc[1]);
+          CONCOLIC_STORE(-1, pc[1], 1);
           SET_LOCALS_SLOT(STACK_SLOT(-1), pc[1]);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, -1);
 
       CASE(_lstore):
-          CONCOLIC_STORE(-1, pc[1] + 1);
+          CONCOLIC_STORE(-1, pc[1] + 1, 2);
           SET_LOCALS_LONG(STACK_LONG(-1), pc[1]);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, -2);
 
       CASE(_dstore):
-          CONCOLIC_STORE(-1, pc[1] + 1);
+          CONCOLIC_STORE(-1, pc[1] + 1, 2);
           SET_LOCALS_DOUBLE(STACK_DOUBLE(-1), pc[1]);
           UPDATE_PC_AND_TOS_AND_CONTINUE(2, -2);
 
       CASE(_wide): {
-#ifdef ENABLE_CONCOLIC
-          ConcolicMngr::warning_reach_unhandled_bytecode("wide");
-#endif
           uint16_t reg = Bytes::get_Java_u2(pc + 2);
 
           opcode = pc[1];
@@ -1203,42 +1203,60 @@ run:
 
           switch(opcode) {
               case Bytecodes::_aload:
+                  CONCOLIC_LOAD(reg, 0, 1);
                   VERIFY_OOP(LOCALS_OBJECT(reg));
                   SET_STACK_OBJECT(LOCALS_OBJECT(reg), 0);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, 1);
 
               case Bytecodes::_iload:
               case Bytecodes::_fload:
+                  CONCOLIC_LOAD(reg, 0, 1);
                   SET_STACK_SLOT(LOCALS_SLOT(reg), 0);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, 1);
 
               case Bytecodes::_lload:
+                  CONCOLIC_LOAD(reg + 1, 1, 2);
                   SET_STACK_LONG_FROM_ADDR(LOCALS_LONG_AT(reg), 1);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, 2);
 
               case Bytecodes::_dload:
-                  SET_STACK_DOUBLE_FROM_ADDR(LOCALS_LONG_AT(reg), 1);
+                  CONCOLIC_LOAD(reg + 1, 1, 2);
+                  SET_STACK_DOUBLE_FROM_ADDR(LOCALS_DOUBLE_AT(reg), 1);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, 2);
 
               case Bytecodes::_astore:
+                  CONCOLIC_STORE(-1, reg, 1);
                   astore(topOfStack, -1, locals, reg);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, -1);
 
               case Bytecodes::_istore:
               case Bytecodes::_fstore:
+                  CONCOLIC_STORE(-1, reg, 1);
                   SET_LOCALS_SLOT(STACK_SLOT(-1), reg);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, -1);
 
               case Bytecodes::_lstore:
+                  CONCOLIC_STORE(-1, reg + 1, 2);
                   SET_LOCALS_LONG(STACK_LONG(-1), reg);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, -2);
 
               case Bytecodes::_dstore:
+                  CONCOLIC_STORE(-1, reg + 1, 2);
                   SET_LOCALS_DOUBLE(STACK_DOUBLE(-1), reg);
                   UPDATE_PC_AND_TOS_AND_CONTINUE(4, -2);
 
               case Bytecodes::_iinc: {
                   int16_t offset = (int16_t)Bytes::get_Java_u2(pc+4);
+#ifdef ENABLE_CONCOLIC
+                  if (ConcolicMngr::can_do_concolic()) {
+                    Expression *left = ConcolicMngr::ctx->get_local_slot(reg);
+                    if (left != NULL) {
+                      ConcolicMngr::ctx->set_local_slot(
+                          reg, new OpSymExpression(
+                              left, new ConExpression((jint)offset), op_add));
+                    }
+                  }
+#endif
                   // Be nice to see what this generates.... QQQ
                   SET_LOCALS_INT(LOCALS_INT(reg) + offset, reg);
                   UPDATE_PC_AND_CONTINUE(6);
@@ -1258,12 +1276,12 @@ run:
 #undef  OPC_STORE_n
 #define OPC_STORE_n(num)                                                \
       CASE(_astore_##num):                                              \
-          CONCOLIC_STORE(-1, num);                                      \
+          CONCOLIC_STORE(-1, num, 1);                                   \
           astore(topOfStack, -1, locals, num);                          \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);                        \
       CASE(_istore_##num):                                              \
       CASE(_fstore_##num):                                              \
-          CONCOLIC_STORE(-1, num);                                      \
+          CONCOLIC_STORE(-1, num, 1);                                   \
           SET_LOCALS_SLOT(STACK_SLOT(-1), num);                         \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
 
@@ -1275,11 +1293,11 @@ run:
 #undef  OPC_DSTORE_n
 #define OPC_DSTORE_n(num)                                               \
       CASE(_dstore_##num):                                              \
-          CONCOLIC_STORE(-1, num + 1);                                  \
+          CONCOLIC_STORE(-1, num + 1, 2);                               \
           SET_LOCALS_DOUBLE(STACK_DOUBLE(-1), num);                     \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -2);                        \
       CASE(_lstore_##num):                                              \
-          CONCOLIC_STORE(-1, num + 1);                                  \
+          CONCOLIC_STORE(-1, num + 1, 2);                               \
           SET_LOCALS_LONG(STACK_LONG(-1), num);                         \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -2);
 
@@ -1292,10 +1310,20 @@ run:
 
 
       CASE(_pop):                /* Discard the top item on the stack */
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - 1, 1);
+          }
+#endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
 
 
       CASE(_pop2):               /* Discard the top 2 items on the stack */
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - 1, 2);
+          }
+#endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -2);
 
       CASE(_dup): { /* Duplicate the top item on the stack */
@@ -1402,88 +1430,106 @@ run:
         UPDATE_PC_AND_CONTINUE(1);
       }
 
-// Simplification of lcmp related pc:
-//  original issue: comparison of two long is translated to 2 path conditions(cmp + == 0), which is not easy to be translated into sql
-//  thus simplify as follows:
-// Since the entire pathconditon information is determined here,
-// do not need to propgate the expression to following jmp instructions.
-
-// TODO: generalization of lcmp related pc.
-//  Original PC:
-//  a < b
-//  Expected PC:
-//  a != b
-//  Details see #132
-#ifdef ENABLE_WEBRIDGE
-#define CONCOLIC_CMP_TRIPLE_RES(l_off, r_off, r, l_value, r_value, res_off)             \
+#ifdef ENABLE_CONCOLIC
+#define CONCOLIC_OPC_BINARY(l_off, l_slots, r_off, r_slots, res_off,          \
+                            res_slots, l_value, r_value, op)                  \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *left =                                                         \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + l_off);               \
     Expression *right =                                                        \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + r_off);               \
-    ConcolicMngr::ctx->set_stack_slot(stack_offset + l_off, NULL);             \
-    ConcolicMngr::ctx->set_stack_slot(stack_offset + r_off, NULL);             \
+    Expression *result = NULL;                                                 \
     if (left || right) {                                                       \
+      /* iand/ior/ixor are shared by Java int and boolean.  Recover the */     \
+      /* Boolean operation only when every symbolic operand is Boolean */     \
+      /* and each concrete peer is a canonical JVM boolean (0 or 1). */       \
+      bool left_boolean = left != NULL && left->is_boolean_expression();       \
+      bool right_boolean = right != NULL && right->is_boolean_expression();    \
+      bool boolean_operation =                                                 \
+          ((op) == op_and || (op) == op_or || (op) == op_xor)                 \
+          && (left_boolean || right_boolean)                                   \
+          && (left != NULL ? left_boolean                                      \
+                           : ((l_value) == 0 || (l_value) == 1))                \
+          && (right != NULL ? right_boolean                                    \
+                            : ((r_value) == 0 || (r_value) == 1));              \
       if (!left) {                                                             \
-        left = new ConExpression(l_value);                                     \
+        left = boolean_operation                                               \
+            ? (Expression *)new ConExpression(                                 \
+                  (jboolean)((l_value) != 0))                                  \
+            : (Expression *)new ConExpression(l_value);                        \
       }                                                                        \
       if (!right) {                                                            \
-        right = new ConExpression(r_value);                                    \
+        right = boolean_operation                                              \
+            ? (Expression *)new ConExpression(                                 \
+                  (jboolean)((r_value) != 0))                                  \
+            : (Expression *)new ConExpression(r_value);                        \
       }                                                                        \
-      Expression *new_exp;                                                     \
-      if (r == 0) {                                                            \
-        new_exp = new OpSymExpression(left, right, op_eq);                     \
-      } else if (r == 1) {                                                     \
-        new_exp = new OpSymExpression(left, right, op_gt);                     \
-      } else {                                                                 \
-        new_exp = new OpSymExpression(left, right, op_lt);                     \
+      SymbolicOp symbolic_op = (op);                                           \
+      if (boolean_operation) {                                                 \
+        symbolic_op = (op) == op_and ? op_land                                 \
+            : (op) == op_or ? op_lor : op_ne;                                 \
       }                                                                        \
-      ConcolicMngr::record_compare_witness(new_exp);                           \
-      ConcolicMngr::ctx->set_stack_slot(stack_offset + res_off, NULL);         \
+      result = new OpSymExpression(left, right, symbolic_op);                  \
     }                                                                          \
+    ConcolicMngr::ctx->clear_stack_value(                                      \
+        stack_offset + l_off, (l_slots));                                      \
+    ConcolicMngr::ctx->clear_stack_value(                                      \
+        stack_offset + r_off, (r_slots));                                      \
+    ConcolicMngr::ctx->set_stack_value(                                        \
+        stack_offset + res_off, (res_slots), result);                          \
   }
 #else
-#define CONCOLIC_CMP_TRIPLE_RES(l_off, r_off, r, l_value, r_value, res_off)
+#define CONCOLIC_OPC_BINARY(l_off, l_slots, r_off, r_slots, res_off,          \
+                            res_slots, l_value, r_value, op)
 #endif
 
+// JVM numeric compare instructions consume two same-width values and produce
+// one int trichotomy.  Keep that value on the shadow stack for the following
+// if* bytecode, while clearing every consumed category-1/category-2 slot.
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_OPC_BINARY(l_off, r_off, res_off, l_value, r_value, op)       \
-  if (ConcolicMngr::can_do_concolic()) {                                       \
-    int stack_offset = GET_STACK_OFFSET;                                       \
-    Expression *left =                                                         \
-        ConcolicMngr::ctx->get_stack_slot(stack_offset + l_off);               \
-    Expression *right =                                                        \
-        ConcolicMngr::ctx->get_stack_slot(stack_offset + r_off);               \
-    if (left || right) {                                                       \
-      if (!left) {                                                             \
-        left = new ConExpression(l_value);                                     \
-      }                                                                        \
-      if (!right) {                                                            \
-        right = new ConExpression(r_value);                                    \
-      }                                                                        \
-      Expression *new_exp = new OpSymExpression(left, right, op);              \
-      ConcolicMngr::ctx->set_stack_slot(stack_offset + res_off, new_exp);      \
-    }                                                                          \
+#define CONCOLIC_OPC_TRICHOTOMY(l_off, r_off, res_off, operand_slots,         \
+                                l_value, r_value, op)                         \
+  if (ConcolicMngr::can_do_concolic()) {                                      \
+    int stack_offset = GET_STACK_OFFSET;                                      \
+    Expression *left =                                                        \
+        ConcolicMngr::ctx->get_stack_slot(stack_offset + l_off);              \
+    Expression *right =                                                       \
+        ConcolicMngr::ctx->get_stack_slot(stack_offset + r_off);              \
+    Expression *result = NULL;                                                \
+    if (left || right) {                                                      \
+      if (!left) {                                                            \
+        left = new ConExpression(l_value);                                    \
+      }                                                                       \
+      if (!right) {                                                           \
+        right = new ConExpression(r_value);                                   \
+      }                                                                       \
+      result = new OpSymExpression(left, right, op);                          \
+    }                                                                         \
+    ConcolicMngr::ctx->clear_stack_value(                                     \
+        stack_offset + l_off, (operand_slots));                               \
+    ConcolicMngr::ctx->clear_stack_value(                                     \
+        stack_offset + r_off, (operand_slots));                               \
+    ConcolicMngr::ctx->set_stack_value(                                       \
+        stack_offset + res_off, 1, result);                                   \
   }
 #else
-#define CONCOLIC_OPC_BINARY(l_off, r_off, res_off, l_value, r_value, op)
+#define CONCOLIC_OPC_TRICHOTOMY(l_off, r_off, res_off, operand_slots,         \
+                                l_value, r_value, op)
 #endif
 
           /* Perform various binary integer operations */
 #undef  OPC_INT_BINARY
-/**
- * We do not clear stack slot when both parameters are concrete
- * Because the result solt is already concrete (NULL)
- */
+/* Every binary opcode replaces its full operand footprint, including when
+ * both operands and the result are concrete. */
 #define OPC_INT_BINARY(opcname, opname, test)                                  \
   CASE(_i##opcname) : {                                                        \
     if (test && (STACK_INT(-1) == 0)) {                                        \
       VM_JAVA_ERROR(vmSymbols::java_lang_ArithmeticException(), "/ by zero",   \
                     note_div0Check_trap);                                      \
     }                                                                          \
-    CONCOLIC_OPC_BINARY(-2, -1, -2, STACK_INT(-2), STACK_INT(-1),              \
-                        op_##opcname);                                         \
+    CONCOLIC_OPC_BINARY(-2, 1, -1, 1, -2, 1, STACK_INT(-2),                   \
+                        STACK_INT(-1), op_##opcname);                          \
     SET_STACK_INT(VMint##opname(STACK_INT(-2), STACK_INT(-1)), -2);            \
     UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);                                     \
   }                                                                            \
@@ -1495,8 +1541,8 @@ run:
                       "/ by long zero", note_div0Check_trap);                  \
       }                                                                        \
     }                                                                          \
-    CONCOLIC_OPC_BINARY(-3, -1, -3, STACK_LONG(-3), STACK_LONG(-1),            \
-                        op_##opcname);                                         \
+    CONCOLIC_OPC_BINARY(-3, 2, -1, 2, -3, 2, STACK_LONG(-3),                  \
+                        STACK_LONG(-1), op_##opcname);                         \
     /* First long at (-1,-2) next long at (-3,-4) */                           \
     SET_STACK_LONG(VMlong##opname(STACK_LONG(-3), STACK_LONG(-1)), -3);        \
     UPDATE_PC_AND_TOS_AND_CONTINUE(1, -2);                                     \
@@ -1517,16 +1563,16 @@ run:
 #undef  OPC_FLOAT_BINARY
 #define OPC_FLOAT_BINARY(opcname, opname)                                  \
       CASE(_d##opcname): {                                                 \
-        CONCOLIC_OPC_BINARY(-3, -1, -3, STACK_DOUBLE(-3), STACK_DOUBLE(-1),\
-          op_##opcname);                                                   \
+        CONCOLIC_OPC_BINARY(-3, 2, -1, 2, -3, 2, STACK_DOUBLE(-3),        \
+          STACK_DOUBLE(-1), op_##opcname);                                \
         SET_STACK_DOUBLE(VMdouble##opname(STACK_DOUBLE(-3),              \
                                           STACK_DOUBLE(-1)),             \
                                           -3);                           \
         UPDATE_PC_AND_TOS_AND_CONTINUE(1, -2);                           \
       }                                                                    \
       CASE(_f##opcname):                                                   \
-          CONCOLIC_OPC_BINARY(-2, -1, -2, STACK_FLOAT(-2), STACK_FLOAT(-1),\
-          op_##opcname);                                                   \
+          CONCOLIC_OPC_BINARY(-2, 1, -1, 1, -2, 1, STACK_FLOAT(-2),       \
+          STACK_FLOAT(-1), op_##opcname);                                 \
           SET_STACK_FLOAT(VMfloat##opname(STACK_FLOAT(-2),                 \
                                           STACK_FLOAT(-1)),                \
                                           -2);                             \
@@ -1548,16 +1594,16 @@ run:
 #undef  OPC_SHIFT_BINARY
 #define OPC_SHIFT_BINARY(opcname, opname)                               \
       CASE(_i##opcname):                                                \
-         CONCOLIC_OPC_BINARY(-2, -1, -2, STACK_INT(-2), STACK_INT(-1),  \
-                             op_##opcname);                             \
+         CONCOLIC_OPC_BINARY(-2, 1, -1, 1, -2, 1, STACK_INT(-2),       \
+                             STACK_INT(-1), op_##opcname);              \
          SET_STACK_INT(VMint##opname(STACK_INT(-2),                     \
                                      STACK_INT(-1)),                    \
                                      -2);                               \
          UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);                         \
       CASE(_l##opcname):                                                \
       {                                                                 \
-         CONCOLIC_OPC_BINARY(-2, -1, -2, STACK_LONG(-2), STACK_INT(-1), \
-                             op_##opcname);                             \
+         CONCOLIC_OPC_BINARY(-2, 2, -1, 1, -2, 2, STACK_LONG(-2),      \
+                             STACK_INT(-1), op_##opcname);              \
          SET_STACK_LONG(VMlong##opname(STACK_LONG(-2),                  \
                                        STACK_INT(-1)),                  \
                                        -2);                             \
@@ -1576,7 +1622,10 @@ run:
 
             Expression *left = ConcolicMngr::ctx->get_local_slot(pc[1]);
             if(left){
-              Expression *right = new ConExpression(pc[2]);
+              // iinc's immediate is a signed byte with Java int semantics.
+              // Passing the raw u1 selected ConExpression(jboolean) on this
+              // VM and serialized +1 as Y_Z_1, producing a mixed Z/I term.
+              Expression *right = new ConExpression((jint)(jbyte)pc[2]);
               Expression *new_exp = new OpSymExpression(left, right, op_add);
               ConcolicMngr::ctx->set_local_slot(pc[1], new_exp);
             }                                                                                         
@@ -1590,61 +1639,70 @@ run:
      /* negate the value on the top of the stack */
 
 #ifdef ENABLE_WEBRIDGE
-#define CONCOLIC_CONVERT_TYPE(input_offset, output_offset, inplace, type)  \
-      if (ConcolicMngr::can_do_concolic()) {  \
-        int stack_offset = GET_STACK_OFFSET;  \
-        Expression *old_exp = \
-            ConcolicMngr::ctx->get_stack_slot(stack_offset + input_offset);  \
-        if (inplace)  \
-          ConcolicMngr::ctx->set_stack_slot(stack_offset + output_offset, old_exp); \
-        else if (old_exp) {  \
-          TypeCastExpression *new_exp = new TypeCastExpression(old_exp);  \
-          new_exp->set_type(type);  \
-          ConcolicMngr::ctx->set_stack_slot(stack_offset + output_offset, new_exp); \
-          ConcolicMngr::record_path_condition(  \
-            new OpSymExpression(old_exp, new_exp, op_eq)  \
-          );  \
-        } \
+#define CONCOLIC_CONVERT_TYPE(input_offset, input_slots, output_offset,       \
+                              output_slots, source_type, target_type)         \
+      if (ConcolicMngr::can_do_concolic()) {                                  \
+        int stack_offset = GET_STACK_OFFSET;                                  \
+        Expression *old_exp =                                                 \
+            ConcolicMngr::ctx->get_stack_slot(stack_offset + input_offset);   \
+        Expression *cast_exp = old_exp == NULL                                \
+            ? NULL                                                            \
+            : (Expression *)new TypeCastExpression(                           \
+                  old_exp, source_type, target_type);                         \
+        /* A conversion is a value-producing JVM operation, including the */ \
+        /* same-width and narrowing forms.  Never alias the source shadow */  \
+        /* and never turn value semantics into an assumed path predicate. */ \
+        ConcolicMngr::ctx->clear_stack_value(                                 \
+            stack_offset + input_offset, (input_slots));                      \
+        /* Clear the complete destination footprint as well.  In particular */\
+        /* a category-2 result owns one expression anchor and one NULL */     \
+        /* companion; no pre-existing category-1 shadow may survive there. */\
+        ConcolicMngr::ctx->set_stack_value(                                   \
+            stack_offset + output_offset, (output_slots), cast_exp);          \
       }
 #else
-#define CONCOLIC_CONVERT_TYPE(input_offset, output_offset, inplace, type)
+#define CONCOLIC_CONVERT_TYPE(input_offset, input_slots, output_offset,       \
+                              output_slots, source_type, target_type)
 #endif
 
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_OPC_UNARY(input_offset, output_offset, op)                    \
+#define CONCOLIC_OPC_UNARY(input_offset, input_slots, output_offset,           \
+                           output_slots, op)                                  \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *old_exp =                                                      \
         ConcolicMngr::ctx->get_stack_slot(stack_offset + input_offset);        \
-    if (old_exp) {                                                             \
-      Expression *new_exp = new OpSymExpression(old_exp, op);                  \
-      ConcolicMngr::ctx->set_stack_slot(stack_offset + output_offset,          \
-                                        new_exp);                              \
-    }                                                                          \
+    Expression *new_exp = old_exp == NULL                                     \
+        ? NULL : (Expression *)new OpSymExpression(old_exp, op);               \
+    ConcolicMngr::ctx->clear_stack_value(                                      \
+        stack_offset + input_offset, (input_slots));                           \
+    ConcolicMngr::ctx->set_stack_value(                                        \
+        stack_offset + output_offset, (output_slots), new_exp);                \
   }
 #else
-#define CONCOLIC_OPC_UNARY(input_offset, output_offset, op)
+#define CONCOLIC_OPC_UNARY(input_offset, input_slots, output_offset,           \
+                           output_slots, op)
 #endif
       CASE(_ineg):
-        CONCOLIC_OPC_UNARY(-1, -1, op_neg);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_neg);
         SET_STACK_INT(VMintNeg(STACK_INT(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
 
       CASE(_fneg):
-        CONCOLIC_OPC_UNARY(-1, -1, op_neg);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_neg);
         SET_STACK_FLOAT(VMfloatNeg(STACK_FLOAT(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
 
       CASE(_lneg):
       {
-        CONCOLIC_OPC_UNARY(-1, -1, op_neg);
+        CONCOLIC_OPC_UNARY(-1, 2, -1, 2, op_neg);
         SET_STACK_LONG(VMlongNeg(STACK_LONG(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
       }
 
       CASE(_dneg):
       {
-        CONCOLIC_OPC_UNARY(-1, -1, op_neg);
+        CONCOLIC_OPC_UNARY(-1, 2, -1, 2, op_neg);
         SET_STACK_DOUBLE(VMdoubleNeg(STACK_DOUBLE(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
       }
@@ -1655,9 +1713,9 @@ run:
           : /* convert top of stack int to float */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, false, "F");
+        CONCOLIC_CONVERT_TYPE(-1, 1, -1, 1, "I", "F");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2f);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_2f);
 #endif
         SET_STACK_FLOAT(VMint2Float(STACK_INT(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
@@ -1667,9 +1725,9 @@ run:
           : /* convert top of stack int to long */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, 0, true, "L");
+        CONCOLIC_CONVERT_TYPE(-1, 1, 0, 2, "I", "J");
 #else
-        CONCOLIC_OPC_UNARY(-1, 0, op_2l);
+        CONCOLIC_OPC_UNARY(-1, 1, 0, 2, op_2l);
 #endif
         // this is ugly QQQ
         jlong r = VMint2Long(STACK_INT(-1));
@@ -1683,9 +1741,9 @@ run:
           : /* convert top of stack int to double */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, 0, false, "D");
+        CONCOLIC_CONVERT_TYPE(-1, 1, 0, 2, "I", "D");
 #else
-        CONCOLIC_OPC_UNARY(-1, 0, op_2d);
+        CONCOLIC_OPC_UNARY(-1, 1, 0, 2, op_2d);
 #endif
 
         // this is ugly QQQ (why cast to jlong?? )
@@ -1700,9 +1758,9 @@ run:
           : /* convert top of stack long to int */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -2, true, "I");
+        CONCOLIC_CONVERT_TYPE(-1, 2, -2, 1, "J", "I");
 #else
-        CONCOLIC_OPC_UNARY(-1, -2, op_2i);
+        CONCOLIC_OPC_UNARY(-1, 2, -2, 1, op_2i);
 #endif
 
         jint r = VMlong2Int(STACK_LONG(-1));
@@ -1715,9 +1773,9 @@ run:
           : /* convert top of stack long to float */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -2, false, "F");
+        CONCOLIC_CONVERT_TYPE(-1, 2, -2, 1, "J", "F");
 #else
-        CONCOLIC_OPC_UNARY(-1, -2, op_2f);
+        CONCOLIC_OPC_UNARY(-1, 2, -2, 1, op_2f);
 #endif
 
         jlong r = STACK_LONG(-1);
@@ -1730,9 +1788,9 @@ run:
           : /* convert top of stack long to double */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, false, "D");
+        CONCOLIC_CONVERT_TYPE(-1, 2, -1, 2, "J", "D");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2d);
+        CONCOLIC_OPC_UNARY(-1, 2, -1, 2, op_2d);
 #endif
 
         jlong r = STACK_LONG(-1);
@@ -1745,9 +1803,9 @@ run:
           : /* Convert top of stack float to int */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, false, "I");
+        CONCOLIC_CONVERT_TYPE(-1, 1, -1, 1, "F", "I");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2i);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_2i);
 #endif
 
         SET_STACK_INT(SharedRuntime::f2i(STACK_FLOAT(-1)), -1);
@@ -1758,9 +1816,9 @@ run:
           : /* convert top of stack float to long */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, 0, false, "L");
+        CONCOLIC_CONVERT_TYPE(-1, 1, 0, 2, "F", "J");
 #else
-        CONCOLIC_OPC_UNARY(-1, 0, op_2l);
+        CONCOLIC_OPC_UNARY(-1, 1, 0, 2, op_2l);
 #endif
 
         jlong r = SharedRuntime::f2l(STACK_FLOAT(-1));
@@ -1773,9 +1831,9 @@ run:
           : /* convert top of stack float to double */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, 0, true, "D");
+        CONCOLIC_CONVERT_TYPE(-1, 1, 0, 2, "F", "D");
 #else
-        CONCOLIC_OPC_UNARY(-1, 0, op_2d);
+        CONCOLIC_OPC_UNARY(-1, 1, 0, 2, op_2d);
 #endif
 
         jfloat f;
@@ -1791,9 +1849,9 @@ run:
           : /* convert top of stack double to int */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -2, false, "I");
+        CONCOLIC_CONVERT_TYPE(-1, 2, -2, 1, "D", "I");
 #else
-        CONCOLIC_OPC_UNARY(-1, -2, op_2i);
+        CONCOLIC_OPC_UNARY(-1, 2, -2, 1, op_2i);
 #endif
 
         jint r1 = SharedRuntime::d2i(STACK_DOUBLE(-1));
@@ -1806,9 +1864,9 @@ run:
           : /* convert top of stack double to float */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -2, true, "F");
+        CONCOLIC_CONVERT_TYPE(-1, 2, -2, 1, "D", "F");
 #else
-        CONCOLIC_OPC_UNARY(-1, -2, op_2f);
+        CONCOLIC_OPC_UNARY(-1, 2, -2, 1, op_2f);
 #endif
 
         jfloat r1 = VMdouble2Float(STACK_DOUBLE(-1));
@@ -1821,9 +1879,9 @@ run:
           : /* convert top of stack double to long */
       {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, false, "L");
+        CONCOLIC_CONVERT_TYPE(-1, 2, -1, 2, "D", "J");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2l);
+        CONCOLIC_OPC_UNARY(-1, 2, -1, 2, op_2l);
 #endif
 
         jlong r1 = SharedRuntime::d2l(STACK_DOUBLE(-1));
@@ -1834,9 +1892,9 @@ run:
 
       CASE(_i2b) : {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, true, "B");
+        CONCOLIC_CONVERT_TYPE(-1, 1, -1, 1, "I", "B");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2b);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_2b);
 #endif
         SET_STACK_INT(VMint2Byte(STACK_INT(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
@@ -1844,9 +1902,9 @@ run:
 
       CASE(_i2c) : {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, true, "C");
+        CONCOLIC_CONVERT_TYPE(-1, 1, -1, 1, "I", "C");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2c);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_2c);
 #endif
         SET_STACK_INT(VMint2Char(STACK_INT(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
@@ -1854,9 +1912,9 @@ run:
 
       CASE(_i2s) : {
 #ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CONVERT_TYPE(-1, -1, true, "S");
+        CONCOLIC_CONVERT_TYPE(-1, 1, -1, 1, "I", "S");
 #else
-        CONCOLIC_OPC_UNARY(-1, -1, op_2s);
+        CONCOLIC_OPC_UNARY(-1, 1, -1, 1, op_2s);
 #endif
         SET_STACK_INT(VMint2Short(STACK_INT(-1)), -1);
         UPDATE_PC_AND_CONTINUE(1);
@@ -1872,15 +1930,32 @@ run:
         ConcolicMngr::ctx->get_stack_slot(stack_offset + r_off);               \
     Expression *new_exp = NULL;                                                \
     if (left || right) {                                                       \
+      bool left_boolean = left != NULL && left->is_boolean_expression();       \
+      bool right_boolean = right != NULL && right->is_boolean_expression();    \
+      bool boolean_comparison =                                                \
+          ((op) == op_eq || (op) == op_ne)                                    \
+          && (left_boolean || right_boolean)                                   \
+          && (left != NULL ? left_boolean                                      \
+                           : ((l_value) == 0 || (l_value) == 1))                \
+          && (right != NULL ? right_boolean                                    \
+                            : ((r_value) == 0 || (r_value) == 1));              \
       if (!left) {                                                             \
-        left = new ConExpression(l_value);                                     \
+        left = boolean_comparison                                              \
+            ? (Expression *)new ConExpression(                                 \
+                  (jboolean)((l_value) != 0))                                  \
+            : (Expression *)new ConExpression(l_value);                        \
       }                                                                        \
       if (!right) {                                                            \
-        right = new ConExpression(r_value);                                    \
+        right = boolean_comparison                                             \
+            ? (Expression *)new ConExpression(                                 \
+                  (jboolean)((r_value) != 0))                                  \
+            : (Expression *)new ConExpression(r_value);                        \
       }                                                                        \
       new_exp = new OpSymExpression(left, right, op, outcome);                 \
     }                                                                          \
     ConcolicMngr::record_branch_condition(new_exp, outcome, (int) opcode);     \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + l_off, 1);             \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + r_off, 1);             \
   }
 #else
 #define CONCOLIC_OPC_BINARY_CMP(l_off, r_off, l_value, r_value, op, outcome)
@@ -1897,10 +1972,21 @@ run:
         ConcolicMngr::ctx->get_stack_slot(stack_offset + off);                 \
     Expression *right_exp = NULL;                                              \
     if (left_exp) {                                                            \
-      Expression *const_exp = new ConExpression(value);                        \
-      right_exp = new OpSymExpression(left_exp, const_exp, op, outcome);       \
+      if ((opcode == Bytecodes::_ifeq || opcode == Bytecodes::_ifne)           \
+          && left_exp->is_boolean_expression()) {                              \
+        /* The stack holds a Boolean value, although the verifier exposes */  \
+        /* an int-shaped slot.  Compare it with Boolean false and apply the */ \
+        /* opcode/outcome polarity here, at the actual path decision. */       \
+        Expression *const_exp = new ConExpression((jboolean)false);            \
+        right_exp = new OpSymExpression(                                       \
+            left_exp, const_exp, op, outcome);                                 \
+      } else {                                                                 \
+        Expression *const_exp = new ConExpression(value);                      \
+        right_exp = new OpSymExpression(left_exp, const_exp, op, outcome);     \
+      }                                                                        \
     }                                                                          \
     ConcolicMngr::record_branch_condition(right_exp, outcome, (int) opcode);   \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + off, 1);               \
   }
 #else
 #define CONCOLIC_OPC_UNARY_CMP(off, value, op, outcome)
@@ -1913,6 +1999,47 @@ run:
   }
 #else
 #define CONCOLIC_RECORD_UNMODELED_BRANCH(outcome)
+#endif
+
+#ifdef ENABLE_CONCOLIC
+#define CONCOLIC_OPC_REF_CMP(l_off, r_off, l_obj, r_obj, op, outcome)          \
+  if (ConcolicMngr::can_do_concolic()) {                                      \
+    int stack_offset = GET_STACK_OFFSET;                                      \
+    oop left_obj = (l_obj);                                                   \
+    oop right_obj = (r_obj);                                                  \
+    Expression *left = ConcolicMngr::ctx->get_stack_slot(                    \
+        stack_offset + (l_off));                                              \
+    Expression *right = ConcolicMngr::ctx->get_stack_slot(                   \
+        stack_offset + (r_off));                                              \
+    if (left == NULL && left_obj != NULL) {                                  \
+      SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(left_obj);     \
+      if (instance != NULL) {                                                 \
+        left = instance->get_or_create_ref_exp(left_obj);                     \
+      }                                                                       \
+    }                                                                         \
+    if (right == NULL && right_obj != NULL) {                                \
+      SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(right_obj);    \
+      if (instance != NULL) {                                                 \
+        right = instance->get_or_create_ref_exp(right_obj);                   \
+      }                                                                       \
+    }                                                                         \
+    if (left == NULL && left_obj == NULL && right != NULL) {                  \
+      left = SymbolExpression::get(Sym_NULL);                                 \
+    }                                                                         \
+    if (right == NULL && right_obj == NULL && left != NULL) {                 \
+      right = SymbolExpression::get(Sym_NULL);                                \
+    }                                                                         \
+    Expression *condition = NULL;                                             \
+    if (left != NULL && right != NULL) {                                      \
+      condition = new OpSymExpression(left, right, op, outcome);              \
+    }                                                                         \
+    ConcolicMngr::record_branch_condition(                                    \
+        condition, outcome, (int) opcode);                                    \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + (l_off), 1);          \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + (r_off), 1);          \
+  }
+#else
+#define CONCOLIC_OPC_REF_CMP(l_off, r_off, l_obj, r_obj, op, outcome)
 #endif
       /* comparison operators */
 
@@ -1952,7 +2079,8 @@ run:
           int skip = cmp                                                     \
                        ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;            \
           address branch_pc = pc;                                            \
-          CONCOLIC_RECORD_UNMODELED_BRANCH(cmp);                              \
+          CONCOLIC_OPC_REF_CMP(-2, -1, STACK_OBJECT(-2),                     \
+                               STACK_OBJECT(-1), op_##name, cmp);             \
           /* Profile branch. */                                              \
           BI_PROFILE_UPDATE_BRANCH(/*is_taken=*/cmp);                        \
           UPDATE_PC_AND_TOS(skip, -2);                                       \
@@ -1966,6 +2094,14 @@ run:
         int stack_offset = GET_STACK_OFFSET;                                 \
         Expression *left =                                                   \
             ConcolicMngr::ctx->get_stack_slot(stack_offset + off);           \
+        oop concrete = STACK_OBJECT(off);                                    \
+        if (left == NULL && concrete != NULL) {                              \
+          SymInstance *instance =                                            \
+              ConcolicMngr::ctx->find_sym_inst(concrete);                    \
+          if (instance != NULL) {                                            \
+            left = instance->get_or_create_ref_exp(concrete);                \
+          }                                                                  \
+        }                                                                    \
         Expression *condition = NULL;                                        \
         if (left) {                                                          \
           condition = new OpSymExpression(                                   \
@@ -1973,6 +2109,7 @@ run:
         }                                                                    \
         ConcolicMngr::record_branch_condition(                               \
             condition, cmp, (int) opcode);                                   \
+        ConcolicMngr::ctx->clear_stack_value(stack_offset + off, 1);          \
       }
 #else
 #define CONCOLIC_OPC_NULL_CMP(off, op, cmp)
@@ -2015,7 +2152,7 @@ run:
       NULL_COMPARISON_NOT_OP(nonnull);
 
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_OPC_BINARY_SWITCH(off, key, op)                               \
+#define CONCOLIC_APPEND_SWITCH_CONDITION(conditions, off, key, op)             \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *sym_exp =                                                      \
@@ -2024,11 +2161,11 @@ run:
       Expression *key_sym_exp = new ConExpression(key);                        \
       Expression *new_exp =                                                    \
           new OpSymExpression(sym_exp, key_sym_exp, op, true);                 \
-      ConcolicMngr::record_path_condition(new_exp);                            \
+      conditions.push_back(new_exp);                                           \
     }                                                                          \
   }
 #else
-#define CONCOLIC_OPC_BINARY_SWITCH(off, key, op)
+#define CONCOLIC_APPEND_SWITCH_CONDITION(conditions, off, key, op)
 #endif
       /* Goto pc at specified offset in switch table. */
 
@@ -2038,21 +2175,44 @@ run:
           int32_t  low  = Bytes::get_Java_u4((address)&lpc[1]);
           int32_t  high = Bytes::get_Java_u4((address)&lpc[2]);
           int32_t  skip;
+          int32_t  raw_key = key;
+#ifdef ENABLE_CONCOLIC
+          exp_list_t switch_conditions;
+#endif
           key -= low;
           if (((uint32_t) key > (uint32_t)(high - low))) {
             key = -1;
             skip = Bytes::get_Java_u4((address)&lpc[0]);
 #ifdef ENABLE_CONCOLIC
-            CONCOLIC_OPC_BINARY_SWITCH(-1, high, op_gt);
-            CONCOLIC_OPC_BINARY_SWITCH(-1, low, op_lt);
+            // The default arm is selector != key for every dense case key.
+            // This conjunction is exactly equivalent to
+            // (selector < low || selector > high), but it fits the path
+            // condition's conjunctive representation and gives the branch
+            // event an auditable index for every owned predicate.  Do not
+            // record only the concrete side (< low or > high): that would be
+            // a sound path strengthening, not the exact switch-arm guard.
+            int32_t condition_key = low;
+            while (true) {
+              CONCOLIC_APPEND_SWITCH_CONDITION(
+                  switch_conditions, -1, condition_key, op_ne);
+              if (condition_key == high) break;
+              condition_key++;
+            }
 #endif
           } else {
             skip = Bytes::get_Java_u4((address)&lpc[key + 3]);
 #ifdef ENABLE_CONCOLIC
-            int32_t real_key = STACK_INT(-1);
-            CONCOLIC_OPC_BINARY_SWITCH(-1, real_key, op_eq);
+            CONCOLIC_APPEND_SWITCH_CONDITION(
+                switch_conditions, -1, raw_key, op_eq);
 #endif
           }
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            ConcolicMngr::record_branch_conditions(
+                switch_conditions, key >= 0, (int) opcode);
+            ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - 1, 1);
+          }
+#endif
           // Profile switch.
           BI_PROFILE_UPDATE_SWITCH(/*switch_index=*/key);
           // Does this really need a full backedge check (osr)?
@@ -2075,21 +2235,46 @@ run:
           int      index = -1;
           int      newindex = 0;
           int32_t  npairs = Bytes::get_Java_u4((address) &lpc[1]);
-          while (--npairs >= 0) {
+          int32_t  remaining = npairs;
+          while (--remaining >= 0) {
             lpc += 2;
             if (key == (int32_t)Bytes::get_Java_u4((address)lpc)) {
-#ifdef ENABLE_CONCOLIC
-              CONCOLIC_OPC_BINARY_SWITCH(-1, key, op_eq);
-#endif
               skip = Bytes::get_Java_u4((address)&lpc[1]);
               index = newindex;
               break;
             }
-#ifdef ENABLE_CONCOLIC
-            CONCOLIC_OPC_BINARY_SWITCH(-1, (int32_t)Bytes::get_Java_u4((address)lpc), op_ne);
-#endif
             newindex += 1;
           }
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            exp_list_t switch_conditions;
+            if (index >= 0) {
+              // A selected lookup arm is exactly selector == selected key;
+              // preceding table entries are an implementation detail, not
+              // additional control-flow predicates.
+              CONCOLIC_APPEND_SWITCH_CONDITION(
+                  switch_conditions, -1, key, op_eq);
+            } else {
+              // The default arm is the conjunction of selector != key for
+              // every sparse case.  Preserve every exact PC index on the one
+              // BranchEvent so the Java side never has to infer ownership by
+              // expression shape or list position.
+              jint *condition_lpc = (jint*)VMalignWordUp(pc + 1);
+              int32_t condition_pairs =
+                  Bytes::get_Java_u4((address)&condition_lpc[1]);
+              while (--condition_pairs >= 0) {
+                condition_lpc += 2;
+                int32_t condition_key =
+                    Bytes::get_Java_u4((address)condition_lpc);
+                CONCOLIC_APPEND_SWITCH_CONDITION(
+                    switch_conditions, -1, condition_key, op_ne);
+              }
+            }
+            ConcolicMngr::record_branch_conditions(
+                switch_conditions, index >= 0, (int) opcode);
+            ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - 1, 1);
+          }
+#endif
           // Profile switch.
           BI_PROFILE_UPDATE_SWITCH(/*switch_index=*/index);
           address branch_pc = pc;
@@ -2101,22 +2286,16 @@ run:
       CASE(_fcmpl):
       {
         int r = VMfloatCompare(STACK_FLOAT(-2), STACK_FLOAT(-1), -1);
-#ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CMP_TRIPLE_RES(-2, -1, r, STACK_FLOAT(-2), STACK_FLOAT(-1), -2);
-#else
-        CONCOLIC_OPC_BINARY(-2, -1, -2, STACK_FLOAT(-2), STACK_FLOAT(-1), op_cmpl);
-#endif
+        CONCOLIC_OPC_TRICHOTOMY(-2, -1, -2, 1, STACK_FLOAT(-2),
+                               STACK_FLOAT(-1), op_cmpl);
         SET_STACK_INT(r, -2);
         UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
       }
       CASE(_fcmpg):
       {
         int r = VMfloatCompare(STACK_FLOAT(-2), STACK_FLOAT(-1), 1);
-#ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CMP_TRIPLE_RES(-2, -1, r, STACK_FLOAT(-2), STACK_FLOAT(-1), -2);
-#else
-        CONCOLIC_OPC_BINARY(-2, -1, -2, STACK_FLOAT(-2), STACK_FLOAT(-1), op_cmpg);
-#endif
+        CONCOLIC_OPC_TRICHOTOMY(-2, -1, -2, 1, STACK_FLOAT(-2),
+                               STACK_FLOAT(-1), op_cmpg);
         SET_STACK_INT(r, -2);
         UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
       }
@@ -2124,11 +2303,8 @@ run:
       CASE(_dcmpl):
       {
         int r = VMdoubleCompare(STACK_DOUBLE(-3), STACK_DOUBLE(-1), -1);
-#ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CMP_TRIPLE_RES(-3, -1, r, STACK_DOUBLE(-3), STACK_DOUBLE(-1), -4);
-#else
-        CONCOLIC_OPC_BINARY(-3, -1, -4, STACK_DOUBLE(-3), STACK_DOUBLE(-1), op_cmpl);
-#endif
+        CONCOLIC_OPC_TRICHOTOMY(-3, -1, -4, 2, STACK_DOUBLE(-3),
+                               STACK_DOUBLE(-1), op_cmpl);
         MORE_STACK(-4); // Pop
         SET_STACK_INT(r, 0);
         UPDATE_PC_AND_TOS_AND_CONTINUE(1, 1);
@@ -2136,11 +2312,8 @@ run:
       CASE(_dcmpg):
       {
         int r = VMdoubleCompare(STACK_DOUBLE(-3), STACK_DOUBLE(-1), 1);
-#ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CMP_TRIPLE_RES(-3, -1, r, STACK_DOUBLE(-3), STACK_DOUBLE(-1), -4);
-#else
-        CONCOLIC_OPC_BINARY(-3, -1, -4, STACK_DOUBLE(-3), STACK_DOUBLE(-1), op_cmpg);
-#endif
+        CONCOLIC_OPC_TRICHOTOMY(-3, -1, -4, 2, STACK_DOUBLE(-3),
+                               STACK_DOUBLE(-1), op_cmpg);
         MORE_STACK(-4); // Pop
         SET_STACK_INT(r, 0);
         UPDATE_PC_AND_TOS_AND_CONTINUE(1, 1);
@@ -2148,11 +2321,8 @@ run:
       CASE(_lcmp):
       {
         int r = VMlongCompare(STACK_LONG(-3), STACK_LONG(-1));
-#ifdef ENABLE_WEBRIDGE
-        CONCOLIC_CMP_TRIPLE_RES(-3, -1, r, STACK_LONG(-3), STACK_LONG(-1), -4);
-#else
-        CONCOLIC_OPC_BINARY(-3, -1, -4, STACK_LONG(-3), STACK_LONG(-1), op_cmp);
-#endif
+        CONCOLIC_OPC_TRICHOTOMY(-3, -1, -4, 2, STACK_LONG(-3),
+                               STACK_LONG(-1), op_cmp);
         MORE_STACK(-4);
         SET_STACK_INT(r, 0);
         UPDATE_PC_AND_TOS_AND_CONTINUE(1, 1);
@@ -2213,7 +2383,7 @@ run:
  * TODO: Refine this macro, it's too complex...
  */
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_ALOAD(T, T2, arrayOff, res_off)                               \
+#define CONCOLIC_ALOAD(T, T2, arrayOff, res_off, res_slots)                    \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *index_exp = ConcolicMngr::ctx->get_and_detach_stack_slot(      \
@@ -2222,6 +2392,9 @@ run:
         ConcolicMngr::ctx->find_array_internal(arrObj);                        \
     Expression *value_exp = array_internal == NULL                            \
         ? NULL : array_internal->load(index);                                  \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff, 1);          \
+    ConcolicMngr::ctx->clear_stack_value(                                     \
+        stack_offset + arrayOff + 1, 1);                                      \
     if (arrObj->is_symbolic()) {                                              \
       SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);     \
       sym_rid_t sym_arr_oid = arrObj->get_sym_rid();                           \
@@ -2234,8 +2407,9 @@ run:
                                        sym_arr->get_and_inc_load_count(), T);  \
       ConcolicMngr::ctx->store_array_element_shadow(                           \
           arrObj, index, value_exp, "SYMBOLIC_ARRAY_LOAD");                  \
-      ConcolicMngr::ctx->set_stack_slot(stack_offset + res_off, value_exp,     \
-                                        sym_arr_oid, index);                   \
+      ConcolicMngr::ctx->set_stack_value(                                     \
+          stack_offset + res_off, (res_slots), value_exp,                     \
+          sym_arr_oid, index);                                                \
                                                                                \
       ConcolicMngr::record_path_condition(                                     \
           new ArrayExpression(sym_arr_oid, index_exp, value_exp, true, T));    \
@@ -2245,22 +2419,25 @@ run:
             index_exp, new ConExpression(index), op_eq, true  \
         ) \
       );                                                                         \
-      ConcolicMngr::ctx->set_stack_slot(stack_offset + res_off, value_exp);    \
+      ConcolicMngr::ctx->set_stack_value(                                     \
+          stack_offset + res_off, (res_slots), value_exp);                    \
     } else if (value_exp) {                                                    \
-      ConcolicMngr::ctx->set_stack_slot(stack_offset + res_off, value_exp);    \
+      ConcolicMngr::ctx->set_stack_value(                                     \
+          stack_offset + res_off, (res_slots), value_exp);                    \
     } else {                                                                   \
-      ConcolicMngr::ctx->clear_stack_slot(GET_STACK_OFFSET + res_off);         \
+      ConcolicMngr::ctx->set_stack_value(                                     \
+          stack_offset + res_off, (res_slots), NULL);                         \
     }                                                                          \
   }
 #else
-#define CONCOLIC_ALOAD(T, T2, arrayOff, res_off)
+#define CONCOLIC_ALOAD(T, T2, arrayOff, res_off, res_slots)
 #endif
 
       /* 32-bit loads. These handle conversion from < 32-bit types */
 #define ARRAY_LOADTO32(T, T2, format, stackRes, extra)                                \
       {                                                                               \
           ARRAY_INTRO(-2);                                                            \
-          CONCOLIC_ALOAD(T, T2, -2, -2);                                              \
+          CONCOLIC_ALOAD(T, T2, -2, -2, 1);                                           \
           (void)extra;                                                                \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), \
                            -2);                                                       \
@@ -2271,7 +2448,7 @@ run:
 #define ARRAY_LOADTO64(T,T2, stackRes, extra)                                              \
       {                                                                                    \
           ARRAY_INTRO(-2);                                                                 \
-          CONCOLIC_ALOAD(T, T2, -2, -1);                                                   \
+          CONCOLIC_ALOAD(T, T2, -2, -1, 2);                                                \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), -1); \
           (void)extra;                                                                     \
           UPDATE_PC_AND_CONTINUE(1);                                                       \
@@ -2295,6 +2472,8 @@ run:
                 ConcolicMngr::ctx->find_array_internal(arrObj);
             Expression *value_exp = array_internal == NULL
                 ? NULL : array_internal->load(index);
+            ConcolicMngr::ctx->clear_stack_value(stack_offset - 2, 1);
+            ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);
             if (arrObj->is_symbolic()) {
               SymArr *sym_arr =
                   ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);
@@ -2324,10 +2503,11 @@ run:
 
               ConcolicMngr::ctx->store_array_element_shadow(
                   arrObj, index, value_exp, "SYMBOLIC_OBJECT_ARRAY_LOAD");
-              ConcolicMngr::ctx->set_stack_slot(stack_offset - 2, value_exp,
-                                                sym_arr_oid, index);
+              ConcolicMngr::ctx->set_stack_value(
+                  stack_offset - 2, 1, value_exp, sym_arr_oid, index);
 
-              if (!isElemNull) {
+              if (!isElemNull
+                  && !ConcolicMngr::ctx->requires_detached_object_shadow(obj)) {
                 SymInstance* sym_inst =
                     ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
                 if (sym_inst != NULL) {
@@ -2355,10 +2535,11 @@ run:
                 // AASTORE/arraycopy even though the Java array itself is
                 // concrete.  This is the object-array counterpart of the
                 // primitive CONCOLIC_ALOAD shadow restoration above.
-                ConcolicMngr::ctx->set_stack_slot(stack_offset - 2,
-                                                  value_exp);
+                ConcolicMngr::ctx->set_stack_value(
+                    stack_offset - 2, 1, value_exp);
               } else {
-                ConcolicMngr::ctx->clear_stack_slot(stack_offset - 2);
+                ConcolicMngr::ctx->set_stack_value(
+                    stack_offset - 2, 1, NULL);
               }
             }
           }
@@ -2378,7 +2559,7 @@ run:
           ARRAY_LOADTO64(T_DOUBLE, jdouble, STACK_DOUBLE, 0);
 
 #ifdef ENABLE_CONCOLIC
-#define CONCOLIC_ASTORE(arrayOff, delta, value, T)                             \
+#define CONCOLIC_ASTORE(arrayOff, delta, value_slots, value, T)                \
   if (ConcolicMngr::can_do_concolic()) {                                       \
     int stack_offset = GET_STACK_OFFSET;                                       \
     Expression *index_exp = ConcolicMngr::ctx->get_and_detach_stack_slot(      \
@@ -2417,16 +2598,20 @@ run:
           value_exp == NULL ? "VM_CONCRETE_PRIMITIVE_STORE"                  \
                             : "SYMBOLIC_PRIMITIVE_STORE");                   \
     }                                                                          \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff, 1);          \
+    ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff + 1, 1);      \
+    ConcolicMngr::ctx->clear_stack_value(                                     \
+        stack_offset + delta, (value_slots));                                 \
   }
 #else
-#define CONCOLIC_ASTORE(arrayOff, delta, value, T)
+#define CONCOLIC_ASTORE(arrayOff, delta, value_slots, value, T)
 #endif
 
       /* 32-bit stores. These handle conversion to < 32-bit types */
 #define ARRAY_STOREFROM32(T, T2, format, stackSrc, extra)                               \
       {                                                                                 \
           ARRAY_INTRO(-3);                                                              \
-          CONCOLIC_ASTORE(-3, -1, (T2) stackSrc(-1), T);                                \
+          CONCOLIC_ASTORE(-3, -1, 1, (T2) stackSrc(-1), T);                             \
           (void)extra;                                                                  \
           *(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)) = stackSrc( -1);    \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -3);                                        \
@@ -2436,7 +2621,7 @@ run:
 #define ARRAY_STOREFROM64(T, T2, stackSrc, extra)                                       \
       {                                                                                 \
           ARRAY_INTRO(-4);                                                              \
-          CONCOLIC_ASTORE(-4, -1, (T2) stackSrc(-1), T);                                \
+          CONCOLIC_ASTORE(-4, -1, 2, (T2) stackSrc(-1), T);                             \
           (void)extra;                                                                  \
           *(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)) = stackSrc( -1);    \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -4);                                        \
@@ -2500,15 +2685,19 @@ run:
                   // must remain fail-closed.
                   value_exp = new PlaceHolderSymbolExp(rhsObject);
                   value_complete = false;
-                } else if (rhsObject->is_symbolic()) {
+                } else {
                   SymInstance *sym_inst =
-                      ConcolicMngr::ctx->get_or_alloc_sym_inst(rhsObject);
+                      ConcolicMngr::ctx->find_sym_inst(rhsObject);
+                  if (sym_inst == NULL && rhsObject->is_symbolic()) {
+                    sym_inst =
+                        ConcolicMngr::ctx->get_or_alloc_sym_inst(rhsObject);
+                  }
                   value_exp = sym_inst == NULL ? NULL
                       : sym_inst->get_or_create_ref_exp(rhsObject);
-                  value_complete = value_exp != NULL;
-                } else {
-                  value_exp = new PlaceHolderSymbolExp(rhsObject);
-                  value_complete = false;
+                  if (value_exp == NULL) {
+                    value_exp = new PlaceHolderSymbolExp(rhsObject);
+                    value_complete = false;
+                  }
                 }
               }
 
@@ -2518,9 +2707,12 @@ run:
                 ConcolicMngr::ctx->store_array_element_shadow(
                     arrObj, index, value_exp, "SYMBOLIC_OBJECT_ARRAY_STORE");
               } else {
-                ConcolicMngr::ctx->get_or_create_array_internal(arrObj)
-                    ->invalidate(index,
-                                 "OPAQUE_CONCRETE_NON_NULL_REFERENCE");
+                ArrayInternal *array_internal =
+                    ConcolicMngr::ctx->get_or_create_array_internal(arrObj);
+                if (array_internal != NULL) {
+                  array_internal->invalidate(
+                      index, "OPAQUE_CONCRETE_NON_NULL_REFERENCE");
+                }
               }
               ConcolicMngr::ctx->get_sym_array(sym_arr_oid)->store();
             } else {
@@ -2530,9 +2722,13 @@ run:
                       index_exp, new ConExpression(index), op_eq, true));
               }
               if (value_exp == NULL && !isElemNull
-                  && !rhsObject->is_array() && rhsObject->is_symbolic()) {
+                  && !rhsObject->is_array()) {
                 SymInstance *sym_inst =
-                    ConcolicMngr::ctx->get_or_alloc_sym_inst(rhsObject);
+                    ConcolicMngr::ctx->find_sym_inst(rhsObject);
+                if (sym_inst == NULL && rhsObject->is_symbolic()) {
+                  sym_inst =
+                      ConcolicMngr::ctx->get_or_alloc_sym_inst(rhsObject);
+                }
                 value_exp = sym_inst == NULL ? NULL
                     : sym_inst->get_or_create_ref_exp(rhsObject);
               }
@@ -2541,6 +2737,9 @@ run:
                   value_exp == NULL ? "VM_CONCRETE_REFERENCE_STORE"
                                     : "SYMBOLIC_REFERENCE_STORE");
             }
+            ConcolicMngr::ctx->clear_stack_value(stack_offset - 3, 1);
+            ConcolicMngr::ctx->clear_stack_value(stack_offset - 2, 1);
+            ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);
           }
 #endif
           ((objArrayOop) arrObj)->obj_at_put(index, rhsObject);
@@ -2556,7 +2755,7 @@ run:
             assert(arrObj->klass() == Universe::byteArrayKlassObj(),
                    "should be byte array otherwise");
           }
-          CONCOLIC_ASTORE(-3, -1, (jboolean) item, T_BOOLEAN);
+          CONCOLIC_ASTORE(-3, -1, 1, (jboolean) item, T_BOOLEAN);
           ((typeArrayOop)arrObj)->byte_at_put(index, item);
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -3);
       }
@@ -2580,9 +2779,9 @@ run:
 
               SymArr* sym_arr = ConcolicMngr::ctx->get_sym_array(sym_arr_oid);
               Expression *length_exp = sym_arr->get_length_exp();
-              ConcolicMngr::ctx->set_stack_slot(GET_STACK_OFFSET - 1,
-                                                length_exp, sym_arr_oid,
-                                                FIELD_INDEX_ARRAY_LENGTH);
+              ConcolicMngr::ctx->set_stack_value(
+                  GET_STACK_OFFSET - 1, 1, length_exp, sym_arr_oid,
+                  FIELD_INDEX_ARRAY_LENGTH);
             } else {
               CONCOLIC_CONST(-1);
             }
@@ -2697,6 +2896,11 @@ run:
               }
             }
           }
+#ifdef ENABLE_CONCOLIC
+          if (ConcolicMngr::can_do_concolic()) {
+            ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - 1, 1);
+          }
+#endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
         } else {
           istate->set_msg(more_monitors);
@@ -2730,6 +2934,11 @@ run:
                 }
               }
             }
+#ifdef ENABLE_CONCOLIC
+            if (ConcolicMngr::can_do_concolic()) {
+              ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - 1, 1);
+            }
+#endif
             UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
           }
           most_recent++;
@@ -2802,32 +3011,30 @@ run:
 
 #ifdef ENABLE_CONCOLIC
           if (ConcolicMngr::can_do_concolic()) {
-            if (obj->is_symbolic()) {
-              /**
-               * It seems that we do not need to handle Object (atos)
-               * TODO: check whether array belongs to atos
-               */
-              if (tos_type != atos) {
-                int stack_offset = GET_STACK_OFFSET;
-                sym_rid_t sym_rid = obj->get_sym_rid();
-
-                if (tos_type != ltos && tos_type != dtos) {
-                  stack_offset -= 1;
-                }
-
-                SymInstance* sym_inst = ConcolicMngr::ctx->get_sym_inst(sym_rid);
-                Expression* sym_exp = sym_inst->get(field_offset);
-                if (sym_exp == NULL
-                    && sym_inst->demand_symbolic_fields_enabled()) {
-                  BasicType field_type = as_BasicType(tos_type);
-                  sym_inst->init_sym_exp(field_offset, field_type);
-                  sym_exp = sym_inst->get(field_offset);
-                }
-                ConcolicMngr::ctx->set_stack_slot(stack_offset, sym_exp, 
-                                                  sym_rid, field_offset);
+            int stack_offset = GET_STACK_OFFSET;
+            const int result_slots =
+                tos_type == ltos || tos_type == dtos ? 2 : 1;
+            const int result_anchor = stack_offset
+                - (result_slots == 1 ? 1 : 0);
+            SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+            if (sym_inst != NULL) {
+              sym_rid_t sym_rid = sym_inst->get_sym_rid();
+              Expression* sym_exp = sym_inst->get(field_offset);
+              if (sym_exp == NULL
+                  && sym_inst->demand_symbolic_fields_enabled()) {
+                BasicType field_type = as_BasicType(tos_type);
+                sym_inst->init_sym_exp(field_offset, field_type);
+                sym_exp = sym_inst->get(field_offset);
               }
+              // Reference-valued fields are branch inputs too.  Propagating
+              // their shadow through getfield/getstatic lets ifnull,
+              // ifnonnull and if_acmp* consume the same expression as scalar
+              // branches instead of silently emitting an unmodelled event.
+              ConcolicMngr::ctx->set_stack_value(
+                  result_anchor, result_slots, sym_exp, sym_rid, field_offset);
             } else {
-              CONCOLIC_CONST(-1);
+              ConcolicMngr::ctx->set_stack_value(
+                  result_anchor, result_slots, NULL);
             }
           }
 #endif
@@ -2950,22 +3157,47 @@ run:
 #ifdef ENABLE_CONCOLIC
           if (ConcolicMngr::can_do_concolic()) {
             int stack_offset = GET_STACK_OFFSET;
-
-            if (tos_type != atos) {
-              Expression *sym_exp =
-                  ConcolicMngr::ctx->get_and_detach_stack_slot(stack_offset -
-                                                               1);
-              if (sym_exp) {
-                SymInstance *sym_inst =
-                    ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
-                sym_inst->set_sym_exp(field_offset, sym_exp);
-              } else {
-                if (obj->is_symbolic()) {
-                  SymInstance *sym_inst =
-                      ConcolicMngr::ctx->get_sym_inst(obj);
-                      sym_inst->set_sym_exp(field_offset, NULL);
+            const int value_slots =
+                tos_type == ltos || tos_type == dtos ? 2 : 1;
+            Expression *sym_exp =
+                ConcolicMngr::ctx->get_and_detach_stack_slot(stack_offset - 1);
+            SymInstance *owner_instance =
+                ConcolicMngr::ctx->find_sym_inst(obj);
+            bool shadow_relevant = sym_exp != NULL || owner_instance != NULL;
+            if (tos_type == atos && sym_exp == NULL) {
+              oop value = STACK_OBJECT(-1);
+              SymInstance *value_instance = value == NULL || value->is_array()
+                  ? NULL : ConcolicMngr::ctx->find_sym_inst(value);
+              shadow_relevant = shadow_relevant
+                  || value_instance != NULL
+                  || (value != NULL && value->is_symbolic());
+              if (shadow_relevant && value == NULL) {
+                sym_exp = SymbolExpression::get(Sym_NULL);
+              } else if (shadow_relevant && value != NULL
+                         && !value->is_array()) {
+                if (value_instance == NULL && value->is_symbolic()) {
+                  value_instance =
+                      ConcolicMngr::ctx->get_or_alloc_sym_inst(value);
+                }
+                if (value_instance != NULL) {
+                  sym_exp = value_instance->get_or_create_ref_exp(value);
                 }
               }
+            }
+            if (sym_exp && shadow_relevant) {
+              SymInstance *sym_inst = owner_instance == NULL
+                  ? ConcolicMngr::ctx->get_or_alloc_sym_inst(obj)
+                  : owner_instance;
+              if (sym_inst != NULL) {
+                sym_inst->set_sym_exp(field_offset, sym_exp);
+              }
+            } else if (owner_instance != NULL) {
+              owner_instance->set_sym_exp(field_offset, NULL);
+            }
+            ConcolicMngr::ctx->clear_stack_value(
+                stack_offset - 1, value_slots);
+            if ((Bytecodes::Code)opcode == Bytecodes::_putfield) {
+              ConcolicMngr::ctx->clear_stack_value(stack_offset + count, 1);
             }
           }
 #endif
@@ -3082,6 +3314,7 @@ run:
               // Must prevent reordering of stores for object initialization
               // with stores that publish the new object.
               OrderAccess::storestore();
+              CONCOLIC_CONST(0);
               SET_STACK_OBJECT(result, 0);
               UPDATE_PC_AND_TOS_AND_CONTINUE(3, 1);
             }
@@ -3093,6 +3326,7 @@ run:
         // Must prevent reordering of stores for object initialization
         // with stores that publish the new object.
         OrderAccess::storestore();
+        CONCOLIC_CONST(0);
         SET_STACK_OBJECT(THREAD->vm_result(), 0);
         THREAD->set_vm_result(NULL);
         UPDATE_PC_AND_TOS_AND_CONTINUE(3, 1);
@@ -3105,6 +3339,8 @@ run:
     if (exp) {                                                                 \
       ConcolicMngr::ctx->alloc_sym_array((arrayOop)THREAD->vm_result(), exp);  \
     }                                                                          \
+    /* newarray/anewarray consume length and replace it with arrayref. */      \
+    ConcolicMngr::ctx->set_stack_value(GET_STACK_OFFSET - 1, 1, NULL);         \
   }
 #else
 #define CONCOLIC_NEW_ARRAY()
@@ -3129,8 +3365,13 @@ run:
 #ifdef ENABLE_CONCOLIC
 #define CONCOLIC_NEW_MULTIARRAY()                                              \
   if (ConcolicMngr::can_do_concolic()) {                                       \
-    Expression *exp = ConcolicMngr::ctx->get_stack_slot(GET_STACK_OFFSET - 1); \
-    guarantee (exp == NULL, "do not support");                                 \
+    /* Dimension expressions are not modeled yet, but must never leak into */\
+    /* the concrete array reference or a later operand-stack occupant. */     \
+    for (int dim = 1; dim <= dims; ++dim) {                                   \
+      ConcolicMngr::ctx->clear_stack_value(GET_STACK_OFFSET - dim, 1);         \
+    }                                                                          \
+    ConcolicMngr::ctx->set_stack_value(                                        \
+        GET_STACK_OFFSET - dims, 1, NULL);                                    \
   }
 #else
 #define CONCOLIC_NEW_MULTIARRAY()
@@ -3227,6 +3468,7 @@ run:
             // Profile instanceof with null_seen and receiver.
             BI_PROFILE_UPDATE_INSTANCEOF(/*null_seen=*/false, objKlass);
           }
+          CONCOLIC_CONST(-1);
           UPDATE_PC_AND_CONTINUE(3);
 
       CASE(_ldc_w):
@@ -3290,7 +3532,7 @@ run:
         {
           u2 index = Bytes::get_Java_u2(pc+1);
 
-          CONCOLIC_CONST(1);
+          CONCOLIC_CONST_VALUE(1, 2);
 
           ConstantPool* constants = METHOD->constants();
           switch (constants->tag_at(index).value()) {
@@ -3331,6 +3573,7 @@ run:
         }
 
         VERIFY_OOP(result);
+        CONCOLIC_CONST(0);
         SET_STACK_OBJECT(result, 0);
         UPDATE_PC_AND_TOS_AND_CONTINUE(incr, 1);
       }
@@ -3363,6 +3606,7 @@ run:
 
         if (cache->has_appendix()) {
           ConstantPool* constants = METHOD->constants();
+          CONCOLIC_CONST(0);
           SET_STACK_OBJECT(cache->appendix_if_resolved(constants), 0);
           MORE_STACK(1);
         }
@@ -3398,6 +3642,7 @@ run:
 
         if (cache->has_appendix()) {
           ConstantPool* constants = METHOD->constants();
+          CONCOLIC_CONST(0);
           SET_STACK_OBJECT(cache->appendix_if_resolved(constants), 0);
           MORE_STACK(1);
         }
@@ -3751,6 +3996,15 @@ run:
     assert(except_oop(), "No exception to process");
     intptr_t continuation_bci;
     // expression stack is emptied
+#ifdef ENABLE_CONCOLIC
+    // Marker invalidation is a control-flow obligation, not a shadow-stack
+    // operation.  Do it for every active owner context even when an
+    // intercepted/symbolized callee has temporarily disabled stack upkeep.
+    ConcolicMngr::abandonPendingBranchForException(THREAD);
+    if (ConcolicMngr::can_maintain_shadow_stack()) {
+      ConcolicMngr::ctx->clear_operand_stack();
+    }
+#endif
     topOfStack = istate->stack_base() - Interpreter::stackElementWords;
     CALL_VM(continuation_bci = (intptr_t)InterpreterRuntime::exception_handler_for_exception(THREAD, except_oop()),
             handle_exception);
@@ -3810,6 +4064,13 @@ run:
     // Let interpreter (only) see the we're in the process of popping a frame
     THREAD->set_pop_frame_in_process();
 
+#ifdef ENABLE_CONCOLIC
+    if (ConcolicMngr::can_maintain_shadow_stack()) {
+      ConcolicMngr::ctx->clear_operand_stack();
+      ConcolicMngr::ctx->cancel_pending_branch();
+    }
+#endif
+
     goto handle_return;
 
   } // handle_Pop_Frame
@@ -3821,6 +4082,12 @@ run:
     istate->set_msg(early_return);
 
     // Clear expression stack.
+#ifdef ENABLE_CONCOLIC
+    if (ConcolicMngr::can_maintain_shadow_stack()) {
+      ConcolicMngr::ctx->clear_operand_stack();
+      ConcolicMngr::ctx->cancel_pending_branch();
+    }
+#endif
     topOfStack = istate->stack_base() - Interpreter::stackElementWords;
 
     JvmtiThreadState *ts = THREAD->jvmti_thread_state();

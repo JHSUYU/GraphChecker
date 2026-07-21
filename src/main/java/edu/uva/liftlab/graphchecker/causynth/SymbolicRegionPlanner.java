@@ -7,6 +7,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -179,7 +180,10 @@ final class SymbolicRegionPlanner {
         private final Map<String, Object> mapPutValue;
         private final DeclaredFieldIdentity containerField;
         private final DeclaredFieldIdentity elementField;
+        private final String baseInputCell;
         private final List<String> fieldPath;
+        private final List<String> proofEdgeIds;
+        private final String proofAuthority;
         private final int elementIndex;
         private final boolean constantIndex;
         private final boolean materializeFromContainerSnapshot;
@@ -194,8 +198,10 @@ final class SymbolicRegionPlanner {
                 int elementIndex, boolean constantIndex) {
             this(containerAccessor, arrayLoad, projectedAccessor,
                     declaredAccessor, null, containerField, elementField,
+                    elementField.signature,
                     Collections.singletonList(elementField.name),
-                    elementIndex, constantIndex, false);
+                    elementIndex, constantIndex, false,
+                    Collections.<String>emptyList(), "");
         }
 
         private ContainerElementFieldCandidate(
@@ -206,9 +212,12 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> mapPutValue,
                 DeclaredFieldIdentity containerField,
                 DeclaredFieldIdentity elementField,
+                String baseInputCell,
                 List<String> fieldPath,
                 int elementIndex, boolean constantIndex,
-                boolean materializeFromContainerSnapshot) {
+                boolean materializeFromContainerSnapshot,
+                Collection<String> proofEdgeIds,
+                String proofAuthority) {
             this.containerAccessor = containerAccessor;
             this.arrayLoad = arrayLoad;
             this.projectedAccessor = projectedAccessor;
@@ -216,7 +225,11 @@ final class SymbolicRegionPlanner {
             this.mapPutValue = mapPutValue;
             this.containerField = containerField;
             this.elementField = elementField;
+            this.baseInputCell = baseInputCell;
             this.fieldPath = new ArrayList<>(fieldPath);
+            this.proofEdgeIds = new ArrayList<>(proofEdgeIds);
+            this.proofAuthority = proofAuthority == null ? ""
+                    : proofAuthority;
             this.elementIndex = elementIndex;
             this.constantIndex = constantIndex;
             this.materializeFromContainerSnapshot =
@@ -372,15 +385,35 @@ final class SymbolicRegionPlanner {
          * selection asks this question for hundreds of candidates; scanning
          * the complete causal edge set for every candidate made HDFS region
          * planning quadratic in practice.
+         *
+         * A broad exception region and each requested-output demand slice
+         * deliberately share the same stable regionId.  They do not share
+         * the same method/edge closure: the demand walk can admit synchronous
+         * callees that were irrelevant to the original exception seed.
+         * Therefore regionId is not a sound cache key for either definition
+         * query below.  Key by the concrete immutable-for-selection draft
+         * instead.  Otherwise a result computed for the broad region can make
+         * a helper return in the expanded output slice look like a new live-in
+         * (and, conversely, can hide a real output-slice frontier).
+         *
+         * Identity semantics are intentional.  RegionDraft is a mutable
+         * work record and has no value equality; each draft's dependency
+         * closure is fully built before input selection invokes these
+         * caches.  The two exact accessor re-admission paths below explicitly
+         * invalidate this draft if they add a method after selection.
          */
-        private final Map<String, Set<String>>
-                internallyDerivedTargetsByRegion = new LinkedHashMap<>();
-        private final Map<String, Set<String>>
+        private final Map<RegionDraft, Set<String>>
+                internallyDerivedTargetsByRegion = new IdentityHashMap<>();
+        private final Map<RegionDraft, Set<String>>
                 callResultsWithCausalAlternativeByRegion =
-                new LinkedHashMap<>();
+                new IdentityHashMap<>();
         private final Map<String, Set<String>> calleesByCaller = new LinkedHashMap<>();
         private final Map<String, Set<String>> parentsByCallee = new LinkedHashMap<>();
         private final Map<String, Set<String>> callSitesByMethod = new LinkedHashMap<>();
+        private final Map<String, Map<String, Set<String>>>
+                dynamicDispatchTargetsByCallerSite = new LinkedHashMap<>();
+        private final Set<String> overlappingWriterAnchors =
+                new LinkedHashSet<>();
         private final Set<String> boundaryCallPairs = new LinkedHashSet<>();
         private final Set<String> anchorMethods = new LinkedHashSet<>();
         private Planner(List<Map<String, Object>> edges,
@@ -414,7 +447,10 @@ final class SymbolicRegionPlanner {
             }
 
             Set<String> emittedMethodSets = new LinkedHashSet<>();
-            Set<String> queuedAnchors = new LinkedHashSet<>(anchors);
+            Set<String> queuedAnchorStates = new LinkedHashSet<>();
+            for (String anchor : anchors) {
+                queuedAnchorStates.add(anchor + "\nNORMAL");
+            }
             Set<String> expandedAnchors = new LinkedHashSet<>();
             Deque<String> anchorQueue = new ArrayDeque<>(anchors);
             int regionIndex = 0;
@@ -425,15 +461,18 @@ final class SymbolicRegionPlanner {
                     if (draft.methods.isEmpty()) {
                         continue;
                     }
-                    String dedup = draft.rootMethod + "\n" + joinSorted(draft.methods);
+                    String dedup = regionDedupKey(draft);
                     if (!emittedMethodSets.add(dedup)) {
                         continue;
                     }
                     draft.regionId = "REGION." + regionIndex++;
                     result.regions.add(toRegionRow(draft));
                 }
-                for (String upstream : upstreamAnchors(methodsCovered(result.regions))) {
-                    if (queuedAnchors.add(upstream)) {
+                for (String upstream : upstreamAnchors(result.regions)) {
+                    String state = upstream + "\n"
+                            + (overlappingWriterAnchors.contains(upstream)
+                            ? "OVERLAPPING_WRITER" : "NORMAL");
+                    if (queuedAnchorStates.add(state)) {
                         anchorQueue.addLast(upstream);
                     }
                 }
@@ -454,7 +493,7 @@ final class SymbolicRegionPlanner {
                     if (regionIndex >= MAX_REGIONS) {
                         break;
                     }
-                    String dedup = draft.rootMethod + "\n" + joinSorted(draft.methods);
+                    String dedup = regionDedupKey(draft);
                     if (!emittedMethodSets.add(dedup)) {
                         continue;
                     }
@@ -482,6 +521,13 @@ final class SymbolicRegionPlanner {
             result.summary.put("coverageComplete", result.coverage.get("complete"));
             result.summary.put("precision", "STATIC_OVER_APPROXIMATION");
             return result;
+        }
+
+        private String regionDedupKey(RegionDraft draft) {
+            return draft.rootMethod + "\n"
+                    + (overlappingWriterAnchors.contains(
+                    draft.anchorMethod) ? draft.anchorMethod : "") + "\n"
+                    + joinSorted(draft.methods);
         }
 
         private void buildCoverageAudit(Result result) {
@@ -627,7 +673,9 @@ final class SymbolicRegionPlanner {
             return covered;
         }
 
-        private List<String> upstreamAnchors(Set<String> coveredMethods) {
+        private List<String> upstreamAnchors(
+                List<Map<String, Object>> regions) {
+            Set<String> coveredMethods = methodsCovered(regions);
             Set<String> anchors = new LinkedHashSet<>();
             Set<String> consumedFields = new LinkedHashSet<>();
             for (Map<String, Object> edge : edges) {
@@ -654,15 +702,70 @@ final class SymbolicRegionPlanner {
                     anchors.add(fromMethod);
                 }
             }
+            Map<String, List<Map<String, Object>>>
+                    demandedSharedConsumers = new LinkedHashMap<>();
+            for (Map<String, Object> region : regions) {
+                Set<String> mandatory = new LinkedHashSet<>(strings(
+                        region.get("mandatorySeedGuardInputs")));
+                Object symbolicInputs = region.get("symbolicInputs");
+                if (!(symbolicInputs instanceof Collection<?>)) {
+                    continue;
+                }
+                Map<String, Map<String, Object>> inputsByPort =
+                        new LinkedHashMap<>();
+                for (Object value : (Collection<?>) symbolicInputs) {
+                    if (!(value instanceof Map<?, ?>)) {
+                        continue;
+                    }
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> input =
+                            (Map<String, Object>) value;
+                    String cell = string(input.get("cell"));
+                    String port = string(input.get("portId"));
+                    if (!port.isEmpty()) {
+                        inputsByPort.put(port, input);
+                    }
+                    if (mandatory.contains(cell)) {
+                        addDemandedSharedConsumer(demandedSharedConsumers,
+                                region, input);
+                    }
+                }
+                Object slices = region.get("outputSlices");
+                if (!(slices instanceof Collection<?>)) {
+                    continue;
+                }
+                for (Object value : (Collection<?>) slices) {
+                    if (!(value instanceof Map<?, ?>)) {
+                        continue;
+                    }
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> slice =
+                            (Map<String, Object>) value;
+                    if (!Boolean.TRUE.equals(slice.get("complete"))) {
+                        continue;
+                    }
+                    for (String port : strings(slice.get("inputPorts"))) {
+                        addDemandedSharedConsumer(demandedSharedConsumers,
+                                region, inputsByPort.get(port));
+                    }
+                }
+            }
             if (!consumedFields.isEmpty()) {
                 for (Map<String, Object> edge : edges) {
                     String method = string(edge.get("method"));
                     if (!"HEAP_WRITE".equals(string(edge.get("transferKind")))
                             || !consumedFields.contains(string(edge.get("toCell")))
                             || method.isEmpty()
-                            || coveredMethods.contains(method)
                             || !plansByMethod.containsKey(method)) {
                         continue;
+                    }
+                    if (coveredMethods.contains(method)) {
+                        if (!coveredDynamicDispatchWriter(
+                                method, string(edge.get("toCell")),
+                                demandedSharedConsumers)) {
+                            continue;
+                        }
+                        overlappingWriterAnchors.add(method);
                     }
                     anchors.add(method);
                 }
@@ -670,6 +773,81 @@ final class SymbolicRegionPlanner {
             List<String> sorted = new ArrayList<>(anchors);
             Collections.sort(sorted);
             return sorted;
+        }
+
+        private void addDemandedSharedConsumer(
+                Map<String, List<Map<String, Object>>> consumers,
+                Map<String, Object> region, Map<String, Object> input) {
+            if (region == null || input == null) {
+                return;
+            }
+            String cell = string(input.get("cell"));
+            if (!globalFieldCell(cell)
+                    || !"SHARED_HEAP".equals(
+                    string(input.get("sourceKind")))) {
+                return;
+            }
+            List<Map<String, Object>> rows = consumers.computeIfAbsent(cell,
+                    ignored -> new ArrayList<>());
+            if (!rows.contains(region)) {
+                rows.add(region);
+            }
+        }
+
+        /**
+         * A cheap static candidate can contain mutually exclusive concrete
+         * implementations of one virtual worker dispatch.  If the exception
+         * branch or an already selected producer output slice consumes a
+         * demanded declared field and one sibling writes it, treating that
+         * writer as "already covered" loses the producer entirely. Emit a
+         * deliberately overlapping candidate only for this exact
+         * sibling-dispatch shape; runtime thread/call ancestry later selects
+         * the concrete instances.
+         */
+        private boolean coveredDynamicDispatchWriter(
+                String writer, String field,
+                Map<String, List<Map<String, Object>>> consumersByField) {
+            for (Map<String, Object> consumer : consumersByField.getOrDefault(
+                    field, Collections.<Map<String, Object>>emptyList())) {
+                String root = string(consumer.get("rootMethod"));
+                String anchor = string(consumer.get("anchorMethod"));
+                if (siblingDynamicDispatch(root, anchor, writer)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean siblingDynamicDispatch(String root, String anchor,
+                                               String writer) {
+            for (Map.Entry<String, Map<String, Set<String>>> byCaller
+                    : dynamicDispatchTargetsByCallerSite.entrySet()) {
+                String caller = byCaller.getKey();
+                if (!caller.equals(root) && !reachableFrom(root, caller)) {
+                    continue;
+                }
+                for (Set<String> targets : byCaller.getValue().values()) {
+                    if (targets.size() < 2) {
+                        continue;
+                    }
+                    for (String consumerChild : targets) {
+                        if (!consumerChild.equals(anchor)
+                                && !reachableFrom(consumerChild, anchor)) {
+                            continue;
+                        }
+                        for (String writerChild : targets) {
+                            if (consumerChild.equals(writerChild)) {
+                                continue;
+                            }
+                            if (writerChild.equals(writer)
+                                    || reachableFrom(writerChild, writer)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
         }
 
         private void index() {
@@ -702,6 +880,17 @@ final class SymbolicRegionPlanner {
                 if (isBoundary(edge)) {
                     boundaryCallPairs.add(pair);
                     continue;
+                }
+                if ("DYNAMIC_DISPATCH".equals(transfer)) {
+                    String site = string(edge.get("siteId"));
+                    if (!site.isEmpty()) {
+                        dynamicDispatchTargetsByCallerSite
+                                .computeIfAbsent(method,
+                                        ignored -> new LinkedHashMap<>())
+                                .computeIfAbsent(site,
+                                        ignored -> new LinkedHashSet<>())
+                                .add(callee);
+                    }
                 }
                 add(calleesByCaller, method, callee);
                 add(parentsByCallee, callee, method);
@@ -1250,10 +1439,27 @@ final class SymbolicRegionPlanner {
                     }
                 }
             }
+            // A PATH_ASSUMPTION proof must cover every output candidate, not
+            // merely the one edge on which the proof happened to be stored.
+            // Include mandatory seed and configured producer outputs before
+            // evaluating those proofs.
+            addSeedOutputs(draft.methods, outputCandidates);
+            addConfiguredProducerReturnOutputs(draft, outputCandidates);
             // Preserve the edge-level guard/site association.  A method plan's
             // independent guards and siteIds sets cannot tell the concolic
             // scheduler which path-condition entry belongs to which branch.
-            Set<String> emittedBranchSites = new LinkedHashSet<>();
+            // A branch site can have both the broad "branch consumes a
+            // relevant value" edge and a more precise control-dependence
+            // edge proving that one outcome reaches an output definition.
+            // Edge ids are deterministic, but their order is not a semantic
+            // priority.  Selecting the first edge used to let a generic
+            // guard_dependency hide a later path_guard_dependency for the
+            // same site, incorrectly pinning an output-changing scalar
+            // branch as PATH_ASSUMPTION.  Aggregate all exact control edges
+            // for a site before deriving its outcome/successor contract, and
+            // retain one strongest edge only for compatibility metadata.
+            Map<String, List<Map<String, Object>>> branchEdgesBySite =
+                    new LinkedHashMap<>();
             for (Map<String, Object> edge : edges) {
                 String method = string(edge.get("method"));
                 if (!draft.methods.contains(method)
@@ -1263,28 +1469,27 @@ final class SymbolicRegionPlanner {
                     continue;
                 }
                 String site = string(edge.get("siteId"));
-                if (site.isEmpty() || !emittedBranchSites.add(site)) {
+                if (site.isEmpty()) {
                     continue;
                 }
-                String guard = firstNonEmpty(string(edge.get("unit")),
-                        string(edge.get("toCell")), site);
-                String policy = exploreGuard(edge, draft, guard)
-                        ? "EXPLORE" : "PATH_ASSUMPTION";
+                branchEdgesBySite.computeIfAbsent(site,
+                        ignored -> new ArrayList<>()).add(edge);
+            }
+            for (List<Map<String, Object>> siteEdges
+                    : branchEdgesBySite.values()) {
+                List<Map<String, Object>> policyEdges =
+                        authoritativeBranchPolicyEdges(siteEdges);
+                Map<String, Object> branchPolicy = branchPolicy(
+                        policyEdges, draft, outputCandidates, false);
+                String site = string(branchPolicy.get("siteId"));
+                String policy = string(branchPolicy.get("policy"));
                 if ("EXPLORE".equals(policy)) {
                     exploreBranches.add(site);
                 } else {
                     pathAssumptions.add(site);
                 }
                 sites.add(site);
-                Boolean requiredOutcome = requiredOutcome(edge);
-                branchPolicies.add(object(
-                        "siteId", site,
-                        "method", method,
-                        "unitIndex", integer(edge.get("unitIndex"), -1),
-                        "policy", policy,
-                        "guard", guard,
-                        "requiredOutcome", requiredOutcome,
-                        "role", "REACHABILITY"));
+                branchPolicies.add(branchPolicy);
             }
             InputSelection inputSelection = selectExternalInputs(draft,
                     inputCandidates, produced);
@@ -1321,8 +1526,6 @@ final class SymbolicRegionPlanner {
             boolean broadInputPortTruncated =
                     selectedExternalInputCount > broadInputPortCount;
 
-            addSeedOutputs(draft.methods, outputCandidates);
-            addConfiguredProducerReturnOutputs(draft, outputCandidates);
             Set<String> prioritySeedOutputs = seedInterfaceCells(draft);
             List<Map<String, Object>> outputPorts = new ArrayList<>();
             int outputIndex = 0;
@@ -1351,6 +1554,9 @@ final class SymbolicRegionPlanner {
             }
             List<Map<String, Object>> outputSlices = outputSlices(draft,
                     inputPorts, outputPorts);
+            mergeRequestedOutputSliceBranchPolicies(draft, outputSlices,
+                    outputCandidates, branchPolicies, pathAssumptions,
+                    exploreBranches, sites);
             int outputSlicePromotedInputCount = inputPorts.size()
                     - broadInputPortCount;
 
@@ -1517,12 +1723,28 @@ final class SymbolicRegionPlanner {
                 for (ContainerElementFieldCandidate candidate
                         : containerCandidates) {
                     containerElementSchemaFields.add(
-                            candidate.elementField.signature);
+                            candidate.baseInputCell);
                     slice.causalEdges.add(candidate.arrayLoad);
+                    slice.causalEdges.add(candidate.containerAccessor);
                     slice.causalCells.add(string(candidate.arrayLoad.get(
                             "fromCell")));
                     slice.causalCells.add(string(candidate.arrayLoad.get(
                             "toCell")));
+                    slice.causalCells.add(string(candidate.containerAccessor
+                            .get("fromCell")));
+                    for (String proofId : candidate.proofEdgeIds) {
+                        for (Map<String, Object> proofEdge : edges) {
+                            if (!proofId.equals(string(proofEdge.get("id")))) {
+                                continue;
+                            }
+                            slice.causalEdges.add(proofEdge);
+                            slice.causalCells.add(string(proofEdge.get(
+                                    "fromCell")));
+                            slice.causalCells.add(string(proofEdge.get(
+                                    "toCell")));
+                            break;
+                        }
+                    }
                 }
                 RequestedStateTransformerContract transformerContract =
                         heapStateOutput
@@ -1579,8 +1801,23 @@ final class SymbolicRegionPlanner {
                 for (String input : selection.externalInputs) {
                     InputPortResolution resolution = inputPortForCell(input,
                             prePromotionInputPorts, region.rootMethod, slice);
+                    if (!resolution.portId.isEmpty()
+                            && input.contains("#field:")) {
+                        Map<String, Object> existing = inputPort(
+                                resolution.portId, inputPorts);
+                        if (existing != null
+                                && string(existing.get(
+                                "fieldPathAuthority")).isEmpty()
+                                && materializableDeclaredFieldPathAccess(
+                                input, slice) != null) {
+                            addOutputSliceFrontierMaterializationMetadata(
+                                    existing, input, slice);
+                        }
+                    }
                     boolean incompatiblePromotedFieldPort =
                             !resolution.portId.isEmpty()
+                                    && !exactMaterializableAliasResolution(
+                                    resolution, prePromotionInputPorts)
                                     && !promotedDeclaredFieldPortCompatible(
                                     input, resolution.portId,
                                     prePromotionInputPorts, slice);
@@ -1638,6 +1875,8 @@ final class SymbolicRegionPlanner {
                             inputPorts, region.rootMethod, slice);
                     boolean incompatiblePromotedFieldPort =
                             !resolution.portId.isEmpty()
+                                    && !exactMaterializableAliasResolution(
+                                    resolution, inputPorts)
                                     && !promotedDeclaredFieldPortCompatible(
                                     input, resolution.portId, inputPorts,
                                     slice);
@@ -1978,6 +2217,8 @@ final class SymbolicRegionPlanner {
             }
             addArrayPutValueFieldCandidates(slice, outputCell,
                     sliceEdgeIds, arrayLoadsByShape, result, emitted);
+            addDirectArrayFieldPathCandidates(slice, arrayLoadsByShape,
+                    result, emitted);
             result.sort(Comparator
                     .comparing((ContainerElementFieldCandidate candidate) ->
                             string(candidate.projectedAccessor.get("siteId")))
@@ -1985,6 +2226,94 @@ final class SymbolicRegionPlanner {
                     .thenComparing(candidate ->
                             string(candidate.arrayLoad.get("id"))));
             return result;
+        }
+
+        /** Exact array[index].a.b.leaf provenance, materialized eagerly. */
+        private void addDirectArrayFieldPathCandidates(
+                RegionDraft slice,
+                Map<String, List<Map<String, Object>>> arrayLoadsByShape,
+                List<ContainerElementFieldCandidate> result,
+                Set<String> emitted) {
+            for (String cell : sorted(slice.causalCells)) {
+                DeclaredFieldPathAccess access =
+                        materializableDeclaredFieldPathAccess(cell, slice);
+                if (access == null) {
+                    continue;
+                }
+                Map<String, Object> rootProjection = null;
+                Map<String, Object> leafDeclared = null;
+                for (Map<String, Object> edge : slice.causalEdges) {
+                    if (cell.equals(string(edge.get("fromCell")))
+                            && access.siteId.equals(string(edge.get(
+                            "siteId")))) {
+                        if (rootProjection != null) {
+                            rootProjection = null;
+                            break;
+                        }
+                        rootProjection = edge;
+                    }
+                }
+                for (Map<String, Object> edge : slice.causalEdges) {
+                    if (access.leafField.signature.equals(string(edge.get(
+                            "fromCell")))
+                            && "field_read".equals(string(edge.get(
+                            "kind")))) {
+                        if (leafDeclared != null) {
+                            leafDeclared = null;
+                            break;
+                        }
+                        leafDeclared = edge;
+                    }
+                }
+                if (rootProjection == null || leafDeclared == null) {
+                    continue;
+                }
+                for (List<Map<String, Object>> loadGroup
+                        : arrayLoadsByShape.values()) {
+                    if (loadGroup.size() != 1) continue;
+                    Map<String, Object> arrayLoad = loadGroup.get(0);
+                    if (!access.method.equals(string(arrayLoad.get("method")))
+                            || !access.accessOwnerCell.equals(string(
+                            arrayLoad.get("toCell")))) {
+                        continue;
+                    }
+                    String arrayCell = string(arrayLoad.get("fromCell"));
+                    List<Map<String, Object>> containers = new ArrayList<>();
+                    for (Map<String, Object> edge : edges) {
+                        if (exactContainerAccessor(edge, access.method,
+                                arrayCell)) {
+                            containers.add(edge);
+                        }
+                    }
+                    if (containers.size() != 1) continue;
+                    Map<String, Object> container = containers.get(0);
+                    DeclaredFieldIdentity containerField = declaredField(
+                            string(container.get("fromCell")));
+                    if (containerField == null
+                            || !containerField.type.endsWith("[]")) {
+                        continue;
+                    }
+                    Set<String> proof = new LinkedHashSet<>(
+                            access.proofEdgeIds);
+                    proof.add(string(container.get("id")));
+                    proof.add(string(arrayLoad.get("id")));
+                    if (proof.contains("")
+                            || proof.size() != access.proofEdgeIds.size() + 2) {
+                        continue;
+                    }
+                    String identity = "DIRECT_ARRAY_FIELD_PATH\n"
+                            + string(arrayLoad.get("id")) + "\n" + cell;
+                    if (!emitted.add(identity)) continue;
+                    int selector = arrayLoadSelector(arrayLoad);
+                    result.add(new ContainerElementFieldCandidate(container,
+                            arrayLoad, rootProjection, leafDeclared, null,
+                            containerField, access.leafField, cell,
+                            access.fieldPath, selector, selector >= 0, true,
+                            proof,
+                            "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
+                                    + "CHAIN_V1"));
+                }
+            }
         }
 
         /**
@@ -2096,8 +2425,10 @@ final class SymbolicRegionPlanner {
                     int selector = arrayLoadSelector(arrayLoad);
                     result.add(new ContainerElementFieldCandidate(container,
                             arrayLoad, projection, declaredRead, putValue,
-                            containerField, elementField, fieldPath, selector,
-                            selector >= 0, true));
+                            containerField, elementField,
+                            elementField.signature, fieldPath, selector,
+                            selector >= 0, true,
+                            Collections.<String>emptyList(), ""));
                 }
             }
         }
@@ -2226,7 +2557,7 @@ final class SymbolicRegionPlanner {
             List<Map<String, Object>> result = new ArrayList<>();
             for (ContainerElementFieldCandidate candidate : candidates) {
                 String basePort = uniqueExactSelectedInputPort(inputPorts,
-                        selectedPorts, candidate.elementField.signature);
+                        selectedPorts, candidate.baseInputCell);
                 String containerPort = uniqueExactSelectedInputPort(
                         inputPorts, selectedPorts,
                         candidate.containerField.signature);
@@ -2234,13 +2565,17 @@ final class SymbolicRegionPlanner {
                         || basePort.equals(containerPort)) {
                     continue;
                 }
-                List<String> proofIds = new ArrayList<>(Arrays.asList(
-                        string(candidate.containerAccessor.get("id")),
-                        string(candidate.arrayLoad.get("id")),
-                        string(candidate.projectedAccessor.get("id")),
-                        string(candidate.declaredAccessor.get("id"))));
-                if (candidate.mapPutValue != null) {
-                    proofIds.add(string(candidate.mapPutValue.get("id")));
+                List<String> proofIds = new ArrayList<>(
+                        candidate.proofEdgeIds);
+                if (proofIds.isEmpty()) {
+                    proofIds.addAll(Arrays.asList(
+                            string(candidate.containerAccessor.get("id")),
+                            string(candidate.arrayLoad.get("id")),
+                            string(candidate.projectedAccessor.get("id")),
+                            string(candidate.declaredAccessor.get("id"))));
+                    if (candidate.mapPutValue != null) {
+                        proofIds.add(string(candidate.mapPutValue.get("id")));
+                    }
                 }
                 proofIds = sorted(proofIds);
                 String selectorAuthority = candidate.constantIndex
@@ -2253,7 +2588,9 @@ final class SymbolicRegionPlanner {
                         "bindingId", outputPort + ".array-element-field."
                                 + string(candidate.arrayLoad.get("id"))
                                 + (candidate.materializeFromContainerSnapshot
-                                ? ".map-put-value."
+                                ? candidate.mapPutValue == null
+                                ? ".direct-field-path."
+                                : ".map-put-value."
                                 + string(candidate.projectedAccessor.get(
                                 "id")) : ""),
                         "baseInputSymbol", basePort,
@@ -2284,14 +2621,18 @@ final class SymbolicRegionPlanner {
                         "fieldMaterializationSiteId",
                         string((candidate
                                 .materializeFromContainerSnapshot
-                                ? candidate.mapPutValue
+                                ? candidate.mapPutValue == null
+                                ? candidate.projectedAccessor
+                                : candidate.mapPutValue
                                 : candidate.projectedAccessor).get(
                                 "siteId")),
                         "arrayLoadSiteId",
                         string(candidate.arrayLoad.get("siteId")),
                         "proofCausalEdgeIds", proofIds,
                         "proofAuthority",
-                        candidate.materializeFromContainerSnapshot
+                        !candidate.proofAuthority.isEmpty()
+                                ? candidate.proofAuthority
+                                : candidate.materializeFromContainerSnapshot
                                 ? "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_"
                                 + "AND_DECLARED_FIELD_FIVE_EDGE_JOIN_V1"
                                 : "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_"
@@ -2323,17 +2664,22 @@ final class SymbolicRegionPlanner {
                                                String arrayCell) {
             DeclaredFieldIdentity field = declaredField(string(edge.get(
                     "fromCell")));
-            return exactStaticEdge(edge)
-                    && method.equals(string(edge.get("method")))
-                    && "accessor_field_return".equals(string(edge.get(
+            if (!exactStaticEdge(edge)
+                    || !method.equals(string(edge.get("method")))
+                    || !"HEAP_READ".equals(string(edge.get("transferKind")))
+                    || !"value_flow".equals(string(edge.get("relation")))
+                    || !arrayCell.equals(string(edge.get("toCell")))
+                    || field == null || !field.type.endsWith("[]")
+                    || !exactLocalCell(method, arrayCell)
+                    || !exactUnitDefines(edge, arrayCell)) {
+                return false;
+            }
+            if ("field_read".equals(string(edge.get("kind")))) {
+                return exactDeclaredGetfieldUnit(edge, field, "");
+            }
+            return "accessor_field_return".equals(string(edge.get(
                     "kind")))
-                    && "HEAP_READ".equals(string(edge.get("transferKind")))
-                    && "value_flow".equals(string(edge.get("relation")))
-                    && arrayCell.equals(string(edge.get("toCell")))
-                    && field != null && field.type.endsWith("[]")
-                    && declaredMetadataMatches(edge, field)
-                    && exactLocalCell(method, arrayCell)
-                    && exactUnitDefines(edge, arrayCell);
+                    && declaredMetadataMatches(edge, field);
         }
 
         private boolean exactProjectedAccessor(Map<String, Object> edge,
@@ -2927,6 +3273,13 @@ final class SymbolicRegionPlanner {
          */
         private void addOutputSliceFrontierMaterializationMetadata(
                 Map<String, Object> port, String cell, RegionDraft slice) {
+            DeclaredFieldPathAccess pathAccess =
+                    materializableDeclaredFieldPathAccess(cell, slice);
+            if (pathAccess != null) {
+                addDeclaredFieldPathMaterializationMetadata(port,
+                        pathAccess);
+                return;
+            }
             DeclaredFieldAccess access = materializableDeclaredFieldAccess(
                     cell, slice);
             if (access == null) {
@@ -2939,7 +3292,8 @@ final class SymbolicRegionPlanner {
             port.put("accessFieldType", access.field.type);
             port.put("accessField", access.field.name);
             if (access.accessorCall) {
-                slice.methods.add(access.accessorImplementationMethod);
+                admitPostSelectionSliceMethod(slice,
+                        access.accessorImplementationMethod);
                 port.put("accessorCallerMethod", access.method);
                 port.put("accessorCallSiteId", access.siteId);
                 port.put("accessorCallUnitIndex", access.unitIndex);
@@ -2965,6 +3319,30 @@ final class SymbolicRegionPlanner {
             port.put("leafField", access.field.name);
         }
 
+        private void addDeclaredFieldPathMaterializationMetadata(
+                Map<String, Object> port,
+                DeclaredFieldPathAccess access) {
+            port.put("bindingMode", "FIELD_ACCESS");
+            port.put("javaType", access.leafField.type);
+            port.put("accessFieldSignature", access.rootField.signature);
+            port.put("accessOwnerClass", access.rootField.owner);
+            port.put("accessFieldType", access.rootField.type);
+            port.put("accessField", access.rootField.name);
+            port.put("accessMethod", access.method);
+            port.put("accessSiteId", access.siteId);
+            port.put("accessUnitIndex", access.unitIndex);
+            port.put("accessSiteAuthority",
+                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+            port.put("fieldPath", access.fieldPath);
+            port.put("leafFieldSignature", access.leafField.signature);
+            port.put("leafOwnerClass", access.leafField.owner);
+            port.put("leafFieldType", access.leafField.type);
+            port.put("leafField", access.leafField.name);
+            port.put("fieldPathProofCausalEdgeIds", access.proofEdgeIds);
+            port.put("fieldPathAuthority",
+                    "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        }
+
         /**
          * Carries an exact accessor site onto an already-selected canonical
          * declared-field region input.  Broad exception/guard frontiers are
@@ -2981,6 +3359,13 @@ final class SymbolicRegionPlanner {
          */
         private void addRegionInputAccessorMaterializationMetadata(
                 Map<String, Object> port, String cell, RegionDraft region) {
+            DeclaredFieldPathAccess pathAccess =
+                    materializableDeclaredFieldPathAccess(cell, region);
+            if (pathAccess != null) {
+                addDeclaredFieldPathMaterializationMetadata(port,
+                        pathAccess);
+                return;
+            }
             DeclaredFieldIdentity field = declaredField(cell);
             if (field == null || !closedProtocolScalarType(field.type)) {
                 return;
@@ -3044,6 +3429,29 @@ final class SymbolicRegionPlanner {
             if (port == null) {
                 return false;
             }
+            if (cell.contains("#field:")) {
+                DeclaredFieldPathAccess access =
+                        materializableDeclaredFieldPathAccess(cell, slice);
+                boolean pathConstrained = !string(port.get(
+                        "fieldPathAuthority")).isEmpty();
+                if (access != null || pathConstrained) {
+                    return access != null
+                        && access.rootField.signature.equals(string(port.get(
+                        "accessFieldSignature")))
+                        && access.leafField.signature.equals(string(port.get(
+                        "leafFieldSignature")))
+                        && access.method.equals(string(port.get(
+                        "accessMethod")))
+                        && access.siteId.equals(string(port.get(
+                        "accessSiteId")))
+                        && access.unitIndex == integer(port.get(
+                        "accessUnitIndex"), -1)
+                        && access.fieldPath.equals(strings(port.get(
+                        "fieldPath")))
+                        && "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
+                        .equals(string(port.get("fieldPathAuthority")));
+                }
+            }
             String directAuthority = string(port.get("accessSiteAuthority"));
             String accessorAuthority = string(port.get(
                     "accessorCallSiteAuthority"));
@@ -3058,6 +3466,27 @@ final class SymbolicRegionPlanner {
                     != null;
         }
 
+        /**
+         * A projected dependency may deliberately resolve to a different
+         * canonical cell.  In that case the exact alias walk, rather than a
+         * second direct-access comparison against the original projection,
+         * is the compatibility proof.  Still require the selected terminal
+         * to carry executable leaf metadata so the weaker projected-port
+         * fallback cannot bypass the ordinary materialization checks.
+         */
+        private boolean exactMaterializableAliasResolution(
+                InputPortResolution resolution,
+                List<Map<String, Object>> inputPorts) {
+            if (resolution == null
+                    || !"UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
+                    resolution.authority)) {
+                return false;
+            }
+            Map<String, Object> port = inputPort(resolution.portId,
+                    inputPorts);
+            return port != null && exactAliasMaterializationPort(port);
+        }
+
         private void admitCompatibleAccessorImplementationMethod(
                 String cell, String portId,
                 List<Map<String, Object>> inputPorts, RegionDraft slice) {
@@ -3068,8 +3497,18 @@ final class SymbolicRegionPlanner {
             DeclaredFieldAccess access =
                     matchingPromotedDeclaredFieldAccess(cell, port, slice);
             if (access != null && access.accessorCall) {
-                slice.methods.add(access.accessorImplementationMethod);
+                admitPostSelectionSliceMethod(slice,
+                        access.accessorImplementationMethod);
             }
+        }
+
+        private void admitPostSelectionSliceMethod(
+                RegionDraft slice, String method) {
+            if (method.isEmpty() || !slice.methods.add(method)) {
+                return;
+            }
+            internallyDerivedTargetsByRegion.remove(slice);
+            callResultsWithCausalAlternativeByRegion.remove(slice);
         }
 
         private Map<String, Object> inputPort(
@@ -3270,15 +3709,11 @@ final class SymbolicRegionPlanner {
                     || !path.matches("(?:#field:[^#]+)+")) {
                 return false;
             }
-
             boolean exactProof = false;
             for (Map<String, Object> edge : slice.causalEdges) {
                 if (!cell.equals(string(edge.get("fromCell")))) {
                     continue;
                 }
-                // Every authoritative projection of this exact frontier must
-                // describe the same root/path.  One conflicting row makes the
-                // static materialization authority ambiguous.
                 if (!exactStaticValueFlow(edge)
                         || !Boolean.TRUE.equals(edge.get("fieldSensitive"))
                         || !root.equals(string(edge.get("objectFromCell")))
@@ -3288,6 +3723,344 @@ final class SymbolicRegionPlanner {
                 exactProof = true;
             }
             return exactProof;
+        }
+
+        /**
+         * Proves the complete direct-getfield chain represented by a
+         * projected canonical field cell.  Projected rows alone are not
+         * sufficient: each segment must have one canonical declared read,
+         * one receiver-local read, and (while a suffix remains) their exact
+         * paired projections.  The graph's existing four-segment path bound
+         * is preserved.  Any missing or duplicate segment fails closed.
+         */
+        private DeclaredFieldPathAccess
+        materializableDeclaredFieldPathAccess(
+                String cell, RegionDraft slice) {
+            int projectionIndex = cell.indexOf("#field:");
+            if (projectionIndex < 0) {
+                return null;
+            }
+            String rootCell = cell.substring(0, projectionIndex);
+            String suffix = cell.substring(projectionIndex);
+            DeclaredFieldIdentity rootField = declaredField(rootCell);
+            List<String> suffixSegments = fieldPathSegments(suffix);
+            if (rootField == null || closedProtocolScalarType(rootField.type)
+                    || suffixSegments.isEmpty()
+                    || 1 + suffixSegments.size() > 4) {
+                return null;
+            }
+
+            Map<String, Object> rootProjection = uniqueExactProjection(
+                    slice, "projected_field_read", cell, rootCell, suffix,
+                    "", suffix);
+            if (rootProjection == null) {
+                return null;
+            }
+            Map<String, Object> rootDeclaredRead = exactProjectionBase(
+                    rootProjection, "field_read", rootField.signature,
+                    string(rootProjection.get("objectToCell")));
+            if (rootDeclaredRead == null
+                    || !exactDeclaredGetfieldUnit(rootDeclaredRead,
+                    rootField, "")) {
+                return null;
+            }
+
+            List<String> fullPath = new ArrayList<>();
+            fullPath.add(rootField.name);
+            fullPath.addAll(suffixSegments);
+            String fullPathSuffix = fieldPathSuffix(fullPath);
+            String rootResult = string(rootProjection.get("objectToCell"));
+            Map<String, Object> rootInstanceProjection =
+                    uniqueExactProjection(slice,
+                            "projected_instance_field_read", "", "",
+                            fullPathSuffix, rootResult,
+                            suffix);
+            if (rootInstanceProjection == null) {
+                return null;
+            }
+            String accessOwnerCell = string(rootInstanceProjection.get(
+                    "objectFromCell"));
+            Map<String, Object> rootInstanceRead = exactProjectionBase(
+                    rootInstanceProjection, "instance_field_read",
+                    accessOwnerCell + "#field:" + rootField.name,
+                    rootResult);
+            if (rootInstanceRead == null
+                    || !sameExactReadSite(rootDeclaredRead,
+                    rootInstanceRead)
+                    || !exactDeclaredGetfieldUnit(rootInstanceRead,
+                    rootField, accessOwnerCell)) {
+                return null;
+            }
+
+            Set<String> proofIds = new LinkedHashSet<>();
+            addProofEdgeIds(proofIds, rootProjection, rootDeclaredRead,
+                    rootInstanceProjection, rootInstanceRead);
+            List<String> aliases = new ArrayList<>();
+            aliases.add(cell);
+            String currentLocal = rootResult;
+            String expectedOwner = rootField.type;
+            List<String> remaining = new ArrayList<>(suffixSegments);
+            DeclaredFieldIdentity leafField = null;
+
+            while (!remaining.isEmpty()) {
+                String segment = remaining.get(0);
+                List<String> tail = new ArrayList<>(remaining.subList(1,
+                        remaining.size()));
+                if (tail.isEmpty()) {
+                    List<Map<String, Object>[]> pairs =
+                            exactDirectFieldReadPairs(slice, currentLocal,
+                                    expectedOwner, segment);
+                    if (pairs.size() != 1) {
+                        return null;
+                    }
+                    Map<String, Object>[] pair = pairs.get(0);
+                    leafField = declaredField(string(pair[0].get(
+                            "fromCell")));
+                    if (leafField == null
+                            || !directFieldLeafType(leafField.type)) {
+                        return null;
+                    }
+                    aliases.add(leafField.signature);
+                    addProofEdgeIds(proofIds, pair[0], pair[1]);
+                    break;
+                }
+
+                String remainingSuffix = fieldPathSuffix(remaining);
+                String tailSuffix = fieldPathSuffix(tail);
+                Map<String, Object> instanceProjection =
+                        uniqueExactProjection(slice,
+                                "projected_instance_field_read", "", "",
+                                remainingSuffix, "", tailSuffix);
+                if (instanceProjection == null
+                        || !currentLocal.equals(string(instanceProjection.get(
+                        "objectFromCell")))) {
+                    return null;
+                }
+                String nextLocal = string(instanceProjection.get(
+                        "objectToCell"));
+                Map<String, Object> instanceRead = exactProjectionBase(
+                        instanceProjection, "instance_field_read",
+                        currentLocal + "#field:" + segment, nextLocal);
+                if (instanceRead == null) {
+                    return null;
+                }
+                List<Map<String, Object>> declaredReads =
+                        exactParallelDeclaredReads(instanceRead,
+                                expectedOwner, segment);
+                if (declaredReads.size() != 1) {
+                    return null;
+                }
+                Map<String, Object> declaredRead = declaredReads.get(0);
+                DeclaredFieldIdentity field = declaredField(string(
+                        declaredRead.get("fromCell")));
+                if (field == null
+                        || !exactDeclaredGetfieldUnit(instanceRead, field,
+                        currentLocal)) {
+                    return null;
+                }
+                String canonicalProjectionCell = field.signature
+                        + tailSuffix;
+                Map<String, Object> declaredProjection =
+                        uniqueExactProjection(slice,
+                                "projected_field_read",
+                                canonicalProjectionCell, field.signature,
+                                tailSuffix, nextLocal, tailSuffix);
+                if (declaredProjection == null
+                        || !string(declaredRead.get("id")).equals(string(
+                        declaredProjection.get("projectionBaseEdgeId")))) {
+                    return null;
+                }
+                aliases.add(canonicalProjectionCell);
+                addProofEdgeIds(proofIds, instanceProjection, instanceRead,
+                        declaredRead, declaredProjection);
+                currentLocal = nextLocal;
+                expectedOwner = field.type;
+                remaining = tail;
+            }
+            if (leafField == null || proofIds.contains("")) {
+                return null;
+            }
+            return new DeclaredFieldPathAccess(cell, rootField, leafField,
+                    string(rootDeclaredRead.get("method")),
+                    string(rootDeclaredRead.get("siteId")), integer(
+                    rootDeclaredRead.get("unitIndex"), -1),
+                    accessOwnerCell, fullPath, aliases, proofIds);
+        }
+
+        private List<String> fieldPathSegments(String suffix) {
+            if (!string(suffix).matches("(?:#field:[^#]+)+")) {
+                return Collections.emptyList();
+            }
+            List<String> result = new ArrayList<>();
+            Matcher matcher = FIELD_PATH_SEGMENT_PATTERN.matcher(suffix);
+            while (matcher.find()) {
+                result.add(matcher.group(1));
+            }
+            return result;
+        }
+
+        private String fieldPathSuffix(Collection<String> path) {
+            StringBuilder result = new StringBuilder();
+            for (String segment : path) {
+                result.append("#field:").append(segment);
+            }
+            return result.toString();
+        }
+
+        private Map<String, Object> uniqueExactProjection(
+                RegionDraft slice, String kind, String fromCell,
+                String objectFromCell, String fieldPath,
+                String objectToCell, String targetSuffix) {
+            Map<String, Object> selected = null;
+            for (Map<String, Object> edge : slice.causalEdges) {
+                String targetObject = string(edge.get("objectToCell"));
+                String expectedTarget = targetObject + targetSuffix;
+                if (!kind.equals(string(edge.get("kind")))
+                        || !exactStaticEdge(edge)
+                        || !"HEAP_READ".equals(string(edge.get(
+                        "transferKind")))
+                        || !"value_flow".equals(string(edge.get(
+                        "relation")))
+                        || !Boolean.TRUE.equals(edge.get("fieldSensitive"))
+                        || !"PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1"
+                        .equals(string(edge.get("authorityInheritance")))
+                        || !fromCell.isEmpty() && !fromCell.equals(string(
+                        edge.get("fromCell")))
+                        || !objectFromCell.isEmpty()
+                        && !objectFromCell.equals(string(edge.get(
+                        "objectFromCell")))
+                        || !fieldPath.equals(string(edge.get("fieldPath")))
+                        || !objectToCell.isEmpty()
+                        && !objectToCell.equals(targetObject)
+                        || !expectedTarget.equals(string(edge.get(
+                        "toCell")))
+                        || !exactLocalCell(string(edge.get("method")),
+                        targetObject)
+                        || string(edge.get("projectionBaseEdgeId")).isEmpty()) {
+                    continue;
+                }
+                if (selected != null) {
+                    return null;
+                }
+                selected = edge;
+            }
+            return selected;
+        }
+
+        private Map<String, Object> exactProjectionBase(
+                Map<String, Object> projection, String kind,
+                String fromCell, String toCell) {
+            String baseId = string(projection.get("projectionBaseEdgeId"));
+            Map<String, Object> selected = null;
+            for (Map<String, Object> edge : edges) {
+                if (!baseId.equals(string(edge.get("id")))) {
+                    continue;
+                }
+                if (selected != null || !kind.equals(string(edge.get(
+                        "kind"))) || !exactStaticEdge(edge)
+                        || !"HEAP_READ".equals(string(edge.get(
+                        "transferKind")))
+                        || !"value_flow".equals(string(edge.get(
+                        "relation")))
+                        || !fromCell.equals(string(edge.get("fromCell")))
+                        || !toCell.equals(string(edge.get("toCell")))
+                        || !sameExactReadSite(projection, edge)) {
+                    return null;
+                }
+                selected = edge;
+            }
+            return selected;
+        }
+
+        private boolean sameExactReadSite(Map<String, Object> left,
+                                          Map<String, Object> right) {
+            return string(left.get("method")).equals(string(right.get(
+                    "method")))
+                    && string(left.get("siteId")).equals(string(right.get(
+                    "siteId")))
+                    && integer(left.get("unitIndex"), -1) == integer(
+                    right.get("unitIndex"), -1)
+                    && string(left.get("unit")).equals(string(right.get(
+                    "unit")));
+        }
+
+        private boolean exactDeclaredGetfieldUnit(
+                Map<String, Object> edge, DeclaredFieldIdentity field,
+                String exactOwnerCell) {
+            String method = string(edge.get("method"));
+            String target = exactLocalName(method, string(edge.get(
+                    "toCell")));
+            String unit = string(edge.get("unit")).trim();
+            if (target.isEmpty() || field == null) {
+                return false;
+            }
+            if (!exactOwnerCell.isEmpty()) {
+                String owner = exactLocalName(method, exactOwnerCell);
+                return !owner.isEmpty() && unit.equals(target + " = "
+                        + owner + "." + field.signature);
+            }
+            return unit.matches("^" + Pattern.quote(target)
+                    + " = [$A-Za-z_][$A-Za-z0-9_]*\\."
+                    + Pattern.quote(field.signature) + "$");
+        }
+
+        @SuppressWarnings("unchecked")
+        private List<Map<String, Object>[]> exactDirectFieldReadPairs(
+                RegionDraft slice, String ownerCell, String expectedOwner,
+                String fieldName) {
+            List<Map<String, Object>[]> result = new ArrayList<>();
+            for (Map<String, Object> instance : slice.causalEdges) {
+                if (!"instance_field_read".equals(string(instance.get(
+                        "kind"))) || !exactStaticEdge(instance)
+                        || !"HEAP_READ".equals(string(instance.get(
+                        "transferKind")))
+                        || !"value_flow".equals(string(instance.get(
+                        "relation")))
+                        || !(ownerCell + "#field:" + fieldName).equals(
+                        string(instance.get("fromCell")))) {
+                    continue;
+                }
+                List<Map<String, Object>> declared =
+                        exactParallelDeclaredReads(instance, expectedOwner,
+                                fieldName);
+                if (declared.size() == 1) {
+                    result.add(new Map[]{declared.get(0), instance});
+                }
+            }
+            return result;
+        }
+
+        private List<Map<String, Object>> exactParallelDeclaredReads(
+                Map<String, Object> instance, String expectedOwner,
+                String fieldName) {
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Map<String, Object> edge : edges) {
+                DeclaredFieldIdentity field = declaredField(string(edge.get(
+                        "fromCell")));
+                if (field == null || !expectedOwner.equals(field.owner)
+                        || !fieldName.equals(field.name)
+                        || !"field_read".equals(string(edge.get("kind")))
+                        || !exactStaticEdge(edge)
+                        || !"HEAP_READ".equals(string(edge.get(
+                        "transferKind")))
+                        || !"value_flow".equals(string(edge.get(
+                        "relation")))
+                        || !string(instance.get("toCell")).equals(string(
+                        edge.get("toCell")))
+                        || !sameExactReadSite(instance, edge)
+                        || !exactDeclaredGetfieldUnit(edge, field, "")) {
+                    continue;
+                }
+                result.add(edge);
+            }
+            return result;
+        }
+
+        private void addProofEdgeIds(Set<String> target,
+                                     Map<String, Object>... proofEdges) {
+            for (Map<String, Object> edge : proofEdges) {
+                target.add(string(edge.get("id")));
+            }
         }
 
         /**
@@ -3536,6 +4309,15 @@ final class SymbolicRegionPlanner {
                     || "java.lang.Float".equals(type)
                     || "java.lang.Double".equals(type)
                     || "java.lang.String".equals(type);
+        }
+
+        /** The custom-JDK field hook has exact scalar semantics for JVM
+         * primitive fields; boxed references and Strings remain concrete. */
+        private boolean directFieldLeafType(String type) {
+            return "boolean".equals(type) || "byte".equals(type)
+                    || "short".equals(type) || "int".equals(type)
+                    || "long".equals(type) || "char".equals(type)
+                    || "float".equals(type) || "double".equals(type);
         }
 
         /**
@@ -4305,23 +5087,21 @@ final class SymbolicRegionPlanner {
             // region port (for example owner.carrier#field:value).  Admit the
             // canonical end only through the exact parallel-read join below.
             if (!syntheticValueProjection(cell)
-                    && declaredField(cell) == null) {
+                    && declaredField(cell) == null
+                    && !declaredFieldProjection(cell)) {
                 return InputPortResolution.unresolved();
             }
 
             Map<String, Integer> distance = new LinkedHashMap<>();
             Deque<String> work = new ArrayDeque<>();
-            String requiredPath = projectedPath(cell);
-            DeclaredFieldIdentity startingField = declaredField(cell);
-            if (requiredPath.isEmpty() && startingField != null) {
-                requiredPath = "#field:" + startingField.name;
-            }
-            if (requiredPath.isEmpty()) {
+            if (exactAliasPath(cell).isEmpty()) {
                 return InputPortResolution.unresolved();
             }
             distance.put(cell, 0);
             work.add(cell);
             Map<Integer, Set<String>> exactPorts = new LinkedHashMap<>();
+            Map<Integer, Set<String>> projectedPorts =
+                    new LinkedHashMap<>();
             Map<Integer, Set<String>> basePorts = new LinkedHashMap<>();
 
             while (!work.isEmpty() && distance.size() <= MAX_PORTS) {
@@ -4334,10 +5114,14 @@ final class SymbolicRegionPlanner {
                     if (port.isEmpty()) {
                         continue;
                     }
-                    if (current.equals(inputCell)
-                            && declaredFieldProjection(inputCell)) {
-                        exactPorts.computeIfAbsent(currentDistance,
-                                ignored -> new LinkedHashSet<>()).add(port);
+                    if (current.equals(inputCell)) {
+                        if (exactAliasMaterializationPort(input)) {
+                            exactPorts.computeIfAbsent(currentDistance,
+                                    ignored -> new LinkedHashSet<>()).add(port);
+                        } else if (declaredFieldProjection(inputCell)) {
+                            projectedPorts.computeIfAbsent(currentDistance,
+                                    ignored -> new LinkedHashSet<>()).add(port);
+                        }
                     } else if (base.equals(inputCell)
                             && materializableProjectedAliasBase(inputCell,
                             slice.rootMethod)) {
@@ -4347,19 +5131,28 @@ final class SymbolicRegionPlanner {
                 }
 
                 for (Map<String, Object> edge : slice.causalEdges) {
-                    if (!current.equals(string(edge.get("toCell")))
-                            || !exactProjectedAliasEdge(edge,
-                            requiredPath)) {
+                    if (!exactProjectedAliasEdge(edge)) {
                         continue;
                     }
-                    String source = string(edge.get("fromCell"));
+                    String source = "";
+                    if (current.equals(string(edge.get("toCell")))) {
+                        source = string(edge.get("fromCell"));
+                    } else if (current.equals(string(edge.get(
+                            "fromCell")))) {
+                        // These are exact alias-preserving projection/copy
+                        // rows, not computations.  Treating them as an
+                        // undirected equivalence edge lets a broad upstream
+                        // projection reach the canonical declared leaf that
+                        // is read in a deeper synchronous helper.
+                        source = string(edge.get("toCell"));
+                    }
                     if (!source.isEmpty() && !distance.containsKey(source)) {
                         distance.put(source, currentDistance + 1);
                         work.addLast(source);
                     }
                 }
                 for (String source : exactParallelFieldReadAliases(current,
-                        slice, requiredPath)) {
+                        slice, exactAliasPath(current))) {
                     if (!source.isEmpty() && !distance.containsKey(source)) {
                         distance.put(source, currentDistance + 1);
                         work.addLast(source);
@@ -4374,16 +5167,74 @@ final class SymbolicRegionPlanner {
                 return InputPortResolution.unresolved();
             }
 
-            String exact = uniqueNearestPort(exactPorts);
             if (!exactPorts.isEmpty()) {
+                String exact = uniquePort(exactPorts);
                 return exact.isEmpty() ? InputPortResolution.unresolved()
                         : new InputPortResolution(exact,
+                        "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN");
+            }
+            // A canonical declared leaf is itself executable evidence, not a
+            // request to reuse an opaque receiver projection.  Leaving it
+            // unresolved here lets requested-output promotion construct its
+            // exact FIELD_ACCESS port (or lets the ordinary exact-cell path
+            // select an already-declared port).  Otherwise discovery order
+            // can make an earlier metadata-free projection hide the leaf
+            // before that leaf has had a chance to be promoted.
+            if (declaredField(cell) != null) {
+                return InputPortResolution.unresolved();
+            }
+            if (!projectedPorts.isEmpty()) {
+                String projected = uniqueNearestPort(projectedPorts);
+                return projected.isEmpty()
+                        ? InputPortResolution.unresolved()
+                        : new InputPortResolution(projected,
                         "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN");
             }
             String base = uniqueNearestPort(basePorts);
             return base.isEmpty() ? InputPortResolution.unresolved()
                     : new InputPortResolution(base,
                     "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN");
+        }
+
+        /**
+         * Only a port with a concrete, statically proven runtime access is a
+         * terminal of the projected-field alias graph.  Broad region ports
+         * may name a useful projection without carrying the leaf declaration
+         * or access site needed to execute it; such a port remains an alias
+         * node and must not hide a canonical leaf promoted by the exact
+         * requested-output slice.
+         */
+        private boolean exactAliasMaterializationPort(
+                Map<String, Object> port) {
+            if (!"FIELD_ACCESS".equals(string(port.get("bindingMode")))
+                    || strings(port.get("fieldPath")).isEmpty()
+                    || string(port.get("leafFieldSignature")).isEmpty()) {
+                return false;
+            }
+            boolean direct = "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
+                    .concat("READ_SITE_V1").equals(string(port.get(
+                            "accessSiteAuthority")));
+            boolean accessor = "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
+                    .concat("ACCESSOR_CALLSITE_V1").equals(string(port.get(
+                            "accessorCallSiteAuthority")));
+            if (!direct && !accessor) {
+                return false;
+            }
+            Collection<String> path = strings(port.get("fieldPath"));
+            return path.size() == 1 || "STATIC_UNIQUE_EXACT_DIRECT_"
+                    .concat("GETFIELD_CHAIN_V1").equals(string(port.get(
+                            "fieldPathAuthority")));
+        }
+
+        private String uniquePort(
+                Map<Integer, Set<String>> portsByDistance) {
+            Set<String> ports = new LinkedHashSet<>();
+            for (Set<String> atDistance : portsByDistance.values()) {
+                if (atDistance != null) {
+                    ports.addAll(atDistance);
+                }
+            }
+            return ports.size() == 1 ? ports.iterator().next() : "";
         }
 
         /**
@@ -4417,6 +5268,13 @@ final class SymbolicRegionPlanner {
             result.remove(current);
             result.remove("");
             return result;
+        }
+
+        private String exactAliasPath(String cell) {
+            String path = projectedPath(cell);
+            DeclaredFieldIdentity field = declaredField(cell);
+            return path.isEmpty() && field != null
+                    ? "#field:" + field.name : path;
         }
 
         private boolean exactParallelFieldReadRow(
@@ -4481,15 +5339,13 @@ final class SymbolicRegionPlanner {
             return receiverOwner || resolvedTuple;
         }
 
-        private boolean exactProjectedAliasEdge(Map<String, Object> edge,
-                                                String requiredPath) {
+        private boolean exactProjectedAliasEdge(Map<String, Object> edge) {
             String kind = string(edge.get("kind"));
             String transfer = string(edge.get("transferKind"));
             boolean exactAliasKind = kind.startsWith("projected_")
                     || "method_receiver_field".equals(kind);
             if (!exactAliasKind
                     || isBoundary(edge)
-                    || !exactStaticValueFlow(edge)
                     || !Boolean.TRUE.equals(edge.get("fieldSensitive"))) {
                 return false;
             }
@@ -4500,6 +5356,13 @@ final class SymbolicRegionPlanner {
                     || "PROJECTION".equals(transfer))) {
                 return false;
             }
+            if (kind.startsWith("projected_")
+                    && exactProjectedBaseAliasAuthority(edge)) {
+                return true;
+            }
+            if (!exactStaticValueFlow(edge)) {
+                return false;
+            }
             if ("projected_local_def_use".equals(kind)
                     && "VALUE_PASS".equals(transfer)
                     && !exactProjectedDirectCopyAuthority(edge)) {
@@ -4508,10 +5371,103 @@ final class SymbolicRegionPlanner {
             String path = string(edge.get("fieldPath"));
             String fromBase = string(edge.get("objectFromCell"));
             String toBase = string(edge.get("objectToCell"));
-            return requiredPath.equals(path) && !fromBase.isEmpty()
+            return !path.isEmpty() && !fromBase.isEmpty()
                     && !toBase.isEmpty()
                     && (fromBase + path).equals(string(edge.get("fromCell")))
                     && (toBase + path).equals(string(edge.get("toCell")));
+        }
+
+        /**
+         * Proves a projected alias from the unique raw Soot edge that created
+         * it.  A getfield can shorten the visible path -- for example
+         * {@code owner#field:profile#field:weight} becomes
+         * {@code profileLocal#field:weight}.  Requiring one fixed path string
+         * for the whole alias walk therefore rejects a valid identity.  The
+         * invariant that survives the read is the identical non-empty suffix
+         * appended to both endpoints of the raw edge.
+         *
+         * <p>The projection is admitted only when its producer reference is
+         * unique, the raw edge retains automatic SMT/value-flow authority,
+         * both rows name the same method and bytecode definition, and the
+         * raw transfer itself is alias preserving.  A projected parameter
+         * identity is accepted from Soot's exact parameter binding even
+         * though the compact projected row is conservatively labelled
+         * {@code taint_depends_on}.  Ordinary local assignments and returns
+         * retain their stronger two-reference/direct-copy proof below.</p>
+         */
+        private boolean exactProjectedBaseAliasAuthority(
+                Map<String, Object> projected) {
+            if (!"PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1".equals(
+                    string(projected.get("authorityInheritance")))
+                    || !exactStaticValueFlow(projected)
+                    || !Boolean.TRUE.equals(projected.get(
+                    "semanticAssertionsAllowed"))
+                    || !Boolean.TRUE.equals(projected.get(
+                    "eligibleForAutomaticDerivation"))
+                    || !Boolean.TRUE.equals(projected.get(
+                    "eligibleForAutomaticSmt"))
+                    || Boolean.TRUE.equals(projected.get("mappingOnly"))
+                    || !"backward_provenance".equals(string(projected.get(
+                    "direction")))) {
+                return false;
+            }
+            String baseId = string(projected.get("projectionBaseEdgeId"));
+            if (baseId.isEmpty()) {
+                return false;
+            }
+            Map<String, Object> base = null;
+            int matches = 0;
+            for (Map<String, Object> candidate : edges) {
+                if (baseId.equals(string(candidate.get("id")))) {
+                    base = candidate;
+                    matches++;
+                }
+            }
+            if (matches != 1 || base == projected || isBoundary(base)
+                    || !exactStaticValueFlow(base)
+                    || !string(projected.get("method")).equals(
+                    string(base.get("method")))
+                    || !string(projected.get("siteId")).equals(
+                    string(base.get("siteId")))
+                    || integer(projected.get("unitIndex"), -1) < 0
+                    || integer(projected.get("unitIndex"), -1) != integer(
+                    base.get("unitIndex"), -1)
+                    || !string(projected.get("transferKind")).equals(
+                    string(base.get("transferKind")))) {
+                return false;
+            }
+            String projectedKind = string(projected.get("kind"));
+            if (!projectedKind.startsWith("projected_")
+                    || !projectedKind.substring("projected_".length())
+                    .equals(string(base.get("kind")))) {
+                return false;
+            }
+            String transfer = string(base.get("transferKind"));
+            if (!("HEAP_READ".equals(transfer)
+                    || "FUNCTION_RETURN".equals(transfer)
+                    || "IDENTITY_BINDING".equals(transfer)
+                    || "VALUE_PASS".equals(transfer)
+                    || "PROJECTION".equals(transfer))) {
+                return false;
+            }
+
+            String baseFrom = string(base.get("fromCell"));
+            String baseTo = string(base.get("toCell"));
+            String from = string(projected.get("fromCell"));
+            String to = string(projected.get("toCell"));
+            if (baseFrom.isEmpty() || baseTo.isEmpty()
+                    || !from.startsWith(baseFrom + "#field:")) {
+                return false;
+            }
+            String suffix = from.substring(baseFrom.length());
+            if (!to.equals(baseTo + suffix)) {
+                return false;
+            }
+
+            if (!"projected_local_def_use".equals(projectedKind)) {
+                return true;
+            }
+            return exactProjectedDirectCopyAuthority(projected);
         }
 
         /**
@@ -4525,10 +5481,20 @@ final class SymbolicRegionPlanner {
          */
         private boolean exactProjectedDirectCopyAuthority(
                 Map<String, Object> projected) {
-            if (!"PROJECTED_FROM_SOOT_EXACT_LOCAL_DIRECT_COPY_V1".equals(
-                    string(projected.get("valueFlowAuthority")))
-                    || !"SOOT_EXACT_LOCAL_DIRECT_COPY_V1".equals(
-                    string(projected.get("baseValueFlowAuthority")))
+            String projectedAuthority = string(projected.get(
+                    "valueFlowAuthority"));
+            String declaredBaseAuthority = string(projected.get(
+                    "baseValueFlowAuthority"));
+            boolean projectedLocal = "PROJECTED_FROM_SOOT_EXACT_LOCAL_"
+                    .concat("DIRECT_COPY_V1").equals(projectedAuthority)
+                    && "SOOT_EXACT_LOCAL_DIRECT_COPY_V1".equals(
+                    declaredBaseAuthority);
+            boolean projectedParameter =
+                    "PROJECTED_FROM_SOOT_EXACT_PARAMETER_IDENTITY_"
+                    .concat("BINDING_V1").equals(projectedAuthority)
+                    && "SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1".equals(
+                    declaredBaseAuthority);
+            if ((!projectedLocal && !projectedParameter)
                     || !"PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1".equals(
                     string(projected.get("authorityInheritance")))) {
                 return false;
@@ -4552,8 +5518,6 @@ final class SymbolicRegionPlanner {
                     || !"VALUE_PASS".equals(string(base.get(
                     "transferKind")))
                     || !exactStaticValueFlow(base)
-                    || !"SOOT_EXACT_LOCAL_DIRECT_COPY_V1".equals(
-                    string(base.get("valueFlowAuthority")))
                     || !string(base.get("valueFlowAuthority")).equals(
                     string(projected.get("baseValueFlowAuthority")))) {
                 return false;
@@ -4571,6 +5535,11 @@ final class SymbolicRegionPlanner {
             }
 
             String directCopyKind = string(base.get("directCopyKind"));
+            if (projectedParameter) {
+                return "PARAMETER_IDENTITY".equals(directCopyKind)
+                        && exactParameterCell(method, from)
+                        && exactLocalCell(method, to);
+            }
             if ("RETURN_LOCAL".equals(directCopyKind)) {
                 return exactLocalCell(method, from)
                         && (method + ".return").equals(to);
@@ -4578,6 +5547,24 @@ final class SymbolicRegionPlanner {
             return "LOCAL_ASSIGN_LOCAL".equals(directCopyKind)
                     && exactLocalCell(method, from)
                     && exactLocalCell(method, to);
+        }
+
+        private boolean exactParameterCell(String method, String cell) {
+            String prefix = string(method) + ".param";
+            String value = string(cell);
+            if (method.isEmpty() || !value.startsWith(prefix)) {
+                return false;
+            }
+            int colon = value.indexOf(':', prefix.length());
+            if (colon <= prefix.length() || colon + 1 >= value.length()) {
+                return false;
+            }
+            for (int index = prefix.length(); index < colon; index++) {
+                if (!Character.isDigit(value.charAt(index))) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private String projectedPath(String cell) {
@@ -5002,7 +5989,104 @@ final class SymbolicRegionPlanner {
                     result.mandatorySeedGuardInputs.add(field);
                 }
             }
+            collapseExactDeclaredFieldPathAliases(result, draft);
             return result;
+        }
+
+        /**
+         * The field-sensitive graph intentionally carries a canonical cell
+         * for every suffix of a direct access chain.  Once the complete chain
+         * is uniquely proven, those suffixes are aliases, not independent
+         * primitive inputs.  Keep only the longest selected path.  If two
+         * unrelated longest paths claim the same suffix, retain that suffix
+         * and fail closed instead of guessing an owner.
+         */
+        private void collapseExactDeclaredFieldPathAliases(
+                InputSelection selection, RegionDraft draft) {
+            Map<String, DeclaredFieldPathAccess> accesses =
+                    new LinkedHashMap<>();
+            for (String input : new ArrayList<>(selection.externalInputs)) {
+                DeclaredFieldPathAccess access =
+                        materializableDeclaredFieldPathAccess(input, draft);
+                if (access != null) {
+                    accesses.put(input, access);
+                }
+            }
+            Set<String> nestedCandidates = new LinkedHashSet<>();
+            for (DeclaredFieldPathAccess outer : accesses.values()) {
+                for (String alias : outer.aliases) {
+                    if (!outer.cell.equals(alias)
+                            && accesses.containsKey(alias)) {
+                        nestedCandidates.add(alias);
+                    }
+                }
+            }
+            List<DeclaredFieldPathAccess> maximal = new ArrayList<>();
+            for (DeclaredFieldPathAccess access : accesses.values()) {
+                if (!nestedCandidates.contains(access.cell)) {
+                    maximal.add(access);
+                }
+            }
+            Map<String, List<DeclaredFieldPathAccess>> claims =
+                    new LinkedHashMap<>();
+            for (DeclaredFieldPathAccess access : maximal) {
+                for (String alias : access.aliases) {
+                    if (!alias.equals(access.cell)
+                            && selection.externalInputs.contains(alias)) {
+                        claims.computeIfAbsent(alias,
+                                ignored -> new ArrayList<>()).add(access);
+                    }
+                }
+            }
+            for (Map.Entry<String, List<DeclaredFieldPathAccess>> claim
+                    : claims.entrySet()) {
+                if (claim.getValue().size() != 1) {
+                    continue;
+                }
+                String alias = claim.getKey();
+                DeclaredFieldPathAccess replacement = claim.getValue().get(0);
+                if (!aliasReadsCoveredByPathProof(alias, replacement,
+                        draft)) {
+                    continue;
+                }
+                if (!selection.externalInputs.remove(alias)) {
+                    continue;
+                }
+                boolean mandatory = selection.mandatorySeedGuardInputs
+                        .remove(alias);
+                selection.selectionReasons.remove(alias);
+                if (mandatory) {
+                    selection.mandatorySeedGuardInputs.add(replacement.cell);
+                    selection.selectionReasons.put(replacement.cell,
+                            "SEED_GUARD_DEPENDENCY_FRONTIER");
+                }
+                selection.derivedInputs.add(alias
+                        + " [exact suffix alias of complete field path "
+                        + replacement.cell + "]");
+            }
+        }
+
+        /**
+         * A canonical declared-field cell may represent reads from several
+         * runtime owners.  Collapse it only when every read in this region is
+         * one of the exact read sites proving the selected direct path.
+         */
+        private boolean aliasReadsCoveredByPathProof(
+                String alias, DeclaredFieldPathAccess replacement,
+                RegionDraft draft) {
+            boolean observed = false;
+            for (Map<String, Object> edge : analysisEdges(draft)) {
+                if (!alias.equals(string(edge.get("fromCell")))
+                        || !"field_read".equals(string(edge.get("kind")))) {
+                    continue;
+                }
+                observed = true;
+                if (!replacement.proofEdgeIds.contains(string(edge.get(
+                        "id")))) {
+                    return false;
+                }
+            }
+            return observed;
         }
 
         private Set<String> upstreamOfGuardHeapPrestateWriters(
@@ -5478,16 +6562,68 @@ final class SymbolicRegionPlanner {
         private boolean internallyDerivedCallResult(String candidate,
                                                      RegionDraft draft) {
             String returnedMethod = methodForCell(candidate);
-            if (returnedMethod.isEmpty()
-                    || !draft.methods.contains(returnedMethod)) {
+            if (returnedMethod.isEmpty()) {
                 return false;
             }
-            return internallyDerivedTargets(draft).contains(candidate);
+            if (draft.methods.contains(returnedMethod)) {
+                return internallyDerivedTargets(draft).contains(candidate);
+            }
+            return planBackedSameThreadCallResult(candidate, returnedMethod,
+                    draft);
+        }
+
+        /**
+         * Proves that a return just beyond the broad region method budget is
+         * nevertheless computed by this activation rather than supplied as a
+         * free live-in.
+         *
+         * <p>Non-exception regions intentionally keep a compact method list;
+         * requested-output slices later rebuild the exact same-thread closure
+         * from the full call graph.  A helper one level beyond that compact
+         * list therefore used to be labelled {@code OPAQUE_CALL_RETURN} even
+         * when an exact call-return edge and an analysed callee plan already
+         * proved its definition.  Besides ordinary helpers, javac-generated
+         * access bridges have precisely this shape.  Treating their result as
+         * an independent input over-approximates the program and can make the
+         * final query satisfiable for values no Java execution can produce.</p>
+         *
+         * <p>The proof below is deliberately structural and fail closed.  It
+         * does not inspect method or class names.  The caller must already be
+         * in this draft, the edge must be an authoritative non-boundary
+         * {@code call_return}, its declared callee must be the method encoded
+         * by the return cell, that method must be reachable without crossing
+         * a protocol boundary, and its symbolic plan must explicitly define
+         * the exact return cell.  Truly native/library/unanalyzed calls still
+         * terminate the symbolic frontier.</p>
+         */
+        private boolean planBackedSameThreadCallResult(
+                String candidate, String returnedMethod, RegionDraft draft) {
+            Map<String, Object> producerPlan = plansByMethod.get(
+                    returnedMethod);
+            if (producerPlan == null
+                    || !strings(producerPlan.get("outputs")).contains(
+                    candidate)
+                    || !reachableFrom(draft.rootMethod, returnedMethod)) {
+                return false;
+            }
+            for (Map<String, Object> edge : analysisEdges(draft)) {
+                if (!candidate.equals(string(edge.get("fromCell")))
+                        || !draft.methods.contains(string(edge.get("method")))
+                        || isBoundary(edge)
+                        || !"FUNCTION_RETURN".equals(string(edge.get(
+                        "transferKind")))
+                        || !"call_return".equals(string(edge.get("kind")))
+                        || !returnedMethod.equals(string(edge.get("invoke")))
+                        || !exactStaticValueFlow(edge)) {
+                    continue;
+                }
+                return true;
+            }
+            return false;
         }
 
         private Set<String> internallyDerivedTargets(RegionDraft draft) {
-            Set<String> cached = internallyDerivedTargetsByRegion.get(
-                    draft.regionId);
+            Set<String> cached = internallyDerivedTargetsByRegion.get(draft);
             if (cached != null) {
                 return cached;
             }
@@ -5506,7 +6642,7 @@ final class SymbolicRegionPlanner {
                     }
                 }
             }
-            internallyDerivedTargetsByRegion.put(draft.regionId, targets);
+            internallyDerivedTargetsByRegion.put(draft, targets);
             return targets;
         }
 
@@ -5736,7 +6872,7 @@ final class SymbolicRegionPlanner {
         private Set<String> callResultsWithCausalAlternative(
                 RegionDraft draft) {
             Set<String> cached = callResultsWithCausalAlternativeByRegion.get(
-                    draft.regionId);
+                    draft);
             if (cached != null) {
                 return cached;
             }
@@ -5771,8 +6907,7 @@ final class SymbolicRegionPlanner {
                     result.addAll(returned);
                 }
             }
-            callResultsWithCausalAlternativeByRegion.put(draft.regionId,
-                    result);
+            callResultsWithCausalAlternativeByRegion.put(draft, result);
             return result;
         }
 
@@ -6211,12 +7346,14 @@ final class SymbolicRegionPlanner {
         private boolean sharedFieldBoundarySource(
                 RegionDraft region, String field) {
             boolean exactDefinition = false;
+            boolean anchorDefinition = false;
             for (Map<String, Object> edge : edges) {
                 if (region.methods.contains(string(edge.get("method")))
                         && field.equals(string(edge.get("toCell")))
                         && exactSharedFieldDefinition(edge)) {
                     exactDefinition = true;
-                    break;
+                    anchorDefinition |= region.anchorMethod.equals(
+                            string(edge.get("method")));
                 }
             }
             if (!exactDefinition) {
@@ -6236,6 +7373,21 @@ final class SymbolicRegionPlanner {
                             "toCell")));
                     if (!targetMethod.isEmpty()
                             && !region.methods.contains(targetMethod)) {
+                        return true;
+                    }
+                }
+            }
+            if (anchorDefinition) {
+                for (Map<String, Object> edge : edges) {
+                    if (!"HEAP_READ".equals(string(edge.get(
+                            "transferKind")))
+                            || !field.equals(string(edge.get("fromCell")))) {
+                        continue;
+                    }
+                    String reader = string(edge.get("method"));
+                    if (!reader.isEmpty() && siblingDynamicDispatch(
+                            region.rootMethod, reader,
+                            region.anchorMethod)) {
                         return true;
                     }
                 }
@@ -7034,37 +8186,330 @@ final class SymbolicRegionPlanner {
             if (explicit instanceof Boolean) {
                 return (Boolean) explicit;
             }
+            Boolean nested = commonNestedRequiredOutcome(edge);
+            if (nested != null) {
+                return nested;
+            }
+            if (hasNestedControlRows(edge)) {
+                // Multiple controlled definitions/effects may require
+                // opposite outcomes.  The evidence string describes only
+                // the first emitted row and must not be promoted to a common
+                // Boolean contract for the whole branch site.
+                return null;
+            }
             Matcher matcher = REQUIRED_OUTCOME_PATTERN.matcher(string(
                     edge.get("evidence")));
             return matcher.find()
                     ? Boolean.valueOf(matcher.group(1)) : null;
         }
 
-        /**
-         * A Jimple guard often contains only compiler temporaries (for
-         * example {@code $i3 >= 0}), so keyword inspection alone cannot tell
-         * that it is the expiry predicate controlling a heap mutation.  When
-         * static control dependence proves a concrete required outcome, walk
-         * that guard's backward dependencies.  A scalar declared heap field
-         * or environment source makes the branch a solver-controlled effect
-         * branch.  An output-relevant path guard may additionally close at a
-         * scalar method return (for example {@code Boolean.booleanValue()});
-         * structural loop gates backed by iterator calls remain path
-         * assumptions.
-         */
-        private boolean exploreGuard(Map<String, Object> edge,
-                                     RegionDraft draft, String guard) {
-            if (SymbolicRegionPlanner.exploreGuard(guard)) {
-                return true;
+        private Boolean commonNestedRequiredOutcome(
+                Map<String, Object> edge) {
+            Boolean common = null;
+            boolean found = false;
+            for (String field : Arrays.asList("controlledDefinitions",
+                    "guardedMutations", "guardedEffects")) {
+                Object rows = edge.get(field);
+                if (!(rows instanceof Collection)) {
+                    continue;
+                }
+                for (Object row : (Collection<?>) rows) {
+                    if (!(row instanceof Map)) {
+                        continue;
+                    }
+                    Object outcome = ((Map<?, ?>) row).get(
+                            "requiredOutcome");
+                    if (!(outcome instanceof Boolean)) {
+                        return null;
+                    }
+                    if (!found) {
+                        common = (Boolean) outcome;
+                        found = true;
+                    } else if (!common.equals(outcome)) {
+                        return null;
+                    }
+                }
             }
+            return found ? common : null;
+        }
+
+        private boolean hasNestedControlRows(Map<String, Object> edge) {
+            for (String field : Arrays.asList("controlledDefinitions",
+                    "guardedMutations", "guardedEffects")) {
+                Object rows = edge.get(field);
+                if (rows instanceof Collection
+                        && !((Collection<?>) rows).isEmpty()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Orders duplicate GUARD edges for one concrete branch site by the
+         * strength of their output-causality evidence.  The causal slice and
+         * exact control-dependence variants must dominate the generic
+         * operand-consumption edge; otherwise file/edge ordering can change
+         * whether a real output branch is explored.
+         */
+        private int branchPolicyEvidenceRank(Map<String, Object> edge,
+                                             RegionDraft draft) {
+            int rank = draft.causalEdges.contains(edge) ? 16 : 0;
             String kind = string(edge.get("kind"));
-            boolean outputRelevantPathGuard =
-                    "path_guard_dependency".equals(kind);
-            if (!(outputRelevantPathGuard
-                    || "heap_mutation_path_guard".equals(kind))
-                    || requiredOutcome(edge) == null) {
+            if (ControlDependenceEdgeSupport.requiresSiteIdentity(kind)) {
+                rank += 32;
+            }
+            if (requiredOutcome(edge) != null) {
+                rank += 8;
+            }
+            if (Boolean.TRUE.equals(edge.get("sameCellRedefinition"))) {
+                rank += 4;
+            }
+            if (!string(edge.get("controlledDefinitionSiteId")).isEmpty()) {
+                rank += 2;
+            }
+            return rank;
+        }
+
+        private List<Map<String, Object>> authoritativeBranchPolicyEdges(
+                List<Map<String, Object>> siteEdges) {
+            List<Map<String, Object>> exact = new ArrayList<>();
+            for (Map<String, Object> edge : siteEdges) {
+                if (ControlDependenceEdgeSupport.requiresSiteIdentity(
+                        string(edge.get("kind")))) {
+                    exact.add(edge);
+                }
+            }
+            return exact.isEmpty() ? siteEdges : exact;
+        }
+
+        private Map<String, Object> branchPolicy(
+                List<Map<String, Object>> policyEdges, RegionDraft draft,
+                Collection<String> outputCandidates,
+                boolean requestedOutputCausal) {
+            Map<String, Object> edge = strongestBranchPolicyEdge(
+                    policyEdges, draft);
+            String site = string(edge.get("siteId"));
+            String guard = firstNonEmpty(string(edge.get("unit")),
+                    string(edge.get("toCell")), site);
+            Map<String, Object> independenceProof = requestedOutputCausal
+                    ? null : outputIndependenceProof(policyEdges,
+                    outputCandidates);
+            boolean outputIndependent = independenceProof != null;
+            Map<String, Object> result = object(
+                    "siteId", site,
+                    "method", string(edge.get("method")),
+                    "unitIndex", integer(edge.get("unitIndex"), -1),
+                    "policy", outputIndependent
+                            ? "PATH_ASSUMPTION" : "EXPLORE",
+                    "guard", guard,
+                    "requiredOutcome", commonRequiredOutcome(policyEdges),
+                    "requiredSuccessorIndices",
+                    requiredSuccessorIndices(policyEdges),
+                    "branchKind", string(edge.get("branchKind")),
+                    "switchCaseKeys", integerValues(edge.get(
+                            "switchCaseKeys")),
+                    "defaultSuccessorIndex", integer(edge.get(
+                            "defaultSuccessorIndex"), -1),
+                    "successorCount", integer(edge.get(
+                            "successorCount"), -1),
+                    "successorIndexAuthority", string(edge.get(
+                            "successorIndexAuthority")),
+                    "switchArmIdentityAuthority", string(edge.get(
+                            "switchArmIdentityAuthority")),
+                    "role", "REACHABILITY",
+                    "sourceEdgeId", string(edge.get("id")),
+                    "sourceEdgeIds", branchPolicyEdgeValues(policyEdges,
+                            "id"),
+                    "sourceEdgeKind", string(edge.get("kind")),
+                    "sourceEdgeKinds", branchPolicyEdgeValues(policyEdges,
+                            "kind"),
+                    "controlDependenceAuthority", string(edge.get(
+                            "controlDependenceAuthority")),
+                    "controlDependenceAuthorities",
+                    branchPolicyEdgeValues(policyEdges,
+                            "controlDependenceAuthority"),
+                    "policyAuthority", outputIndependent
+                            ? string(independenceProof.get(
+                            "outputPathIndependenceAuthority"))
+                            : requestedOutputCausal
+                            ? "STATIC_REQUESTED_OUTPUT_SLICE_CONTROL_"
+                            + "DEPENDENCE_REQUIRES_EXPLORATION_V1"
+                            : explorationAuthority(policyEdges, draft));
+            if (outputIndependent) {
+                result.put("pathAssumptionProof", object(
+                        "outputPathIndependenceProven", true,
+                        "authority", string(independenceProof.get(
+                                "outputPathIndependenceAuthority")),
+                        "reason", string(independenceProof.get(
+                                "outputPathIndependenceReason")),
+                        "checkedOutputs", strings(independenceProof.get(
+                                "outputPathIndependenceCheckedOutputs"))));
+            } else {
+                result.put("explorationReason",
+                        "OUTPUT_OR_PATH_INFLUENCE_PRESENT_OR_NOT_PROVEN_"
+                                + "ABSENT");
+            }
+            return result;
+        }
+
+        /**
+         * Requested-output demand slicing can admit synchronous helpers that
+         * the compact exception region intentionally omitted.  Their exact
+         * control-dependence edges are part of the executable slice, so every
+         * such branch needs the same fail-closed policy contract as a branch
+         * in the broad region.  A causal guard is always EXPLORE; it cannot be
+         * resurrected as a PATH_ASSUMPTION by a coarser broad-region proof.
+         */
+        private void mergeRequestedOutputSliceBranchPolicies(
+                RegionDraft draft, List<Map<String, Object>> outputSlices,
+                Collection<String> outputCandidates,
+                List<Map<String, Object>> branchPolicies,
+                Set<String> pathAssumptions, Set<String> exploreBranches,
+                Set<String> sites) {
+            Set<String> selectedEdgeIds = new LinkedHashSet<>();
+            for (Map<String, Object> outputSlice : outputSlices) {
+                selectedEdgeIds.addAll(strings(outputSlice.get(
+                        "causalEdgeIds")));
+            }
+            if (selectedEdgeIds.isEmpty()) {
+                return;
+            }
+            Map<String, List<Map<String, Object>>> causalBySite =
+                    new LinkedHashMap<>();
+            for (Map<String, Object> edge : edges) {
+                if (!selectedEdgeIds.contains(string(edge.get("id")))
+                        || !"GUARD".equals(string(edge.get(
+                        "transferKind")))) {
+                    continue;
+                }
+                String site = string(edge.get("siteId"));
+                if (!site.isEmpty()) {
+                    causalBySite.computeIfAbsent(site,
+                            ignored -> new ArrayList<>()).add(edge);
+                }
+            }
+            Map<String, Integer> policyIndexBySite = new LinkedHashMap<>();
+            for (int index = 0; index < branchPolicies.size(); index++) {
+                policyIndexBySite.put(string(branchPolicies.get(index).get(
+                        "siteId")), index);
+            }
+            for (Map.Entry<String, List<Map<String, Object>>> entry
+                    : causalBySite.entrySet()) {
+                List<Map<String, Object>> policyEdges =
+                        authoritativeBranchPolicyEdges(entry.getValue());
+                Map<String, Object> policy = branchPolicy(policyEdges,
+                        draft, outputCandidates, true);
+                Integer existingIndex = policyIndexBySite.get(entry.getKey());
+                if (existingIndex == null) {
+                    policyIndexBySite.put(entry.getKey(),
+                            branchPolicies.size());
+                    branchPolicies.add(policy);
+                } else if (!"EXPLORE".equals(string(branchPolicies.get(
+                        existingIndex).get("policy")))) {
+                    branchPolicies.set(existingIndex, policy);
+                }
+                pathAssumptions.remove(entry.getKey());
+                exploreBranches.add(entry.getKey());
+                sites.add(entry.getKey());
+            }
+        }
+
+        private Map<String, Object> strongestBranchPolicyEdge(
+                List<Map<String, Object>> siteEdges, RegionDraft draft) {
+            Map<String, Object> strongest = siteEdges.get(0);
+            for (int index = 1; index < siteEdges.size(); index++) {
+                Map<String, Object> candidate = siteEdges.get(index);
+                if (branchPolicyEvidenceRank(candidate, draft)
+                        > branchPolicyEvidenceRank(strongest, draft)) {
+                    strongest = candidate;
+                }
+            }
+            return strongest;
+        }
+
+        private Boolean commonRequiredOutcome(
+                Collection<Map<String, Object>> siteEdges) {
+            Boolean common = null;
+            boolean found = false;
+            for (Map<String, Object> edge : siteEdges) {
+                Boolean candidate = requiredOutcome(edge);
+                if (candidate == null) {
+                    return null;
+                }
+                if (!found) {
+                    common = candidate;
+                    found = true;
+                } else if (!common.equals(candidate)) {
+                    return null;
+                }
+            }
+            return found ? common : null;
+        }
+
+        private Map<String, Object> outputIndependenceProof(
+                Collection<Map<String, Object>> siteEdges,
+                Collection<String> outputs) {
+            for (Map<String, Object> edge : siteEdges) {
+                if (ControlDependenceEdgeSupport
+                        .hasAuditableOutputIndependenceProof(edge)
+                        && outputIndependenceCovers(edge, outputs)) {
+                    return edge;
+                }
+            }
+            return null;
+        }
+
+        private List<String> branchPolicyEdgeValues(
+                Collection<Map<String, Object>> siteEdges, String field) {
+            Set<String> values = new LinkedHashSet<>();
+            for (Map<String, Object> edge : siteEdges) {
+                String value = string(edge.get(field));
+                if (!value.isEmpty()) {
+                    values.add(value);
+                }
+            }
+            List<String> result = new ArrayList<>(values);
+            Collections.sort(result);
+            return result;
+        }
+
+        private String explorationAuthority(
+                Collection<Map<String, Object>> siteEdges,
+                RegionDraft draft) {
+            for (Map<String, Object> edge : siteEdges) {
+                if (ControlDependenceEdgeSupport.requiresSiteIdentity(
+                        string(edge.get("kind")))) {
+                    return "STATIC_OUTPUT_CONTROL_DEPENDENCE_REQUIRES_"
+                            + "EXPLORATION_V1";
+                }
+            }
+            for (Map<String, Object> edge : siteEdges) {
+                if (guardHasSolverControlledFrontier(edge, draft)) {
+                    return "SYMBOLIC_FRONTIER_REQUIRES_EXPLORATION_V1";
+                }
+            }
+            return "CONSERVATIVE_UNPROVEN_OUTPUT_INDEPENDENCE_V1";
+        }
+
+        private boolean outputIndependenceCovers(
+                Map<String, Object> edge, Collection<String> outputs) {
+            if (outputs == null || outputs.isEmpty()) {
                 return false;
             }
+            Set<String> checked = new LinkedHashSet<>(strings(edge.get(
+                    "outputPathIndependenceCheckedOutputs")));
+            return checked.containsAll(outputs);
+        }
+
+        /**
+         * Provides audit metadata for an EXPLORE decision.  This provenance
+         * walk is deliberately not a gate: an unresolved frontier means the
+         * branch remains conservatively explorable, never that it can be
+         * pinned to the concrete trace.
+         */
+        private boolean guardHasSolverControlledFrontier(
+                Map<String, Object> edge, RegionDraft draft) {
             String start = string(edge.get("fromCell"));
             if (start.isEmpty()) {
                 return false;
@@ -7088,12 +8533,10 @@ final class SymbolicRegionPlanner {
             work.add(start);
             while (!work.isEmpty() && seen.size() < 4096) {
                 String current = work.removeFirst();
-                if (!current.equals(start)
-                        && solverControlledScalarFrontier(current)) {
+                if (solverControlledScalarFrontier(current)) {
                     return true;
                 }
-                if (!current.equals(start) && outputRelevantPathGuard
-                        && scalarMethodReturnFrontier(current)) {
+                if (scalarMethodReturnFrontier(current)) {
                     return true;
                 }
                 List<Map<String, Object>> dependencies = incoming.get(current);
@@ -7108,6 +8551,50 @@ final class SymbolicRegionPlanner {
                 }
             }
             return false;
+        }
+
+        private List<Integer> requiredSuccessorIndices(
+                Collection<Map<String, Object>> edges) {
+            Set<Integer> indices = new LinkedHashSet<>();
+            for (Map<String, Object> edge : edges) {
+                collectIntegerValues(indices, edge.get(
+                        "reachingSuccessorIndices"));
+                for (String field : Arrays.asList("controlledDefinitions",
+                        "guardedMutations", "guardedEffects")) {
+                    Object rows = edge.get(field);
+                    if (!(rows instanceof Collection)) {
+                        continue;
+                    }
+                    for (Object row : (Collection<?>) rows) {
+                        if (row instanceof Map) {
+                            collectIntegerValues(indices,
+                                    ((Map<?, ?>) row).get(
+                                            "reachingSuccessorIndices"));
+                        }
+                    }
+                }
+            }
+            List<Integer> result = new ArrayList<>(indices);
+            Collections.sort(result);
+            return result;
+        }
+
+        private void collectIntegerValues(Set<Integer> target,
+                                          Object values) {
+            if (!(values instanceof Collection)) {
+                return;
+            }
+            for (Object value : (Collection<?>) values) {
+                if (value instanceof Number) {
+                    target.add(((Number) value).intValue());
+                }
+            }
+        }
+
+        private List<Integer> integerValues(Object values) {
+            Set<Integer> result = new LinkedHashSet<>();
+            collectIntegerValues(result, values);
+            return new ArrayList<>(result);
         }
 
         private boolean solverControlledScalarFrontier(String cell) {
@@ -7129,18 +8616,7 @@ final class SymbolicRegionPlanner {
             }
             String method = methodForCell(value);
             return !method.isEmpty()
-                    && scalarType(declaredReturnType(method))
-                    && !structuralMethodReturn(method);
-        }
-
-        private boolean structuralMethodReturn(String method) {
-            String declaringType = lower(owner(method));
-            String name = methodName(method);
-            return declaringType.contains("iterator")
-                    || declaringType.endsWith(".enumeration")
-                    || declaringType.endsWith(".spliterator")
-                    || "hasNext".equals(name)
-                    || "hasMoreElements".equals(name);
+                    && scalarType(declaredReturnType(method));
         }
 
         private boolean scalarType(String type) {
@@ -7277,6 +8753,42 @@ final class SymbolicRegionPlanner {
             this.accessorImplementationMethod =
                     accessorImplementationMethod == null ? ""
                             : accessorImplementationMethod;
+        }
+    }
+
+    /**
+     * Exact direct-getfield proof for one projected scalar frontier.  The
+     * hook belongs to {@code rootField}; {@code leafField} is the only field
+     * that may become symbolic.
+     */
+    private static final class DeclaredFieldPathAccess {
+        private final String cell;
+        private final DeclaredFieldIdentity rootField;
+        private final DeclaredFieldIdentity leafField;
+        private final String method;
+        private final String siteId;
+        private final int unitIndex;
+        private final String accessOwnerCell;
+        private final List<String> fieldPath;
+        private final List<String> aliases;
+        private final List<String> proofEdgeIds;
+
+        private DeclaredFieldPathAccess(
+                String cell, DeclaredFieldIdentity rootField,
+                DeclaredFieldIdentity leafField, String method,
+                String siteId, int unitIndex, String accessOwnerCell,
+                Collection<String> fieldPath, Collection<String> aliases,
+                Collection<String> proofEdgeIds) {
+            this.cell = cell;
+            this.rootField = rootField;
+            this.leafField = leafField;
+            this.method = method;
+            this.siteId = siteId;
+            this.unitIndex = unitIndex;
+            this.accessOwnerCell = accessOwnerCell;
+            this.fieldPath = new ArrayList<>(fieldPath);
+            this.aliases = new ArrayList<>(aliases);
+            this.proofEdgeIds = sorted(proofEdgeIds);
         }
     }
 
@@ -7485,23 +8997,6 @@ final class SymbolicRegionPlanner {
         }
         return methodForCell(output).equals(anchorMethod)
                 ? "SINK_STATE" : "REGION_OUTPUT";
-    }
-
-    private static boolean exploreGuard(String guard) {
-        String value = lower(guard);
-        if (value.contains("instanceof") || value.contains("callback")
-                || value.matches(".*\\b(pc|nc|ac)\\b.*")
-                || value.contains("debug") || value.contains("logger")) {
-            return false;
-        }
-        return value.contains("allkeys")
-                || value.contains("key")
-                || value.contains("expired")
-                || value.contains("stale")
-                || value.contains("timeout")
-                || value.contains("failure")
-                || value.contains("currentkey")
-                || value.contains("encryptionkey");
     }
 
     private static String projection(String cell) {

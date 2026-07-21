@@ -157,25 +157,53 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
   switch (type) {
   case T_OBJECT: {
     oop fld_oop = obj->obj_field(fd->offset());
-    if (fld_oop == NULL) return false;
+    if (fld_oop == NULL) {
+      // A selected nullable reference is still a symbolic input when its
+      // concrete seed happens to be null.  Keep its field expression on the
+      // owner; getfield will propagate that expression to ifnull/ifnonnull.
+      // Recursive whole-object symbolization remains unchanged: it cannot
+      // traverse a missing child and does not invent one.
+      if (!_selected_field.empty()) {
+        sym_inst = this->_ctx.find_sym_inst(obj);
+        if (sym_inst != NULL) {
+          assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
+                 "should be equal");
+          sym_inst->set_sym_exp(fd->offset(), new FieldSymbolExp(
+              sym_inst->get_sym_rid(), symbolic_name, T_OBJECT));
+        }
+      }
+      return false;
+    }
     if (fld_oop->klass()->name() == vmSymbols::java_lang_String()) {
-      sym_inst = this->_ctx.get_sym_inst(obj);
+      // A String field is an alias, not ownership of the referenced String.
+      // In particular, a literal refers to a VM-global intern-table entry.
+      // Bind the symbolic String expression to this owner/field edge and let
+      // getfield carry it on the operand shadow stack.  This preserves Java
+      // identity/content and does not contaminate other aliases.
+      sym_inst = this->_ctx.find_sym_inst(obj);
+      if (sym_inst == NULL) {
+        tty->print_cr("Warning: String field owner has no symbolic shadow");
+        return false;
+      }
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
              "should be equal");
-      SymString* sym_str_inst = reinterpret_cast<SymString *>(this->_ctx.get_or_alloc_sym_inst(fld_oop));
-      sym_str_inst->set_ref_exp(new StringSymbolExp(obj->get_sym_rid(), symbolic_name));
-      sym_inst->init_sym_exp(fd->offset(), sym_str_inst->get_ref_exp());
+      sym_inst->set_sym_exp(fd->offset(), new StringSymbolExp(
+          sym_inst->get_sym_rid(), symbolic_name));
       return false;
     }
     if (!_selected_field.empty()) {
-      sym_inst = this->_ctx.get_sym_inst(obj);
+      sym_inst = this->_ctx.find_sym_inst(obj);
+      if (sym_inst == NULL) {
+        tty->print_cr("Warning: object field owner has no symbolic shadow");
+        return false;
+      }
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
              "should be equal");
       SymInstance *field_instance = this->_ctx.get_or_alloc_sym_inst(fld_oop);
       if (field_instance != NULL) {
         field_instance->set_ref_exp(new FieldSymbolExp(
             field_instance->get_sym_rid(), symbolic_name, T_OBJECT));
-        sym_inst->init_sym_exp(fd->offset(),
+        sym_inst->set_sym_exp(fd->offset(),
             field_instance->get_or_create_ref_exp(fld_oop));
       }
       return false;
@@ -185,16 +213,24 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
   case T_ARRAY: {
     arrayOop array_obj = (arrayOop)(obj->obj_field(fd->offset()));
     if (array_obj != NULL) {
-      sym_arr = this->_ctx.alloc_sym_array(array_obj);
-      sym_arr->set_length_exp(new ArrayLengthExp(sym_arr->get_sym_rid(), type));
+      sym_arr = this->_ctx.get_or_alloc_sym_array(array_obj);
+      if (sym_arr != NULL) {
+        sym_arr->set_length_exp(
+            new ArrayLengthExp(sym_arr->get_sym_rid(), type));
+      }
     }
     return false;
   }
   default:
-    sym_inst = this->_ctx.get_sym_inst(obj);
+    sym_inst = this->_ctx.find_sym_inst(obj);
+    if (sym_inst == NULL) {
+      tty->print_cr("Warning: primitive field owner has no symbolic shadow");
+      return false;
+    }
     assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
            "should be equal");
-    sym_inst->init_sym_exp(fd->offset(), type, symbolic_name);
+    sym_inst->set_sym_exp(fd->offset(), new FieldSymbolExp(
+        sym_inst->get_sym_rid(), symbolic_name, type));
 //      sym_inst->init_sym_exp(fd->offset(), type);
     return false;
   }
@@ -241,7 +277,9 @@ bool FieldSymbolizer::before_instance_helper() {
       _prefix_lst.push_back(clz_name);
     }
     return true;
-  } else if (this->_obj->klass()->name() == vmSymbols::java_lang_String()) {
+  } else if (sym_inst != NULL
+             && this->_obj->klass()->name()
+                    == vmSymbols::java_lang_String()) {
     // rename plain String symbolic expressions
     SymString* sym_str_inst = reinterpret_cast<SymString *>(sym_inst);
     if (!_prefix_lst.empty()) {

@@ -9,6 +9,8 @@
 #include <pthread.h>
 #include <string>
 
+class Thread;
+
 class ConcolicMngr {
 #ifdef ENABLE_CONCOLIC
 public:
@@ -21,6 +23,9 @@ public:
   static jlong startConcolicRegion(JavaThread *thread, const char *region_id,
                                    const char *activation_id);
   static jlong endConcolic();
+  static void abandonPendingBranchForException(Thread *thread);
+  static void abortCurrentContext(const char *reason);
+  static void cleanupAbandonedContext(JavaThread *thread);
   static void pausePathConditionRecording();
   static void resumePathConditionRecording();
   static jlong markBranch(const char *site_id, int occurrence);
@@ -39,16 +44,17 @@ public:
 
   /* let compiler not optimize this  code!! */
   inline static bool __attribute__((optimize("O0"))) has_symbolized_method() {
-    return ctx && ctx->is_symbolizing_method();
+    return ctx && !ctx->is_aborted() && ctx->is_symbolizing_method();
   }
 
   inline static bool __attribute__((optimize("O0"))) has_active_context() {
-    return ctx != NULL;
+    return ctx != NULL && !ctx->is_aborted();
   }
   
   /* let compiler not optimize this  code!! */
   inline static bool __attribute__((optimize("O0"))) can_do_concolic() {
-    return ctx && ctx->path_condition_pause_depth() == 0
+    return ctx && !ctx->is_aborted()
+        && ctx->path_condition_pause_depth() == 0
         && !ctx->is_symbolizing_method()
         && ctx->symbolic_tracking_enabled();
   }
@@ -60,13 +66,13 @@ public:
   // Its native implementation temporarily enables PC recording only while
   // the VM mutates symbolic state, then restores the caller's pause depth.
   inline static bool __attribute__((optimize("O0"))) can_explicitly_symbolize() {
-    return ctx && !ctx->is_symbolizing_method();
+    return ctx && !ctx->is_aborted() && !ctx->is_symbolizing_method();
   }
 
   // A paused observation subtree must keep the Zero/shadow frame structure
   // balanced even though its bytecodes do not propagate symbolic state.
   inline static bool __attribute__((optimize("O0"))) can_maintain_shadow_stack() {
-    return ctx && !ctx->is_symbolizing_method();
+    return ctx && !ctx->is_aborted() && !ctx->is_symbolizing_method();
   }
 
   inline static bool __attribute__((optimize("O0"))) should_try_handle_method() {
@@ -95,9 +101,9 @@ public:
     ctx->record_branch_condition(sym_exp, outcome, opcode);
   }
 
-  inline static void __attribute__((optimize("O0"))) record_compare_witness(
-      Expression *sym_exp) {
-    ctx->record_compare_witness(sym_exp);
+  inline static void __attribute__((optimize("O0"))) record_branch_conditions(
+      const exp_list_t &expressions, bool outcome, int opcode) {
+    ctx->record_branch_conditions(expressions, outcome, opcode);
   }
 
   static void method_enter_callback(ZeroFrame *caller_frame, ZeroFrame *callee_frame) {

@@ -20,11 +20,35 @@ public final class RegionStringConversionApiSmoke {
         String hexadecimal = Integer.toHexString(integer.intValue());
         String longStatic = Long.toString(longValue.longValue());
         String longInstance = longValue.toString();
-        // Both calls return an interned String.  The VM cannot attach a
-        // per-execution symbolic identity to that shared object, so it must
-        // retain explicit unsupported provenance in the region summary.
+        // Both calls return an interned String.  Their symbolic provenance
+        // must travel on the returned operand edge without changing the
+        // shared object's identity or symbolizing unrelated literal aliases.
         String booleanStatic = Boolean.toString(booleanValue.booleanValue());
         String booleanInstance = booleanValue.toString();
+        String booleanPeer = "true";
+        require(booleanStatic == booleanPeer && booleanInstance == booleanPeer,
+                "Boolean conversion did not preserve interned identity");
+
+        // Consume both returned edges in real predicates.  Merely computing
+        // the conversions above is not a path decision; these contains calls
+        // are what make the unsupported conversion provenance reportable.
+        boolean booleanStaticMatches = booleanStatic.contains("true");
+        System.markConcolicBranch("STRING.CONVERSION.BOOLEAN.STATIC", 1);
+        if (!booleanStaticMatches) {
+            throw new AssertionError("unexpected static Boolean text");
+        }
+        boolean booleanInstanceMatches = booleanInstance.contains("true");
+        System.markConcolicBranch("STRING.CONVERSION.BOOLEAN.INSTANCE", 1);
+        if (!booleanInstanceMatches) {
+            throw new AssertionError("unexpected instance Boolean text");
+        }
+
+        // A separate alias of the same interned oop remains concrete.
+        boolean peerMatches = booleanPeer.contains("true");
+        System.markConcolicBranch("STRING.CONVERSION.BOOLEAN.PEER", 1);
+        if (!peerMatches) {
+            throw new AssertionError("unexpected peer Boolean text");
+        }
 
         StringBuilder builder = new StringBuilder();
         builder.append("key=").append(integer.intValue());
@@ -44,6 +68,7 @@ public final class RegionStringConversionApiSmoke {
                 System.getSymbolicExpression(longInstance);
         String builderValueExpression =
                 System.getSymbolicExpression(builderValue);
+        String branchEvents = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
 
         require(decimalStaticExpression.contains("\"_name\":\"toString\""),
@@ -89,6 +114,12 @@ public final class RegionStringConversionApiSmoke {
                 builderValueExpression);
         require(builderValueExpression.contains("\"_name\":\"toString\""),
                 builderValueExpression);
+        require(oneCondition(branchEvents,
+                "STRING.CONVERSION.BOOLEAN.STATIC"), branchEvents);
+        require(oneCondition(branchEvents,
+                "STRING.CONVERSION.BOOLEAN.INSTANCE"), branchEvents);
+        require(emptyCondition(branchEvents,
+                "STRING.CONVERSION.BOOLEAN.PEER"), branchEvents);
         // getSymbolicExpression is observational and must not add an otherwise
         // unused value to the path condition.
         require(summary.contains("\"regionId\":\"REGION.string-conversion\""),
@@ -107,6 +138,28 @@ public final class RegionStringConversionApiSmoke {
         require("true".equals(booleanStatic), booleanStatic);
         require("true".equals(booleanInstance), booleanInstance);
         System.out.println("CAUSYNTH_REGION_STRING_CONVERSION_API_SMOKE_OK");
+    }
+
+    private static boolean oneCondition(String events, String site) {
+        String event = event(events, site);
+        return event.contains("\"conditionCount\":1")
+                && !event.contains("\"conditionIndices\":[]");
+    }
+
+    private static boolean emptyCondition(String events, String site) {
+        String event = event(events, site);
+        return event.contains("\"conditionCount\":0")
+                && event.contains("\"conditionIndices\":[]");
+    }
+
+    private static String event(String events, String site) {
+        String identity = "\"siteId\":\"" + site + "\"";
+        int identityOffset = events.indexOf(identity);
+        if (identityOffset < 0) return "";
+        int start = events.lastIndexOf('{', identityOffset);
+        int end = events.indexOf('}', identityOffset);
+        return start < 0 || end < start ? "" : events.substring(start,
+                end + 1);
     }
 
     private static void require(boolean condition, String detail) {

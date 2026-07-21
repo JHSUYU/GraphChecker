@@ -26,6 +26,7 @@
 #include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "compiler/compileBroker.hpp"
+#include "concolic/concolicMngr.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/init.hpp"
 #include "runtime/java.hpp"
@@ -135,6 +136,12 @@ void Exceptions::_throw_oop(Thread* thread, const char* file, int line, oop exce
 }
 
 void Exceptions::_throw(Thread* thread, const char* file, int line, Handle h_exception, const char* message) {
+  // A preconstructed exception (including Java athrow and VM preallocated
+  // errors) must abandon any one-shot branch marker before control can enter
+  // exception delivery machinery.
+#ifdef ENABLE_CONCOLIC
+  ConcolicMngr::abandonPendingBranchForException(thread);
+#endif
   ResourceMark rm;
   assert(h_exception() != NULL, "exception should not be NULL");
 
@@ -224,6 +231,11 @@ void Exceptions::_throw_cause(Thread* thread, const char* file, int line, Symbol
 
 
 void Exceptions::throw_stack_overflow_exception(Thread* THREAD, const char* file, int line, methodHandle method) {
+  // fill_in_stack_trace can execute Java-visible exception machinery before
+  // _throw installs the pending exception.
+#ifdef ENABLE_CONCOLIC
+  ConcolicMngr::abandonPendingBranchForException(THREAD);
+#endif
   Handle exception;
   if (!THREAD->has_pending_exception()) {
     Klass* k = SystemDictionary::StackOverflowError_klass();
@@ -258,6 +270,12 @@ void Exceptions::fthrow(Thread* thread, const char* file, int line, Symbol* h_na
 Handle Exceptions::new_exception(Thread *thread, Symbol* name,
                                  Symbol* signature, JavaCallArguments *args,
                                  Handle h_loader, Handle h_protection_domain) {
+  // This is the funnel used by implicit null/array/arithmetic and most VM
+  // exceptions.  Cancel before class resolution, initialization, allocation,
+  // the Java constructor, or Throwable.fillInStackTrace can execute a branch.
+#ifdef ENABLE_CONCOLIC
+  ConcolicMngr::abandonPendingBranchForException(thread);
+#endif
   assert(Universe::is_fully_initialized(),
     "cannot be called during initialization");
   assert(thread->is_Java_thread(), "can only be called by a Java thread");
@@ -352,6 +370,11 @@ Handle Exceptions::new_exception(Thread* thread, Symbol* name,
                                  const char* message, Handle h_cause,
                                  Handle h_loader, Handle h_protection_domain,
                                  ExceptionMsgToUtf8Mode to_utf8_safe) {
+  // Message materialization can itself allocate/fail before reaching the
+  // constructor funnel above.
+#ifdef ENABLE_CONCOLIC
+  ConcolicMngr::abandonPendingBranchForException(thread);
+#endif
   JavaCallArguments args;
   Symbol* signature = NULL;
   if (message == NULL) {

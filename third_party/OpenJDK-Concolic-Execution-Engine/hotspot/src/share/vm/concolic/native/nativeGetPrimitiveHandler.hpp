@@ -13,7 +13,8 @@ class NativeGetPrimitiveHandler {
 public:
   static bool target(const std::string& name_sig);
 
-  static void handle_native(intptr_t* locals, BasicType result_type);
+  static void handle_native(intptr_t* locals, BasicType result_type,
+                            int parameter_slots);
 
 private:
   static std::set<std::string> handle_method_name_sigs;

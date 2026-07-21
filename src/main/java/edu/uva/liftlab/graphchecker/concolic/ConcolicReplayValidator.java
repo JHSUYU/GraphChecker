@@ -22,6 +22,9 @@ public final class ConcolicReplayValidator {
     private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
             "EXACT_BASE_PORT_GETTER_SITE_OCCURRENCE_THEN_"
                     + "FRESH_ENTRY_REBIND_V1";
+    private static final String CONTAINER_REPLAY_REBINDING_AUTHORITY =
+            "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                    + "IDENTITY_REBIND_V1";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -66,8 +69,9 @@ public final class ConcolicReplayValidator {
                 array(rawResult, "replayMaterializationsApplied").size()
                         == 0);
         String plannedActivationId = string(task, "activationId");
-        String appliedActivationId = firstNonBlank(string(rawResult,
-                "activationId"), plannedActivationId);
+        // Runtime-local identity evidence must name the replay activation
+        // itself; a task/source activation is never a valid fallback.
+        String appliedActivationId = string(rawResult, "activationId");
         JsonArray plannedRows = array(task, "modelAssignments");
         JsonArray appliedRows = array(rawResult,
                 "modelAssignmentsApplied");
@@ -147,6 +151,21 @@ public final class ConcolicReplayValidator {
                 freshMapEntryRebindingCount(plannedRows));
         result.addProperty("freshMapEntryRebindingValidated",
                 freshRebindingProblems.isEmpty());
+
+        List<String> containerRebindingProblems =
+                validateContainerRebindings(plannedRows, appliedRows,
+                        array(rawResult, "dynamicFieldBindings"),
+                        importedSummary == null ? new JsonArray()
+                                : array(importedSummary,
+                                "dynamicFieldBindings"),
+                        importedSummary != null, appliedActivationId);
+        for (String problem : containerRebindingProblems) {
+            failures.add("CONTAINER_REPLAY_REBINDING_INVALID:" + problem);
+        }
+        result.addProperty("containerReplayRebindingCount",
+                containerReplayRebindingCount(plannedRows));
+        result.addProperty("containerReplayRebindingValidated",
+                containerRebindingProblems.isEmpty());
 
         JsonArray observed = array(rawResult, "branchMappings");
         for (JsonElement element : array(task, "expectedBranchPrefix")) {
@@ -243,13 +262,17 @@ public final class ConcolicReplayValidator {
                         && !contains(failures,
                         "INVALID_APPLIED_DYNAMIC_ASSIGNMENT")
                         && !contains(failures,
-                        "FRESH_MAP_ENTRY_REBINDING_INVALID"));
+                        "FRESH_MAP_ENTRY_REBINDING_INVALID")
+                        && !contains(failures,
+                        "CONTAINER_REPLAY_REBINDING_INVALID"));
         result.addProperty("modelAssignmentIdentityValidated",
                 !contains(failures, "MODEL_ASSIGNMENT_SET_MISMATCH")
                         && !contains(failures,
                         "INVALID_PLANNED_MODEL_ASSIGNMENT")
                         && !contains(failures,
-                        "INVALID_APPLIED_MODEL_ASSIGNMENT"));
+                        "INVALID_APPLIED_MODEL_ASSIGNMENT")
+                        && !contains(failures,
+                        "CONTAINER_REPLAY_REBINDING_INVALID"));
         boolean outputClosureGap = outputClosure
                 && containsOutputClosureFailure(failures);
         int outputClosureFailureCount = countOutputClosureFailures(failures);
@@ -612,6 +635,192 @@ public final class ConcolicReplayValidator {
         return result;
     }
 
+    private static boolean containerReplayRebinding(
+            JsonObject assignment) {
+        return CONTAINER_REPLAY_REBINDING_AUTHORITY.equals(string(
+                assignment, "containerReplayRebindingAuthority"));
+    }
+
+    private static int containerReplayRebindingCount(
+            JsonArray assignments) {
+        int result = 0;
+        for (JsonElement element : assignments) {
+            if (element.isJsonObject() && containerReplayRebinding(
+                    element.getAsJsonObject())) {
+                result++;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Joins a stable array selector in the solver plan to the fresh
+     * activation-local object identities observed by the replay JVM.  Object
+     * token numbers are never compared to the source execution; only the
+     * static selector tuple crosses that boundary.
+     */
+    private static List<String> validateContainerRebindings(
+            JsonArray planned, JsonArray applied, JsonArray rawBindings,
+            JsonArray importedBindings, boolean importedSummaryPresent,
+            String replayActivationId) {
+        List<String> problems = new ArrayList<>();
+        int plannedCount = containerReplayRebindingCount(planned);
+        int appliedCount = containerReplayRebindingCount(applied);
+        if (plannedCount != appliedCount) {
+            problems.add("PLANNED_APPLIED_REBIND_COUNT_MISMATCH");
+        }
+        for (int index = 0; index < planned.size(); index++) {
+            JsonElement element = planned.get(index);
+            if (!element.isJsonObject()
+                    || !containerReplayRebinding(
+                    element.getAsJsonObject())) {
+                continue;
+            }
+            JsonObject plan = element.getAsJsonObject();
+            List<JsonObject> appliedMatches =
+                    matchingStableContainerAssignments(applied, plan);
+            if (appliedMatches.size() != 1) {
+                problems.add("PLAN_" + index
+                        + (appliedMatches.isEmpty()
+                        ? "_NO_EXACT_APPLIED_REBIND"
+                        : "_AMBIGUOUS_APPLIED_REBIND"));
+                continue;
+            }
+            JsonObject appliedRow = appliedMatches.get(0);
+            List<JsonObject> rawMatches = matchingRuntimeContainerBindings(
+                    rawBindings, appliedRow, replayActivationId);
+            if (rawMatches.size() != 1) {
+                problems.add("PLAN_" + index
+                        + (rawMatches.isEmpty()
+                        ? "_NO_EXACT_FRESH_RAW_CONTAINER_BINDING"
+                        : "_AMBIGUOUS_FRESH_RAW_CONTAINER_BINDING"));
+                continue;
+            }
+            if (importedSummaryPresent) {
+                List<JsonObject> importedMatches =
+                        matchingRuntimeContainerBindings(importedBindings,
+                                appliedRow, replayActivationId);
+                if (importedMatches.size() != 1) {
+                    problems.add("PLAN_" + index
+                            + (importedMatches.isEmpty()
+                            ? "_NO_EXACT_FRESH_IMPORTED_CONTAINER_BINDING"
+                            : "_AMBIGUOUS_FRESH_IMPORTED_CONTAINER_BINDING"));
+                }
+            }
+        }
+        return problems;
+    }
+
+    private static List<JsonObject> matchingStableContainerAssignments(
+            JsonArray assignments, JsonObject expected) {
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonElement element : assignments) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (containerReplayRebinding(candidate)
+                    && same(candidate, expected, "engineSymbol")
+                    && same(candidate, expected, "inputSymbol")
+                    && same(candidate, expected, "baseInputSymbol")
+                    && same(candidate, expected, "valueType")
+                    && same(candidate, expected, "value")
+                    && same(candidate, expected, "authority")
+                    && same(candidate, expected, "dynamicBindingId")
+                    && same(candidate, expected, "dynamicFieldSymbol")
+                    && same(candidate, expected,
+                    "materializationSiteId")
+                    && integer(candidate, "materializationOccurrence", -1)
+                    == integer(expected, "materializationOccurrence", -2)
+                    && canonical(array(candidate, "materializationPath"))
+                    .equals(canonical(array(expected,
+                            "materializationPath")))
+                    && sameStableContainerSelector(object(candidate,
+                    "containerSelector"), object(expected,
+                    "containerSelector"))) {
+                result.add(candidate);
+            }
+        }
+        return result;
+    }
+
+    private static boolean sameStableContainerSelector(JsonObject left,
+                                                       JsonObject right) {
+        for (String member : new String[]{"kind", "bindingId",
+                "containerInputPort", "containerInputCell",
+                "selectorAuthority", "declaredFieldOwnerClass",
+                "declaredFieldType"}) {
+            if (!same(left, right, member)) return false;
+        }
+        return integer(left, "elementIndex", -1)
+                == integer(right, "elementIndex", -2)
+                && integer(left, "elementOccurrence", -1)
+                == integer(right, "elementOccurrence", -2);
+    }
+
+    private static JsonObject stableContainerSelector(
+            JsonObject selector) {
+        JsonObject result = new JsonObject();
+        for (String member : new String[]{"kind", "bindingId",
+                "containerInputPort", "containerInputCell",
+                "selectorAuthority", "elementIndex",
+                "elementOccurrence", "declaredFieldOwnerClass",
+                "declaredFieldType"}) {
+            JsonElement value = selector.get(member);
+            if (value != null) result.add(member, value.deepCopy());
+        }
+        return result;
+    }
+
+    private static List<JsonObject> matchingRuntimeContainerBindings(
+            JsonArray bindings, JsonObject applied,
+            String replayActivationId) {
+        List<JsonObject> result = new ArrayList<>();
+        JsonObject expectedSelector = object(applied,
+                "containerSelector");
+        for (JsonElement element : bindings) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            JsonObject selector = object(binding, "containerSelector");
+            long elementToken = longInteger(selector,
+                    "elementObjectToken", 0L);
+            String scope = string(selector, "objectTokenScope");
+            if (!"DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
+                    string(binding, "kind"))
+                    || !"ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
+                    .concat("IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE")
+                    .equals(string(binding, "authority"))
+                    || !bool(binding, "complete", false)
+                    || !same(binding, applied, "baseInputSymbol")
+                    || !same(binding, applied, "dynamicBindingId")
+                    || !same(binding, applied, "dynamicFieldSymbol")
+                    || !same(binding, applied, "materializationSiteId")
+                    || integer(binding, "materializationOccurrence", -1)
+                    != integer(applied, "materializationOccurrence", -2)
+                    || !canonical(array(binding, "fieldPath")).equals(
+                    canonical(array(applied, "materializationPath")))
+                    || !selector.equals(expectedSelector)
+                    || replayActivationId.isEmpty()
+                    || !replayActivationId.equals(scope)
+                    || !scope.equals(string(binding, "objectTokenScope"))
+                    || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
+                    .equals(string(binding, "objectTokenAuthority"))
+                    || !"STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_"
+                    .concat("EXACT_ELEMENT_IDENTITY_TO_DECLARED_FIELD_"
+                            + "HOOK_V1").equals(string(binding,
+                    "materializationSiteBridgeAuthority"))
+                    || !string(selector, "bindingId").equals(string(
+                    binding, "materializationSiteBridgeBindingId"))
+                    || elementToken <= 0L
+                    || elementToken != longInteger(binding,
+                    "materializationSiteBridgeElementObjectToken", 0L)
+                    || !scope.equals(string(binding,
+                    "materializationSiteBridgeObjectTokenScope"))) {
+                continue;
+            }
+            result.add(binding);
+        }
+        return result;
+    }
+
     private static boolean same(JsonObject left, JsonObject right,
                                 String member) {
         return string(left, member).equals(string(right, member));
@@ -656,7 +865,8 @@ public final class ConcolicReplayValidator {
                 .equals(string(assignment, "dynamicFieldBindingKind"));
         boolean container = containerSelector.size() > 0
                 || "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
-                string(assignment, "dynamicFieldBindingKind"));
+                string(assignment, "dynamicFieldBindingKind"))
+                || containerReplayRebinding(assignment);
         if (base.isEmpty()) result.add("MISSING_BASE_INPUT_SYMBOL");
         if (dynamic.isEmpty()) result.add("MISSING_DYNAMIC_FIELD_SYMBOL");
         if (engine.isEmpty()) result.add("MISSING_ENGINE_SYMBOL");
@@ -672,7 +882,8 @@ public final class ConcolicReplayValidator {
                 result.add("MAP_PROJECTION_HAS_FOREIGN_SELECTOR");
             }
         } else if (container) {
-            validateContainerSelector(containerSelector, occurrence, result);
+            validateContainerSelector(assignment, containerSelector,
+                    occurrence, activationId, source, result);
         } else {
             validateMapEntrySelector(assignment, source, result);
         }
@@ -689,8 +900,11 @@ public final class ConcolicReplayValidator {
         return result;
     }
 
-    private static void validateContainerSelector(JsonObject selector,
+    private static void validateContainerSelector(JsonObject assignment,
+                                                  JsonObject selector,
                                                   int occurrence,
+                                                  String activationId,
+                                                  String source,
                                                   List<String> result) {
         if (selector.size() == 0) {
             result.add("MISSING_CONTAINER_SELECTOR");
@@ -723,13 +937,46 @@ public final class ConcolicReplayValidator {
         if (string(selector, "declaredFieldType").isEmpty()) {
             result.add("MISSING_DECLARED_FIELD_TYPE");
         }
+        if (!CONTAINER_REPLAY_REBINDING_AUTHORITY.equals(string(
+                assignment, "containerReplayRebindingAuthority"))) {
+            result.add("INVALID_CONTAINER_REPLAY_REBINDING_AUTHORITY");
+        }
+        if (bool(assignment, "sourceContainerObjectTokensRetained", true)) {
+            result.add("SOURCE_CONTAINER_OBJECT_TOKENS_RETAINED");
+        }
+        if ("PLANNED".equals(source)) {
+            for (String runtimeMember : new String[]{
+                    "resolvedFromSelectorAuthority",
+                    "containerObjectToken", "elementObjectToken",
+                    "objectTokenAuthority", "objectTokenScope",
+                    "containerObservationLocation"}) {
+                if (containsMember(assignment, runtimeMember)) {
+                    result.add("PLANNED_CONTAINER_HAS_RUNTIME_MEMBER:"
+                            + runtimeMember);
+                }
+            }
+            for (String runtimeClaim : new String[]{"authority",
+                    "complete"}) {
+                if (selector.has(runtimeClaim)) {
+                    result.add("PLANNED_CONTAINER_HAS_RUNTIME_MEMBER:"
+                            + runtimeClaim);
+                }
+            }
+            if (assignment.has("sameSourceContainerIdentityClaimed")
+                    || assignment.has("currentContainerSelectorCaptured")) {
+                result.add("PLANNED_CONTAINER_HAS_APPLIED_REBIND_WITNESS");
+            }
+            return;
+        }
         if (longInteger(selector, "containerObjectToken", 0L) <= 0L
                 || longInteger(selector, "elementObjectToken", 0L) <= 0L) {
             result.add("INVALID_CONTAINER_OBJECT_TOKEN");
         }
+        String tokenScope = string(selector, "objectTokenScope");
         if (!"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
                 string(selector, "objectTokenAuthority"))
-                || string(selector, "objectTokenScope").isEmpty()) {
+                || activationId.isEmpty()
+                || !activationId.equals(tokenScope)) {
             result.add("INVALID_CONTAINER_OBJECT_TOKEN_SCOPE");
         }
         if (!("EXACT_ARRAY_INDEX".equals(string(selector,
@@ -743,6 +990,12 @@ public final class ConcolicReplayValidator {
                         "authority"))
                 || !bool(selector, "complete", false)) {
             result.add("INCOMPLETE_CONTAINER_SELECTOR_AUTHORITY");
+        }
+        if (bool(assignment, "sameSourceContainerIdentityClaimed", true)) {
+            result.add("APPLIED_CONTAINER_CLAIMS_SOURCE_IDENTITY");
+        }
+        if (!bool(assignment, "currentContainerSelectorCaptured", false)) {
+            result.add("APPLIED_CURRENT_CONTAINER_SELECTOR_NOT_CAPTURED");
         }
     }
 
@@ -1052,7 +1305,14 @@ public final class ConcolicReplayValidator {
             identityComponent(value, canonical(mapProjection));
         } else if (container.size() > 0) {
             identityComponent(value, "ARRAY_INDEX");
-            identityComponent(value, canonical(container));
+            // Runtime object tokens and their scope are replay-local.  The
+            // stable selector is the cross-execution identity; a separate
+            // join validates the applied selector against the fresh raw
+            // binding before admission.
+            identityComponent(value, canonical(stableContainerSelector(
+                    container)));
+            identityComponent(value, string(assignment,
+                    "containerReplayRebindingAuthority"));
         } else {
             if (freshMapEntryRebinding(assignment)) {
                 // Planned and applied rows intentionally differ in their key:
