@@ -334,6 +334,17 @@ public class ConcolicComposedModelProjectorTest {
         assertEquals(3, selector.get("elementOccurrence").getAsInt());
         assertEquals("EXACT_ARRAY_INDEX",
                 selector.get("selectorAuthority").getAsString());
+        assertFalse(selector.has("containerObjectToken"));
+        assertFalse(selector.has("elementObjectToken"));
+        assertFalse(selector.has("objectTokenAuthority"));
+        assertFalse(selector.has("objectTokenScope"));
+        assertFalse(selector.has("resolvedFromSelectorAuthority"));
+        assertEquals("EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                        + "IDENTITY_REBIND_V1",
+                retained.get("containerReplayRebindingAuthority")
+                        .getAsString());
+        assertFalse(retained.get("sourceContainerObjectTokensRetained")
+                .getAsBoolean());
 
         JsonObject crossed = assignment.deepCopy();
         JsonObject wrong = selector.deepCopy();
@@ -346,6 +357,48 @@ public class ConcolicComposedModelProjectorTest {
         } catch (IOException expected) {
             assertTrue(expected.getMessage().contains(
                     "CROSS_BINDING_CONTAINER_SELECTOR"));
+        }
+
+        JsonObject deep = binding.deepCopy();
+        JsonArray path = new JsonArray();
+        path.add("state");
+        path.add("guard");
+        path.add("id");
+        deep.add("fieldPath", path);
+        deep.addProperty("leafOwnerObjectToken", 303L);
+        deep.addProperty("actualHookSiteId",
+                "CONTAINER_SNAPSHOT:BIND.ARRAY.3");
+        deep.addProperty("actualHookOccurrence", 3);
+        deep.addProperty("effectiveMaterializationSiteId", "SITE.ID");
+        deep.addProperty("effectiveMaterializationOccurrence", 3);
+        deep.addProperty("materializationSiteBridgeAuthority",
+                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
+                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1");
+        deep.addProperty("materializationSiteBridgeBindingId",
+                "BIND.ARRAY.3");
+        deep.addProperty("materializationSiteBridgeElementObjectToken",
+                302L);
+        deep.addProperty("materializationSiteBridgeObjectTokenScope",
+                "ACT.UPSTREAM.3");
+        JsonObject deepSummary = new JsonObject();
+        JsonArray deepBindings = new JsonArray();
+        deepBindings.add(deep);
+        deepSummary.add("dynamicFieldBindings", deepBindings);
+        JsonObject deepRetained = ConcolicComposedModelProjector
+                .retainDynamicSelector(deepSummary, source(), assignment);
+        assertEquals(path, deepRetained.get("materializationPath"));
+        assertFalse(deepRetained.getAsJsonObject("containerSelector")
+                .has("elementObjectToken"));
+
+        deep.addProperty("materializationSiteBridgeElementObjectToken",
+                304L);
+        try {
+            ConcolicComposedModelProjector.retainDynamicSelector(
+                    deepSummary, source(), assignment);
+            fail("mismatched deep bridge token must not project");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains(
+                    "INCOMPLETE_DYNAMIC_BINDING"));
         }
     }
 

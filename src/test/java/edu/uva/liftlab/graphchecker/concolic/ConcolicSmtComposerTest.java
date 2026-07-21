@@ -1622,6 +1622,16 @@ public class ConcolicSmtComposerTest {
             assertEquals("SCOPED_DYNAMIC_FIELD",
                     removeMapping.get("termKind").getAsString());
             assertEquals("Int", removeMapping.get("solverSort").getAsString());
+            assertEquals("REGION.P.in.3", removeMapping.get(
+                    "canonicalPort").getAsString());
+            assertEquals("sym__port__REGION_P_in_3__int",
+                    removeMapping.get("canonicalSolverTerm").getAsString());
+            assertEquals("CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                            + "GUARDED_EQUALITY_V1",
+                    removeMapping.get("canonicalBridgeAuthority")
+                            .getAsString());
+            assertEquals(1, linesContaining(result.smtLib, removeMapping.get(
+                    "canonicalBridgeAssertion").getAsString()).size());
             assertFalse(removeTerm.equals(noRemoveTerm));
             assertTrue(removeProjection.get(
                     "selectorGuardFormula").getAsString().contains(removeTerm));
@@ -1645,6 +1655,54 @@ public class ConcolicSmtComposerTest {
                     + noRemoveProjection.get(
                     "selectorSolverSymbol").getAsString()
                     + " (<= " + noRemoveTerm + " 0))"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void twoDynamicMapEntriesWithOneBaseCannotBecomeOneRoot()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            String first = "REGION.P.in.3.field.firstentry.occ.1";
+            String second = "REGION.P.in.3.field.secondentry.occ.2";
+            JsonObject summary = producerSummary(singlePutEffect(), true);
+            prepareDynamicOutputCase(summary, ">", "OBS.ENTRY.FIRST",
+                    "entry_value_first", first);
+            summary.getAsJsonArray("dynamicFieldBindings").add(
+                    runtimeDynamicFieldBinding("OBS.ENTRY.SECOND", second,
+                            "ACT.P"));
+            summary.getAsJsonArray("heapObservations").add(
+                    dynamicHeapObservation("OBS.ENTRY.SECOND",
+                            "entry_value_second", second));
+            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                    java.util.Collections.singletonList(summary),
+                    closedPathManifest());
+            writeSummary(fixture, merged.summaries.get(0));
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertFalse(result.manifest.get(
+                    "caseProjectionCatalogComplete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "AMBIGUOUS_DYNAMIC_BASE_ROOT:REGION.P.in.3:2"));
+            JsonObject projection = result.manifest.getAsJsonArray(
+                    "caseProjectionCatalog").get(0).getAsJsonObject();
+            assertTrue(projection.getAsJsonArray("validationGaps")
+                    .toString().contains("AMBIGUOUS_DYNAMIC_BASE_ROOT"));
+            assertFalse(rawSymbolMapping(projection,
+                    "M_J_field_" + first + "_expiry").has(
+                    "canonicalPort"));
+            assertFalse(rawSymbolMapping(projection,
+                    "M_J_field_" + second + "_expiry").has(
+                    "canonicalPort"));
         } finally {
             folder.delete();
         }
@@ -1698,6 +1756,13 @@ public class ConcolicSmtComposerTest {
             assertEquals(projected.get("solverTerm").getAsString(),
                     rawSymbolMapping(projection, raw).get(
                             "solverTerm").getAsString());
+            JsonObject mapping = rawSymbolMapping(projection, raw);
+            assertEquals("REGION.P.in.3", mapping.get(
+                    "canonicalPort").getAsString());
+            assertEquals("sym__port__REGION_P_in_3__int", mapping.get(
+                    "canonicalSolverTerm").getAsString());
+            assertEquals(1, linesContaining(result.smtLib, mapping.get(
+                    "canonicalBridgeAssertion").getAsString()).size());
         } finally {
             folder.delete();
         }
@@ -2025,6 +2090,48 @@ public class ConcolicSmtComposerTest {
                 "selectorAuthority", "DISCOVER_UNIQUE_IDENTITY_INDEX");
         assertFalse(ConcolicSmtComposer.completeContainerSelectorForTests(
                 discovery));
+
+        JsonObject deep = valid.deepCopy();
+        JsonArray deepPath = new JsonArray();
+        deepPath.add("state");
+        deepPath.add("guard");
+        deepPath.add("enabled");
+        deep.add("fieldPath", deepPath);
+        deep.addProperty("leafOwnerObjectToken", 303L);
+        deep.addProperty("actualHookSiteId",
+                "CONTAINER_SNAPSHOT:BIND.ARRAY.1");
+        deep.addProperty("actualHookOccurrence", 1);
+        deep.addProperty("effectiveMaterializationSiteId",
+                "SITE.CONTAINER");
+        deep.addProperty("effectiveMaterializationOccurrence", 1);
+        deep.addProperty("materializationSiteBridgeAuthority",
+                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
+                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1");
+        deep.addProperty("materializationSiteBridgeBindingId",
+                "BIND.ARRAY.1");
+        deep.addProperty("materializationSiteBridgeElementObjectToken",
+                302L);
+        deep.addProperty("materializationSiteBridgeObjectTokenScope",
+                "ACT.P");
+        assertTrue(ConcolicSmtComposer.completeContainerSelectorForTests(
+                deep));
+        JsonObject metadata = ConcolicSmtComposer
+                .projectionDynamicMetadataForTests(deep);
+        assertEquals(deep, metadata.getAsJsonObject("runtimeBinding"));
+        for (String member : new String[]{
+                "resolvedFromSelectorAuthority", "actualHookSiteId",
+                "actualHookOccurrence", "effectiveMaterializationSiteId",
+                "effectiveMaterializationOccurrence",
+                "materializationSiteBridgeAuthority",
+                "materializationSiteBridgeBindingId",
+                "materializationSiteBridgeElementObjectToken",
+                "materializationSiteBridgeObjectTokenScope"}) {
+            assertEquals(member, deep.get(member), metadata.get(member));
+        }
+        deep.addProperty("materializationSiteBridgeElementObjectToken",
+                304L);
+        assertFalse(ConcolicSmtComposer.completeContainerSelectorForTests(
+                deep));
     }
 
     @Test
@@ -2146,6 +2253,259 @@ public class ConcolicSmtComposerTest {
                 assertFalse(line, line.contains(
                         "port__REGION_P_in_3"));
             }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void composesNonMutatingMapReadFromSyntheticObservationState()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.9",
+                            "<example.Value: boolean enabled>"));
+            JsonObject summary = producerSummary(new JsonArray(), true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            String dynamic =
+                    "REGION.P.in.9.field.nonmutating.occ.1";
+            JsonObject observation = nonMutatingDynamicHeapObservation(
+                    "OBS.NON_MUTATING", "entry_value_non_mutating",
+                    dynamic, "REGION.P.in.9");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            String statePort = observation.get("statePort").getAsString();
+            String digestPrefix = statePort.substring(
+                    statePort.lastIndexOf('.') + 1);
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString(),
+                    result.manifest.get("structurallyComplete")
+                            .getAsBoolean());
+            assertEquals(1, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertEquals(1, result.manifest.get(
+                    "heapObservationFieldBindingCount").getAsInt());
+            assertTrue(lineContaining(result.smtLib, digestPrefix)
+                    .contains("MapState"));
+            String keyPresent = lineContaining(result.smtLib,
+                    ":named heap_observation_key_present_OBS_NON_MUTATING");
+            assertTrue(keyPresent.contains(digestPrefix));
+            assertFalse(keyPresent.contains("port__REGION_P_in_9"));
+            assertTrue(lineContaining(result.smtLib,
+                    ":named heap_observation_value_OBS_NON_MUTATING")
+                    .contains(digestPrefix));
+            assertTrue(lineContaining(result.smtLib,
+                    ":named heap_observation_field_OBS_NON_MUTATING_0")
+                    .contains("dynamic_field"));
+            assertFalse(result.smtLib.contains(
+                    "(declare-const port__REGION_P_in_9 MapState)"));
+            for (String line : linesContaining(result.smtLib,
+                    digestPrefix)) {
+                assertFalse(line, line.contains("emptyMapState"));
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void mergedCasesUseSourceActivationForObservationStateProof()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            String observationId = "OBS.MERGED.NON_MUTATING";
+            String dynamic =
+                    "REGION.P.in.3.field.mergednonmutating.occ.1";
+
+            JsonObject positive = producerSummary(new JsonArray(), true);
+            prepareDynamicOutputCase(positive, ">", observationId,
+                    "entry_value_merged_non_mutating", dynamic);
+            positive.add("heapObservations", singleton(
+                    nonMutatingDynamicHeapObservation(observationId,
+                            "entry_value_merged_non_mutating", dynamic)));
+            positive.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+
+            JsonObject negative = producerSummary(new JsonArray(), true);
+            negative.addProperty("summaryId",
+                    "SUMMARY.P.NON_MUTATING.NEGATIVE");
+            prepareDynamicOutputCase(negative, "<=", observationId,
+                    "entry_value_merged_non_mutating", dynamic);
+            negative.add("heapObservations", singleton(
+                    nonMutatingDynamicHeapObservation(observationId,
+                            "entry_value_merged_non_mutating", dynamic)));
+            negative.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+
+            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                    java.util.Arrays.asList(positive, negative),
+                    closedPathManifest());
+            JsonArray cases = merged.summaries.get(0).getAsJsonObject(
+                    "regionRelation").getAsJsonArray("cases");
+            assertEquals(2, cases.size());
+            for (JsonElement element : cases) {
+                JsonObject item = element.getAsJsonObject();
+                assertFalse(item.has("activationId"));
+                assertEquals("ACT.P",
+                        item.get("sourceActivationId").getAsString());
+            }
+            writeSummary(fixture, merged.summaries.get(0));
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            String statePort = cases.get(0).getAsJsonObject()
+                    .getAsJsonArray("heapObservations").get(0)
+                    .getAsJsonObject().get("statePort").getAsString();
+            String digestPrefix = statePort.substring(
+                    statePort.lastIndexOf('.') + 1);
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString(),
+                    result.manifest.get("structurallyComplete")
+                            .getAsBoolean());
+            assertEquals(2, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertEquals(2, countDeclarationLines(result.smtLib,
+                    digestPrefix));
+            assertEquals(2, linesContaining(result.smtLib,
+                    ":named heap_observation_key_present_"
+                            + "OBS_MERGED_NON_MUTATING").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void canonicalDynamicFieldBaseCannotMasqueradeAsMapReadState()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.9",
+                            "<example.Value: boolean enabled>"));
+            JsonObject summary = producerSummary(new JsonArray(), true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            JsonObject observation = nonMutatingDynamicHeapObservation(
+                    "OBS.CANONICAL.BASE", "entry_value_bad_base",
+                    "REGION.P.in.9.field.badbase.occ.1",
+                    "REGION.P.in.9");
+            observation.addProperty("statePort", "REGION.P.in.9");
+            observation.getAsJsonObject("stateBaseProof").addProperty(
+                    "statePort", "REGION.P.in.9");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "InvalidOrAmbiguousHeapObservationStateBase"));
+            assertEquals(0, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_CANONICAL_BASE"));
+            assertFalse(result.smtLib.contains(
+                    "(declare-const port__REGION_P_in_9 MapState)"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void emptyMapInitializerCannotAuthenticateObservationStateBase()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonArray initializers = new JsonArray();
+            initializers.add(emptyMapInitializer());
+            JsonObject summary = producerSummary(new JsonArray(),
+                    initializers, true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            JsonObject observation = nonMutatingDynamicHeapObservation(
+                    "OBS.EMPTY.INIT", "entry_value_empty_init",
+                    "REGION.P.in.3.field.emptyinit.occ.1");
+            summary.add("heapObservations", singleton(observation));
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "InvalidOrAmbiguousHeapObservationStateBase"));
+            assertEquals(0, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_EMPTY_INIT"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void duplicateSyntheticObservationStateProofsFailClosed()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject summary = producerSummary(new JsonArray(), true);
+            summary.getAsJsonObject("outputExpressions").add(
+                    "REGION.P.out.0", symbol("L", "producer_map_state"));
+            JsonObject first = nonMutatingDynamicHeapObservation(
+                    "OBS.PROOF.1", "entry_value_proof_1",
+                    "REGION.P.in.3.field.proof.occ.1");
+            JsonObject second = nonMutatingDynamicHeapObservation(
+                    "OBS.PROOF.2", "entry_value_proof_2",
+                    "REGION.P.in.3.field.proof.occ.2");
+            String duplicatedPort = first.get("statePort").getAsString();
+            String duplicatedDigest = first.getAsJsonObject(
+                    "stateBaseProof").get("selectorDigest").getAsString();
+            second.addProperty("statePort", duplicatedPort);
+            second.getAsJsonObject("stateBaseProof").addProperty(
+                    "statePort", duplicatedPort);
+            second.getAsJsonObject("stateBaseProof").addProperty(
+                    "selectorDigest", duplicatedDigest);
+            JsonArray observations = new JsonArray();
+            observations.add(first);
+            observations.add(second);
+            summary.add("heapObservations", observations);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertFalse(result.manifest.get("complete").getAsBoolean());
+            assertTrue(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "InvalidOrAmbiguousHeapObservationStateBase"));
+            assertEquals(0, result.manifest.get("heapObservationCount")
+                    .getAsInt());
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_PROOF_1"));
+            assertFalse(result.smtLib.contains(
+                    "heap_observation_key_present_OBS_PROOF_2"));
+            assertFalse(result.smtLib.contains(duplicatedPort.replace('.',
+                    '_') + " MapState"));
         } finally {
             folder.delete();
         }
@@ -2520,6 +2880,84 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.smtLib.contains("exact_field__"));
             assertTrue(result.smtLib.contains(
                     "sym__port__REGION_P_in_3__int"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void deepContainerSnapshotProjectsPrimitiveLeafFromArrayRoot()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            addRegionPort(fixture, "REGION.P", "symbolicInputs",
+                    port("REGION.P.in.9",
+                            "<example.Guard: boolean enabled>"));
+            JsonObject summary = containerFieldSummary(fixture,
+                    "EXACT_ARRAY_INDEX", 1, 1, false);
+            JsonObject slice = summary.getAsJsonObject(
+                    "requestedOutputSlice");
+            slice.getAsJsonArray("inputPorts").add("REGION.P.in.9");
+            JsonObject declaration = slice.getAsJsonArray(
+                    "containerElementFieldBindings").get(0)
+                    .getAsJsonObject();
+            declaration.addProperty("schemaVersion", 2);
+            declaration.addProperty("materializationMode",
+                    "CONTAINER_SNAPSHOT");
+            declaration.addProperty("baseInputSymbol", "REGION.P.in.9");
+            JsonArray path = new JsonArray();
+            path.add("state");
+            path.add("guard");
+            path.add("enabled");
+            declaration.add("fieldPath", path);
+            declaration.addProperty("declaredFieldSignature",
+                    "<example.Guard: boolean enabled>");
+            declaration.addProperty("declaredFieldOwnerClass",
+                    "example.Guard");
+            declaration.addProperty("declaredFieldType", "boolean");
+            declaration.addProperty("declaredFieldName", "enabled");
+            declaration.addProperty("proofAuthority",
+                    "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
+                            + "CHAIN_V1");
+            String method = declaration.get("method").getAsString();
+            JsonArray methods = new JsonArray();
+            methods.add(method);
+            slice.add("methods", methods);
+            JsonArray sites = new JsonArray();
+            sites.add(declaration.get("arrayLoadSiteId").getAsString());
+            sites.add(declaration.get(
+                    "fieldMaterializationSiteId").getAsString());
+            slice.add("sites", sites);
+            JsonArray proof = new JsonArray();
+            JsonArray causalEdges = new JsonArray();
+            for (int index = 0; index < 12; index++) {
+                String edgeId = "DEEP." + index;
+                proof.add(edgeId);
+                JsonObject edge = new JsonObject();
+                edge.addProperty("edgeId", edgeId);
+                causalEdges.add(edge);
+            }
+            declaration.add("proofCausalEdgeIds", proof.deepCopy());
+            slice.add("causalEdgeIds", proof.deepCopy());
+            slice.add("causalEdges", causalEdges);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            String projection = lineContaining(result.smtLib,
+                    ":named container_element_field_BIND_ARRAY_0");
+            assertTrue(projection.contains("exact_field__"));
+            assertTrue(projection, projection.contains(
+                    "sym__port__REGION_P_in_9__int"));
+            assertTrue(result.smtLib.contains(
+                    "(declare-fun exact_field__"));
+            assertTrue(lineContaining(result.smtLib,
+                    "(declare-fun exact_field__").endsWith("(Ref) Int)"));
         } finally {
             folder.delete();
         }
@@ -4551,6 +4989,110 @@ public class ConcolicSmtComposerTest {
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
         result.add("entryFieldBindings", bindings);
+        return result;
+    }
+
+    private static JsonObject nonMutatingDynamicHeapObservation(
+            String id, String valueSymbol, String dynamicFieldSymbol) {
+        return nonMutatingDynamicHeapObservation(id, valueSymbol,
+                dynamicFieldSymbol, "REGION.P.in.3");
+    }
+
+    private static JsonObject nonMutatingDynamicHeapObservation(
+            String id, String valueSymbol, String dynamicFieldSymbol,
+            String baseInputSymbol) {
+        JsonObject result = dynamicHeapObservation(id, valueSymbol,
+                dynamicFieldSymbol);
+        String region = "REGION.P";
+        String activationId = "ACT.P";
+        String dynamicBindingId = "DYNAMIC_FIELD:" + dynamicFieldSymbol;
+        String selectorDigest = ConcolicSmtComposer
+                .heapObservationStateSelectorDigestForTests(id,
+                        baseInputSymbol, dynamicBindingId);
+        String statePort = ConcolicSmtComposer
+                .heapObservationStatePortForTests(region, id,
+                        baseInputSymbol, dynamicBindingId);
+        long mapToken = 101L;
+        String mapWitness = "CAUSYNTH_REF_WITNESS_V1_A10_4143542e50_T"
+                + mapToken;
+        JsonObject mapExpression = symbol("L", mapWitness);
+        result.addProperty("statePort", statePort);
+        result.addProperty("stateBindingAuthority",
+                "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1");
+        result.addProperty("stateBaseComplete", true);
+        result.add("mapExpression", mapExpression.deepCopy());
+        result.addProperty("expressionAuthority",
+                "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
+        result.addProperty("backingMapObjectToken", mapToken);
+        result.addProperty("objectTokenScope", activationId);
+        result.addProperty("mapExpressionWitnessSchemaVersion", 1);
+        result.addProperty("mapExpressionWitnessKind",
+                "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
+        result.addProperty("mapExpressionWitnessObjectToken", mapToken);
+        result.addProperty("mapExpressionWitnessObjectTokenScope",
+                activationId);
+        result.addProperty("mapExpressionWitnessAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
+                        + "SCOPED_REF_SYMBOL_V1");
+
+        JsonObject binding = result.getAsJsonArray("entryFieldBindings")
+                .get(0).getAsJsonObject();
+        binding.addProperty("baseInputSymbol", baseInputSymbol);
+        if ("REGION.P.in.9".equals(baseInputSymbol)) {
+            binding.add("fieldExpression", symbol("Z",
+                    "M_Z_field_" + dynamicFieldSymbol + "_enabled"));
+            binding.addProperty("fieldSignature",
+                    "<example.Value: boolean enabled>");
+            binding.addProperty("fieldJavaType", "boolean");
+            JsonArray fieldPath = new JsonArray();
+            fieldPath.add("enabled");
+            binding.add("fieldPath", fieldPath);
+        }
+        binding.addProperty("fieldExpressionAuthority",
+                "EXACT_VM_BRANCH_MAPPING_DYNAMIC_SYMBOL_AND_REQUESTED_"
+                        + "SLICE_BASE_V1");
+        binding.addProperty("observationStateBindingAuthority",
+                "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1");
+
+        JsonObject proof = new JsonObject();
+        proof.addProperty("schemaVersion", 1);
+        proof.addProperty("kind",
+                "NON_MUTATING_MAP_ENTRY_READ_STATE_BASE");
+        proof.addProperty("statePort", statePort);
+        proof.addProperty("observationId", id);
+        proof.addProperty("entryReadObservationId", id);
+        proof.addProperty("regionId", region);
+        proof.addProperty("activationId", activationId);
+        proof.addProperty("baseInputSymbol", baseInputSymbol);
+        proof.addProperty("dynamicBindingId", dynamicBindingId);
+        proof.addProperty("dynamicFieldSymbol", dynamicFieldSymbol);
+        proof.add("mapExpression", mapExpression.deepCopy());
+        proof.addProperty("expressionAuthority",
+                "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
+        proof.addProperty("backingMapObjectToken", mapToken);
+        proof.addProperty("objectTokenScope", activationId);
+        proof.addProperty("mapExpressionWitnessSchemaVersion", 1);
+        proof.addProperty("mapExpressionWitnessKind",
+                "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
+        proof.addProperty("mapExpressionWitnessObjectToken", mapToken);
+        proof.addProperty("mapExpressionWitnessObjectTokenScope",
+                activationId);
+        proof.addProperty("mapExpressionWitnessAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
+                        + "SCOPED_REF_SYMBOL_V1");
+        proof.addProperty("candidateMutationCount", 0);
+        proof.addProperty("heapEffectCount", 0);
+        proof.addProperty("associatedHeapEffectCount", 0);
+        proof.addProperty("runtimeHeapEffectRecordCount", 0);
+        proof.addProperty("runtimeHeapEffectJoinedCount", 0);
+        proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
+        proof.addProperty("selectorDigest", selectorDigest);
+        proof.addProperty("statePortDerivationAuthority",
+                "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1");
+        proof.addProperty("authority",
+                "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1");
+        proof.addProperty("complete", true);
+        result.add("stateBaseProof", proof);
         return result;
     }
 

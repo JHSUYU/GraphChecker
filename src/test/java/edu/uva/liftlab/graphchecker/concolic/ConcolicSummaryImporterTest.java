@@ -15,6 +15,7 @@ import java.security.MessageDigest;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
@@ -29,6 +30,20 @@ public class ConcolicSummaryImporterTest {
                 witness, "ACT.P"));
         witness.addProperty("valueExpressionWitnessObjectToken", 103L);
         assertFalse(ConcolicSummaryImporter.validValueRefWitnessForTests(
+                witness, "ACT.Q"));
+    }
+
+    @Test
+    public void tokenMapRefWitnessRequiresExactActivationAndMapToken() {
+        JsonObject witness = mapRefWitnessRecord();
+        assertTrue(ConcolicSummaryImporter.validMapRefWitnessForTests(
+                witness, "ACT.P"));
+
+        witness.addProperty("mapExpressionWitnessObjectToken", 102L);
+        assertFalse(ConcolicSummaryImporter.validMapRefWitnessForTests(
+                witness, "ACT.P"));
+        witness.addProperty("mapExpressionWitnessObjectToken", 101L);
+        assertFalse(ConcolicSummaryImporter.validMapRefWitnessForTests(
                 witness, "ACT.Q"));
     }
 
@@ -227,6 +242,29 @@ public class ConcolicSummaryImporterTest {
             record.addProperty(
                     "valueExpressionWitnessCertifiedObjectTokenScope", "ACT.P");
         }
+        return record;
+    }
+
+    private static JsonObject mapRefWitnessRecord() {
+        JsonObject record = new JsonObject();
+        record.addProperty("expressionAuthority",
+                "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1");
+        record.addProperty("objectTokenScope", "ACT.P");
+        record.addProperty("backingMapObjectToken", 101L);
+        record.addProperty("mapExpressionWitnessSchemaVersion", 1);
+        record.addProperty("mapExpressionWitnessKind",
+                "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS");
+        record.addProperty("mapExpressionWitnessObjectToken", 101L);
+        record.addProperty("mapExpressionWitnessObjectTokenScope", "ACT.P");
+        record.addProperty("mapExpressionWitnessAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
+                        + "SCOPED_REF_SYMBOL_V1");
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "L");
+        expression.addProperty("_exp",
+                "CAUSYNTH_REF_WITNESS_V1_A10_4143542e50_T101");
+        record.add("mapExpression", expression);
         return record;
     }
 
@@ -2668,14 +2706,14 @@ public class ConcolicSummaryImporterTest {
                     materializationSite, 2);
             JsonArray dynamicBindings = new JsonArray();
             dynamicBindings.add(dynamicFieldBinding(firstDynamic,
-                    materializationSite, 1, 103L, firstRead, firstKey));
+                    materializationSite, 1, 105L, firstRead, firstKey));
             dynamicBindings.add(dynamicFieldBinding(secondDynamic,
-                    materializationSite, 2, 203L, secondRead, secondKey));
+                    materializationSite, 2, 205L, secondRead, secondKey));
             JsonArray fieldObservations = new JsonArray();
             fieldObservations.add(dynamicFieldObservation(firstDynamic,
-                    materializationSite, 1, 103L, firstRead));
+                    materializationSite, 1, 105L, firstRead));
             fieldObservations.add(dynamicFieldObservation(secondDynamic,
-                    materializationSite, 2, 203L, secondRead));
+                    materializationSite, 2, 205L, secondRead));
             JsonArray mappings = new JsonArray();
             JsonObject firstExpression = symbol(
                     "M_J_field_" + firstDynamic + "_expiry", "J");
@@ -2721,6 +2759,81 @@ public class ConcolicSummaryImporterTest {
                     "fieldExpression"));
             assertEquals(secondExpression, secondBinding.get(
                     "fieldExpression"));
+            JsonObject importedDynamic = imported.summary.getAsJsonArray(
+                    "dynamicFieldBindings").get(0).getAsJsonObject();
+            assertEquals(103L, importedDynamic.get(
+                    "entryValueOwnerObjectToken").getAsLong());
+            assertEquals(105L, importedDynamic.get(
+                    "leafOwnerObjectToken").getAsLong());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void importsReadOnlyMapEntryWithExactDynamicStateBase()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importNonMutatingDynamicMapReadFixture(
+                    folder.getRoot().toPath(), "VALID");
+
+            assertFalse(imported.diagnostics, imported.diagnostics.contains(
+                    "UNRESOLVED_HEAP_OBSERVATION_STATE_PORT"));
+            assertEquals(0, imported.summary.getAsJsonArray(
+                    "heapEffects").size());
+            assertEquals(0, imported.summary.getAsJsonObject(
+                    "heapEffectModel").get("candidateMutationCount")
+                    .getAsInt());
+            assertEquals(imported.diagnostics, 1,
+                    imported.summary.getAsJsonArray(
+                            "heapObservations").size());
+            JsonObject observation = imported.summary.getAsJsonArray(
+                    "heapObservations").get(0).getAsJsonObject();
+            assertTrue(observation.get("complete").getAsBoolean());
+            assertTrue(observation.get("stateBaseComplete").getAsBoolean());
+            assertEquals("NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_"
+                            + "FIELD_BASE_V1",
+                    observation.get("stateBindingAuthority").getAsString());
+            assertTrue(observation.get("statePort").getAsString().matches(
+                    "REGION\\.P\\.state\\.heapObservation\\.[0-9a-f]{12}"));
+            assertNotEquals("REGION.P.in.1",
+                    observation.get("statePort").getAsString());
+            assertEquals(1, observation.getAsJsonArray(
+                    "entryFieldBindings").size());
+            JsonObject proof = observation.getAsJsonObject(
+                    "stateBaseProof");
+            assertEquals(observation.get("statePort").getAsString(),
+                    proof.get("statePort").getAsString());
+            assertEquals(101L, proof.get("backingMapObjectToken")
+                    .getAsLong());
+            assertEquals(0, proof.get("candidateMutationCount").getAsInt());
+            assertEquals(0, proof.get("heapEffectCount").getAsInt());
+            assertTrue(proof.get("complete").getAsBoolean());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void readOnlyDynamicMapStateBaseFailsClosedWithoutExactProofs()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            for (String mode : new String[]{"INVALID_VM_MAPPING",
+                    "DUPLICATE_VM_MAPPING", "INVALID_SLICE_BINDING"}) {
+                MapFixture imported = importNonMutatingDynamicMapReadFixture(
+                        folder.getRoot().toPath().resolve(mode), mode);
+                JsonObject observation = imported.summary.getAsJsonArray(
+                        "heapObservations").get(0).getAsJsonObject();
+                assertFalse(mode, observation.get("complete").getAsBoolean());
+                assertFalse(mode, observation.has("stateBaseProof"));
+                assertFalse(mode, observation.has("stateBaseComplete"));
+                assertTrue(mode, imported.diagnostics.contains(
+                        "UNRESOLVED_HEAP_OBSERVATION_STATE_PORT"));
+            }
         } finally {
             folder.delete();
         }
@@ -2761,7 +2874,8 @@ public class ConcolicSummaryImporterTest {
                     .getAsInt());
 
             String[] rejected = new String[]{"MALFORMED_OPERATOR",
-                    "DUPLICATE_DYNAMIC", "DUPLICATE_RAW"};
+                    "DUPLICATE_DYNAMIC", "DUPLICATE_RAW",
+                    "WRONG_ENTRY_VALUE_OWNER"};
             for (String mutation : rejected) {
                 MapFixture invalid = importRawExpiryFallbackFixture(
                         folder.getRoot().toPath().resolve(
@@ -2780,7 +2894,9 @@ public class ConcolicSummaryImporterTest {
                         rejectedRaw.get("reason").getAsString());
                 assertTrue(mutation + ": " + invalid.diagnostics,
                         invalid.diagnostics.contains(
-                                "MISSING_DYNAMIC_FIELD_EXPRESSION"));
+                                "WRONG_ENTRY_VALUE_OWNER".equals(mutation)
+                                        ? "INCOMPLETE_DYNAMIC_FIELD_BINDING"
+                                        : "MISSING_DYNAMIC_FIELD_EXPRESSION"));
             }
         } finally {
             folder.delete();
@@ -4130,6 +4246,12 @@ public class ConcolicSummaryImporterTest {
         return result;
     }
 
+    private static JsonArray singletonInteger(int value) {
+        JsonArray result = new JsonArray();
+        result.add(value);
+        return result;
+    }
+
     private static JsonArray singletonObject(JsonObject value) {
         JsonArray result = new JsonArray();
         result.add(value);
@@ -4190,6 +4312,8 @@ public class ConcolicSummaryImporterTest {
         path.add("expiry");
         binding.add("fieldPath", path);
         binding.addProperty("leafOwnerObjectToken", ownerToken);
+        binding.addProperty("entryValueOwnerObjectToken",
+                entryRead.get("valueObjectToken").getAsLong());
         binding.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
         binding.addProperty("objectTokenScope", "ACT.P");
@@ -4226,6 +4350,9 @@ public class ConcolicSummaryImporterTest {
         observation.addProperty("available", true);
         observation.addProperty("leafOwnerObjectToken", ownerToken);
         observation.addProperty("leafOwnerObjectTokenKnown", true);
+        observation.addProperty("accessOwnerObjectToken",
+                entryRead.get("valueObjectToken").getAsLong());
+        observation.addProperty("accessOwnerObjectTokenKnown", true);
         observation.addProperty("leafOwnerClass", "example.Value");
         observation.addProperty("entryReadObservationId",
                 entryRead.get("observationId").getAsString());
@@ -4241,6 +4368,122 @@ public class ConcolicSummaryImporterTest {
         observation.addProperty("dynamicFieldBindingComplete", true);
         observation.addProperty("complete", true);
         return observation;
+    }
+
+    private static MapFixture importNonMutatingDynamicMapReadFixture(
+            Path root, String mode) throws Exception {
+        String method = "<example.Store: void prune()>";
+        String base = "REGION.P.in.1";
+        String materializationSite = method + "#u8";
+        String dependencyCell =
+                "<example.State: example.Guard state>"
+                        + "#field:guard#field:expiry";
+        String dynamic = dynamicFieldSymbol(base, materializationSite, 1);
+        JsonObject key = constant("Y_I_7", "I");
+        JsonObject witness = mapRefWitnessRecord();
+        JsonObject read = runtimeMapEntryRead(witness.get("mapExpression"),
+                key, method, 4, 0, 1, 1);
+        for (java.util.Map.Entry<String, JsonElement> entry
+                : witness.entrySet()) {
+            read.add(entry.getKey(), entry.getValue().deepCopy());
+        }
+        JsonArray observations = new JsonArray();
+        observations.add(read);
+
+        JsonArray deepPath = strings("state", "guard", "expiry");
+        JsonObject dynamicBinding = dynamicFieldBinding(dynamic,
+                materializationSite, 1, 105L, read, key);
+        dynamicBinding.add("fieldPath", deepPath.deepCopy());
+        JsonArray dynamicBindings = new JsonArray();
+        dynamicBindings.add(dynamicBinding);
+        JsonObject fieldObservation = dynamicFieldObservation(dynamic,
+                materializationSite, 1, 105L, read);
+        fieldObservation.add("fieldPath", deepPath.deepCopy());
+        fieldObservation.add("path", deepPath.deepCopy());
+        JsonArray fieldObservations = new JsonArray();
+        fieldObservations.add(fieldObservation);
+
+        JsonObject action = fieldAccessAction(base, "expiry");
+        action.addProperty("cell", dependencyCell);
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("accessMethod", method);
+        action.addProperty("accessSiteId", materializationSite);
+        action.addProperty("fieldPathAuthority",
+                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        action.addProperty("leafFieldSignature",
+                "<example.Value: long expiry>");
+        action.add("fieldPath", deepPath.deepCopy());
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+
+        JsonObject expression = symbol("M_J_field_" + dynamic
+                + "_example/Value", "J");
+        JsonObject condition = binaryCondition(
+                "virtual void example.Store.prune():11", ">",
+                expression, constant("Y_J_0", "J"));
+        JsonArray path = new JsonArray();
+        path.add(condition.deepCopy());
+        JsonObject mapping = branchMapping(method, 11, 1, true,
+                condition);
+        mapping.addProperty("vmOccurrence", 1);
+        mapping.addProperty("conditionIndex", 0);
+        mapping.addProperty("rawConditionIndex", 0);
+        mapping.addProperty("engineConditionIndex", 0);
+        mapping.addProperty("pathConditionBaseline", 0);
+        mapping.addProperty("rawPathConditionBaseline", 0);
+        mapping.addProperty("enginePathConditionBaseline", 0);
+        mapping.addProperty("pathConditionSize", 1);
+        mapping.addProperty("rawPathConditionSize", 1);
+        mapping.addProperty("enginePathConditionSize", 1);
+        mapping.addProperty("mappingPolicy",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
+        mapping.addProperty("conditionAuthority",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
+        mapping.addProperty("vmBranchEventExpected", true);
+        mapping.addProperty("vmBranchEventValidated",
+                !"INVALID_VM_MAPPING".equals(mode));
+        mapping.addProperty("vmBranchEventId", 1);
+        mapping.addProperty("vmBranchEventAuthority",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+        mapping.addProperty("vmThreadContextId", 2);
+        mapping.addProperty("vmOwnerJavaThreadId", 3);
+        mapping.addProperty("vmOwnerOsThreadId", 4);
+        mapping.addProperty("overrideMode", "NONE");
+        mapping.add("vmConditionIndices", singletonInteger(0));
+        mapping.add("rawCondition", condition.deepCopy());
+        mapping.add("condition", condition.deepCopy());
+        JsonArray mappings = new JsonArray();
+        mappings.add(mapping);
+        if ("DUPLICATE_VM_MAPPING".equals(mode)) {
+            JsonObject duplicate = mapping.deepCopy();
+            duplicate.addProperty("vmBranchEventId", 2);
+            mappings.add(duplicate);
+        }
+
+        JsonObject inputBinding = new JsonObject();
+        inputBinding.addProperty("dependencyCell", dependencyCell);
+        inputBinding.addProperty("inputPort", base);
+        inputBinding.addProperty("bindingAuthority",
+                "INVALID_SLICE_BINDING".equals(mode)
+                        ? "ALIAS_HEURISTIC" : "EXACT_CELL_IDENTITY");
+        inputBinding.add("dependencyMethods", singletonString(method));
+        JsonObject slice = new JsonObject();
+        slice.addProperty("structuralComplete", true);
+        slice.addProperty("truncated", false);
+        slice.add("inputBindings", singletonObject(inputBinding));
+        slice.add("sites", strings(method + "#u4", materializationSite,
+                method + "#u11"));
+        slice.addProperty("_fixtureRequestedOutputCell",
+                "<example.Output: int result>");
+
+        JsonArray causalEdges = new JsonArray();
+        causalEdges.add(causalEdge("DF.READ.NON_MUTATING", method,
+                materializationSite, "HEAP_READ", "field_read"));
+
+        return importMapFixture(root, path, true, new JsonArray(),
+                singletonString(method), causalEdges, new JsonArray(),
+                observations, actions, mappings, fieldObservations,
+                dynamicBindings, slice, new JsonArray());
     }
 
     private static MapFixture importRawExpiryFallbackFixture(
@@ -4271,6 +4514,8 @@ public class ConcolicSummaryImporterTest {
                 secondRead, secondKey));
         if ("DUPLICATE_DYNAMIC".equals(mutation)) {
             bindings.add(firstBinding.deepCopy());
+        } else if ("WRONG_ENTRY_VALUE_OWNER".equals(mutation)) {
+            firstBinding.addProperty("entryValueOwnerObjectToken", 999L);
         }
         JsonArray fields = new JsonArray();
         fields.add(dynamicFieldObservation(firstDynamic, site, 1, 103L,
@@ -4951,6 +5196,11 @@ public class ConcolicSummaryImporterTest {
         String method = "<example.Store: void update()>";
         String cell = "<example.Store: java.util.Map data>";
         if (sliceMetadata != null
+                && sliceMetadata.has("_fixtureRequestedOutputCell")) {
+            cell = sliceMetadata.get("_fixtureRequestedOutputCell")
+                    .getAsString();
+        }
+        if (sliceMetadata != null
                 && sliceMetadata.has(
                 "captureDischargedByHeapEffectTransformer")
                 && sliceMetadata.get(
@@ -5068,6 +5318,7 @@ public class ConcolicSummaryImporterTest {
         if (sliceMetadata != null) {
             for (java.util.Map.Entry<String, JsonElement> entry
                     : sliceMetadata.entrySet()) {
+                if (entry.getKey().startsWith("_fixture")) continue;
                 requestedOutputSlice.add(entry.getKey(),
                         entry.getValue().deepCopy());
             }

@@ -11,6 +11,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class SymbolicRegionPlannerTest {
@@ -2785,6 +2786,128 @@ public class SymbolicRegionPlannerTest {
                         && secondField.equals(edge.get("fromPort"))
                         && secondField.equals(edge.get("toPort"))));
         assertEquals(Boolean.TRUE, result.coverage.get("complete"));
+    }
+
+    @Test
+    public void emitsCoveredTransitiveWritersAtSiblingDynamicDispatch() {
+        String root = "<example.Worker: void run()>";
+        String consumer = "<example.Consumer: void executeWorker()>";
+        String relay = "<example.Relay: void executeWorker()>";
+        String source = "<example.Source: void executeWorker()>";
+        String firstField = "<example.Bus: int first>";
+        String secondField = "<example.Bus: int second>";
+        String produced = source + "::$value";
+        String relayed = relay + "::$value";
+        String consumed = consumer + "::$value";
+        String failure = consumer + "#u4#exception:example.Bug";
+
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(root, Collections.singletonList(root + "::r0"),
+                        Collections.<String>emptyList()),
+                plan(consumer, Collections.singletonList(secondField),
+                        Collections.singletonList(failure)),
+                plan(relay, Collections.singletonList(firstField),
+                        Collections.singletonList(secondField)),
+                plan(source, Collections.singletonList(
+                                source + "::external"),
+                        Collections.singletonList(firstField)));
+
+        Map<String, Object> dispatchConsumer = edge(root,
+                "DYNAMIC_DISPATCH", "dispatch_receiver",
+                root + "::r0", consumer + "::r0", 7);
+        dispatchConsumer.put("invoke", consumer);
+        Map<String, Object> dispatchRelay = edge(root,
+                "DYNAMIC_DISPATCH", "dispatch_receiver",
+                root + "::r0", relay + "::r0", 7);
+        dispatchRelay.put("invoke", relay);
+        Map<String, Object> dispatchSource = edge(root,
+                "DYNAMIC_DISPATCH", "dispatch_receiver",
+                root + "::r0", source + "::r0", 7);
+        dispatchSource.put("invoke", source);
+        Map<String, Object> producerValue = edge(source, "VALUE_PASS",
+                "local_def_use", source + "::external", produced, 1);
+        authoritativeValueFlow(producerValue);
+        Map<String, Object> sourceWrite = edge(source, "HEAP_WRITE",
+                "field_write", produced, firstField, 2);
+        authoritativeValueFlow(sourceWrite);
+        Map<String, Object> relayRead = edge(relay, "HEAP_READ",
+                "field_read", firstField, relayed, 1);
+        authoritativeValueFlow(relayRead);
+        Map<String, Object> relayWrite = edge(relay, "HEAP_WRITE",
+                "field_write", relayed, secondField, 2);
+        authoritativeValueFlow(relayWrite);
+        Map<String, Object> read = edge(consumer, "HEAP_READ",
+                "field_read", secondField, consumed, 1);
+        authoritativeValueFlow(read);
+        List<Map<String, Object>> edges = Arrays.asList(
+                dispatchConsumer,
+                dispatchRelay,
+                dispatchSource,
+                producerValue,
+                sourceWrite,
+                relayRead,
+                relayWrite,
+                read,
+                edge(consumer, "GUARD", "exception_guard", consumed,
+                        failure, 3),
+                edge(consumer, "SEED", "seed_exception_throw",
+                        consumer + "::$exception", failure, 4));
+
+        SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(
+                edges, plans);
+
+        assertEquals("one target, relay, and transitive source candidate",
+                3, result.regions.size());
+        Map<String, Object> consumerRegion = result.regions.stream()
+                .filter(region -> consumer.equals(region.get(
+                        "anchorMethod"))).findFirst().orElse(null);
+        Map<String, Object> relayRegion = result.regions.stream()
+                .filter(region -> relay.equals(region.get(
+                        "anchorMethod"))).findFirst().orElse(null);
+        Map<String, Object> sourceRegion = result.regions.stream()
+                .filter(region -> source.equals(region.get(
+                        "anchorMethod"))).findFirst().orElse(null);
+        assertNotNull(consumerRegion);
+        assertNotNull(relayRegion);
+        assertNotNull(sourceRegion);
+        assertEquals(Collections.singletonList(secondField),
+                consumerRegion.get("mandatorySeedGuardInputs"));
+        assertTrue("covered relay needs an anchor-specific candidate: "
+                        + result.regions,
+                secondField.equals(((List<?>) relayRegion.get(
+                        "outputs")).stream()
+                        .map(value -> ((Map<?, ?>) value).get("cell"))
+                        .filter(secondField::equals)
+                        .findFirst().orElse(null)));
+        assertTrue(((List<?>) relayRegion.get("outputSlices")).stream()
+                .map(value -> (Map<?, ?>) value)
+                .filter(slice -> secondField.equals(slice.get(
+                        "outputCell")))
+                .anyMatch(slice -> ((List<?>) slice.get("inputBindings"))
+                        .stream().map(value -> (Map<?, ?>) value)
+                        .anyMatch(binding -> firstField.equals(binding.get(
+                                "dependencyCell")))));
+        assertTrue("covered transitive source needs its own candidate: "
+                        + result.regions,
+                firstField.equals(((List<?>) sourceRegion.get(
+                        "outputs")).stream()
+                        .map(value -> ((Map<?, ?>) value).get("cell"))
+                        .filter(firstField::equals)
+                        .findFirst().orElse(null)));
+        assertTrue(result.regionEdges.stream().anyMatch(edge ->
+                firstField.equals(edge.get("fromPort"))
+                        && firstField.equals(edge.get("toPort"))
+                        && sourceRegion.get("regionId").equals(
+                        edge.get("fromRegion"))
+                        && relayRegion.get("regionId").equals(
+                        edge.get("toRegion"))));
+        assertTrue(result.regionEdges.stream().anyMatch(edge ->
+                secondField.equals(edge.get("fromPort"))
+                        && secondField.equals(edge.get("toPort"))
+                        && relayRegion.get("regionId").equals(
+                        edge.get("fromRegion"))
+                        && consumerRegion.get("regionId").equals(
+                        edge.get("toRegion"))));
     }
 
     @Test

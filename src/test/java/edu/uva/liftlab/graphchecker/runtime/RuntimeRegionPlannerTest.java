@@ -2750,6 +2750,73 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void restoresExactDeepLeafDeclarationForScheduler()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            String method = "<example.MapProducer: int compute()>";
+            String rootField =
+                    "<example.StateNode: example.GuardNode state>";
+            String cell = rootField + "#field:guard#field:enabled";
+            String leaf = "<example.BooleanLeaf: boolean enabled>";
+            String row = "{\"regionId\":\"REGION.DEEP\","
+                    + "\"rootMethod\":\"" + method + "\","
+                    + "\"anchorMethod\":\"" + method + "\","
+                    + "\"methods\":[\"" + method + "\"],"
+                    + "\"symbolicInputs\":[{"
+                    + "\"portId\":\"REGION.DEEP.in.0\","
+                    + "\"cell\":\"" + cell + "\","
+                    + "\"sourceKind\":\"SHARED_HEAP\","
+                    + "\"projection\":\"field:guard#field:enabled\","
+                    + "\"bindingMode\":\"FIELD_ACCESS\","
+                    + "\"accessFieldSignature\":\"" + rootField
+                    + "\",\"accessOwnerClass\":\"example.StateNode\","
+                    + "\"accessFieldType\":\"example.GuardNode\","
+                    + "\"accessField\":\"state\","
+                    + "\"leafFieldSignature\":\"" + leaf + "\","
+                    + "\"leafOwnerClass\":\"example.BooleanLeaf\","
+                    + "\"leafField\":\"enabled\","
+                    + "\"fieldPath\":[\"state\",\"guard\","
+                    + "\"enabled\"],\"fieldPathAuthority\":"
+                    + "\"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1\""
+                    + "}],\"outputs\":[],\"branchPolicies\":[],"
+                    + "\"models\":[]}\n";
+            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.FieldAccessEvent observed =
+                    exactFieldRead(2, method, 1, 8, rootField, 41, 42);
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), Collections.singletonList(
+                            method(1, method, 1, 0, 0)),
+                    Collections.emptyList(),
+                    Collections.singletonList(observed));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> action = (Map<String, Object>)
+                    ((List<?>) result.activations.get(0).get(
+                            "symbolize")).get(0);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> declarations =
+                    (List<Map<String, Object>>) action.get(
+                            "fieldPathLeafDeclarations");
+            assertEquals(1, declarations.size());
+            Map<String, Object> declaration = declarations.get(0);
+            assertEquals(Arrays.asList("state", "guard", "enabled"),
+                    declaration.get("fieldPath"));
+            assertEquals(leaf, declaration.get("fieldSignature"));
+            assertEquals("example.BooleanLeaf",
+                    declaration.get("declaredFieldOwnerClass"));
+            assertEquals("boolean", declaration.get("declaredFieldType"));
+            assertEquals(Boolean.TRUE, declaration.get("complete"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void promotedDeclaredFieldObservesOnlyItsAuthorizedReadSite()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -3530,18 +3597,26 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void ambiguousSelectedDirectDefinitionsFailClosed()
+    public void ambiguousOrUnqualifiedDirectDefinitionsFailClosed()
             throws Exception {
-        RuntimeRegionPlanner.Result result =
-                demandSlicedSaslInputResult(true);
+        List<RuntimeRegionPlanner.Result> rejected = Arrays.asList(
+                demandSlicedSaslInputResult(true),
+                demandSlicedSaslInputResult(false, "VALUE_PASS",
+                        "value_flow"),
+                demandSlicedSaslInputResult(false, "HEAP_READ",
+                        "taint_depends_on"));
 
-        Map<String, Object> validation = edgeValidationFor(result,
-                "REGION.C");
-        assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                validation.get("status"));
-        assertEquals(1, validation.get("concreteDemandPrunedPairCount"));
-        assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
-        assertEquals(false, validation.get("composable"));
+        for (RuntimeRegionPlanner.Result result : rejected) {
+            Map<String, Object> validation = edgeValidationFor(result,
+                    "REGION.C");
+            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
+                    validation.get("status"));
+            assertEquals(1, validation.get(
+                    "concreteDemandPrunedPairCount"));
+            assertEquals(0, validation.get(
+                    "confirmedValueEqualityPairCount"));
+            assertEquals(false, validation.get("composable"));
+        }
     }
 
     @Test
@@ -4445,7 +4520,7 @@ public class RuntimeRegionPlannerTest {
             assertEquals(7, activation.get("staticInputPortCount"));
             assertEquals(2, activation.get("concreteInputPortCount"));
             assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
-                            + "STATIC_DEMAND_SLICE_V1",
+                            + "STATIC_DEMAND_SLICE_V2",
                     activation.get("concreteInputSelectionAuthority"));
             @SuppressWarnings("unchecked")
             Map<String, Object> demand = (Map<String, Object>) activation.get(
@@ -4470,6 +4545,114 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
+    }
+
+    @Test
+    public void demandSliceCrossesLatestIntraRegionFieldWriteRhs()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
+                true, true, 77, true);
+
+        Map<String, Object> activation = result.activations.get(0);
+        assertEquals(3, activation.get("staticInputPortCount"));
+        assertEquals(1, activation.get("concreteInputPortCount"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> demand = (Map<String, Object>) activation.get(
+                "concreteDemandSlice");
+        assertEquals(Collections.singletonList("REGION.C.in.2"),
+                demand.get("inputPorts"));
+        assertTrue(String.valueOf(demand.get("edgeIds")).contains(
+                "DF.WRITE.NEW"));
+        assertFalse(String.valueOf(demand.get("edgeIds")).contains(
+                "DF.WRITE.OLD"));
+        assertEquals(Collections.emptyList(),
+                demand.get("concreteBoundCells"));
+        assertEquals(Boolean.TRUE, demand.get("staticProvenanceComplete"));
+        assertEquals(1, demand.get("heapReadClassificationCount"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> classifications =
+                (List<Map<String, Object>>) demand.get(
+                        "heapReadClassifications");
+        Map<String, Object> classification = classifications.get(0);
+        assertEquals("INTRA_REGION_LATEST_WRITE_RHS",
+                classification.get("classification"));
+        assertEquals(Long.valueOf(5L), classification.get("writeSeq"));
+        assertEquals("DF.WRITE.NEW",
+                classification.get("writeStaticEdgeId"));
+        assertEquals("RUNTIME_EXACT_HEAP_READ_LATEST_WRITE_AND_"
+                        + "FROZEN_RHS_V1",
+                demand.get("heapReachingDefinitionAuthority"));
+    }
+
+    @Test
+    public void demandSliceKeepsFieldAsEntryWhenPriorWriteUsesOtherReceiver()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
+                false, true, 88, true);
+
+        Map<String, Object> activation = result.activations.get(0);
+        assertEquals(1, activation.get("concreteInputPortCount"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> demand = (Map<String, Object>) activation.get(
+                "concreteDemandSlice");
+        assertEquals(Collections.singletonList("REGION.C.in.0"),
+                demand.get("inputPorts"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> classifications =
+                (List<Map<String, Object>>) demand.get(
+                        "heapReadClassifications");
+        assertEquals("REGION_ENTRY_STATE_NO_PRIOR_WRITE",
+                classifications.get(0).get("classification"));
+    }
+
+    @Test
+    public void demandSliceKeepsFieldAsEntryWhenLatestWriteIsOutsideClosure()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
+                false, true, 77, true, false);
+
+        Map<String, Object> activation = result.activations.get(0);
+        assertEquals(1, activation.get("concreteInputPortCount"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> demand = (Map<String, Object>) activation.get(
+                "concreteDemandSlice");
+        assertEquals(Collections.singletonList("REGION.C.in.0"),
+                demand.get("inputPorts"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> classifications =
+                (List<Map<String, Object>>) demand.get(
+                        "heapReadClassifications");
+        assertEquals("REGION_ENTRY_STATE_EXTERNAL_LATEST_WRITE",
+                classifications.get(0).get("classification"));
+        assertEquals(Long.valueOf(5L),
+                classifications.get(0).get("writeSeq"));
+    }
+
+    @Test
+    public void demandSliceBindsConcreteWhenInternalWriteHasNoExactFrozenRhs()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
+                false, true, 77, false);
+
+        Map<String, Object> activation = result.activations.get(0);
+        assertEquals(0, activation.get("concreteInputPortCount"));
+        assertEquals(Boolean.FALSE,
+                activation.get("concreteDemandSymbolicPotential"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> demand = (Map<String, Object>) activation.get(
+                "concreteDemandSlice");
+        assertEquals(Collections.singletonList(
+                        "<example.State: int value>"),
+                demand.get("concreteBoundCells"));
+        assertEquals(Boolean.FALSE, demand.get("staticProvenanceComplete"));
+        assertTrue(String.valueOf(demand.get("gaps")).contains(
+                "MISSING_OR_AMBIGUOUS_FROZEN_HEAP_WRITE_RHS"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> classifications =
+                (List<Map<String, Object>>) demand.get(
+                        "heapReadClassifications");
+        assertEquals("CONCRETE_BOUND",
+                classifications.get(0).get("classification"));
     }
 
     @Test
@@ -4596,7 +4779,7 @@ public class RuntimeRegionPlannerTest {
         assertEquals(0, activation.get("concreteInputPortCount"));
         assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
         assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
-                        + "STATIC_DEMAND_SLICE_V1",
+                        + "STATIC_DEMAND_SLICE_V2",
                 activation.get("concreteInputSelectionAuthority"));
         Map<String, Object> demand = (Map<String, Object>) activation.get(
                 "concreteDemandSlice");
@@ -4630,6 +4813,129 @@ public class RuntimeRegionPlannerTest {
                 + "\"method\":\"" + method + "\","
                 + "\"siteId\":\"" + siteId + "\","
                 + "\"unitIndex\":" + unitIndex + "}\n";
+    }
+
+    private static RuntimeRegionPlanner.Result heapReachingDefinitionResult(
+            boolean includeOldWrite, boolean includeNewWrite,
+            int newWriteReceiver, boolean exactNewWriteSite)
+            throws Exception {
+        return heapReachingDefinitionResult(includeOldWrite, includeNewWrite,
+                newWriteReceiver, exactNewWriteSite, true);
+    }
+
+    private static RuntimeRegionPlanner.Result heapReachingDefinitionResult(
+            boolean includeOldWrite, boolean includeNewWrite,
+            int newWriteReceiver, boolean exactNewWriteSite,
+            boolean newWriteInsideClosure) throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            String root = "<example.Consumer: void run(int,int)>";
+            String externalWriter = "<example.Writer: void publish(int)>";
+            String field = "<example.State: int value>";
+            String oldInput = root + ".param0:int";
+            String newInput = root + ".param1:int";
+            String oldRhs = root + "::oldValue";
+            String newRhs = root + "::newValue";
+            String readLocal = root + "::observed";
+            String guardSite = root + "#u6";
+            String failure = guardSite + "#exception:example.Bug";
+            Path regions = folder.getRoot().toPath().resolve(
+                    "regions.jsonl");
+            Path graph = folder.getRoot().toPath().resolve("graph.jsonl");
+            String region = "{\"regionId\":\"REGION.C\","
+                    + "\"rootMethod\":\"" + root + "\","
+                    + "\"anchorMethod\":\"" + root + "\","
+                    + "\"methods\":[\"" + root + "\"],"
+                    + "\"symbolicInputs\":["
+                    + inputPort("REGION.C.in.0", field, "SHARED_HEAP")
+                    + ',' + inputPort("REGION.C.in.1", oldInput,
+                    "ROOT_ARGUMENT")
+                    + ',' + inputPort("REGION.C.in.2", newInput,
+                    "ROOT_ARGUMENT") + "],"
+                    + "\"outputs\":[{\"portId\":\"REGION.C.out.0\","
+                    + "\"cell\":\"" + failure + "\","
+                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
+                    + "\"branchPolicies\":[{\"siteId\":\""
+                    + guardSite + "\",\"policy\":\"PATH_ASSUMPTION\","
+                    + "\"guard\":\"observed == 0\","
+                    + "\"requiredOutcome\":false,"
+                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
+            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+
+            String newWriteSite = exactNewWriteSite
+                    ? root + "#u4" : root + "#u40";
+            int newWriteUnit = exactNewWriteSite ? 4 : 40;
+            String frozen = frozenDemandEdge("DF.GUARD", "GUARD",
+                    "control_depends_on", readLocal, failure, root,
+                    guardSite, 6)
+                    + frozenDemandEdge("DF.READ", "HEAP_READ",
+                    "value_flow", field, readLocal, root,
+                    root + "#u5", 5)
+                    + frozenDemandEdge("DF.WRITE.OLD", "HEAP_WRITE",
+                    "value_flow", oldRhs, field, root,
+                    root + "#u2", 2)
+                    + frozenDemandEdge("DF.OLD.RHS", "VALUE_PASS",
+                    "value_flow", oldInput, oldRhs, root,
+                    root + "#u1", 1)
+                    + frozenDemandEdge("DF.WRITE.NEW", "HEAP_WRITE",
+                    "value_flow", newRhs, field, root,
+                    newWriteSite, newWriteUnit)
+                    + frozenDemandEdge("DF.NEW.RHS", "VALUE_PASS",
+                    "value_flow", newInput, newRhs, root,
+                    root + "#u3", 3);
+            Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
+
+            List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
+                    new RuntimeRegionPlanner.RuntimeEvent(2,
+                            "METHOD_ARGUMENT", root, 1, 0, 0,
+                            root + "#entry", 0, "int", 0, "1",
+                            false, false),
+                    new RuntimeRegionPlanner.RuntimeEvent(3,
+                            "METHOD_ARGUMENT", root, 1, 0, 0,
+                            root + "#entry", 1, "int", 0, "2",
+                            false, false),
+                    new RuntimeRegionPlanner.RuntimeEvent(7, "BRANCH",
+                            root, 1, 0, 0, guardSite, -1, "", 0,
+                            "", true, true));
+            List<RuntimeRegionPlanner.FieldAccessEvent> fields =
+                    new ArrayList<>();
+            // Deliberately publish the newer write before the older one.
+            // Reaching-definition selection is by maximum sequence, never
+            // by the incidental order of the input event collection.
+            if (includeNewWrite) {
+                fields.add(new RuntimeRegionPlanner.FieldAccessEvent(5,
+                        "FIELD_WRITE", newWriteInsideClosure
+                        ? root : externalWriter,
+                        newWriteInsideClosure ? 1 : 2, 4,
+                        (newWriteInsideClosure ? root : externalWriter)
+                                + "#u4",
+                        field, newWriteReceiver, 0, "2", "", false,
+                        0, "TEST_NO_FINGERPRINT"));
+            }
+            if (includeOldWrite) {
+                fields.add(new RuntimeRegionPlanner.FieldAccessEvent(4,
+                        "FIELD_WRITE", root, 1, 2, root + "#u2",
+                        field, 77, 0, "1", "", false, 0,
+                        "TEST_NO_FINGERPRINT"));
+            }
+            fields.add(new RuntimeRegionPlanner.FieldAccessEvent(6,
+                    "FIELD_READ", root, 1, 5, root + "#u5", field,
+                    77, 0, includeNewWrite && newWriteReceiver == 77
+                    ? "2" : includeOldWrite ? "1" : "0", "", false,
+                    0, "TEST_NO_FINGERPRINT"));
+
+            List<RuntimeRegionPlanner.MethodEvent> methods =
+                    new ArrayList<>();
+            methods.add(method(1, root, 1, 0, 0));
+            if (includeNewWrite && !newWriteInsideClosure) {
+                methods.add(method(2, externalWriter, 2, 0, 0));
+            }
+            return RuntimeRegionPlanner.plan(regions.toFile(), null,
+                    graph.toFile(), methods, runtime, fields);
+        } finally {
+            folder.delete();
+        }
     }
 
     private static RuntimeRegionPlanner.Result
@@ -5522,6 +5828,13 @@ public class RuntimeRegionPlannerTest {
 
     private static RuntimeRegionPlanner.Result demandSlicedSaslInputResult(
             boolean ambiguous) throws Exception {
+        return demandSlicedSaslInputResult(ambiguous, "HEAP_READ",
+                "value_flow");
+    }
+
+    private static RuntimeRegionPlanner.Result demandSlicedSaslInputResult(
+            boolean duplicateDefinition, String directTransferKind,
+            String directRelation) throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
@@ -5535,8 +5848,6 @@ public class RuntimeRegionPlannerTest {
             String rawEndpoint = SASL_SERVER + "::$r4";
             String defaultField = "<javax.security.auth.callback."
                     + "NameCallback: java.lang.String defaultName>";
-            String alternateField = "<example.OtherCallback: "
-                    + "java.lang.String defaultName>";
             String guardSite = SASL_SERVER + "#u8";
             String failure = SASL_SERVER + "#u11#exception:example.Bug";
             String serverRegion = "{\"regionId\":\"REGION.S\","
@@ -5546,8 +5857,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"symbolicInputs\":["
                     + inputPort("REGION.S.in.0", defaultField,
                     "PROTOCOL_INPUT")
-                    + (ambiguous ? "," + inputPort("REGION.S.in.1",
-                    alternateField, "PROTOCOL_INPUT") : "")
                     + "],\"outputs\":[{\"portId\":\"REGION.S.out.0\","
                     + "\"cell\":\"" + failure + "\","
                     + "\"kind\":\"FAILURE_PREDICATE\"}],"
@@ -5576,12 +5885,13 @@ public class RuntimeRegionPlannerTest {
             String frozen = frozenDemandEdge("DF.GUARD", "GUARD",
                     "control_depends_on", rawEndpoint, failure,
                     SASL_SERVER, guardSite, 8)
-                    + frozenDemandEdge("DF.DIRECT.DEFAULT", "HEAP_READ",
-                    "value_flow", defaultField, rawEndpoint, SASL_SERVER,
+                    + frozenDemandEdge("DF.DIRECT.DEFAULT",
+                    directTransferKind, directRelation, defaultField,
+                    rawEndpoint, SASL_SERVER,
                     SASL_SERVER + "#u4", 4)
-                    + (ambiguous ? frozenDemandEdge(
-                    "DF.DIRECT.ALTERNATE", "HEAP_READ", "value_flow",
-                    alternateField, rawEndpoint, SASL_SERVER,
+                    + (duplicateDefinition ? frozenDemandEdge(
+                    "DF.DIRECT.DUPLICATE", directTransferKind,
+                    directRelation, defaultField, rawEndpoint, SASL_SERVER,
                     SASL_SERVER + "#u5", 5) : "");
             Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
 

@@ -164,6 +164,8 @@ final class RuntimeRegionPlanner {
             calls.put(event.callId, event);
             add(methodsBySignature, event.method, event);
         }
+        RuntimeFieldAccessIndex runtimeFieldAccesses =
+                RuntimeFieldAccessIndex.build(fields, calls);
 
         int instanceIndex = 0;
         int activationIndex = 0;
@@ -257,7 +259,8 @@ final class RuntimeRegionPlanner {
                         containedRuntime);
                 ConcreteDemandSlice demandSlice = staticProjections.reslice(
                         region, runtimePathEvidenceComplete,
-                        observedMethods, root.method);
+                        observedMethods, root.method, root, containedCalls,
+                        runtimeFieldAccesses);
                 List<StaticPort> concreteInputs = demandSlice.inputs(region);
                 if (demandSlice.applied) {
                     demandResliceAppliedCount++;
@@ -1684,6 +1687,8 @@ final class RuntimeRegionPlanner {
                             observedField.declaredSignature
                                     ? "RUNTIME_FIELD_ACCESS_DECLARATION"
                                     : "STATIC_CANONICAL_DECLARED_FIELD");
+                    restoreExactDirectFieldPathLeafMetadata(port, action,
+                            exact);
                 }
             }
             if ("RECEIVER_FIELD".equals(action.get("location"))) {
@@ -1710,6 +1715,65 @@ final class RuntimeRegionPlanner {
         }
         applyExactConsumedArrayFieldEvidence(result, root, fieldEvents);
         return result;
+    }
+
+    private static void restoreExactDirectFieldPathLeafMetadata(
+            StaticPort port, Map<String, Object> action,
+            FieldCell observedRoot) {
+        Map<String, Object> metadata = port.materializationMetadata;
+        if (!"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
+                string(metadata.get("fieldPathAuthority")))) {
+            return;
+        }
+        List<String> path = stringList(metadata.get("fieldPath"));
+        FieldCell staticRoot = fieldCell(port.cell);
+        FieldCell leaf = fieldCell(string(metadata.get(
+                "leafFieldSignature")));
+        if (path.size() < 2 || path.size() > 4
+                || !path.equals(dependencyFieldPath(port.cell))
+                || !staticRoot.declaredSignature
+                || !observedRoot.signature().equals(
+                staticRoot.signature())
+                || !leaf.declaredSignature
+                || !leaf.name.equals(path.get(path.size() - 1))
+                || !primitiveType(leaf.type)
+                || !staticRoot.signature().equals(string(metadata.get(
+                "accessFieldSignature")))
+                || !staticRoot.owner.equals(string(metadata.get(
+                "accessOwnerClass")))
+                || !staticRoot.name.equals(string(metadata.get(
+                "accessField")))) {
+            return;
+        }
+        action.put("bindingMode", "FIELD_ACCESS");
+        action.put("javaType", leaf.type);
+        // Keep the hook declaration in accessFieldSignature, while the
+        // action's symbolic field identity denotes only the scalar leaf.
+        action.put("field", leaf.signature());
+        action.put("fieldPath", path);
+        action.put("accessOwnerClass", staticRoot.owner);
+        action.put("accessField", staticRoot.name);
+        action.put("accessFieldType", staticRoot.type);
+        action.put("accessFieldSignature", staticRoot.signature());
+        action.put("leafFieldSignature", leaf.signature());
+        action.put("leafOwnerClass", leaf.owner);
+        action.put("leafField", leaf.name);
+        action.put("fieldPathAuthority",
+                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        // Publish the leaf declaration proven above as a first-class row.
+        // The scheduler cannot derive the owner of a path such as
+        // State.state#guard#enabled from the root signature alone: that
+        // signature only declares GuardNode, while the scalar leaf belongs
+        // to BooleanLeaf.  Keeping the exact path/signature join explicit
+        // lets it validate the deep leaf without guessing through types.
+        List<Map<String, Object>> declarations = new ArrayList<>();
+        declarations.add(object(
+                "fieldPath", new ArrayList<>(path),
+                "fieldSignature", leaf.signature(),
+                "declaredFieldOwnerClass", leaf.owner,
+                "declaredFieldType", leaf.type,
+                "complete", true));
+        action.put("fieldPathLeafDeclarations", declarations);
     }
 
     private static List<String> observedArgumentFields(
@@ -3850,10 +3914,15 @@ final class RuntimeRegionPlanner {
             Map<String, Object> baseAction = uniqueAction(actions, base);
             Map<String, Object> containerAction = uniqueAction(actions,
                     container);
+            boolean directPathSnapshot =
+                    "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
+                    .concat("CHAIN_V1").equals(string(declaration.get(
+                    "proofAuthority")));
             if (bindingId.isEmpty() || !bindingIds.add(bindingId)
                     || baseAction == null || containerAction == null
                     || baseAction == containerAction
-                    || !fieldSignature.equals(string(baseAction.get(
+                    || !directPathSnapshot
+                    && !fieldSignature.equals(string(baseAction.get(
                     "cell")))
                     || !containerCell.equals(string(containerAction.get(
                     "cell")))) {
@@ -3862,7 +3931,7 @@ final class RuntimeRegionPlanner {
             String observedBaseField = string(baseAction.get("field"));
             String observedContainerField = string(containerAction.get(
                     "field"));
-            if (!observedBaseField.isEmpty()
+            if (!directPathSnapshot && !observedBaseField.isEmpty()
                     && !fieldSignature.equals(observedBaseField)
                     || !observedContainerField.isEmpty()
                     && !containerCell.equals(observedContainerField)) {
@@ -3883,14 +3952,39 @@ final class RuntimeRegionPlanner {
                     || !field.name.equals(path.get(path.size() - 1))) {
                 return false;
             }
-            baseAction.put("field", fieldSignature);
+            FieldCell accessField = field;
+            if (directPathSnapshot) {
+                String baseCell = string(baseAction.get("cell"));
+                accessField = fieldCell(baseCell);
+                if (!accessField.declaredSignature
+                        || !path.equals(dependencyFieldPath(baseCell))
+                        || !path.equals(stringList(baseAction.get(
+                        "fieldPath")))
+                        || !fieldSignature.equals(string(baseAction.get(
+                        "leafFieldSignature")))
+                        || !accessField.signature().equals(string(
+                        baseAction.get("accessFieldSignature")))
+                        || !accessField.name.equals(string(baseAction.get(
+                        "accessField")))
+                        || !accessField.owner.equals(string(baseAction.get(
+                        "accessOwnerClass")))) {
+                    return false;
+                }
+                baseAction.put("leafFieldSignature", field.signature());
+                baseAction.put("leafOwnerClass", field.owner);
+                baseAction.put("leafField", field.name);
+            }
+            // The hook stays on the first declared field, but the symbolic
+            // identity denotes only the final scalar leaf.
+            baseAction.put("field", directPathSnapshot
+                    ? field.signature() : accessField.signature());
             baseAction.put("fieldPath", path);
             baseAction.put("bindingMode", "FIELD_ACCESS");
-            baseAction.put("accessOwnerClass", field.owner);
-            baseAction.put("accessField", field.name);
-            baseAction.put("accessFieldType", field.type);
+            baseAction.put("accessOwnerClass", accessField.owner);
+            baseAction.put("accessField", accessField.name);
+            baseAction.put("accessFieldType", accessField.type);
             baseAction.put("javaType", field.type);
-            baseAction.put("accessFieldSignature", field.signature());
+            baseAction.put("accessFieldSignature", accessField.signature());
             baseAction.put("accessFieldAuthority",
                     "STATIC_EXACT_CONTAINER_ELEMENT_FIELD_DECLARATION");
 
@@ -5184,6 +5278,248 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /**
+     * Indexed runtime heap events used by the post-runtime demand slice.  A
+     * field is crossed only when one exact executed FIELD_READ can be joined
+     * to the frozen HEAP_READ row and the latest same-object write is both
+     * inside the selected call closure and joined to one frozen HEAP_WRITE
+     * RHS.  Missing or ambiguous joins remain concrete.
+     */
+    private static final class RuntimeFieldAccessIndex {
+        private static final String AUTHORITY =
+                "RUNTIME_EXACT_HEAP_READ_LATEST_WRITE_AND_FROZEN_RHS_V1";
+        private final Map<String, List<FieldAccessEvent>> readsBySite =
+                new LinkedHashMap<>();
+        private final Map<String, List<FieldAccessEvent>> writesByContext =
+                new LinkedHashMap<>();
+        private final Map<String, List<FieldAccessEvent>> unscopedWrites =
+                new LinkedHashMap<>();
+
+        private static RuntimeFieldAccessIndex build(
+                List<FieldAccessEvent> fields,
+                Map<Long, MethodEvent> calls) {
+            RuntimeFieldAccessIndex result = new RuntimeFieldAccessIndex();
+            for (FieldAccessEvent event : values(fields)) {
+                String field = exactFieldKey(event.field);
+                if (field.isEmpty()) {
+                    continue;
+                }
+                if ("FIELD_READ".equals(event.kind)
+                        && exactRuntimeFieldSite(event)) {
+                    add(result.readsBySite, fieldSiteKey(event.method,
+                            event.siteId, event.unitIndex, field), event);
+                } else if ("FIELD_WRITE".equals(event.kind)) {
+                    MethodEvent call = calls == null ? null
+                            : calls.get(event.callId);
+                    if (call == null) {
+                        add(result.unscopedWrites,
+                                receiverFieldKey(event.receiverObjectId,
+                                        field), event);
+                    } else {
+                        add(result.writesByContext, contextFieldKey(
+                                call.test, call.process,
+                                event.receiverObjectId, field), event);
+                    }
+                }
+            }
+            return result;
+        }
+
+        private RuntimeHeapDefinition reachingDefinition(
+                StaticDataflowProjectionEdge readDefinition,
+                MethodEvent root, Set<Long> containedCalls,
+                Set<String> observedMethods,
+                StaticProjectionIndex staticProjections) {
+            String field = exactFieldKey(readDefinition.fromCell);
+            if (root == null || containedCalls == null
+                    || staticProjections == null || field.isEmpty()) {
+                return RuntimeHeapDefinition.concrete(readDefinition, null,
+                        "MISSING_EXACT_RUNTIME_HEAP_CONTEXT:"
+                                + readDefinition.fromCell);
+            }
+
+            List<FieldAccessEvent> matchingReads = new ArrayList<>();
+            for (FieldAccessEvent event : values(readsBySite.get(
+                    fieldSiteKey(readDefinition.method,
+                            readDefinition.siteId,
+                            readDefinition.unitIndex, field)))) {
+                if (containedCalls.contains(event.callId)) {
+                    matchingReads.add(event);
+                }
+            }
+            if (matchingReads.size() != 1) {
+                String reason = matchingReads.isEmpty()
+                        ? "MISSING_EXACT_CONTAINED_RUNTIME_FIELD_READ:"
+                        : "AMBIGUOUS_EXACT_CONTAINED_RUNTIME_FIELD_READ:"
+                        + matchingReads.size() + ':';
+                return RuntimeHeapDefinition.concrete(readDefinition, null,
+                        reason + readDefinition.siteId);
+            }
+
+            FieldAccessEvent read = matchingReads.get(0);
+            if (read.receiverObjectId == 0) {
+                return RuntimeHeapDefinition.concrete(readDefinition, read,
+                        "MISSING_RUNTIME_FIELD_RECEIVER_IDENTITY:"
+                                + readDefinition.siteId);
+            }
+
+            List<FieldAccessEvent> writes = values(writesByContext.get(
+                    contextFieldKey(root.test, root.process,
+                            read.receiverObjectId, field)));
+            FieldAccessEvent latest = latestBefore(writes, read.seq);
+            FieldAccessEvent unknown = latestBefore(values(
+                    unscopedWrites.get(receiverFieldKey(
+                            read.receiverObjectId, field))), read.seq);
+            if (unknown != null && (latest == null
+                    || unknown.seq >= latest.seq)) {
+                return RuntimeHeapDefinition.concrete(readDefinition, read,
+                        "UNSCOPED_LATEST_RUNTIME_FIELD_WRITE:"
+                                + unknown.seq + ':' + readDefinition.fromCell);
+            }
+            if (latest == null) {
+                return RuntimeHeapDefinition.entry(readDefinition, read,
+                        null);
+            }
+            if (!containedCalls.contains(latest.callId)) {
+                return RuntimeHeapDefinition.entry(readDefinition, read,
+                        latest);
+            }
+
+            StaticDataflowProjectionEdge writeDefinition =
+                    staticProjections.uniqueRuntimeHeapWriteDefinition(
+                            latest, readDefinition.fromCell,
+                            observedMethods);
+            if (writeDefinition == null) {
+                return RuntimeHeapDefinition.concrete(readDefinition, read,
+                        "MISSING_OR_AMBIGUOUS_FROZEN_HEAP_WRITE_RHS:"
+                                + latest.siteId);
+            }
+            return RuntimeHeapDefinition.internal(readDefinition, read,
+                    latest, writeDefinition);
+        }
+
+        private static FieldAccessEvent latestBefore(
+                List<FieldAccessEvent> events, long upperExclusive) {
+            FieldAccessEvent latest = null;
+            for (FieldAccessEvent event : events) {
+                if (event.seq < upperExclusive
+                        && (latest == null || event.seq > latest.seq)) {
+                    latest = event;
+                }
+            }
+            return latest;
+        }
+
+        private static boolean exactRuntimeFieldSite(
+                FieldAccessEvent event) {
+            return event != null && !event.method.isEmpty()
+                    && !event.siteId.isEmpty() && event.unitIndex >= 0;
+        }
+
+        private static String exactFieldKey(String field) {
+            FieldCell parsed = fieldCell(field);
+            return parsed.declaredSignature && parsed.materializable()
+                    ? parsed.owner + '\n' + parsed.type + '\n' + parsed.name
+                    : "";
+        }
+
+        private static String fieldSiteKey(String method, String site,
+                                           int unitIndex, String field) {
+            return safe(method) + '\n' + safe(site) + '\n' + unitIndex
+                    + '\n' + safe(field);
+        }
+
+        private static String receiverFieldKey(int receiver, String field) {
+            return receiver + "\n" + safe(field);
+        }
+
+        private static String contextFieldKey(String test, String process,
+                                              int receiver, String field) {
+            return safe(test) + '\n' + safe(process) + '\n'
+                    + receiverFieldKey(receiver, field);
+        }
+    }
+
+    private static final class RuntimeHeapDefinition {
+        private final String classification;
+        private final StaticDataflowProjectionEdge readDefinition;
+        private final FieldAccessEvent read;
+        private final FieldAccessEvent write;
+        private final StaticDataflowProjectionEdge writeDefinition;
+        private final String failure;
+
+        private RuntimeHeapDefinition(String classification,
+                StaticDataflowProjectionEdge readDefinition,
+                FieldAccessEvent read, FieldAccessEvent write,
+                StaticDataflowProjectionEdge writeDefinition,
+                String failure) {
+            this.classification = safe(classification);
+            this.readDefinition = readDefinition;
+            this.read = read;
+            this.write = write;
+            this.writeDefinition = writeDefinition;
+            this.failure = safe(failure);
+        }
+
+        private static RuntimeHeapDefinition internal(
+                StaticDataflowProjectionEdge readDefinition,
+                FieldAccessEvent read, FieldAccessEvent write,
+                StaticDataflowProjectionEdge writeDefinition) {
+            return new RuntimeHeapDefinition(
+                    "INTRA_REGION_LATEST_WRITE_RHS", readDefinition,
+                    read, write, writeDefinition, "");
+        }
+
+        private static RuntimeHeapDefinition entry(
+                StaticDataflowProjectionEdge readDefinition,
+                FieldAccessEvent read, FieldAccessEvent externalWrite) {
+            return new RuntimeHeapDefinition(externalWrite == null
+                    ? "REGION_ENTRY_STATE_NO_PRIOR_WRITE"
+                    : "REGION_ENTRY_STATE_EXTERNAL_LATEST_WRITE",
+                    readDefinition, read, externalWrite, null, "");
+        }
+
+        private static RuntimeHeapDefinition concrete(
+                StaticDataflowProjectionEdge readDefinition,
+                FieldAccessEvent read, String failure) {
+            return new RuntimeHeapDefinition("CONCRETE_BOUND",
+                    readDefinition, read, null, null, failure);
+        }
+
+        private boolean internal() {
+            return "INTRA_REGION_LATEST_WRITE_RHS".equals(classification);
+        }
+
+        private boolean concreteBound() {
+            return "CONCRETE_BOUND".equals(classification);
+        }
+
+        private Map<String, Object> toMap() {
+            return object(
+                    "classification", classification,
+                    "field", readDefinition == null ? ""
+                            : readDefinition.fromCell,
+                    "readStaticEdgeId", readDefinition == null ? ""
+                            : readDefinition.edgeId,
+                    "readSiteId", read == null
+                            ? readDefinition == null ? ""
+                            : readDefinition.siteId : read.siteId,
+                    "readSeq", read == null ? 0L : read.seq,
+                    "readCallId", read == null ? 0L : read.callId,
+                    "receiverObjectId", read == null ? 0
+                            : read.receiverObjectId,
+                    "writeSeq", write == null ? 0L : write.seq,
+                    "writeCallId", write == null ? 0L : write.callId,
+                    "writeSiteId", write == null ? "" : write.siteId,
+                    "writeStaticEdgeId", writeDefinition == null ? ""
+                            : writeDefinition.edgeId,
+                    "rhsCell", writeDefinition == null ? ""
+                            : writeDefinition.fromCell,
+                    "failure", failure,
+                    "authority", RuntimeFieldAccessIndex.AUTHORITY);
+        }
+    }
+
     private static final class StaticRegion {
         private String regionId = "";
         private String rootMethod = "";
@@ -5344,6 +5680,22 @@ final class RuntimeRegionPlanner {
                 return selected;
             }
             return null;
+        }
+
+        private boolean runtimeHeapReachingDefinitionEligible(String cell) {
+            for (StaticPort input : inputs) {
+                if (!cell.equals(input.cell)) {
+                    continue;
+                }
+                // Protocol/environment boundaries can be represented by an
+                // accessor or VM placeholder even when the frozen graph row
+                // is spelled HEAP_READ.  They are not ordinary shared-heap
+                // entry state and must retain their dedicated resolution.
+                if (!"SHARED_HEAP".equals(input.sourceKind)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private StaticOutputSlice outputSliceFor(String outputPort) {
@@ -5775,14 +6127,18 @@ final class RuntimeRegionPlanner {
                     incomingByCell.get(endpoint))) {
                 if (!demandEdgeIds.contains(edge.edgeId)
                         || !edge.toCell.equals(endpoint)
-                        || !edge.exactConcreteDefinition(observedMethods)) {
+                        || !edge.exactDirectDemandInputDefinition(
+                        observedMethods)) {
                     continue;
                 }
                 for (StaticPort port : retainedPorts) {
                     if (!edge.fromCell.equals(port.cell)) {
                         continue;
                     }
-                    if (selected != null && selected != port) {
+                    // Uniqueness is over the immutable evidence row, not only
+                    // the resolved port. Duplicate direct definitions for the
+                    // same retained input are still ambiguous.
+                    if (selected != null) {
                         return DirectDemandInputResolution.ambiguous();
                     }
                     selected = port;
@@ -5802,7 +6158,9 @@ final class RuntimeRegionPlanner {
          */
         private ConcreteDemandSlice reslice(StaticRegion region,
                 boolean runtimePathEvidenceComplete,
-                Set<String> observedMethods, String runtimeRootMethod) {
+                Set<String> observedMethods, String runtimeRootMethod,
+                MethodEvent runtimeRoot, Set<Long> containedCalls,
+                RuntimeFieldAccessIndex runtimeFieldAccesses) {
             // Old unit/catalog callers that genuinely have no frozen graph
             // retain their legacy behavior.  A real frozen catalog never
             // falls back to its broad candidate input list after runtime has
@@ -5905,6 +6263,33 @@ final class RuntimeRegionPlanner {
                     result.edgeIds.add(definition.edgeId);
                     addNonBlank(result.methods, definition.method);
                     addNonBlank(result.sites, definition.siteId);
+                    if (definition.exactDeclaredHeapRead()
+                            && region.runtimeHeapReachingDefinitionEligible(
+                            definition.fromCell)) {
+                        RuntimeHeapDefinition heapDefinition =
+                                runtimeFieldAccesses.reachingDefinition(
+                                        definition, runtimeRoot,
+                                        containedCalls, observedMethods,
+                                        this);
+                        result.recordHeapDefinition(heapDefinition);
+                        if (heapDefinition.internal()) {
+                            StaticDataflowProjectionEdge writeDefinition =
+                                    heapDefinition.writeDefinition;
+                            result.edgeIds.add(writeDefinition.edgeId);
+                            addNonBlank(result.methods,
+                                    writeDefinition.method);
+                            addNonBlank(result.sites,
+                                    writeDefinition.siteId);
+                            work.addLast(writeDefinition.fromCell);
+                            continue;
+                        }
+                        if (heapDefinition.concreteBound()) {
+                            result.gaps.add(heapDefinition.failure);
+                            result.concreteBoundCells.add(
+                                    definition.fromCell);
+                            continue;
+                        }
+                    }
                     if (!definition.fromCell.isEmpty()) {
                         work.addLast(definition.fromCell);
                     }
@@ -5912,6 +6297,24 @@ final class RuntimeRegionPlanner {
             }
             result.visitedCellCount = visited.size();
             return result;
+        }
+
+        private StaticDataflowProjectionEdge uniqueRuntimeHeapWriteDefinition(
+                FieldAccessEvent write, String declaredField,
+                Set<String> observedMethods) {
+            StaticDataflowProjectionEdge selected = null;
+            for (StaticDataflowProjectionEdge edge : values(
+                    incomingByCell.get(declaredField))) {
+                if (!edge.exactHeapWriteAt(write, declaredField,
+                        observedMethods)) {
+                    continue;
+                }
+                if (selected != null) {
+                    return null;
+                }
+                selected = edge;
+            }
+            return selected;
         }
 
         private List<StaticDataflowProjectionEdge> exactDefinitions(
@@ -5967,7 +6370,7 @@ final class RuntimeRegionPlanner {
     private static final class ConcreteDemandSlice {
         private static final String AUTHORITY =
                 "RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_STATIC_"
-                        + "DEMAND_SLICE_V1";
+                        + "DEMAND_SLICE_V2";
         private boolean applied;
         private int visitedCellCount;
         private final Set<String> inputPortIds = new LinkedHashSet<>();
@@ -5981,6 +6384,8 @@ final class RuntimeRegionPlanner {
                 new ArrayList<>();
         private final Set<String> externalInputPromotionKeys =
                 new LinkedHashSet<>();
+        private final List<Map<String, Object>> heapReadClassifications =
+                new ArrayList<>();
 
         private static ConcreteDemandSlice legacyStatic(String reason) {
             ConcreteDemandSlice result = new ConcreteDemandSlice();
@@ -6052,6 +6457,13 @@ final class RuntimeRegionPlanner {
             externalInputPromotions.add(row);
         }
 
+        private void recordHeapDefinition(
+                RuntimeHeapDefinition definition) {
+            if (definition != null) {
+                heapReadClassifications.add(definition.toMap());
+            }
+        }
+
         private Map<String, Object> toMap() {
             return object(
                     "kind", "CONCRETE_REGION_DEMAND_SLICE",
@@ -6074,6 +6486,12 @@ final class RuntimeRegionPlanner {
                     externalInputPromotions.size(),
                     "externalInputPromotions",
                     copyRows(externalInputPromotions),
+                    "heapReachingDefinitionAuthority",
+                    RuntimeFieldAccessIndex.AUTHORITY,
+                    "heapReadClassificationCount",
+                    heapReadClassifications.size(),
+                    "heapReadClassifications",
+                    copyRows(heapReadClassifications),
                     "concreteBoundCells", sorted(concreteBoundCells),
                     "visitedCellCount", visitedCellCount,
                     "gaps", new ArrayList<>(gaps));
@@ -6217,6 +6635,39 @@ final class RuntimeRegionPlanner {
             return !"GUARD".equals(transferKind)
                     && !"SEED".equals(transferKind)
                     && !"EXCEPTION".equals(transferKind);
+        }
+
+        /**
+         * A raw runtime consumer endpoint may be canonicalized to a retained
+         * demand input only through one direct frozen heap-read value-flow
+         * row. The broader concrete-definition predicate is intentionally
+         * insufficient here: value passes and taint dependencies must not
+         * revive a pruned region boundary input.
+         */
+        private boolean exactDirectDemandInputDefinition(
+                Set<String> observedMethods) {
+            return exactDeclaredHeapRead()
+                    && "value_flow".equals(relation)
+                    && exactConcreteDefinition(observedMethods);
+        }
+
+        private boolean exactDeclaredHeapRead() {
+            return "HEAP_READ".equals(transferKind)
+                    && exactDeclaredFieldCell(fromCell)
+                    && !method.isEmpty() && !siteId.isEmpty()
+                    && unitIndex >= 0;
+        }
+
+        private boolean exactHeapWriteAt(FieldAccessEvent write,
+                String declaredField, Set<String> observedMethods) {
+            return write != null
+                    && "HEAP_WRITE".equals(transferKind)
+                    && declaredField.equals(toCell)
+                    && !fromCell.isEmpty()
+                    && exactConcreteDefinition(observedMethods)
+                    && method.equals(write.method)
+                    && siteId.equals(write.siteId)
+                    && unitIndex == write.unitIndex;
         }
 
         private boolean exactGuardDependency(Set<String> observedMethods) {
@@ -7498,6 +7949,27 @@ final class RuntimeRegionPlanner {
         private final List<String> excludedCausalEdgeIds = new ArrayList<>();
         private final List<String> prestateElisions = new ArrayList<>();
 
+        private static final class FieldPathRuntimeCandidate {
+            private final StaticPort port;
+            private final String portId;
+            private final List<String> path;
+            private final String leafFieldSignature;
+            private final String accessMethod;
+            private final FieldAccessEvent event;
+
+            private FieldPathRuntimeCandidate(
+                    StaticPort port, Collection<String> path,
+                    String leafFieldSignature, String accessMethod,
+                    FieldAccessEvent event) {
+                this.port = port;
+                this.portId = port.portId;
+                this.path = new ArrayList<>(path);
+                this.leafFieldSignature = safe(leafFieldSignature);
+                this.accessMethod = safe(accessMethod);
+                this.event = event;
+            }
+        }
+
         private static StaticOutputSlice fromJson(String json) {
             StaticOutputSlice slice = new StaticOutputSlice();
             slice.outputPort = jsonString(json, "outputPort");
@@ -7826,8 +8298,9 @@ final class RuntimeRegionPlanner {
                     : "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(selector)
                     && index == -1 && occurrence == -1;
             List<String> path = stringList(declaration.get("fieldPath"));
-            Set<String> proof = stringSet(declaration.get(
+            List<String> proofRows = stringList(declaration.get(
                     "proofCausalEdgeIds"));
+            Set<String> proof = new LinkedHashSet<>(proofRows);
             int schemaVersion = intValue(declaration.get(
                     "schemaVersion"), -1);
             String materializationMode = string(declaration.get(
@@ -7848,7 +8321,17 @@ final class RuntimeRegionPlanner {
                     && "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_AND_"
                     .concat("DECLARED_FIELD_FIVE_EDGE_JOIN_V1").equals(
                     string(declaration.get("proofAuthority")));
-            return (direct || snapshot)
+            boolean directPathSnapshot = schemaVersion == 2
+                    && "CONTAINER_SNAPSHOT".equals(materializationMode)
+                    && path.size() >= 2 && path.size() <= 4
+                    && field.name.equals(path.get(path.size() - 1))
+                    && primitiveType(field.type)
+                    && proofRows.size() == proof.size()
+                    && proof.size() == 4 * path.size()
+                    && "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
+                    .concat("CHAIN_V1").equals(string(declaration.get(
+                    "proofAuthority")));
+            return (direct || snapshot || directPathSnapshot)
                     && "ARRAY_ELEMENT_FIELD".equals(string(declaration.get(
                     "kind")))
                     && Boolean.TRUE.equals(declaration.get("complete"))
@@ -8267,6 +8750,15 @@ final class RuntimeRegionPlanner {
                     }
                 }
             }
+            collapseRuntimeConfirmedFieldPathAliases(evidence,
+                    retainedBindings, refined);
+            retainedPorts.clear();
+            for (Map<String, Object> binding : retainedBindings) {
+                String port = string(binding.get("inputPort"));
+                if (!port.isEmpty()) {
+                    retainedPorts.add(port);
+                }
+            }
             refined.inputBindings.addAll(retainedBindings);
             refined.inputPorts.addAll(sorted(retainedPorts));
             for (String port : inputPorts) {
@@ -8380,6 +8872,113 @@ final class RuntimeRegionPlanner {
                     && transformerContractReady
                     && refined.captureBindingsComplete;
             return refined;
+        }
+
+        /**
+         * The static graph carries every canonical suffix of an exact field
+         * chain.  Runtime receiver/value identity decides whether two such
+         * ports are the same concrete chain: a longer read must produce the
+         * exact receiver consumed by its immediately shorter suffix.  This
+         * keeps independent same-name fields while removing duplicate hooks
+         * before concolic scheduling.
+         */
+        private void collapseRuntimeConfirmedFieldPathAliases(
+                InstanceEvidence evidence,
+                List<Map<String, Object>> retainedBindings,
+                StaticOutputSlice refined) {
+            Map<String, FieldPathRuntimeCandidate> candidates =
+                    new LinkedHashMap<>();
+            for (Map<String, Object> binding : retainedBindings) {
+                String portId = string(binding.get("inputPort"));
+                StaticPort port = evidence.region.exactInputFor(portId);
+                FieldPathRuntimeCandidate candidate =
+                        runtimeFieldPathCandidate(evidence, port);
+                if (candidate != null) {
+                    candidates.put(portId, candidate);
+                }
+            }
+            Map<String, List<FieldPathRuntimeCandidate>> claims =
+                    new LinkedHashMap<>();
+            for (FieldPathRuntimeCandidate longer : candidates.values()) {
+                for (FieldPathRuntimeCandidate suffix : candidates.values()) {
+                    if (longer == suffix
+                            || longer.path.size() != suffix.path.size() + 1
+                            || !longer.path.subList(1, longer.path.size())
+                            .equals(suffix.path)
+                            || !longer.leafFieldSignature.equals(
+                            suffix.leafFieldSignature)
+                            || !longer.accessMethod.equals(
+                            suffix.accessMethod)
+                            || longer.event.callId != suffix.event.callId
+                            || longer.event.seq >= suffix.event.seq
+                            || longer.event.valueObjectId == 0
+                            || longer.event.valueObjectId
+                            != suffix.event.receiverObjectId) {
+                        continue;
+                    }
+                    claims.computeIfAbsent(suffix.portId,
+                            ignored -> new ArrayList<>()).add(longer);
+                }
+            }
+            Set<String> remove = new LinkedHashSet<>();
+            for (Map.Entry<String, List<FieldPathRuntimeCandidate>> entry
+                    : claims.entrySet()) {
+                if (entry.getValue().size() != 1) {
+                    continue;
+                }
+                FieldPathRuntimeCandidate suffix = candidates.get(
+                        entry.getKey());
+                FieldPathRuntimeCandidate replacement = entry.getValue()
+                        .get(0);
+                remove.add(suffix.portId);
+                refined.inputAliasCanonicalizations.add(object(
+                        "fromInputPort", suffix.portId,
+                        "toInputPort", replacement.portId,
+                        "fromCell", suffix.port.cell,
+                        "toCell", replacement.port.cell,
+                        "producerValueObjectId",
+                        replacement.event.valueObjectId,
+                        "suffixReceiverObjectId",
+                        suffix.event.receiverObjectId,
+                        "authority",
+                        "RUNTIME_EXACT_ADJACENT_FIELD_PATH_RECEIVER_"
+                                + "VALUE_IDENTITY_V1"));
+            }
+            if (remove.isEmpty()) {
+                return;
+            }
+            retainedBindings.removeIf(binding -> remove.contains(string(
+                    binding.get("inputPort"))));
+        }
+
+        private FieldPathRuntimeCandidate runtimeFieldPathCandidate(
+                InstanceEvidence evidence, StaticPort port) {
+            if (port == null || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
+                    .equals(string(port.materializationMetadata.get(
+                            "fieldPathAuthority")))) {
+                return null;
+            }
+            List<String> path = stringList(port.materializationMetadata.get(
+                    "fieldPath"));
+            String leaf = string(port.materializationMetadata.get(
+                    "leafFieldSignature"));
+            String method = string(port.materializationMetadata.get(
+                    "accessMethod"));
+            if (path.size() < 2 || leaf.isEmpty() || method.isEmpty()) {
+                return null;
+            }
+            FieldAccessEvent selected = null;
+            for (FieldAccessEvent event : evidence.fieldEvents) {
+                if (!authoritativeStaticFieldReadSite(port, event)) {
+                    continue;
+                }
+                if (selected != null) {
+                    return null;
+                }
+                selected = event;
+            }
+            return selected == null ? null : new FieldPathRuntimeCandidate(
+                    port, path, leaf, method, selected);
         }
 
         /**
@@ -8912,7 +9511,7 @@ final class RuntimeRegionPlanner {
                     "accessorCallSiteAuthority",
                     "accessorImplementationMethod",
                     "accessorImplementationAuthority",
-                    "accessorEvidenceAuthority"}) {
+                    "accessorEvidenceAuthority", "fieldPathAuthority"}) {
                 String value = jsonString(json, field);
                 if (!value.isEmpty()) result.put(field, value);
             }

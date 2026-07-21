@@ -52,6 +52,8 @@ public final class BooleanReachConditionExtractor {
                     + "\\.return(?:#.*)?$");
     private static final Pattern PARAMETER_CELL = Pattern.compile(
             ">\\.param[0-9]+:([^#]+)(?:#.*)?$");
+    private static final Pattern SAFE_SMT_ATOM = Pattern.compile(
+            "[A-Za-z_~!@$%^&*+=<>.?/][A-Za-z0-9_~!@$%^&*+\\-=<>.?/]*");
     private BooleanReachConditionExtractor() {
     }
 
@@ -314,6 +316,7 @@ public final class BooleanReachConditionExtractor {
                                       List<String> gaps) {
         Map<String, List<JsonObject>> mappingsByPort =
                 new LinkedHashMap<>();
+        Map<String, Integer> caseCountByRegion = new LinkedHashMap<>();
         JsonArray cases = array(manifest, "caseProjectionCatalog");
         if (integer(manifest, "caseProjectionCatalogCount", -1)
                 != cases.size()) {
@@ -336,6 +339,10 @@ public final class BooleanReachConditionExtractor {
                 gaps.add("INCOMPLETE_CASE_PROJECTION:" + caseIndex);
                 continue;
             }
+            String caseRegion = string(pathCase, "regionId");
+            Integer previousCaseCount = caseCountByRegion.get(caseRegion);
+            caseCountByRegion.put(caseRegion, previousCaseCount == null ? 1
+                    : previousCaseCount + 1);
             for (JsonElement mappingElement : array(pathCase,
                     "rawEngineSymbolMappings")) {
                 if (!mappingElement.isJsonObject()) continue;
@@ -355,6 +362,10 @@ public final class BooleanReachConditionExtractor {
                         "sourceSummaryId"));
                 evidence.addProperty("sourceActivationId", string(pathCase,
                         "sourceActivationId"));
+                evidence.addProperty("selectorSolverSymbol", string(pathCase,
+                        "selectorSolverSymbol"));
+                evidence.add("caseDynamicFieldBindings", array(pathCase,
+                        "dynamicFieldBindings").deepCopy());
                 values.add(evidence);
             }
         }
@@ -379,6 +390,8 @@ public final class BooleanReachConditionExtractor {
                     || smt.contains("(= (VInt " + solverTerm + ") "
                     + portTerm + ")"));
             List<JsonObject> evidence = mappingsByPort.get(port.id);
+            int regionCaseCount = caseCountByRegion.containsKey(port.regionId)
+                    ? caseCountByRegion.get(port.regionId) : 0;
             if (!declared && (evidence == null || evidence.isEmpty())) {
                 continue;
             }
@@ -388,9 +401,21 @@ public final class BooleanReachConditionExtractor {
                         + port.id);
                 continue;
             }
+            if (regionCaseCount > 0
+                    && !exactlyOneMappingPerCase(evidence,
+                    regionCaseCount)) {
+                gaps.add("BOOLEAN_CASE_MAPPING_COVERAGE_MISMATCH:"
+                        + port.id + ":" + regionCaseCount);
+            }
             if (evidence != null) {
                 for (JsonObject mapping : evidence) {
-                    if (!solverTerm.equals(string(mapping, "solverTerm"))
+                    boolean direct = solverTerm.equals(string(mapping,
+                            "solverTerm"));
+                    boolean bridged = !direct
+                            && exactDynamicCanonicalBridge(smt, mapping,
+                            port.id, solverTerm);
+                    if ((!direct && !bridged)
+                            || direct && hasDynamicBridgeMetadata(mapping)
                             || !"Int".equals(string(mapping, "solverSort"))
                             || !"EMITTER_ACTUAL_TERM".equals(string(mapping,
                             "authority"))) {
@@ -413,6 +438,118 @@ public final class BooleanReachConditionExtractor {
                 value -> value.port.id));
         return new Discovery(roots, domainInputs, staticBoolean,
                 usedBoolean, suppliedBoolean);
+    }
+
+    private static boolean exactlyOneMappingPerCase(
+            List<JsonObject> evidence, int expectedCaseCount) {
+        if (evidence == null || expectedCaseCount < 1
+                || evidence.size() != expectedCaseCount) {
+            return false;
+        }
+        Set<String> cases = new LinkedHashSet<>();
+        for (JsonObject mapping : evidence) {
+            String caseId = string(mapping, "caseId");
+            if (caseId.isEmpty() || !cases.add(caseId)) return false;
+        }
+        return cases.size() == expectedCaseCount;
+    }
+
+    /**
+     * Attests the composer's explicit dynamic-leaf/canonical-port bridge.
+     * Every identity is reconstructed from the catalog and the exact named
+     * assertion must occur as one complete SMT line; no symbol-prefix or
+     * formula-shape inference is accepted here.
+     */
+    private static boolean exactDynamicCanonicalBridge(
+            String smt, JsonObject mapping, String port,
+            String canonicalSolverTerm) {
+        String actual = string(mapping, "solverTerm");
+        String guard = string(mapping, "canonicalBridgeGuard");
+        String expression = "(= " + actual + " "
+                + canonicalSolverTerm + ")";
+        String formula = "(=> " + guard + " " + expression + ")";
+        String assertionName = string(mapping,
+                "canonicalBridgeAssertionName");
+        String assertion = "(assert (! " + formula + " :named "
+                + assertionName + "))";
+        JsonArray ids = array(mapping, "dynamicBindingIds");
+        if (!port.equals(string(mapping, "canonicalPort"))
+                || actual.isEmpty() || actual.equals(canonicalSolverTerm)
+                || !safeSmtAtom(actual)
+                || !safeSmtAtom(canonicalSolverTerm)
+                || !canonicalSolverTerm.equals("sym__port__"
+                + smtName(port) + "__int")
+                || !port.startsWith(string(mapping, "regionId") + ".in.")
+                || !"INT".equals(string(mapping, "sort"))
+                || !canonicalSolverTerm.equals(string(mapping,
+                "canonicalSolverTerm"))
+                || !guard.equals(string(mapping, "selectorSolverSymbol"))
+                || assertionName.isEmpty()
+                || !expression.equals(string(mapping,
+                "canonicalBridgeExpression"))
+                || !formula.equals(string(mapping,
+                "canonicalBridgeFormula"))
+                || !assertion.equals(string(mapping,
+                "canonicalBridgeAssertion"))
+                || !sha256(assertion).equals(string(mapping,
+                "canonicalBridgeAssertionSha256"))
+                || !"CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                .concat("GUARDED_EQUALITY_V1").equals(string(mapping,
+                        "canonicalBridgeAuthority"))
+                || !"SCOPED_DYNAMIC_FIELD".equals(string(mapping,
+                "termKind"))
+                || ids.size() != 1 || !ids.get(0).isJsonPrimitive()
+                || !ids.get(0).getAsJsonPrimitive().isString()
+                || !exactSmtLine(smt, assertion)) {
+            return false;
+        }
+        String bindingId = ids.get(0).getAsString();
+        JsonObject selected = null;
+        for (JsonElement element : array(mapping,
+                "caseDynamicFieldBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            if (!bindingId.equals(string(binding,
+                    "dynamicBindingId"))) continue;
+            if (selected != null) return false;
+            selected = binding;
+        }
+        return selected != null
+                && port.equals(string(selected, "baseInputSymbol"))
+                && actual.equals(string(selected, "solverTerm"))
+                && string(mapping, "rawEngineSymbol").equals(string(selected,
+                "fieldExpressionRawEngineSymbol"))
+                && bool(selected, "complete", false)
+                && bool(selected, "observationMatched", false)
+                && "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM".equals(string(
+                selected, "termBindingAuthority"));
+    }
+
+    private static boolean hasDynamicBridgeMetadata(JsonObject mapping) {
+        for (String member : new String[]{"canonicalSolverTerm",
+                "canonicalBridgeGuard", "canonicalBridgeExpression",
+                "canonicalBridgeFormula", "canonicalBridgeAssertionName",
+                "canonicalBridgeAssertion",
+                "canonicalBridgeAssertionSha256",
+                "canonicalBridgeAuthority"}) {
+            if (mapping.has(member)) return true;
+        }
+        return false;
+    }
+
+    private static boolean safeSmtAtom(String value) {
+        return value != null && SAFE_SMT_ATOM.matcher(value).matches();
+    }
+
+    private static boolean exactSmtLine(String smt, String expected) {
+        if (smt == null || expected == null || expected.isEmpty()) {
+            return false;
+        }
+        int matches = 0;
+        for (String line : smt.split("\\R", -1)) {
+            if (expected.equals(line)) matches++;
+        }
+        return matches == 1;
     }
 
     private static Set<String> suppliedInputs(JsonObject relationships,
@@ -756,6 +893,16 @@ public final class BooleanReachConditionExtractor {
                         "sourceActivationId"));
                 row.addProperty("rawEngineSymbol", string(evidence,
                         "rawEngineSymbol"));
+                for (String member : new String[]{"solverTerm",
+                        "canonicalSolverTerm", "canonicalBridgeGuard",
+                        "canonicalBridgeAssertionName",
+                        "canonicalBridgeAssertionSha256",
+                        "canonicalBridgeAuthority"}) {
+                    JsonElement value = evidence.get(member);
+                    if (value != null) row.add(member, value.deepCopy());
+                }
+                row.add("dynamicBindingIds", array(evidence,
+                        "dynamicBindingIds").deepCopy());
                 cases.add(row);
             }
             result.add("caseProjectionEvidence", cases);

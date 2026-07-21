@@ -249,13 +249,17 @@ public class ConcolicReplayValidatorTest {
         task.add("modelAssignments", planned.deepCopy());
         JsonObject raw = result(false, true);
         raw.addProperty("modelAssignmentAppliedCount", 1);
-        JsonObject applied = planned.get(0).getAsJsonObject().deepCopy();
+        JsonObject applied = appliedContainerAssignment(
+                planned.get(0).getAsJsonObject(), "ACT.REPLAY");
         // Runtime reconstructs the selector but does not need to echo the
         // producer-only binding-kind discriminator.
         applied.remove("dynamicFieldBindingKind");
         JsonArray appliedRows = new JsonArray();
         appliedRows.add(applied);
         raw.add("modelAssignmentsApplied", appliedRows);
+        JsonArray rawBindings = new JsonArray();
+        rawBindings.add(rawContainerBinding(applied));
+        raw.add("dynamicFieldBindings", rawBindings);
 
         JsonObject validation = ConcolicReplayValidator.validate(task, raw);
 
@@ -263,6 +267,58 @@ public class ConcolicReplayValidatorTest {
                 .getAsBoolean());
         assertTrue(validation.get("dynamicAssignmentIdentityValidated")
                 .getAsBoolean());
+    }
+
+    @Test
+    public void rejectsSeedTokensWrongReplayScopeAndUnjoinedContainerToken() {
+        for (String fault : new String[]{"SEED_TOKEN", "WRONG_SCOPE",
+                "RAW_TOKEN"}) {
+            JsonObject plannedRow = containerAssignment(2, 3);
+            if ("SEED_TOKEN".equals(fault)) {
+                plannedRow.getAsJsonObject("containerSelector")
+                        .addProperty("containerObjectToken", 77L);
+            }
+            JsonObject task = task();
+            JsonArray planned = new JsonArray();
+            planned.add(plannedRow);
+            task.add("modelAssignments", planned);
+            String scope = "WRONG_SCOPE".equals(fault)
+                    ? "ACT.SOURCE" : "ACT.REPLAY";
+            JsonObject applied = appliedContainerAssignment(plannedRow,
+                    scope);
+            JsonObject binding = rawContainerBinding(applied);
+            if ("RAW_TOKEN".equals(fault)) {
+                binding.addProperty(
+                        "materializationSiteBridgeElementObjectToken",
+                        999L);
+            }
+            JsonObject raw = result(false, true);
+            raw.addProperty("modelAssignmentAppliedCount", 1);
+            JsonArray appliedRows = new JsonArray();
+            appliedRows.add(applied);
+            raw.add("modelAssignmentsApplied", appliedRows);
+            JsonArray bindings = new JsonArray();
+            bindings.add(binding);
+            raw.add("dynamicFieldBindings", bindings);
+
+            JsonObject validation = ConcolicReplayValidator.validate(task,
+                    raw);
+
+            assertFalse(fault + ":" + validation,
+                    validation.get("valid").getAsBoolean());
+            String failures = validation.getAsJsonArray("failures")
+                    .toString();
+            if ("SEED_TOKEN".equals(fault)) {
+                assertTrue(failures.contains(
+                        "PLANNED_CONTAINER_HAS_RUNTIME_MEMBER"));
+            } else if ("WRONG_SCOPE".equals(fault)) {
+                assertTrue(failures.contains(
+                        "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE"));
+            } else {
+                assertTrue(failures.contains(
+                        "NO_EXACT_FRESH_RAW_CONTAINER_BINDING"));
+            }
+        }
     }
 
     @Test
@@ -291,11 +347,16 @@ public class ConcolicReplayValidatorTest {
         JsonArray planned = new JsonArray();
         planned.add(exact);
         task.add("modelAssignments", planned.deepCopy());
-        JsonArray applied = planned.deepCopy();
+        JsonArray applied = new JsonArray();
+        applied.add(appliedContainerAssignment(exact, "ACT.REPLAY"));
         applied.get(0).getAsJsonObject().getAsJsonObject(
                 "containerSelector").addProperty("elementIndex", 1);
         JsonObject raw = result(false, true);
         raw.add("modelAssignmentsApplied", applied);
+        JsonArray rawBindings = new JsonArray();
+        rawBindings.add(rawContainerBinding(
+                applied.get(0).getAsJsonObject()));
+        raw.add("dynamicFieldBindings", rawBindings);
         JsonObject mismatch = ConcolicReplayValidator.validate(task, raw);
         assertFalse(mismatch.get("valid").getAsBoolean());
         assertTrue(mismatch.getAsJsonArray("failures").toString().contains(
@@ -614,6 +675,7 @@ public class ConcolicReplayValidatorTest {
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
         raw.addProperty("regionId", "REGION.3");
+        raw.addProperty("activationId", "ACT.REPLAY");
         raw.addProperty("allModelAssignmentsApplied", true);
         raw.addProperty("modelAssignmentAppliedCount", 0);
         raw.add("modelAssignmentsApplied", new JsonArray());
@@ -763,6 +825,9 @@ public class ConcolicReplayValidatorTest {
         assignment.addProperty("materializationOccurrence", occurrence);
         assignment.addProperty("dynamicFieldBindingKind",
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
+        JsonArray materializationPath = new JsonArray();
+        materializationPath.add("id");
+        assignment.add("materializationPath", materializationPath);
         JsonObject selector = new JsonObject();
         selector.addProperty("kind", "ARRAY_INDEX");
         selector.addProperty("bindingId", "BIND.ARRAY.3");
@@ -770,23 +835,75 @@ public class ConcolicReplayValidatorTest {
         selector.addProperty("containerInputCell",
                 "<example.Keys: example.Key[] keys>");
         selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
-        selector.addProperty("resolvedFromSelectorAuthority",
-                "EXACT_ARRAY_INDEX");
         selector.addProperty("elementIndex", index);
         selector.addProperty("elementOccurrence", occurrence);
         selector.addProperty("declaredFieldOwnerClass", "example.Key");
         selector.addProperty("declaredFieldType", "int");
+        assignment.add("containerSelector", selector);
+        assignment.addProperty("containerReplayRebindingAuthority",
+                "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                        + "IDENTITY_REBIND_V1");
+        assignment.addProperty("sourceContainerObjectTokensRetained",
+                false);
+        return assignment;
+    }
+
+    private static JsonObject appliedContainerAssignment(JsonObject planned,
+                                                         String activation) {
+        JsonObject applied = planned.deepCopy();
+        applied.remove("solverSymbol");
+        JsonObject selector = applied.getAsJsonObject("containerSelector");
+        selector.addProperty("resolvedFromSelectorAuthority",
+                "EXACT_ARRAY_INDEX");
         selector.addProperty("containerObjectToken", 301L);
         selector.addProperty("elementObjectToken", 302L);
         selector.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        selector.addProperty("objectTokenScope", "ACT.REPLAY");
+        selector.addProperty("objectTokenScope", activation);
+        selector.addProperty("containerObservationLocation",
+                "EXACT_CONSUMED_LEAF_OBSERVATION");
         selector.addProperty("authority",
                 "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
                         + "ACTIVATION_LOCAL_ELEMENT_IDENTITY");
         selector.addProperty("complete", true);
-        assignment.add("containerSelector", selector);
-        return assignment;
+        applied.addProperty("sameSourceContainerIdentityClaimed", false);
+        applied.addProperty("currentContainerSelectorCaptured", true);
+        return applied;
+    }
+
+    private static JsonObject rawContainerBinding(JsonObject applied) {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("kind",
+                "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
+        binding.addProperty("authority",
+                "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_AND_"
+                        + "STABLE_FIELD_SITE_OCCURRENCE");
+        for (String member : new String[]{"baseInputSymbol",
+                "dynamicBindingId", "dynamicFieldSymbol",
+                "materializationSiteId", "materializationOccurrence"}) {
+            binding.add(member, applied.get(member).deepCopy());
+        }
+        binding.add("fieldPath", applied.getAsJsonArray(
+                "materializationPath").deepCopy());
+        JsonObject selector = applied.getAsJsonObject(
+                "containerSelector").deepCopy();
+        binding.add("containerSelector", selector);
+        binding.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        binding.addProperty("objectTokenScope",
+                selector.get("objectTokenScope").getAsString());
+        binding.addProperty("materializationSiteBridgeAuthority",
+                "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_EXACT_"
+                        + "ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1");
+        binding.addProperty("materializationSiteBridgeBindingId",
+                selector.get("bindingId").getAsString());
+        binding.addProperty("materializationSiteBridgeElementObjectToken",
+                selector.get("elementObjectToken").getAsLong());
+        binding.addProperty("materializationSiteBridgeObjectTokenScope",
+                selector.get("objectTokenScope").getAsString());
+        binding.addProperty("complete", true);
+        return binding;
     }
 
     private static JsonObject mapProjectionAssignment() {

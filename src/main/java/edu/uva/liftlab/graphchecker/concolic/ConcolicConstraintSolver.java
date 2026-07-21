@@ -88,7 +88,8 @@ public final class ConcolicConstraintSolver {
         Set<String> targetSymbols = symbolicNames(targetConstraint(task));
         Set<String> unmaterializableTargetSymbols = new LinkedHashSet<>();
         Set<String> targetResolutionGaps = new LinkedHashSet<>();
-        List<JsonObject> actions = materializationActions(activation);
+        MaterializationActionCatalog actions =
+                materializationActions(activation);
         for (String raw : targetSymbols) {
             MaterializationResolution resolution =
                     materializationResolution(raw, actions,
@@ -613,7 +614,8 @@ public final class ConcolicConstraintSolver {
                                               DynamicBindingRegistry registry,
                                               Set<String> projectedSymbols) {
         JsonArray result = new JsonArray();
-        List<JsonObject> actions = materializationActions(activation);
+        MaterializationActionCatalog actions =
+                materializationActions(activation);
 
         for (String raw : encoder.controlledSymbols) {
             if (!projectedSymbols.contains(raw)) continue;
@@ -652,18 +654,28 @@ public final class ConcolicConstraintSolver {
         return result;
     }
 
-    private static List<JsonObject> materializationActions(
+    private static MaterializationActionCatalog materializationActions(
             JsonObject activation) {
-        List<JsonObject> actions = new ArrayList<>();
+        List<JsonObject> executable = new ArrayList<>();
         JsonArray materializations = array(activation, "materializations");
         JsonArray source = materializations.size() > 0
                 ? materializations : array(activation, "symbolize");
         for (JsonElement element : source) {
-            if (element.isJsonObject()) actions.add(element.getAsJsonObject());
+            if (element.isJsonObject()) {
+                executable.add(element.getAsJsonObject());
+            }
         }
-        Collections.sort(actions, Comparator.comparing(value -> string(value,
-                "symbol")));
-        return actions;
+        List<JsonObject> declared = new ArrayList<>();
+        for (JsonElement element : array(activation, "symbolize")) {
+            if (element.isJsonObject()) {
+                declared.add(element.getAsJsonObject());
+            }
+        }
+        Comparator<JsonObject> bySymbol = Comparator.comparing(
+                value -> string(value, "symbol"));
+        Collections.sort(executable, bySymbol);
+        Collections.sort(declared, bySymbol);
+        return new MaterializationActionCatalog(executable, declared);
     }
 
     private static JsonElement targetConstraint(JsonObject task) {
@@ -759,14 +771,21 @@ public final class ConcolicConstraintSolver {
     }
 
     private static MaterializationResolution materializationResolution(
-            String raw, List<JsonObject> actions,
+            String raw, MaterializationActionCatalog actions,
             DynamicBindingRegistry registry) {
         DynamicFieldBinding exact = registry.exact(raw);
         if (exact != null) {
             List<JsonObject> exactActions = new ArrayList<>();
-            for (JsonObject action : actions) {
+            for (JsonObject action : actions.executable) {
                 if (exact.baseInputSymbol.equals(string(action, "symbol"))) {
                     exactActions.add(action);
+                }
+            }
+            if (exactActions.isEmpty() && exact.isContainerElement()) {
+                for (JsonObject action : actions.declared) {
+                    if (exact.matchesSelectorOnlyDeclaration(action)) {
+                        exactActions.add(action);
+                    }
                 }
             }
             if (exactActions.size() != 1) {
@@ -778,7 +797,7 @@ public final class ConcolicConstraintSolver {
             }
             if (exact.isContainerElement()) {
                 int containerActions = 0;
-                for (JsonObject action : actions) {
+                for (JsonObject action : actions.executable) {
                     if (exact.containerInputPort().equals(string(action,
                             "symbol"))
                             && exact.containerInputCell().equals(string(
@@ -799,7 +818,7 @@ public final class ConcolicConstraintSolver {
                     exact.baseInputSymbol), exact);
         }
 
-        ActionMatch legacy = bestAction(raw, actions);
+        ActionMatch legacy = bestAction(raw, actions.executable);
         if (legacy == null) {
             return MaterializationResolution.gap(
                     "NO_STATIC_MATERIALIZATION_ACTION");
@@ -847,6 +866,17 @@ public final class ConcolicConstraintSolver {
         return suffix != null && suffix.matches(
                 "[A-Za-z_$][A-Za-z0-9_$]*"
                         + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
+    }
+
+    private static final class MaterializationActionCatalog {
+        private final List<JsonObject> executable;
+        private final List<JsonObject> declared;
+
+        private MaterializationActionCatalog(
+                List<JsonObject> executable, List<JsonObject> declared) {
+            this.executable = executable;
+            this.declared = declared;
+        }
     }
 
     private static final class MaterializationResolution {
@@ -976,6 +1006,9 @@ public final class ConcolicConstraintSolver {
         private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
                 "EXACT_BASE_PORT_GETTER_SITE_OCCURRENCE_THEN_"
                         + "FRESH_ENTRY_REBIND_V1";
+        private static final String CONTAINER_REPLAY_REBINDING_AUTHORITY =
+                "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                        + "IDENTITY_REBIND_V1";
         private final JsonObject raw;
         private final String dynamicBindingId;
         private final String baseInputSymbol;
@@ -1097,10 +1130,81 @@ public final class ConcolicConstraintSolver {
             if (string(selector, "declaredFieldType").isEmpty()) {
                 result.add("MISSING_DECLARED_FIELD_TYPE");
             }
+            if (longInteger(selector, "containerObjectToken", 0L) <= 0L
+                    || longInteger(selector,
+                    "elementObjectToken", 0L) <= 0L) {
+                result.add("INVALID_CONTAINER_OBJECT_TOKEN");
+            }
+            String tokenScope = string(selector, "objectTokenScope");
+            if (!"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
+                    string(selector, "objectTokenAuthority"))
+                    || tokenScope.isEmpty()
+                    || !firstNonBlank(string(raw, "objectTokenScope"),
+                    tokenScope).equals(tokenScope)
+                    || !firstNonBlank(string(raw, "objectTokenAuthority"),
+                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN")
+                    .equals(string(selector, "objectTokenAuthority"))) {
+                result.add("INVALID_CONTAINER_OBJECT_TOKEN_SCOPE");
+            }
+            String resolved = string(selector,
+                    "resolvedFromSelectorAuthority");
+            if (!("EXACT_ARRAY_INDEX".equals(resolved)
+                    || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(resolved))) {
+                result.add("INVALID_CONTAINER_RESOLUTION_AUTHORITY");
+            }
+            if (!"EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_"
+                    .concat("LOCAL_ELEMENT_IDENTITY").equals(string(
+                            selector, "authority"))) {
+                result.add("INVALID_CONTAINER_SELECTOR_AUTHORITY");
+            }
         }
 
         private boolean isContainerElement() {
             return CONTAINER_KIND.equals(string(raw, "kind"));
+        }
+
+        /**
+         * Selector-only snapshot leaves are declarations, not ordinary
+         * executable field hooks.  They may bridge the solver model back to
+         * replay only when the declared action exactly matches the imported
+         * runtime binding's static field site and full path.
+         */
+        private boolean matchesSelectorOnlyDeclaration(JsonObject action) {
+            if (!isContainerElement()
+                    || !baseInputSymbol.equals(string(action, "symbol"))
+                    || !"FIELD_ACCESS".equals(string(action,
+                    "bindingMode"))
+                    || !"HEAP_OBJECT_FIELD".equals(string(action,
+                    "location"))
+                    || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
+                    .equals(string(action, "fieldPathAuthority"))
+                    || !materializationSiteId.equals(string(action,
+                    "accessSiteId"))) {
+                return false;
+            }
+            String signature = string(raw, "fieldSignature");
+            List<String> expectedPath = fieldPath();
+            List<String> actionPath = new ArrayList<>();
+            for (JsonElement segment : array(action, "fieldPath")) {
+                if (!segment.isJsonPrimitive()
+                        || !segment.getAsJsonPrimitive().isString()
+                        || segment.getAsString().isEmpty()) {
+                    return false;
+                }
+                actionPath.add(segment.getAsString());
+            }
+            JsonObject selector = object(raw, "containerSelector");
+            return !signature.isEmpty()
+                    && expectedPath.size() >= 2
+                    && expectedPath.size() <= 4
+                    && expectedPath.equals(actionPath)
+                    && signature.equals(string(action, "field"))
+                    && signature.equals(string(action,
+                    "leafFieldSignature"))
+                    && string(selector, "declaredFieldOwnerClass").equals(
+                    string(action, "leafOwnerClass"))
+                    && expectedPath.get(expectedPath.size() - 1).equals(
+                    string(action, "leafField"));
         }
 
         private String containerInputPort() {
@@ -1156,6 +1260,10 @@ public final class ConcolicConstraintSolver {
                 }
                 assignment.add("containerSelector", container.deepCopy());
                 selector.add("containerSelector", container);
+                assignment.addProperty("containerReplayRebindingAuthority",
+                        CONTAINER_REPLAY_REBINDING_AUTHORITY);
+                assignment.addProperty(
+                        "sourceContainerObjectTokensRetained", false);
                 for (String member : new String[]{"containerBindingId",
                         "containerInputPort", "containerInputCell",
                         "selectorAuthority", "elementIndex",
@@ -1557,6 +1665,18 @@ public final class ConcolicConstraintSolver {
         try {
             return value == null || value.isJsonNull()
                     ? fallback : value.getAsInt();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static long longInteger(JsonObject object, String name,
+                                    long fallback) {
+        if (object == null) return fallback;
+        JsonElement value = object.get(name);
+        try {
+            return value == null || value.isJsonNull()
+                    ? fallback : value.getAsLong();
         } catch (RuntimeException ignored) {
             return fallback;
         }

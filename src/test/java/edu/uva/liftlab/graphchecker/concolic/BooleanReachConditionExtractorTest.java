@@ -10,6 +10,7 @@ import org.junit.Test;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.List;
 
@@ -342,6 +343,119 @@ public class BooleanReachConditionExtractorTest {
         }
     }
 
+    @Test
+    public void booleanRootMustHaveExactlyOneMappingInEveryRegionCase()
+            throws Exception {
+        Fixture fixture = fixture();
+        JsonObject firstCase = fixture.manifest.getAsJsonArray(
+                "caseProjectionCatalog").get(0).getAsJsonObject();
+        firstCase.addProperty("regionId", "ROOT.A");
+        firstCase.addProperty("caseId", "CASE.ROOT.A.1");
+        JsonObject secondCase = firstCase.deepCopy();
+        secondCase.addProperty("caseId", "CASE.ROOT.A.2");
+        JsonArray secondMappings = secondCase.getAsJsonArray(
+                "rawEngineSymbolMappings");
+        for (int index = secondMappings.size() - 1; index >= 0; index--) {
+            if ("ROOT.A.in.0".equals(secondMappings.get(index)
+                    .getAsJsonObject().get("canonicalPort").getAsString())) {
+                secondMappings.remove(index);
+            }
+        }
+        fixture.manifest.getAsJsonArray("caseProjectionCatalog").add(
+                secondCase);
+        fixture.manifest.addProperty("caseProjectionCatalogCount", 2);
+        final int[] invocations = {0};
+
+        BooleanReachConditionExtractor.Extraction extraction =
+                BooleanReachConditionExtractor.extract(fixture.smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships, smt -> {
+                            invocations[0]++;
+                            return new BooleanReachConditionExtractor
+                                    .SolverResult("sat", "sat");
+                        }, 8, 256);
+
+        assertFalse(extraction.report.get("complete").getAsBoolean());
+        assertEquals(0, invocations[0]);
+        assertTrue(extraction.report.getAsJsonArray("discoveryGaps")
+                .toString().contains(
+                        "BOOLEAN_CASE_MAPPING_COVERAGE_MISMATCH:"
+                                + "ROOT.A.in.0:2"));
+    }
+
+    @Test
+    public void duplicatedDynamicBridgeAssertionFailsClosed()
+            throws Exception {
+        Fixture fixture = fixture();
+        JsonObject pathCase = fixture.manifest.getAsJsonArray(
+                "caseProjectionCatalog").get(0).getAsJsonObject();
+        pathCase.addProperty("regionId", "ROOT.A");
+        pathCase.addProperty("selectorSolverSymbol", "case_root_a");
+        JsonObject mapping = pathCase.getAsJsonArray(
+                "rawEngineSymbolMappings").get(0).getAsJsonObject();
+        String port = "ROOT.A.in.0";
+        String canonical = solverTerm(port);
+        String actual = "actual_dynamic_root_a";
+        String id = "DYNAMIC_FIELD:ROOT.A.in.0.field.exact.occ.1";
+        String expression = "(= " + actual + " " + canonical + ")";
+        String formula = "(=> case_root_a " + expression + ")";
+        String assertionName = "bridge_root_a";
+        String assertion = "(assert (! " + formula + " :named "
+                + assertionName + "))";
+        mapping.addProperty("solverTerm", actual);
+        mapping.addProperty("sort", "INT");
+        mapping.addProperty("solverSort", "Int");
+        mapping.addProperty("termKind", "SCOPED_DYNAMIC_FIELD");
+        JsonArray ids = new JsonArray();
+        ids.add(id);
+        mapping.add("dynamicBindingIds", ids);
+        mapping.addProperty("canonicalSolverTerm", canonical);
+        mapping.addProperty("canonicalBridgeGuard", "case_root_a");
+        mapping.addProperty("canonicalBridgeExpression", expression);
+        mapping.addProperty("canonicalBridgeFormula", formula);
+        mapping.addProperty("canonicalBridgeAssertionName", assertionName);
+        mapping.addProperty("canonicalBridgeAssertion", assertion);
+        mapping.addProperty("canonicalBridgeAssertionSha256",
+                sha256(assertion));
+        mapping.addProperty("canonicalBridgeAuthority",
+                "CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                        + "GUARDED_EQUALITY_V1");
+        JsonObject binding = new JsonObject();
+        binding.addProperty("dynamicBindingId", id);
+        binding.addProperty("baseInputSymbol", port);
+        binding.addProperty("solverTerm", actual);
+        binding.addProperty("fieldExpressionRawEngineSymbol",
+                mapping.get("rawEngineSymbol").getAsString());
+        binding.addProperty("complete", true);
+        binding.addProperty("observationMatched", true);
+        binding.addProperty("termBindingAuthority",
+                "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM");
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        pathCase.add("dynamicFieldBindings", bindings);
+        String bridge = "(declare-const actual_dynamic_root_a Int)\n"
+                + "(declare-const case_root_a Bool)\n" + assertion + "\n"
+                + assertion + "\n";
+        String smt = fixture.smt.replace("(check-sat)\n",
+                bridge + "(check-sat)\n");
+        final int[] invocations = {0};
+
+        BooleanReachConditionExtractor.Extraction extraction =
+                BooleanReachConditionExtractor.extract(smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships, query -> {
+                            invocations[0]++;
+                            return new BooleanReachConditionExtractor
+                                    .SolverResult("sat", "sat");
+                        }, 8, 256);
+
+        assertFalse(extraction.report.get("complete").getAsBoolean());
+        assertEquals(0, invocations[0]);
+        assertTrue(extraction.report.getAsJsonArray("discoveryGaps")
+                .toString().contains(
+                        "BOOLEAN_CASE_TERM_MISMATCH:ROOT.A.in.0"));
+    }
+
     private static void bindCliArtifacts(JsonObject manifest,
                                          JsonObject relationships,
                                          Path smt, Path regions,
@@ -462,6 +576,16 @@ public class BooleanReachConditionExtractorTest {
                 .append("(check-sat)\n");
         return new Fixture(smt.toString(), manifest, regions,
                 relationships);
+    }
+
+    private static String sha256(String value) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        StringBuilder result = new StringBuilder();
+        for (byte current : digest.digest(value.getBytes(
+                StandardCharsets.UTF_8))) {
+            result.append(String.format("%02x", current & 0xff));
+        }
+        return result.toString();
     }
 
     private static JsonObject caseProjection(String... ports) {

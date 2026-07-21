@@ -1387,6 +1387,84 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void tokenScopedMapWitnessKeepsDeepEntryBindingExact()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.Pruner: void retainDeepSymbolic()>";
+        String base = "REGION.TEST.in.enabled";
+        JsonObject activation = concreteActivation(
+                "ACT.MAP.REF.WITNESS", root, 1);
+        activation.addProperty("test", "mock-symbolic-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.add("symbolize", singleton(
+                deepEnabledFieldAction(base)));
+        Files.write(plan, (activation + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "mock-symbolic-test");
+        try {
+            DelayedExpressionEngine.reset();
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            ExpiringValue value = new ExpiringValue(23L);
+            java.util.LinkedHashMap<Integer, ExpiringValue> map =
+                    new java.util.LinkedHashMap<>();
+            map.put(7004, value);
+            long token = ConcolicRegionRuntime.enterRegion(root, map);
+            assertTrue(token > 0L);
+            DelayedExpressionEngine.mapExpressionsAvailable = false;
+            Object view = map.entrySet();
+            ConcolicRegionRuntime.registerMapView(root, 3, map, view,
+                    "ENTRY_SET");
+            java.util.Iterator<?> iterator =
+                    ((java.util.Set<?>) view).iterator();
+            ConcolicRegionRuntime.registerMapViewIterator(root, 4, view,
+                    iterator);
+            Object entry = iterator.next();
+            ConcolicRegionRuntime.recordMapIteratorNext(root, 5, iterator,
+                    entry);
+            ConcolicRegionRuntime.materializeField(root, 6, value,
+                    deepStateFieldSignature(), "state");
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonObject row = resultRows(results).get(0);
+            assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
+            JsonObject observation = row.getAsJsonArray(
+                    "runtimeHeapObservations").get(0).getAsJsonObject();
+            assertTrue(observation.get("complete").getAsBoolean());
+            assertEquals("ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1",
+                    observation.get("expressionAuthority").getAsString());
+            assertEquals(observation.get("backingMapObjectToken").getAsLong(),
+                    observation.get("mapExpressionWitnessObjectToken")
+                            .getAsLong());
+            assertEquals("ACT.MAP.REF.WITNESS", observation.get(
+                    "mapExpressionWitnessObjectTokenScope").getAsString());
+
+            JsonObject binding = row.getAsJsonArray(
+                    "dynamicFieldBindings").get(0).getAsJsonObject();
+            JsonObject field = row.getAsJsonArray(
+                    "fieldObservations").get(0).getAsJsonObject();
+            assertTrue(binding.get("complete").getAsBoolean());
+            assertEquals(observation.get("valueObjectToken").getAsLong(),
+                    binding.get("entryValueOwnerObjectToken").getAsLong());
+            assertEquals(binding.get("entryValueOwnerObjectToken").getAsLong(),
+                    field.get("accessOwnerObjectToken").getAsLong());
+            assertEquals(binding.get("leafOwnerObjectToken").getAsLong(),
+                    field.get("leafOwnerObjectToken").getAsLong());
+            assertTrue(binding.get("entryValueOwnerObjectToken").getAsLong()
+                    != binding.get("leafOwnerObjectToken").getAsLong());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            DelayedExpressionEngine.reset();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void mapEntryFieldsUseIndependentDynamicSymbolsAndOccurrenceModel()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -1539,7 +1617,8 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.OBSERVE.FOUR.DYNAMIC.ENTRIES", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(expiryFieldAction(base)));
+        activation.add("symbolize", singleton(
+                deepEnabledFieldAction(base)));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
 
@@ -1570,7 +1649,7 @@ public class ConcolicRegionRuntimeTest {
                 ConcolicRegionRuntime.recordMapIteratorNext(root, 5,
                         iterator, entry);
                 ConcolicRegionRuntime.materializeField(root, 6,
-                        values[index], expiryFieldSignature(), "expiry");
+                        values[index], deepStateFieldSignature(), "state");
             }
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
@@ -1604,11 +1683,22 @@ public class ConcolicRegionRuntimeTest {
                         binding.get("entryReadObservationId").getAsString());
                 assertEquals("DYNAMIC_FIELD:" + dynamic,
                         entry.get("dynamicBindingId").getAsString());
+                assertEquals(JsonParser.parseString(
+                                "[\"state\",\"guard\",\"enabled\"]"),
+                        binding.get("fieldPath"));
+                assertEquals(deepEnabledFieldSignature(),
+                        binding.get("fieldSignature").getAsString());
                 assertEquals("Y_I_" + (7000 + index),
                         entry.getAsJsonObject("keyExpression")
                                 .get("_exp").getAsString());
+                assertFalse(DelayedExpressionEngine
+                        .SYMBOLIC_FIELD_PREFIXES.containsKey(values[index]));
+                assertFalse(DelayedExpressionEngine
+                        .SYMBOLIC_FIELD_PREFIXES.containsKey(
+                        values[index].state));
                 assertEquals(dynamic, DelayedExpressionEngine
-                        .SYMBOLIC_FIELD_PREFIXES.get(values[index]));
+                        .SYMBOLIC_FIELD_PREFIXES.get(
+                        values[index].state.guard));
             }
             JsonObject snapshot = entries.get(4).getAsJsonObject();
             assertEquals("FINITE_MAP_ENTRY_SNAPSHOT",
@@ -1992,6 +2082,11 @@ public class ConcolicRegionRuntimeTest {
         leafAction.add("fieldPath",
                 JsonParser.parseString("[\"metadata\",\"expiry\"]"));
         activation.add("symbolize", actions);
+        // Scheduler keeps the leaf in the declaration catalog but executes
+        // only the container observation; the snapshot creates the leaf's
+        // dynamic action after selecting the exact element identity.
+        activation.add("materializations", singleton(
+                containerAction.deepCopy()));
 
         JsonObject binding = genericArrayBinding("BIND.SNAPSHOT", base,
                 container, "DISCOVER_UNIQUE_IDENTITY_INDEX", -1, -1,
@@ -2153,6 +2248,30 @@ public class ConcolicRegionRuntimeTest {
             assertEquals(3, selector.get("elementOccurrence").getAsInt());
             assertEquals("EXACT_ARRAY_INDEX",
                     selector.get("selectorAuthority").getAsString());
+            assertEquals("EXACT_ARRAY_INDEX", selector.get(
+                    "resolvedFromSelectorAuthority").getAsString());
+            assertTrue(selector.get("containerObjectToken").getAsLong()
+                    > 0L);
+            assertTrue(selector.get("elementObjectToken").getAsLong()
+                    > 0L);
+            assertEquals("ACT.MODEL.ARRAY.FIELD",
+                    selector.get("objectTokenScope").getAsString());
+            assertEquals("ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN",
+                    selector.get("objectTokenAuthority").getAsString());
+            assertEquals("EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
+                            + "ACTIVATION_LOCAL_ELEMENT_IDENTITY",
+                    selector.get("authority").getAsString());
+            assertTrue(selector.get("complete").getAsBoolean());
+            assertEquals("EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_"
+                            + "LOCAL_IDENTITY_REBIND_V1",
+                    applied.get("containerReplayRebindingAuthority")
+                            .getAsString());
+            assertFalse(applied.get("sourceContainerObjectTokensRetained")
+                    .getAsBoolean());
+            assertFalse(applied.get("sameSourceContainerIdentityClaimed")
+                    .getAsBoolean());
+            assertTrue(applied.get("currentContainerSelectorCaptured")
+                    .getAsBoolean());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -5178,6 +5297,39 @@ public class ConcolicRegionRuntimeTest {
         return action;
     }
 
+    private static String deepStateFieldSignature() {
+        return "<" + ExpiringValue.class.getName() + ": "
+                + DeepState.class.getName() + " state>";
+    }
+
+    private static String deepEnabledFieldSignature() {
+        return "<" + DeepGuard.class.getName()
+                + ": boolean enabled>";
+    }
+
+    private static JsonObject deepEnabledFieldAction(String baseSymbol) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", baseSymbol);
+        action.addProperty("cell", deepStateFieldSignature()
+                + "#field:guard#field:enabled");
+        action.addProperty("field", deepEnabledFieldSignature());
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("javaType", "boolean");
+        action.addProperty("accessOwnerClass",
+                ExpiringValue.class.getName());
+        action.addProperty("accessField", "state");
+        action.addProperty("accessFieldSignature",
+                deepStateFieldSignature());
+        action.addProperty("leafOwnerClass", DeepGuard.class.getName());
+        action.addProperty("leafField", "enabled");
+        action.addProperty("leafFieldSignature",
+                deepEnabledFieldSignature());
+        action.add("fieldPath", JsonParser.parseString(
+                "[\"state\",\"guard\",\"enabled\"]"));
+        return action;
+    }
+
     private static JsonObject dynamicAssignment(
             String baseSymbol, String dynamicSymbol, String site,
             int occurrence, String value) {
@@ -5320,6 +5472,11 @@ public class ConcolicRegionRuntimeTest {
                 Current.class.getName());
         selector.addProperty("declaredFieldType", "int");
         assignment.add("containerSelector", selector);
+        assignment.addProperty("containerReplayRebindingAuthority",
+                "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                        + "IDENTITY_REBIND_V1");
+        assignment.addProperty("sourceContainerObjectTokensRetained",
+                false);
         return assignment;
     }
 
@@ -5558,10 +5715,20 @@ public class ConcolicRegionRuntimeTest {
     private static final class ExpiringValue {
         @SuppressWarnings("unused")
         private long expiry;
+        private final DeepState state = new DeepState();
 
         private ExpiringValue(long expiry) {
             this.expiry = expiry;
         }
+    }
+
+    private static final class DeepState {
+        private final DeepGuard guard = new DeepGuard();
+    }
+
+    private static final class DeepGuard {
+        @SuppressWarnings("unused")
+        private boolean enabled;
     }
 
     /** Exact-event stand-in with an intentionally ambiguous PC suffix. */
@@ -5701,6 +5868,7 @@ public class ConcolicRegionRuntimeTest {
         private static String arrayFieldMutationName = "";
         private static Object arrayFieldMutationReplacement;
         private static boolean integerOutputExpressions;
+        private static boolean mapExpressionsAvailable;
 
         private static void reset() {
             SYMBOLIC_FIELD_OWNERS.clear();
@@ -5716,6 +5884,7 @@ public class ConcolicRegionRuntimeTest {
             arrayFieldMutationName = "";
             arrayFieldMutationReplacement = null;
             integerOutputExpressions = false;
+            mapExpressionsAvailable = true;
         }
 
         @SuppressWarnings("unused")
@@ -5775,7 +5944,9 @@ public class ConcolicRegionRuntimeTest {
                         "M_L_field_REGION.TEST.in.0_java/lang/String");
             }
             if (value instanceof java.util.Map) {
-                return envelope("java/util/HashMap", "entryMap");
+                return mapExpressionsAvailable
+                        ? envelope("java/util/HashMap", "entryMap")
+                        : emptyEnvelope();
             }
             if (value instanceof Integer && integerOutputExpressions) {
                 return integerEnvelope(((Integer) value).intValue());

@@ -1295,6 +1295,58 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void exactDeclaredDeepLeafOwnerSurvivesMaterialization() {
+        String root = "<example.StateNode: example.GuardNode state>";
+        String leaf = "<example.BooleanLeaf: boolean enabled>";
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", "REGION.DEEP.in.0");
+        action.addProperty("cell", root
+                + "#field:guard#field:enabled");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("observed", true);
+        action.addProperty("valueObjectId", 42L);
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("accessFieldSignature", root);
+        action.addProperty("accessOwnerClass", "example.StateNode");
+        action.addProperty("accessFieldType", "example.GuardNode");
+        action.addProperty("accessField", "state");
+        action.addProperty("field", leaf);
+        action.addProperty("leafFieldSignature", leaf);
+        action.addProperty("leafOwnerClass", "example.BooleanLeaf");
+        action.addProperty("leafField", "enabled");
+        action.addProperty("javaType", "boolean");
+        action.addProperty("fieldPathAuthority",
+                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        action.add("fieldPath", JsonParser.parseString(
+                "[\"state\",\"guard\",\"enabled\"]"));
+        JsonObject declaration = new JsonObject();
+        declaration.add("fieldPath", action.get("fieldPath").deepCopy());
+        declaration.addProperty("fieldSignature", leaf);
+        declaration.addProperty("declaredFieldOwnerClass",
+                "example.BooleanLeaf");
+        declaration.addProperty("declaredFieldType", "boolean");
+        declaration.addProperty("complete", true);
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration);
+        action.add("fieldPathLeafDeclarations", declarations);
+
+        JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
+                arrayFieldCaptureActivation(action),
+                Collections.<JsonObject>emptyList());
+
+        assertEquals(1, prepared.getAsJsonArray("materializations").size());
+        assertEquals(0, prepared.getAsJsonArray("concreteFallbacks").size());
+        JsonObject binding = prepared.getAsJsonArray("materializations")
+                .get(0).getAsJsonObject();
+        assertEquals("FIELD_ACCESS",
+                binding.get("bindingMode").getAsString());
+        assertEquals("example.BooleanLeaf",
+                binding.get("leafOwnerClass").getAsString());
+        assertEquals("boolean", binding.get("javaType").getAsString());
+        assertEquals(3, binding.getAsJsonArray("fieldPath").size());
+    }
+
+    @Test
     public void uniqueDefinitionFinalizesPendingLocalArrayRoot() {
         String root = "<example.LocalArray: void run()>";
         String localCell = root + "::$r0";

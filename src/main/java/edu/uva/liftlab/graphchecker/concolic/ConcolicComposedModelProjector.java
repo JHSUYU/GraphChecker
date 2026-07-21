@@ -49,6 +49,9 @@ public final class ConcolicComposedModelProjector {
     private static final String TARGET_MAP_STATE = "TARGET_MAP_STATE";
     private static final String LOOKUP_KEY_PRODUCER =
             "LOOKUP_KEY_PRODUCER";
+    private static final String CONTAINER_REPLAY_REBINDING_AUTHORITY =
+            "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                    + "IDENTITY_REBIND_V1";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
     private static final Gson PRETTY = new GsonBuilder()
@@ -1971,6 +1974,10 @@ public final class ConcolicComposedModelProjector {
             if (isContainerBinding(selected)) {
                 assignment.add("containerSelector",
                         normalizedContainerSelector(selected));
+                assignment.addProperty("containerReplayRebindingAuthority",
+                        CONTAINER_REPLAY_REBINDING_AUTHORITY);
+                assignment.addProperty(
+                        "sourceContainerObjectTokensRetained", false);
             } else if (isMapProjectionBinding(selected)) {
                 assignment.add("mapProjectionSelector",
                         normalizedMapProjectionSelector(selected));
@@ -2073,6 +2080,31 @@ public final class ConcolicComposedModelProjector {
             String scope = string(binding, "objectTokenScope");
             String resolved = string(selector,
                     "resolvedFromSelectorAuthority");
+            String selectorBindingId = string(selector, "bindingId");
+            int occurrence = integer(binding,
+                    "materializationOccurrence", -1);
+            boolean directLeafOwner = array(binding, "fieldPath").size() == 1
+                    && leaf == element;
+            boolean bridgedDeepLeafOwner = array(binding,
+                    "fieldPath").size() > 1
+                    && ("CONTAINER_SNAPSHOT:" + selectorBindingId).equals(
+                    string(binding, "actualHookSiteId"))
+                    && occurrence == integer(binding,
+                    "actualHookOccurrence", -2)
+                    && string(binding, "materializationSiteId").equals(
+                    string(binding, "effectiveMaterializationSiteId"))
+                    && occurrence == integer(binding,
+                    "effectiveMaterializationOccurrence", -2)
+                    && "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_"
+                    .concat("EXACT_ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1")
+                    .equals(string(binding,
+                            "materializationSiteBridgeAuthority"))
+                    && selectorBindingId.equals(string(binding,
+                    "materializationSiteBridgeBindingId"))
+                    && element == longInteger(binding,
+                    "materializationSiteBridgeElementObjectToken", 0L)
+                    && scope.equals(string(binding,
+                    "materializationSiteBridgeObjectTokenScope"));
             return "ARRAY_INDEX".equals(string(selector, "kind"))
                     && bool(selector, "complete", false)
                     && !string(selector, "bindingId").isEmpty()
@@ -2089,7 +2121,8 @@ public final class ConcolicComposedModelProjector {
                     && !string(selector,
                     "declaredFieldOwnerClass").isEmpty()
                     && !string(selector, "declaredFieldType").isEmpty()
-                    && leaf > 0L && container > 0L && element == leaf
+                    && leaf > 0L && container > 0L && element > 0L
+                    && (directLeafOwner || bridgedDeepLeafOwner)
                     && !scope.isEmpty()
                     && scope.equals(string(selector, "objectTokenScope"))
                     && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
@@ -2139,10 +2172,7 @@ public final class ConcolicComposedModelProjector {
                     "containerInputPort", "containerInputCell",
                     "selectorAuthority", "elementIndex",
                     "elementOccurrence", "declaredFieldOwnerClass",
-                    "declaredFieldType", "containerObjectToken",
-                    "elementObjectToken", "objectTokenAuthority",
-                    "objectTokenScope", "resolvedFromSelectorAuthority",
-                    "authority", "complete"}) {
+                    "declaredFieldType"}) {
                 copyMember(source, result, member);
             }
             return result;

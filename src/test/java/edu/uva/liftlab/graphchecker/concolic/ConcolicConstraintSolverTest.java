@@ -253,6 +253,93 @@ public class ConcolicConstraintSolverTest {
                 "declaredFieldOwnerClass").getAsString());
         assertEquals("int",
                 selector.get("declaredFieldType").getAsString());
+        assertFalse(selector.has("containerObjectToken"));
+        assertFalse(selector.has("objectTokenScope"));
+        assertFalse(selector.has("complete"));
+        assertEquals("EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                        + "IDENTITY_REBIND_V1",
+                assignment.get("containerReplayRebindingAuthority")
+                        .getAsString());
+        assertFalse(assignment.get("sourceContainerObjectTokensRetained")
+                .getAsBoolean());
+    }
+
+    @Test
+    public void selectorOnlySnapshotLeafUsesUniqueDeclaredAction()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String site = "<example.Producer: int compute()>#u3";
+        JsonObject binding = containerBinding("REGION.3.in.8", site,
+                0, 1);
+        binding.addProperty("fieldSignature",
+                "<example.BooleanLeaf: boolean enabled>");
+        JsonArray path = new JsonArray();
+        path.add("state");
+        path.add("guard");
+        path.add("enabled");
+        binding.add("fieldPath", path);
+        JsonObject selector = binding.getAsJsonObject("containerSelector");
+        selector.addProperty("declaredFieldOwnerClass",
+                "example.BooleanLeaf");
+        selector.addProperty("declaredFieldType", "boolean");
+        String dynamic = binding.get("dynamicFieldSymbol").getAsString();
+        String engine = "M_Z_field_" + dynamic
+                + "_example/BooleanLeaf";
+        JsonObject condition = binarySymbol(engine, "!=", 0);
+        condition.getAsJsonObject("_left").addProperty("_java_type", "Z");
+        JsonObject task = task(condition);
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        task.add("dynamicFieldBindings", bindings);
+
+        JsonObject activation = new JsonObject();
+        JsonObject container = new JsonObject();
+        container.addProperty("symbol", "REGION.3.in.array");
+        container.addProperty("cell",
+                "<example.Keys: example.Key[] keys>");
+        container.addProperty("location", "HEAP_OBJECT_FIELD");
+        container.addProperty("bindingMode",
+                "CONTAINER_INPUT_OBSERVATION");
+        JsonArray materializations = new JsonArray();
+        materializations.add(container);
+        activation.add("materializations", materializations);
+        JsonObject leaf = new JsonObject();
+        leaf.addProperty("symbol", "REGION.3.in.8");
+        leaf.addProperty("cell", "<example.State: example.Guard state>"
+                + "#field:guard#field:enabled");
+        leaf.addProperty("field",
+                "<example.BooleanLeaf: boolean enabled>");
+        leaf.addProperty("leafFieldSignature",
+                "<example.BooleanLeaf: boolean enabled>");
+        leaf.addProperty("leafOwnerClass", "example.BooleanLeaf");
+        leaf.addProperty("leafField", "enabled");
+        leaf.addProperty("accessSiteId", site);
+        leaf.addProperty("bindingMode", "FIELD_ACCESS");
+        leaf.addProperty("location", "HEAP_OBJECT_FIELD");
+        leaf.addProperty("fieldPathAuthority",
+                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        leaf.add("fieldPath", path.deepCopy());
+        JsonArray declared = new JsonArray();
+        declared.add(leaf);
+        activation.add("symbolize", declared);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(task, activation,
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("REGION.3.in.8",
+                assignment.get("inputSymbol").getAsString());
+        assertEquals(path, assignment.get("materializationPath"));
+        assertEquals("REGION.3.in.array", assignment.getAsJsonObject(
+                "containerSelector").get("containerInputPort")
+                .getAsString());
+        assertEquals("REGION.3.in.8", assignment.getAsJsonObject(
+                "target").get("symbol").getAsString());
     }
 
     @Test
@@ -520,12 +607,25 @@ public class ConcolicConstraintSolverTest {
         selector.addProperty("containerInputCell",
                 "<example.Keys: example.Key[] keys>");
         selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
+        selector.addProperty("resolvedFromSelectorAuthority",
+                "EXACT_ARRAY_INDEX");
         selector.addProperty("elementIndex", index);
         selector.addProperty("elementOccurrence", occurrence);
         selector.addProperty("declaredFieldOwnerClass", "example.Key");
         selector.addProperty("declaredFieldType", "int");
+        selector.addProperty("containerObjectToken", 301L);
+        selector.addProperty("elementObjectToken", 302L);
+        selector.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        selector.addProperty("objectTokenScope", "ACT.SOURCE");
+        selector.addProperty("authority",
+                "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_"
+                        + "LOCAL_ELEMENT_IDENTITY");
         selector.addProperty("complete", true);
         binding.add("containerSelector", selector);
+        binding.addProperty("objectTokenAuthority",
+                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
+        binding.addProperty("objectTokenScope", "ACT.SOURCE");
         binding.addProperty("complete", true);
         return binding;
     }

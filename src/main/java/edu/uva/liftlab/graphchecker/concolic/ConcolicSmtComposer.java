@@ -65,6 +65,19 @@ public final class ConcolicSmtComposer {
             "IMPORTER_EXACT_ACTIVATION_TOKEN_AND_DYNAMIC_FIELD_OWNER_JOIN_V1";
     private static final String VALUE_REF_WITNESS_SYMBOL_PREFIX =
             "CAUSYNTH_REF_WITNESS_V1_A";
+    private static final String MAP_REF_WITNESS_AUTHORITY =
+            "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1";
+    private static final String MAP_REF_WITNESS_KIND =
+            "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS";
+    private static final String NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY =
+            "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1";
+    private static final String NON_MUTATING_MAP_ENTRY_READ_STATE_BASE_KIND =
+            "NON_MUTATING_MAP_ENTRY_READ_STATE_BASE";
+    private static final String NON_MUTATING_DYNAMIC_FIELD_AUTHORITY =
+            "EXACT_VM_BRANCH_MAPPING_DYNAMIC_SYMBOL_AND_REQUESTED_SLICE_"
+                    + "BASE_V1";
+    private static final String HEAP_OBSERVATION_STATE_PORT_AUTHORITY =
+            "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1";
     static final String STATIC_INPUT_FIELD_PROJECTION_AUTHORITY =
             "STATIC_EXACT_FIELD_PROJECTION_AND_RESOLVED_DECLARATION_V1";
     private static final String STATIC_FIELD_DECLARATION_AUTHORITY =
@@ -75,6 +88,24 @@ public final class ConcolicSmtComposer {
 
     static boolean completeContainerSelectorForTests(JsonObject binding) {
         return Emitter.completeContainerSelector(binding);
+    }
+
+    static JsonObject projectionDynamicMetadataForTests(JsonObject binding) {
+        return Emitter.projectionDynamicMetadata(binding);
+    }
+
+    static String heapObservationStatePortForTests(
+            String region, String observationId, String baseInputSymbol,
+            String dynamicBindingId) {
+        return heapObservationStatePort(region, observationId,
+                baseInputSymbol, dynamicBindingId);
+    }
+
+    static String heapObservationStateSelectorDigestForTests(
+            String observationId, String baseInputSymbol,
+            String dynamicBindingId) {
+        return heapObservationStateSelectorDigest(observationId,
+                baseInputSymbol, dynamicBindingId);
     }
 
     static boolean authenticatedValueRefWitnessForTests(
@@ -4613,10 +4644,11 @@ public final class ConcolicSmtComposer {
                     bindMapProjectionElementFields(region, item);
                     guardedPathCaseCount++;
                 } finally {
+                    capture.finish();
+                    bindDynamicProjectionRoots(capture);
                     currentGuard = previousGuard;
                     currentCaseProjection = previousCapture;
                     restoreSymbolScope(previousScope);
-                    capture.finish();
                     caseProjectionCatalog.add(capture.toJson());
                     if (!capture.complete()) {
                         caseProjectionCatalogComplete = false;
@@ -4657,6 +4689,44 @@ public final class ConcolicSmtComposer {
                 heapGap(region, "CaseSelectorPartitionGap@" + region);
             }
             guardedRegionRelationCount++;
+        }
+
+        /**
+         * Gives an occurrence-specific dynamic leaf a canonical projection
+         * port only after the selected case proves a one-to-one base/leaf
+         * relation.  In particular, two map entries rooted at the same static
+         * input are not collapsed into one scalar.  The exact emitted guarded
+         * assertion is retained in the case catalog so downstream projection
+         * can attest the bridge without guessing from symbol names.
+         */
+        private void bindDynamicProjectionRoots(
+                CaseProjectionCapture capture) {
+            for (SymbolProjection projection
+                    : capture.dynamicRootProjections()) {
+                String port = projection.canonicalPort;
+                Port schema = ports.get(port);
+                Sort expected = schema == null ? null
+                        : sortOfJava(schema.javaType);
+                if (schema == null || !schema.input
+                        || expected == Sort.VALUE || expected == Sort.MAP
+                        || expected == Sort.ARRAY_VALUE
+                        || expected == Sort.ARRAY
+                        || expected != projection.sort) {
+                    capture.gap("DYNAMIC_ROOT_PORT_OR_SORT_MISMATCH:"
+                            + port);
+                    continue;
+                }
+                Term canonical = canonicalPortTerm(port, expected);
+                String equality = "(= " + projection.solverTerm + " "
+                        + canonical.text + ")";
+                String assertionName = assertNamed(
+                        "case_dynamic_root_bridge_" + capture.regionId + "_"
+                                + capture.caseId + "_" + port,
+                        equality);
+                projection.bindCanonical(canonical.text,
+                        capture.selectorSolverSymbol, equality,
+                        assertionName);
+            }
         }
 
         /**
@@ -4936,8 +5006,16 @@ public final class ConcolicSmtComposer {
                     "keyExpressionAuthority", "containerSelector",
                     "containerBindingId", "containerInputPort",
                     "containerInputCell", "selectorAuthority",
+                    "resolvedFromSelectorAuthority",
                     "elementIndex", "elementOccurrence",
                     "declaredFieldOwnerClass", "declaredFieldType",
+                    "actualHookSiteId", "actualHookOccurrence",
+                    "effectiveMaterializationSiteId",
+                    "effectiveMaterializationOccurrence",
+                    "materializationSiteBridgeAuthority",
+                    "materializationSiteBridgeBindingId",
+                    "materializationSiteBridgeElementObjectToken",
+                    "materializationSiteBridgeObjectTokenScope",
                     "mapProjectionSelector", "entrySnapshotElementCount",
                     "outputElementCount",
                     "entrySnapshotElementObjectTokens",
@@ -4967,6 +5045,31 @@ public final class ConcolicSmtComposer {
             String scope = string(binding, "objectTokenScope");
             String resolvedFrom = string(selector,
                     "resolvedFromSelectorAuthority");
+            String selectorBindingId = string(selector, "bindingId");
+            int occurrence = integer(binding,
+                    "materializationOccurrence", -1);
+            boolean directLeafOwner = array(binding, "fieldPath").size() == 1
+                    && leafOwner == elementObject;
+            boolean bridgedDeepLeafOwner = array(binding,
+                    "fieldPath").size() > 1
+                    && ("CONTAINER_SNAPSHOT:" + selectorBindingId).equals(
+                    string(binding, "actualHookSiteId"))
+                    && occurrence == integer(binding,
+                    "actualHookOccurrence", -2)
+                    && string(binding, "materializationSiteId").equals(
+                    string(binding, "effectiveMaterializationSiteId"))
+                    && occurrence == integer(binding,
+                    "effectiveMaterializationOccurrence", -2)
+                    && "STATIC_CONTAINER_SELECTOR_AND_ACTIVATION_LOCAL_"
+                    .concat("EXACT_ELEMENT_IDENTITY_TO_DECLARED_FIELD_HOOK_V1")
+                    .equals(string(binding,
+                            "materializationSiteBridgeAuthority"))
+                    && selectorBindingId.equals(string(binding,
+                    "materializationSiteBridgeBindingId"))
+                    && elementObject == longInteger(binding,
+                    "materializationSiteBridgeElementObjectToken", 0L)
+                    && scope.equals(string(binding,
+                    "materializationSiteBridgeObjectTokenScope"));
             return "ARRAY_INDEX".equals(string(selector, "kind"))
                     && bool(selector, "complete", false)
                     && !string(selector, "bindingId").isEmpty()
@@ -4984,7 +5087,8 @@ public final class ConcolicSmtComposer {
                     "declaredFieldOwnerClass").isEmpty()
                     && !string(selector, "declaredFieldType").isEmpty()
                     && leafOwner > 0L && containerObject > 0L
-                    && elementObject > 0L && leafOwner == elementObject
+                    && elementObject > 0L
+                    && (directLeafOwner || bridgedDeepLeafOwner)
                     && !scope.isEmpty()
                     && scope.equals(string(selector, "objectTokenScope"))
                     && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
@@ -5643,6 +5747,183 @@ public final class ConcolicSmtComposer {
             }
         }
 
+        private void incrementCount(Map<String, Integer> counts,
+                                    String identity) {
+            if (identity == null || identity.isEmpty()) return;
+            Integer count = counts.get(identity);
+            counts.put(identity, count == null ? 1 : count + 1);
+        }
+
+        private boolean hasObservationStateBaseClaim(JsonObject observation) {
+            return observation.has("stateBaseComplete")
+                    || observation.has("stateBaseProof");
+        }
+
+        private boolean validObservationStateBaseProof(
+                String region, JsonObject summary, JsonObject observation,
+                JsonObject proof, Map<String, Integer> observationCounts,
+                Map<String, Integer> proofObservationCounts,
+                Map<String, Integer> proofStatePortCounts,
+                Map<String, Integer> proofSelectorCounts,
+                Map<String, Integer> proofDynamicBindingCounts) {
+            String observationId = string(observation, "observationId");
+            String statePort = string(observation, "statePort");
+            String activationId = firstNonBlank(string(summary,
+                    "activationId"), string(summary,
+                    "sourceActivationId"));
+            String baseInputSymbol = string(proof, "baseInputSymbol");
+            String dynamicBindingId = string(proof, "dynamicBindingId");
+            String dynamicFieldSymbol = string(proof,
+                    "dynamicFieldSymbol");
+            String selectorDigest = heapObservationStateSelectorDigest(
+                    observationId, baseInputSymbol, dynamicBindingId);
+            String expectedStatePort = heapObservationStatePort(region,
+                    observationId, baseInputSymbol, dynamicBindingId);
+            JsonArray bindings = array(observation, "entryFieldBindings");
+            JsonObject binding = bindings.size() == 1
+                    && bindings.get(0).isJsonObject()
+                    ? bindings.get(0).getAsJsonObject() : null;
+            long backingMapToken = jsonLong(observation.get(
+                    "backingMapObjectToken"), 0L);
+            String objectTokenScope = string(observation,
+                    "objectTokenScope");
+            JsonElement mapExpressionElement = observation.get(
+                    "mapExpression");
+            JsonObject mapExpression = mapExpressionElement != null
+                    && mapExpressionElement.isJsonObject()
+                    ? mapExpressionElement.getAsJsonObject() : null;
+
+            boolean exactWitnessFields = true;
+            for (String field : new String[]{
+                    "expressionAuthority",
+                    "mapExpressionWitnessSchemaVersion",
+                    "mapExpressionWitnessKind",
+                    "mapExpressionWitnessObjectToken",
+                    "mapExpressionWitnessObjectTokenScope",
+                    "mapExpressionWitnessAuthority"}) {
+                JsonElement observed = observation.get(field);
+                JsonElement proved = proof.get(field);
+                if (observed == null || proved == null
+                        || observed.isJsonNull() || proved.isJsonNull()
+                        || !observed.equals(proved)) {
+                    exactWitnessFields = false;
+                }
+            }
+
+            return integer(proof, "schemaVersion", -1) == 1
+                    && NON_MUTATING_MAP_ENTRY_READ_STATE_BASE_KIND.equals(
+                    string(proof, "kind"))
+                    && bool(proof, "complete", false)
+                    && bool(observation, "stateBaseComplete", false)
+                    && NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY.equals(
+                    string(proof, "authority"))
+                    && NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY.equals(
+                    string(observation, "stateBindingAuthority"))
+                    && HEAP_OBSERVATION_STATE_PORT_AUTHORITY.equals(string(
+                    proof, "statePortDerivationAuthority"))
+                    && !observationId.isEmpty()
+                    && observationId.equals(string(proof,
+                    "observationId"))
+                    && observationId.equals(string(proof,
+                    "entryReadObservationId"))
+                    && countIsOne(observationCounts, observationId)
+                    && countIsOne(proofObservationCounts, observationId)
+                    && !region.isEmpty()
+                    && region.equals(string(proof, "regionId"))
+                    && !activationId.isEmpty()
+                    && activationId.equals(string(proof, "activationId"))
+                    && activationId.equals(objectTokenScope)
+                    && activationId.equals(string(proof,
+                    "objectTokenScope"))
+                    && !statePort.isEmpty()
+                    && statePort.equals(string(proof, "statePort"))
+                    && statePort.equals(expectedStatePort)
+                    && statePort.equals(region + ".state.heapObservation."
+                    + selectorDigest.substring(0, 12))
+                    && !ports.contains(statePort)
+                    && !statePort.equals(baseInputSymbol)
+                    && countIsOne(proofStatePortCounts, statePort)
+                    && selectorDigest.equals(string(proof,
+                    "selectorDigest"))
+                    && countIsOne(proofSelectorCounts, selectorDigest)
+                    && !baseInputSymbol.isEmpty()
+                    && ports.contains(baseInputSymbol)
+                    && ports.isInput(baseInputSymbol)
+                    && ports.sort(baseInputSymbol) != Sort.MAP
+                    && !dynamicBindingId.isEmpty()
+                    && countIsOne(proofDynamicBindingCounts,
+                    dynamicBindingId)
+                    && !dynamicFieldSymbol.isEmpty()
+                    && binding != null
+                    && dynamicBindingId.equals(string(binding,
+                    "dynamicBindingId"))
+                    && baseInputSymbol.equals(string(binding,
+                    "baseInputSymbol"))
+                    && dynamicFieldSymbol.equals(string(binding,
+                    "dynamicFieldSymbol"))
+                    && observationId.equals(string(binding,
+                    "entryReadObservationId"))
+                    && NON_MUTATING_DYNAMIC_FIELD_AUTHORITY.equals(string(
+                    binding, "fieldExpressionAuthority"))
+                    && NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY.equals(
+                    string(binding, "observationStateBindingAuthority"))
+                    && integer(proof, "candidateMutationCount", -1) == 0
+                    && integer(proof, "heapEffectCount", -1) == 0
+                    && integer(proof, "associatedHeapEffectCount", -1) == 0
+                    && integer(proof,
+                    "runtimeHeapEffectRecordCount", -1) == 0
+                    && integer(proof,
+                    "runtimeHeapEffectJoinedCount", -1) == 0
+                    && integer(proof,
+                    "ignoredRuntimeHeapEvidenceCount", -1) == 0
+                    && emptyOrMissingArray(summary, "heapEffects")
+                    && emptyOrMissingArray(summary,
+                    "heapStateInitializers")
+                    && mapExpression != null
+                    && proof.has("mapExpression")
+                    && proof.get("mapExpression").isJsonObject()
+                    && mapExpressionElement.equals(proof.get(
+                    "mapExpression"))
+                    && exactWitnessFields
+                    && MAP_REF_WITNESS_AUTHORITY.equals(string(observation,
+                    "expressionAuthority"))
+                    && integer(observation,
+                    "mapExpressionWitnessSchemaVersion", -1) == 1
+                    && MAP_REF_WITNESS_KIND.equals(string(observation,
+                    "mapExpressionWitnessKind"))
+                    && VALUE_REF_WITNESS_TOKEN_AUTHORITY.equals(string(
+                    observation, "mapExpressionWitnessAuthority"))
+                    && backingMapToken > 0L
+                    && backingMapToken == jsonLong(proof.get(
+                    "backingMapObjectToken"), -1L)
+                    && backingMapToken == jsonLong(observation.get(
+                    "mapExpressionWitnessObjectToken"), -1L)
+                    && backingMapToken == jsonLong(proof.get(
+                    "mapExpressionWitnessObjectToken"), -1L)
+                    && objectTokenScope.equals(string(observation,
+                    "mapExpressionWitnessObjectTokenScope"))
+                    && objectTokenScope.equals(string(proof,
+                    "mapExpressionWitnessObjectTokenScope"))
+                    && "SymbolExpression".equals(string(mapExpression,
+                    "_type"))
+                    && "L".equals(string(mapExpression, "_java_type"))
+                    && valueRefWitnessSymbol(objectTokenScope,
+                    backingMapToken).equals(string(mapExpression, "_exp"));
+        }
+
+        private boolean countIsOne(Map<String, Integer> counts,
+                                   String identity) {
+            Integer count = counts.get(identity);
+            return count != null && count == 1;
+        }
+
+        private boolean emptyOrMissingArray(JsonObject object,
+                                            String field) {
+            JsonElement value = object.get(field);
+            return value == null || value.isJsonArray()
+                    && value.getAsJsonArray().size() == 0;
+        }
+
         private void heapObservations(String region, JsonObject summary) {
             JsonElement declared = summary.get("heapObservations");
             if (declared == null) return;
@@ -5652,12 +5933,33 @@ public final class ConcolicSmtComposer {
             }
             JsonArray observations = declared.getAsJsonArray();
             Map<String, Integer> idCounts = new LinkedHashMap<>();
+            Map<String, Integer> stateBaseObservationCounts =
+                    new LinkedHashMap<>();
+            Map<String, Integer> stateBasePortCounts =
+                    new LinkedHashMap<>();
+            Map<String, Integer> stateBaseSelectorCounts =
+                    new LinkedHashMap<>();
+            Map<String, Integer> stateBaseDynamicBindingCounts =
+                    new LinkedHashMap<>();
             for (JsonElement element : observations) {
                 if (!element.isJsonObject()) continue;
-                String id = string(element.getAsJsonObject(), "observationId");
+                JsonObject observation = element.getAsJsonObject();
+                String id = string(observation, "observationId");
                 if (id.isEmpty()) continue;
-                Integer count = idCounts.get(id);
-                idCounts.put(id, count == null ? 1 : count + 1);
+                incrementCount(idCounts, id);
+                JsonElement proofElement = observation.get("stateBaseProof");
+                if (proofElement == null || !proofElement.isJsonObject()) {
+                    continue;
+                }
+                JsonObject proof = proofElement.getAsJsonObject();
+                incrementCount(stateBaseObservationCounts,
+                        string(proof, "observationId"));
+                incrementCount(stateBasePortCounts,
+                        string(proof, "statePort"));
+                incrementCount(stateBaseSelectorCounts,
+                        string(proof, "selectorDigest"));
+                incrementCount(stateBaseDynamicBindingCounts,
+                        string(proof, "dynamicBindingId"));
             }
 
             Set<String> declaredStatePorts = new LinkedHashSet<>();
@@ -5671,6 +5973,31 @@ public final class ConcolicSmtComposer {
                     "heapStateInitializers")) {
                 if (element.isJsonObject()) declaredStatePorts.add(string(
                         element.getAsJsonObject(), "statePort"));
+            }
+            Set<Integer> admittedStateBaseProofs = new LinkedHashSet<>();
+            for (int index = 0; index < observations.size(); index++) {
+                JsonElement element = observations.get(index);
+                if (!element.isJsonObject()) continue;
+                JsonObject observation = element.getAsJsonObject();
+                if (!hasObservationStateBaseClaim(observation)) continue;
+                JsonElement proofElement = observation.get("stateBaseProof");
+                boolean admitted = proofElement != null
+                        && proofElement.isJsonObject()
+                        && validObservationStateBaseProof(region, summary,
+                        observation, proofElement.getAsJsonObject(),
+                        idCounts, stateBaseObservationCounts,
+                        stateBasePortCounts, stateBaseSelectorCounts,
+                        stateBaseDynamicBindingCounts);
+                if (!admitted) {
+                    heapGap(region,
+                            "InvalidOrAmbiguousHeapObservationStateBase@"
+                                    + region + ":" + firstNonBlank(string(
+                                    observation, "observationId"),
+                                    String.valueOf(index)));
+                    continue;
+                }
+                admittedStateBaseProofs.add(index);
+                declaredStatePorts.add(string(observation, "statePort"));
             }
 
             for (int index = 0; index < observations.size(); index++) {
@@ -5707,7 +6034,15 @@ public final class ConcolicSmtComposer {
                         && bindingsElement.isJsonArray()
                         && bindings.size() > 0;
                 boolean canonicalState = ports.contains(statePort);
+                boolean stateBaseClaim = hasObservationStateBaseClaim(
+                        observation);
+                boolean admittedStateBase = admittedStateBaseProofs.contains(
+                        index);
                 if (canonicalState && ports.sort(statePort) != Sort.MAP) {
+                    valid = false;
+                }
+                if (stateBaseClaim && !admittedStateBase
+                        || admittedStateBase && canonicalState) {
                     valid = false;
                 }
                 if (!canonicalState && !declaredStatePorts.contains(
@@ -6216,7 +6551,8 @@ public final class ConcolicSmtComposer {
                 String bindingId = firstNonBlank(string(binding,
                         "bindingId"), String.valueOf(ordinal));
                 String issue = validateContainerElementFieldBinding(
-                        binding, requestedInputs, bindingIds, basePorts);
+                        binding, requestedOutputSlice, requestedInputs,
+                        bindingIds, basePorts);
                 if (!issue.isEmpty()) {
                     heapGap(region, "ContainerElementFieldBinding@" + region
                             + ":" + bindingId + ":" + issue);
@@ -6697,12 +7033,18 @@ public final class ConcolicSmtComposer {
         }
 
         private String validateContainerElementFieldBinding(
-                JsonObject binding, Set<String> requestedInputs,
+                JsonObject binding, JsonObject requestedOutputSlice,
+                Set<String> requestedInputs,
                 Set<String> bindingIds, Set<String> basePorts) {
             String id = string(binding, "bindingId");
             String base = string(binding, "baseInputSymbol");
             String container = string(binding, "containerInputPort");
-            if (integer(binding, "schemaVersion", -1) != 1
+            int schemaVersion = integer(binding, "schemaVersion", -1);
+            boolean schemaOne = schemaVersion == 1;
+            boolean directPathSnapshot = schemaVersion == 2
+                    && "CONTAINER_SNAPSHOT".equals(string(binding,
+                    "materializationMode"));
+            if ((!schemaOne && !directPathSnapshot)
                     || !"ARRAY_ELEMENT_FIELD".equals(string(binding,
                     "kind")) || !bool(binding, "complete", false)) {
                 return "INCOMPLETE_OR_UNSUPPORTED_SCHEMA";
@@ -6774,21 +7116,77 @@ public final class ConcolicSmtComposer {
             JsonArray proof = array(binding, "proofCausalEdgeIds");
             Set<String> proofIds = new LinkedHashSet<>();
             for (JsonElement element : proof) {
-                if (element.isJsonPrimitive()
-                        && !element.getAsString().isEmpty()) {
-                    proofIds.add(element.getAsString());
+                if (!element.isJsonPrimitive()
+                        || !element.getAsJsonPrimitive().isString()
+                        || element.getAsString().isEmpty()
+                        || !proofIds.add(element.getAsString())) {
+                    return "STATIC_PROOF_IDENTITY_INCOMPLETE";
                 }
             }
-            if (proof.size() != 4 || proofIds.size() != 4
-                    || string(binding, "method").isEmpty()
-                    || string(binding, "fieldMaterializationSiteId").isEmpty()
-                    || string(binding, "arrayLoadSiteId").isEmpty()
-                    || !"STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(
-                            string(binding, "proofAuthority"))) {
-                return "STATIC_FOUR_EDGE_PROOF_INCOMPLETE";
+            String method = string(binding, "method");
+            String fieldSite = string(binding,
+                    "fieldMaterializationSiteId");
+            String arraySite = string(binding, "arrayLoadSiteId");
+            if (schemaOne) {
+                if (proof.size() != 4
+                        || method.isEmpty() || fieldSite.isEmpty()
+                        || arraySite.isEmpty()
+                        || !"STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_"
+                        .concat("DECLARED_FIELD_FOUR_EDGE_JOIN_V1").equals(
+                                string(binding, "proofAuthority"))) {
+                    return "STATIC_FOUR_EDGE_PROOF_INCOMPLETE";
+                }
+                return "";
+            }
+
+            if (path.size() < 2 || path.size() > 4
+                    || !primitiveDescriptor(javaTypeDescriptor(
+                    field.group(2)))
+                    || proof.size() != 4 * path.size()
+                    || !"STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
+                    .concat("CHAIN_V1").equals(string(binding,
+                            "proofAuthority"))) {
+                return "STATIC_DIRECT_FIELD_PATH_PROOF_INCOMPLETE";
+            }
+            Set<String> sliceMethods = strictStringSet(array(
+                    requestedOutputSlice, "methods"));
+            Set<String> sliceSites = strictStringSet(array(
+                    requestedOutputSlice, "sites"));
+            Set<String> sliceEdges = requestedSliceCausalEdgeIds(
+                    requestedOutputSlice);
+            if (sliceMethods == null || sliceSites == null
+                    || method.isEmpty() || !sliceMethods.contains(method)
+                    || !exactMethodUnitSite(method, fieldSite)
+                    || !exactMethodUnitSite(method, arraySite)
+                    || !sliceSites.contains(fieldSite)
+                    || !sliceSites.contains(arraySite)
+                    || sliceEdges == null
+                    || !sliceEdges.containsAll(proofIds)) {
+                return "STATIC_DIRECT_FIELD_PATH_SLICE_CLOSURE_INCOMPLETE";
             }
             return "";
+        }
+
+        private Set<String> requestedSliceCausalEdgeIds(JsonObject slice) {
+            Set<String> result = strictStringSet(array(slice,
+                    "causalEdgeIds"));
+            if (result == null) return null;
+            for (JsonElement element : array(slice, "causalEdges")) {
+                if (!element.isJsonObject()) return null;
+                String edgeId = string(element.getAsJsonObject(), "edgeId");
+                if (edgeId.isEmpty()) return null;
+                result.add(edgeId);
+            }
+            return result.isEmpty() ? null : result;
+        }
+
+        private boolean exactMethodUnitSite(String method, String site) {
+            if (method == null || method.isEmpty() || site == null) {
+                return false;
+            }
+            String prefix = method + "#u";
+            return site.startsWith(prefix)
+                    && site.substring(prefix.length()).matches("[0-9]+");
         }
 
         private ContainerFieldSelector containerFieldSelector(
@@ -6832,7 +7230,9 @@ public final class ConcolicSmtComposer {
                     "resolvedFromSelectorAuthority");
             int runtimeOccurrence = integer(selector,
                     "elementOccurrence", -1);
-            String activationId = string(summary, "activationId");
+            String activationId = firstNonBlank(string(summary,
+                    "activationId"), string(summary,
+                    "sourceActivationId"));
             if (integer(runtime, "schemaVersion", -1) != 2
                     || !bool(runtime, "complete", false)
                     || !completeContainerSelector(runtime)
@@ -8582,7 +8982,7 @@ public final class ConcolicSmtComposer {
             if (declarationKeys.add(key)) declarations.add(declaration);
         }
 
-        private void assertNamed(String name, String expression) {
+        private String assertNamed(String name, String expression) {
             String unique = smtName(name);
             if (!assertionNames.add(unique)) {
                 int suffix = 2;
@@ -8596,6 +8996,7 @@ public final class ConcolicSmtComposer {
             assertions.add("(assert (! " + asserted + " :named "
                     + unique + "))");
             assertionCount++;
+            return unique;
         }
 
         private boolean isNull(Term term) {
@@ -9049,6 +9450,31 @@ public final class ConcolicSmtComposer {
             if (selectorSolverSymbol.isEmpty()) {
                 gap("MISSING_CASE_SELECTOR_SYMBOL");
             }
+            Map<String, Integer> eligibleBaseCounts =
+                    new LinkedHashMap<>();
+            for (JsonElement element : dynamicBindings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                if (!rootProjectableDynamicKind(string(binding, "kind"))) {
+                    continue;
+                }
+                String base = string(binding, "baseInputSymbol");
+                if (base.isEmpty()) {
+                    gap("DYNAMIC_ROOT_WITHOUT_BASE_INPUT:"
+                            + string(binding, "dynamicBindingId"));
+                    continue;
+                }
+                Integer previous = eligibleBaseCounts.get(base);
+                eligibleBaseCounts.put(base, previous == null ? 1
+                        : previous + 1);
+            }
+            for (Map.Entry<String, Integer> entry
+                    : eligibleBaseCounts.entrySet()) {
+                if (entry.getValue() != 1) {
+                    gap("AMBIGUOUS_DYNAMIC_BASE_ROOT:" + entry.getKey()
+                            + ":" + entry.getValue());
+                }
+            }
             for (JsonElement element : dynamicBindings) {
                 if (!element.isJsonObject()) {
                     gap("NON_OBJECT_PROJECTION_DYNAMIC_BINDING");
@@ -9075,7 +9501,45 @@ public final class ConcolicSmtComposer {
                         .equals(string(binding, "kind"))
                         ? "EXACT_RUNTIME_SYMBOLIZE_FIELD_WITHOUT_PC_"
                         + "EXPRESSION" : "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM");
+                String base = string(binding, "baseInputSymbol");
+                if (rootProjectableDynamicKind(string(binding, "kind"))
+                        && eligibleBaseCounts.get(base) != null
+                        && eligibleBaseCounts.get(base) == 1) {
+                    if (!projection.canonicalPort.isEmpty()
+                            && !projection.canonicalPort.equals(base)) {
+                        gap("DYNAMIC_ROOT_CANONICAL_PORT_CONFLICT:" + id);
+                    } else {
+                        projection.canonicalPort = base;
+                    }
+                }
             }
+        }
+
+        private List<SymbolProjection> dynamicRootProjections() {
+            List<SymbolProjection> result = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (SymbolProjection projection : symbols.values()) {
+                if (projection.canonicalPort.isEmpty()
+                        || projection.dynamicBindingIds.isEmpty()) {
+                    continue;
+                }
+                String key = projection.rawEngineSymbol + "\u0000"
+                        + projection.canonicalPort;
+                if (seen.add(key)) result.add(projection);
+            }
+            Collections.sort(result, (left, right) -> {
+                int byPort = left.canonicalPort.compareTo(
+                        right.canonicalPort);
+                return byPort != 0 ? byPort
+                        : left.rawEngineSymbol.compareTo(
+                        right.rawEngineSymbol);
+            });
+            return result;
+        }
+
+        private static boolean rootProjectableDynamicKind(String kind) {
+            return "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(kind)
+                    || "DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(kind);
         }
 
         private boolean complete() {
@@ -9169,6 +9633,10 @@ public final class ConcolicSmtComposer {
         private final Sort sort;
         private String termKind;
         private String canonicalPort;
+        private String canonicalSolverTerm = "";
+        private String canonicalBridgeGuard = "";
+        private String canonicalBridgeExpression = "";
+        private String canonicalBridgeAssertionName = "";
         private final Set<String> dynamicBindingIds = new LinkedHashSet<>();
 
         private SymbolProjection(String rawEngineSymbol, String solverTerm,
@@ -9190,6 +9658,23 @@ public final class ConcolicSmtComposer {
             }
         }
 
+        private void bindCanonical(String solverTerm, String guard,
+                                   String equality,
+                                   String assertionName) {
+            if (!canonicalSolverTerm.isEmpty()
+                    && (!canonicalSolverTerm.equals(solverTerm)
+                    || !canonicalBridgeGuard.equals(guard)
+                    || !canonicalBridgeExpression.equals(equality)
+                    || !canonicalBridgeAssertionName.equals(
+                    assertionName))) {
+                return;
+            }
+            canonicalSolverTerm = firstNonBlank(solverTerm);
+            canonicalBridgeGuard = firstNonBlank(guard);
+            canonicalBridgeExpression = firstNonBlank(equality);
+            canonicalBridgeAssertionName = firstNonBlank(assertionName);
+        }
+
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("rawEngineSymbol", rawEngineSymbol);
@@ -9199,6 +9684,27 @@ public final class ConcolicSmtComposer {
             result.addProperty("termKind", termKind);
             if (!canonicalPort.isEmpty()) {
                 result.addProperty("canonicalPort", canonicalPort);
+            }
+            if (!canonicalSolverTerm.isEmpty()) {
+                String formula = "(=> " + canonicalBridgeGuard + " "
+                        + canonicalBridgeExpression + ")";
+                String assertion = "(assert (! " + formula + " :named "
+                        + canonicalBridgeAssertionName + "))";
+                result.addProperty("canonicalSolverTerm",
+                        canonicalSolverTerm);
+                result.addProperty("canonicalBridgeGuard",
+                        canonicalBridgeGuard);
+                result.addProperty("canonicalBridgeExpression",
+                        canonicalBridgeExpression);
+                result.addProperty("canonicalBridgeFormula", formula);
+                result.addProperty("canonicalBridgeAssertionName",
+                        canonicalBridgeAssertionName);
+                result.addProperty("canonicalBridgeAssertion", assertion);
+                result.addProperty("canonicalBridgeAssertionSha256",
+                        sha256(assertion.getBytes(StandardCharsets.UTF_8)));
+                result.addProperty("canonicalBridgeAuthority",
+                        "CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                                + "GUARDED_EQUALITY_V1");
             }
             result.add("dynamicBindingIds",
                     GSON.toJsonTree(dynamicBindingIds));
@@ -9812,6 +10318,24 @@ public final class ConcolicSmtComposer {
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(impossible);
         }
+    }
+
+    private static String heapObservationStateSelectorDigest(
+            String observationId, String baseInputSymbol,
+            String dynamicBindingId) {
+        String material = firstNonBlank(observationId, "") + "\n"
+                + firstNonBlank(baseInputSymbol, "") + "\n"
+                + firstNonBlank(dynamicBindingId, "");
+        return sha256(material.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String heapObservationStatePort(
+            String region, String observationId, String baseInputSymbol,
+            String dynamicBindingId) {
+        String digest = heapObservationStateSelectorDigest(observationId,
+                baseInputSymbol, dynamicBindingId);
+        return firstNonBlank(region, "") + ".state.heapObservation."
+                + digest.substring(0, 12);
     }
 
     private static Path sibling(Path path, String name) {

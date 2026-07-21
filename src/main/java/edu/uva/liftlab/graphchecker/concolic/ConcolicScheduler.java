@@ -1745,6 +1745,15 @@ public final class ConcolicScheduler {
                         "RUNTIME_EXPLICITLY_UNOBSERVED"));
                 continue;
             }
+            if (exactContainerSnapshotLeafDeclaration(activation, action)) {
+                // Schema-v2 snapshots are materialized dynamically when the
+                // observation-only container is consumed.  Keep the exact
+                // leaf in the declared symbolize catalog, but do not install
+                // an owner-wide FIELD_ACCESS hook or misclassify it as a
+                // concrete fallback merely because the static cell starts at
+                // an intermediate reference owner.
+                continue;
+            }
             if (configuredScalarContainerLeaf(activation, action)
                     && "HEAP_OBJECT_FIELD".equals(location)) {
                 String declaredField = configuredDeclaredFieldSignature(
@@ -1890,6 +1899,20 @@ public final class ConcolicScheduler {
             } else if ("HEAP_OBJECT_FIELD".equals(location)) {
                 binding.addProperty("bindingMode", "FIELD_ACCESS");
                 List<String> path = fieldPath(cell);
+                JsonObject declaredLeaf = exactDeclaredFieldPathLeaf(
+                        action, path);
+                boolean deepExactDeclarationRequired = path.size() > 2;
+                if (deepExactDeclarationRequired && declaredLeaf == null) {
+                    concreteFallbacks.add(concreteFallback(binding,
+                            "DEEP_FIELD_PATH_LACKS_EXACT_DECLARED_CHAIN"));
+                    continue;
+                }
+                String derivedLeafOwner = declaredLeaf == null
+                        ? leafOwnerClass(cell) : string(declaredLeaf,
+                        "declaredFieldOwnerClass");
+                String derivedLeafField = declaredLeaf == null
+                        ? leafField(cell) : declaredFieldName(string(
+                        declaredLeaf, "fieldSignature"));
                 boolean exactMetadata = retainOrVerifyDerived(
                         binding, "fieldPath",
                         JSONL_GSON.toJsonTree(path))
@@ -1898,9 +1921,17 @@ public final class ConcolicScheduler {
                         && retainOrVerifyDerived(binding, "accessField",
                         path.isEmpty() ? "" : path.get(0))
                         && retainOrVerifyDerived(binding, "leafField",
-                        leafField(cell))
+                        derivedLeafField)
                         && retainOrVerifyDerived(binding,
-                        "leafOwnerClass", leafOwnerClass(cell));
+                        "leafOwnerClass", derivedLeafOwner)
+                        && (declaredLeaf == null
+                        || retainOrVerifyDerived(binding,
+                        "leafFieldSignature", string(declaredLeaf,
+                                "fieldSignature"))
+                        && retainOrVerifyDerived(binding, "field",
+                        string(declaredLeaf, "fieldSignature"))
+                        && retainOrVerifyDerived(binding, "javaType",
+                        string(declaredLeaf, "declaredFieldType")));
                 binding.addProperty("lazy", true);
                 if (!exactMetadata) {
                     concreteFallbacks.add(concreteFallback(binding,
@@ -1917,16 +1948,6 @@ public final class ConcolicScheduler {
                     // temporal alias for a future object.
                     concreteFallbacks.add(concreteFallback(binding,
                             "RUNTIME_OBSERVED_NULL_PROJECTED_FIELD_ROOT"));
-                    continue;
-                } else if (path.size() > 2
-                        && !hasCompleteDeclaredFieldPath(action, path)) {
-                    // Reflection can sometimes walk a deep path in one
-                    // execution, but without a declared leaf chain neither
-                    // static nor runtime evidence establishes the projected
-                    // value as a stable live-in.  Unknown inputs are concrete
-                    // passthrough by policy.
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "DEEP_FIELD_PATH_LACKS_EXACT_DECLARED_CHAIN"));
                     continue;
                 } else {
                     executableCount++;
@@ -2033,6 +2054,95 @@ public final class ConcolicScheduler {
             }
         }
         return result;
+    }
+
+    /**
+     * Recognizes only the strict direct-field-path schema whose runtime
+     * materializer is the exact container snapshot, not a getfield hook.
+     */
+    private static boolean exactContainerSnapshotLeafDeclaration(
+            JsonObject activation, JsonObject action) {
+        String symbol = string(action, "symbol");
+        if (symbol.isEmpty()
+                || !"HEAP_OBJECT_FIELD".equals(string(action,
+                "location"))
+                || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
+                string(action, "fieldPathAuthority"))) {
+            return false;
+        }
+        JsonObject selected = null;
+        for (JsonElement element : array(activation,
+                "containerElementFieldBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject declaration = element.getAsJsonObject();
+            if (!symbol.equals(string(declaration, "baseInputSymbol"))) {
+                continue;
+            }
+            if (selected != null) return false;
+            selected = declaration;
+        }
+        if (selected == null
+                || integer(selected, "schemaVersion", -1) != 2
+                || !"ARRAY_ELEMENT_FIELD".equals(string(selected, "kind"))
+                || !"CONTAINER_SNAPSHOT".equals(string(selected,
+                "materializationMode"))
+                || !"STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
+                .equals(string(selected, "proofAuthority"))
+                || !bool(selected, "complete", false)
+                || !"EXACT_ARRAY_INDEX".equals(string(selected,
+                "selectorAuthority"))
+                || integer(selected, "elementIndex", -1) < 0
+                || integer(selected, "elementOccurrence", -1) < 1) {
+            return false;
+        }
+        JsonArray path = array(selected, "fieldPath");
+        JsonArray actionPath = array(action, "fieldPath");
+        if (path.size() < 2 || path.size() > 4
+                || !path.equals(actionPath)
+                || array(selected, "proofCausalEdgeIds").size()
+                != 4 * path.size()) {
+            return false;
+        }
+        Set<String> proofIds = new LinkedHashSet<>();
+        for (JsonElement proof : array(selected, "proofCausalEdgeIds")) {
+            if (!proof.isJsonPrimitive()
+                    || proof.getAsString().trim().isEmpty()
+                    || !proofIds.add(proof.getAsString())) {
+                return false;
+            }
+        }
+        String leafSignature = string(selected,
+                "declaredFieldSignature");
+        String[] leaf = declaredField(leafSignature);
+        String[] root = declaredField(string(action, "cell"));
+        String[] access = declaredField(string(action,
+                "accessFieldSignature"));
+        return leaf != null && root != null && access != null
+                && ("boolean".equals(leaf[1])
+                || "java.lang.Boolean".equals(leaf[1]))
+                && leaf[2].equals(path.get(path.size() - 1).getAsString())
+                && leafSignature.equals(string(action, "field"))
+                && leafSignature.equals(string(action,
+                "leafFieldSignature"))
+                && leaf[0].equals(string(action, "leafOwnerClass"))
+                && leaf[2].equals(string(action, "leafField"))
+                && leaf[0].equals(string(selected,
+                "declaredFieldOwnerClass"))
+                && leaf[1].equals(string(selected, "declaredFieldType"))
+                && root[0].equals(access[0])
+                && root[1].equals(access[1])
+                && root[2].equals(access[2])
+                && access[0].equals(string(action, "accessOwnerClass"))
+                && access[2].equals(string(action, "accessField"))
+                && access[1].equals(string(action, "accessFieldType"))
+                && !string(selected, "containerInputPort").isEmpty()
+                && !symbol.equals(string(selected, "containerInputPort"))
+                && declaredField(string(selected,
+                "containerInputCell")) != null
+                && string(selected, "fieldMaterializationSiteId")
+                .matches("^<.+>#u[0-9]+$")
+                && string(selected, "arrayLoadSiteId")
+                .matches("^<.+>#u[0-9]+$");
     }
 
     private static boolean configuredScalarContainerLeaf(
@@ -2197,10 +2307,22 @@ public final class ConcolicScheduler {
         return fallback;
     }
 
-    private static boolean hasCompleteDeclaredFieldPath(
+    /**
+     * Returns the one complete leaf declaration that is internally exact for
+     * this direct getfield path.  Merely attaching a declaration to a general
+     * heap action is not enough: only the planner's strict direct-chain
+     * authority may refine the leaf owner derived from the root signature.
+     */
+    private static JsonObject exactDeclaredFieldPathLeaf(
             JsonObject action, List<String> expectedPath) {
+        if (expectedPath.size() < 2
+                || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
+                string(action, "fieldPathAuthority"))) {
+            return null;
+        }
         JsonArray declarations = array(action,
                 "fieldPathLeafDeclarations");
+        JsonObject selected = null;
         for (JsonElement element : declarations) {
             if (!element.isJsonObject()) {
                 continue;
@@ -2219,17 +2341,38 @@ public final class ConcolicScheduler {
             }
             boolean matches = true;
             for (int index = 0; index < expectedPath.size(); index++) {
-                if (!expectedPath.get(index).equals(
-                        declaredPath.get(index).getAsString())) {
+                JsonElement segment = declaredPath.get(index);
+                if (!segment.isJsonPrimitive()
+                        || !expectedPath.get(index).equals(
+                        segment.getAsString())) {
                     matches = false;
                     break;
                 }
             }
             if (matches) {
-                return true;
+                if (selected != null) {
+                    return null;
+                }
+                selected = declaration;
             }
         }
-        return false;
+        if (selected == null) {
+            return null;
+        }
+        String signature = string(selected, "fieldSignature");
+        String[] leaf = declaredField(signature);
+        return leaf != null
+                && leaf[0].equals(string(selected,
+                "declaredFieldOwnerClass"))
+                && leaf[1].equals(string(selected, "declaredFieldType"))
+                && leaf[2].equals(expectedPath.get(
+                expectedPath.size() - 1))
+                ? selected : null;
+    }
+
+    private static String declaredFieldName(String signature) {
+        String[] field = declaredField(signature);
+        return field == null ? "" : field[2];
     }
 
     private static void dischargeDeferredResolution(JsonObject binding,

@@ -143,23 +143,31 @@ CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/
   experiments/generic/three-thread-rpc/run.sh all
 ```
 
+`containers/` runs the same end-to-end workflow with live-ins at
+`array[0].state.guard.enabled` and a map-entry value's nested Boolean leaf.
+`FourThreadSharedFieldWorkloadTest` is the compact recursive fork/merge
+regression for `1 -> 2 -> 3` and `1 -> 4 -> 3`. Neither workload has a
+`while` loop.
+
 ## HDFS validation checkpoint
 
 The frozen HDFS trace was re-aggregated without rerunning Soot, instrumentation,
-or the workload. `target/hdfs-runtime-demand-reslice-v4` completed in 2:16.54
-with 18,838,000 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
+or the workload. `target/hdfs-runtime-demand-reslice-v5` completed in 2:20.25
+with 19,043,412 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
 All 430 instances used the runtime-guided re-slice; 63,673 candidate inputs
-were pruned, 384 confirmed external inputs were restored, and warnings are 0.
+were pruned, 385 confirmed external inputs were restored, and warnings are 0.
 
 The HDFS RPC/SASL mapping remains enabled for true transport boundaries.
 `REGION_EDGE.0` retains 10 SASL equality bindings, while edges 802 and 2076
-retain 50 and 10 exact read-from bindings. The v4 selector is complete and
+retain 50 and 10 exact read-from bindings. The v5 selector is complete and
 selects the same five runtime calls (NN, DN, KeyUpdater, Dispatcher, target)
 with all causal bounds verified.
 
 TODO: final HDFS SMT composition still needs the five configured replay summary
 files, which are absent from this checkout and have no recoverable in-repository
-source. Obtain or regenerate those summaries, then compose against the v4
+source. Obtain or regenerate those summaries, then compose against the v5
 activation/edge catalogs. Preserve the intentionally loose HDFS loop and
 read-from policies; unresolved gaps remain concrete and must not restore the
-old wide frontier.
+old wide frontier. Fresh full-HDFS static-catalog timing and indexing the exact
+direct-field-path proof scans also remain TODO; v5 measures only the frozen-graph
+runtime re-slice.

@@ -45,6 +45,22 @@ import java.util.regex.Pattern;
  * activation rows.</p>
  */
 public final class ConcolicPrimitiveBootstrapProjector {
+    private static final String DYNAMIC_CONTAINER_FIELD_KIND =
+            "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
+    private static final String DYNAMIC_MAP_ENTRY_FIELD_KIND =
+            "DYNAMIC_MAP_ENTRY_FIELD_BINDING";
+    private static final String DYNAMIC_CONTAINER_FIELD_AUTHORITY =
+            "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_AND_"
+                    + "STABLE_FIELD_SITE_OCCURRENCE";
+    private static final String DYNAMIC_MAP_ENTRY_FIELD_AUTHORITY =
+            "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
+                    + "FIELD_SITE_OCCURRENCE";
+    private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
+            "EXACT_BASE_PORT_GETTER_SITE_OCCURRENCE_THEN_"
+                    + "FRESH_ENTRY_REBIND_V1";
+    private static final String CONTAINER_REPLAY_REBINDING_AUTHORITY =
+            "EXACT_STATIC_ARRAY_SELECTOR_THEN_ACTIVATION_LOCAL_"
+                    + "IDENTITY_REBIND_V1";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
     private static final Gson JSONL_GSON = new GsonBuilder()
@@ -144,11 +160,17 @@ public final class ConcolicPrimitiveBootstrapProjector {
             JsonObject summary = summaries.get(summaryId);
             JsonObject source = activations.get(activationId);
             validateSource(region, summaryId, activationId, summary, source);
-            JsonObject mapping = exactPortMapping(selectedCase, port);
-            JsonObject action = exactAction(summary, source, port);
+            JsonObject mapping = exactPortMapping(selectedCase, port, smt);
+            JsonObject dynamicBinding = exactDynamicLeafBinding(selectedCase,
+                    summary, mapping, port);
+            JsonObject action = exactAction(summary, source, port,
+                    dynamicBinding);
             String actionIdentity = actionIdentitySha256(action);
             JsonObject modelAssignment = modelAssignment(mapping,
                     rootAssignment, action, actionIdentity);
+            if (dynamicBinding != null) {
+                retainDynamicLeafSelector(modelAssignment, dynamicBinding);
+            }
             JsonObject replay = producerReplay(source, modelAssignment);
             if (!usedActivationIds.add(activationId)) {
                 throw gap("ONE_PRODUCER_ACTIVATION_CONTROLS_MULTIPLE_ROOTS:"
@@ -553,7 +575,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
     }
 
     private static JsonObject exactPortMapping(JsonObject pathCase,
-                                               String port)
+                                               String port, String smt)
             throws IOException {
         JsonArray catalog = array(pathCase, "rawEngineSymbolMappings");
         if (!"GUARDED_CASE_PROJECTION_CATALOG".equals(string(pathCase,
@@ -582,14 +604,277 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 "authority"))) {
             throw gap("MISSING_CASE_INPUT_MAPPING:" + port);
         }
+        String canonical = canonicalProjectionTerm(selected);
+        if (!string(selected, "solverTerm").equals(canonical)
+                && !exactDynamicCanonicalBridge(pathCase, selected, port,
+                canonical, smt)) {
+            throw gap("CASE_DYNAMIC_CANONICAL_BRIDGE_NOT_EXACT:" + port);
+        }
         return selected.deepCopy();
     }
 
-    private static JsonObject exactAction(JsonObject summary,
-                                          JsonObject activation, String port)
+    private static String canonicalProjectionTerm(JsonObject mapping) {
+        return firstNonBlank(string(mapping, "canonicalSolverTerm"),
+                string(mapping, "solverTerm"));
+    }
+
+    private static boolean exactDynamicCanonicalBridge(
+            JsonObject pathCase, JsonObject mapping, String port,
+            String canonical, String smt) {
+        String actual = string(mapping, "solverTerm");
+        String guard = string(mapping, "canonicalBridgeGuard");
+        String expression = "(= " + actual + " " + canonical + ")";
+        String formula = "(=> " + guard + " " + expression + ")";
+        String assertionName = string(mapping,
+                "canonicalBridgeAssertionName");
+        String assertion = "(assert (! " + formula + " :named "
+                + assertionName + "))";
+        JsonArray ids = array(mapping, "dynamicBindingIds");
+        if (actual.isEmpty() || canonical.isEmpty()
+                || actual.equals(canonical)
+                || !safeSmtAtom(actual) || !safeSmtAtom(canonical)
+                || !canonical.equals("sym__port__" + smtName(port)
+                + "__int")
+                || !port.equals(string(mapping, "canonicalPort"))
+                || !port.startsWith(string(pathCase, "regionId") + ".in.")
+                || !"INT".equals(string(mapping, "sort"))
+                || !"Int".equals(string(mapping, "solverSort"))
+                || !guard.equals(string(pathCase,
+                "selectorSolverSymbol"))
+                || assertionName.isEmpty()
+                || !expression.equals(string(mapping,
+                "canonicalBridgeExpression"))
+                || !formula.equals(string(mapping,
+                "canonicalBridgeFormula"))
+                || !assertion.equals(string(mapping,
+                "canonicalBridgeAssertion"))
+                || !sha256(assertion).equals(string(mapping,
+                "canonicalBridgeAssertionSha256"))
+                || !"CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                .concat("GUARDED_EQUALITY_V1").equals(string(mapping,
+                        "canonicalBridgeAuthority"))
+                || !"SCOPED_DYNAMIC_FIELD".equals(string(mapping,
+                "termKind"))
+                || ids.size() != 1 || !ids.get(0).isJsonPrimitive()
+                || !ids.get(0).getAsJsonPrimitive().isString()
+                || !exactSmtLine(smt, assertion)) {
+            return false;
+        }
+        String id = ids.get(0).getAsString();
+        JsonObject selected = null;
+        for (JsonElement element : array(pathCase,
+                "dynamicFieldBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            if (!id.equals(string(binding, "dynamicBindingId"))) continue;
+            if (selected != null) return false;
+            selected = binding;
+        }
+        return selected != null
+                && port.equals(string(selected, "baseInputSymbol"))
+                && actual.equals(string(selected, "solverTerm"))
+                && string(mapping, "rawEngineSymbol").equals(string(selected,
+                "fieldExpressionRawEngineSymbol"))
+                && bool(selected, "complete", false)
+                && bool(selected, "observationMatched", false)
+                && "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM".equals(string(
+                selected, "termBindingAuthority"));
+    }
+
+    private static boolean exactSmtLine(String smt, String expected) {
+        if (smt == null || expected == null || expected.isEmpty()) {
+            return false;
+        }
+        int matches = 0;
+        for (String line : smt.split("\\R", -1)) {
+            if (expected.equals(line)) matches++;
+        }
+        return matches == 1;
+    }
+
+    /**
+     * Resolves a dynamic scalar leaf only through the selected case's exact VM
+     * term.  The selected-case metadata is joined back to the byte-for-byte
+     * runtime binding retained by its source summary; neither a base-field
+     * prefix nor an unselected occurrence may authorize replay.
+     */
+    private static JsonObject exactDynamicLeafBinding(
+            JsonObject selectedCase, JsonObject summary, JsonObject mapping,
+            String port) throws IOException {
+        String raw = string(mapping, "rawEngineSymbol");
+        JsonArray selectedBindings = array(selectedCase,
+                "dynamicFieldBindings");
+        JsonArray mappingBindingIds = array(mapping,
+                "dynamicBindingIds");
+        if (selectedCase.has("dynamicFieldBindingCount")
+                && integer(selectedCase, "dynamicFieldBindingCount", -1)
+                != selectedBindings.size()) {
+            throw gap("SELECTED_CASE_DYNAMIC_BINDING_COUNT_MISMATCH:" + port);
+        }
+
+        JsonObject selected = null;
+        for (JsonElement element : selectedBindings) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (!raw.equals(string(candidate,
+                    "fieldExpressionRawEngineSymbol"))) {
+                continue;
+            }
+            if (selected != null) {
+                throw gap("AMBIGUOUS_SELECTED_CASE_DYNAMIC_BINDING:" + raw);
+            }
+            selected = candidate;
+        }
+        boolean mappingClaimsDynamic = "SCOPED_DYNAMIC_FIELD".equals(
+                string(mapping, "termKind"))
+                || mappingBindingIds.size() > 0;
+        if (mappingClaimsDynamic) {
+            int baseMatches = 0;
+            for (JsonElement element : selectedBindings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject candidate = element.getAsJsonObject();
+                String kind = string(candidate, "kind");
+                if (port.equals(string(candidate, "baseInputSymbol"))
+                        && (DYNAMIC_CONTAINER_FIELD_KIND.equals(kind)
+                        || DYNAMIC_MAP_ENTRY_FIELD_KIND.equals(kind))) {
+                    baseMatches++;
+                }
+            }
+            if (baseMatches != 1) {
+                throw gap("SELECTED_CASE_DYNAMIC_BASE_NOT_UNIQUE:" + port
+                        + ":" + baseMatches);
+            }
+        }
+        if (selected == null) {
+            if (mappingClaimsDynamic) {
+                throw gap("SELECTED_CASE_DYNAMIC_MAPPING_WITHOUT_BINDING:"
+                        + raw);
+            }
+            return null;
+        }
+
+        JsonObject runtime = object(selected, "runtimeBinding");
+        String kind = string(runtime, "kind");
+        if (runtime.size() == 0
+                || !(DYNAMIC_CONTAINER_FIELD_KIND.equals(kind)
+                || DYNAMIC_MAP_ENTRY_FIELD_KIND.equals(kind))
+                || !kind.equals(string(selected, "kind"))
+                || !bool(selected, "complete", false)
+                || !bool(selected, "observationMatched", false)
+                || !bool(runtime, "complete", false)) {
+            throw gap("SELECTED_CASE_DYNAMIC_BINDING_INCOMPLETE:" + raw);
+        }
+        if (!raw.equals(string(selected,
+                "fieldExpressionRawEngineSymbol"))
+                || !string(mapping, "solverTerm").equals(string(selected,
+                "solverTerm"))
+                || !"EMITTER_ACTUAL_DYNAMIC_FIELD_TERM".equals(
+                string(selected, "termBindingAuthority"))) {
+            throw gap("SELECTED_CASE_DYNAMIC_TERM_MISMATCH:" + raw);
+        }
+
+        String base = string(runtime, "baseInputSymbol");
+        String dynamic = string(runtime, "dynamicFieldSymbol");
+        String id = string(runtime, "dynamicBindingId");
+        String site = string(runtime, "materializationSiteId");
+        int occurrence = integer(runtime, "materializationOccurrence", -1);
+        String expectedDynamic = base + ".field."
+                + sha256(site).substring(0, 12) + ".occ." + occurrence;
+        if (mappingBindingIds.size() != 1
+                || !mappingBindingIds.get(0).isJsonPrimitive()
+                || !mappingBindingIds.get(0).getAsJsonPrimitive().isString()
+                || !id.equals(mappingBindingIds.get(0).getAsString())
+                || !port.equals(base) || dynamic.isEmpty()
+                || !id.equals("DYNAMIC_FIELD:" + dynamic)
+                || site.isEmpty() || occurrence < 1
+                || !expectedDynamic.equals(dynamic)
+                || !exactEngineSymbol(raw, dynamic)
+                || string(runtime, "fieldSignature").isEmpty()
+                || array(runtime, "fieldPath").size() == 0) {
+            throw gap("SELECTED_CASE_DYNAMIC_BINDING_IDENTITY_MISMATCH:" + raw);
+        }
+
+        if (DYNAMIC_CONTAINER_FIELD_KIND.equals(kind)) {
+            validateContainerDynamicBinding(runtime, raw);
+        } else {
+            validateMapEntryDynamicBinding(runtime, raw);
+        }
+
+        JsonObject sourceBinding = null;
+        for (JsonElement element : array(summary, "dynamicFieldBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (!id.equals(string(candidate, "dynamicBindingId"))) continue;
+            if (sourceBinding != null) {
+                throw gap("AMBIGUOUS_SOURCE_SUMMARY_DYNAMIC_BINDING:" + id);
+            }
+            sourceBinding = candidate;
+        }
+        if (sourceBinding == null || !runtime.equals(sourceBinding)) {
+            throw gap("SELECTED_CASE_SOURCE_DYNAMIC_BINDING_MISMATCH:" + id);
+        }
+        return runtime.deepCopy();
+    }
+
+    private static void validateContainerDynamicBinding(JsonObject binding,
+                                                        String raw)
             throws IOException {
-        validateInputAdmission(summary, port);
-        JsonArray source = array(activation, "materializations");
+        JsonObject selector = object(binding, "containerSelector");
+        int occurrence = integer(binding, "materializationOccurrence", -1);
+        if (integer(binding, "schemaVersion", -1) != 2
+                || !DYNAMIC_CONTAINER_FIELD_AUTHORITY.equals(string(binding,
+                "authority"))
+                || !"ARRAY_INDEX".equals(string(selector, "kind"))
+                || !bool(selector, "complete", false)
+                || string(selector, "bindingId").isEmpty()
+                || string(selector, "containerInputPort").isEmpty()
+                || string(selector, "containerInputCell").isEmpty()
+                || !"EXACT_ARRAY_INDEX".equals(string(selector,
+                "selectorAuthority"))
+                || integer(selector, "elementIndex", -1) < 0
+                || integer(selector, "elementOccurrence", -1) != occurrence
+                || string(selector, "declaredFieldOwnerClass").isEmpty()
+                || string(selector, "declaredFieldType").isEmpty()
+                || longInteger(selector, "containerObjectToken", 0L) <= 0L
+                || longInteger(selector, "elementObjectToken", 0L) <= 0L
+                || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
+                string(selector, "objectTokenAuthority"))
+                || string(selector, "objectTokenScope").isEmpty()
+                || !("EXACT_ARRAY_INDEX".equals(string(selector,
+                "resolvedFromSelectorAuthority"))
+                || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(string(selector,
+                "resolvedFromSelectorAuthority")))
+                || !"EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
+                .concat("ACTIVATION_LOCAL_ELEMENT_IDENTITY").equals(
+                        string(selector, "authority"))) {
+            throw gap("SELECTED_CASE_CONTAINER_SELECTOR_INCOMPLETE:" + raw);
+        }
+    }
+
+    private static void validateMapEntryDynamicBinding(JsonObject binding,
+                                                       String raw)
+            throws IOException {
+        if (integer(binding, "schemaVersion", -1) != 1
+                || !DYNAMIC_MAP_ENTRY_FIELD_AUTHORITY.equals(string(binding,
+                "authority"))
+                || string(binding, "entryReadObservationId").isEmpty()
+                || binding.get("keyExpression") == null
+                || !binding.get("keyExpression").isJsonObject()
+                || string(binding, "keyExpressionAuthority").isEmpty()) {
+            throw gap("SELECTED_CASE_MAP_ENTRY_BINDING_INCOMPLETE:" + raw);
+        }
+    }
+
+    private static JsonObject exactAction(JsonObject summary,
+                                          JsonObject activation, String port,
+                                          JsonObject dynamicBinding)
+            throws IOException {
+        validateInputAdmission(summary, port, dynamicBinding);
+        JsonArray source = dynamicBinding != null
+                && DYNAMIC_CONTAINER_FIELD_KIND.equals(string(
+                dynamicBinding, "kind"))
+                ? array(activation, "symbolize")
+                : array(activation, "materializations");
         if (source.size() == 0) source = array(activation, "symbolize");
         JsonObject selected = null;
         for (JsonElement element : source) {
@@ -609,7 +894,18 @@ public final class ConcolicPrimitiveBootstrapProjector {
         if (bindingMode.isEmpty() || location.isEmpty() || cell.isEmpty()) {
             throw gap("ROOT_INPUT_ACTION_IDENTITY_INCOMPLETE:" + port);
         }
-        if ("LOCAL_DEFINITION".equals(bindingMode)) {
+        if (dynamicBinding != null) {
+            if (!"FIELD_ACCESS".equals(bindingMode)) {
+                throw gap("DYNAMIC_ROOT_INPUT_IS_NOT_FIELD_ACCESS:" + port);
+            }
+            validateDynamicFieldAction(selected, dynamicBinding, port);
+            if (DYNAMIC_CONTAINER_FIELD_KIND.equals(string(dynamicBinding,
+                    "kind"))) {
+                JsonObject selector = object(dynamicBinding,
+                        "containerSelector");
+                requireContainerAction(activation, selector);
+            }
+        } else if ("LOCAL_DEFINITION".equals(bindingMode)) {
             validateLocalDefinitionIdentity(selected, port);
         } else if ("ROOT_ENTRY".equals(bindingMode)) {
             validateRootEntryIdentity(selected, port);
@@ -620,8 +916,85 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return selected.deepCopy();
     }
 
+    private static void validateDynamicFieldAction(JsonObject action,
+                                                   JsonObject binding,
+                                                   String port)
+            throws IOException {
+        String fieldSignature = string(binding, "fieldSignature");
+        JsonArray fieldPath = array(binding, "fieldPath");
+        boolean validPath = fieldPath.size() > 0;
+        for (JsonElement segment : fieldPath) {
+            validPath &= segment.isJsonPrimitive()
+                    && segment.getAsJsonPrimitive().isString()
+                    && !segment.getAsString().isEmpty();
+        }
+        if (!port.equals(string(action, "symbol"))
+                || !"HEAP_OBJECT_FIELD".equals(string(action, "location"))
+                || !fieldSignature.equals(firstNonBlank(
+                string(action, "field"), string(action, "cell")))
+                || !fieldPath.equals(array(action, "fieldPath"))
+                || !validPath) {
+            throw gap("DYNAMIC_FIELD_ACTION_IDENTITY_INCOMPLETE:" + port);
+        }
+        if (DYNAMIC_CONTAINER_FIELD_KIND.equals(string(binding, "kind"))) {
+            JsonObject selector = object(binding, "containerSelector");
+            boolean exactLeafDeclaration = fieldSignature.equals(string(
+                    action,
+                    "leafFieldSignature"))
+                    && string(selector, "declaredFieldOwnerClass").equals(
+                    string(action, "leafOwnerClass"))
+                    && fieldPath.get(fieldPath.size() - 1).getAsString()
+                    .equals(string(action, "leafField"));
+            boolean directPath = fieldPath.size() == 1
+                    && exactLeafDeclaration
+                    && fieldSignature.equals(string(action,
+                    "accessFieldSignature"))
+                    && fieldPath.get(0).getAsString().equals(string(action,
+                    "accessField"));
+            boolean deepPath = fieldPath.size() >= 2
+                    && fieldPath.size() <= 4
+                    && exactLeafDeclaration
+                    && "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
+                    .equals(string(action, "fieldPathAuthority"))
+                    && fieldPath.get(0).getAsString().equals(string(action,
+                    "accessField"))
+                    && !string(action, "accessFieldSignature").isEmpty();
+            if (!directPath && !deepPath) {
+                throw gap("DYNAMIC_CONTAINER_DECLARED_ACTION_INCOMPLETE:"
+                        + port);
+            }
+        }
+    }
+
+    private static void requireContainerAction(JsonObject activation,
+                                               JsonObject selector)
+            throws IOException {
+        String port = string(selector, "containerInputPort");
+        String cell = string(selector, "containerInputCell");
+        JsonObject selected = null;
+        JsonArray source = array(activation, "materializations");
+        if (source.size() == 0) source = array(activation, "symbolize");
+        for (JsonElement element : source) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            if (!port.equals(string(action, "symbol"))) continue;
+            if (selected != null) {
+                throw gap("AMBIGUOUS_DYNAMIC_CONTAINER_ACTION:" + port);
+            }
+            selected = action;
+        }
+        if (selected == null || !cell.equals(string(selected, "cell"))
+                || !"CONTAINER_INPUT_OBSERVATION".equals(string(selected,
+                "bindingMode"))
+                || !bool(selected, "arrayFieldObservationOnly", false)
+                || bool(selected, "modelControllable", true)) {
+            throw gap("DYNAMIC_CONTAINER_ACTION_MISSING:" + port);
+        }
+    }
+
     private static void validateInputAdmission(JsonObject summary,
-                                               String port)
+                                               String port,
+                                               JsonObject dynamicBinding)
             throws IOException {
         JsonObject admission = object(summary,
                 "inputMaterializationAdmission");
@@ -630,7 +1003,10 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 ("STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
                         + "TRANSFORMER_RUNTIME_PATH_PROOFS_AND_EXPLICIT_"
                         + "CONCRETE_FALLBACKS").equals(authority);
-        if (!bool(admission, "complete", false)
+        String observedSymbol = dynamicBinding == null ? port
+                : string(dynamicBinding, "dynamicFieldSymbol");
+        if (observedSymbol.isEmpty()
+                || !bool(admission, "complete", false)
                 || !exactInputMaterializationAuthority(authority)
                 || array(admission, "failures").size() != 0
                 || countString(array(admission, "globalSliceInputs"), port)
@@ -638,7 +1014,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 || countString(array(admission, "requiredSliceInputs"), port)
                 != 1
                 || countString(array(admission,
-                "observedSymbolizedInputs"), port) != 1
+                "observedSymbolizedInputs"), observedSymbol) != 1
                 || countString(array(admission,
                 "pathInactiveSliceInputs"), port) != 0
                 || (explicitFallbackAuthority
@@ -751,7 +1127,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                                               String actionIdentity)
             throws IOException {
         String canonical = string(root, "solverTerm");
-        if (!canonical.equals(string(mapping, "solverTerm"))) {
+        if (!canonical.equals(canonicalProjectionTerm(mapping))) {
             throw gap("CASE_MAPPING_IS_NOT_CANONICAL_ROOT_TERM:"
                     + string(root, "portId"));
         }
@@ -759,6 +1135,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
         result.addProperty("engineSymbol", string(mapping,
                 "rawEngineSymbol"));
         result.addProperty("solverSymbol", canonical);
+        result.addProperty("actualCaseSolverTerm", string(mapping,
+                "solverTerm"));
         result.addProperty("inputSymbol", string(root, "portId"));
         result.addProperty("valueType", "BOOL");
         result.addProperty("value", bool(root, "value", false)
@@ -771,7 +1149,119 @@ public final class ConcolicPrimitiveBootstrapProjector {
         result.addProperty("projectionAuthority",
                 "BOOTSTRAP_COMPOSED_SMT_EXACT_SELECTED_CASE_ROOT_TERM_"
                         + "AND_ACTION_IDENTITY_V2");
+        if (!string(mapping, "canonicalSolverTerm").isEmpty()) {
+            JsonObject bridge = new JsonObject();
+            for (String member : new String[]{"canonicalPort",
+                    "canonicalSolverTerm", "canonicalBridgeGuard",
+                    "canonicalBridgeExpression", "canonicalBridgeFormula",
+                    "canonicalBridgeAssertionName",
+                    "canonicalBridgeAssertion",
+                    "canonicalBridgeAssertionSha256",
+                    "canonicalBridgeAuthority"}) {
+                copy(mapping, bridge, member);
+            }
+            bridge.add("dynamicBindingIds", array(mapping,
+                    "dynamicBindingIds").deepCopy());
+            result.add("canonicalDynamicRootBridge", bridge);
+        }
         return result;
+    }
+
+    private static void retainDynamicLeafSelector(JsonObject assignment,
+                                                  JsonObject binding)
+            throws IOException {
+        String kind = string(binding, "kind");
+        String base = string(binding, "baseInputSymbol");
+        String dynamic = string(binding, "dynamicFieldSymbol");
+        String site = string(binding, "materializationSiteId");
+        int occurrence = integer(binding, "materializationOccurrence", -1);
+        assignment.addProperty("inputSymbol", base);
+        copy(binding, assignment, "dynamicBindingId");
+        copy(binding, assignment, "baseInputSymbol");
+        copy(binding, assignment, "dynamicFieldSymbol");
+        copy(binding, assignment, "materializationSiteId");
+        copy(binding, assignment, "materializationOccurrence");
+        copy(binding, assignment, "fieldSignature");
+        copy(binding, assignment, "fieldPath");
+        assignment.addProperty("dynamicFieldBindingKind", kind);
+        assignment.add("materializationPath",
+                array(binding, "fieldPath").deepCopy());
+
+        JsonObject selector = new JsonObject();
+        selector.addProperty("materializationSiteId", site);
+        selector.addProperty("materializationOccurrence", occurrence);
+        if (DYNAMIC_CONTAINER_FIELD_KIND.equals(kind)) {
+            JsonObject runtimeSelector = object(binding,
+                    "containerSelector");
+            JsonObject containerSelector = new JsonObject();
+            for (String member : new String[]{"kind", "bindingId",
+                    "containerInputPort", "containerInputCell",
+                    "selectorAuthority", "elementIndex",
+                    "elementOccurrence", "declaredFieldOwnerClass",
+                    "declaredFieldType"}) {
+                copy(runtimeSelector, containerSelector, member);
+            }
+            assignment.add("containerSelector",
+                    containerSelector.deepCopy());
+            selector.add("containerSelector",
+                    containerSelector.deepCopy());
+            assignment.addProperty("containerReplayRebindingAuthority",
+                    CONTAINER_REPLAY_REBINDING_AUTHORITY);
+            assignment.addProperty(
+                    "sourceContainerObjectTokensRetained", false);
+            for (String member : new String[]{"containerBindingId",
+                    "containerInputPort", "containerInputCell",
+                    "selectorAuthority", "elementIndex",
+                    "elementOccurrence", "declaredFieldOwnerClass",
+                    "declaredFieldType"}) {
+                copy(binding, assignment, member);
+            }
+        } else if (DYNAMIC_MAP_ENTRY_FIELD_KIND.equals(kind)) {
+            // A source JVM's entry id, key and observation id are not stable
+            // replay selectors.  Runtime rebinds the exact static field site
+            // and occurrence to the fresh entry selected in the replay JVM.
+            assignment.addProperty("dynamicReplayRebindingAuthority",
+                    FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
+            assignment.addProperty("sourceEntrySelectorRetained", false);
+            selector.addProperty("replayRebindingAuthority",
+                    FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
+            selector.addProperty("sourceEntrySelectorRetained", false);
+        } else {
+            throw gap("UNSUPPORTED_DYNAMIC_LEAF_BINDING_KIND:" + kind);
+        }
+        assignment.add("dynamicSelector", selector);
+
+        if (!exactEngineSymbol(string(assignment, "engineSymbol"), dynamic)) {
+            throw gap("DYNAMIC_ASSIGNMENT_ENGINE_SYMBOL_MISMATCH:" + dynamic);
+        }
+    }
+
+    private static void copy(JsonObject source, JsonObject target,
+                             String member) {
+        JsonElement value = source.get(member);
+        if (value != null) target.add(member, value.deepCopy());
+    }
+
+    private static boolean exactEngineSymbol(String raw, String symbol) {
+        if (raw == null || symbol == null || symbol.isEmpty()) return false;
+        if (raw.equals(symbol)) return true;
+        if (raw.length() <= 10 || raw.charAt(0) != 'M'
+                || raw.charAt(1) != '_'
+                || "ZCBSIFJDL".indexOf(raw.charAt(2)) < 0
+                || !raw.startsWith("_field_", 3)) {
+            return false;
+        }
+        String payload = raw.substring(10);
+        if (payload.equals(symbol)) return true;
+        String boundary = symbol + "_";
+        return payload.startsWith(boundary)
+                && legalVmOwnerSuffix(payload.substring(boundary.length()));
+    }
+
+    private static boolean legalVmOwnerSuffix(String suffix) {
+        return suffix != null && suffix.matches(
+                "[A-Za-z_$][A-Za-z0-9_$]*"
+                        + "(?:/[A-Za-z_$][A-Za-z0-9_$]*)*");
     }
 
     private static JsonObject actionIdentity(JsonObject action) {
@@ -1261,6 +1751,16 @@ public final class ConcolicPrimitiveBootstrapProjector {
 
     private static boolean safeSmtAtom(String value) {
         return value != null && SAFE_SMT_ATOM.matcher(value).matches();
+    }
+
+    private static String smtName(String value) {
+        String normalized = firstNonBlank(value, "anonymous")
+                .replaceAll("[^A-Za-z0-9_]", "_");
+        if (normalized.isEmpty()) normalized = "anonymous";
+        if (Character.isDigit(normalized.charAt(0))) {
+            normalized = "n_" + normalized;
+        }
+        return normalized;
     }
 
     private static String firstNonBlank(String... values) {

@@ -46,8 +46,12 @@ public final class ConcolicSummaryImporter {
             "^A([ZBCSIJFDL])_([0-9]+)$");
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
+    private static final String MAP_REF_WITNESS_AUTHORITY =
+            "ACTIVATION_LOCAL_MAP_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
             "ACTIVATION_LOCAL_REF_SYMBOL_WITNESS";
+    private static final String MAP_REF_WITNESS_KIND =
+            "ACTIVATION_LOCAL_MAP_REF_SYMBOL_WITNESS";
     private static final String VALUE_REF_WITNESS_TOKEN_AUTHORITY =
             "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
                     + "SCOPED_REF_SYMBOL_V1";
@@ -61,6 +65,12 @@ public final class ConcolicSummaryImporter {
     private static final String CONTAINER_PUT_CONSUMER_AUTHORITY =
             "RAW_SEMANTIC_REQUESTED_OUTPUT_MAP_PUT_KEY_EXACT_DYNAMIC_"
                     + "SYMBOL_V1";
+    private static final String CONTAINER_SNAPSHOT_BRANCH_CONSUMER_AUTHORITY =
+            "REQUESTED_OUTPUT_SLICE_EXACT_BRANCH_DYNAMIC_SYMBOL_V1";
+    private static final String NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY =
+            "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1";
+    private static final String NON_MUTATING_DYNAMIC_FIELD_EXPRESSION_AUTHORITY =
+            "EXACT_VM_BRANCH_MAPPING_DYNAMIC_SYMBOL_AND_REQUESTED_SLICE_BASE_V1";
     private static final Pattern MATERIALIZATION_HOOK_SITE =
             Pattern.compile("^<.+>#u[0-9]+$");
     private static final Pattern JIMPLE_CMP_ASSIGNMENT = Pattern.compile(
@@ -78,6 +88,11 @@ public final class ConcolicSummaryImporter {
     static boolean validValueRefWitnessForTests(JsonObject record,
                                                 String activationId) {
         return validValueRefWitness(record, activationId);
+    }
+
+    static boolean validMapRefWitnessForTests(JsonObject record,
+                                              String activationId) {
+        return validMapRefWitness(record, activationId);
     }
 
     public static void main(String[] args) throws Exception {
@@ -3468,12 +3483,15 @@ public final class ConcolicSummaryImporter {
             String fieldSignature = string(binding, "fieldSignature");
             long leafToken = longInteger(binding,
                     "leafOwnerObjectToken", 0L);
+            long entryValueOwnerToken = longInteger(binding,
+                    "entryValueOwnerObjectToken", 0L);
             String expectedDynamic = base.isEmpty() || site.isEmpty()
                     || occurrence < 1 ? "" : base + ".field."
                     + sha256(site).substring(0, 12) + ".occ." + occurrence;
             if (dynamic.isEmpty() || !dynamic.equals(expectedDynamic)
                     || !bindingId.equals("DYNAMIC_FIELD:" + dynamic)
                     || entryReadId.isEmpty() || leafToken <= 0L
+                    || entryValueOwnerToken <= 0L
                     || !activationId.equals(string(binding,
                     "objectTokenScope"))
                     || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
@@ -3494,12 +3512,15 @@ public final class ConcolicSummaryImporter {
             String originMethod = string(read, "originMethod");
             String leafOwnerClass = string(field, "leafOwnerClass");
             boolean identityJoin = pcBoundary >= 0
-                    && leafToken == longInteger(read,
+                    && entryValueOwnerToken == longInteger(read,
                     "valueObjectToken", -1L)
                     && activationId.equals(string(read,
                     "objectTokenScope"))
                     && bool(field, "available", false)
                     && bool(field, "complete", false)
+                    && bool(field, "accessOwnerObjectTokenKnown", false)
+                    && entryValueOwnerToken == longInteger(field,
+                    "accessOwnerObjectToken", -1L)
                     && bool(field, "leafOwnerObjectTokenKnown", false)
                     && leafToken == longInteger(field,
                     "leafOwnerObjectToken", -1L)
@@ -4115,7 +4136,20 @@ public final class ConcolicSummaryImporter {
                         ports, activation, rawBranchMappings,
                         fieldObservations, dynamicBindingCatalog,
                         rawPathCondition, normalization,
-                        dynamicPcFallbacks);
+                        dynamicPcFallbacks, regionId,
+                        candidateCount == 0 && mutations.isEmpty()
+                                && effects.size() == 0
+                                && unsupportedCount == 0
+                                && malformedCount == 0
+                                && runtimeHeapEvidence.ignoredEvidence.size()
+                                == 0
+                                && !runtimeJoin.legacy
+                                && runtimeJoin.recordCount == 0
+                                && runtimeJoin.joinedCount == 0
+                                && runtimeJoin.bindings.isEmpty()
+                                && runtimeJoin.issues.isEmpty()
+                                && !supportedMapStateField(string(object(
+                                activation, "requestedOutput"), "cell")));
         issues.addAll(heapObservations.issues);
         issues.addAll(associateHeapObservationsWithEffects(effects,
                 heapObservations));
@@ -5299,7 +5333,9 @@ public final class ConcolicSummaryImporter {
         boolean generic = "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT"
                 .equals(expression)
                 || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT".equals(
-                expression);
+                expression)
+                || MAP_REF_WITNESS_AUTHORITY.equals(expression)
+                && validMapRefWitness(record, activationId);
         boolean keyExact =
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT".equals(key)
                 || "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT".equals(key)
@@ -5315,6 +5351,41 @@ public final class ConcolicSummaryImporter {
                 || VALUE_REF_WITNESS_AUTHORITY.equals(value)
                 && validValueRefWitness(record, activationId);
         return generic && keyExact && valueExact;
+    }
+
+    private static boolean validMapRefWitness(JsonObject record,
+                                              String activationId) {
+        if (record == null
+                || !MAP_REF_WITNESS_AUTHORITY.equals(string(record,
+                "expressionAuthority"))
+                || integer(record, "mapExpressionWitnessSchemaVersion", -1)
+                != 1
+                || !MAP_REF_WITNESS_KIND.equals(string(record,
+                "mapExpressionWitnessKind"))
+                || !VALUE_REF_WITNESS_TOKEN_AUTHORITY.equals(string(record,
+                "mapExpressionWitnessAuthority"))) {
+            return false;
+        }
+        long mapToken = longInteger(record,
+                "backingMapObjectToken", 0L);
+        long witnessToken = longInteger(record,
+                "mapExpressionWitnessObjectToken", 0L);
+        String witnessScope = string(record,
+                "mapExpressionWitnessObjectTokenScope");
+        JsonElement expressionElement = record.get("mapExpression");
+        if (mapToken <= 0L || witnessToken != mapToken
+                || activationId == null || activationId.isEmpty()
+                || !activationId.equals(string(record, "objectTokenScope"))
+                || !activationId.equals(witnessScope)
+                || expressionElement == null
+                || !expressionElement.isJsonObject()) {
+            return false;
+        }
+        JsonObject mapExpression = expressionElement.getAsJsonObject();
+        return "SymbolExpression".equals(string(mapExpression, "_type"))
+                && "L".equals(string(mapExpression, "_java_type"))
+                && valueRefWitnessSymbol(activationId, mapToken).equals(
+                string(mapExpression, "_exp"));
     }
 
     private static boolean validValueRefWitness(JsonObject record,
@@ -5404,6 +5475,23 @@ public final class ConcolicSummaryImporter {
         }
     }
 
+    private static void copyMapRefWitnessMetadata(JsonObject source,
+                                                  JsonObject target) {
+        String[] fields = {
+                "expressionAuthority", "objectTokenScope",
+                "mapExpressionWitnessSchemaVersion",
+                "mapExpressionWitnessKind",
+                "mapExpressionWitnessObjectToken",
+                "mapExpressionWitnessObjectTokenScope",
+                "mapExpressionWitnessAuthority"
+        };
+        for (String field : fields) {
+            if (source.has(field) && !source.get(field).isJsonNull()) {
+                target.add(field, source.get(field).deepCopy());
+            }
+        }
+    }
+
     private static boolean completeObservationTokens(JsonObject record) {
         return bool(record, "backingMapObjectTokenKnown", false)
                 && longInteger(record, "backingMapObjectToken", 0L) > 0L
@@ -5454,12 +5542,28 @@ public final class ConcolicSummaryImporter {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             String symbol = string(action, "symbol");
-            if (!"FIELD_ACCESS".equals(string(action, "bindingMode"))
+            String bindingMode = string(action, "bindingMode");
+            if (!("FIELD_ACCESS".equals(bindingMode)
+                    || "CONTAINER_INPUT_OBSERVATION".equals(bindingMode))
                     || symbol.isEmpty()) {
                 continue;
             }
             if (actions.put(symbol, action) != null) {
                 duplicateActions.add(symbol);
+            }
+        }
+        Map<String, JsonObject> declaredActions = new LinkedHashMap<>();
+        Set<String> duplicateDeclaredActions = new LinkedHashSet<>();
+        for (JsonElement element : array(activation, "symbolize")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            String symbol = string(action, "symbol");
+            if (!"FIELD_ACCESS".equals(string(action, "bindingMode"))
+                    || symbol.isEmpty()) {
+                continue;
+            }
+            if (declaredActions.put(symbol, action) != null) {
+                duplicateDeclaredActions.add(symbol);
             }
         }
 
@@ -5544,7 +5648,9 @@ public final class ConcolicSummaryImporter {
                 ContainerDynamicFieldValidation validated =
                         validateContainerDynamicFieldBinding(record,
                                 activation, actions, duplicateActions,
-                                fieldObservations, mutations, ports);
+                                declaredActions, duplicateDeclaredActions,
+                                fieldObservations, branchMappings,
+                                symbolizedInputs, mutations, ports);
                 String bindingId = string(record, "dynamicBindingId");
                 String dynamic = string(record, "dynamicFieldSymbol");
                 if (validated == null) {
@@ -5583,7 +5689,10 @@ public final class ConcolicSummaryImporter {
             int occurrence = integer(record, "materializationOccurrence", -1);
             String fieldSignature = string(record, "fieldSignature");
             String entryReadId = string(record, "entryReadObservationId");
-            long ownerToken = longInteger(record, "leafOwnerObjectToken", 0L);
+            long leafOwnerToken = longInteger(record,
+                    "leafOwnerObjectToken", 0L);
+            long entryValueOwnerToken = longInteger(record,
+                    "entryValueOwnerObjectToken", 0L);
             String keyAuthority = string(record, "keyExpressionAuthority");
             JsonObject action = actions.get(base);
             RuntimeHeapObservation entryRead = observations.byId.get(
@@ -5610,7 +5719,8 @@ public final class ConcolicSummaryImporter {
                     && !site.isEmpty() && occurrence >= 1
                     && !fieldSignature.isEmpty()
                     && array(record, "fieldPath").size() > 0
-                    && ownerToken > 0L && !entryReadId.isEmpty()
+                    && leafOwnerToken > 0L && entryValueOwnerToken > 0L
+                    && !entryReadId.isEmpty()
                     && hasNonNull(record, "keyExpression")
                     && keyAuthorityValid
                     && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
@@ -5629,7 +5739,7 @@ public final class ConcolicSummaryImporter {
                 structureComplete = false;
             }
             if (entryRead == null
-                    || ownerToken != longInteger(entryRead.record,
+                    || entryValueOwnerToken != longInteger(entryRead.record,
                     "valueObjectToken", 0L)
                     || !hasNonNull(record, "keyExpression")
                     || !hasNonNull(entryRead.record, "keyExpression")
@@ -5645,7 +5755,7 @@ public final class ConcolicSummaryImporter {
             if (entryUsesValueRefWitness
                     && (!validValueRefWitness(entryRead.record,
                     string(activation, "activationId"))
-                    || ownerToken != longInteger(entryRead.record,
+                    || entryValueOwnerToken != longInteger(entryRead.record,
                     "valueExpressionWitnessObjectToken", 0L))) {
                 // Repeat the activation/token check at the semantic field join,
                 // rather than treating raw-observation admission as authority
@@ -5684,7 +5794,8 @@ public final class ConcolicSummaryImporter {
             }
             if (entryUsesValueRefWitness) {
                 certifyValueRefWitnessJoin(entryRead.record, record,
-                        ownerToken, string(activation, "activationId"));
+                        entryValueOwnerToken,
+                        string(activation, "activationId"));
             }
             RuntimeDynamicFieldBinding binding =
                     new RuntimeDynamicFieldBinding(record);
@@ -5728,10 +5839,10 @@ public final class ConcolicSummaryImporter {
 
     private static void certifyValueRefWitnessJoin(
             JsonObject entryRead, JsonObject dynamicBinding,
-            long leafOwnerObjectToken, String activationId) {
+            long entryValueOwnerObjectToken, String activationId) {
         if (!validValueRefWitness(entryRead, activationId)
-                || leafOwnerObjectToken <= 0L
-                || leafOwnerObjectToken != longInteger(entryRead,
+                || entryValueOwnerObjectToken <= 0L
+                || entryValueOwnerObjectToken != longInteger(entryRead,
                 "valueExpressionWitnessObjectToken", 0L)) {
             return;
         }
@@ -5739,7 +5850,7 @@ public final class ConcolicSummaryImporter {
         entryRead.addProperty("valueExpressionWitnessCertificationAuthority",
                 VALUE_REF_WITNESS_CERTIFICATION_AUTHORITY);
         entryRead.addProperty("valueExpressionWitnessCertifiedObjectToken",
-                leafOwnerObjectToken);
+                entryValueOwnerObjectToken);
         entryRead.addProperty(
                 "valueExpressionWitnessCertifiedObjectTokenScope",
                 activationId);
@@ -5749,7 +5860,7 @@ public final class ConcolicSummaryImporter {
                 VALUE_REF_WITNESS_CERTIFICATION_AUTHORITY);
         dynamicBinding.addProperty(
                 "entryValueRefWitnessJoinObjectToken",
-                leafOwnerObjectToken);
+                entryValueOwnerObjectToken);
         dynamicBinding.addProperty(
                 "entryValueRefWitnessJoinObjectTokenScope", activationId);
     }
@@ -6369,7 +6480,10 @@ public final class ConcolicSummaryImporter {
     validateContainerDynamicFieldBinding(
             JsonObject record, JsonObject activation,
             Map<String, JsonObject> actions, Set<String> duplicateActions,
-            JsonElement fieldObservations, List<HeapMutation> mutations,
+            Map<String, JsonObject> declaredActions,
+            Set<String> duplicateDeclaredActions,
+            JsonElement fieldObservations, JsonArray branchMappings,
+            JsonElement symbolizedInputs, List<HeapMutation> mutations,
             HeapPortResolver ports) {
         String activationId = string(activation, "activationId");
         String bindingId = string(record, "dynamicBindingId");
@@ -6379,6 +6493,10 @@ public final class ConcolicSummaryImporter {
         int occurrence = integer(record, "materializationOccurrence", -1);
         String fieldSignature = string(record, "fieldSignature");
         JsonArray fieldPath = array(record, "fieldPath");
+        String firstFieldPathSegment = fieldPath.size() > 0
+                && fieldPath.get(0).isJsonPrimitive()
+                && fieldPath.get(0).getAsJsonPrimitive().isString()
+                ? fieldPath.get(0).getAsString() : "";
         long leafToken = longInteger(record, "leafOwnerObjectToken", 0L);
         JsonObject selector = object(record, "containerSelector");
         String selectorBindingId = string(selector, "bindingId");
@@ -6414,6 +6532,23 @@ public final class ConcolicSummaryImporter {
         String bridgeTokenScope = string(record,
                 "materializationSiteBridgeObjectTokenScope");
 
+        List<JsonObject> declarations = new ArrayList<>();
+        for (JsonElement element : array(activation,
+                "containerElementFieldBindings")) {
+            if (element.isJsonObject() && selectorBindingId.equals(string(
+                    element.getAsJsonObject(), "bindingId"))) {
+                declarations.add(element.getAsJsonObject());
+            }
+        }
+        JsonObject declaration = declarations.size() == 1
+                ? declarations.get(0) : null;
+        boolean snapshotDeclaration = declaration != null
+                && integer(declaration, "schemaVersion", -1) == 2
+                && "CONTAINER_SNAPSHOT".equals(string(declaration,
+                "materializationMode"))
+                && "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
+                .equals(string(declaration, "proofAuthority"));
+
         String expectedDynamic = base.isEmpty() || site.isEmpty()
                 || occurrence < 1 ? ""
                 : base + ".field." + sha256(site).substring(0, 12)
@@ -6439,14 +6574,20 @@ public final class ConcolicSummaryImporter {
                 && !record.has("keyExpression")
                 && !record.has("keyExpressionAuthority");
 
-        complete &= MATERIALIZATION_HOOK_SITE.matcher(actualHookSite)
-                .matches()
+        boolean exactMaterializationOrigin = snapshotDeclaration
+                ? ("CONTAINER_SNAPSHOT:" + selectorBindingId).equals(
+                actualHookSite)
+                : MATERIALIZATION_HOOK_SITE.matcher(actualHookSite)
+                .matches();
+        complete &= exactMaterializationOrigin
                 && actualHookOccurrence > 0
                 && site.equals(effectiveSite)
                 && occurrence == effectiveOccurrence
                 && CONTAINER_SITE_BRIDGE_AUTHORITY.equals(bridgeAuthority)
                 && selectorBindingId.equals(bridgeBindingId)
-                && leafToken == bridgeElementToken
+                && (snapshotDeclaration
+                ? bridgeElementToken == elementToken
+                : leafToken == bridgeElementToken)
                 && activationId.equals(bridgeTokenScope);
 
         complete &= "ARRAY_INDEX".equals(string(selector, "kind"))
@@ -6459,7 +6600,7 @@ public final class ConcolicSummaryImporter {
                 && elementOccurrence == occurrence
                 && !declaredOwner.isEmpty() && !declaredType.isEmpty()
                 && containerToken > 0L && elementToken > 0L
-                && leafToken == elementToken
+                && (snapshotDeclaration || leafToken == elementToken)
                 && "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
                 string(selector, "objectTokenAuthority"))
                 && activationId.equals(string(selector,
@@ -6486,27 +6627,36 @@ public final class ConcolicSummaryImporter {
                 && declaredType.equals(normalizeContainerType(string(record,
                 "declaredFieldType")));
 
-        JsonObject action = actions.get(base);
+        JsonObject action = snapshotDeclaration
+                ? declaredActions.get(base) : actions.get(base);
         JsonObject containerAction = actions.get(containerPort);
         complete &= action != null && containerAction != null
-                && !duplicateActions.contains(base)
+                && !(snapshotDeclaration
+                ? duplicateDeclaredActions.contains(base)
+                : duplicateActions.contains(base))
                 && !duplicateActions.contains(containerPort)
                 && !base.equals(containerPort)
                 && fieldSignature.equals(firstNonBlank(string(action,
                 "field"), string(action, "cell")))
                 && fieldPath.equals(array(action, "fieldPath"))
                 && containerCell.equals(string(containerAction, "cell"));
-
-        List<JsonObject> declarations = new ArrayList<>();
-        for (JsonElement element : array(activation,
-                "containerElementFieldBindings")) {
-            if (element.isJsonObject() && selectorBindingId.equals(string(
-                    element.getAsJsonObject(), "bindingId"))) {
-                declarations.add(element.getAsJsonObject());
-            }
+        if (snapshotDeclaration && action != null) {
+            complete &= "FIELD_ACCESS".equals(string(action,
+                    "bindingMode"))
+                    && "HEAP_OBJECT_FIELD".equals(string(action,
+                    "location"))
+                    && "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
+                    .equals(string(action, "fieldPathAuthority"))
+                    && fieldSignature.equals(string(action,
+                    "leafFieldSignature"))
+                    && declaredFieldOwner(fieldSignature).equals(string(
+                    action, "leafOwnerClass"))
+                    && declaredFieldName(fieldSignature).equals(string(
+                    action, "leafField"))
+                    && firstFieldPathSegment.equals(string(action,
+                    "accessField"))
+                    && !string(action, "accessFieldSignature").isEmpty();
         }
-        JsonObject declaration = declarations.size() == 1
-                ? declarations.get(0) : null;
         if (declaration == null) {
             complete = false;
         } else {
@@ -6525,7 +6675,13 @@ public final class ConcolicSummaryImporter {
                     && declaredIndex == -1
                     && (declaredOccurrence == -1
                     || declaredOccurrence == occurrence);
-            complete &= integer(declaration, "schemaVersion", -1) == 1
+            boolean declarationSchemaComplete = snapshotDeclaration
+                    ? exactSchema2ContainerSnapshotDeclaration(declaration,
+                    fieldSignature, fieldPath, activation)
+                    && exactDeclaration
+                    : integer(declaration, "schemaVersion", -1) == 1
+                    && (exactDeclaration || discoveryDeclaration);
+            complete &= declarationSchemaComplete
                     && "ARRAY_ELEMENT_FIELD".equals(string(declaration,
                     "kind"))
                     && base.equals(string(declaration,
@@ -6542,7 +6698,9 @@ public final class ConcolicSummaryImporter {
                     && declaredType.equals(normalizeContainerType(string(
                     declaration, "declaredFieldType")))
                     && resolvedFrom.equals(declaredSelector)
-                    && (exactDeclaration || discoveryDeclaration);
+                    && (!snapshotDeclaration
+                    || fieldSignature.equals(string(declaration,
+                    "declaredFieldSignature")));
         }
 
         String signatureOwner = normalizeContainerType(
@@ -6554,40 +6712,78 @@ public final class ConcolicSummaryImporter {
 
         List<JsonObject> observed = fieldObservationsForDynamicBinding(
                 fieldObservations, bindingId, dynamic);
+        JsonObject observation = observed.size() == 1
+                ? observed.get(0) : null;
         complete &= observed.size() == 1
-                && completeContainerDynamicFieldObservation(
-                observed.isEmpty() ? null : observed.get(0), record,
-                selector, activationId);
+                && completeContainerDynamicFieldObservation(observation,
+                record, selector, activationId);
+        if (snapshotDeclaration && observation != null && action != null) {
+            complete &= bool(observation, "accessOwnerObjectTokenKnown",
+                    false)
+                    && longInteger(observation,
+                    "accessOwnerObjectToken", 0L) == elementToken
+                    && string(observation, "accessOwnerClass").equals(
+                    declaredFieldOwner(string(action,
+                            "accessFieldSignature")))
+                    && string(observation, "leafOwnerClass").equals(
+                    declaredFieldOwner(fieldSignature));
+        }
 
-        List<ContainerPutConsumerWitness> consumers =
-                exactContainerPutConsumerWitnesses(mutations, ports,
-                        activation, dynamic);
-        complete &= consumers.size() == 1;
+        List<ContainerPutConsumerWitness> consumers = snapshotDeclaration
+                ? Collections.<ContainerPutConsumerWitness>emptyList()
+                : exactContainerPutConsumerWitnesses(mutations, ports,
+                activation, dynamic);
+        List<ContainerSnapshotBranchWitness> branchConsumers =
+                snapshotDeclaration
+                        ? exactContainerSnapshotBranchWitnesses(activation,
+                        branchMappings, dynamic, fieldSignature)
+                        : Collections.<ContainerSnapshotBranchWitness>
+                        emptyList();
+        complete &= snapshotDeclaration
+                ? countString(symbolizedInputs, dynamic) == 1
+                && branchConsumers.size() == 1
+                : consumers.size() == 1;
         if (!complete) return null;
-        ContainerPutConsumerWitness consumer = consumers.get(0);
 
         JsonObject normalized = record.deepCopy();
-        normalized.add("fieldExpression",
-                consumer.mutation.keyExpression.deepCopy());
         normalized.addProperty("fieldJavaType", fieldJavaType(
                 fieldSignature));
-        normalized.addProperty("fieldExpressionAuthority",
-                "EXACT_REQUESTED_OUTPUT_MAP_PUT_KEY_DYNAMIC_SYMBOL");
-        normalized.addProperty("consumerWitnessRawConditionIndex",
-                consumer.mutation.rawIndex);
-        normalized.addProperty("consumerWitnessCodePosition",
-                consumer.mutation.codePosition);
-        normalized.addProperty("consumerWitnessSiteId",
-                consumer.mutation.siteId);
-        normalized.addProperty("consumerWitnessOccurrence",
-                consumer.mutation.occurrence);
-        normalized.addProperty("consumerWitnessInputPort",
-                consumer.binding.inputPort);
-        normalized.addProperty("consumerWitnessOutputPort",
-                consumer.binding.outputPort);
-        normalized.addProperty("consumerWitnessOperation", "MAP_PUT");
-        normalized.addProperty("consumerWitnessAuthority",
-                CONTAINER_PUT_CONSUMER_AUTHORITY);
+        if (snapshotDeclaration) {
+            ContainerSnapshotBranchWitness consumer =
+                    branchConsumers.get(0);
+            normalized.add("fieldExpression",
+                    consumer.fieldExpression.deepCopy());
+            normalized.addProperty("fieldExpressionAuthority",
+                    "EXACT_BRANCH_MAPPING_DYNAMIC_SYMBOL");
+            normalized.addProperty("consumerWitnessSiteId",
+                    consumer.siteId);
+            normalized.addProperty("consumerWitnessOccurrence",
+                    consumer.occurrence);
+            normalized.addProperty("consumerWitnessOperation", "BRANCH");
+            normalized.addProperty("consumerWitnessAuthority",
+                    CONTAINER_SNAPSHOT_BRANCH_CONSUMER_AUTHORITY);
+        } else {
+            ContainerPutConsumerWitness consumer = consumers.get(0);
+            normalized.add("fieldExpression",
+                    consumer.mutation.keyExpression.deepCopy());
+            normalized.addProperty("fieldExpressionAuthority",
+                    "EXACT_REQUESTED_OUTPUT_MAP_PUT_KEY_DYNAMIC_SYMBOL");
+            normalized.addProperty("consumerWitnessRawConditionIndex",
+                    consumer.mutation.rawIndex);
+            normalized.addProperty("consumerWitnessCodePosition",
+                    consumer.mutation.codePosition);
+            normalized.addProperty("consumerWitnessSiteId",
+                    consumer.mutation.siteId);
+            normalized.addProperty("consumerWitnessOccurrence",
+                    consumer.mutation.occurrence);
+            normalized.addProperty("consumerWitnessInputPort",
+                    consumer.binding.inputPort);
+            normalized.addProperty("consumerWitnessOutputPort",
+                    consumer.binding.outputPort);
+            normalized.addProperty("consumerWitnessOperation", "MAP_PUT");
+            normalized.addProperty("consumerWitnessAuthority",
+                    CONTAINER_PUT_CONSUMER_AUTHORITY);
+        }
         String selectorTuple = selectorBindingId + "\u0000" + base
                 + "\u0000" + containerPort + "\u0000" + containerCell
                 + "\u0000" + elementIndex + "\u0000" + occurrence
@@ -6603,6 +6799,186 @@ public final class ConcolicSummaryImporter {
         return new ContainerDynamicFieldValidation(normalized,
                 base + "\u0000" + site + "\u0000" + occurrence,
                 selectorTuple, identityTuple, bridgeTuple);
+    }
+
+    private static boolean exactSchema2ContainerSnapshotDeclaration(
+            JsonObject declaration, String fieldSignature,
+            JsonArray fieldPath, JsonObject activation) {
+        if (integer(declaration, "schemaVersion", -1) != 2
+                || !"CONTAINER_SNAPSHOT".equals(string(declaration,
+                "materializationMode"))
+                || !"STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
+                .equals(string(declaration, "proofAuthority"))
+                || !bool(declaration, "complete", false)
+                || !fieldSignature.equals(string(declaration,
+                "declaredFieldSignature"))
+                || !"boolean".equals(fieldJavaType(fieldSignature))
+                || !declaredFieldOwner(fieldSignature).equals(string(
+                declaration, "declaredFieldOwnerClass"))
+                || !"boolean".equals(string(declaration,
+                "declaredFieldType"))
+                || fieldPath.size() < 2 || fieldPath.size() > 4
+                || array(declaration, "proofCausalEdgeIds").size()
+                != 4 * fieldPath.size()
+                || !MATERIALIZATION_HOOK_SITE.matcher(string(declaration,
+                "fieldMaterializationSiteId")).matches()
+                || !MATERIALIZATION_HOOK_SITE.matcher(string(declaration,
+                "arrayLoadSiteId")).matches()) {
+            return false;
+        }
+        Set<String> proofIds = new LinkedHashSet<>();
+        Set<String> sliceEdgeIds = new LinkedHashSet<>();
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        for (JsonElement edgeId : array(slice, "causalEdgeIds")) {
+            if (edgeId.isJsonPrimitive()) {
+                sliceEdgeIds.add(edgeId.getAsString());
+            }
+        }
+        for (JsonElement edge : array(slice, "causalEdges")) {
+            if (edge.isJsonObject()) {
+                String edgeId = string(edge.getAsJsonObject(), "edgeId");
+                if (!edgeId.isEmpty()) sliceEdgeIds.add(edgeId);
+            }
+        }
+        for (JsonElement proof : array(declaration,
+                "proofCausalEdgeIds")) {
+            if (!proof.isJsonPrimitive()
+                    || proof.getAsString().trim().isEmpty()
+                    || !proofIds.add(proof.getAsString())
+                    || !sliceEdgeIds.contains(proof.getAsString())) {
+                return false;
+            }
+        }
+        for (JsonElement segment : fieldPath) {
+            if (!segment.isJsonPrimitive()
+                    || !segment.getAsJsonPrimitive().isString()
+                    || segment.getAsString().trim().isEmpty()) {
+                return false;
+            }
+        }
+        JsonElement leaf = fieldPath.get(fieldPath.size() - 1);
+        return leaf.isJsonPrimitive()
+                && leaf.getAsJsonPrimitive().isString()
+                && declaredFieldName(fieldSignature).equals(
+                leaf.getAsString())
+                && declaredFieldName(fieldSignature).equals(string(
+                declaration, "declaredFieldName"));
+    }
+
+    /**
+     * A schema-v2 snapshot leaf is admitted only when one in-slice VM branch
+     * consumes the byte-exact Boolean symbol created for that dynamic leaf.
+     * Prefix matches and owner-wide aliases are deliberately rejected.
+     */
+    private static List<ContainerSnapshotBranchWitness>
+    exactContainerSnapshotBranchWitnesses(
+            JsonObject activation, JsonArray branchMappings,
+            String dynamicFieldSymbol, String fieldSignature) {
+        List<ContainerSnapshotBranchWitness> result = new ArrayList<>();
+        String owner = declaredFieldOwner(fieldSignature);
+        if (!"boolean".equals(fieldJavaType(fieldSignature))
+                || owner.isEmpty() || dynamicFieldSymbol.isEmpty()) {
+            return result;
+        }
+        String expectedRaw = "M_Z_field_" + dynamicFieldSymbol + "_"
+                + owner.replace('.', '/');
+        Set<String> applicationMethods = new LinkedHashSet<>();
+        String rootMethod = ConcolicCodePosition.sootMethodKey(string(
+                activation, "rootMethod"));
+        if (!rootMethod.isEmpty()) applicationMethods.add(rootMethod);
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        for (JsonElement method : array(slice, "methods")) {
+            if (!method.isJsonPrimitive()) continue;
+            String key = ConcolicCodePosition.sootMethodKey(
+                    method.getAsString());
+            if (!key.isEmpty()) applicationMethods.add(key);
+        }
+        for (JsonElement edge : array(slice, "causalEdges")) {
+            if (!edge.isJsonObject()) continue;
+            String key = ConcolicCodePosition.sootMethodKey(string(
+                    edge.getAsJsonObject(), "method"));
+            if (!key.isEmpty()) applicationMethods.add(key);
+        }
+
+        for (JsonElement element : branchMappings) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mapping = element.getAsJsonObject();
+            JsonElement condition = mapping.get("condition");
+            SnapshotDynamicExpressionScan scan =
+                    new SnapshotDynamicExpressionScan();
+            collectSnapshotDynamicExpressions(condition,
+                    dynamicFieldSymbol, expectedRaw, scan);
+            if (scan.referenceCount == 0) continue;
+            String method = ConcolicCodePosition.sootMethodKey(string(
+                    mapping, "method"));
+            int unitIndex = integer(mapping, "unitIndex", -1);
+            int occurrence = integer(mapping, "occurrence", -1);
+            int conditionIndex = integer(mapping, "conditionIndex", -1);
+            int rawConditionIndex = integer(mapping,
+                    "rawConditionIndex", -1);
+            String siteId = string(mapping, "siteId");
+            boolean exact = !scan.invalid
+                    && scan.referenceCount == 1
+                    && scan.expression != null
+                    && !method.isEmpty()
+                    && applicationMethods.contains(method)
+                    && unitIndex >= 0
+                    && siteId.equals(string(mapping, "method")
+                    + "#u" + unitIndex)
+                    && occurrence > 0
+                    && conditionIndex >= 0
+                    && conditionIndex == rawConditionIndex
+                    && !bool(mapping, "overrideApplied", true)
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_"
+                    .concat("PC_INDEX").equals(string(mapping,
+                            "mappingPolicy"))
+                    && bool(mapping, "vmBranchEventValidated", false)
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
+                    .equals(string(mapping, "conditionAuthority"));
+            if (!exact) {
+                return Collections.emptyList();
+            }
+            result.add(new ContainerSnapshotBranchWitness(
+                    scan.expression, siteId, occurrence));
+        }
+        return result;
+    }
+
+    private static void collectSnapshotDynamicExpressions(
+            JsonElement expression, String dynamicFieldSymbol,
+            String expectedRaw, SnapshotDynamicExpressionScan scan) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement item : expression.getAsJsonArray()) {
+                collectSnapshotDynamicExpressions(item, dynamicFieldSymbol,
+                        expectedRaw, scan);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        String type = string(object, "_type");
+        String raw = string(object, "_exp");
+        if (("SymbolExpression".equals(type)
+                || "ConSymbolExp".equals(type))
+                && HeapPortResolver.containsSymbolReference(raw,
+                dynamicFieldSymbol)) {
+            scan.referenceCount++;
+            if (!expectedRaw.equals(raw)
+                    || !"Z".equals(string(object, "_java_type"))
+                    || scan.expression != null) {
+                scan.invalid = true;
+            } else {
+                scan.expression = object.deepCopy();
+            }
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (!"_exp".equals(entry.getKey())
+                    && !"_code_position".equals(entry.getKey())) {
+                collectSnapshotDynamicExpressions(entry.getValue(),
+                        dynamicFieldSymbol, expectedRaw, scan);
+            }
+        }
     }
 
     /**
@@ -6825,6 +7201,12 @@ public final class ConcolicSummaryImporter {
                 && longInteger(binding, "leafOwnerObjectToken", 0L)
                 == longInteger(observation, "leafOwnerObjectToken", -1L)
                 && bool(observation, "leafOwnerObjectTokenKnown", false)
+                && longInteger(binding,
+                "entryValueOwnerObjectToken", 0L)
+                == longInteger(observation,
+                "accessOwnerObjectToken", -1L)
+                && bool(observation,
+                "accessOwnerObjectTokenKnown", false)
                 && entryReadId.equals(string(observation,
                 "entryReadObservationId"))
                 && arrayContainsString(array(observation,
@@ -7293,7 +7675,9 @@ public final class ConcolicSummaryImporter {
             JsonArray branchMappings, JsonElement fieldObservations,
             DynamicFieldBindingCatalog dynamicBindings,
             JsonArray rawPathCondition, PathNormalization normalization,
-            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks) {
+            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
+            String regionId,
+            boolean nonMutatingDynamicRead) {
         if (catalog.legacy) {
             return HeapObservationExtraction.legacy(catalog);
         }
@@ -7303,8 +7687,20 @@ public final class ConcolicSummaryImporter {
         Map<String, List<GuardedMutationProof>> guardedMutations =
                 guardedMutationProofs(slice);
         for (RuntimeHeapObservation runtime : catalog.byId.values()) {
+            ObservationFieldBindings fieldBindings =
+                    observationFieldBindings(runtime, activation, slice,
+                            guardedMutations, branchMappings,
+                            fieldObservations, dynamicBindings,
+                            rawPathCondition, normalization,
+                            dynamicPcFallbacks, nonMutatingDynamicRead);
+            issues.addAll(fieldBindings.issues);
             ObservationStateResolution state = observationState(
                     runtime, effects, ports);
+            if (!state.resolved && !state.ambiguous) {
+                state = nonMutatingDynamicObservationState(runtime,
+                        effects, activation, regionId, dynamicBindings,
+                        fieldBindings, nonMutatingDynamicRead);
+            }
             if (!state.resolved) {
                 issues.add(new HeapEffectIssue(
                         state.ambiguous
@@ -7313,13 +7709,6 @@ public final class ConcolicSummaryImporter {
                         runtime.pcBoundary, runtime.observationId,
                         string(runtime.record, "siteId")));
             }
-            ObservationFieldBindings fieldBindings =
-                    observationFieldBindings(runtime, activation, slice,
-                            guardedMutations, branchMappings,
-                            fieldObservations, dynamicBindings,
-                            rawPathCondition, normalization,
-                            dynamicPcFallbacks);
-            issues.addAll(fieldBindings.issues);
 
             JsonObject observation = new JsonObject();
             observation.addProperty("schemaVersion", 1);
@@ -7338,12 +7727,18 @@ public final class ConcolicSummaryImporter {
             if (!state.effectId.isEmpty()) {
                 observation.addProperty("stateEffectId", state.effectId);
             }
+            if (state.stateBaseProof != null) {
+                observation.addProperty("stateBaseComplete", true);
+                observation.add("stateBaseProof",
+                        state.stateBaseProof.deepCopy());
+            }
             observation.add("mapExpression", runtime.record.get(
                     "mapExpression").deepCopy());
             observation.add("keyExpression", runtime.record.get(
                     "keyExpression").deepCopy());
             observation.add("valueExpression", runtime.record.get(
                     "valueExpression").deepCopy());
+            copyMapRefWitnessMetadata(runtime.record, observation);
             copyValueRefWitnessMetadata(runtime.record, observation);
             if (hasNonNull(runtime.record, "entryExpression")) {
                 observation.add("entryExpression", runtime.record.get(
@@ -7424,6 +7819,105 @@ public final class ConcolicSummaryImporter {
                 "EXACT_ACTIVATION_MAP_INPUT_EXPRESSION", "");
     }
 
+    private static ObservationStateResolution
+    nonMutatingDynamicObservationState(
+            RuntimeHeapObservation observation, JsonArray effects,
+            JsonObject activation, String regionId,
+            DynamicFieldBindingCatalog catalog,
+            ObservationFieldBindings fieldBindings,
+            boolean nonMutatingDynamicRead) {
+        if (!nonMutatingDynamicRead || effects.size() != 0
+                || !fieldBindings.complete
+                || fieldBindings.bindings.size() != 1) {
+            return ObservationStateResolution.unresolved();
+        }
+        JsonElement element = fieldBindings.bindings.get(0);
+        if (!element.isJsonObject()) {
+            return ObservationStateResolution.unresolved();
+        }
+        JsonObject binding = element.getAsJsonObject();
+        String base = string(binding, "baseInputSymbol");
+        String dynamicSymbol = string(binding, "dynamicFieldSymbol");
+        String bindingId = string(binding, "dynamicBindingId");
+        String activationId = string(activation, "activationId");
+        List<RuntimeDynamicFieldBinding> candidates = catalog.forEntry(
+                observation.observationId, base);
+        if (base.isEmpty() || dynamicSymbol.isEmpty() || bindingId.isEmpty()
+                || candidates.size() != 1
+                || !NON_MUTATING_DYNAMIC_FIELD_EXPRESSION_AUTHORITY.equals(
+                string(binding, "fieldExpressionAuthority"))
+                || !NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY.equals(
+                string(binding, "observationStateBindingAuthority"))
+                || activationId.isEmpty()
+                || !activationId.equals(string(observation.record,
+                "objectTokenScope"))) {
+            return ObservationStateResolution.unresolved();
+        }
+        RuntimeDynamicFieldBinding dynamic = candidates.get(0);
+        if (!bindingId.equals(dynamic.dynamicBindingId)
+                || !dynamicSymbol.equals(dynamic.dynamicFieldSymbol)
+                || !activationId.equals(string(dynamic.record,
+                "objectTokenScope"))
+                || !bool(dynamic.record, "complete", false)) {
+            return ObservationStateResolution.unresolved();
+        }
+        if (!validMapRefWitness(observation.record, activationId)) {
+            return ObservationStateResolution.unresolved();
+        }
+        String selectorDigest = sha256(observation.observationId + "\n"
+                + base + "\n" + bindingId);
+        String statePort = regionId + ".state.heapObservation."
+                + selectorDigest.substring(0, 12);
+        JsonObject proof = new JsonObject();
+        proof.addProperty("schemaVersion", 1);
+        proof.addProperty("kind",
+                "NON_MUTATING_MAP_ENTRY_READ_STATE_BASE");
+        proof.addProperty("statePort", statePort);
+        proof.addProperty("observationId", observation.observationId);
+        proof.addProperty("entryReadObservationId",
+                observation.observationId);
+        proof.addProperty("regionId", regionId);
+        proof.addProperty("activationId", activationId);
+        proof.addProperty("baseInputSymbol", base);
+        proof.addProperty("dynamicBindingId", bindingId);
+        proof.addProperty("dynamicFieldSymbol", dynamicSymbol);
+        proof.add("mapExpression", observation.record.get(
+                "mapExpression").deepCopy());
+        proof.addProperty("expressionAuthority", string(
+                observation.record, "expressionAuthority"));
+        proof.addProperty("backingMapObjectToken", longInteger(
+                observation.record, "backingMapObjectToken", 0L));
+        proof.addProperty("objectTokenScope", string(observation.record,
+                "objectTokenScope"));
+        proof.addProperty("mapExpressionWitnessSchemaVersion", integer(
+                observation.record, "mapExpressionWitnessSchemaVersion",
+                -1));
+        proof.addProperty("mapExpressionWitnessKind", string(
+                observation.record, "mapExpressionWitnessKind"));
+        proof.addProperty("mapExpressionWitnessObjectToken", longInteger(
+                observation.record, "mapExpressionWitnessObjectToken",
+                0L));
+        proof.addProperty("mapExpressionWitnessObjectTokenScope", string(
+                observation.record,
+                "mapExpressionWitnessObjectTokenScope"));
+        proof.addProperty("mapExpressionWitnessAuthority", string(
+                observation.record, "mapExpressionWitnessAuthority"));
+        proof.addProperty("candidateMutationCount", 0);
+        proof.addProperty("heapEffectCount", 0);
+        proof.addProperty("associatedHeapEffectCount", 0);
+        proof.addProperty("runtimeHeapEffectRecordCount", 0);
+        proof.addProperty("runtimeHeapEffectJoinedCount", 0);
+        proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
+        proof.addProperty("selectorDigest", selectorDigest);
+        proof.addProperty("statePortDerivationAuthority",
+                "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1");
+        proof.addProperty("authority",
+                NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY);
+        proof.addProperty("complete", true);
+        return ObservationStateResolution.resolved(statePort,
+                NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY, "", proof);
+    }
+
     private static ObservationFieldBindings observationFieldBindings(
             RuntimeHeapObservation observation, JsonObject activation,
             JsonObject slice,
@@ -7431,7 +7925,8 @@ public final class ConcolicSummaryImporter {
             JsonArray branchMappings, JsonElement fieldObservations,
             DynamicFieldBindingCatalog dynamicBindings,
             JsonArray rawPathCondition, PathNormalization normalization,
-            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks) {
+            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
+            boolean nonMutatingDynamicRead) {
         List<HeapEffectIssue> issues = new ArrayList<>();
         JsonArray bindings = new JsonArray();
         Set<String> guardSites = new LinkedHashSet<>();
@@ -7471,7 +7966,7 @@ public final class ConcolicSummaryImporter {
             return dynamicObservationFieldBindings(observation, activation,
                     expressionSymbols, branchMappings, dynamicBindings,
                     issues, guardSites, rawPathCondition, normalization,
-                    dynamicPcFallbacks);
+                    dynamicPcFallbacks, nonMutatingDynamicRead);
         }
 
         Set<String> requestedInputs = new LinkedHashSet<>();
@@ -7569,9 +8064,15 @@ public final class ConcolicSummaryImporter {
             DynamicFieldBindingCatalog catalog,
             List<HeapEffectIssue> inheritedIssues, Set<String> guardSites,
             JsonArray rawPathCondition, PathNormalization normalization,
-            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks) {
+            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
+            boolean nonMutatingDynamicRead) {
         List<HeapEffectIssue> issues = new ArrayList<>(inheritedIssues);
         JsonArray bindings = new JsonArray();
+        if (nonMutatingDynamicRead && guardSites.isEmpty()) {
+            return nonMutatingDynamicObservationFieldBindings(observation,
+                    activation, branchMappings, catalog, issues,
+                    rawPathCondition, normalization);
+        }
         Set<String> requestedInputs = new LinkedHashSet<>();
         JsonObject slice = object(activation, "requestedOutputSlice");
         for (JsonElement element : array(slice, "inputPorts")) {
@@ -7703,6 +8204,300 @@ public final class ConcolicSummaryImporter {
                 issues.isEmpty() && bindings.size() == expectedActions.size()
                         && bindings.size() > 0,
                 issues);
+    }
+
+    /**
+     * A read-only producer has no map mutation guard from which to discover
+     * the dynamic entry field.  Admit that field only from the independent
+     * exact witnesses already present in the activation and VM result.  This
+     * path is deliberately disjoint from guarded-mutation materialization.
+     */
+    private static ObservationFieldBindings
+    nonMutatingDynamicObservationFieldBindings(
+            RuntimeHeapObservation observation, JsonObject activation,
+            JsonArray branchMappings, DynamicFieldBindingCatalog catalog,
+            List<HeapEffectIssue> inheritedIssues,
+            JsonArray rawPathCondition, PathNormalization normalization) {
+        List<HeapEffectIssue> issues = new ArrayList<>(inheritedIssues);
+        JsonArray bindings = new JsonArray();
+        List<RuntimeDynamicFieldBinding> dynamicCandidates =
+                catalog.forObservation(observation.observationId);
+        if (dynamicCandidates.size() != 1) {
+            issues.add(new HeapEffectIssue(dynamicCandidates.isEmpty()
+                    ? "MISSING_MAP_ENTRY_READ_DYNAMIC_FIELD_BINDING"
+                    : "AMBIGUOUS_MAP_ENTRY_READ_DYNAMIC_FIELD_BINDING",
+                    observation.pcBoundary, observation.observationId,
+                    "NON_MUTATING_MAP_ENTRY_READ"));
+            return new ObservationFieldBindings(bindings, false, issues);
+        }
+        RuntimeDynamicFieldBinding dynamic = dynamicCandidates.get(0);
+        List<JsonObject> actions = new ArrayList<>();
+        for (JsonElement element : runtimeMaterializationActions(
+                activation)) {
+            if (element.isJsonObject() && dynamic.baseInputSymbol.equals(
+                    string(element.getAsJsonObject(), "symbol"))) {
+                actions.add(element.getAsJsonObject());
+            }
+        }
+        if (actions.size() != 1) {
+            issues.add(new HeapEffectIssue(actions.isEmpty()
+                    ? "MISSING_MAP_ENTRY_READ_FIELD_ACTION"
+                    : "AMBIGUOUS_MAP_ENTRY_READ_FIELD_ACTION",
+                    observation.pcBoundary, dynamic.baseInputSymbol,
+                    observation.observationId));
+            return new ObservationFieldBindings(bindings, false, issues);
+        }
+        JsonObject action = actions.get(0);
+        if (!exactRequestedNonMutatingFieldBase(activation, action,
+                dynamic)) {
+            issues.add(new HeapEffectIssue(
+                    "INCOMPLETE_NON_MUTATING_MAP_ENTRY_READ_FIELD_BASE",
+                    observation.pcBoundary, dynamic.baseInputSymbol,
+                    observation.observationId));
+            return new ObservationFieldBindings(bindings, false, issues);
+        }
+        List<JsonObject> expressions =
+                exactNonMutatingDynamicBranchExpressions(branchMappings,
+                        rawPathCondition, normalization, activation, action,
+                        dynamic);
+        if (expressions.size() != 1) {
+            issues.add(new HeapEffectIssue(expressions.size() > 1
+                    ? "AMBIGUOUS_DYNAMIC_FIELD_EXPRESSION"
+                    : "MISSING_DYNAMIC_FIELD_EXPRESSION",
+                    observation.pcBoundary, dynamic.dynamicBindingId,
+                    observation.observationId));
+            return new ObservationFieldBindings(bindings, false, issues);
+        }
+        String fieldType = fieldJavaType(dynamic.fieldSignature);
+        if (fieldType.isEmpty()) {
+            issues.add(new HeapEffectIssue("INCOMPLETE_DYNAMIC_FIELD_TYPE",
+                    observation.pcBoundary, dynamic.dynamicBindingId,
+                    dynamic.fieldSignature));
+            return new ObservationFieldBindings(bindings, false, issues);
+        }
+
+        JsonObject binding = new JsonObject();
+        binding.addProperty("schemaVersion", 1);
+        binding.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
+        binding.addProperty("dynamicBindingId", dynamic.dynamicBindingId);
+        binding.addProperty("baseInputSymbol", dynamic.baseInputSymbol);
+        binding.addProperty("dynamicFieldSymbol", dynamic.dynamicFieldSymbol);
+        binding.add("fieldExpression", expressions.get(0).deepCopy());
+        binding.addProperty("fieldExpressionAuthority",
+                NON_MUTATING_DYNAMIC_FIELD_EXPRESSION_AUTHORITY);
+        binding.addProperty("fieldSignature", dynamic.fieldSignature);
+        binding.addProperty("fieldJavaType", fieldType);
+        binding.add("fieldPath", array(dynamic.record,
+                "fieldPath").deepCopy());
+        binding.addProperty("materializationSiteId", string(dynamic.record,
+                "materializationSiteId"));
+        binding.addProperty("materializationOccurrence", integer(
+                dynamic.record, "materializationOccurrence", -1));
+        binding.addProperty("entryReadObservationId",
+                observation.observationId);
+        binding.add("keyExpression", dynamic.record.get(
+                "keyExpression").deepCopy());
+        binding.addProperty("keyExpressionAuthority", string(
+                dynamic.record, "keyExpressionAuthority"));
+        binding.addProperty("baseInputRole", "FIELD_FAMILY_TEMPLATE_ONLY");
+        binding.addProperty("authority",
+                "RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_AND_"
+                        + "ENTRY_VALUE_TOKEN_JOIN");
+        binding.addProperty("observationStateBindingAuthority",
+                NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY);
+        bindings.add(binding);
+        return new ObservationFieldBindings(bindings, issues.isEmpty(),
+                issues);
+    }
+
+    private static boolean exactRequestedNonMutatingFieldBase(
+            JsonObject activation, JsonObject action,
+            RuntimeDynamicFieldBinding dynamic) {
+        JsonObject slice = object(activation, "requestedOutputSlice");
+        String base = dynamic.baseInputSymbol;
+        String cell = string(action, "cell");
+        String accessMethod = string(action, "accessMethod");
+        JsonArray fieldPath = array(action, "fieldPath");
+        List<String> projectedPath = new ArrayList<>();
+        String projectedBase = projectedBaseCell(cell);
+        String baseField = declaredFieldName(projectedBase);
+        if (!baseField.isEmpty()) projectedPath.add(baseField);
+        projectedPath.addAll(projectedFieldPath(cell));
+        if (!bool(activation, "requestedOutputSliceComplete", false)
+                || !bool(slice, "complete", false)
+                || !bool(slice, "structuralComplete", false)
+                || bool(slice, "truncated", true)
+                || countString(slice.get("inputPorts"), base) != 1
+                || countString(slice.get("methods"), accessMethod) != 1
+                || !"FIELD_ACCESS".equals(string(action, "bindingMode"))
+                || !"HEAP_OBJECT_FIELD".equals(string(action, "location"))
+                || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
+                string(action, "fieldPathAuthority"))
+                || base.isEmpty() || cell.isEmpty() || accessMethod.isEmpty()
+                || fieldPath.size() < 2
+                || projectedPath.size() != fieldPath.size()
+                || !dynamic.fieldSignature.equals(firstNonBlank(
+                string(action, "leafFieldSignature"),
+                string(action, "field")))) {
+            return false;
+        }
+        for (int index = 0; index < fieldPath.size(); index++) {
+            if (!fieldPath.get(index).isJsonPrimitive()
+                    || !projectedPath.get(index).equals(
+                    fieldPath.get(index).getAsString())) {
+                return false;
+            }
+        }
+        List<JsonObject> bindings = new ArrayList<>();
+        for (JsonElement element : array(slice, "inputBindings")) {
+            if (element.isJsonObject() && base.equals(string(
+                    element.getAsJsonObject(), "inputPort"))) {
+                bindings.add(element.getAsJsonObject());
+            }
+        }
+        if (bindings.size() != 1) {
+            return false;
+        }
+        JsonObject binding = bindings.get(0);
+        return cell.equals(string(binding, "dependencyCell"))
+                && "EXACT_CELL_IDENTITY".equals(string(binding,
+                "bindingAuthority"))
+                && countString(binding.get("dependencyMethods"),
+                accessMethod) == 1;
+    }
+
+    private static List<JsonObject> exactNonMutatingDynamicBranchExpressions(
+            JsonArray branchMappings, JsonArray rawPathCondition,
+            PathNormalization normalization, JsonObject activation,
+            JsonObject action, RuntimeDynamicFieldBinding dynamic) {
+        List<JsonObject> result = new ArrayList<>();
+        String descriptor = javaTypeDescriptor(fieldJavaType(
+                dynamic.fieldSignature));
+        String owner = declaredFieldOwner(dynamic.fieldSignature);
+        if (descriptor.length() != 1
+                || "ZCBSIFJDL".indexOf(descriptor.charAt(0)) < 0
+                || owner.isEmpty()) {
+            return result;
+        }
+        String expectedEngineSymbol = "M_" + descriptor + "_field_"
+                + dynamic.dynamicFieldSymbol + "_"
+                + owner.replace('.', '/');
+        for (JsonElement element : branchMappings) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mapping = element.getAsJsonObject();
+            DynamicBranchExpressionScan scan =
+                    new DynamicBranchExpressionScan();
+            collectNonMutatingDynamicExpressions(mapping.get("condition"),
+                    dynamic.dynamicFieldSymbol, expectedEngineSymbol,
+                    descriptor, scan);
+            if (scan.referenceCount == 0) continue;
+            if (scan.invalid || scan.referenceCount != 1
+                    || scan.expression == null
+                    || !exactNonMutatingBranchMapping(mapping,
+                    rawPathCondition, normalization, activation, action)) {
+                return Collections.emptyList();
+            }
+            result.add(scan.expression);
+        }
+        return result;
+    }
+
+    private static boolean exactNonMutatingBranchMapping(
+            JsonObject mapping, JsonArray rawPathCondition,
+            PathNormalization normalization, JsonObject activation,
+            JsonObject action) {
+        int rawIndex = integer(mapping, "rawConditionIndex", -1);
+        int conditionIndex = integer(mapping, "conditionIndex", -1);
+        int engineIndex = integer(mapping, "engineConditionIndex", rawIndex);
+        int baseline = integer(mapping, "rawPathConditionBaseline", -1);
+        int boundary = integer(mapping, "rawPathConditionSize", -1);
+        int occurrence = integer(mapping, "occurrence", -1);
+        int unitIndex = integer(mapping, "unitIndex", -1);
+        String method = string(mapping, "method");
+        JsonElement rawCondition = mapping.get("rawCondition");
+        JsonElement condition = mapping.get("condition");
+        int normalizedIndex = normalization.index(rawIndex);
+        return rawIndex >= 0 && rawIndex < rawPathCondition.size()
+                && conditionIndex == rawIndex && engineIndex == rawIndex
+                && normalization.isSemantic(rawIndex)
+                && normalizedIndex >= 0
+                && normalizedIndex < normalization.conditions.size()
+                && rawCondition != null && condition != null
+                && GSON.toJson(rawPathCondition.get(rawIndex)).equals(
+                GSON.toJson(rawCondition))
+                && GSON.toJson(normalization.conditions.get(normalizedIndex))
+                .equals(GSON.toJson(condition))
+                && validSemanticBranchCondition(mapping, rawCondition,
+                condition)
+                && method.equals(string(action, "accessMethod"))
+                && countString(object(activation,
+                "requestedOutputSlice").get("methods"), method) == 1
+                && unitIndex >= 0
+                && string(mapping, "siteId").equals(method + "#u"
+                + unitIndex)
+                && occurrence > 0
+                && occurrence == integer(mapping, "vmOccurrence", -1)
+                && integer(mapping, "vmBranchEventId", 0) > 0
+                && longInteger(mapping, "vmThreadContextId", 0L) > 0L
+                && longInteger(mapping, "vmOwnerJavaThreadId", 0L) > 0L
+                && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
+                && bool(mapping, "vmBranchEventExpected", false)
+                && bool(mapping, "vmBranchEventValidated", false)
+                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
+                string(mapping, "vmBranchEventAuthority"))
+                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
+                .equals(string(mapping, "mappingPolicy"))
+                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX".equals(
+                string(mapping, "conditionAuthority"))
+                && !bool(mapping, "overrideApplied", true)
+                && "NONE".equals(string(mapping, "overrideMode"))
+                && bool(mapping, "outcome", false) == bool(mapping,
+                "observedOutcome", !bool(mapping, "outcome", false))
+                && bool(mapping, "outcome", false) == bool(mapping,
+                "effectiveOutcome", !bool(mapping, "outcome", false))
+                && baseline >= 0 && boundary > baseline
+                && rawIndex >= baseline && rawIndex < boundary
+                && containsInteger(array(mapping, "vmConditionIndices"),
+                rawIndex);
+    }
+
+    private static void collectNonMutatingDynamicExpressions(
+            JsonElement expression, String dynamicFieldSymbol,
+            String expectedEngineSymbol, String descriptor,
+            DynamicBranchExpressionScan scan) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement item : expression.getAsJsonArray()) {
+                collectNonMutatingDynamicExpressions(item,
+                        dynamicFieldSymbol, expectedEngineSymbol,
+                        descriptor, scan);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        String raw = string(object, "_exp");
+        if (("SymbolExpression".equals(string(object, "_type"))
+                || "ConSymbolExp".equals(string(object, "_type")))
+                && HeapPortResolver.containsSymbolReference(raw,
+                dynamicFieldSymbol)) {
+            scan.referenceCount++;
+            if (!expectedEngineSymbol.equals(raw)
+                    || !descriptor.equals(string(object, "_java_type"))
+                    || scan.expression != null) {
+                scan.invalid = true;
+            } else {
+                scan.expression = object.deepCopy();
+            }
+        }
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (!"_exp".equals(entry.getKey())
+                    && !"_code_position".equals(entry.getKey())) {
+                collectNonMutatingDynamicExpressions(entry.getValue(),
+                        dynamicFieldSymbol, expectedEngineSymbol,
+                        descriptor, scan);
+            }
+        }
     }
 
     private static List<JsonObject> exactGuardSymbolExpressions(
@@ -11454,6 +12249,31 @@ public final class ConcolicSummaryImporter {
         }
     }
 
+    private static final class SnapshotDynamicExpressionScan {
+        private int referenceCount;
+        private boolean invalid;
+        private JsonObject expression;
+    }
+
+    private static final class DynamicBranchExpressionScan {
+        private int referenceCount;
+        private boolean invalid;
+        private JsonObject expression;
+    }
+
+    private static final class ContainerSnapshotBranchWitness {
+        private final JsonObject fieldExpression;
+        private final String siteId;
+        private final int occurrence;
+
+        private ContainerSnapshotBranchWitness(
+                JsonObject fieldExpression, String siteId, int occurrence) {
+            this.fieldExpression = fieldExpression.deepCopy();
+            this.siteId = siteId;
+            this.occurrence = occurrence;
+        }
+    }
+
     private static final class MapProjectionDynamicFieldValidation {
         private final JsonObject normalized;
         private final String siteOccurrence;
@@ -11516,6 +12336,17 @@ public final class ConcolicSummaryImporter {
             return result;
         }
 
+        private List<RuntimeDynamicFieldBinding> forObservation(
+                String observationId) {
+            List<RuntimeDynamicFieldBinding> result = new ArrayList<>();
+            for (RuntimeDynamicFieldBinding binding : byId.values()) {
+                if (observationId.equals(binding.entryReadObservationId)) {
+                    result.add(binding);
+                }
+            }
+            return result;
+        }
+
         private JsonArray normalizedBindings() {
             JsonArray result = new JsonArray();
             for (RuntimeDynamicFieldBinding binding : byId.values()) {
@@ -11531,31 +12362,44 @@ public final class ConcolicSummaryImporter {
         private final String statePort;
         private final String authority;
         private final String effectId;
+        private final JsonObject stateBaseProof;
 
         private ObservationStateResolution(boolean resolved,
                                            boolean ambiguous,
                                            String statePort,
                                            String authority,
-                                           String effectId) {
+                                           String effectId,
+                                           JsonObject stateBaseProof) {
             this.resolved = resolved;
             this.ambiguous = ambiguous;
             this.statePort = statePort;
             this.authority = authority;
             this.effectId = effectId;
+            this.stateBaseProof = stateBaseProof == null ? null
+                    : stateBaseProof.deepCopy();
         }
 
         private static ObservationStateResolution resolved(
                 String statePort, String authority, String effectId) {
             return new ObservationStateResolution(true, false, statePort,
-                    authority, effectId);
+                    authority, effectId, null);
+        }
+
+        private static ObservationStateResolution resolved(
+                String statePort, String authority, String effectId,
+                JsonObject stateBaseProof) {
+            return new ObservationStateResolution(true, false, statePort,
+                    authority, effectId, stateBaseProof);
         }
 
         private static ObservationStateResolution unresolved() {
-            return new ObservationStateResolution(false, false, "", "", "");
+            return new ObservationStateResolution(false, false, "", "", "",
+                    null);
         }
 
         private static ObservationStateResolution ambiguous() {
-            return new ObservationStateResolution(false, true, "", "", "");
+            return new ObservationStateResolution(false, true, "", "", "",
+                    null);
         }
     }
 
