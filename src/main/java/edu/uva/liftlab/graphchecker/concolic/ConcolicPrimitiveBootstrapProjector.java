@@ -109,6 +109,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         LinkedHashSet<String> queried = new LinkedHashSet<>();
         queried.addAll(selectors);
         queried.addAll(rootTerms);
+        queried.addAll(canonicalIntegralInputTerms(cases));
         String solverInput = solverInput(smt, assignmentByPort.values(),
                 queried);
         SolverIdentity solverIdentity = attestSolver(arguments.z3,
@@ -142,12 +143,28 @@ public final class ConcolicPrimitiveBootstrapProjector {
 
         List<JsonObject> producerRows = new ArrayList<>();
         JsonArray caseManifest = new JsonArray();
+        JsonArray supplementalManifest = new JsonArray();
         Set<String> usedActivationIds = new LinkedHashSet<>();
+        Map<String, List<Map.Entry<String, JsonObject>>> rootsByRegion =
+                new LinkedHashMap<>();
         for (Map.Entry<String, JsonObject> entry
                 : assignmentByPort.entrySet()) {
-            String port = entry.getKey();
-            JsonObject rootAssignment = entry.getValue();
-            String region = string(rootAssignment, "regionId");
+            String region = string(entry.getValue(), "regionId");
+            List<Map.Entry<String, JsonObject>> regionRoots =
+                    rootsByRegion.get(region);
+            if (regionRoots == null) {
+                regionRoots = new ArrayList<>();
+                rootsByRegion.put(region, regionRoots);
+            }
+            regionRoots.add(entry);
+        }
+        int projectedPrimitiveInputCount = 0;
+        int supplementalPrimitiveAssignmentCount = 0;
+        for (Map.Entry<String, List<Map.Entry<String, JsonObject>>>
+                regionEntry : rootsByRegion.entrySet()) {
+            String region = regionEntry.getKey();
+            List<Map.Entry<String, JsonObject>> regionRoots =
+                    regionEntry.getValue();
             JsonObject selectedCase = selectedCases.get(region);
             if (selectedCase == null) {
                 throw gap("ROOT_REGION_HAS_NO_SELECTED_CASE:" + region);
@@ -160,42 +177,105 @@ public final class ConcolicPrimitiveBootstrapProjector {
             JsonObject summary = summaries.get(summaryId);
             JsonObject source = activations.get(activationId);
             validateSource(region, summaryId, activationId, summary, source);
-            JsonObject mapping = exactPortMapping(selectedCase, port, smt);
-            JsonObject dynamicBinding = exactDynamicLeafBinding(selectedCase,
-                    summary, mapping, port);
-            JsonObject action = exactAction(summary, source, port,
-                    dynamicBinding);
-            String actionIdentity = actionIdentitySha256(action);
-            JsonObject modelAssignment = modelAssignment(mapping,
-                    rootAssignment, action, actionIdentity);
-            if (dynamicBinding != null) {
-                retainDynamicLeafSelector(modelAssignment, dynamicBinding);
-            }
-            JsonObject replay = producerReplay(source, modelAssignment);
-            if (!usedActivationIds.add(activationId)) {
-                throw gap("ONE_PRODUCER_ACTIVATION_CONTROLS_MULTIPLE_ROOTS:"
-                        + activationId);
-            }
-            producerRows.add(replay);
-
+            JsonArray replayAssignments = new JsonArray();
+            Set<String> rootPorts = new LinkedHashSet<>();
             JsonObject selected = new JsonObject();
             selected.addProperty("regionId", region);
-            selected.addProperty("rootInputPort", port);
             selected.addProperty("caseId", string(selectedCase, "caseId"));
             selected.addProperty("sourceSummaryId", summaryId);
             selected.addProperty("sourceActivationId", activationId);
             selected.addProperty("selectorSolverSymbol", string(selectedCase,
                     "selectorSolverSymbol"));
-            selected.addProperty("rawEngineSymbol", string(mapping,
+            JsonArray rootProjectionRows = new JsonArray();
+            for (Map.Entry<String, JsonObject> rootEntry : regionRoots) {
+                String port = rootEntry.getKey();
+                JsonObject rootAssignment = rootEntry.getValue();
+                rootPorts.add(port);
+                JsonObject mapping = exactPortMapping(selectedCase, port, smt);
+                JsonObject dynamicBinding = exactDynamicLeafBinding(
+                        selectedCase, summary, mapping, port);
+                JsonObject action = exactAction(summary, source, port,
+                        dynamicBinding);
+                String actionIdentity = actionIdentitySha256(action);
+                JsonObject modelAssignment = modelAssignment(mapping,
+                        rootAssignment, action, actionIdentity);
+                if (dynamicBinding != null) {
+                    retainDynamicLeafSelector(modelAssignment,
+                            dynamicBinding);
+                }
+                replayAssignments.add(modelAssignment);
+                projectedPrimitiveInputCount++;
+
+                JsonObject projection = projectedInputManifest(region, port,
+                        selectedCase, mapping, string(rootAssignment,
+                                "solverTerm"), string(rootAssignment,
+                                "value"), action, actionIdentity);
+                projection.addProperty("projectionRole", "ROOT_BOOLEAN");
+                rootProjectionRows.add(projection);
+            }
+            if (rootProjectionRows.size() == 0) {
+                throw gap("SELECTED_PRODUCER_CASE_HAS_NO_ROOT_INPUT:"
+                        + region);
+            }
+            JsonObject firstRoot = rootProjectionRows.get(0)
+                    .getAsJsonObject();
+            selected.addProperty("rootInputPort", string(firstRoot,
+                    "inputPort"));
+            selected.addProperty("rawEngineSymbol", string(firstRoot,
                     "rawEngineSymbol"));
-            selected.addProperty("canonicalSolverTerm", string(rootAssignment,
-                    "solverTerm"));
-            selected.addProperty("modelValue", string(rootAssignment,
-                    "value"));
+            selected.addProperty("canonicalSolverTerm", string(firstRoot,
+                    "canonicalSolverTerm"));
+            selected.addProperty("modelValue", string(firstRoot,
+                    "modelValue"));
             selected.addProperty("materializationActionIdentitySha256",
-                    actionIdentity);
-            selected.add("materializationActionIdentity",
-                    actionIdentity(action));
+                    string(firstRoot,
+                            "materializationActionIdentitySha256"));
+            selected.add("materializationActionIdentity", object(firstRoot,
+                    "materializationActionIdentity").deepCopy());
+            selected.add("rootInputProjections", rootProjectionRows);
+
+            for (JsonObject mapping : supplementalIntegralMappings(
+                    selectedCase, rootPorts, smt)) {
+                String port = string(mapping, "canonicalPort");
+                String solverTerm = canonicalProjectionTerm(mapping);
+                String modelValue = values.get(solverTerm);
+                if (modelValue == null) {
+                    throw gap("Z3_SUPPLEMENTAL_VALUE_MISSING:" + port);
+                }
+                JsonObject dynamicBinding = exactDynamicLeafBinding(
+                        selectedCase, summary, mapping, port);
+                JsonObject action = exactAction(summary, source, port,
+                        dynamicBinding);
+                String valueType = scalarPrimitiveValueType(action, mapping,
+                        port);
+                String normalizedValue = normalizePrimitiveModelValue(
+                        valueType, modelValue, port);
+                String actionIdentity = actionIdentitySha256(action);
+                JsonObject modelAssignment = primitiveModelAssignment(mapping,
+                        port, valueType, normalizedValue, action,
+                        actionIdentity);
+                if (dynamicBinding != null) {
+                    retainDynamicLeafSelector(modelAssignment,
+                            dynamicBinding);
+                }
+                replayAssignments.add(modelAssignment);
+                projectedPrimitiveInputCount++;
+                supplementalPrimitiveAssignmentCount++;
+
+                JsonObject projection = projectedInputManifest(region, port,
+                        selectedCase, mapping, solverTerm, normalizedValue,
+                        action, actionIdentity);
+                projection.addProperty("projectionRole",
+                        "SUPPLEMENTAL_PRIMITIVE");
+                supplementalManifest.add(projection);
+            }
+
+            JsonObject replay = producerReplay(source, replayAssignments);
+            if (!usedActivationIds.add(activationId)) {
+                throw gap("ONE_PRODUCER_ACTIVATION_CONTROLS_MULTIPLE_ROOTS:"
+                        + activationId);
+            }
+            producerRows.add(replay);
             caseManifest.add(selected);
         }
         Collections.sort(producerRows, Comparator.comparing(
@@ -245,6 +325,12 @@ public final class ConcolicPrimitiveBootstrapProjector {
         manifest.addProperty("selectedValuationKey", string(valuation,
                 "valuationKey"));
         manifest.addProperty("rootBooleanInputCount", assignmentByPort.size());
+        manifest.addProperty("totalProjectedPrimitiveInputCount",
+                projectedPrimitiveInputCount);
+        manifest.addProperty("supplementalPrimitiveAssignmentCount",
+                supplementalPrimitiveAssignmentCount);
+        manifest.add("supplementalPrimitiveAssignments",
+                supplementalManifest);
         manifest.addProperty("selectedProducerCaseCount", caseManifest.size());
         manifest.add("selectedProducerCases", caseManifest);
         manifest.addProperty("producerReplayActivationCount",
@@ -256,7 +342,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         manifest.addProperty("activationBundleScheduleId", schedule);
         manifest.addProperty("activationBundleSize", bundleSize);
         manifest.addProperty("upstreamModelAssignmentCount",
-                producerRows.size());
+                projectedPrimitiveInputCount);
         manifest.addProperty("downstreamModelAssignmentCount", 0);
         manifest.addProperty("downstreamReplayMaterializationCount", 0);
         manifest.addProperty("downstreamBranchOverrideCount", 0);
@@ -613,6 +699,66 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return selected.deepCopy();
     }
 
+    /**
+     * Includes canonical integral terms in the original Z3 query so a model
+     * value is available after the selected case is known.  Boolean roots are
+     * already present in this set; additional entries are ordinary primitive
+     * live-ins such as an {@code int} consumed at an exact field-read site.
+     */
+    private static Set<String> canonicalIntegralInputTerms(
+            List<JsonObject> cases) throws IOException {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonObject pathCase : cases) {
+            for (JsonElement element : array(pathCase,
+                    "rawEngineSymbolMappings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject mapping = element.getAsJsonObject();
+                if (!integralCanonicalMapping(mapping)) continue;
+                String term = canonicalProjectionTerm(mapping);
+                if (!safeSmtAtom(term)) {
+                    throw gap("CANONICAL_PRIMITIVE_TERM_IS_NOT_AN_ATOM:"
+                            + string(mapping, "canonicalPort"));
+                }
+                result.add(term);
+            }
+        }
+        return result;
+    }
+
+    private static List<JsonObject> supplementalIntegralMappings(
+            JsonObject selectedCase, Set<String> rootPorts, String smt)
+            throws IOException {
+        Map<String, JsonObject> byPort = new LinkedHashMap<>();
+        for (JsonElement element : array(selectedCase,
+                "rawEngineSymbolMappings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (!integralCanonicalMapping(candidate)) continue;
+            String port = string(candidate, "canonicalPort");
+            if (rootPorts.contains(port)) continue;
+            if (byPort.put(port, candidate) != null) {
+                throw gap("AMBIGUOUS_CASE_INPUT_MAPPING:" + port);
+            }
+        }
+        List<JsonObject> result = new ArrayList<>();
+        for (String port : byPort.keySet()) {
+            result.add(exactPortMapping(selectedCase, port, smt));
+        }
+        Collections.sort(result, Comparator.comparing(
+                value -> string(value, "canonicalPort")));
+        return result;
+    }
+
+    private static boolean integralCanonicalMapping(JsonObject mapping) {
+        String port = string(mapping, "canonicalPort");
+        String termKind = string(mapping, "termKind");
+        return !port.isEmpty()
+                && "INT".equals(string(mapping, "sort"))
+                && "Int".equals(string(mapping, "solverSort"))
+                && ("CANONICAL_PORT_TERM".equals(termKind)
+                || "SCOPED_DYNAMIC_FIELD".equals(termKind));
+    }
+
     private static String canonicalProjectionTerm(JsonObject mapping) {
         return firstNonBlank(string(mapping, "canonicalSolverTerm"),
                 string(mapping, "solverTerm"));
@@ -909,11 +1055,56 @@ public final class ConcolicPrimitiveBootstrapProjector {
             validateLocalDefinitionIdentity(selected, port);
         } else if ("ROOT_ENTRY".equals(bindingMode)) {
             validateRootEntryIdentity(selected, port);
+        } else if ("FIELD_ACCESS".equals(bindingMode)) {
+            validateScalarFieldAction(selected, port);
         } else {
             throw gap("ROOT_INPUT_ACTION_BINDING_NOT_MODEL_CONTROLLABLE:"
                     + port + ":" + bindingMode);
         }
         return selected.deepCopy();
+    }
+
+    private static void validateScalarFieldAction(JsonObject action,
+                                                  String port)
+            throws IOException {
+        String signature = firstNonBlank(string(action,
+                "accessFieldSignature"), string(action, "field"),
+                string(action, "cell"));
+        Matcher declared = Pattern.compile(
+                "^<([^:<>]+):\\s*([^\\s<>]+)\\s+([^\\s<>]+)>$")
+                .matcher(signature);
+        if (!declared.matches()) {
+            throw gap("SCALAR_FIELD_ACTION_DECLARATION_INVALID:" + port);
+        }
+        String owner = declared.group(1);
+        String type = declared.group(2);
+        String field = declared.group(3);
+        String method = string(action, "accessMethod");
+        int unitIndex = integer(action, "accessUnitIndex", -1);
+        String site = string(action, "accessSiteId");
+        String authority = string(action, "accessSiteAuthority");
+        JsonArray path = array(action, "fieldPath");
+        boolean pathExact = path.size() == 0
+                || path.size() == 1 && path.get(0).isJsonPrimitive()
+                && field.equals(path.get(0).getAsString());
+        if (!port.equals(string(action, "symbol"))
+                || !"FIELD_ACCESS".equals(string(action, "bindingMode"))
+                || !"HEAP_OBJECT_FIELD".equals(string(action, "location"))
+                || !isIntegralPrimitiveType(type)
+                || !signature.equals(firstNonBlank(string(action, "field"),
+                string(action, "cell")))
+                || !owner.equals(string(action, "accessOwnerClass"))
+                || !field.equals(string(action, "accessField"))
+                || !type.equals(string(action, "accessFieldType"))
+                || method.isEmpty() || unitIndex < 0
+                || !site.equals(method + "#u" + unitIndex)
+                || !("STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1"
+                .equals(authority)
+                || "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1"
+                .equals(authority))
+                || !pathExact) {
+            throw gap("SCALAR_FIELD_ACTION_IDENTITY_INCOMPLETE:" + port);
+        }
     }
 
     private static void validateDynamicFieldAction(JsonObject action,
@@ -1167,6 +1358,105 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return result;
     }
 
+    private static JsonObject primitiveModelAssignment(JsonObject mapping,
+                                                       String port,
+                                                       String valueType,
+                                                       String value,
+                                                       JsonObject action,
+                                                       String actionIdentity) {
+        String canonical = canonicalProjectionTerm(mapping);
+        JsonObject result = new JsonObject();
+        result.addProperty("engineSymbol", string(mapping,
+                "rawEngineSymbol"));
+        result.addProperty("solverSymbol", canonical);
+        result.addProperty("actualCaseSolverTerm", string(mapping,
+                "solverTerm"));
+        result.addProperty("inputSymbol", port);
+        result.addProperty("valueType", valueType);
+        result.addProperty("value", value);
+        result.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        result.addProperty("materializeAtRealDefinition", true);
+        result.add("target", action.deepCopy());
+        result.addProperty("targetActionIdentitySha256", actionIdentity);
+        result.add("targetActionIdentity", actionIdentity(action));
+        result.addProperty("projectionAuthority",
+                "BOOTSTRAP_COMPOSED_SMT_SELECTED_CASE_FREE_PRIMITIVE_"
+                        + "TERM_AND_ACTION_IDENTITY_V1");
+        return result;
+    }
+
+    private static String scalarPrimitiveValueType(JsonObject action,
+                                                   JsonObject mapping,
+                                                   String port)
+            throws IOException {
+        if (!"INT".equals(string(mapping, "sort"))
+                || !"Int".equals(string(mapping, "solverSort"))) {
+            throw gap("SUPPLEMENTAL_PRIMITIVE_SORT_UNSUPPORTED:" + port);
+        }
+        String type = firstNonBlank(string(action, "accessFieldType"),
+                string(action, "javaType"));
+        if ("boolean".equals(type) || "java.lang.Boolean".equals(type)
+                || "Ljava/lang/Boolean;".equals(type) || "Z".equals(type)) {
+            return "BOOL";
+        }
+        if (isIntegralPrimitiveType(type)) return "INT";
+        throw gap("SUPPLEMENTAL_PRIMITIVE_JAVA_TYPE_UNSUPPORTED:" + port
+                + ":" + type);
+    }
+
+    private static boolean isIntegralPrimitiveType(String type) {
+        return "boolean".equals(type) || "byte".equals(type)
+                || "char".equals(type) || "short".equals(type)
+                || "int".equals(type) || "long".equals(type)
+                || "Z".equals(type) || "B".equals(type)
+                || "C".equals(type) || "S".equals(type)
+                || "I".equals(type) || "J".equals(type);
+    }
+
+    private static String normalizePrimitiveModelValue(String valueType,
+                                                       String value,
+                                                       String port)
+            throws IOException {
+        String normalized = value == null ? "" : value.trim();
+        if ("BOOL".equals(valueType)) {
+            if ("1".equals(normalized) || "true".equals(normalized)) {
+                return "true";
+            }
+            if ("0".equals(normalized) || "false".equals(normalized)) {
+                return "false";
+            }
+        } else if ("INT".equals(valueType)
+                && normalized.matches("-?(?:0|[1-9][0-9]*)")) {
+            return normalized;
+        }
+        throw gap("SUPPLEMENTAL_PRIMITIVE_MODEL_VALUE_UNSUPPORTED:" + port
+                + ":" + normalized);
+    }
+
+    private static JsonObject projectedInputManifest(
+            String region, String port, JsonObject selectedCase,
+            JsonObject mapping, String solverTerm, String modelValue,
+            JsonObject action, String actionIdentity) {
+        JsonObject result = new JsonObject();
+        result.addProperty("regionId", region);
+        result.addProperty("inputPort", port);
+        result.addProperty("caseId", string(selectedCase, "caseId"));
+        result.addProperty("sourceSummaryId", string(selectedCase,
+                "sourceSummaryId"));
+        result.addProperty("sourceActivationId", string(selectedCase,
+                "sourceActivationId"));
+        result.addProperty("selectorSolverSymbol", string(selectedCase,
+                "selectorSolverSymbol"));
+        result.addProperty("rawEngineSymbol", string(mapping,
+                "rawEngineSymbol"));
+        result.addProperty("canonicalSolverTerm", solverTerm);
+        result.addProperty("modelValue", modelValue);
+        result.addProperty("materializationActionIdentitySha256",
+                actionIdentity);
+        result.add("materializationActionIdentity", actionIdentity(action));
+        return result;
+    }
+
     private static void retainDynamicLeafSelector(JsonObject assignment,
                                                   JsonObject binding)
             throws IOException {
@@ -1316,11 +1606,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
     }
 
     private static JsonObject producerReplay(JsonObject source,
-                                             JsonObject assignment) {
+                                             JsonArray assignments) {
         JsonObject result = source.deepCopy();
-        JsonArray assignments = new JsonArray();
-        assignments.add(assignment);
-        result.add("modelAssignments", assignments);
+        result.add("modelAssignments", assignments.deepCopy());
         result.add("forcedBranches", new JsonArray());
         result.add("replayMaterializations", new JsonArray());
         result.remove("targetBranch");

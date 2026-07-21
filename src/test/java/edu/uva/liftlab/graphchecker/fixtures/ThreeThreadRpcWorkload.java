@@ -28,6 +28,7 @@ public final class ThreeThreadRpcWorkload {
     public static final String PRODUCER_A_THREAD = "rpc-producer-a";
     public static final String PRODUCER_B_THREAD = "rpc-producer-b";
     public static final String CONSUMER_THREAD = "rpc-consumer";
+    public static int t=10;
     private static final long JOIN_TIMEOUT_MILLIS = 10_000L;
 
     private ThreeThreadRpcWorkload() {
@@ -36,12 +37,16 @@ public final class ThreeThreadRpcWorkload {
     public static final class ProducerA {
         public int compute(Boolean b1) {
             int a = 0;
+            int c=-9;
+            if(b1){
+                c=10;
+            }
             if (b1.booleanValue()) {
                 a = 1;
             } else {
                 a = -1;
             }
-            return a;
+            return a+t-9;
         }
     }
 

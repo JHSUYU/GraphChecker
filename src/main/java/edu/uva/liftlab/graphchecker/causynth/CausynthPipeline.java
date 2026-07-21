@@ -1605,11 +1605,11 @@ public final class CausynthPipeline {
                             continue;
                         }
                         if (field instanceof StaticFieldRef) {
-                            throw new IllegalStateException(
-                                    "STATIC_FIELD_MATERIALIZATION_UNSUPPORTED: "
-                                            + fieldRef.getSignature()
-                                            + " at " + method.getSignature()
-                                            + "#u" + unitIndex);
+                            instrumentConsumedStaticPrimitiveFieldRead(body,
+                                    method, stmt, unitIndex,
+                                    (StaticFieldRef) field, refs);
+                            count++;
+                            continue;
                         }
                         if (!(field instanceof InstanceFieldRef)) {
                             throw new IllegalStateException(
@@ -1691,6 +1691,70 @@ public final class CausynthPipeline {
             }
         }
         return count;
+    }
+
+    /**
+     * Materializes a primitive {@code getstatic} on the exact local that
+     * consumed it.  The static field itself is never overwritten: replay and
+     * symbolic state are activation-local, while ordinary execution still
+     * performs exactly one real getstatic before the hook runs.
+     */
+    private static void instrumentConsumedStaticPrimitiveFieldRead(
+            Body body, SootMethod method, Stmt stmt, int unitIndex,
+            StaticFieldRef field, ConcolicRegionRefs refs) {
+        if (!(stmt instanceof AssignStmt)
+                || ((AssignStmt) stmt).getRightOp() != field
+                || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
+            throw new IllegalStateException(
+                    "STATIC_FIELD_READ_SHAPE_UNSUPPORTED: "
+                            + field.getFieldRef().getSignature() + " at "
+                            + method.getSignature() + "#u" + unitIndex);
+        }
+        Local consumed = (Local) ((AssignStmt) stmt).getLeftOp();
+        PrimitiveWrapper wrapper = PrimitiveWrapper.forType(
+                consumed.getType());
+        if (wrapper == null) {
+            throw new IllegalStateException(
+                    "STATIC_FIELD_MATERIALIZATION_UNSUPPORTED: "
+                            + field.getFieldRef().getSignature() + " at "
+                            + method.getSignature() + "#u" + unitIndex);
+        }
+
+        SootClass wrapperClass = Scene.v().getSootClass(wrapper.className);
+        RefType wrapperType = RefType.v(wrapper.className);
+        SootMethodRef valueOf = Scene.v().makeMethodRef(wrapperClass,
+                "valueOf", Collections.singletonList(consumed.getType()),
+                wrapperType, true);
+        Local boxed = newTraceLocal(body, wrapperType,
+                "$causynthStaticFieldBox");
+        Local materialized = newTraceLocal(body,
+                RefType.v("java.lang.Object"),
+                "$causynthStaticFieldMaterialized");
+        Local cast = newTraceLocal(body, wrapperType,
+                "$causynthStaticFieldUnbox");
+        SootMethodRef unbox = Scene.v().makeMethodRef(wrapperClass,
+                wrapper.unboxMethod, Collections.<Type>emptyList(),
+                consumed.getType(), false);
+
+        List<Unit> after = new ArrayList<>();
+        after.add(Jimple.v().newAssignStmt(boxed,
+                Jimple.v().newStaticInvokeExpr(valueOf, consumed)));
+        after.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                refs.pauseObservation)));
+        after.add(Jimple.v().newAssignStmt(materialized,
+                Jimple.v().newStaticInvokeExpr(
+                        refs.materializeStaticPrimitiveField,
+                        StringConstant.v(method.getSignature()),
+                        IntConstant.v(unitIndex),
+                        StringConstant.v(field.getFieldRef().getSignature()),
+                        StringConstant.v(field.getFieldRef().name()), boxed)));
+        after.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
+                refs.resumeObservation)));
+        after.add(Jimple.v().newAssignStmt(cast,
+                Jimple.v().newCastExpr(materialized, wrapperType)));
+        after.add(Jimple.v().newAssignStmt(consumed,
+                Jimple.v().newVirtualInvokeExpr(cast, unbox)));
+        insertAfterSequence(body, stmt, after);
     }
 
     /**
@@ -2810,24 +2874,24 @@ public final class CausynthPipeline {
                 AssignStmt assign = (AssignStmt) stmt;
                 Value left = assign.getLeftOp();
                 Value right = assign.getRightOp();
-                if (left instanceof InstanceFieldRef) {
+                if (left instanceof FieldRef) {
                     count += insertFieldTrace(body, unit, recordFieldRef, "FIELD_WRITE",
-                            method.getSignature(), unitIndex, (InstanceFieldRef) left,
+                            method.getSignature(), unitIndex, (FieldRef) left,
                             methodReceiver, right, true, traceFields,
                             observationIsolation);
                 }
-                if (right instanceof InstanceFieldRef) {
+                if (right instanceof FieldRef) {
                     count += insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
-                            method.getSignature(), unitIndex, (InstanceFieldRef) right,
+                            method.getSignature(), unitIndex, (FieldRef) right,
                             methodReceiver, left, true, traceFields,
                             observationIsolation);
                 }
             } else {
                 for (ValueBox box : stmt.getUseBoxes()) {
                     Value value = box.getValue();
-                    if (value instanceof InstanceFieldRef) {
+                    if (value instanceof FieldRef) {
                         count += insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
-                                method.getSignature(), unitIndex, (InstanceFieldRef) value,
+                                method.getSignature(), unitIndex, (FieldRef) value,
                                 methodReceiver, value, false, traceFields,
                                 observationIsolation);
                     }
@@ -2839,7 +2903,7 @@ public final class CausynthPipeline {
 
     private int insertFieldTrace(Body body, Unit unit, SootMethodRef recordFieldRef,
                                  String kind, String method, int unitIndex,
-                                 InstanceFieldRef fieldRef, Value methodReceiverValue,
+                                 FieldRef fieldRef, Value methodReceiverValue,
                                  Value value,
                                  boolean fieldValueIsReadValue,
                                  TraceFieldSelection traceFields,
@@ -2851,7 +2915,14 @@ public final class CausynthPipeline {
         List<Unit> prefixUnits = new ArrayList<>();
         beginTraceObservationIsolation(prefixUnits, observationIsolation);
         Value methodReceiver = objectArg(body, methodReceiverValue, prefixUnits);
-        Value receiver = objectArg(body, fieldRef.getBase(), prefixUnits);
+        // A static field has no Java receiver object.  Its interned canonical
+        // signature is a process-local class-state identity token: all
+        // getstatic/putstatic hooks for that exact declaration observe the
+        // same non-null object while unrelated static fields cannot alias it.
+        Value receiverValue = fieldRef instanceof InstanceFieldRef
+                ? ((InstanceFieldRef) fieldRef).getBase()
+                : StringConstant.v(field);
+        Value receiver = objectArg(body, receiverValue, prefixUnits);
         Value valueObject = objectArg(body, value, prefixUnits);
         Value primitiveValue = primitiveValueString(body, value, prefixUnits);
         Stmt traceCall = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
@@ -3179,6 +3250,7 @@ public final class CausynthPipeline {
         private final SootMethodRef symbolizeArgument;
         private final SootMethodRef materializeReference;
         private final SootMethodRef materializePrimitive;
+        private final SootMethodRef materializeStaticPrimitiveField;
         private final SootMethodRef materializeField;
         private final SootMethodRef prepareFieldMaterialization;
         private final SootMethodRef materializeConsumedField;
@@ -3210,6 +3282,7 @@ public final class CausynthPipeline {
                                    SootMethodRef symbolizeArgument,
                                    SootMethodRef materializeReference,
                                    SootMethodRef materializePrimitive,
+                                   SootMethodRef materializeStaticPrimitiveField,
                                    SootMethodRef materializeField,
                                    SootMethodRef prepareFieldMaterialization,
                                    SootMethodRef materializeConsumedField,
@@ -3240,6 +3313,8 @@ public final class CausynthPipeline {
             this.symbolizeArgument = symbolizeArgument;
             this.materializeReference = materializeReference;
             this.materializePrimitive = materializePrimitive;
+            this.materializeStaticPrimitiveField =
+                    materializeStaticPrimitiveField;
             this.materializeField = materializeField;
             this.prepareFieldMaterialization = prepareFieldMaterialization;
             this.materializeConsumedField = materializeConsumedField;
@@ -3312,6 +3387,10 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(runtime, "materializePrimitive",
                             Arrays.asList(string, string, object),
                             object, true),
+                    Scene.v().makeMethodRef(runtime,
+                            "materializeStaticPrimitiveField",
+                            Arrays.asList(string, IntType.v(), string, string,
+                                    object), object, true),
                     Scene.v().makeMethodRef(runtime, "materializeField",
                             Arrays.asList(string, IntType.v(), object, string,
                                     string), VoidType.v(), true),

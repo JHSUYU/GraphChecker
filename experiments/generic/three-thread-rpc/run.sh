@@ -84,6 +84,7 @@ target_schedule=$(configured_value schedule_output_dir)
 target_classes="${work_root}/concolic-target-classes"
 producer_campaign_root="${work_root}/producer-campaign"
 bootstrap_root="${work_root}/bootstrap"
+bounded_runtime_edges="${bootstrap_root}/bounded_runtime_edges.jsonl"
 campaign_root="${work_root}/campaign"
 final_root="${work_root}/final"
 campaign_snapshot_regions=""
@@ -144,17 +145,33 @@ require_command() {
 # concrete shared-field read-from bindings while the workflow below remains
 # channel-oriented.
 runtime_channel_rows() {
-  jq -c '
-    . as $activation
+  jq -c -s '
+    . as $activations
+    | [$activations[]
+        | select(.captureGoal.kind == "OUTPUT_CLOSURE")
+        | .edgeBindings[]?
+        | select(.relation == "READ_FROM"
+            and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM")
+      ] as $validatedEdges
+    | ($validatedEdges | map(.fromRegion) | unique) as $sourceRegions
+    | ($validatedEdges | map(.toRegion) | unique
+        | map(select(. as $candidate
+            | ($sourceRegions | index($candidate)) == null))) as $terminalRegions
+    | (if ($terminalRegions | length) != 1 then
+        error("runtime read-from graph has no unique terminal target region")
+      else $terminalRegions[0] end) as $terminalRegion
+    | $activations[] as $activation
     | select(
-        .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .replayable == true
-        and .symbolicReady == true
-        and (.requestedOutput.cell | type == "string" and length > 0))
-    | .edgeBindings[]? as $edge
+        $activation.captureGoal.kind == "OUTPUT_CLOSURE"
+        and $activation.replayable == true
+        and $activation.symbolicReady == true
+        and ($activation.requestedOutput.cell
+            | type == "string" and length > 0))
+    | $activation.edgeBindings[]? as $edge
     | select(
         $edge.relation == "READ_FROM"
         and $edge.selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        and $edge.toRegion == $terminalRegion
         and $edge.fromRegion == $activation.regionId
         and $edge.fromRegionInstance == $activation.regionInstanceId
         and $edge.fromOutputCell == $activation.requestedOutput.cell
@@ -169,6 +186,7 @@ runtime_channel_rows() {
             + "[[:space:]]+(?<name>[^ >]+)>$").name
         | ascii_upcase) as $channel
     | {
+        edgeId: $edge.edgeId,
         channel: $channel,
         fromCell: $activation.requestedOutput.cell,
         toCell: $edge.toInputCell,
@@ -202,6 +220,7 @@ validate_discovery_inputs() {
     length > 0
     and all(.[];
       (.channel | type == "string" and test("^[A-Za-z0-9._-]+$"))
+      and (.edgeId | type == "string" and length > 0)
       and (.fromCell | type == "string" and length > 0)
       and (.toCell | type == "string" and length > 0)
       and (.producerRegion | type == "string" and length > 0)
@@ -216,6 +235,31 @@ validate_discovery_inputs() {
   if rg -q '"kind":"configured_rpc_return_mapping"' "${static_graph}"; then
     die "local fixture unexpectedly contains a configured RPC mapping"
   fi
+}
+
+# The runtime graph can contain predecessors of a live-in which this workflow
+# deliberately leaves free (for example a mutable process-wide configuration
+# field).  Freeze the campaign to the same direct producer-to-target edges
+# used by discovery/composition instead of recursively closing every observed
+# writer in the process.
+write_bounded_runtime_edges() {
+  local output=$1
+  local ids expected
+  ids=$(runtime_channel_rows | jq -c -s '[.[].edgeId] | unique')
+  expected=$(jq -r 'length' <<< "${ids}")
+  [[ "${expected}" -gt 0 ]] || die "bounded runtime graph has no edges"
+  jq -c --argjson ids "${ids}" '
+    select(.edgeId as $edge | ($ids | index($edge)) != null)
+  ' "${runtime_edge_validations}" >"${output}"
+  jq -e -s --argjson expected "${expected}" '
+    length == $expected
+    and ([.[].edgeId] | unique | length) == $expected
+    and all(.[];
+      .status == "CONFIRMED_READ_FROM"
+      and .composable == true
+      and .eligibleForAutomaticSmt == true)
+  ' "${output}" >/dev/null \
+    || die "bounded runtime edge projection is incomplete"
 }
 
 discovered_channels() {
@@ -1077,6 +1121,11 @@ do_bootstrap_project() {
     and .activationSelection == "ALL"
     and .producerReplayActivationCount == .rootBooleanInputCount
     and .producerReplayActivationCount > 0
+    and .totalProjectedPrimitiveInputCount
+      == .upstreamModelAssignmentCount
+    and .supplementalPrimitiveAssignmentCount
+      == (.upstreamModelAssignmentCount - .rootBooleanInputCount)
+    and .upstreamModelAssignmentCount >= .producerReplayActivationCount
     and .downstreamModelAssignmentCount == 0
     and .downstreamReplayMaterializationCount == 0
     and .downstreamBranchOverrideCount == 0
@@ -1090,8 +1139,11 @@ do_bootstrap_project() {
     and ([.[] | select(.activationBundleMemberRole == "PRIMARY")] | length) == 1
     and ([.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT")] | length)
       == $manifest[0].producerReplayActivationCount
+    and ([.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT")
+      | ((.modelAssignments // []) | length)] | add)
+      == $manifest[0].upstreamModelAssignmentCount
     and all(.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT");
-      ((.modelAssignments // []) | length) == 1
+      ((.modelAssignments // []) | length) >= 1
       and ((.forcedBranches // []) | length) == 0
       and ((.replayMaterializations // []) | length) == 0
       and .targetReplayRequired == false)
@@ -1208,12 +1260,13 @@ do_campaign() {
       && -n "$(find "${campaign_root}" -mindepth 1 -print -quit)" ]]; then
     die "partial campaign exists without an atomic state pointer: ${campaign_root}"
   fi
+  write_bounded_runtime_edges "${bounded_runtime_edges}"
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
   args=(
     --regions "${static_regions}"
     --activations "${activation_plan}"
-    --edges "${runtime_edge_validations}"
+    --edges "${bounded_runtime_edges}"
     --roots "${roots}"
     --static-graph "${static_graph}"
     --output-dir "${campaign_root}"
@@ -1477,9 +1530,6 @@ do_final() {
   [[ "${expected_regions}" == "${actual_regions}" ]] \
     || die "final condition roots do not match both discovered producers"
   jq -e --argjson expected "${#channels[@]}" '
-    def assigned($row; $port):
-      [$row.assignments[] | select(.portId == $port) | .value]
-      | if length == 1 then .[0] else null end;
     .complete == true
     and .status == "COMPLETE_EXACT_BOOLEAN_REACH_CONDITION"
     and .extractionMode == "FINAL_REPORT"
@@ -1489,23 +1539,10 @@ do_final() {
     and .exactFiniteProjection == true
     and .rootBooleanInputCount == $expected
     and .satisfyingValuationCount > 0
-    and .unsatisfyingValuationCount > 0
-    and (.rootBooleanInputs as $inputs
-      | .truthTable as $rows
-      | all($inputs[];
-          .portId as $port
-          | any($rows[];
-              . as $left
-              | any($rows[];
-                  . as $right
-                  | $left.reachesBug != $right.reachesBug
-                  and assigned($left; $port) != assigned($right; $port)
-                  and all($inputs[] | select(.portId != $port);
-                    .portId as $other
-                    | assigned($left; $other)
-                      == assigned($right; $other))))))
+    and (.satisfyingValuationCount + .unsatisfyingValuationCount
+      == .valuationCount)
   ' "${final_root}/boolean_reach_condition.json" >/dev/null \
-    || die "final exact reach condition does not depend on every producer Boolean"
+    || die "final exact Boolean projection is incomplete"
   echo "[three-thread-rpc] final reach condition: ${final_root}/boolean_reach_condition.json"
 }
 

@@ -109,6 +109,53 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     }
 
     @Test
+    public void selectedProducerProjectsSupplementalStaticIntIntoSameReplay()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installSupplementalStaticInt(fixture);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        JsonObject producerA = null;
+        for (JsonObject activation : result.activations) {
+            if ("REGION.A".equals(activation.get("regionId").getAsString())) {
+                producerA = activation;
+                break;
+            }
+        }
+        assertTrue("missing REGION.A producer replay", producerA != null);
+        JsonArray assignments = producerA.getAsJsonArray(
+                "modelAssignments");
+        assertEquals(2, assignments.size());
+        JsonObject supplemental = assignments.get(1).getAsJsonObject();
+        assertEquals("REGION.A.in.1", supplemental.get(
+                "inputSymbol").getAsString());
+        assertEquals("INT", supplemental.get("valueType").getAsString());
+        assertEquals("37", supplemental.get("value").getAsString());
+        assertEquals("FIELD_ACCESS", supplemental.getAsJsonObject("target")
+                .get("bindingMode").getAsString());
+        assertEquals("<fixture.Globals: int t>", supplemental
+                .getAsJsonObject("target").get("accessFieldSignature")
+                .getAsString());
+        assertEquals(3, result.manifest.get(
+                "totalProjectedPrimitiveInputCount").getAsInt());
+        assertEquals(1, result.manifest.get(
+                "supplementalPrimitiveAssignmentCount").getAsInt());
+        assertEquals(3, result.manifest.get(
+                "upstreamModelAssignmentCount").getAsInt());
+        assertEquals(2, result.manifest.get(
+                "producerReplayActivationCount").getAsInt());
+        JsonArray projected = result.manifest.getAsJsonArray(
+                "supplementalPrimitiveAssignments");
+        assertEquals(1, projected.size());
+        assertEquals("SUPPLEMENTAL_PRIMITIVE", projected.get(0)
+                .getAsJsonObject().get("projectionRole").getAsString());
+    }
+
+    @Test
     public void selectedArrayElementBooleanRetainsExactContainerSelector()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -547,6 +594,88 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
             return assignments.get(0).getAsJsonObject();
         }
         throw new AssertionError("missing producer activation " + region);
+    }
+
+    private static void installSupplementalStaticInt(Fixture fixture)
+            throws Exception {
+        String smt = new String(Files.readAllBytes(fixture.smt),
+                StandardCharsets.UTF_8).replace("(check-sat)\n",
+                "(declare-const ti Int)\n"
+                        + "(assert (= ti 37))\n(check-sat)\n");
+        Files.write(fixture.smt, smt.getBytes(StandardCharsets.UTF_8));
+
+        JsonObject composition = JsonParser.parseString(new String(
+                Files.readAllBytes(fixture.composition),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        for (com.google.gson.JsonElement element : composition
+                .getAsJsonArray("caseProjectionCatalog")) {
+            JsonObject pathCase = element.getAsJsonObject();
+            if (!"CASE.A.1".equals(pathCase.get("caseId").getAsString())) {
+                continue;
+            }
+            JsonObject mapping = new JsonObject();
+            mapping.addProperty("rawEngineSymbol",
+                    "M_I_field_REGION.A.in.1_java/lang/Integer");
+            mapping.addProperty("solverTerm", "ti");
+            mapping.addProperty("sort", "INT");
+            mapping.addProperty("solverSort", "Int");
+            mapping.addProperty("termKind", "CANONICAL_PORT_TERM");
+            mapping.addProperty("canonicalPort", "REGION.A.in.1");
+            mapping.add("dynamicBindingIds", new JsonArray());
+            mapping.addProperty("authority", "EMITTER_ACTUAL_TERM");
+            JsonArray mappings = pathCase.getAsJsonArray(
+                    "rawEngineSymbolMappings");
+            mappings.add(mapping);
+            pathCase.addProperty("rawEngineSymbolMappingCount",
+                    mappings.size());
+        }
+        Files.write(fixture.composition, composition.toString().getBytes(
+                StandardCharsets.UTF_8));
+
+        JsonObject summary = jsonlRow(fixture.summaries, "summaryId",
+                "SUMMARY.A.1");
+        JsonObject admission = summary.getAsJsonObject(
+                "inputMaterializationAdmission");
+        for (String member : new String[]{"globalSliceInputs",
+                "requiredSliceInputs", "observedSymbolizedInputs"}) {
+            admission.getAsJsonArray(member).add("REGION.A.in.1");
+        }
+        replaceJsonlRow(fixture.summaries, "summaryId", "SUMMARY.A.1",
+                summary);
+
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", "REGION.A.in.1");
+        action.addProperty("cell", "<fixture.Globals: int t>");
+        action.addProperty("sourceKind", "SHARED_HEAP");
+        action.addProperty("projection", "value");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("observed", true);
+        action.addProperty("javaType", "int");
+        action.addProperty("field", "<fixture.Globals: int t>");
+        action.addProperty("accessKind", "FIELD_READ");
+        action.addProperty("accessMethod",
+                "<fixture.REGION.A: int compute(java.lang.Boolean)>");
+        action.addProperty("accessUnitIndex", 7);
+        action.addProperty("accessSiteId",
+                "<fixture.REGION.A: int compute(java.lang.Boolean)>#u7");
+        action.addProperty("accessSiteAuthority",
+                "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+        action.addProperty("accessOwnerClass", "fixture.Globals");
+        action.addProperty("accessField", "t");
+        action.addProperty("accessFieldType", "int");
+        action.addProperty("accessFieldSignature",
+                "<fixture.Globals: int t>");
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        JsonArray fieldPath = new JsonArray();
+        fieldPath.add("t");
+        action.add("fieldPath", fieldPath);
+        activation.getAsJsonArray("materializations").add(action);
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        refreshBootstrapArtifacts(fixture);
     }
 
     private static JsonObject installDynamicLeaf(Fixture fixture,

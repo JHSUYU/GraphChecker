@@ -35,6 +35,76 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicRegionRuntimeTest {
     @Test
+    public void materializesExactStaticPrimitiveReadFromSolverModel()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.StaticConsumer: void run()>";
+        String method = "<example.StaticConsumer: int compute()>";
+        String field = "<example.StaticInputs: int t>";
+        String symbol = "REGION.TEST.in.t";
+
+        JsonObject activation = concreteActivation(
+                "ACT.MODEL.STATIC.PRIMITIVE", root, 1);
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", symbol);
+        action.addProperty("cell", field);
+        action.addProperty("field", field);
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("accessOwnerClass", "example.StaticInputs");
+        action.addProperty("accessField", "t");
+        action.addProperty("accessFieldSignature", field);
+        action.addProperty("accessMethod", method);
+        action.addProperty("accessUnitIndex", 7);
+        action.addProperty("accessSiteId", method + "#u7");
+        action.addProperty("accessSiteAuthority",
+                "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+        activation.add("materializations", singleton(action));
+
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", "M_I_field_" + symbol);
+        assignment.addProperty("solverSymbol", "sym_t");
+        assignment.addProperty("inputSymbol", symbol);
+        assignment.addProperty("valueType", "INT");
+        assignment.addProperty("value", "21");
+        assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        assignment.addProperty("materializeAtRealDefinition", true);
+        assignment.add("target", action.deepCopy());
+        activation.add("modelAssignments", singleton(assignment));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "concrete-model-test");
+        try {
+            long token = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[0]);
+            assertTrue(token > 0L);
+            Object materialized = ConcolicRegionRuntime
+                    .materializeStaticPrimitiveField(method, 7, field, "t",
+                            Integer.valueOf(10));
+            assertEquals(Integer.valueOf(21), materialized);
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+
+            JsonObject result = resultRows(results).get(0);
+            assertTrue(result.get("allModelAssignmentsApplied")
+                    .getAsBoolean());
+            JsonObject applied = result.getAsJsonArray(
+                    "modelAssignmentsApplied").get(0).getAsJsonObject();
+            assertEquals(symbol, applied.get("inputSymbol").getAsString());
+            assertEquals("STATIC_FIELD_READ",
+                    applied.get("appliedAt").getAsString());
+            assertEquals("21", applied.get("value").getAsString());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void valueRefWitnessSymbolIsActivationAndTokenScoped() {
         JsonObject first = ConcolicRegionRuntime
                 .valueRefWitnessExpressionForTests("ACT.P", 103L);

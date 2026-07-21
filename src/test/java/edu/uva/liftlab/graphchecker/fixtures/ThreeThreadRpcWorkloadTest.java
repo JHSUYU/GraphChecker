@@ -32,7 +32,9 @@ public class ThreeThreadRpcWorkloadTest {
 
                 assertEquals(b1, result.getB1());
                 assertEquals(b2, result.getB2());
-                assertEquals(b1.booleanValue() ? 1 : -1, result.getA());
+                int expectedA = (b1.booleanValue() ? 1 : -1)
+                        + ThreeThreadRpcWorkload.t - 9;
+                assertEquals(expectedA, result.getA());
                 assertEquals(b2.booleanValue() ? 0 : 10, result.getB());
                 assertEquals(result.getA() > result.getB(),
                         result.isBugReached());

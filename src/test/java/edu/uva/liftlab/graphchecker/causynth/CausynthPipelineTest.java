@@ -421,6 +421,98 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void selectedStaticPrimitiveReadIsMaterializedAfterOneGetstatic()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            G.reset();
+            Scene.v().addClass(new SootClass("java.lang.Object",
+                    Modifier.PUBLIC));
+            Scene.v().addClass(new SootClass("java.lang.Integer",
+                    Modifier.PUBLIC));
+            SootClass holder = new SootClass("example.StaticIntHolder",
+                    Modifier.PUBLIC);
+            Scene.v().addClass(holder);
+            SootField value = new SootField("value", IntType.v(),
+                    Modifier.PUBLIC | Modifier.STATIC);
+            holder.addField(value);
+            SootClass region = new SootClass("example.StaticIntRegion",
+                    Modifier.PUBLIC);
+            Scene.v().addClass(region);
+            region.setApplicationClass();
+            SootMethod method = new SootMethod("read",
+                    Collections.emptyList(), IntType.v(),
+                    Modifier.PUBLIC | Modifier.STATIC);
+            region.addMethod(method);
+            Body body = Jimple.v().newBody(method);
+            method.setActiveBody(body);
+            Local result = Jimple.v().newLocal("result", IntType.v());
+            body.getLocals().add(result);
+            body.getUnits().add(Jimple.v().newAssignStmt(result,
+                    Jimple.v().newStaticFieldRef(value.makeRef())));
+            body.getUnits().add(Jimple.v().newReturnStmt(result));
+
+            Path plan = folder.getRoot().toPath().resolve(
+                    "static-int-field-activation.jsonl");
+            JsonObject activation = new JsonObject();
+            activation.addProperty("activationId", "ACT.STATIC.INT");
+            activation.addProperty("replayable", true);
+            JsonObject action = new JsonObject();
+            action.addProperty("symbol", "REGION.STATIC.in.0");
+            action.addProperty("bindingMode", "FIELD_ACCESS");
+            action.addProperty("location", "HEAP_OBJECT_FIELD");
+            action.addProperty("cell", value.getSignature());
+            action.addProperty("field", value.getSignature());
+            action.addProperty("accessOwnerClass", holder.getName());
+            action.addProperty("accessField", value.getName());
+            action.addProperty("accessFieldSignature",
+                    value.getSignature());
+            action.addProperty("accessMethod", method.getSignature());
+            action.addProperty("accessUnitIndex", 0);
+            action.addProperty("accessSiteId",
+                    method.getSignature() + "#u0");
+            action.addProperty("accessSiteAuthority",
+                    "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+            action.addProperty("javaType", "int");
+            JsonArray actions = new JsonArray();
+            actions.add(action);
+            activation.add("materializations", actions);
+            Files.write(plan, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            Object selection = concolicMaterializationSelection(plan,
+                    "ACT.STATIC.INT");
+            assertEquals(1, instrumentConcolicMaterializations(selection,
+                    concolicRegionRefs()));
+
+            int getstaticCount = 0;
+            int hookCount = 0;
+            for (Unit unit : body.getUnits()) {
+                if (unit instanceof AssignStmt
+                        && ((AssignStmt) unit).getRightOp()
+                        instanceof soot.jimple.StaticFieldRef) {
+                    getstaticCount++;
+                }
+                InvokeExpr invoke = invokeExpression(unit);
+                if (invoke != null && "materializeStaticPrimitiveField"
+                        .equals(invoke.getMethodRef().name())) {
+                    hookCount++;
+                    assertEquals(method.getSignature(), invoke.getArg(0)
+                            .toString().replace("\"", ""));
+                    assertEquals(value.getSignature(), invoke.getArg(2)
+                            .toString().replace("\"", ""));
+                }
+            }
+            assertEquals("instrumentation must not evaluate getstatic twice",
+                    1, getstaticCount);
+            assertEquals(1, hookCount);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void arrayLeafRootAuthorityFollowsRootBindingNotPathLength()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

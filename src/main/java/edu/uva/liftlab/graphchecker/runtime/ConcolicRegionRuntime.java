@@ -808,6 +808,40 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Materializes the primitive value consumed by one exact {@code getstatic}
+     * site.  Static JVM state is process-global, so the hook deliberately
+     * symbolizes the activation-local consumed value instead of mutating the
+     * real static field and leaking a replay assignment into another region.
+     */
+    public static Object materializeStaticPrimitiveField(
+            String method, int unitIndex, String fieldSignature,
+            String fieldName, Object boxedValue) {
+        ActiveRegion active = activeRegion();
+        if (active == null || boxedValue == null) {
+            return boxedValue;
+        }
+        SymbolizeAction selected = null;
+        for (SymbolizeAction action : active.activation.symbolize) {
+            if (!action.matchesStaticField(method, unitIndex,
+                    fieldSignature, fieldName)) {
+                continue;
+            }
+            if (selected != null && selected != action) {
+                active.addUnresolvedOnce(siteId(method, unitIndex)
+                        + ": AMBIGUOUS_STATIC_FIELD_MATERIALIZATION");
+                return boxedValue;
+            }
+            selected = action;
+        }
+        if (selected == null
+                || !active.materialized.add(selected.symbol)) {
+            return boxedValue;
+        }
+        return materializePrimitiveValue(active, selected, boxedValue,
+                "STATIC_FIELD_READ", null);
+    }
+
+    /**
      * Prepares one array-valued leaf field before the instrumented program
      * executes its single real getfield.  This method never symbolizes or
      * captures the array.  It writes any selected model first, reads the leaf
@@ -9483,6 +9517,49 @@ public final class ConcolicRegionRuntime {
             return "LOCAL_DEFINITION".equals(bindingMode)
                     && method.equals(safe(actualMethod))
                     && local.equals(safe(actualLocal));
+        }
+
+        private boolean matchesStaticField(String actualMethod,
+                                           int actualUnitIndex,
+                                           String signature,
+                                           String actualField) {
+            if (!("FIELD_ACCESS".equals(bindingMode)
+                    || "HEAP_OBJECT_FIELD".equals(location))) {
+                return false;
+            }
+            String exactSignature = safe(signature);
+            String[] declaration = declaredField(exactSignature);
+            if (declaration == null
+                    || !declaration[2].equals(safe(actualField))
+                    || !accessField.equals(safe(actualField))) {
+                return false;
+            }
+            if (!accessOwnerClass.isEmpty()
+                    && !accessOwnerClass.equals(declaration[0])) {
+                return false;
+            }
+            if (!accessFieldSignature.isEmpty()
+                    && !accessFieldSignature.equals(exactSignature)) {
+                return false;
+            }
+            boolean accessSiteConstrained = !accessMethod.isEmpty()
+                    || !accessSiteId.isEmpty() || accessUnitIndex >= 0
+                    || !accessSiteAuthority.isEmpty();
+            if (!accessSiteConstrained) {
+                return false;
+            }
+            boolean exactSite =
+                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1".equals(
+                            accessSiteAuthority)
+                    || RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY.equals(
+                            accessSiteAuthority);
+            return exactSite
+                    && accessMethod.equals(safe(actualMethod))
+                    && accessUnitIndex == actualUnitIndex
+                    && accessSiteId.equals(siteId(actualMethod,
+                    actualUnitIndex))
+                    && (cell.contains(exactSignature)
+                    || field.equals(exactSignature));
         }
 
         private boolean matchesField(String actualMethod,
