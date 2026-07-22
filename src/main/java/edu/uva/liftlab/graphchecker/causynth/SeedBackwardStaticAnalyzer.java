@@ -1172,7 +1172,12 @@ final class SeedBackwardStaticAnalyzer {
     private boolean processFieldWrites(String method, List<Fact> facts, Fact fact,
                                        Set<String> relevant) {
         boolean changed = false;
+        Set<String> affectedRelevantHeapCells = new LinkedHashSet<>();
         for (String field : fact.fieldDefs) {
+            String fieldNode = canonical(method, field);
+            if (relevant.contains(fieldNode)) {
+                affectedRelevantHeapCells.add(fieldNode);
+            }
             changed |= processFieldWrite(method, fact, relevant, field,
                     fieldWriteSources(method, fact, field), "field_write",
                     "assignment writes relevant field");
@@ -1193,6 +1198,10 @@ final class SeedBackwardStaticAnalyzer {
             boolean receiverHit = receiverExactHit || receiverProjectionHit;
             boolean classFieldHit = relevant.contains(classField);
             if (receiverHit || classFieldHit) {
+                if (receiverHit) {
+                    affectedRelevantHeapCells.add(receiverField);
+                }
+                affectedRelevantHeapCells.add(classField);
                 for (String source : sources) {
                     if (ignoreNode(source)) {
                         continue;
@@ -1227,20 +1236,23 @@ final class SeedBackwardStaticAnalyzer {
                     "field_mutation",
                     "mutator call updates object stored in relevant field");
             if (mutationAffectsRelevantState) {
-                changed |= processHeapMutationPathGuards(method, fact,
-                        mutatedFieldNode, relevant);
+                affectedRelevantHeapCells.add(mutatedFieldNode);
             }
+        }
+        for (String affectedCell : affectedRelevantHeapCells) {
+            changed |= processHeapMutationPathGuards(method, fact,
+                    affectedCell, relevant);
         }
         return changed;
     }
 
     /**
-     * A heap mutation has no Jimple definition local, so the ordinary
+     * A heap write may have no exactly relevant Jimple definition local, so the ordinary
      * {@link #processRequiredPathGuards(String, Fact, List, Set)} path
-     * cannot attach the branches that make the mutation execute.  Treat
-     * the mutated heap cell as the definition for control-dependence
-     * purposes.  This is required for conditional collection updates,
-     * including an {@code Iterator.remove()} guarded by a predicate.
+     * cannot reliably attach the branches that make the write execute.
+     * Treat the affected heap cell as the definition for control-dependence
+     * purposes. This covers ordinary field assignments and collection
+     * updates, including an {@code Iterator.remove()} guarded by a predicate.
      */
     private boolean processHeapMutationPathGuards(
             String method, Fact mutation, String mutatedCell,
@@ -4611,18 +4623,18 @@ final class SeedBackwardStaticAnalyzer {
             // authority than that base. Require an explicit false/true tuple
             // on the base so incomplete rows fail closed.
             boolean baseMappingOnly = hasProjectionBase
-                    && !Boolean.FALSE.equals(
-                    projectionBaseEdge.get("mappingOnly"));
+                    && StaticDataflowEdgeSchema.mappingOnly(
+                    projectionBaseEdge);
             boolean mappingOnly = baseMappingOnly;
             boolean baseSemanticAssertionsAllowed = !hasProjectionBase
-                    || Boolean.TRUE.equals(projectionBaseEdge.get(
-                    "semanticAssertionsAllowed"));
+                    || StaticDataflowEdgeSchema.semanticAssertionsAllowed(
+                    projectionBaseEdge);
             boolean baseAutomaticDerivationAllowed = !hasProjectionBase
-                    || Boolean.TRUE.equals(projectionBaseEdge.get(
-                    "eligibleForAutomaticDerivation"));
+                    || StaticDataflowEdgeSchema
+                    .eligibleForAutomaticDerivation(projectionBaseEdge);
             boolean baseAutomaticSmtAllowed = !hasProjectionBase
-                    || Boolean.TRUE.equals(projectionBaseEdge.get(
-                    "eligibleForAutomaticSmt"));
+                    || StaticDataflowEdgeSchema.eligibleForAutomaticSmt(
+                    projectionBaseEdge);
             boolean semanticAssertionsAllowed = !mappingOnly
                     && baseSemanticAssertionsAllowed;
             boolean eligibleForAutomaticDerivation =
@@ -4631,8 +4643,8 @@ final class SeedBackwardStaticAnalyzer {
             boolean eligibleForAutomaticSmt = semanticAssertionsAllowed
                     && baseAutomaticSmtAllowed;
             String mappingAuthority = mappingOnly
-                    ? stringValue(projectionBaseEdge.get(
-                    "mappingAuthority")) : "";
+                    ? StaticDataflowEdgeSchema.mappingAuthority(
+                    projectionBaseEdge) : "";
             String edgeTransferKind = SymbolicPlanningStage.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -4647,25 +4659,33 @@ final class SeedBackwardStaticAnalyzer {
             String relation = exactDirectCopy || projectedDirectCopy
                     ? "value_flow" : relationForKind(kind);
             edge = object(
+                    "schemaVersion", StaticDataflowEdgeSchema.VERSION,
                     "id", edgeId,
                     "kind", kind,
                     "transferKind", edgeTransferKind,
                     "relation", mappingOnly ? "" : relation,
                     "candidateRelation", relation,
-                    "mappingOnly", mappingOnly,
-                    "mappingAuthority", mappingAuthority,
-                    "semanticAssertionsAllowed",
-                    semanticAssertionsAllowed,
-                    "eligibleForAutomaticDerivation",
-                    eligibleForAutomaticDerivation,
-                    "eligibleForAutomaticSmt", eligibleForAutomaticSmt,
-                    "direction", "backward_provenance",
                     "fromCell", fromText,
                     "toCell", toText,
                     "method", method,
                     "siteId", stableSiteId(method,
                             fact == null ? -1 : fact.unitIndex, kind),
                     "evidence", evidence);
+            if (mappingOnly) {
+                edge.put("mappingOnly", true);
+                if (!mappingAuthority.isEmpty()) {
+                    edge.put("mappingAuthority", mappingAuthority);
+                }
+            }
+            if (!semanticAssertionsAllowed) {
+                edge.put("semanticAssertionsAllowed", false);
+            }
+            if (!eligibleForAutomaticDerivation) {
+                edge.put("eligibleForAutomaticDerivation", false);
+            }
+            if (!eligibleForAutomaticSmt) {
+                edge.put("eligibleForAutomaticSmt", false);
+            }
             if (hasProjectionBase) {
                 edge.put("projectionBaseEdgeId", stringValue(
                         projectionBaseEdge.get("id")));
@@ -4792,15 +4812,7 @@ final class SeedBackwardStaticAnalyzer {
                 baseEdge.get("relation")))
                 || !"VALUE_PASS".equals(stringValue(
                 baseEdge.get("transferKind")))
-                || Boolean.TRUE.equals(baseEdge.get("mappingOnly"))
-                || !Boolean.TRUE.equals(baseEdge.get(
-                "semanticAssertionsAllowed"))
-                || !Boolean.TRUE.equals(baseEdge.get(
-                "eligibleForAutomaticDerivation"))
-                || !Boolean.TRUE.equals(baseEdge.get(
-                "eligibleForAutomaticSmt"))
-                || !"backward_provenance".equals(stringValue(
-                baseEdge.get("direction")))) {
+                || !StaticDataflowEdgeSchema.automaticSemantics(baseEdge)) {
             return false;
         }
         String authority = stringValue(baseEdge.get("valueFlowAuthority"));

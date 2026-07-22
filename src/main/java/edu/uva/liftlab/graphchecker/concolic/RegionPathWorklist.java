@@ -14,6 +14,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,6 +34,14 @@ import java.util.TreeSet;
 public final class RegionPathWorklist {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
+
+    public enum State {
+        NOT_STARTED,
+        PENDING,
+        CLOSED,
+        GAPPED
+    }
+
     private RegionPathWorklist() {
     }
 
@@ -109,14 +118,10 @@ public final class RegionPathWorklist {
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
-        private int candidateFlipCount;
-        private int terminalFlipCount;
-        private int observedCoveredFlipCount;
-        private int duplicateTaskCount;
-        private int transitionDiscoverySeedCount;
-        private int transitionDiscoveryTaskCount;
-        private int coveredConcreteObservationCount;
-        private boolean wallClockReached;
+        private final Map<JsonObject, List<SummaryBranchMapping>>
+                branchMappings = new IdentityHashMap<>();
+        private final Map<JsonObject, String> branchMappingIssues =
+                new IdentityHashMap<>();
 
         private Planner(List<JsonObject> summaries,
                         List<JsonObject> activations,
@@ -132,6 +137,15 @@ public final class RegionPathWorklist {
                 if (!key.isEmpty()) this.records.put(key, record);
             }
             this.summaries.addAll(safe(summaries));
+            for (JsonObject summary : this.summaries) {
+                try {
+                    branchMappings.put(summary,
+                            SummaryBranchMapping.fromSummary(summary));
+                } catch (IllegalArgumentException malformed) {
+                    branchMappingIssues.put(summary,
+                            malformed.getMessage());
+                }
+            }
             Collections.sort(this.summaries, Comparator.comparing(value ->
                     string(value, "regionId") + "\n"
                             + stablePathKey(value)));
@@ -141,8 +155,8 @@ public final class RegionPathWorklist {
             indexWitnessedBranchPositions();
             indexObservedFlipCoverage();
             Set<String> seenPaths = new LinkedHashSet<>();
+            Set<String> observedRegions = new TreeSet<>();
             for (JsonObject summary : summaries) {
-                if (!bool(summary, "valid", true)) continue;
                 String region = string(summary, "regionId");
                 if (region.isEmpty()) continue;
                 JsonObject activation = activations.get(string(summary,
@@ -153,12 +167,19 @@ public final class RegionPathWorklist {
 
                 String pathKey = stablePathKey(summary);
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
+                observedRegions.add(region);
                 increment(pathCountByRegion, region);
+                String branchMappingIssue = branchMappingIssues.get(summary);
+                if (branchMappingIssue != null) {
+                    gap("INVALID_BRANCH_MAPPING_SCHEMA",
+                            branchMappingIssue, region, pathKey, "", -1);
+                    continue;
+                }
                 boolean transitionDiscovery = goal.isTransitionDiscovery();
-                if (transitionDiscovery) transitionDiscoverySeedCount++;
                 if (!bool(summary, "relationallyComplete", false)
                         && !(transitionDiscovery
-                        && admissibleTransitionDiscoverySeed(summary))) {
+                        && admissibleTransitionDiscoverySeed(summary,
+                        branchMappings.get(summary)))) {
                     gap("INCOMPLETE_REGION_SUMMARY",
                             "RELATIONAL_INPUT_OUTPUT_SUMMARY_NOT_COMPLETE",
                             region, pathKey, "", -1);
@@ -170,24 +191,24 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (wallClockExceeded()) {
-                    wallClockReached = true;
                     gap("BOUND_REACHED", "MAX_WALL_CLOCK", region,
                             pathKey, "", -1);
                     break;
                 }
-                planSummary(summary, activation, pathKey);
+                planSummary(summary, activation, pathKey,
+                        branchMappings.get(summary));
                 if (tasks.size() >= bounds.maxTasks) break;
             }
 
-            JsonObject manifest = manifest(seenPaths.size());
+            JsonObject manifest = manifest(seenPaths.size(),
+                    observedRegions);
             return new Result(tasks, manifest);
         }
 
-        private void planSummary(JsonObject summary, JsonObject activation,
-                                 String pathKey) {
+        private void planSummary(
+                JsonObject summary, JsonObject activation, String pathKey,
+                List<SummaryBranchMapping> mappings) {
             JsonArray conditions = array(summary, "pathCondition");
-            JsonArray mappings = array(summary, "branchMappings");
-            boolean policyAware = hasBranchPolicy(mappings);
             Set<String> outputSites = outputSliceSites(summary, activation);
             RegionCaptureGoal goal = RegionCaptureGoal.from(
                     activation == null ? summary : activation);
@@ -198,67 +219,43 @@ public final class RegionPathWorklist {
                     "guardOccurrence", -1);
             boolean discoveryDesired = bool(discovery,
                     "desiredOutcome", false);
-            List<JsonObject> candidates = new ArrayList<>();
-            for (JsonElement element : mappings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                String site = string(mapping, "siteId");
+            List<SummaryBranchMapping> candidates = new ArrayList<>();
+            for (SummaryBranchMapping mapping : mappings) {
+                String site = mapping.siteId();
                 if (!outputSites.isEmpty() && !outputSites.contains(site)) {
                     continue;
                 }
                 if (goal.isTransitionDiscovery()
                         && (!discoverySite.equals(site)
                         || discoveryOccurrence > 0
-                        && discoveryOccurrence != integer(mapping,
-                        "occurrence", 1)
-                        || discoveryDesired == bool(mapping, "outcome",
-                        false))) {
+                        && discoveryOccurrence != mapping.occurrence()
+                        || discoveryDesired
+                        == mapping.sourceTakenOutcome())) {
                     continue;
                 }
-                if (coveredConcreteObservation(mapping)) {
-                    coveredConcreteObservationCount++;
-                    continue;
-                }
-                if (policyAware && !validBranchPolicy(mapping)) {
-                    String policy = string(mapping, "policy");
-                    gap("INVALID_BRANCH_POLICY", policy.isEmpty()
-                                    ? "MISSING_BRANCH_POLICY"
-                                    : "UNKNOWN_BRANCH_POLICY:" + policy,
+                if (mapping.isConcreteObservation()) {
+                    if (!mapping.isExplore()
+                            || coveredConcreteObservation(mapping)) {
+                        continue;
+                    }
+                    gap("UNMAPPED_BRANCH", "NO_NORMALIZED_CONDITION",
                             string(summary, "regionId"), pathKey, site,
-                            integer(mapping, "occurrence", -1));
+                            mapping.occurrence());
                     continue;
                 }
-                if (policyAware && !isExplorePolicy(mapping)) {
-                    continue;
-                }
-                int conditionIndex = integer(mapping, "conditionIndex", -1);
-                if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
-                    gap("UNMAPPED_BRANCH", "NO_NORMALIZED_CONDITION", string(
-                                    summary, "regionId"), pathKey, site,
-                            integer(mapping, "occurrence", -1));
-                    continue;
-                }
-                if (branchWitness(mapping) == null) {
-                    gap("MISSING_BRANCH_WITNESS",
-                            "BINARY_PATH_CONDITION_HAS_NO_IMMUTABLE_WITNESS",
-                            string(summary, "regionId"), pathKey, site,
-                            integer(mapping, "occurrence", -1));
-                    continue;
-                }
+                if (!mapping.isExplore()) continue;
                 candidates.add(mapping);
             }
             // Classic depth-first concolic order: flip the latest relevant
             // decision first, then progressively shorter prefixes.
             Collections.sort(candidates, (left, right) -> {
-                int byIndex = Integer.compare(integer(right,
-                        "conditionIndex", -1), integer(left,
-                        "conditionIndex", -1));
+                int byIndex = Integer.compare(right.summaryPcIndex(),
+                        left.summaryPcIndex());
                 if (byIndex != 0) return byIndex;
-                int bySite = string(left, "siteId").compareTo(
-                        string(right, "siteId"));
+                int bySite = left.siteId().compareTo(right.siteId());
                 if (bySite != 0) return bySite;
-                return Integer.compare(integer(left, "occurrence", 1),
-                        integer(right, "occurrence", 1));
+                return Integer.compare(left.occurrence(),
+                        right.occurrence());
             });
 
             int limit = Math.min(candidates.size(), bounds.maxFlipsPerPath);
@@ -273,46 +270,25 @@ public final class RegionPathWorklist {
                     return;
                 }
                 emitTask(summary, activation, pathKey, conditions,
-                        candidates.get(index));
+                        mappings, candidates.get(index));
             }
         }
 
-        private boolean hasBranchPolicy(JsonArray mappings) {
-            for (JsonElement element : mappings) {
-                if (element.isJsonObject()
-                        && element.getAsJsonObject().has("policy")) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean isExplorePolicy(JsonObject mapping) {
-            JsonElement policy = mapping.get("policy");
-            return policy != null && policy.isJsonPrimitive()
-                    && policy.getAsJsonPrimitive().isString()
-                    && "EXPLORE".equals(policy.getAsString());
-        }
-
-        private boolean validBranchPolicy(JsonObject mapping) {
-            String policy = string(mapping, "policy");
-            return "EXPLORE".equals(policy)
-                    || "PATH_ASSUMPTION".equals(policy);
-        }
-
-        private void emitTask(JsonObject summary, JsonObject activation,
-                              String pathKey, JsonArray conditions,
-                              JsonObject mapping) {
-            int conditionIndex = integer(mapping, "conditionIndex", -1);
+        private void emitTask(
+                JsonObject summary, JsonObject activation, String pathKey,
+                JsonArray conditions, List<SummaryBranchMapping> mappings,
+                SummaryBranchMapping mapping) {
+            int conditionIndex = mapping.summaryPcIndex();
             BranchReplayPlan replay;
             try {
-                replay = BranchReplayPlan.fromSummary(summary, mapping);
+                replay = BranchReplayPlan.fromSummary(summary, mappings,
+                        mapping);
             } catch (IllegalArgumentException incompleteWitness) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
                         "BRANCH_WITNESS_OR_NON_BRANCH_CONTEXT_DOES_NOT_"
                                 + "PARTITION_SUMMARY_PC_PREFIX",
                         string(summary, "regionId"), pathKey,
-                        branchSite(mapping), branchOccurrence(mapping));
+                        mapping.siteId(), mapping.occurrence());
                 return;
             }
             JsonArray prefix = new JsonArray();
@@ -333,11 +309,9 @@ public final class RegionPathWorklist {
             String key = stableFlipKey(region, output, site,
                     occurrence, desired, alphaCanonical(prefix, alpha),
                     stableRuntimeBindings(summary, alpha), purpose);
-            candidateFlipCount++;
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
-                terminalFlipCount++;
                 if (gapStatus(previous)) {
                     gap("EXPLORATION_GAP", firstNonBlank(string(previous,
                                     "reason"), string(previous, "status")),
@@ -353,12 +327,9 @@ public final class RegionPathWorklist {
                 // therefore direct evidence that this exact flip frontier
                 // has already been executed.  Later suffix decisions remain
                 // independently enumerable from that observed summary.
-                terminalFlipCount++;
-                observedCoveredFlipCount++;
                 return;
             }
             if (!emitted.add(key)) {
-                duplicateTaskCount++;
                 return;
             }
 
@@ -375,7 +346,6 @@ public final class RegionPathWorklist {
                 task.addProperty("summaryCacheAdmission", "QUARANTINED");
                 task.add("transitionDiscovery", object(summary,
                         "transitionDiscovery").deepCopy());
-                transitionDiscoveryTaskCount++;
             }
             task.addProperty("sourceSummaryId", string(summary, "summaryId"));
             task.addProperty("sourcePathKey", pathKey);
@@ -396,17 +366,6 @@ public final class RegionPathWorklist {
             tasks.add(task);
         }
 
-        private BranchWitness branchWitness(JsonObject mapping) {
-            JsonElement value = mapping == null ? null
-                    : mapping.get("witness");
-            if (value == null || !value.isJsonObject()) return null;
-            try {
-                return BranchWitness.fromJson(value.getAsJsonObject());
-            } catch (IllegalArgumentException malformed) {
-                return null;
-            }
-        }
-
         /**
          * Indexes only predicates whose immutable witness is an exact member
          * of an admitted summary path condition.  This is later used to
@@ -415,29 +374,14 @@ public final class RegionPathWorklist {
          */
         private void indexWitnessedBranchPositions() {
             for (JsonObject summary : summaries) {
-                if (!bool(summary, "valid", true)
-                        || !bool(summary, "relationallyComplete", false)) {
+                if (!bool(summary, "relationallyComplete", false)) {
                     continue;
                 }
-                JsonArray conditions = array(summary, "pathCondition");
-                for (JsonElement element : array(summary,
-                        "branchMappings")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject mapping = element.getAsJsonObject();
-                    int index = integer(mapping, "conditionIndex", -1);
-                    BranchWitness witness = branchWitness(mapping);
-                    if (index < 0 || index >= conditions.size()
-                            || integer(mapping, "summaryPcIndex", -1)
-                            != index || witness == null
-                            || !witness.siteId().equals(string(mapping,
-                            "siteId"))
-                            || witness.occurrence() != integer(mapping,
-                            "occurrence", 1)
-                            || !BranchPredicateAlgebra.equivalent(
-                            witness.sourceSatisfiedPredicate(),
-                            conditions.get(index))) {
-                        continue;
-                    }
+                List<SummaryBranchMapping> mappings =
+                        branchMappings.get(summary);
+                if (mappings == null) continue;
+                for (SummaryBranchMapping mapping : mappings) {
+                    if (!mapping.isWitnessed()) continue;
                     witnessedBranchPositions.add(branchPosition(mapping));
                 }
             }
@@ -446,62 +390,19 @@ public final class RegionPathWorklist {
         /**
          * A concrete VM branch has no solver predicate and therefore is not
          * itself flippable.  It is safe to omit from the worklist only when
-         * the same static branch position and branch shape has an immutable
-         * witnessed predicate on another admitted path.  No predicate is
+         * the same binary branch position has an immutable witnessed
+         * predicate on another admitted path.  No predicate is
          * copied or synthesized; an otherwise unmapped branch remains a gap.
          */
-        private boolean coveredConcreteObservation(JsonObject mapping) {
-            if (!"VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT".equals(
-                    string(mapping, "conditionAuthority"))
-                    || !"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
-                    .equals(string(mapping, "mappingPolicy"))
-                    || integer(mapping, "conditionIndex", -1) != -1
-                    || integer(mapping, "rawConditionIndex", -1) != -1
-                    || integer(mapping, "engineConditionIndex", -1) != -1
-                    || !bool(mapping, "vmBranchEventExpected", false)
-                    || !bool(mapping, "vmBranchEventValidated", false)
-                    || integer(mapping, "vmBranchEventId", -1) < 1
-                    || bool(mapping, "overrideApplied", false)
-                    || array(mapping, "vmConditionIndices").size() != 0
-                    || mapping.has("condition")
-                    && !mapping.get("condition").isJsonNull()
-                    || mapping.has("rawCondition")
-                    && !mapping.get("rawCondition").isJsonNull()
-                    || mapping.has("witness")
-                    && !mapping.get("witness").isJsonNull()) {
-                return false;
-            }
+        private boolean coveredConcreteObservation(
+                SummaryBranchMapping mapping) {
+            if (!mapping.isConcreteObservation()) return false;
             return witnessedBranchPositions.contains(branchPosition(
                     mapping));
         }
 
-        private String branchPosition(JsonObject mapping) {
-            return string(mapping, "siteId") + "\n"
-                    + integer(mapping, "occurrence", 1) + "\n"
-                    + branchShape(mapping);
-        }
-
-        private String branchShape(JsonObject mapping) {
-            String declared = string(mapping, "branchKind");
-            if (!declared.isEmpty()) return declared;
-            int opcode = integer(mapping, "vmOpcode", -1);
-            if (opcode >= 153 && opcode <= 166
-                    || opcode == 198 || opcode == 199) return "IF";
-            if (opcode == 170) return "TABLE_SWITCH";
-            if (opcode == 171) return "LOOKUP_SWITCH";
-            return "VM_OPCODE_" + opcode;
-        }
-
-        private String branchSite(JsonObject mapping) {
-            BranchWitness witness = branchWitness(mapping);
-            return witness == null ? string(mapping, "siteId")
-                    : witness.siteId();
-        }
-
-        private int branchOccurrence(JsonObject mapping) {
-            BranchWitness witness = branchWitness(mapping);
-            return witness == null ? integer(mapping, "occurrence", -1)
-                    : witness.occurrence();
+        private String branchPosition(SummaryBranchMapping mapping) {
+            return mapping.siteId() + "\n" + mapping.occurrence();
         }
 
         /**
@@ -513,8 +414,7 @@ public final class RegionPathWorklist {
          */
         private void indexObservedFlipCoverage() {
             for (JsonObject summary : summaries) {
-                if (!bool(summary, "valid", true)
-                        || !bool(summary, "relationallyComplete", false)) {
+                if (!bool(summary, "relationallyComplete", false)) {
                     continue;
                 }
                 String region = string(summary, "regionId");
@@ -526,8 +426,9 @@ public final class RegionPathWorklist {
                 if (!goal.isOutputClosure()) continue;
 
                 JsonArray conditions = array(summary, "pathCondition");
-                JsonArray mappings = array(summary, "branchMappings");
-                boolean policyAware = hasBranchPolicy(mappings);
+                List<SummaryBranchMapping> mappings =
+                        branchMappings.get(summary);
+                if (mappings == null) continue;
                 Set<String> outputSites = outputSliceSites(summary,
                         activation);
                 JsonObject discovery = object(summary,
@@ -541,33 +442,29 @@ public final class RegionPathWorklist {
                 AlphaNormalizer alpha = new AlphaNormalizer(summary);
                 String purpose = goal.isTransitionDiscovery()
                         ? stableTransitionDiscoveryPurpose(summary) : "";
-                for (JsonElement element : mappings) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject mapping = element.getAsJsonObject();
-                    if (policyAware && !isExplorePolicy(mapping)) continue;
-                    String site = string(mapping, "siteId");
+                for (SummaryBranchMapping mapping : mappings) {
+                    if (!mapping.isWitnessed()
+                            || !mapping.isExplore()) continue;
+                    String site = mapping.siteId();
                     if (!outputSites.isEmpty()
                             && !outputSites.contains(site)) continue;
-                    int occurrence = integer(mapping, "occurrence", 1);
+                    int occurrence = mapping.occurrence();
                     if (goal.isTransitionDiscovery()
                             && (!discoverySite.equals(site)
                             || discoveryOccurrence > 0
                             && discoveryOccurrence != occurrence
-                            || discoveryDesired == bool(mapping, "outcome",
-                            false))) {
+                            || discoveryDesired
+                            == mapping.sourceTakenOutcome())) {
                         continue;
                     }
-                    int conditionIndex = integer(mapping,
-                            "conditionIndex", -1);
-                    if (conditionIndex < 0
-                            || conditionIndex >= conditions.size()) continue;
+                    int conditionIndex = mapping.summaryPcIndex();
                     JsonArray prefix = new JsonArray();
                     for (int index = 0; index < conditionIndex; index++) {
                         prefix.add(conditions.get(index).deepCopy());
                     }
                     observedFlipKeys.add(stableFlipKey(region,
                             summary.get("requestedOutput"), site, occurrence,
-                            bool(mapping, "outcome", false),
+                            mapping.sourceTakenOutcome(),
                             alphaCanonical(prefix, alpha),
                             stableRuntimeBindings(summary, alpha), purpose));
                 }
@@ -582,53 +479,59 @@ public final class RegionPathWorklist {
             return canonical(stable);
         }
 
-        private JsonObject manifest(int observedPathCount) {
+        private JsonObject manifest(int observedPathCount,
+                                    Set<String> observedRegions) {
+            String regionId = manifestRegionId(observedRegions);
+            if (observedRegions.size() > 1) {
+                gap("MULTIPLE_REGION_SCOPE",
+                        "REGION_PATH_WORKLIST_REQUIRES_ONE_REGION",
+                        "", "", "", -1);
+            }
+            if (observedPathCount == 0) {
+                gap("NO_OBSERVED_PATH_SEED",
+                        "OUTPUT_CLOSURE_SEED_REQUIRED",
+                        regionId, "", "", -1);
+            }
+
+            State state = observedPathCount == 0
+                    ? State.NOT_STARTED
+                    : !gaps.isEmpty()
+                    ? State.GAPPED
+                    : tasks.isEmpty() ? State.CLOSED : State.PENDING;
             JsonObject result = new JsonObject();
             result.addProperty("schemaVersion", 1);
             result.addProperty("kind", "REGION_PATH_WORKLIST");
-            result.addProperty("captureScope",
-                    "OUTPUT_RELEVANT_BOUNDED_PATH_CLOSURE");
-            result.addProperty("targetRegionPolicy",
-                    "ONE_DIRECTED_TARGET_BRANCH_OUTSIDE_THIS_WORKLIST");
-            result.addProperty("stableKeyAlgorithm",
-                    "SHA-256_CANONICAL_FLIP_QUERY_V1");
-            result.addProperty("dynamicIdsExcludedFromStableKey", true);
+            result.addProperty("regionId", regionId);
+            result.addProperty("state", state.name());
             result.add("bounds", bounds.toJson());
             result.addProperty("observedPathCount", observedPathCount);
-            result.addProperty("candidateFlipCount", candidateFlipCount);
-            result.addProperty("terminalFlipCount", terminalFlipCount);
-            result.addProperty("observedCoveredFlipCount",
-                    observedCoveredFlipCount);
             result.addProperty("pendingTaskCount", tasks.size());
-            result.addProperty("duplicateTaskCount", duplicateTaskCount);
-            result.addProperty("transitionDiscoverySeedCount",
-                    transitionDiscoverySeedCount);
-            result.addProperty("transitionDiscoveryTaskCount",
-                    transitionDiscoveryTaskCount);
-            result.addProperty("coveredConcreteObservationCount",
-                    coveredConcreteObservationCount);
-            result.addProperty("coveredConcreteObservationAuthority",
-                    "EXACT_VM_CONCRETE_EVENT_COVERED_BY_IMMUTABLE_"
-                            + "WITNESS_AT_SAME_STATIC_POSITION_V1");
-            result.addProperty("wallClockBoundReached", wallClockReached);
-            result.add("pathCountByRegion", GSON.toJsonTree(
-                    pathCountByRegion));
-            result.addProperty("gapCount", gaps.size());
             result.add("gaps", GSON.toJsonTree(gaps));
-            boolean closed = tasks.isEmpty() && gaps.isEmpty();
-            result.addProperty("complete", closed);
-            result.addProperty("status", closed
-                    ? "COMPLETE_BOUNDED_PATH_CLOSURE"
-                    : gaps.isEmpty()
-                    ? "PATH_CLOSURE_HAS_PENDING_WORK"
-                    : "PATH_CLOSURE_WITH_EXPLICIT_GAPS");
-            result.addProperty("soundnessScope",
-                    "OBSERVED_AND_SOLVER_CLOSED_OUTPUT_RELEVANT_PATHS_WITHIN_BOUNDS");
             return result;
         }
 
+        private String manifestRegionId(Set<String> observedRegions) {
+            if (observedRegions.size() == 1) {
+                return observedRegions.iterator().next();
+            }
+            if (!observedRegions.isEmpty()) return "";
+
+            Set<String> inputRegions = new TreeSet<>();
+            for (JsonObject summary : summaries) {
+                String region = string(summary, "regionId");
+                if (!region.isEmpty()) inputRegions.add(region);
+            }
+            for (JsonObject activation : activations.values()) {
+                String region = string(activation, "regionId");
+                if (!region.isEmpty()) inputRegions.add(region);
+            }
+            return inputRegions.size() == 1
+                    ? inputRegions.iterator().next() : "";
+        }
+
         private boolean admissibleTransitionDiscoverySeed(
-                JsonObject summary) {
+                JsonObject summary,
+                List<SummaryBranchMapping> mappings) {
             JsonObject discovery = object(summary, "transitionDiscovery");
             String site = string(discovery, "guardSiteId");
             int occurrence = integer(discovery, "guardOccurrence", -1);
@@ -636,15 +539,13 @@ public final class RegionPathWorklist {
                     || !nestedOutputSliceComplete(summary)
                     || site.isEmpty() || occurrence < 1
                     || array(summary, "pathCondition").size() == 0
-                    || array(summary, "branchMappings").size() == 0) {
+                    || mappings == null || mappings.isEmpty()) {
                 return false;
             }
-            for (JsonElement element : array(summary, "branchMappings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                if (site.equals(string(mapping, "siteId"))
-                        && occurrence == integer(mapping, "occurrence", 1)
-                        && integer(mapping, "conditionIndex", -1) >= 0) {
+            for (SummaryBranchMapping mapping : mappings) {
+                if (mapping.isWitnessed()
+                        && site.equals(mapping.siteId())
+                        && occurrence == mapping.occurrence()) {
                     return true;
                 }
             }

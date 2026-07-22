@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayObservationValidator;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicCodePosition;
+import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
 
 import java.io.BufferedReader;
@@ -3501,14 +3502,21 @@ public final class ConcolicRegionRuntime {
                 BranchWitness witness = BranchWitness.vmPc(siteId,
                         safe(method), unitIndex, occurrence,
                         observedOutcome, semanticCondition, conditionIndex,
-                        branchVmEventEvidence(vmAttestation, vmEventId,
-                                rawOperator, semanticOperator));
+                        branchPredicateMetadata(rawOperator,
+                                semanticOperator));
                 mapping.add("witness", witness.toJson());
                 active.branchWitnesses.add(witness);
             }
-        } else if (vmAttestation.valid) {
+        } else if (vmAttestation.valid && conditionCandidates == 0) {
             mapping.addProperty("conditionAuthority",
                     "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT");
+            mapping.add("concreteObservation",
+                    ExactConcreteBranchObservation.attested(siteId,
+                            safe(method), unitIndex, occurrence,
+                            observedOutcome).toJson());
+        } else if (vmAttestation.valid) {
+            mapping.addProperty("conditionAuthority",
+                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT_PC_INDEX");
         }
         boolean pathConditionShrank = conditions.size() < baseline;
         if (pathConditionShrank) {
@@ -3528,29 +3536,14 @@ public final class ConcolicRegionRuntime {
         active.branchMappings.add(mapping);
     }
 
-    private static JsonObject branchVmEventEvidence(
-            VmBranchEventAttestation attestation, long eventId,
+    private static JsonObject branchPredicateMetadata(
             String rawOperator, String semanticOperator) {
-        JsonObject event = new JsonObject();
-        event.addProperty("eventId", eventId);
-        event.addProperty("authority", attestation.authority);
-        if (attestation.event != null) {
-            event.addProperty("contextId", longInteger(attestation.event,
-                    "contextId", 0L));
-            event.addProperty("ownerJavaThreadId", longInteger(
-                    attestation.event, "ownerJavaThreadId", 0L));
-            event.addProperty("ownerOsThreadId", longInteger(
-                    attestation.event, "ownerOsThreadId", 0L));
-            event.addProperty("opcode", integer(attestation.event,
-                    "opcode", -1));
-            event.addProperty("codePosition", string(attestation.event,
-                    "codePosition"));
-        }
-        event.addProperty("predicateNormalization",
+        JsonObject metadata = new JsonObject();
+        metadata.addProperty("predicateNormalization",
                 safe(rawOperator).equals(safe(semanticOperator))
-                        ? "IDENTITY"
-                        : "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
-        return event;
+                        ? BranchWitness.IDENTITY_NORMALIZATION
+                        : BranchWitness.CMP_NORMALIZATION);
+        return metadata;
     }
 
     private static void recordSwitchBranchPaused(
@@ -11269,7 +11262,6 @@ public final class ConcolicRegionRuntime {
         private final String regionId;
         private final String test;
         private final String rootMethod;
-        private final String observedRootMethod;
         private final String pathQueryKey;
         private final int invocationOrdinal;
         private final RootContextSelector rootContextSelector;
@@ -11298,7 +11290,6 @@ public final class ConcolicRegionRuntime {
             this.regionId = string(json, "regionId");
             this.test = string(json, "test");
             this.rootMethod = string(json, "rootMethod");
-            this.observedRootMethod = string(json, "observedRootMethod");
             this.pathQueryKey = string(json, "pathQueryKey");
             this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
             this.rootContextSelector = RootContextSelector.from(json);
@@ -11616,9 +11607,7 @@ public final class ConcolicRegionRuntime {
                         && !selectedActivation.equals(activation.activationId)) {
                     continue;
                 }
-                String expectedRoot = firstNonBlank(activation.rootMethod,
-                        activation.observedRootMethod);
-                if (!rootMethod.equals(expectedRoot)) {
+                if (!rootMethod.equals(activation.rootMethod)) {
                     continue;
                 }
                 if (!activation.test.isEmpty()
@@ -11786,8 +11775,7 @@ public final class ConcolicRegionRuntime {
                             + "activationId " + activation.activationId
                             + " in " + plan);
                 }
-                String root = firstNonBlank(activation.rootMethod,
-                        activation.observedRootMethod);
+                String root = activation.rootMethod;
                 RootContextSelector contextSelector =
                         activation.rootContextSelector;
                 RootArgumentSelector selector =

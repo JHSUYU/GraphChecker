@@ -1211,14 +1211,14 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
                 regionFile, regionEdgeFile, staticGraph, methods,
                 runtimeEvents, fields);
-        writeFile(new File(outputDir, "runtime_region_instances.jsonl"),
-                planned.instancesJsonl());
+        Files.deleteIfExists(new File(outputDir,
+                "runtime_region_instances.jsonl").toPath());
+        Files.deleteIfExists(new File(outputDir,
+                "runtime_region_summary.json").toPath());
         writeFile(new File(outputDir, "runtime_region_edge_validation.jsonl"),
                 planned.edgeValidationsJsonl());
         writeFile(new File(outputDir, "concolic_activation_plan.jsonl"),
                 planned.activationsJsonl());
-        writeFile(new File(outputDir, "runtime_region_summary.json"),
-                planned.summaryJson());
     }
 
     private static String jsonObject(Object... values) {

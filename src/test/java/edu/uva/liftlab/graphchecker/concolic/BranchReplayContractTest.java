@@ -25,7 +25,7 @@ public class BranchReplayContractTest {
     }
 
     @Test
-    public void witnessOwnsOneExclusiveEvidenceVariantAndStableHash() {
+    public void witnessRoundTripPreservesPredicateAndPcBinding() {
         JsonObject event = new JsonObject();
         event.addProperty("eventId", 41L);
         event.addProperty("contextId", 9L);
@@ -34,14 +34,66 @@ public class BranchReplayContractTest {
                 event);
 
         BranchWitness roundTrip = BranchWitness.fromJson(witness.toJson());
-        assertEquals(witness.witnessId(), roundTrip.witnessId());
         assertEquals(3, roundTrip.vmPcIndex());
-        assertEquals(BranchWitness.VM_PC, roundTrip.evidenceKind());
-        assertFalse(roundTrip.evidence().has("certificate"));
+        assertEquals(BranchWitness.IDENTITY_NORMALIZATION,
+                roundTrip.predicateNormalization());
+        assertTrue(witness.sameContent(roundTrip));
+        assertFalse(roundTrip.toJson().has("witnessId"));
+        assertFalse(roundTrip.toJson().has("evidence"));
 
         JsonObject tampered = witness.toJson();
-        tampered.getAsJsonObject("site").addProperty("unitIndex", 8);
-        expectRejected(tampered, "content hash");
+        tampered.remove("vmPcIndex");
+        expectRejected(tampered, "keys must be");
+    }
+
+    @Test
+    public void nestedUnaryMinusRoundTripsWithoutWireHashes() {
+        JsonObject input = new JsonObject();
+        input.addProperty("_type", "SymbolExpression");
+        input.addProperty("_java_type", "I");
+        input.addProperty("_exp", "M_I_field_REGION.4.in.8_Producer");
+
+        JsonObject negated = new JsonObject();
+        negated.addProperty("_type", "BinaryExpression");
+        negated.addProperty("_op", "-");
+        negated.add("_right", input);
+
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_java_type", "I");
+        left.addProperty("_exp", "M_I_field_REGION.4.in.6_Producer");
+
+        JsonObject subtraction = new JsonObject();
+        subtraction.addProperty("_type", "BinaryExpression");
+        subtraction.add("_left", left);
+        subtraction.addProperty("_op", "-");
+        subtraction.add("_right", negated);
+
+        JsonObject ten = new JsonObject();
+        ten.addProperty("_type", "ConstExpr");
+        ten.addProperty("_java_type", "I");
+        ten.addProperty("_exp", "Y_I_10");
+
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "BinaryExpression");
+        predicate.add("_left", subtraction);
+        predicate.addProperty("_op", ">");
+        predicate.add("_right", ten);
+
+        JsonObject metadata = new JsonObject();
+        metadata.addProperty("predicateNormalization", "IDENTITY");
+        BranchWitness witness = BranchWitness.vmPc("ROOT#u26", "ROOT",
+                26, 1, false, predicate, 4, metadata);
+        JsonObject encoded = witness.toJson();
+        BranchWitness decoded = BranchWitness.fromJson(encoded);
+
+        assertTrue(witness.sameContent(decoded));
+        JsonObject decodedUnary = decoded.sourceSatisfiedPredicate()
+                .getAsJsonObject().getAsJsonObject("_left")
+                .getAsJsonObject("_right");
+        assertEquals("-", decodedUnary.get("_op").getAsString());
+        assertFalse(decodedUnary.has("_left"));
+        assertFalse(encoded.has("witnessId"));
     }
 
     @Test
@@ -56,10 +108,10 @@ public class BranchReplayContractTest {
         assertEquals("<", contract.requiredSatisfiedPredicate()
                 .getAsJsonObject().get("_op").getAsString());
         assertEquals(3, contract.requiredPathPredicates().size());
-        assertEquals(first.witnessId(), contract.orderedPrefix().get(0)
-                .witnessId());
-        assertEquals(second.witnessId(), contract.orderedPrefix().get(1)
-                .witnessId());
+        assertEquals(first.siteId(), contract.orderedPrefix().get(0)
+                .siteId());
+        assertEquals(second.siteId(), contract.orderedPrefix().get(1)
+                .siteId());
 
         JsonObject encoded = contract.toJson();
         assertFalse(encoded.has("prefix"));
@@ -67,19 +119,23 @@ public class BranchReplayContractTest {
         assertFalse(encoded.has("observedOutcome"));
         assertFalse(encoded.has("desiredOutcome"));
         assertFalse(encoded.has("negatedCondition"));
-        assertEquals(contract.contractId(),
-                BranchReplayContract.fromJson(encoded).contractId());
+        assertFalse(encoded.has("required"));
+        assertFalse(encoded.has("contractId"));
+        assertTrue(contract.sameContent(
+                BranchReplayContract.fromJson(encoded)));
     }
 
     @Test
-    public void replayContractRejectsASecondPolarityAuthority() {
+    public void replayContractDerivesPolarityWithoutASecondJsonAuthority() {
         BranchReplayContract contract = BranchReplayContract.flip(
                 Collections.<BranchWitness>emptyList(),
                 witness("ROOT#u7", 7, 1, true, "=="));
-        JsonObject malformed = contract.toJson();
-        malformed.getAsJsonObject("required").addProperty("takenOutcome",
-                true);
-        expectContractRejected(malformed, "exact source-witness flip");
+        JsonObject encoded = contract.toJson();
+        assertFalse(encoded.has("required"));
+        BranchReplayContract decoded = BranchReplayContract.fromJson(encoded);
+        assertFalse(decoded.requiredTakenOutcome());
+        assertEquals("!=", decoded.requiredSatisfiedPredicate()
+                .getAsJsonObject().get("_op").getAsString());
     }
 
     @Test
@@ -178,14 +234,4 @@ public class BranchReplayContractTest {
         }
     }
 
-    private static void expectContractRejected(JsonObject value,
-                                               String fragment) {
-        try {
-            BranchReplayContract.fromJson(value);
-            fail("expected malformed contract to be rejected");
-        } catch (IllegalArgumentException expected) {
-            assertTrue(expected.getMessage(),
-                    expected.getMessage().contains(fragment));
-        }
-    }
 }

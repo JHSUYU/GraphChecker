@@ -70,7 +70,7 @@ public class ConcolicSummaryImporterTest {
                 ConcolicSummaryImporter.ImportResult imported =
                         ConcolicSummaryImporter.importSummaries(
                                 results, activations, regions, output,
-                                diagnostics, caseRoot.resolve("cache"));
+                                diagnostics);
 
                 assertEquals(0, imported.validSummaryCount);
                 JsonObject diagnostic = JsonParser.parseString(new String(
@@ -230,7 +230,7 @@ public class ConcolicSummaryImporterTest {
                 ConcolicSummaryImporter.ImportResult imported =
                         ConcolicSummaryImporter.importSummaries(
                                 results, activations, regions, output,
-                                diagnostics, caseRoot.resolve("cache"));
+                                diagnostics);
                 assertEquals(0, imported.validSummaryCount);
                 assertEquals(1, imported.diagnosticCount);
                 String diagnostic = new String(Files.readAllBytes(
@@ -329,6 +329,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    @org.junit.Ignore("retired directed-target bootstrap summary protocol")
     public void admitsOnlyObservedUnforcedDirectedTargetReplay()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -374,6 +375,10 @@ public class ConcolicSummaryImporterTest {
             BranchReplayContract targetContract = BranchReplayContract.flip(
                     Collections.<BranchWitness>emptyList(), sourceWitness);
             activation.add("replayContract", targetContract.toJson());
+            JsonObject targetPolicy = new JsonObject();
+            targetPolicy.addProperty("siteId", "example.Target#u8");
+            targetPolicy.addProperty("policy", "EXPLORE");
+            activation.add("branches", singletonObject(targetPolicy));
             write(activations, activation + "\n");
 
             JsonObject region = new JsonObject();
@@ -421,27 +426,26 @@ public class ConcolicSummaryImporterTest {
             engine.addProperty("active", true);
             engine.addProperty("regionId", "REGION.T");
             engine.addProperty("activationId", "ACT.T");
-            engine.add("pathCondition", new JsonArray());
+            JsonArray targetPath = new JsonArray();
+            targetPath.add(targetContract.requiredSatisfiedPredicate());
+            engine.add("pathCondition", targetPath);
             raw.add("engineSummary", engine);
             write(results, raw + "\n");
 
             ConcolicSummaryImporter.ImportResult accepted =
                     ConcolicSummaryImporter.importSummaries(results,
-                            activations, regions, output, diagnostics,
-                            root.resolve("cache-ok"));
-            assertEquals(1, accepted.validSummaryCount);
+                            activations, regions, output, diagnostics);
+            assertEquals(readOptional(diagnostics), 1,
+                    accepted.validSummaryCount);
+            assertFalse(Files.exists(diagnostics));
             JsonObject acceptedSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                     .getAsJsonObject();
             assertFalse(acceptedSummary.has("targetReplayValidated"));
-            assertEquals(targetContract.contractId(), acceptedSummary
-                    .getAsJsonObject("executionAdmission")
-                    .getAsJsonObject("branchReplayObservation")
-                    .get("contractId").getAsString());
+            assertEquals("INPUT_MODEL_REPLAY",
+                    acceptedSummary.get("executionKind").getAsString());
             assertFalse(acceptedSummary.has("directedTargetQuery"));
-            assertEquals("SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION",
-                    acceptedSummary.getAsJsonObject("executionAdmission")
-                            .get("authority").getAsString());
+            assertFalse(acceptedSummary.has("executionAdmission"));
 
             branch.addProperty("observedOutcome", true);
             BranchWitness wrongWitness = BranchWitness.vmPc(
@@ -454,11 +458,11 @@ public class ConcolicSummaryImporterTest {
             ConcolicSummaryImporter.ImportResult rejected =
                     ConcolicSummaryImporter.importSummaries(results,
                             activations, regions, rejectedOutput,
-                            rejectedDiagnostics, root.resolve("cache-bad"));
+                            rejectedDiagnostics);
             assertEquals(0, rejected.validSummaryCount);
             assertTrue(new String(Files.readAllBytes(rejectedDiagnostics),
                     StandardCharsets.UTF_8).contains(
-                    "TARGET_OUTCOME_MISMATCH"));
+                    "REJECTED_CANONICAL_BRANCH_MAPPING"));
 
             JsonObject seedActivation = activation.deepCopy();
             seedActivation.addProperty("targetReplayRequired", false);
@@ -467,6 +471,7 @@ public class ConcolicSummaryImporterTest {
             seedActivation.remove("replayContract");
             branch.addProperty("observedOutcome", false);
             branch.addProperty("overrideApplied", false);
+            branch.add("witness", replayWitness.toJson());
             raw.addProperty("branchOverrideUsed", false);
             for (int mode = 0; mode < 3; mode++) {
                 JsonObject candidateActivation = seedActivation.deepCopy();
@@ -501,8 +506,7 @@ public class ConcolicSummaryImporterTest {
                 ConcolicSummaryImporter.ImportResult rejectedSeed =
                         ConcolicSummaryImporter.importSummaries(results,
                                 activations, regions, seedOutput,
-                                seedDiagnostics, root.resolve(
-                                        "cache-rejected-seed-" + mode));
+                                seedDiagnostics);
                 assertEquals(0, rejectedSeed.validSummaryCount);
                 assertTrue(new String(Files.readAllBytes(seedDiagnostics),
                         StandardCharsets.UTF_8).contains(expectedFailure));
@@ -524,7 +528,6 @@ public class ConcolicSummaryImporterTest {
             Path results = root.resolve("results.jsonl");
             Path output = root.resolve("summaries.jsonl");
             Path diagnostics = root.resolve("diagnostics.jsonl");
-            Path cache = root.resolve("cache");
             String method = "<example.Handler: void handle()>";
             write(activations, "{\"activationId\":\"ACT.0\","
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
@@ -557,19 +560,19 @@ public class ConcolicSummaryImporterTest {
 
             ConcolicSummaryImporter.ImportResult imported =
                     ConcolicSummaryImporter.importSummaries(results, activations,
-                            regions, output, diagnostics, cache);
+                            regions, output, diagnostics);
 
             assertEquals(1, imported.rawResultCount);
             assertEquals(1, imported.validSummaryCount);
             String summary = new String(Files.readAllBytes(output),
                     StandardCharsets.UTF_8);
-            assertTrue(summary.contains("RUNTIME_CONCOLIC"));
             assertTrue(summary.contains("InvalidToken"));
             JsonObject importedSummary = JsonParser.parseString(
                     summary.trim()).getAsJsonObject();
+            assertEquals("UNFORCED_SEED",
+                    importedSummary.get("executionKind").getAsString());
             assertEquals(0, importedSummary.getAsJsonArray(
                     "symbolicInputs").size());
-            assertEquals(1, Files.list(cache).count());
         } finally {
             folder.delete();
         }
@@ -587,7 +590,6 @@ public class ConcolicSummaryImporterTest {
             Path results = root.resolve("results.jsonl");
             Path output = root.resolve("summaries.jsonl");
             Path diagnostics = root.resolve("diagnostics.jsonl");
-            Path cache = root.resolve("cache");
             String method = "<example.Handler: void handle()>";
             write(activations, "{\"activationId\":\"ACT.0\","
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
@@ -632,13 +634,12 @@ public class ConcolicSummaryImporterTest {
 
             ConcolicSummaryImporter.ImportResult imported =
                     ConcolicSummaryImporter.importSummaries(results,
-                            activations, regions, output, diagnostics, cache);
+                            activations, regions, output, diagnostics);
 
             assertEquals(1, imported.rawResultCount);
             assertEquals(0, imported.validSummaryCount);
             assertEquals("", new String(Files.readAllBytes(output),
                     StandardCharsets.UTF_8));
-            assertFalse(Files.exists(cache));
             JsonObject diagnostic = JsonParser.parseString(new String(
                     Files.readAllBytes(diagnostics), StandardCharsets.UTF_8)
                     .trim()).getAsJsonObject();
@@ -675,50 +676,63 @@ public class ConcolicSummaryImporterTest {
                     + "\"rootMethod\":\"<example.Handler: void handle()>\","
                     + "\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson() + ","
+                    + "\"branches\":[{\"siteId\":"
+                    + "\"example.Handler#u1\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"methods\":[\"<example.Handler: void handle()>\"]}\n");
             String condition = "{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"!=\",\"_code_position\":"
                     + "\"virtual void example.Handler.handle():12\"}";
-            write(results, "{\"event\":\"CONCOLIC_REGION_RESULT\","
-                    + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
-                    + "\"exitKind\":\"NORMAL\","
-                    + "\"branchMappings\":["
-                    + "{\"siteId\":\"example.Handler#u1\","
-                    + "\"occurrence\":1,\"conditionIndex\":0,"
-                    + "\"pathConditionSize\":1,"
-                    + "\"pathConditionBaseline\":0},"
-                    + "{\"siteId\":\"example.Handler#u1\","
-                    + "\"occurrence\":2,\"conditionIndex\":1,"
-                    + "\"pathConditionSize\":2,"
-                    + "\"pathConditionBaseline\":1},"
-                    + "{\"siteId\":\"example.Handler#u1\","
-                    + "\"occurrence\":3,\"conditionIndex\":2,"
-                    + "\"pathConditionSize\":3,"
-                    + "\"pathConditionBaseline\":2}],"
-                    + "\"engineSummary\":{\"active\":true,"
-                    + "\"pathCondition\":[" + condition + ","
-                    + condition + "," + condition + "]}}\n");
+            JsonObject conditionObject = JsonParser.parseString(condition)
+                    .getAsJsonObject();
+            JsonArray path = new JsonArray();
+            JsonArray rawMappings = new JsonArray();
+            for (int index = 0; index < 3; index++) {
+                path.add(conditionObject.deepCopy());
+                JsonObject metadata = new JsonObject();
+                metadata.addProperty("predicateNormalization", "IDENTITY");
+                JsonObject rawMapping = new JsonObject();
+                rawMapping.add("witness", BranchWitness.vmPc(
+                        "example.Handler#u1",
+                        "<example.Handler: void handle()>", 1,
+                        index + 1, true, conditionObject, index, metadata)
+                        .toJson());
+                rawMappings.add(rawMapping);
+            }
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.0");
+            raw.addProperty("regionId", "REGION.0");
+            raw.addProperty("exitKind", "NORMAL");
+            raw.add("branchMappings", rawMappings);
+            JsonObject engine = new JsonObject();
+            engine.addProperty("active", true);
+            engine.add("pathCondition", path);
+            raw.add("engineSummary", engine);
+            write(results, raw + "\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
-                    regions, output, diagnostics, root.resolve("cache"));
+                    regions, output, diagnostics);
 
-            JsonObject summary = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
+            String summaryRow = new String(Files.readAllBytes(output),
+                    StandardCharsets.UTF_8).trim();
+            assertFalse(readOptional(diagnostics), summaryRow.isEmpty());
+            JsonObject summary = JsonParser.parseString(summaryRow)
                     .getAsJsonObject();
             assertEquals(3, summary.getAsJsonArray("pathCondition").size());
             JsonArray mappings = summary.getAsJsonArray("branchMappings");
             for (int index = 0; index < mappings.size(); index++) {
                 JsonObject mapping = mappings.get(index).getAsJsonObject();
                 assertEquals(index,
-                        mapping.get("conditionIndex").getAsInt());
-                assertEquals(index,
-                        mapping.get("engineConditionIndex").getAsInt());
+                        mapping.get("summaryPcIndex").getAsInt());
+                assertEquals(3, mapping.size());
+                assertEquals("EXPLORE",
+                        mapping.get("policy").getAsString());
+                assertFalse(mapping.has("conditionIndex"));
+                assertFalse(mapping.has("engineConditionIndex"));
             }
-            assertEquals(0, summary.getAsJsonObject(
-                    "pathConditionNormalization")
-                    .get("consecutiveDuplicatesRemoved").getAsInt());
+            assertFalse(summary.has("pathConditionNormalization"));
         } finally {
             folder.delete();
         }
@@ -741,7 +755,9 @@ public class ConcolicSummaryImporterTest {
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
                     + method + "\",\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson()
-                    + ",\"symbolize\":[]}\n");
+                    + ",\"branches\":[{\"siteId\":\"" + method
+                    + "#u4\",\"policy\":\"EXPLORE\"}],"
+                    + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"methods\":[\"" + method + "\"]}\n");
 
@@ -766,6 +782,12 @@ public class ConcolicSummaryImporterTest {
                     "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
             mapping.add("rawCondition", rawCondition.deepCopy());
             mapping.add("condition", semanticCondition.deepCopy());
+            JsonObject witnessMetadata = new JsonObject();
+            witnessMetadata.addProperty("predicateNormalization",
+                    BranchWitness.CMP_NORMALIZATION);
+            mapping.add("witness", BranchWitness.vmPc(method + "#u4",
+                    method, 4, 1, true, semanticCondition, 0,
+                    witnessMetadata).toJson());
             JsonArray mappings = new JsonArray();
             mappings.add(mapping);
             JsonArray path = new JsonArray();
@@ -783,100 +805,30 @@ public class ConcolicSummaryImporterTest {
             write(results, result + "\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
-                    regions, output, diagnostics, root.resolve("cache"));
+                    regions, output, diagnostics);
 
-            JsonObject summary = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
+            String summaryRow = new String(Files.readAllBytes(output),
+                    StandardCharsets.UTF_8).trim();
+            assertFalse(readOptional(diagnostics), summaryRow.isEmpty());
+            JsonObject summary = JsonParser.parseString(summaryRow)
                     .getAsJsonObject();
             JsonObject importedCondition = summary.getAsJsonArray(
                     "pathCondition").get(0).getAsJsonObject();
             assertEquals(">=", importedCondition.get("_op").getAsString());
             JsonObject importedMapping = summary.getAsJsonArray(
                     "branchMappings").get(0).getAsJsonObject();
-            assertEquals(">", importedMapping.getAsJsonObject(
-                    "rawCondition").get("_op").getAsString());
-            assertEquals(">=", importedMapping.getAsJsonObject(
-                    "condition").get("_op").getAsString());
-            assertEquals(1, summary.getAsJsonObject(
-                    "pathConditionNormalization").get(
-                    "semanticBranchConditionSubstitutionCount").getAsInt());
+            assertEquals(3, importedMapping.size());
+            assertEquals(0, importedMapping.get("summaryPcIndex").getAsInt());
+            assertFalse(importedMapping.has("rawCondition"));
+            assertFalse(importedMapping.has("condition"));
+            BranchWitness importedWitness = BranchWitness.fromJson(
+                    importedMapping.getAsJsonObject("witness"));
+            assertEquals(">=", importedWitness.sourceSatisfiedPredicate()
+                    .getAsJsonObject().get("_op").getAsString());
+            assertFalse(summary.has("pathConditionNormalization"));
             assertEquals("<", BranchPredicateAlgebra.complement(
                     importedCondition)
                     .getAsJsonObject().get("_op").getAsString());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void filtersBookkeepingAndPreservesRawAndNormalizedIndices()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path root = folder.getRoot().toPath();
-            Path activations = root.resolve("activation.jsonl");
-            Path regions = root.resolve("regions.jsonl");
-            Path results = root.resolve("results.jsonl");
-            Path output = root.resolve("summaries.jsonl");
-            Path diagnostics = root.resolve("diagnostics.jsonl");
-            String method = "<example.Target: java.lang.Object lookup(int)>";
-            write(activations, "{\"activationId\":\"ACT.0\","
-                    + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + method + "\",\"captureGoal\":"
-                    + RegionCaptureGoal.outputClosure().toJson()
-                    + ",\"symbolize\":[]}\n");
-            write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"" + method + "\"]}\n");
-            String producer = "{\"_type\":\"MethodExpression\","
-                    + "\"_code_position\":\"virtual jobject "
-                    + "example.Target.lookup(jint):40\"}";
-            String bookkeeping = "{\"_type\":\"BinaryExpression\","
-                    + "\"_op\":\"!=\",\"_code_position\":\"static jobject "
-                    + "edu.uva.liftlab.graphchecker.runtime."
-                    + "ConcolicRegionRuntime.safe(jobject):840\"}";
-            String target = "{\"_type\":\"BinaryExpression\","
-                    + "\"_op\":\"!=\",\"_code_position\":\"virtual jobject "
-                    + "example.Target.lookup(jint):41\"}";
-            write(results, "{\"event\":\"CONCOLIC_REGION_RESULT\","
-                    + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
-                    + "\"exitKind\":\"NORMAL\","
-                    + "\"branchMappings\":[{\"conditionIndex\":2,"
-                    + "\"pathConditionSize\":3,\"pathConditionBaseline\":0,"
-                    + "\"condition\":" + target + "}],"
-                    + "\"engineSummary\":{\"active\":true,"
-                    + "\"pathCondition\":[" + producer + ","
-                    + bookkeeping + "," + target + "]}}\n");
-
-            ConcolicSummaryImporter.ImportResult imported =
-                    ConcolicSummaryImporter.importSummaries(results, activations,
-                            regions, output, diagnostics, root.resolve("cache"));
-
-            assertEquals(1, imported.validSummaryCount);
-            JsonObject summary = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
-                    .getAsJsonObject();
-            assertEquals(2, summary.getAsJsonArray("pathCondition").size());
-            JsonObject mapping = summary.getAsJsonArray("branchMappings")
-                    .get(0).getAsJsonObject();
-            assertEquals(2, mapping.get("rawConditionIndex").getAsInt());
-            assertEquals(1, mapping.get("normalizedConditionIndex").getAsInt());
-            assertEquals(1, mapping.get("conditionIndex").getAsInt());
-            assertEquals(2, mapping.get("pathConditionSize").getAsInt());
-            assertTrue(mapping.has("rawCondition"));
-
-            JsonObject normalization = summary.getAsJsonObject(
-                    "pathConditionNormalization");
-            assertEquals(1, normalization.get("filteredConditionCount").getAsInt());
-            assertEquals(2, normalization.get("semanticConditionCount").getAsInt());
-            JsonObject filteredIndex = normalization
-                    .getAsJsonArray("conditionIndexMap").get(1).getAsJsonObject();
-            assertEquals(-1, filteredIndex.get("normalizedConditionIndex").getAsInt());
-            assertEquals("FILTERED", filteredIndex.get("status").getAsString());
-            String diagnosticRows = new String(Files.readAllBytes(diagnostics),
-                    StandardCharsets.UTF_8);
-            assertTrue(diagnosticRows.contains(
-                    "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
         } finally {
             folder.delete();
         }
@@ -899,7 +851,9 @@ public class ConcolicSummaryImporterTest {
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
                     + method + "\",\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson()
-                    + ",\"symbolize\":[]}\n");
+                    + ",\"branches\":[{\"siteId\":\"" + method
+                    + "#u7\",\"policy\":\"EXPLORE\"}],"
+                    + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"methods\":[\"" + method + "\"]}\n");
             String semanticEvent = "{\"_type\":\"MethodExpression\","
@@ -911,31 +865,79 @@ public class ConcolicSummaryImporterTest {
             String mapped = "{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"!=\",\"_code_position\":"
                     + "\"virtual jobject example.Target.lookup(jint):42\"}";
-            write(results, "{\"event\":\"CONCOLIC_REGION_RESULT\","
-                    + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
-                    + "\"exitKind\":\"NORMAL\","
-                    + "\"branchMappings\":[{\"conditionIndex\":2,"
-                    + "\"condition\":" + mapped + "}],"
-                    + "\"engineSummary\":{\"active\":true,"
-                    + "\"pathCondition\":[" + semanticEvent + ","
-                    + unmapped + "," + mapped + "]}}\n");
+            JsonObject mappedCondition = JsonParser.parseString(mapped)
+                    .getAsJsonObject();
+            JsonObject metadata = new JsonObject();
+            metadata.addProperty("predicateNormalization", "IDENTITY");
+            JsonObject mapping = new JsonObject();
+            mapping.addProperty("conditionIndex", 2);
+            mapping.add("condition", mappedCondition.deepCopy());
+            mapping.add("witness", BranchWitness.vmPc(method + "#u7",
+                    method, 7, 1, true, mappedCondition, 2, metadata)
+                    .toJson());
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.0");
+            raw.addProperty("regionId", "REGION.0");
+            raw.addProperty("exitKind", "NORMAL");
+            raw.add("branchMappings", singletonObject(mapping));
+            JsonObject engine = new JsonObject();
+            engine.addProperty("active", true);
+            JsonArray rawPath = new JsonArray();
+            rawPath.add(JsonParser.parseString(semanticEvent));
+            rawPath.add(JsonParser.parseString(unmapped));
+            rawPath.add(mappedCondition.deepCopy());
+            engine.add("pathCondition", rawPath);
+            raw.add("engineSummary", engine);
+            write(results, raw + "\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
-                    regions, output, diagnostics, root.resolve("cache"));
+                    regions, output, diagnostics);
 
             JsonObject summary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                     .getAsJsonObject();
             assertEquals(2, summary.getAsJsonArray("pathCondition").size());
-            JsonObject mapping = summary.getAsJsonArray("branchMappings")
+            JsonObject importedMapping = summary.getAsJsonArray("branchMappings")
                     .get(0).getAsJsonObject();
-            assertEquals(1, mapping.get("conditionIndex").getAsInt());
-            JsonObject filtered = summary.getAsJsonObject(
-                    "pathConditionNormalization").getAsJsonArray(
-                    "conditionIndexMap").get(1).getAsJsonObject();
-            assertEquals("FILTERED", filtered.get("status").getAsString());
-            assertEquals("BINARY_CONDITION_WITHOUT_INSTRUMENTED_BRANCH_MAPPING",
-                    filtered.get("reason").getAsString());
+            assertEquals(1, importedMapping.get(
+                    "summaryPcIndex").getAsInt());
+            assertEquals(3, importedMapping.size());
+            assertFalse(importedMapping.has("conditionIndex"));
+            assertTrue(new String(Files.readAllBytes(diagnostics),
+                    StandardCharsets.UTF_8).contains(
+                    "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void outputClosureFailsClosedWithoutAnyBinaryBranchMapping()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            JsonObject map = symbol(
+                    "M_L_field_REGION.P.in.0_example/Store", "L");
+            JsonArray path = new JsonArray();
+            path.add(binaryCondition(
+                    "virtual void example.Store.update():18", "!=",
+                    map, constant("Y_L_NULL", "L")));
+            path.add(methodExpression("java/util/HashMap put", 19,
+                    symbolCopy(map), symbol("key", "I"),
+                    symbol("value", "example/Value")));
+
+            MapFixture imported = importMapFixture(
+                    folder.getRoot().toPath(), path);
+
+            assertEquals(1, imported.summary.getAsJsonArray(
+                    "heapEffects").size());
+            assertFalse("an output relation cannot omit a symbolic branch",
+                    imported.summary.get("relationallyComplete")
+                            .getAsBoolean());
+            assertTrue(imported.diagnostics.contains(
+                    "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
         } finally {
             folder.delete();
         }
@@ -1025,13 +1027,9 @@ public class ConcolicSummaryImporterTest {
             assertEquals("sourceMap", putAll.getAsJsonObject("sourceExpression")
                     .get("_exp").getAsString());
 
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(4, model.get("effectCount").getAsInt());
-            assertEquals(1, model.get("mapStateFamilyCount").getAsInt());
-            assertTrue(model.get("complete").getAsBoolean());
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
+            assertFalse(imported.summary.has("heapEffectModel"));
             assertEquals(0, imported.diagnostics.trim().length());
             JsonObject output = imported.summary
                     .getAsJsonObject("outputExpressions")
@@ -1074,7 +1072,7 @@ public class ConcolicSummaryImporterTest {
                     root.resolve("results.jsonl"),
                     root.resolve("activation.jsonl"), root.resolve(
                             "regions.jsonl"), incompleteOutput,
-                    incompleteDiagnostics, root.resolve("incomplete-cache"));
+                    incompleteDiagnostics);
             JsonObject incompleteSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(incompleteOutput),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
@@ -1094,8 +1092,7 @@ public class ConcolicSummaryImporterTest {
                     root.resolve("results.jsonl"),
                     root.resolve("activation.jsonl"), root.resolve(
                             "regions.jsonl"), missingSliceOutput,
-                    root.resolve("missing-slice-diagnostics.jsonl"),
-                    root.resolve("missing-slice-cache"));
+                    root.resolve("missing-slice-diagnostics.jsonl"));
             JsonObject missingSliceSummary = JsonParser.parseString(
                     new String(Files.readAllBytes(missingSliceOutput),
                             StandardCharsets.UTF_8).trim()).getAsJsonObject();
@@ -1136,11 +1133,6 @@ public class ConcolicSummaryImporterTest {
             assertEquals("JDK_HASHMAP_REMOVENODE_MATCH_VALUE_FALSE",
                     remove.get("parameterNormalization").getAsString());
             assertFalse(remove.has("valueExpression"));
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(1, model.get("candidateMutationCount").getAsInt());
-            assertEquals(0, model.get("unsupportedMutationCount").getAsInt());
-            assertFalse(model.get("complete").getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1170,13 +1162,8 @@ public class ConcolicSummaryImporterTest {
                     "pathCondition").size());
             assertEquals(0, imported.summary.getAsJsonArray(
                     "heapEffects").size());
-            JsonObject normalization = imported.summary.getAsJsonObject(
-                    "pathConditionNormalization");
-            assertEquals(1, normalization.get("filteredConditionCount")
-                    .getAsInt());
-            assertEquals("OUTSIDE_REGION_SEMANTIC_METHOD_BOUNDARY",
-                    normalization.getAsJsonArray("conditionIndexMap").get(0)
-                            .getAsJsonObject().get("reason").getAsString());
+            assertTrue(imported.diagnostics.contains(
+                    "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
         } finally {
             folder.delete();
         }
@@ -1204,12 +1191,7 @@ public class ConcolicSummaryImporterTest {
             assertEquals("MAP_REMOVE", imported.summary.getAsJsonArray(
                     "heapEffects").get(0).getAsJsonObject().get("kind")
                     .getAsString());
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(1, coverage.get(
-                    "statePortMatchedTransformerCount").getAsInt());
-            assertTrue(coverage.get("complete").getAsBoolean());
+            assertFalse(imported.summary.has("heapEffectModel"));
         } finally {
             folder.delete();
         }
@@ -1274,33 +1256,10 @@ public class ConcolicSummaryImporterTest {
                     null, new JsonArray(), fixture.branchMappings,
                     null, null, fixture.sliceMetadata, new JsonArray());
 
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals("EXACT_REQUESTED_STATE_TRANSFORMER_"
-                            + "RUNTIME_PATH_COVERAGE_V5",
-                    coverage.get("policy").getAsString());
-            assertTrue(coverage.get(
-                    "exactRequestedStateTransformerContract").getAsBoolean());
-            assertTrue(coverage.get(
-                    "requestedStateTransformerContractValid").getAsBoolean());
-            assertEquals(2, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("uncoveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("edgeFreeVoidMethodCount").getAsInt());
-            assertEquals(1, coverage.get("guardExcludedWriteSiteCount")
-                    .getAsInt());
-            assertEquals(0, coverage.get("statePortMatchedTransformerCount")
-                    .getAsInt());
-            assertFalse(coverage.get("complete").getAsBoolean());
             assertEquals("HEAP_EFFECT_STATE_TRANSFORMER",
                     imported.summary.getAsJsonObject(
                             "requestedOutputSlice").get(
                             "captureDischargeAuthority").getAsString());
-            assertFalse(coverage.toString().contains("DF.WRITE.OTHER"));
-            assertFalse(coverage.toString().contains(fixture.wrapper));
-            assertTrue(coverage.toString().contains(
-                    fixture.outerGuardSite));
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1321,27 +1280,8 @@ public class ConcolicSummaryImporterTest {
             assertTrue(valid.diagnostics,
                     valid.summary.get("relationallyComplete").getAsBoolean());
             assertEquals(0, valid.diagnostics.trim().length());
-            JsonObject coverage = valid.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(4, coverage.get("declaredWriteSiteCount")
-                    .getAsInt());
-            assertEquals(4, coverage.get("coveredWriteSiteCount")
-                    .getAsInt());
-            assertEquals(0, coverage.get("uncoveredWriteSiteCount")
-                    .getAsInt());
-            assertEquals(4, coverage.get(
-                    "statePortMatchedTransformerCount").getAsInt());
-            int orderedMatches = 0;
-            for (JsonElement element : coverage.getAsJsonArray("matches")) {
-                if ("RUNTIME_ORDERED_MAP_PUT_TO_EXACT_STATIC_WRITE_AND_"
-                        .concat("CONTAINER_ELEMENT_FIELD_V1").equals(
-                                element.getAsJsonObject().get("authority")
-                                        .getAsString())) {
-                    orderedMatches++;
-                }
-            }
-            assertEquals(4, orderedMatches);
+            assertEquals(4, valid.summary.getAsJsonArray(
+                    "heapEffects").size());
 
             String[] failures = new String[]{"CARDINALITY", "ORDER", "KEY",
                     "LOAD", "PORT", "TOKEN"};
@@ -1356,13 +1296,6 @@ public class ConcolicSummaryImporterTest {
                 assertTrue(failure + ": " + rejected.diagnostics,
                         rejected.diagnostics.contains(
                                 "EXACT_ORDERED_MAP_PUT_BIJECTION_FAILED"));
-                JsonObject rejectedCoverage = rejected.summary
-                        .getAsJsonObject("heapEffectModel").getAsJsonObject(
-                                "staticTransformerCoverage");
-                assertEquals(failure, 0, rejectedCoverage.get(
-                        "statePortMatchedTransformerCount").getAsInt());
-                assertEquals(failure, 4, rejectedCoverage.get(
-                        "uncoveredWriteSiteCount").getAsInt());
             }
         } finally {
             folder.delete();
@@ -1482,11 +1415,6 @@ public class ConcolicSummaryImporterTest {
                     null, new JsonArray(), fixture.branchMappings,
                     null, null, fixture.sliceMetadata, new JsonArray());
 
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(1, model.get("unsupportedMutationCount")
-                    .getAsInt());
-            assertFalse(model.get("complete").getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1520,12 +1448,6 @@ public class ConcolicSummaryImporterTest {
                     missing.causalEdges, null, new JsonArray(),
                     new JsonArray(), null, null, missing.sliceMetadata,
                     new JsonArray());
-            JsonObject missingCoverage = missingGuard.summary
-                    .getAsJsonObject("heapEffectModel").getAsJsonObject(
-                            "staticTransformerCoverage");
-            assertEquals(0, missingCoverage.get(
-                    "guardExcludedWriteSiteCount").getAsInt());
-            assertFalse(missingCoverage.get("complete").getAsBoolean());
             assertFalse(missingGuard.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(missingGuard.diagnostics.contains(
@@ -1593,27 +1515,12 @@ public class ConcolicSummaryImporterTest {
                     fixture.branchMappings, null, null,
                     fixture.sliceMetadata, strings(expiryPort));
 
-            JsonObject admission = inactiveExpiry.summary.getAsJsonObject(
-                    "inputMaterializationAdmission");
-            assertTrue(admission.get("complete").getAsBoolean());
-            assertTrue(containsString(admission.getAsJsonArray(
-                    "globalSliceInputs"), expiryPort));
-            assertFalse(containsString(admission.getAsJsonArray(
-                    "requiredSliceInputs"), expiryPort));
-            assertTrue(containsString(admission.getAsJsonArray(
-                    "pathInactiveSliceInputs"), expiryPort));
-            assertEquals(1, admission.getAsJsonArray("pathInactiveProofs")
-                    .size());
-            JsonObject proof = admission.getAsJsonArray(
-                    "pathInactiveProofs").get(0).getAsJsonObject();
-            assertEquals(expiryPort, proof.get("inputPort").getAsString());
-            assertTrue(proof.toString().contains(fixture.pruneSite));
-            assertTrue(proof.toString().contains(fixture.outerGuardSite));
-            assertTrue(proof.toString().contains(fixture.innerGuardSite));
             assertFalse(inactiveExpiry.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(inactiveExpiry.diagnostics.contains(
                     "UNOBSERVED_DECLARED_HEAP_WRITE"));
+            assertFalse(inactiveExpiry.diagnostics.contains(
+                    "SLICE_INPUT_NOT_SYMBOLIZED:" + expiryPort));
 
             MapFixture missingKey = importMapFixture(
                     folder.getRoot().toPath().resolve("key-required"),
@@ -1621,13 +1528,6 @@ public class ConcolicSummaryImporterTest {
                     fixture.causalEdges, null, additional,
                     fixture.branchMappings, null, null,
                     fixture.sliceMetadata, strings(keyPort, expiryPort));
-            JsonObject keyAdmission = missingKey.summary.getAsJsonObject(
-                    "inputMaterializationAdmission");
-            assertFalse(keyAdmission.get("complete").getAsBoolean());
-            assertTrue(containsString(keyAdmission.getAsJsonArray(
-                    "requiredSliceInputs"), keyPort));
-            assertTrue(containsString(keyAdmission.getAsJsonArray(
-                    "pathInactiveSliceInputs"), expiryPort));
             assertFalse(missingKey.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(missingKey.diagnostics.contains(
@@ -1672,23 +1572,6 @@ public class ConcolicSummaryImporterTest {
                     methods, causalEdges, new JsonArray(),
                     branchMappings, null);
 
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(2, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(2, coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("uncoveredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("guardExcludedWriteSiteCount")
-                    .getAsInt());
-            JsonObject guardMatch = coverage.getAsJsonArray("matches").get(0)
-                    .getAsJsonObject();
-            assertEquals("RUNTIME_OBSERVED_DOMINATING_GUARD_EXCLUDES_WRITE",
-                    guardMatch.get("authority").getAsString());
-            assertEquals(prune + "#u4",
-                    guardMatch.get("guardSiteId").getAsString());
-            assertFalse(guardMatch.get("requiredOutcome").getAsBoolean());
-            assertTrue(guardMatch.get("observedOutcome").getAsBoolean());
-            assertTrue(coverage.get("complete").getAsBoolean());
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertEquals(0, imported.diagnostics.trim().length());
@@ -1730,13 +1613,6 @@ public class ConcolicSummaryImporterTest {
                     methods, causalEdges, new JsonArray(),
                     branchMappings, null);
 
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(0, coverage.get("guardExcludedWriteSiteCount")
-                    .getAsInt());
-            assertEquals(1, coverage.get("uncoveredWriteSiteCount").getAsInt());
-            assertFalse(coverage.get("complete").getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1776,12 +1652,6 @@ public class ConcolicSummaryImporterTest {
                     methods, causalEdges, new JsonArray(),
                     new JsonArray(), null);
 
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(0, coverage.get("guardExcludedWriteSiteCount")
-                    .getAsInt());
-            assertEquals(1, coverage.get("uncoveredWriteSiteCount").getAsInt());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1855,12 +1725,6 @@ public class ConcolicSummaryImporterTest {
 
             assertEquals(0, imported.summary.getAsJsonArray(
                     "heapEffects").size());
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(3, model.get("candidateMutationCount").getAsInt());
-            assertEquals(3, model.get("unsupportedMutationCount").getAsInt());
-            assertEquals(0, model.get("malformedMutationCount").getAsInt());
-            assertFalse(model.get("complete").getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1940,17 +1804,6 @@ public class ConcolicSummaryImporterTest {
                     folder.getRoot().toPath(), path, true, new JsonArray(),
                     methods, causalEdges);
 
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            JsonObject coverage = model.getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertTrue(coverage.get("applicable").getAsBoolean());
-            assertEquals(1, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("uncoveredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("edgeFreeVoidMethodCount").getAsInt());
-            assertFalse(coverage.get("complete").getAsBoolean());
-            assertFalse(model.get("complete").getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -1989,12 +1842,6 @@ public class ConcolicSummaryImporterTest {
                     folder.getRoot().toPath(), path, true, new JsonArray(),
                     methods, causalEdges);
 
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(2, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("uncoveredWriteSiteCount").getAsInt());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -2027,12 +1874,6 @@ public class ConcolicSummaryImporterTest {
                     "pathCondition").size());
             assertEquals(1, imported.summary.getAsJsonArray(
                     "heapEffects").size());
-            JsonObject normalization = imported.summary.getAsJsonObject(
-                    "pathConditionNormalization");
-            assertEquals("REQUESTED_OUTPUT_SLICE_METHOD",
-                    normalization.get("policy").getAsString());
-            assertEquals(1, normalization.get("filteredConditionCount")
-                    .getAsInt());
             assertTrue(imported.diagnostics.contains(
                     "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
         } finally {
@@ -2058,11 +1899,6 @@ public class ConcolicSummaryImporterTest {
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), path);
             assertEquals(0, imported.summary.getAsJsonArray("heapEffects").size());
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(1, model.get("unsupportedMutationCount").getAsInt());
-            assertEquals(1, model.get("malformedMutationCount").getAsInt());
-            assertTrue(!model.get("complete").getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
@@ -2093,11 +1929,8 @@ public class ConcolicSummaryImporterTest {
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertEquals(0, imported.diagnostics.trim().length());
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(0, model.get("syntheticInputCount").getAsInt());
-            assertEquals(1, model.get("initializedInputCount").getAsInt());
-            assertEquals(1, model.get("initializerCount").getAsInt());
+            assertEquals(1, imported.summary.getAsJsonArray(
+                    "heapStateInitializers").size());
 
             JsonObject initializer = imported.summary.getAsJsonArray(
                     "heapStateInitializers").get(0).getAsJsonObject();
@@ -2125,15 +1958,6 @@ public class ConcolicSummaryImporterTest {
                     true);
             assertTrue(observed.diagnostics, observed.summary.get(
                     "relationallyComplete").getAsBoolean());
-            assertEquals("[\"REGION.P.in.0\",\"REGION.P.in.1\"]",
-                    observed.summary.getAsJsonObject(
-                            "inputMaterializationAdmission")
-                            .getAsJsonArray("admittedObservedInputs")
-                            .toString());
-            assertEquals(1, observed.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapObservationImport").get(
-                    "mapStateInputObservationCount").getAsInt());
             assertEquals("REGION.P.in.0", observed.summary
                     .getAsJsonArray("finiteMapSnapshots").get(0)
                     .getAsJsonObject().get("statePort").getAsString());
@@ -2253,12 +2077,8 @@ public class ConcolicSummaryImporterTest {
                             + "AND_ENTRY_VALUE_TOKEN_JOIN",
                     binding.get("authority").getAsString());
 
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            assertEquals(1, model.get("identityEffectCount").getAsInt());
-            assertEquals(1, model.get("observationCount").getAsInt());
-            assertTrue(model.getAsJsonObject("runtimeHeapObservationImport")
-                    .get("complete").getAsBoolean());
+            assertTrue(imported.summary.get("relationallyComplete")
+                    .getAsBoolean());
         } finally {
             folder.delete();
         }
@@ -2286,17 +2106,9 @@ public class ConcolicSummaryImporterTest {
 
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
-            JsonObject admission = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapObservationImport");
-            assertTrue(admission.get("complete").getAsBoolean());
-            assertEquals(2, admission.get("recordCount").getAsInt());
-            assertEquals(2, admission.get("validatedCount").getAsInt());
-            assertEquals(1, admission.get("mapEntryReadCount").getAsInt());
-            assertEquals(1, admission.get("finiteMapSnapshotCount")
-                    .getAsInt());
             assertEquals(1, imported.summary.getAsJsonArray(
                     "heapObservations").size());
+            assertTrue(imported.summary.has("finiteMapSnapshots"));
             assertFalse(imported.diagnostics.contains(
                     "UNSUPPORTED_RUNTIME_HEAP_OBSERVATION_KIND"));
         } finally {
@@ -2330,10 +2142,8 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
                     "INCOMPLETE_RUNTIME_FINITE_MAP_SNAPSHOT"));
-            assertEquals(0, imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapObservationImport")
-                    .get("finiteMapSnapshotCount").getAsInt());
+            assertEquals(0, imported.summary.getAsJsonArray(
+                    "finiteMapSnapshots").size());
         } finally {
             folder.delete();
         }
@@ -2444,9 +2254,6 @@ public class ConcolicSummaryImporterTest {
                     "UNRESOLVED_HEAP_OBSERVATION_STATE_PORT"));
             assertEquals(0, imported.summary.getAsJsonArray(
                     "heapEffects").size());
-            assertEquals(0, imported.summary.getAsJsonObject(
-                    "heapEffectModel").get("candidateMutationCount")
-                    .getAsInt());
             assertEquals(imported.diagnostics, 1,
                     imported.summary.getAsJsonArray(
                             "heapObservations").size());
@@ -2522,21 +2329,12 @@ public class ConcolicSummaryImporterTest {
         try {
             MapFixture valid = importRawExpiryFallbackFixture(
                     folder.getRoot().toPath().resolve("valid"), "VALID");
-            assertTrue(valid.diagnostics,
-                    valid.summary.get("relationallyComplete").getAsBoolean());
-            JsonObject rawOne = valid.summary.getAsJsonObject(
-                    "pathConditionNormalization").getAsJsonArray(
-                    "conditionIndexMap").get(1).getAsJsonObject();
-            assertEquals("RETAINED", rawOne.get("status").getAsString());
-            assertEquals(
-                    "CERTIFIED_DYNAMIC_MAP_ENTRY_FIELD_RAW_PC_"
-                            + "SIBLING_BRANCH_TEMPLATE_V1",
-                    rawOne.get("admissionAuthority").getAsString());
-            int normalized = rawOne.get("normalizedConditionIndex")
-                    .getAsInt();
-            assertEquals(">=", valid.summary.getAsJsonArray(
-                    "pathCondition").get(normalized).getAsJsonObject()
-                    .get("_op").getAsString());
+            assertFalse(valid.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(valid.diagnostics.contains(
+                    "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
+            assertTrue(valid.summary.getAsJsonArray(
+                    "pathCondition").toString().contains("\">=\""));
             JsonObject entryBinding = valid.summary.getAsJsonArray(
                     "heapObservations").get(0).getAsJsonObject()
                     .getAsJsonArray("entryFieldBindings").get(0)
@@ -2544,9 +2342,11 @@ public class ConcolicSummaryImporterTest {
             assertEquals("EXACT_SEMANTIC_RAW_PC_DYNAMIC_SYMBOL_FALLBACK",
                     entryBinding.get("fieldExpressionAuthority")
                             .getAsString());
-            assertEquals(-1, valid.summary.getAsJsonArray("branchMappings")
-                    .get(0).getAsJsonObject().get("rawConditionIndex")
-                    .getAsInt());
+            JsonObject concreteMapping = valid.summary.getAsJsonArray(
+                    "branchMappings").get(0).getAsJsonObject();
+            assertEquals(2, concreteMapping.size());
+            assertTrue(concreteMapping.has("concreteObservation"));
+            assertFalse(concreteMapping.has("rawConditionIndex"));
 
             String[] rejected = new String[]{"MALFORMED_OPERATOR",
                     "DUPLICATE_DYNAMIC", "DUPLICATE_RAW",
@@ -2556,17 +2356,16 @@ public class ConcolicSummaryImporterTest {
                         folder.getRoot().toPath().resolve(
                                 mutation.toLowerCase(java.util.Locale.ROOT)),
                         mutation);
+                if (invalid.summary.entrySet().isEmpty()) {
+                    assertEquals("MALFORMED_OPERATOR", mutation);
+                    assertTrue(invalid.diagnostics,
+                            invalid.diagnostics.contains(
+                                    "REJECTED_CANONICAL_BRANCH_MAPPING"));
+                    continue;
+                }
                 assertFalse(mutation + ": " + invalid.diagnostics,
                         invalid.summary.get("relationallyComplete")
                                 .getAsBoolean());
-                JsonObject rejectedRaw = invalid.summary.getAsJsonObject(
-                        "pathConditionNormalization").getAsJsonArray(
-                        "conditionIndexMap").get(1).getAsJsonObject();
-                assertEquals(mutation, "FILTERED",
-                        rejectedRaw.get("status").getAsString());
-                assertEquals(mutation,
-                        "BINARY_CONDITION_WITHOUT_INSTRUMENTED_BRANCH_MAPPING",
-                        rejectedRaw.get("reason").getAsString());
                 assertTrue(mutation + ": " + invalid.diagnostics,
                         invalid.diagnostics.contains(
                                 "WRONG_ENTRY_VALUE_OWNER".equals(mutation)
@@ -2791,16 +2590,9 @@ public class ConcolicSummaryImporterTest {
                     placeholderCondition(placeholder), false,
                     vmClock);
 
-            assertTrue(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            JsonObject admission = imported.summary.getAsJsonObject(
-                    "inputMaterializationAdmission");
-            assertTrue(admission.get("complete").getAsBoolean());
-            assertEquals(0, admission.getAsJsonArray(
-                    "observedSymbolizedInputs").size());
-            assertEquals("REGION.TIME.in.0", admission.getAsJsonArray(
-                    "admittedVmIntrinsicPlaceholderInputs").get(0)
-                    .getAsString());
+            assertTrue(imported.diagnostics,
+                    imported.summary.get("relationallyComplete")
+                            .getAsBoolean());
             JsonArray requirements = imported.summary.getAsJsonArray(
                     "unforcedEnvironmentValidationRequirements");
             assertEquals(1, requirements.size());
@@ -2836,10 +2628,8 @@ public class ConcolicSummaryImporterTest {
             assertEquals("UNIQUE_USED_PLACEHOLDER_IDENTITY_TO_EXACT_"
                             + "SLICE_INPUT",
                     binding.get("ownerAuthority").getAsString());
-            JsonObject bindingAdmission = imported.summary.getAsJsonObject(
-                    "vmIntrinsicPlaceholderBindingAdmission");
-            assertEquals(1, bindingAdmission.get("schemaVersion").getAsInt());
-            assertTrue(bindingAdmission.get("complete").getAsBoolean());
+            assertFalse(imported.summary.has(
+                    "vmIntrinsicPlaceholderBindingAdmission"));
             assertFalse(imported.diagnostics.contains(
                     "SLICE_INPUT_NOT_SYMBOLIZED"));
         } finally {
@@ -2863,8 +2653,7 @@ public class ConcolicSummaryImporterTest {
                     summary.getAsJsonObject("outputExpressions")
                             .getAsJsonObject("REGION.OUT.out.0")
                             .get("_exp").getAsString());
-            assertTrue(summary.getAsJsonObject("outputExpressionAdmission")
-                    .get("complete").getAsBoolean());
+            assertFalse(summary.has("outputExpressionAdmission"));
         } finally {
             folder.delete();
         }
@@ -2884,16 +2673,14 @@ public class ConcolicSummaryImporterTest {
                     2);
             assertFalse(ambiguous.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(String.valueOf(ambiguous.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues"))
-                    .contains("AMBIGUOUS_EXACT_OUTPUT_EXPRESSION_CAPTURE"));
+            assertFalse(ambiguous.getAsJsonObject(
+                    "outputExpressions").has("REGION.OUT.out.0"));
 
             JsonObject constant = importExactOutputCaptureFixture(
                     second.getRoot().toPath(), constant("Y_L_value", "L"), 1);
             assertFalse(constant.get("relationallyComplete").getAsBoolean());
-            assertTrue(String.valueOf(constant.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues"))
-                    .contains("NON_SYMBOLIC_OUTPUT_EXPRESSION"));
+            assertTrue(constant.getAsJsonObject(
+                    "outputExpressions").has("REGION.OUT.out.0"));
         } finally {
             first.delete();
             second.delete();
@@ -2917,18 +2704,7 @@ public class ConcolicSummaryImporterTest {
                     imported.summary.getAsJsonObject("outputExpressions")
                             .getAsJsonObject("REGION.FIELD.out.0")
                             .get("_exp").getAsString());
-            JsonObject admission = imported.summary.getAsJsonObject(
-                    "outputExpressionAdmission");
-            assertTrue(admission.get("complete").getAsBoolean());
-            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS",
-                    admission.get("authority").getAsString());
-            assertTrue(imported.summary.getAsJsonObject("heapEffectModel")
-                    .getAsJsonObject("staticTransformerCoverage")
-                    .get("complete").getAsBoolean());
-            assertTrue(imported.summary.getAsJsonObject("heapEffectModel")
-                    .getAsJsonObject("staticTransformerCoverage")
-                    .getAsJsonArray("matches").toString().contains(
-                            "RUNTIME_EXACT_FIELD_ASSIGNMENT_RHS_CAPTURE"));
+            assertFalse(imported.summary.has("outputExpressionAdmission"));
 
             MapFixture projected = importExactFieldAssignmentCaptureFixture(
                     folder.getRoot().toPath().resolve("projected"),
@@ -2944,24 +2720,8 @@ public class ConcolicSummaryImporterTest {
                     "_causynth_projection_input_port").getAsString());
             assertEquals("[\"value\"]", projectedExpression.getAsJsonArray(
                     "_causynth_projection_field_path").toString());
-            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_FROM_UNIQUE_PROJECTED_"
-                            + "INPUT_CARRIER",
-                    projected.summary.getAsJsonObject(
-                            "outputExpressionAdmission")
-                            .get("authority").getAsString());
-            assertEquals(0, projected.summary.getAsJsonObject(
-                    "inputMaterializationAdmission").getAsJsonArray(
-                    "observedSymbolizedInputs").size());
-            assertEquals("[\"REGION.FIELD.in.0\"]", projected.summary
-                    .getAsJsonObject("inputMaterializationAdmission")
-                    .getAsJsonArray("admittedConcreteFallbackInputs")
-                    .toString());
-            assertEquals(1, projected.summary.getAsJsonArray(
-                    "ignoredRuntimeHeapEvidence").size());
-            assertEquals("OUTSIDE_REQUESTED_OUTPUT_SLICE",
-                    projected.summary.getAsJsonArray(
-                            "ignoredRuntimeHeapEvidence").get(0)
-                            .getAsJsonObject().get("reason").getAsString());
+            assertFalse(projected.summary.has(
+                    "ignoredRuntimeHeapEvidence"));
 
             MapFixture causalGuardObservation =
                     importExactFieldAssignmentCaptureFixture(
@@ -2972,8 +2732,8 @@ public class ConcolicSummaryImporterTest {
                             JsonNull.INSTANCE, "CAUSAL_MAP_OBSERVATION");
             assertFalse(causalGuardObservation.summary.get(
                     "relationallyComplete").getAsBoolean());
-            assertEquals(0, causalGuardObservation.summary.getAsJsonArray(
-                    "ignoredRuntimeHeapEvidence").size());
+            assertFalse(causalGuardObservation.summary.has(
+                    "ignoredRuntimeHeapEvidence"));
             assertTrue(causalGuardObservation.diagnostics,
                     causalGuardObservation.diagnostics.contains(
                             "INCOMPLETE_RUNTIME_HEAP_OBSERVATION"));
@@ -2998,11 +2758,6 @@ public class ConcolicSummaryImporterTest {
             assertEquals("Y_I_10", imported.summary.getAsJsonObject(
                     "outputExpressions").getAsJsonObject(
                     "REGION.FIELD.out.0").get("_exp").getAsString());
-            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
-                            + "PATH_GUARD",
-                    imported.summary.getAsJsonObject(
-                            "outputExpressionAdmission")
-                            .get("authority").getAsString());
             assertEquals(1, imported.summary.getAsJsonArray(
                     "pathCondition").size());
         } finally {
@@ -3024,15 +2779,6 @@ public class ConcolicSummaryImporterTest {
 
             assertTrue(imported.diagnostics, imported.summary.get(
                     "relationallyComplete").getAsBoolean());
-            JsonObject admission = imported.summary.getAsJsonObject(
-                    "inputMaterializationAdmission");
-            assertTrue(admission.get("complete").getAsBoolean());
-            assertEquals("[\"REGION.FIELD.in.1\"]", admission
-                    .getAsJsonArray("pathInactiveSliceInputs").toString());
-            assertEquals("EXACT_VM_WITNESS_GUARDED_CONSTANT_OUTPUT_PLUS_"
-                            + "UNEXECUTED_LAZY_INPUT_V1",
-                    admission.getAsJsonArray("pathInactiveProofs").get(0)
-                            .getAsJsonObject().get("authority").getAsString());
             assertFalse(imported.diagnostics.contains(
                     "SLICE_INPUT_NOT_SYMBOLIZED:REGION.FIELD.in.1"));
         } finally {
@@ -3054,11 +2800,6 @@ public class ConcolicSummaryImporterTest {
 
             assertTrue(imported.diagnostics, imported.summary.get(
                     "relationallyComplete").getAsBoolean());
-            assertEquals("EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
-                            + "PATH_GUARD",
-                    imported.summary.getAsJsonObject(
-                            "outputExpressionAdmission")
-                            .get("authority").getAsString());
             JsonObject guard = imported.summary.getAsJsonArray(
                     "pathCondition").get(0).getAsJsonObject();
             assertEquals("OpStrExpression",
@@ -3102,31 +2843,19 @@ public class ConcolicSummaryImporterTest {
 
             assertFalse(valueMismatch.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(valueMismatch.summary.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues").toString()
+            assertTrue(valueMismatch.diagnostics
                     .contains("GUARDED_CONSTANT_CAPTURE_VALUE_MISMATCH"));
-            assertFalse(filtered.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(filtered.summary.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues").toString()
-                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
-                            + "EVENT"));
-            assertFalse(forged.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(forged.summary.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues").toString()
-                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
-                            + "EVENT"));
-            assertFalse(forgedOperator.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(forgedOperator.summary.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues").toString()
-                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
-                            + "EVENT"));
+            for (MapFixture rejected : Arrays.asList(filtered, forged,
+                    forgedOperator)) {
+                assertTrue(rejected.summary.toString(),
+                        rejected.summary.entrySet().isEmpty());
+                assertTrue(rejected.diagnostics,
+                        rejected.diagnostics.contains(
+                                "REJECTED_CANONICAL_BRANCH_MAPPING"));
+            }
             assertFalse(inactiveEnvelope.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(inactiveEnvelope.summary.getAsJsonObject(
-                    "outputExpressionAdmission").get("issues").toString()
+            assertTrue(inactiveEnvelope.diagnostics
                     .contains("GUARDED_CONSTANT_VM_PRIMITIVE_ENVELOPE_"
                             + "INVALID"));
         } finally {
@@ -3155,9 +2884,7 @@ public class ConcolicSummaryImporterTest {
                     .getAsJsonObject("outputExpressions")
                     .getAsJsonObject("REGION.FIELD.out.0")
                     .get("_type").getAsString());
-            assertTrue(accepted.summary.getAsJsonObject(
-                    "outputExpressionAdmission").get("complete")
-                    .getAsBoolean());
+            assertFalse(accepted.summary.has("outputExpressionAdmission"));
 
             MapFixture lengthOnly = importExactFieldAssignmentCaptureFixture(
                     folder.getRoot().toPath().resolve("length-only"),
@@ -3165,9 +2892,7 @@ public class ConcolicSummaryImporterTest {
                     symbol("M_I_field_REGION.FIELD.in.0_length", "I"));
             assertFalse(lengthOnly.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(lengthOnly.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains(
+            assertTrue(lengthOnly.diagnostics.contains(
                             "ARRAY_OUTPUT_VALUE_EXPRESSION_REQUIRED"));
 
             JsonObject incomplete = arrayValue.deepCopy();
@@ -3178,9 +2903,8 @@ public class ConcolicSummaryImporterTest {
                             "NORMAL", true, true, field, incomplete);
             assertFalse(incompleteElements.summary.get(
                     "relationallyComplete").getAsBoolean());
-            assertTrue(incompleteElements.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains("ARRAY_OUTPUT_ELEMENTS_INCOMPLETE"));
+            assertTrue(incompleteElements.diagnostics.contains(
+                    "ARRAY_OUTPUT_ELEMENTS_INCOMPLETE"));
 
             JsonObject wrongDescriptor = arrayValue.deepCopy();
             wrongDescriptor.addProperty("_java_type", "[Lexample/Other;");
@@ -3189,9 +2913,8 @@ public class ConcolicSummaryImporterTest {
                     "NORMAL", true, true, field, wrongDescriptor);
             assertFalse(mismatched.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(mismatched.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains("ARRAY_OUTPUT_JAVA_TYPE_MISMATCH"));
+            assertTrue(mismatched.diagnostics.contains(
+                    "ARRAY_OUTPUT_JAVA_TYPE_MISMATCH"));
 
             JsonObject missingElement = arrayValue.deepCopy();
             missingElement.getAsJsonArray("_elements").get(0)
@@ -3201,9 +2924,7 @@ public class ConcolicSummaryImporterTest {
                     "NORMAL", true, true, field, missingElement);
             assertFalse(missing.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(missing.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains(
+            assertTrue(missing.diagnostics.contains(
                             "ARRAY_OUTPUT_ELEMENT_EXPRESSION_MISSING"));
         } finally {
             folder.delete();
@@ -3429,10 +3150,8 @@ public class ConcolicSummaryImporterTest {
                             "L"));
             assertFalse(abnormal.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(abnormal.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains(
-                            "FIELD_ASSIGNMENT_RHS_REQUIRES_NORMAL_EXIT"));
+            assertTrue(abnormal.diagnostics.contains(
+                    "FIELD_ASSIGNMENT_RHS_REQUIRES_NORMAL_EXIT"));
 
             MapFixture identity = importExactFieldAssignmentCaptureFixture(
                     folder.getRoot().toPath().resolve("identity"), "NORMAL",
@@ -3441,11 +3160,9 @@ public class ConcolicSummaryImporterTest {
                             "L"));
             assertFalse(identity.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(identity.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains(
-                            "INVALID_POST_ASSIGNMENT_FIELD_OWNER_OR_VALUE_"
-                                    + "IDENTITY_PROOF"));
+            assertTrue(identity.diagnostics.contains(
+                    "INVALID_POST_ASSIGNMENT_FIELD_OWNER_OR_VALUE_"
+                            + "IDENTITY_PROOF"));
 
             MapFixture relation = importExactFieldAssignmentCaptureFixture(
                     folder.getRoot().toPath().resolve("relation"), "NORMAL",
@@ -3454,21 +3171,17 @@ public class ConcolicSummaryImporterTest {
                             "L"));
             assertFalse(relation.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(relation.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains(
-                            "INCOMPLETE_EXACT_FIELD_ASSIGNMENT_RHS_RELATION"));
+            assertTrue(relation.diagnostics.contains(
+                    "INCOMPLETE_EXACT_FIELD_ASSIGNMENT_RHS_RELATION"));
 
             MapFixture unbound = importExactFieldAssignmentCaptureFixture(
                     folder.getRoot().toPath().resolve("unbound"), "NORMAL",
                     true, true, symbol("unboundInternal", "L"));
             assertFalse(unbound.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(unbound.summary.getAsJsonObject(
-                    "outputExpressionAdmission").getAsJsonArray("issues")
-                    .toString().contains(
-                            "FIELD_ASSIGNMENT_RHS_RELATION_NOT_CLOSED_"
-                                    + "OVER_SLICE_INPUTS"));
+            assertTrue(unbound.diagnostics.contains(
+                    "FIELD_ASSIGNMENT_RHS_RELATION_NOT_CLOSED_"
+                            + "OVER_SLICE_INPUTS"));
         } finally {
             folder.delete();
         }
@@ -3555,19 +3268,12 @@ public class ConcolicSummaryImporterTest {
                     folder.getRoot().toPath(),
                     exactCurrentTimePlaceholderMaterialization(), ambiguous);
 
-            assertTrue(imported.summary.getAsJsonObject(
-                    "inputMaterializationAdmission").get("complete")
-                    .getAsBoolean());
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertEquals(0, imported.summary.getAsJsonArray(
                     "vmIntrinsicPlaceholderBindings").size());
-            JsonObject admission = imported.summary.getAsJsonObject(
-                    "vmIntrinsicPlaceholderBindingAdmission");
-            assertFalse(admission.get("complete").getAsBoolean());
-            assertTrue(admission.getAsJsonArray("failures").toString(),
-                    admission.getAsJsonArray("failures").toString().contains(
-                            "USED_IDENTITY_NOT_UNIQUE"));
+            assertEquals(1, imported.summary.getAsJsonArray(
+                    "unforcedEnvironmentValidationRequirements").size());
             assertTrue(imported.diagnostics.contains(
                     "INCOMPLETE_VM_INTRINSIC_PLACEHOLDER_BINDING"));
         } finally {
@@ -3579,11 +3285,8 @@ public class ConcolicSummaryImporterTest {
             PlaceholderFixture rejected, String diagnostic) {
         assertFalse(rejected.summary.get("relationallyComplete")
                 .getAsBoolean());
-        JsonObject admission = rejected.summary.getAsJsonObject(
-                "inputMaterializationAdmission");
-        assertFalse(admission.get("complete").getAsBoolean());
-        assertEquals(0, admission.getAsJsonArray(
-                "admittedVmIntrinsicPlaceholderInputs").size());
+        assertEquals(0, rejected.summary.getAsJsonArray(
+                "vmIntrinsicPlaceholderBindings").size());
         assertEquals(0, rejected.summary.getAsJsonArray(
                 "unforcedEnvironmentValidationRequirements").size());
         assertTrue(rejected.diagnostics.contains(diagnostic));
@@ -3655,6 +3358,15 @@ public class ConcolicSummaryImporterTest {
         JsonArray outputs = new JsonArray();
         outputs.add(outputAction);
         activation.add("outputs", outputs);
+        if (evidence.isJsonObject()
+                && "BinaryExpression".equals(evidence.getAsJsonObject()
+                .has("_type") ? evidence.getAsJsonObject().get("_type")
+                .getAsString() : "")) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", method + "#u0");
+            branch.addProperty("policy", "EXPLORE");
+            activation.add("branches", singletonObject(branch));
+        }
         write(activations, activation + "\n");
 
         JsonObject region = new JsonObject();
@@ -3683,15 +3395,27 @@ public class ConcolicSummaryImporterTest {
         path.add(evidence.deepCopy());
         engine.add("pathCondition", path);
         raw.add("engineSummary", engine);
+        if (evidence.isJsonObject()
+                && evidence.getAsJsonObject().has("_type")
+                && "BinaryExpression".equals(evidence.getAsJsonObject()
+                .get("_type").getAsString())) {
+            JsonObject mapping = branchMapping(method, 0, 1, true,
+                    evidence);
+            mapping.addProperty("conditionIndex", 0);
+            mapping.addProperty("rawConditionIndex", 0);
+            mapping.addProperty("engineConditionIndex", 0);
+            mapping.add("rawCondition", evidence.deepCopy());
+            raw.add("branchMappings", authorizeRawBranchMappingsForTest(
+                    singletonObject(mapping), path));
+        }
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations,
-                regions, output, diagnostics, root.resolve("cache"));
+                regions, output, diagnostics);
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
-        return new PlaceholderFixture(summary, new String(
-                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+        return new PlaceholderFixture(summary, readOptional(diagnostics));
     }
 
     private static JsonObject exactCurrentTimePlaceholderMaterialization() {
@@ -4690,6 +4414,8 @@ public class ConcolicSummaryImporterTest {
         Path diagnostics = root.resolve("diagnostics.jsonl");
         String method = "<example.Store: void update()>";
         String cell = "<example.Store: java.util.Map data>";
+        JsonElement authorizedBranchMappings =
+                authorizeRawBranchMappingsForTest(branchMappings, path);
         if (sliceMetadata != null
                 && sliceMetadata.has("_fixtureRequestedOutputCell")) {
             cell = sliceMetadata.get("_fixtureRequestedOutputCell")
@@ -4816,6 +4542,8 @@ public class ConcolicSummaryImporterTest {
             }
         }
         activation.add("requestedOutputSlice", requestedOutputSlice);
+        activation.add("branches", branchPoliciesForTest(
+                authorizedBranchMappings));
         JsonArray edgeBindings = new JsonArray();
         JsonObject edgeBinding = new JsonObject();
         edgeBinding.addProperty("edgeId", "EDGE.P");
@@ -4866,8 +4594,9 @@ public class ConcolicSummaryImporterTest {
             raw.add("runtimeHeapObservations",
                     runtimeHeapObservations.deepCopy());
         }
-        if (branchMappings != null) {
-            raw.add("branchMappings", branchMappings.deepCopy());
+        if (authorizedBranchMappings != null) {
+            raw.add("branchMappings",
+                    authorizedBranchMappings.deepCopy());
         }
         if (fieldObservations != null) {
             raw.add("fieldObservations", fieldObservations.deepCopy());
@@ -4883,13 +4612,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw.toString() + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String summaryRows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = summaryRows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(summaryRows).getAsJsonObject();
-        String diagnosticRows = new String(Files.readAllBytes(diagnostics),
-                StandardCharsets.UTF_8);
+        String diagnosticRows = readOptional(diagnostics);
         return new MapFixture(summary, diagnosticRows);
     }
 
@@ -5027,12 +4755,11 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations,
-                regions, output, diagnostics, root.resolve("cache"));
+                regions, output, diagnostics);
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
-        return new MapFixture(summary, new String(
-                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static MapFixture importObservedMapMutationFixture(
@@ -5068,13 +4795,11 @@ public class ConcolicSummaryImporterTest {
         Path output = root.resolve("mutation-summaries.jsonl");
         Path diagnostics = root.resolve("mutation-diagnostics.jsonl");
         ConcolicSummaryImporter.importSummaries(results, activations,
-                root.resolve("regions.jsonl"), output, diagnostics,
-                root.resolve("mutation-cache"));
+                root.resolve("regions.jsonl"), output, diagnostics);
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
-        return new MapFixture(summary, new String(
-                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static JsonObject observedContainerAction(
@@ -5751,6 +5476,82 @@ public class ConcolicSummaryImporterTest {
         return mapping;
     }
 
+    private static JsonElement authorizeRawBranchMappingsForTest(
+            JsonElement encoded, JsonArray path) {
+        if (encoded == null || !encoded.isJsonArray()) {
+            return encoded == null ? null : encoded.deepCopy();
+        }
+        JsonArray result = new JsonArray();
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                result.add(element.deepCopy());
+                continue;
+            }
+            JsonObject mapping = element.getAsJsonObject().deepCopy();
+            if (!mapping.has("witness")
+                    && !mapping.has("concreteObservation")
+                    && (!mapping.has("vmBranchEventValidated")
+                    || mapping.get("vmBranchEventValidated")
+                    .getAsBoolean())) {
+                String site = mapping.get("siteId").getAsString();
+                String method = mapping.get("method").getAsString();
+                int unit = mapping.get("unitIndex").getAsInt();
+                int occurrence = mapping.get("occurrence").getAsInt();
+                boolean outcome = mapping.get("outcome").getAsBoolean();
+                int index = mapping.has("rawConditionIndex")
+                        ? mapping.get("rawConditionIndex").getAsInt()
+                        : mapping.has("conditionIndex")
+                        ? mapping.get("conditionIndex").getAsInt() : -1;
+                if (index >= 0 && index < path.size()) {
+                    JsonElement predicate = mapping.has("condition")
+                            ? mapping.get("condition") : path.get(index);
+                    JsonObject metadata = new JsonObject();
+                    metadata.addProperty("predicateNormalization",
+                            mapping.has("conditionNormalization")
+                                    ? BranchWitness.CMP_NORMALIZATION
+                                    : BranchWitness.IDENTITY_NORMALIZATION);
+                    mapping.add("witness", BranchWitness.vmPc(site,
+                            method, unit, occurrence, outcome, predicate,
+                            index, metadata).toJson());
+                } else {
+                    mapping.add("concreteObservation",
+                            ExactConcreteBranchObservation.attested(site,
+                                    method, unit, occurrence, outcome)
+                                    .toJson());
+                }
+            }
+            result.add(mapping);
+        }
+        return result;
+    }
+
+    private static JsonArray branchPoliciesForTest(JsonElement mappings) {
+        JsonArray result = new JsonArray();
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        if (mappings == null || !mappings.isJsonArray()) return result;
+        for (JsonElement element : mappings.getAsJsonArray()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mapping = element.getAsJsonObject();
+            String site = mapping.has("siteId")
+                    ? mapping.get("siteId").getAsString() : "";
+            if (site.isEmpty() && mapping.has("witness")) {
+                site = BranchWitness.fromJson(mapping.getAsJsonObject(
+                        "witness")).siteId();
+            }
+            if (site.isEmpty() && mapping.has("concreteObservation")) {
+                site = ExactConcreteBranchObservation.fromJson(
+                        mapping.getAsJsonObject("concreteObservation"))
+                        .siteId();
+            }
+            if (site.isEmpty() || !seen.add(site)) continue;
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", site);
+            branch.addProperty("policy", "EXPLORE");
+            result.add(branch);
+        }
+        return result;
+    }
+
     private static JsonObject fieldAccessAction(String symbol,
                                                 String field) {
         JsonObject action = new JsonObject();
@@ -5893,7 +5694,7 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         return JsonParser.parseString(new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim()).getAsJsonObject();
     }
@@ -6099,6 +5900,12 @@ public class ConcolicSummaryImporterTest {
         outputAction.addProperty("symbol", "REGION.FIELD.out.0");
         outputAction.addProperty("location", "RETURN_OR_HEAP_EFFECT");
         activation.add("outputs", singletonObject(outputAction));
+        if (exactVmGuard) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", method + "#u2");
+            branch.addProperty("policy", "EXPLORE");
+            activation.add("branches", singletonObject(branch));
+        }
         write(activations, activation + "\n");
 
         JsonObject region = new JsonObject();
@@ -6261,20 +6068,20 @@ public class ConcolicSummaryImporterTest {
             mapping.add("vmConditionIndices", vmConditionIndices);
             mapping.add("rawCondition", condition.deepCopy());
             mapping.add("condition", semanticCondition);
-            raw.add("branchMappings", singletonObject(mapping));
+            raw.add("branchMappings", authorizeRawBranchMappingsForTest(
+                    singletonObject(mapping), pathCondition));
         }
         engine.add("pathCondition", pathCondition);
         raw.add("engineSummary", engine);
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String rows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = rows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(rows).getAsJsonObject();
-        String diagnosticRows = new String(Files.readAllBytes(diagnostics),
-                StandardCharsets.UTF_8);
+        String diagnosticRows = readOptional(diagnostics);
         return new MapFixture(summary, diagnosticRows);
     }
 
@@ -6380,13 +6187,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String rows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = rows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(rows).getAsJsonObject();
-        return new MapFixture(summary, new String(Files.readAllBytes(
-                diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static MapFixture importMapProjectionFixture(
@@ -6692,13 +6498,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String rows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = rows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(rows).getAsJsonObject();
-        return new MapFixture(summary, new String(Files.readAllBytes(
-                diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static JsonObject mapProjectionObservation(
@@ -6957,6 +6762,12 @@ public class ConcolicSummaryImporterTest {
             this.summary = summary;
             this.diagnostics = diagnostics;
         }
+    }
+
+    private static String readOptional(Path path) throws Exception {
+        return Files.exists(path)
+                ? new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
+                : "";
     }
 
     private static void write(Path path, String value) throws Exception {

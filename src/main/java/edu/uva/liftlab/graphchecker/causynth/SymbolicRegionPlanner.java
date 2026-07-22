@@ -2691,15 +2691,7 @@ final class SymbolicRegionPlanner {
         private boolean exactStaticEdge(Map<String, Object> edge) {
             return !isBoundary(edge)
                     && !string(edge.get("id")).isEmpty()
-                    && !Boolean.TRUE.equals(edge.get("mappingOnly"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "semanticAssertionsAllowed"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticDerivation"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticSmt"))
-                    && "backward_provenance".equals(string(edge.get(
-                    "direction")))
+                    && StaticDataflowEdgeSchema.automaticSemantics(edge)
                     && exactSiteIdentity(edge);
         }
 
@@ -2910,10 +2902,10 @@ final class SymbolicRegionPlanner {
                         obligationEntry.getValue().get("causalEdgeIds");
                 boolean relationComplete = "value_flow".equals(
                         string(edge.get("relation")))
-                        && Boolean.TRUE.equals(edge.get(
-                        "semanticAssertionsAllowed"))
-                        && Boolean.TRUE.equals(edge.get(
-                        "eligibleForAutomaticSmt"))
+                        && StaticDataflowEdgeSchema
+                        .semanticAssertionsAllowed(edge)
+                        && StaticDataflowEdgeSchema
+                        .eligibleForAutomaticSmt(edge)
                         && exactAssignmentRhsCell(rhsCell, rhs)
                         && obligationEdges != null
                         && obligationEdges.contains(edgeId);
@@ -4087,15 +4079,7 @@ final class SymbolicRegionPlanner {
          * outbound return projections. */
         private boolean exactStaticValueFlow(Map<String, Object> edge) {
             return "value_flow".equals(string(edge.get("relation")))
-                    && !Boolean.TRUE.equals(edge.get("mappingOnly"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "semanticAssertionsAllowed"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticDerivation"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticSmt"))
-                    && "backward_provenance".equals(string(edge.get(
-                    "direction")))
+                    && StaticDataflowEdgeSchema.automaticSemantics(edge)
                     && !string(edge.get("id")).isEmpty();
         }
 
@@ -5221,15 +5205,8 @@ final class SymbolicRegionPlanner {
             if (!"PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1".equals(
                     string(projected.get("authorityInheritance")))
                     || !exactStaticValueFlow(projected)
-                    || !Boolean.TRUE.equals(projected.get(
-                    "semanticAssertionsAllowed"))
-                    || !Boolean.TRUE.equals(projected.get(
-                    "eligibleForAutomaticDerivation"))
-                    || !Boolean.TRUE.equals(projected.get(
-                    "eligibleForAutomaticSmt"))
-                    || Boolean.TRUE.equals(projected.get("mappingOnly"))
-                    || !"backward_provenance".equals(string(projected.get(
-                    "direction")))) {
+                    || !StaticDataflowEdgeSchema.automaticSemantics(
+                    projected)) {
                 return false;
             }
             String baseId = string(projected.get("projectionBaseEdgeId"));
@@ -6230,13 +6207,7 @@ final class SymbolicRegionPlanner {
         private boolean authoritativeGuardProtocolBoundary(
                 Map<String, Object> edge) {
             if (!isBoundary(edge)
-                    || Boolean.TRUE.equals(edge.get("mappingOnly"))
-                    || !Boolean.TRUE.equals(edge.get(
-                    "semanticAssertionsAllowed"))
-                    || !Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticDerivation"))
-                    || !Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticSmt"))) {
+                    || !StaticDataflowEdgeSchema.automaticSemantics(edge)) {
                 return false;
             }
             String relation = string(edge.get("relation"));
@@ -6252,15 +6223,7 @@ final class SymbolicRegionPlanner {
         private boolean authoritativeGuardDerivationEdge(
                 Map<String, Object> edge) {
             if (!definitionLikeGuardEdge(edge)
-                    || Boolean.TRUE.equals(edge.get("mappingOnly"))
-                    || !Boolean.TRUE.equals(edge.get(
-                    "semanticAssertionsAllowed"))
-                    || !Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticDerivation"))
-                    || !Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticSmt"))
-                    || !"backward_provenance".equals(string(edge.get(
-                    "direction")))
+                    || !StaticDataflowEdgeSchema.automaticSemantics(edge)
                     || string(edge.get("id")).isEmpty()) {
                 return false;
             }
@@ -7228,7 +7191,7 @@ final class SymbolicRegionPlanner {
             return "HEAP_WRITE".equals(string(edge.get("transferKind")))
                     && ("field_write".equals(kind)
                     || "field_mutation".equals(kind))
-                    && !Boolean.TRUE.equals(edge.get("mappingOnly"))
+                    && !StaticDataflowEdgeSchema.mappingOnly(edge)
                     && !string(edge.get("id")).isEmpty()
                     && !string(edge.get("siteId")).isEmpty()
                     && (exactStaticValueFlow(edge)
@@ -7237,10 +7200,10 @@ final class SymbolicRegionPlanner {
                     // names one concrete producer definition.
                     || string(edge.get("relation")).isEmpty()
                     || "value_flow".equals(string(edge.get("relation")))
-                    && Boolean.TRUE.equals(edge.get(
-                    "semanticAssertionsAllowed"))
-                    && Boolean.TRUE.equals(edge.get(
-                    "eligibleForAutomaticSmt")));
+                    && StaticDataflowEdgeSchema
+                    .semanticAssertionsAllowed(edge)
+                    && StaticDataflowEdgeSchema
+                    .eligibleForAutomaticSmt(edge));
         }
 
         private boolean fieldBacksProjectedBoundary(
@@ -7565,15 +7528,7 @@ final class SymbolicRegionPlanner {
                     proof.get("transferKind")))
                     || !"value_flow".equals(string(proof.get("relation")))
                     || !Boolean.TRUE.equals(proof.get("fieldSensitive"))
-                    || !Boolean.TRUE.equals(proof.get(
-                    "semanticAssertionsAllowed"))
-                    || !Boolean.TRUE.equals(proof.get(
-                    "eligibleForAutomaticDerivation"))
-                    || !Boolean.TRUE.equals(proof.get(
-                    "eligibleForAutomaticSmt"))
-                    || Boolean.TRUE.equals(proof.get("mappingOnly"))
-                    || !"backward_provenance".equals(string(
-                    proof.get("direction")))
+                    || !StaticDataflowEdgeSchema.automaticSemantics(proof)
                     || string(proof.get("id")).isEmpty()) {
                 return false;
             }

@@ -215,9 +215,6 @@ public final class ConcolicReplayValidator {
                 string(rawResult, "exitKind"))
                 && string(rawResult, "exceptionType").isEmpty();
         boolean importedSummaryPresent = importedSummary != null;
-        boolean importedSummaryValid = !outputClosure
-                || importedSummaryPresent
-                && bool(importedSummary, "valid", false);
         boolean importedSummaryNormalExit = !outputClosure
                 || importedSummaryPresent
                 && bool(importedSummary, "normalExit", false)
@@ -239,18 +236,12 @@ public final class ConcolicReplayValidator {
         boolean requestedOutputExpressionPresent = !outputClosure
                 || importedSummaryPresent
                 && exactRequestedOutputExpression(task, importedSummary);
-        boolean outputExpressionAdmissionComplete = !outputClosure
-                || importedSummaryPresent
-                && outputExpressionAdmissionComplete(importedSummary);
-
         if (outputClosure) {
             require(failures, "OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT",
                     rawNormalExit);
             require(failures, "MISSING_IMPORTED_OUTPUT_SUMMARY",
                     importedSummaryPresent);
             if (importedSummaryPresent) {
-                require(failures, "IMPORTED_OUTPUT_SUMMARY_INVALID",
-                        importedSummaryValid);
                 require(failures,
                         "IMPORTED_OUTPUT_SUMMARY_NOT_RELATIONALLY_COMPLETE",
                         importedSummaryRelationallyComplete);
@@ -268,9 +259,6 @@ public final class ConcolicReplayValidator {
                 require(failures,
                         "REQUESTED_OUTPUT_EXPRESSION_MISSING",
                         requestedOutputExpressionPresent);
-                require(failures,
-                        "OUTPUT_EXPRESSION_ADMISSION_INCOMPLETE",
-                        outputExpressionAdmissionComplete);
             }
         }
 
@@ -313,14 +301,13 @@ public final class ConcolicReplayValidator {
         result.addProperty("normalExitValidated", rawNormalExit
                 && importedSummaryNormalExit);
         result.addProperty("importedOutputSummaryValidated",
-                importedSummaryValid && importedSummaryRelationallyComplete
+                importedSummaryRelationallyComplete
                         && importedSummaryGoalMatches
                         && importedSummaryRegionMatches);
         result.addProperty("requestedOutputIdentityValidated",
                 requestedOutputMatches);
         result.addProperty("requestedOutputExpressionValidated",
-                requestedOutputExpressionPresent
-                        && outputExpressionAdmissionComplete);
+                requestedOutputExpressionPresent);
         result.addProperty("outputClosureAdmissionGap", outputClosureGap);
         result.addProperty("outputClosureFailureCount",
                 outputClosureFailureCount);
@@ -1519,18 +1506,6 @@ public final class ConcolicReplayValidator {
             if (usableExpression(expression)) return true;
         }
         return false;
-    }
-
-    private static boolean outputExpressionAdmissionComplete(
-            JsonObject summary) {
-        JsonElement admission = summary == null ? null
-                : summary.get("outputExpressionAdmission");
-        // Older importer artifacts predate this diagnostic object.  Exact
-        // requested-output identity, a usable expression, and the summary's
-        // relationallyComplete bit are their admission evidence.
-        return admission == null || admission.isJsonNull()
-                || admission.isJsonObject()
-                && bool(admission.getAsJsonObject(), "complete", false);
     }
 
     private static boolean usableExpression(JsonElement expression) {

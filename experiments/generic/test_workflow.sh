@@ -41,15 +41,12 @@ for file in \
   artifacts/symbolic_regions.jsonl artifacts/static_dataflow_edges.jsonl \
   artifacts/symbolic_region_edges.jsonl \
   artifacts/runtime/concolic_activation_plan.jsonl \
-  artifacts/runtime/runtime_region_instances.jsonl \
   artifacts/runtime/runtime_region_edge_validation.jsonl \
   artifacts/schedule/concolic_region_results.jsonl \
   artifacts/schedule/scheduled_activation_plan.jsonl \
   artifacts/schedule/concolic_region_summaries.jsonl \
-  artifacts/schedule/region_path_manifest.json \
   artifacts/schedule/merged_region_summaries.jsonl \
   artifacts/schedule/branch_queries.jsonl \
-  artifacts/schedule/symbolic_merge_plan.json \
   artifacts/schedule/composed_fatal.smt2 \
   artifacts/schedule/composed_smt_manifest.json \
   artifacts/schedule/symbolic_relationship_candidates.json; do
@@ -69,17 +66,11 @@ printf '%s\n' \
   '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","fromPort":"out.0","toRegion":"REGION.0","toPort":"in.0"}' \
   > "${fixture_root}/artifacts/symbolic_region_edges.jsonl"
 printf '%s\n' \
-  '{"regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","validationStatus":"FULLY_OBSERVED","symbolicReady":true,"replayable":true}' \
-  > "${fixture_root}/artifacts/runtime/runtime_region_instances.jsonl"
-printf '%s\n' \
-  '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","toRegion":"REGION.0","status":"VALIDATED"}' \
+  '{"schemaVersion":2,"kind":"RUNTIME_REGION_EDGE_EVIDENCE","edgeId":"REGION_EDGE.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"RPC_RETURN","fromPort":"out.0","toPort":"in.0","requiresOrder":true,"requiresObjectIdentity":false,"state":"UNOBSERVED","bindings":[]}' \
   > "${fixture_root}/artifacts/runtime/runtime_region_edge_validation.jsonl"
 printf '%s\n' \
-  '{"activationId":"ACT.0","regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","symbolicReady":true,"replayable":true}' \
+  '{"activationId":"ACT.0","regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","observedMethods":["m"],"symbolicReady":true,"replayable":true}' \
   > "${fixture_root}/artifacts/runtime/concolic_activation_plan.jsonl"
-printf '%s\n' \
-  '{"equalityClasses":[{"canonicalSymbol":"EQ.Z","members":["z","a"]},{"canonicalSymbol":"EQ.A","members":["b","a"]}],"equalityRelations":[{"edgeId":"E.0","kind":"SYMBOLIC_EQUALITY","fromEndpoint":"out.0","toEndpoint":"in.0","runtimeBindings":[]}],"versionedStateMerges":[{"edgeId":"E.1","kind":"VERSIONED_HEAP_READ_FROM","fromEndpoint":"state.out","toEndpoint":"state.in","runtimeBindings":[]}],"alternativeWriterGroups":[]}' \
-  > "${fixture_root}/artifacts/schedule/symbolic_merge_plan.json"
 printf '%s\n' \
   '{"regionId":"REGION.0","requestedOutput":{"portId":"out.0","kind":"RETURN"},"regionRelation":{"kind":"GUARDED_PATH_MERGE","complete":true,"caseCount":1,"cases":[{"caseId":"CASE.0","pathKey":"path","guard":{"kind":"PATH_CONDITION","conditions":[{"op":"="}]},"outputExpressions":{"out.0":{"exp":"x"}},"heapEffects":[],"relationallyComplete":true,"normalExit":true}]}}' \
   > "${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl"
@@ -110,7 +101,6 @@ printf '%s\n' \
   'workload_work_dir=@repo/module' \
   'workload_command=echo workflow' \
   'runtime_activation_plan=artifacts/runtime/concolic_activation_plan.jsonl' \
-  'runtime_region_instances=artifacts/runtime/runtime_region_instances.jsonl' \
   'runtime_edge_validations=artifacts/runtime/runtime_region_edge_validation.jsonl' \
   'schedule_output_dir=artifacts/schedule' \
   'reach_report=artifacts/reports/reach-condition.json' \
@@ -124,6 +114,8 @@ bash -n "${BASH_SOURCE[0]}"
 help_text=$("${runner}" help)
 assert_contains "${help_text}" \
   'reach       Project the composed bug path onto finite Boolean root inputs'
+assert_not_contains "${help_text}" \
+  'merge       Merge imported output paths into guarded region relations'
 
 normalized=$("${runner}" --config "${config}" config)
 assert_contains "${normalized}" "project_repo=${fixture_root}/repo"
@@ -182,26 +174,15 @@ assert_not_contains "${debug_text}" 'z-static'
   >"${debug_stdout}" 2>"${debug_stderr}"
 assert_contains "$(<"${debug_stdout}")" 'workflow'
 debug_text=$(<"${debug_stderr}")
-assert_contains "${debug_text}" 'artifact=runtime_region_instances'
 assert_contains "${debug_text}" 'artifact=runtime_region_edge_validation'
 assert_contains "${debug_text}" 'artifact=concolic_activation_plan'
-assert_contains "${debug_text}" 'artifact=runtime_region_instances path='
 assert_contains "${debug_text}" 'total=1 shown=1 truncated=false'
 assert_not_contains "${debug_text}" 'status=invalid-json'
 
-GRAPH_CHECKER_DEBUG=true "${runner}" --config "${config}" schedule \
-  >"${debug_stdout}" 2>"${debug_stderr}"
-assert_contains "$(<"${debug_stderr}")" 'artifact=symbolic_merge_plan'
-
-"${runner}" --config "${config}" --debug merge \
+"${runner}" --config "${config}" debug-stage merge \
   >"${debug_stdout}" 2>"${debug_stderr}"
 assert_contains "$(<"${debug_stderr}")" 'artifact=guarded_merge'
 assert_contains "$(<"${debug_stderr}")" 'GUARDED_PATH_MERGE'
-
-CAUSYNTH_MERGED_SUMMARIES="${fixture_root}/artifacts/schedule/merged_region_summaries.jsonl" \
-  "${runner}" --config "${config}" debug-stage merge \
-  >"${debug_stdout}" 2>"${debug_stderr}"
-assert_contains "$(<"${debug_stderr}")" 'artifact=guarded_merge'
 
 "${runner}" --config "${config}" --debug compose \
   >"${debug_stdout}" 2>"${debug_stderr}"
@@ -212,14 +193,10 @@ assert_contains "${debug_text}" '(check-sat)'
 
 schedule=$("${runner}" --config "${config}" --dry-run schedule)
 assert_contains "${schedule}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler'
-assert_contains "${schedule}" \
-  "--runtime-region-instances ${fixture_root}/artifacts/runtime/runtime_region_instances.jsonl"
+assert_not_contains "${schedule}" '--runtime-region-instances'
 
 imported=$("${runner}" --config "${config}" --dry-run import)
 assert_contains "${imported}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter'
-
-merged=$("${runner}" --config "${config}" --dry-run merge)
-assert_contains "${merged}" 'edu.uva.liftlab.graphchecker.concolic.RegionSummaryMerger'
 
 composed=$("${runner}" --config "${config}" --dry-run compose)
 assert_contains "${composed}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer'

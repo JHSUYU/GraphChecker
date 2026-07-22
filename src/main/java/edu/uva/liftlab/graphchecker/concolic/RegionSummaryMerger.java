@@ -44,12 +44,14 @@ public final class RegionSummaryMerger {
         JsonObject pathManifest = readJson(arguments.pathManifest);
         Result result = merge(summaries, pathManifest);
         writeJsonl(arguments.output, result.summaries);
-        Files.write(arguments.manifest,
-                (GSON.toJson(result.manifest) + System.lineSeparator())
-                        .getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
+        if (arguments.manifest != null) {
+            Files.write(arguments.manifest,
+                    (GSON.toJson(result.manifest) + System.lineSeparator())
+                            .getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
+        }
         System.out.println(GSON.toJson(result.manifest));
     }
 
@@ -58,8 +60,7 @@ public final class RegionSummaryMerger {
         Map<String, List<JsonObject>> groups = new LinkedHashMap<>();
         List<JsonObject> diagnostics = new ArrayList<>();
         for (JsonObject summary : safe(summaries)) {
-            if (!bool(summary, "valid", true)
-                    || !RegionCaptureGoal.from(summary).isOutputClosure()) {
+            if (!RegionCaptureGoal.from(summary).isOutputClosure()) {
                 continue;
             }
             String region = string(summary, "regionId");
@@ -94,17 +95,15 @@ public final class RegionSummaryMerger {
         manifest.addProperty("inputSummaryCount", safe(summaries).size());
         manifest.addProperty("mergedRelationCount", merged.size());
         int caseCount = 0;
-        boolean complete = bool(pathManifest, "complete", false)
-                && diagnostics.isEmpty()
-                && !merged.isEmpty();
+        boolean complete = diagnostics.isEmpty() && !merged.isEmpty();
         for (JsonObject summary : merged) {
             JsonObject relation = object(summary, "regionRelation");
             caseCount += integer(relation, "caseCount", 0);
             complete &= bool(relation, "complete", false);
         }
         manifest.addProperty("guardedCaseCount", caseCount);
-        manifest.addProperty("pathWorklistStatus", string(pathManifest,
-                "status"));
+        manifest.addProperty("pathWorklistState", string(pathManifest,
+                "state"));
         manifest.addProperty("diagnosticCount", diagnostics.size());
         manifest.add("diagnostics", GSON.toJsonTree(diagnostics));
         manifest.addProperty("complete", complete);
@@ -167,14 +166,8 @@ public final class RegionSummaryMerger {
                     array(summary,
                             "unforcedEnvironmentValidationRequirements")
                             .deepCopy());
-            copyIfPresent(summary, item,
-                    "inputMaterializationAdmission");
-            copyIfPresent(summary, item,
-                    "vmIntrinsicPlaceholderBindingAdmission");
             item.add("heapEffects", array(summary,
                     "heapEffects").deepCopy());
-            item.add("heapEffectModel", object(summary,
-                    "heapEffectModel").deepCopy());
             item.addProperty("relationallyComplete", bool(summary,
                     "relationallyComplete", false));
             item.addProperty("normalExit", bool(summary,
@@ -185,8 +178,6 @@ public final class RegionSummaryMerger {
                     "summaryId"));
             item.addProperty("sourceActivationId", string(summary,
                     "activationId"));
-            item.addProperty("admissionAuthority",
-                    "VALIDATED_UNFORCED_CONCOLIC_REPLAY_OR_SEED_PATH");
             cases.add(item);
             if (!bool(summary, "relationallyComplete", false)) {
                 casesComplete = false;
@@ -195,10 +186,22 @@ public final class RegionSummaryMerger {
             }
         }
 
-        boolean pathClosed = bool(pathManifest, "complete", false);
-        if (!pathClosed) diagnostics.add(gap(region,
-                "PATH_WORKLIST_NOT_CLOSED:" + string(pathManifest,
-                        "status")));
+        String pathState = string(pathManifest, "state");
+        String pathRegion = string(pathManifest, "regionId");
+        boolean hasObservedPath = integer(pathManifest,
+                "observedPathCount", 0) > 0;
+        boolean pathClosed = RegionPathWorklist.State.CLOSED.name().equals(
+                pathState) && hasObservedPath && region.equals(pathRegion);
+        if (!region.equals(pathRegion)) {
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_REGION_MISMATCH:" + pathRegion));
+        } else if (!hasObservedPath) {
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_HAS_NO_OBSERVED_PATH"));
+        } else if (!pathClosed) {
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_NOT_CLOSED:" + pathState));
+        }
         boolean complete = pathClosed && casesComplete && cases.size() > 0;
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
@@ -211,8 +214,7 @@ public final class RegionSummaryMerger {
                 "GUARDED_OUTPUT_AND_STATE_TRANSFORMERS");
         relation.addProperty("coverageSemantics",
                 "SOLVER_CLOSED_RELEVANT_BRANCH_FLIPS_WITHIN_BOUNDS");
-        relation.addProperty("pathClosureStatus", string(pathManifest,
-                "status"));
+        relation.addProperty("pathClosureState", pathState);
         relation.addProperty("complete", complete);
         relation.addProperty("authority",
                 "RUNTIME_CONCOLIC_MULTI_PATH_SUMMARIES");
@@ -247,8 +249,7 @@ public final class RegionSummaryMerger {
         merged.addProperty("schemaVersion", 1);
         merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
         merged.addProperty("summaryId", "SUMMARY." + region
-                + ".MERGED." + relationHash.substring(0, 12));
-        merged.addProperty("cacheKey", relationHash);
+                + ".MERGED." + relationHash);
         merged.addProperty("activationId", "MERGED_PATHS");
         merged.addProperty("regionId", region);
         merged.add("sourceRegionInstanceIds",
@@ -259,30 +260,9 @@ public final class RegionSummaryMerger {
         merged.add("requestedOutputSlice", object(first,
                 "requestedOutputSlice").deepCopy());
         merged.add("edgeBindings", mergedBindings);
-        merged.add("pathCondition", new JsonArray());
-        merged.add("outputExpressions", new JsonObject());
-        merged.add("heapStateInitializers", new JsonArray());
-        merged.add("heapObservations", new JsonArray());
-        merged.add("finiteMapSnapshots", new JsonArray());
-        merged.add("dynamicFieldBindings", new JsonArray());
-        merged.add("engineArrayInputBindings", new JsonArray());
-        merged.add("vmIntrinsicPlaceholderBindings", new JsonArray());
-        merged.add("unforcedEnvironmentValidationRequirements",
-                new JsonArray());
-        merged.add("heapEffects", new JsonArray());
         merged.add("regionRelation", relation);
         merged.addProperty("relationallyComplete", complete);
-        merged.addProperty("valid", cases.size() > 0);
-        merged.addProperty("confidence", "RUNTIME_CONCOLIC_MERGED");
         return merged;
-    }
-
-    private static void copyIfPresent(JsonObject source, JsonObject target,
-                                      String field) {
-        JsonElement value = source == null ? null : source.get(field);
-        if (value != null && !value.isJsonNull()) {
-            target.add(field, value.deepCopy());
-        }
     }
 
     private static JsonObject gap(String region, String reason) {
@@ -328,8 +308,6 @@ public final class RegionSummaryMerger {
             if (result.inputs.isEmpty() || result.pathManifest == null
                     || result.output == null) throw new IllegalArgumentException(
                     "--summaries, --path-manifest, and --output are required");
-            if (result.manifest == null) result.manifest = result.output
-                    .resolveSibling("region_relation_merge_manifest.json");
             return result;
         }
     }

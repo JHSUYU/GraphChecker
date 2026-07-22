@@ -71,10 +71,10 @@ public final class ConcolicReplayRunner {
                         "SKIPPED_NOT_REPLAYABLE", 0L, arguments.command);
                 continue;
             }
-            if (!activation.symbolicReady) {
+            if (!activation.schedulerReady) {
                 result.skipped++;
                 appendManifest(arguments.manifest, activation, -1,
-                        "SKIPPED_NOT_SYMBOLIC_READY", 0L, arguments.command);
+                        "SKIPPED_NOT_SCHEDULER_READY", 0L, arguments.command);
                 continue;
             }
             if (arguments.dryRun) {
@@ -178,15 +178,11 @@ public final class ConcolicReplayRunner {
         return value == null || value.isJsonNull() ? "" : value.getAsString();
     }
 
-    private static boolean bool(JsonObject object, String field,
-                                boolean fallback) {
+    private static boolean strictTrue(JsonObject object, String field) {
         JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean()
+                && value.getAsBoolean();
     }
 
     private static String firstNonBlank(String... values) {
@@ -205,14 +201,14 @@ public final class ConcolicReplayRunner {
         private final String regionId;
         private final String test;
         private final boolean replayable;
-        private final boolean symbolicReady;
+        private final boolean schedulerReady;
 
         private Activation(JsonObject row) {
             this.activationId = string(row, "activationId");
             this.regionId = string(row, "regionId");
             this.test = string(row, "test");
-            this.replayable = bool(row, "replayable", true);
-            this.symbolicReady = bool(row, "symbolicReady", true);
+            this.replayable = strictTrue(row, "replayable");
+            this.schedulerReady = strictTrue(row, "schedulerReady");
         }
     }
 

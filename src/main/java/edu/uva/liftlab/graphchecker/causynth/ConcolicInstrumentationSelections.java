@@ -115,18 +115,12 @@ final class ConcolicInstrumentationSelections {
                 if (!selected.isEmpty() && !selected.equals(activationId)) {
                     continue;
                 }
-                // Activation plans produced before the scheduler existed did
-                // not carry an explicit readiness bit.  Preserve that format
-                // while allowing the scheduler to be the authority for newer
-                // plans.
-                boolean ready = jsonBoolean(row, "symbolicReady", true)
-                        || jsonBoolean(row, "schedulerReady", false);
-                if (!jsonBoolean(row, "replayable", true) || !ready) {
+                if (!strictJsonBooleanEquals(row, "replayable", true)
+                        || !strictJsonBooleanEquals(row,
+                        "schedulerReady", true)) {
                     continue;
                 }
-                String root = stringValue(firstNonBlank(
-                        jsonString(row, "rootMethod"),
-                        jsonString(row, "observedRootMethod")));
+                String root = jsonString(row, "rootMethod");
                 if (!root.isEmpty()) {
                     roots.add(root);
                 }
@@ -218,10 +212,7 @@ final class ConcolicInstrumentationSelections {
 
         if (!strictJsonBooleanEquals(row, "replayable", true)
                 || !strictJsonBooleanEquals(row, "boundaryReady", true)
-                || !strictJsonBooleanEquals(row, "symbolicReady", true)
                 || !strictJsonBooleanEquals(row, "schedulerReady", true)
-                || !strictJsonBooleanEquals(row,
-                "materializationComplete", true)
                 || !strictJsonBooleanEquals(row,
                 "runtimePathEvidenceComplete", true)
                 || !strictJsonBooleanEquals(row,
@@ -232,8 +223,6 @@ final class ConcolicInstrumentationSelections {
                 "pathSignatureTruncated", false)
                 || !strictJsonBooleanEquals(row,
                 "containedCallTreeTruncated", false)
-                || !strictJsonIntEquals(row,
-                "deferredMaterializationCount", 0)
                 || !emptyJsonArray(row, "runtimeGaps")
                 || !absentOrEmptyJsonArray(row, "forcedBranches")
                 || row.has("transitionDiscovery")
@@ -756,7 +745,9 @@ final class ConcolicInstrumentationSelections {
                             "activationId"))) {
                         continue;
                     }
-                    if (!jsonBoolean(row, "replayable", true)) {
+                    if (!strictJsonBooleanEquals(row, "replayable", true)
+                            || !strictJsonBooleanEquals(row,
+                            "schedulerReady", true)) {
                         continue;
                     }
                     String activationId = jsonString(row, "activationId");
@@ -1315,7 +1306,9 @@ final class ConcolicInstrumentationSelections {
                     JsonObject row = parsed.getAsJsonObject();
                     if (!selected.isEmpty() && !selected.equals(jsonString(
                             row, "activationId"))) continue;
-                    if (!jsonBoolean(row, "replayable", true)) continue;
+                    if (!strictJsonBooleanEquals(row, "replayable", true)
+                            || !strictJsonBooleanEquals(row,
+                            "schedulerReady", true)) continue;
                     JsonElement captures = row.get(
                             "requestedOutputCapture");
                     if (captures == null || !captures.isJsonArray()) continue;

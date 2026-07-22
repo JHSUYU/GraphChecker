@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicReplayValidator;
+import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RegionCaptureGoal;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -747,6 +748,8 @@ public class ConcolicRegionRuntimeTest {
                 mapping.get("mappingPolicy").getAsString());
         assertEquals("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX",
                 mapping.get("conditionAuthority").getAsString());
+        assertTrue(mapping.has("witness"));
+        assertFalse(mapping.has("concreteObservation"));
         assertEquals(77L, mapping.get("vmThreadContextId").getAsLong());
         assertEquals(Thread.currentThread().getId(), mapping.get(
                 "vmOwnerJavaThreadId").getAsLong());
@@ -783,6 +786,13 @@ public class ConcolicRegionRuntimeTest {
                 mapping.get("conditionAuthority").getAsString());
         assertFalse(mapping.has("condition"));
         assertFalse(mapping.has("witness"));
+        ExactConcreteBranchObservation observation =
+                ExactConcreteBranchObservation.fromJson(
+                        mapping.getAsJsonObject("concreteObservation"));
+        assertEquals("<example.Target: java.lang.Object lookup(int)>#u7",
+                observation.siteId());
+        assertEquals(1, observation.occurrence());
+        assertTrue(observation.sourceTakenOutcome());
         assertTrue(mapping.get("mappingWarning").getAsString().contains(
                 "no newly added target-method condition"));
     }
@@ -914,6 +924,7 @@ public class ConcolicRegionRuntimeTest {
         assertFalse(mapping.get("symbolicSwitchArmComplete").getAsBoolean());
         assertEquals("VM_THREAD_CONTEXT_EXACT_CONCRETE_SWITCH_EVENT",
                 mapping.get("conditionAuthority").getAsString());
+        assertFalse(mapping.has("concreteObservation"));
         assertTrue(mapping.get("mappingWarning").getAsString().contains(
                 "selector was concrete"));
     }
@@ -2897,7 +2908,6 @@ public class ConcolicRegionRuntimeTest {
                 + "\"regionId\":\"REGION.0\","
                 + "\"test\":\"bridge-test\","
                 + "\"rootMethod\":\"" + root + "\","
-                + "\"observedRootMethod\":\"" + root + "\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
                 + "\"materializations\":[{\"symbol\":\"REGION.0.in.0\","
                 + "\"cell\":\"arg0\",\"location\":\"ARGUMENT\","

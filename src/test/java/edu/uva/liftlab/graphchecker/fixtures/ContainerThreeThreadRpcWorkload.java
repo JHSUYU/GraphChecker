@@ -59,6 +59,7 @@ public final class ContainerThreeThreadRpcWorkload {
 
     public static final class ArrayProducer {
         StateNode[] payloads;
+        int input;
 
         ArrayProducer(Boolean enabled) {
             payloads = new StateNode[]{
@@ -79,6 +80,9 @@ public final class ContainerThreeThreadRpcWorkload {
 
     public static final class MapProducer {
         Map<Integer, StateNode> values;
+        int input1;
+        int input2;
+        int input3;
 
         MapProducer(Boolean enabled) {
             values = new LinkedHashMap<>();
@@ -91,8 +95,18 @@ public final class ContainerThreeThreadRpcWorkload {
             Map.Entry<Integer, StateNode> entry = iterator.next();
             StateNode value = entry.getValue();
             boolean enabled = value.state.guard.enabled;
-            if (enabled) {
-                return 0;
+            if(input1<10){
+                input1=10;
+            }
+            if(input2<10){
+                input2=10;
+            }
+
+            if(input3>0){
+                input3 =- input3;
+            }
+            if (enabled || ((input1-input3)>10)) {
+                return 0+input1+input2-input3;
             }
             return 10;
         }

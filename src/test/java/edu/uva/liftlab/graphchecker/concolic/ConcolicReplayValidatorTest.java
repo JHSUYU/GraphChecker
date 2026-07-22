@@ -647,7 +647,6 @@ public class ConcolicReplayValidatorTest {
         JsonObject summary = new JsonObject();
         summary.addProperty("summaryId", "SUMMARY.REPLAY");
         summary.addProperty("regionId", "REGION.3");
-        summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
         summary.addProperty("normalExit", true);
         summary.addProperty("exceptionType", "");
@@ -662,9 +661,6 @@ public class ConcolicReplayValidatorTest {
         JsonObject outputs = new JsonObject();
         outputs.add("REGION.3.out.0", expression);
         summary.add("outputExpressions", outputs);
-        JsonObject admission = new JsonObject();
-        admission.addProperty("complete", true);
-        summary.add("outputExpressionAdmission", admission);
         return summary;
     }
 
