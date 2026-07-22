@@ -2141,7 +2141,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                                       Iterable<JsonObject> assignments,
                                       Set<String> terms) {
         StringBuilder result = new StringBuilder(
-                SymbolicRelationshipVerifier.stripSolverCommands(smt));
+                SmtLibQueries.stripSolverCommands(smt));
         if (result.length() > 0
                 && result.charAt(result.length() - 1) != '\n') {
             result.append('\n');

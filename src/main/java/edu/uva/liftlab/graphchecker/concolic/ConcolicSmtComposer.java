@@ -172,19 +172,15 @@ public final class ConcolicSmtComposer {
         boolean instanceScopedContext = resolutionContext.size() > 0
                 && !string(resolutionContext, "regionInstanceId").isEmpty();
 
-        // A source-scope boundary also permits the corresponding bounded
-        // summaries. The relational option can admit an additional bounded
-        // loop summary without discarding unrelated exact runtime bindings
-        // from the same fatal instance.
+        // An explicit source-scope boundary also permits a certified bounded
+        // approximation for the same region. There is no second, independent
+        // relational composition scope.
         Set<String> boundedRelationalRegions = new LinkedHashSet<>(
                 arguments.boundedUpstreamRegions);
-        boundedRelationalRegions.addAll(
-                arguments.boundedRelationalRegions);
 
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
                 resolutionContext,
-                summaries, arguments.boundedUpstreamRegions,
-                boundedRelationalRegions);
+                summaries, arguments.boundedUpstreamRegions);
         Set<String> relevantRegions = resolved.relevantRegions;
         // Static projection can expose several aliases for one runtime
         // writer/read event.  Resolution deliberately admits only aliases
@@ -556,14 +552,12 @@ public final class ConcolicSmtComposer {
      */
     private static ResolvedSummaryGraph resolveSummaryGraph(
             JsonObject fatal, JsonObject context, List<JsonObject> summaries,
-            Set<String> sourceScopeRegions,
-            Set<String> boundedRelationalRegions) {
+            Set<String> sourceScopeRegions) {
         String fatalRegion = string(fatal, "regionId");
         String fatalInstance = firstNonBlank(string(context,
                 "regionInstanceId"), string(fatal, "regionInstanceId"));
         ResolvedSummaryGraph result = new ResolvedSummaryGraph(fatalRegion,
-                fatalInstance, sourceScopeRegions,
-                boundedRelationalRegions);
+                fatalInstance, sourceScopeRegions);
 
         for (String field : new String[]{"equalityRelations",
                 "versionedStateMerges"}) {
@@ -1186,12 +1180,10 @@ public final class ConcolicSmtComposer {
 
         private ResolvedSummaryGraph(String fatalRegion,
                                      String fatalInstance,
-                                     Set<String> sourceScopeRegions,
-                                     Set<String> boundedRelationalRegions) {
+                                     Set<String> sourceScopeRegions) {
             this.fatalRegion = firstNonBlank(fatalRegion);
             this.fatalInstance = firstNonBlank(fatalInstance);
             this.boundedRegions = new LinkedHashSet<>(sourceScopeRegions);
-            this.boundedRegions.addAll(boundedRelationalRegions);
             this.relevantRegions.add(this.fatalRegion);
         }
 
@@ -1430,90 +1422,6 @@ public final class ConcolicSmtComposer {
             this.excludedAlternatives = excludedAlternatives;
             this.includedRelations = includedRelations;
         }
-    }
-
-    private static Set<String> relevantRegions(JsonObject fatal,
-                                               JsonObject context,
-                                               List<JsonObject> summaries,
-                                               Set<String> boundedRegions) {
-        Set<String> result = new LinkedHashSet<>();
-        String fatalRegion = string(fatal, "regionId");
-        result.add(fatalRegion);
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (String field : new String[]{"equalityRelations",
-                    "versionedStateMerges"}) {
-                for (JsonElement element : array(context, field)) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject relation = element.getAsJsonObject();
-                    String downstream = regionOf(string(relation,
-                            "toEndpoint"));
-                    String upstream = regionOf(string(relation,
-                            "fromEndpoint"));
-                    if (result.contains(downstream) && !upstream.isEmpty()) {
-                        changed |= result.add(upstream);
-                    }
-                }
-            }
-            for (JsonElement element : array(context,
-                    "alternativeWriterGroups")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject group = element.getAsJsonObject();
-                String downstream = regionOf(firstNonBlank(
-                        string(group, "downstreamEndpoint"),
-                        string(group, "consumerEndpoint"),
-                        alternativeConsumer(group)));
-                if (!result.contains(downstream)) continue;
-                for (JsonElement alternative : array(group,
-                        "alternatives")) {
-                    if (!alternative.isJsonObject()) continue;
-                    String upstream = regionOf(string(
-                            alternative.getAsJsonObject(), "fromEndpoint"));
-                    if (!upstream.isEmpty()) changed |= result.add(upstream);
-                }
-            }
-        }
-        String fatalInstance = string(context, "regionInstanceId");
-        for (JsonObject summary : summaries) {
-            if (!bool(summary, "valid", true)) {
-                continue;
-            }
-            if (!boundedRegions.isEmpty()
-                    && !boundedRegions.contains(string(summary,
-                    "regionId"))) {
-                continue;
-            }
-            for (JsonElement element : edgeBindings(summary)) {
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject binding = element.getAsJsonObject();
-                if (edgeBindingTargets(binding, fatalRegion,
-                        fatalInstance)
-                        && edgeBindingSourceMatches(binding, summary)) {
-                    result.add(string(summary, "regionId"));
-                }
-            }
-        }
-        result.remove("");
-        return result;
-    }
-
-    private static boolean edgeBindingTargets(JsonObject binding,
-                                              String fatalRegion,
-                                              String fatalInstance) {
-        String downstreamRegion = firstNonBlank(string(binding, "toRegion"),
-                regionOf(firstNonBlank(string(binding, "toInputPort"),
-                        string(binding, "consumerInputPort"))));
-        if (!fatalRegion.equals(downstreamRegion)) {
-            return false;
-        }
-        String downstreamInstance = firstNonBlank(string(binding,
-                "toRegionInstance"), string(binding,
-                "consumerRegionInstance"));
-        return !fatalInstance.isEmpty() && !downstreamInstance.isEmpty()
-                && fatalInstance.equals(downstreamInstance);
     }
 
     private static boolean edgeBindingSourceMatches(JsonObject binding,
@@ -9384,14 +9292,11 @@ public final class ConcolicSmtComposer {
         private String activationId = "";
         private final Set<String> boundedUpstreamRegions =
                 new LinkedHashSet<>();
-        private final Set<String> boundedRelationalRegions =
-                new LinkedHashSet<>();
 
         public static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
             List<String> summaryValues = new ArrayList<>();
             List<String> boundedRegionValues = new ArrayList<>();
-            List<String> boundedRelationalRegionValues = new ArrayList<>();
             for (int index = 0; index < argv.length; index++) {
                 String argument = argv[index];
                 if (!argument.startsWith("--")) {
@@ -9409,8 +9314,6 @@ public final class ConcolicSmtComposer {
                     summaryValues.add(value);
                 } else if ("bounded-upstream-region".equals(key)) {
                     boundedRegionValues.add(value);
-                } else if ("bounded-relational-region".equals(key)) {
-                    boundedRelationalRegionValues.add(value);
                 } else if (!singleValueOption(key)) {
                     throw new IllegalArgumentException(
                             "Unknown composer option: --" + key);
@@ -9445,14 +9348,6 @@ public final class ConcolicSmtComposer {
                     String normalized = firstNonBlank(region);
                     if (!normalized.isEmpty()) {
                         result.boundedUpstreamRegions.add(normalized);
-                    }
-                }
-            }
-            for (String value : boundedRelationalRegionValues) {
-                for (String region : value.split(",")) {
-                    String normalized = firstNonBlank(region);
-                    if (!normalized.isEmpty()) {
-                        result.boundedRelationalRegions.add(normalized);
                     }
                 }
             }

@@ -313,16 +313,11 @@ catalog. The catalog itself contains only its schema, candidate array, and
 verification eligibility; it does not mirror the manifest's target identity,
 stage, artifact fingerprints, or a second derived binding id.
 
-`SymbolicRelationshipVerifier` may run an automatic proof only when the
-candidate set says `eligibleForAutomaticVerification=true`. It first requires
-the base formula to be SAT, then classifies a relationship as `DERIVED` only if:
-
-```text
-base constraints AND NOT(relationship) == UNSAT
-```
-
-This prevents vacuous proofs from an inconsistent base and blocks proof labels
-when composition is incomplete.
+Relationship catalogs are deliberately candidate-only and always carry
+`eligibleForAutomaticVerification=false`. No solver result promotes a
+relationship to trusted evidence. A future natural, injection-free target
+replay may upgrade a candidate only after observing the target under the
+candidate model; that trust-promotion stage remains an explicit TODO.
 
 ## 12. Verification
 

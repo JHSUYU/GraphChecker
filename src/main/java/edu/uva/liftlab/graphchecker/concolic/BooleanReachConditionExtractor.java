@@ -178,7 +178,7 @@ public final class BooleanReachConditionExtractor {
                     "REACH_CONDITION_DISCOVERY_WITH_GAPS");
         }
 
-        String base = SymbolicRelationshipVerifier.stripSolverCommands(
+        String base = SmtLibQueries.stripSolverCommands(
                 composedSmt);
         String domainBase = appendBooleanDomain(base,
                 discovery.booleanDomainInputs);

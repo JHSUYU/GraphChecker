@@ -3961,30 +3961,6 @@ public class ConcolicSmtComposerTest {
                     "(= port__REGION_P_out_0 port__REGION_F_in_0)"));
             assertFalse(bounded.smtLib.contains("writer_guard__right"));
 
-            ConcolicSmtComposer.Arguments relationalArguments =
-                    ConcolicSmtComposer.Arguments.parse(new String[]{
-                            "--fatal-query", fixture.fatal.toString(),
-                            "--summaries", fixture.summaries.toString(),
-                            "--regions", fixture.regions.toString(),
-                            "--output", fixture.output.toString(),
-                            "--manifest", fixture.manifest.toString(),
-                            "--fatal-region", "REGION.F",
-                            "--activation-id", "ACT.F",
-                            "--bounded-relational-region", "REGION.P"
-                    });
-            ConcolicSmtComposer.Result relational =
-                    ConcolicSmtComposer.compose(relationalArguments);
-
-            assertEquals("FULL_INSTANCE_SCOPED_CONTEXT",
-                    relational.manifest.get("compositionScope")
-                            .getAsString());
-            assertEquals(0, relational.manifest.get(
-                    "excludedContextRelationCount").getAsInt());
-            assertEquals(1, relational.manifest.get(
-                    "alternativeWriterGroupCount").getAsInt());
-            assertTrue(relational.smtLib.contains("writer_guard__left"));
-            assertTrue(relational.smtLib.contains("writer_guard__right"));
-
             // A static graph may project the same concrete writer/read event
             // through aliases whose producer regions were not replayed.  Do
             // not turn those alternatives into mandatory summaries.  The

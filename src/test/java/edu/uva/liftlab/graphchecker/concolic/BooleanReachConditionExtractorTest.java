@@ -379,6 +379,22 @@ public class BooleanReachConditionExtractorTest {
     }
 
     @Test
+    public void stripsOnlySolverCommandsFromReusableSmt() {
+        String lineSeparator = System.lineSeparator();
+        assertEquals("(set-logic ALL)" + lineSeparator
+                        + "(assert true)" + lineSeparator
+                        + "" + lineSeparator,
+                SmtLibQueries.stripSolverCommands(
+                        "(set-logic ALL)\n"
+                                + "  (check-sat)\n"
+                                + "(assert true)\n"
+                                + "(get-model)\n"
+                                + "(get-value (x))\n"
+                                + "(get-unsat-core)\n"
+                                + " (exit)\n"));
+    }
+
+    @Test
     public void z3SolverAttestsExecutableAndRejectsNonzeroSatOutput()
             throws Exception {
         Path directory = Files.createTempDirectory("fake-z3-");
