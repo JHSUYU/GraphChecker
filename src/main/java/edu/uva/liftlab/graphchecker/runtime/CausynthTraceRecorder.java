@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -36,9 +35,6 @@ public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
     private static final AtomicLong EVENT_COUNTER = new AtomicLong();
-    private static final Map<String, MethodContext> CONTEXTS = new LinkedHashMap<>();
-    private static final Map<String, FieldEvent> FIELD_EVENTS_BY_CONTEXT_UNIT =
-            new LinkedHashMap<>();
     private static final List<TraceEvent> EVENTS = new ArrayList<>();
     private static final List<FieldEvent> FIELD_EVENTS = new ArrayList<>();
     private static final List<ExecutionEvent> EXECUTION_EVENTS = new ArrayList<>();
@@ -57,8 +53,6 @@ public final class CausynthTraceRecorder {
                 }
             };
     private static final int DEFAULT_MAX_EVENTS = 200000;
-    private static final int DEFAULT_MAX_GRAPH_EDGES = 50000;
-    private static final int DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE = 2000;
     private static final ConcurrentMap<String, Pattern> JSON_STRING_FIELD_PATTERNS =
             new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Pattern> JSON_NUMBER_FIELD_PATTERNS =
@@ -80,8 +74,6 @@ public final class CausynthTraceRecorder {
     private static volatile File traceFile;
     private static volatile String testName;
     private static volatile int maxEvents;
-    private static volatile int maxGraphEdges;
-    private static volatile int maxContextPairsPerEdge;
     /**
      * Rich campaign replays may emit hundreds of thousands of events.  When
      * aggregation is performed by a fresh host JVM, retaining the same rows
@@ -155,24 +147,13 @@ public final class CausynthTraceRecorder {
                 System.getProperty("causynth.trace.test"),
                 System.getenv("CAUSYNTH_TRACE_TEST"),
                 "unknown-test");
-        int graphEdges = parseInt(firstNonBlank(params.get("max-graph-edges"),
-                System.getProperty("causynth.trace.max.graph.edges"),
-                System.getenv("CAUSYNTH_TRACE_MAX_GRAPH_EDGES"),
-                String.valueOf(DEFAULT_MAX_GRAPH_EDGES)), DEFAULT_MAX_GRAPH_EDGES);
-        int contextPairs = parseInt(firstNonBlank(params.get("max-context-pairs-per-edge"),
-                System.getProperty("causynth.trace.max.context.pairs.per.edge"),
-                System.getenv("CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE"),
-                String.valueOf(DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE)),
-                DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE);
         try {
-            aggregateExistingTrace(directory, graph, test, graphEdges, contextPairs);
+            aggregateExistingTrace(directory, graph, test);
         } catch (Throwable throwable) {
             outputDir = directory;
             traceFile = new File(directory, "runtime_trace.jsonl");
             testName = test;
             maxEvents = DEFAULT_MAX_EVENTS;
-            maxGraphEdges = graphEdges;
-            maxContextPairsPerEdge = contextPairs;
             writeShutdownFailure(throwable);
             System.err.println("Failed to aggregate Causynth runtime trace: "
                     + throwable);
@@ -204,12 +185,6 @@ public final class CausynthTraceRecorder {
         synchronized (LOCK) {
             if (retainRecordedEventsInMemory) {
                 EVENTS.add(event);
-                MethodContext context = CONTEXTS.get(event.contextKey());
-                if (context == null) {
-                    context = new MethodContext(event);
-                    CONTEXTS.put(event.contextKey(), context);
-                }
-                context.observe(event);
             }
             writeTraceLine(event);
         }
@@ -247,12 +222,6 @@ public final class CausynthTraceRecorder {
         synchronized (LOCK) {
             if (retainRecordedEventsInMemory) {
                 EVENTS.add(event);
-                MethodContext context = CONTEXTS.get(event.contextKey());
-                if (context == null) {
-                    context = new MethodContext(event);
-                    CONTEXTS.put(event.contextKey(), context);
-                }
-                context.observe(event);
             }
             writeTraceLine(event);
         }
@@ -463,10 +432,6 @@ public final class CausynthTraceRecorder {
         synchronized (LOCK) {
             if (retainRecordedEventsInMemory) {
                 FIELD_EVENTS.add(event);
-                String key = fieldEventKey(event.process, event.threadName,
-                        event.tid, event.method, event.methodObjectId,
-                        event.unitIndex, event.field);
-                FIELD_EVENTS_BY_CONTEXT_UNIT.put(key, event);
             }
             writeFieldTraceLine(event);
         }
@@ -640,16 +605,6 @@ public final class CausynthTraceRecorder {
                     System.getProperty("causynth.trace.max.events"),
                     System.getenv("CAUSYNTH_TRACE_MAX_EVENTS"),
                     String.valueOf(DEFAULT_MAX_EVENTS)), DEFAULT_MAX_EVENTS);
-            int configuredMaxGraphEdges = parseInt(firstNonBlank(
-                    System.getProperty("causynth.trace.max.graph.edges"),
-                    System.getenv("CAUSYNTH_TRACE_MAX_GRAPH_EDGES"),
-                    String.valueOf(DEFAULT_MAX_GRAPH_EDGES)),
-                    DEFAULT_MAX_GRAPH_EDGES);
-            int configuredMaxContextPairsPerEdge = parseInt(firstNonBlank(
-                    System.getProperty("causynth.trace.max.context.pairs.per.edge"),
-                    System.getenv("CAUSYNTH_TRACE_MAX_CONTEXT_PAIRS_PER_EDGE"),
-                    String.valueOf(DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE)),
-                    DEFAULT_MAX_CONTEXT_PAIRS_PER_EDGE);
             boolean configuredStreamingOnly = Boolean.parseBoolean(
                     firstNonBlank(System.getProperty(
                                     "causynth.trace.streaming.only"),
@@ -676,9 +631,6 @@ public final class CausynthTraceRecorder {
                     // selected region executes.
                     testName = configuredTestName;
                     maxEvents = Integer.MAX_VALUE;
-                    maxGraphEdges = configuredMaxGraphEdges;
-                    maxContextPairsPerEdge =
-                            configuredMaxContextPairsPerEdge;
                     retainRecordedEventsInMemory = false;
                     traceWriteFailure = false;
                     outputDir = null;
@@ -708,8 +660,6 @@ public final class CausynthTraceRecorder {
                 // or the JVM default value of an event limit.
                 testName = configuredTestName;
                 maxEvents = configuredMaxEvents;
-                maxGraphEdges = configuredMaxGraphEdges;
-                maxContextPairsPerEdge = configuredMaxContextPairsPerEdge;
                 retainRecordedEventsInMemory = !configuredStreamingOnly;
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
@@ -795,7 +745,7 @@ public final class CausynthTraceRecorder {
                                 "streaming-only trace requires offline "
                                         + "aggregation in a fresh JVM");
                     }
-                    writeInstantiatedGraph();
+                    writeRuntimeRegionArtifacts();
                 }
             } catch (Throwable throwable) {
                 writeShutdownFailure(throwable);
@@ -811,16 +761,13 @@ public final class CausynthTraceRecorder {
     }
 
     private static void aggregateExistingTrace(File directory, File staticGraph,
-                                               String test, int graphEdges,
-                                               int contextPairs) throws IOException {
+                                               String test) throws IOException {
         synchronized (LOCK) {
             clearInMemoryTrace();
             outputDir = directory;
             traceFile = new File(directory, "runtime_trace.jsonl");
             testName = test;
             maxEvents = Integer.MAX_VALUE;
-            maxGraphEdges = graphEdges;
-            maxContextPairsPerEdge = contextPairs;
             // This JVM is the offline aggregator.  Rows loaded below must be
             // retained regardless of the recording-mode property inherited
             // from a caller.
@@ -828,15 +775,13 @@ public final class CausynthTraceRecorder {
             traceWriter = null;
             System.setProperty("causynth.static.graph", staticGraph.getPath());
             loadExistingTrace(traceFile);
-            writeInstantiatedGraph();
+            writeRuntimeRegionArtifacts();
         }
     }
 
     private static void clearInMemoryTrace() {
         INITIALIZED.set(false);
         EVENT_COUNTER.set(0L);
-        CONTEXTS.clear();
-        FIELD_EVENTS_BY_CONTEXT_UNIT.clear();
         EVENTS.clear();
         FIELD_EVENTS.clear();
         EXECUTION_EVENTS.clear();
@@ -909,7 +854,6 @@ public final class CausynthTraceRecorder {
                 }
             }
         }
-        normalizeRecordedEventOrderAndRebuildIndexes();
     }
 
     /**
@@ -917,34 +861,13 @@ public final class CausynthTraceRecorder {
      * writer lock.  Consequently a valid multi-threaded trace can contain
      * rows in a different file order from their sequence order.  Every
      * offline consumer uses the recorder sequence as its observation-order
-     * authority, so rebuild all order-sensitive indexes after loading instead
-     * of accidentally treating writer-lock acquisition order as execution
-     * order.
+     * authority instead of treating writer-lock acquisition order as
+     * execution order.
      */
-    private static void normalizeRecordedEventOrderAndRebuildIndexes() {
+    private static void normalizeRecordedEventOrder() {
         EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
         FIELD_EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
         EXECUTION_EVENTS.sort((left, right) -> Long.compare(left.id, right.id));
-
-        CONTEXTS.clear();
-        for (TraceEvent event : EVENTS) {
-            MethodContext context = CONTEXTS.get(event.contextKey());
-            if (context == null) {
-                context = new MethodContext(event);
-                CONTEXTS.put(event.contextKey(), context);
-            }
-            context.observe(event);
-        }
-
-        FIELD_EVENTS_BY_CONTEXT_UNIT.clear();
-        for (FieldEvent event : FIELD_EVENTS) {
-            String key = fieldEventKey(event.process, event.threadName,
-                    event.tid, event.method, event.methodObjectId,
-                    event.unitIndex, event.field);
-            // FIELD_EVENTS is sequence ordered, therefore the retained value
-            // is the latest observation for this exact runtime field site.
-            FIELD_EVENTS_BY_CONTEXT_UNIT.put(key, event);
-        }
     }
 
     private static void addTraceEvent(TraceEvent event) {
@@ -952,12 +875,6 @@ public final class CausynthTraceRecorder {
             return;
         }
         EVENTS.add(event);
-        MethodContext context = CONTEXTS.get(event.contextKey());
-        if (context == null) {
-            context = new MethodContext(event);
-            CONTEXTS.put(event.contextKey(), context);
-        }
-        context.observe(event);
         EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
     }
 
@@ -967,9 +884,6 @@ public final class CausynthTraceRecorder {
             return;
         }
         FIELD_EVENTS.add(event);
-        String key = fieldEventKey(event.process, event.threadName, event.tid,
-                event.method, event.methodObjectId, event.unitIndex, event.field);
-        FIELD_EVENTS_BY_CONTEXT_UNIT.put(key, event);
         EVENT_COUNTER.set(Math.max(EVENT_COUNTER.get(), event.id));
     }
 
@@ -1097,809 +1011,14 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void writeInstantiatedGraph() throws IOException {
-        // In-memory aggregation has the same cross-thread row-order property
-        // as an offline-loaded stream.  Normalize centrally before any graph,
-        // latest-write, or region-planning consumer observes the collections.
-        normalizeRecordedEventOrderAndRebuildIndexes();
-        File staticGraph = new File(firstNonBlank(System.getProperty("causynth.static.graph"),
+    private static void writeRuntimeRegionArtifacts() throws IOException {
+        normalizeRecordedEventOrder();
+        File staticGraph = new File(firstNonBlank(
+                System.getProperty("causynth.static.graph"),
                 System.getenv("CAUSYNTH_STATIC_GRAPH"),
                 new File(outputDir, "static_dataflow_edges.jsonl").getPath()));
-        List<StaticEdge> staticEdges = readStaticEdges(staticGraph);
-        Map<String, List<MethodContext>> contextsByMethod = new LinkedHashMap<>();
-        for (MethodContext context : CONTEXTS.values()) {
-            List<MethodContext> contexts = contextsByMethod.get(context.method);
-            if (contexts == null) {
-                contexts = new ArrayList<>();
-                contextsByMethod.put(context.method, contexts);
-            }
-            contexts.add(context);
-        }
-
-        List<String> nodeJson = new ArrayList<>();
-        Set<String> emittedNodes = new LinkedHashSet<>();
-        Map<String, EdgeAccumulator> emittedEdges = new LinkedHashMap<>();
-        List<String> roleNodeJson = new ArrayList<>();
-        Set<String> emittedRoleNodes = new LinkedHashSet<>();
-        Map<String, EdgeAccumulator> emittedRoleEdges = new LinkedHashMap<>();
-        int mergedEdgeInputCount = 0;
-        int mergedRoleEdgeInputCount = 0;
-        int skippedGraphEdgeInstances = 0;
-        int skippedRoleGraphEdgeInstances = 0;
-        long skippedContextPairInstances = 0L;
-        boolean truncated = false;
-        boolean roleTruncated = false;
-        boolean contextPairTruncated = false;
-        for (StaticEdge edge : staticEdges) {
-            ContextPairSelection contextSelection = contextsForGraphEdge(edge,
-                    contextsByMethod);
-            if (contextSelection.truncated) {
-                contextPairTruncated = true;
-                truncated = true;
-                roleTruncated = true;
-                skippedContextPairInstances += contextSelection.skipped;
-            }
-            for (InstantiatedContextPair context : contextSelection.pairs) {
-                String fromCell = instantiateCell(context.fromContext, edge, edge.fromCell);
-                String toCell = instantiateCell(context.toContext, edge, edge.toCell);
-                String fromId = nodeId(context.fromContext, fromCell);
-                String toId = nodeId(context.toContext, toCell);
-                String edgeKey = edgeKey(edge, fromId, toId);
-                EdgeAccumulator accumulator = emittedEdges.get(edgeKey);
-                if (accumulator == null) {
-                    if (emittedEdges.size() >= maxGraphEdges) {
-                        truncated = true;
-                        skippedGraphEdgeInstances++;
-                    } else {
-                        accumulator = new EdgeAccumulator(edge, fromId, toId,
-                                context.fromContext, context.toContext);
-                        emittedEdges.put(edgeKey, accumulator);
-                    }
-                } else {
-                    accumulator.observe(edge, context.fromContext, context.toContext);
-                    mergedEdgeInputCount++;
-                }
-                if (accumulator != null) {
-                    if (emittedNodes.add(fromId)) {
-                        nodeJson.add(nodeJson(context.fromContext, fromId, fromCell));
-                    }
-                    if (emittedNodes.add(toId)) {
-                        nodeJson.add(nodeJson(context.toContext, toId, toCell));
-                    }
-                }
-
-                String roleFromCell = roleCell(fromCell);
-                String roleToCell = roleCell(toCell);
-                String roleFromId = roleNodeId(context.fromContext, roleFromCell);
-                String roleToId = roleNodeId(context.toContext, roleToCell);
-                String roleEdgeKey = roleEdgeKey(edge, roleFromId, roleToId);
-                EdgeAccumulator roleAccumulator = emittedRoleEdges.get(roleEdgeKey);
-                if (roleAccumulator == null) {
-                    if (emittedRoleEdges.size() >= maxGraphEdges) {
-                        roleTruncated = true;
-                        skippedRoleGraphEdgeInstances++;
-                        continue;
-                    }
-                    roleAccumulator = new EdgeAccumulator(edge, roleFromId, roleToId,
-                            context.fromContext, context.toContext);
-                    emittedRoleEdges.put(roleEdgeKey, roleAccumulator);
-                } else {
-                    roleAccumulator.observe(edge, context.fromContext, context.toContext);
-                    mergedRoleEdgeInputCount++;
-                }
-                if (roleAccumulator != null) {
-                    if (emittedRoleNodes.add(roleFromId)) {
-                        roleNodeJson.add(roleNodeJson(context.fromContext,
-                                roleFromId, roleFromCell));
-                    }
-                    if (emittedRoleNodes.add(roleToId)) {
-                        roleNodeJson.add(roleNodeJson(context.toContext,
-                                roleToId, roleToCell));
-                    }
-                }
-            }
-        }
-        RuntimeFieldBridgeStats runtimeFieldBridgeStats = addRuntimeFieldBridges(
-                emittedNodes, nodeJson, emittedEdges,
-                emittedRoleNodes, roleNodeJson, emittedRoleEdges);
-        truncated = truncated || runtimeFieldBridgeStats.truncated;
-        roleTruncated = roleTruncated || runtimeFieldBridgeStats.roleTruncated;
-
-        String summary = jsonObject(
-                "test", testName,
-                "traceFile", traceFile == null ? "" : traceFile.getPath(),
-                "staticGraph", staticGraph.getPath(),
-                "traceEventCount", EVENTS.size(),
-                "fieldEventCount", FIELD_EVENTS.size(),
-                "executionEventCount", EXECUTION_EVENTS.size(),
-                "observedMethodContextCount", CONTEXTS.size(),
-                "observedMethodCount", contextsByMethod.size(),
-                "staticEdgeCount", staticEdges.size(),
-                "instantiatedNodeCount", nodeJson.size(),
-                "instantiatedEdgeCount", emittedEdges.size(),
-                "mergedEdgeInputCount", mergedEdgeInputCount,
-                "roleMergedNodeCount", roleNodeJson.size(),
-                "roleMergedEdgeCount", emittedRoleEdges.size(),
-                "mergedRoleEdgeInputCount", mergedRoleEdgeInputCount,
-                "runtimeFieldBridgeInputCount", runtimeFieldBridgeStats.inputCount,
-                "runtimeFieldBridgeMergedInputCount", runtimeFieldBridgeStats.mergedInputCount,
-                "runtimeRoleFieldBridgeMergedInputCount", runtimeFieldBridgeStats.roleMergedInputCount,
-                "skippedGraphEdgeInstances", skippedGraphEdgeInstances,
-                "skippedRoleGraphEdgeInstances", skippedRoleGraphEdgeInstances,
-                "skippedRuntimeFieldBridgeInstances", runtimeFieldBridgeStats.skippedGraphEdgeInstances,
-                "skippedRuntimeRoleFieldBridgeInstances", runtimeFieldBridgeStats.skippedRoleGraphEdgeInstances,
-                "skippedContextPairInstances", skippedContextPairInstances,
-                "contextPairTruncated", contextPairTruncated,
-                "truncated", truncated,
-                "roleTruncated", roleTruncated,
-                "maxEvents", maxEvents,
-                "maxGraphEdges", maxGraphEdges,
-                "maxContextPairsPerEdge", maxContextPairsPerEdge);
-        // Large traces can legitimately instantiate graphs beyond Java's
-        // maximum String/byte[] size.  Stream the already bounded collections
-        // instead of constructing one multi-gigabyte intermediate String.
-        writeGraphFile(new File(outputDir, "unit_test_instantiated_graph.json"),
-                summary, nodeJson, emittedEdges, false);
-        writeGraphFile(new File(outputDir, "unit_test_role_merged_graph.json"),
-                summary, roleNodeJson, emittedRoleEdges, true);
-        writeFile(new File(outputDir, "summary.json"), summary);
-        writeSymbolicGuidanceDag(emittedEdges, emittedRoleEdges,
-                contextsByMethod, truncated, roleTruncated);
-        writeSeedChainSummary(staticEdges);
-        writeRuntimeValidationSummary(staticEdges, contextsByMethod);
-        writeRuntimeRefinedSymbolicPlan(staticGraph);
         writeRuntimeRegionPlans(staticGraph);
     }
-
-    private static void writeSymbolicGuidanceDag(
-            Map<String, EdgeAccumulator> objectEdges,
-            Map<String, EdgeAccumulator> roleEdges,
-            Map<String, List<MethodContext>> contextsByMethod,
-            boolean objectGraphTruncated,
-            boolean roleGraphTruncated) throws IOException {
-        List<String> guidanceEdges = new ArrayList<>();
-        Map<String, Integer> modelCounts = new LinkedHashMap<>();
-        int emitted = 0;
-        int index = 0;
-        for (EdgeAccumulator edge : roleEdges.values()) {
-            String model = guidanceModel(edge);
-            increment(modelCounts, model);
-            if (!shouldEmitGuidanceEdge(edge)) {
-                continue;
-            }
-            if (emitted++ >= 1500) {
-                continue;
-            }
-            guidanceEdges.add(guidanceEdgeJson("GUIDE." + index++, edge, model));
-        }
-
-        List<String> modelRequirements = new ArrayList<>();
-        for (Map.Entry<String, Integer> entry : modelCounts.entrySet()) {
-            modelRequirements.add(modelRequirementJson(entry.getKey(),
-                    entry.getValue()));
-        }
-
-        // The generic trace layer deliberately does not synthesize
-        // project-specific relationships.  Concrete edge evidence and merge
-        // points remain available; symbolic expressions come only from
-        // imported region summaries later in the concolic campaign.
-        List<String> evidence = new ArrayList<>();
-        List<String> symbolicExpressions = new ArrayList<>();
-        List<String> mergePoints = symbolicMergePoints(roleEdges);
-        List<String> limitations = symbolicGuidanceLimitations();
-
-        String summary = jsonObject(
-                "test", testName,
-                "purpose", "symbolic_execution_guidance",
-                "objectEdgeCount", objectEdges.size(),
-                "roleEdgeCount", roleEdges.size(),
-                "observedMethodCount", contextsByMethod.size(),
-                "objectGraphTruncated", objectGraphTruncated,
-                "roleGraphTruncated", roleGraphTruncated,
-                "guidanceEdgeCount", guidanceEdges.size(),
-                "symbolicExpressionCount", symbolicExpressions.size(),
-                "mergePointCount", mergePoints.size(),
-                "precision", "over_approx_static_graph_plus_runtime_context");
-        String dag = "{"
-                + "\"summary\":" + summary
-                + ",\"symbolicExpressions\":[" + join(symbolicExpressions) + "]"
-                + ",\"evidence\":[" + join(evidence) + "]"
-                + ",\"modelRequirements\":[" + join(modelRequirements) + "]"
-                + ",\"mergePoints\":[" + join(mergePoints) + "]"
-                + ",\"guidanceEdges\":[" + join(guidanceEdges) + "]"
-                + ",\"limitations\":[" + join(limitations) + "]"
-                + "}";
-        writeFile(new File(outputDir, "symbolic_guidance_dag.json"), dag);
-    }
-
-    private static void increment(Map<String, Integer> counts, String key) {
-        Integer value = counts.get(key);
-        counts.put(key, value == null ? 1 : value + 1);
-    }
-
-    private static boolean shouldEmitGuidanceEdge(EdgeAccumulator edge) {
-        return edge != null;
-    }
-
-    private static String guidanceModel(EdgeAccumulator edge) {
-        String kind = lower(edge == null ? "" : edge.kind);
-        String text = edgeText(edge);
-        if (kind.contains("rpc") || kind.contains("protocol")
-                || kind.contains("transfer")) {
-            return "port_mapping_candidate";
-        }
-        if (kind.contains("runtime_field_state")) {
-            return "heap_latest_write";
-        }
-        if (text.contains("<java.util.map:")) {
-            return "symbolic_map_state";
-        }
-        if (kind.contains("field_write") || kind.contains("field_mutation")) {
-            return "heap_write";
-        }
-        if (kind.contains("field_read")) {
-            return "heap_read";
-        }
-        if (kind.contains("constructor")) {
-            return "constructor_summary";
-        }
-        if (kind.contains("call_return") || kind.contains("caller_return")) {
-            return "method_return_summary";
-        }
-        if (kind.contains("argument")) {
-            return "argument_binding";
-        }
-        if (kind.contains("seed")) {
-            return "target_seed";
-        }
-        if (kind.contains("guard")) {
-            return "path_condition";
-        }
-        if (kind.contains("throw")) {
-            return "exception_condition";
-        }
-        return "local_dataflow";
-    }
-
-    private static String guidanceEdgeJson(String id, EdgeAccumulator edge,
-                                           String model) {
-        return jsonObject(
-                "id", id,
-                "kind", edge.kind,
-                "model", model,
-                "summary", guidanceSummary(model),
-                "expressionHint", guidanceExpressionHint(model),
-                "precision", guidancePrecision(model),
-                "from", edge.from,
-                "to", edge.to,
-                "fromProcess", edge.firstFromContext.process,
-                "fromThreadRole", threadRole(edge.firstFromContext.threadName),
-                "toProcess", edge.firstToContext.process,
-                "toThreadRole", threadRole(edge.firstToContext.threadName),
-                "method", edge.method,
-                "occurrences", edge.occurrences,
-                "mergedInstances", edge.mergedInstances,
-                "fromContextCount", edge.fromContexts.size(),
-                "toContextCount", edge.toContexts.size(),
-                "firstSeq", edge.firstSeq == Long.MAX_VALUE ? 0 : edge.firstSeq,
-                "lastSeq", edge.lastSeq == Long.MIN_VALUE ? 0 : edge.lastSeq,
-                "staticEdgeIds", join(edge.staticEdgeIds, ";"));
-    }
-
-    private static String guidanceSummary(String model) {
-        if ("port_mapping_candidate".equals(model)) {
-            return "Use only to locate endpoint ports; it is not a symbolic equality until runtime value evidence or region summaries prove one.";
-        }
-        if ("heap_latest_write".equals(model)) {
-            return "Model read as latest observed write to the same process, receiver object, and field.";
-        }
-        if ("symbolic_map_state".equals(model)) {
-            return "Model as symbolic map state; precise entry lookup requires Map put/get/remove summaries.";
-        }
-        if ("heap_write".equals(model)) {
-            return "Model as heap field update.";
-        }
-        if ("heap_read".equals(model)) {
-            return "Model as heap field read.";
-        }
-        if ("constructor_summary".equals(model)) {
-            return "Model constructor as object creation with argument-to-field summaries.";
-        }
-        if ("method_return_summary".equals(model)) {
-            return "Obtain the return expression from a captured region summary; otherwise leave it uninterpreted.";
-        }
-        if ("argument_binding".equals(model)) {
-            return "Bind caller actual to callee formal in the symbolic environment.";
-        }
-        if ("target_seed".equals(model)) {
-            return "Target seed dependency that should be preserved in the symbolic slice.";
-        }
-        if ("path_condition".equals(model)) {
-            return "Model as path condition or ITE guard.";
-        }
-        if ("exception_condition".equals(model)) {
-            return "Model as exception feasibility condition.";
-        }
-        return "Local def-use dependency inside an observed method context.";
-    }
-
-    private static String guidanceExpressionHint(String model) {
-        if ("port_mapping_candidate".equals(model)) {
-            return "no assertion; await runtime fingerprint equality or captured transformation summaries";
-        }
-        if ("heap_latest_write".equals(model)) {
-            return "read(field) := latestWrite(field, readSeq)";
-        }
-        if ("symbolic_map_state".equals(model)) {
-            return "mapValue := symbolicMapGet(mapState, key); mapState' := symbolicMapPut(mapState, key, value)";
-        }
-        if ("heap_write".equals(model)) {
-            return "Heap(receiver, field) := sourceExpr";
-        }
-        if ("heap_read".equals(model)) {
-            return "local := Field(receiver, field)";
-        }
-        if ("constructor_summary".equals(model)) {
-            return "object := ConstructorSummary(args)";
-        }
-        if ("method_return_summary".equals(model)) {
-            return "lhs := MethodSummary(receiver, args)";
-        }
-        if ("argument_binding".equals(model)) {
-            return "formal := actual";
-        }
-        if ("target_seed".equals(model)) {
-            return "target := seedExpression(operands)";
-        }
-        if ("path_condition".equals(model)) {
-            return "path := path && guardExpr";
-        }
-        if ("exception_condition".equals(model)) {
-            return "exceptionFeasible := condition";
-        }
-        return "to := from";
-    }
-
-    private static String guidancePrecision(String model) {
-        if ("heap_latest_write".equals(model) || "heap_read".equals(model)
-                || "heap_write".equals(model)) {
-            return "runtime_object_field_level";
-        }
-        if ("port_mapping_candidate".equals(model)) {
-            return "mapping_only_not_eligible_for_automatic_smt";
-        }
-        if ("symbolic_map_state".equals(model)) {
-            return "map_object_level_without_entry_equality";
-        }
-        if ("method_return_summary".equals(model)
-                || "constructor_summary".equals(model)) {
-            return "static_context_instantiated";
-        }
-        return "static_context_instantiated";
-    }
-
-    private static String modelRequirementJson(String model, int count) {
-        return jsonObject(
-                "model", model,
-                "edgeCount", count,
-                "summary", guidanceSummary(model),
-                "expressionHint", guidanceExpressionHint(model),
-                "precision", guidancePrecision(model));
-    }
-
-    private static List<String> symbolicMergePoints(
-            Map<String, EdgeAccumulator> roleEdges) {
-        // Only a small, diagnostic subset of targets can become a guidance
-        // merge point.  First discover that subset, then count its incoming
-        // edges.  Retaining a List<EdgeAccumulator> for every target used to
-        // duplicate up to maxGraphEdges references on large traces.
-        Set<String> interestingTargets = new LinkedHashSet<>();
-        for (EdgeAccumulator edge : roleEdges.values()) {
-            if (shouldEmitGuidanceEdge(edge)
-                    && interestingMergeTarget(edge.to, edge)) {
-                interestingTargets.add(edge.to);
-            }
-        }
-        Map<String, MergePointSummary> incoming = new LinkedHashMap<>();
-        for (String target : interestingTargets) {
-            incoming.put(target, new MergePointSummary());
-        }
-        interestingTargets.clear();
-        for (EdgeAccumulator edge : roleEdges.values()) {
-            MergePointSummary summary = incoming.get(edge.to);
-            if (summary != null && shouldEmitGuidanceEdge(edge)) {
-                summary.observe(edge);
-            }
-        }
-        List<String> result = new ArrayList<>();
-        int index = 0;
-        for (Map.Entry<String, MergePointSummary> entry
-                : incoming.entrySet()) {
-            MergePointSummary summary = entry.getValue();
-            if (summary.incomingCount < 2) {
-                continue;
-            }
-            result.add(jsonObject(
-                    "id", "MERGE." + index++,
-                    "target", entry.getKey(),
-                    "incomingCount", summary.incomingCount,
-                    "incomingKinds", join(summary.incomingKinds, ";"),
-                    "suggestedModel", suggestedMergeModel(entry.getKey()),
-                    "guidance", "Use Merge(...) for role-level summaries; use runtime sequence/latest-write when a concrete occurrence is selected."));
-            if (result.size() >= 200) {
-                break;
-            }
-        }
-        return result;
-    }
-
-    private static boolean interestingMergeTarget(String target,
-                                                  EdgeAccumulator edge) {
-        String model = guidanceModel(edge);
-        return "port_mapping_candidate".equals(model)
-                || "heap_latest_write".equals(model)
-                || "symbolic_map_state".equals(model);
-    }
-
-    private static String suggestedMergeModel(String target) {
-        String text = lower(target);
-        if (text.contains("<java.util.map:")) {
-            return "SymbolicMapState/MergeMapUpdates";
-        }
-        if (text.contains(".return")) {
-            return "Merge(MethodSummary alternatives)";
-        }
-        return "Merge(incomingExpressions)";
-    }
-
-    private static final class MergePointSummary {
-        private int incomingCount;
-        private final Set<String> incomingKinds = new LinkedHashSet<>();
-
-        private void observe(EdgeAccumulator edge) {
-            incomingCount++;
-            incomingKinds.add(edge.kind);
-        }
-    }
-
-    private static List<String> symbolicGuidanceLimitations() {
-        List<String> limitations = new ArrayList<>();
-        limitations.add(jsonObject(
-                "id", "lim.method_return_values",
-                "summary", "A method return becomes a relation only after its region is captured; a runtime digest proves concrete equality, not a general transformer.",
-                "impact", "Keep uncaptured return transformers uninterpreted."));
-        limitations.add(jsonObject(
-                "id", "lim.role_merge",
-                "summary", "Role graph merges multiple runtime occurrences.",
-                "impact", "Use object-level graph and runtime seq for a concrete occurrence; use Merge(...) for role-level guidance."));
-        limitations.add(jsonObject(
-                "id", "lim.latest_write",
-                "summary", "runtime_field_state is latest observed write by process, receiver object, and field signature.",
-                "impact", "Treat as execution guidance, not a full Java happens-before proof."));
-        limitations.add(jsonObject(
-                "id", "lim.map_entries",
-                "summary", "Map put/get/remove entry equality is not dynamically validated.",
-                "impact", "Keep the map as symbolic state unless entry-level region summaries are captured."));
-        limitations.add(jsonObject(
-                "id", "lim.rpc_correlation",
-                "summary", "Static RPC/protocol edges are format and port mappings only.",
-                "impact", "Exclude them from automatic SMT until complete endpoint fingerprints or captured encode/decode regions establish the relation."));
-        return limitations;
-    }
-
-    private static String staticEdgeText(StaticEdge edge) {
-        if (edge == null) {
-            return "";
-        }
-        return lower(edge.kind + "\n" + edge.fromCell + "\n" + edge.toCell
-                + "\n" + edge.method + "\n" + edge.id);
-    }
-
-    private static String edgeText(EdgeAccumulator edge) {
-        if (edge == null) {
-            return "";
-        }
-        return lower(edge.kind + "\n" + edge.from + "\n" + edge.to + "\n"
-                + edge.method + "\n" + edge.firstFromContext.process + "\n"
-                + edge.firstToContext.process);
-    }
-
-    private static String lower(String value) {
-        return value == null ? "" : value.toLowerCase(Locale.ROOT);
-    }
-
-    private static RuntimeFieldBridgeStats addRuntimeFieldBridges(
-            Set<String> emittedNodes, List<String> nodeJson,
-            Map<String, EdgeAccumulator> emittedEdges,
-            Set<String> emittedRoleNodes, List<String> roleNodeJson,
-            Map<String, EdgeAccumulator> emittedRoleEdges) {
-        RuntimeFieldBridgeStats stats = new RuntimeFieldBridgeStats();
-        Map<String, FieldEvent> latestWrites = new LinkedHashMap<>();
-        int bridgeId = 0;
-        for (FieldEvent event : FIELD_EVENTS) {
-            if (event.receiverObjectId == 0 || event.field == null
-                    || event.field.isEmpty()) {
-                continue;
-            }
-            String fieldObjectKey = event.process + "|" + event.receiverObjectId
-                    + "|" + event.field;
-            if ("FIELD_WRITE".equals(event.kind)) {
-                latestWrites.put(fieldObjectKey, event);
-                continue;
-            }
-            if (!"FIELD_READ".equals(event.kind)) {
-                continue;
-            }
-            FieldEvent write = latestWrites.get(fieldObjectKey);
-            if (write == null) {
-                continue;
-            }
-            MethodContext writeContext = CONTEXTS.get(fieldEventContextKey(write));
-            MethodContext readContext = CONTEXTS.get(fieldEventContextKey(event));
-            if (writeContext == null || readContext == null) {
-                continue;
-            }
-            String fromCell = runtimeFieldCell(write);
-            String toCell = runtimeFieldCell(event);
-            StaticEdge edge = new StaticEdge("RTFIELD." + bridgeId++,
-                    "runtime_field_state",
-                    fromCell,
-                    toCell,
-                    write.method + " -> " + event.method,
-                    -1);
-            stats.inputCount++;
-
-            String fromId = nodeId(writeContext, fromCell);
-            String toId = nodeId(readContext, toCell);
-            String edgeKey = edgeKey(edge, fromId, toId);
-            EdgeAccumulator accumulator = emittedEdges.get(edgeKey);
-            if (accumulator == null) {
-                if (emittedEdges.size() >= maxGraphEdges) {
-                    stats.truncated = true;
-                    stats.skippedGraphEdgeInstances++;
-                } else {
-                    accumulator = new EdgeAccumulator(edge, fromId, toId,
-                            writeContext, readContext);
-                    emittedEdges.put(edgeKey, accumulator);
-                }
-            } else {
-                accumulator.observe(edge, writeContext, readContext);
-                stats.mergedInputCount++;
-            }
-            if (accumulator != null) {
-                if (emittedNodes.add(fromId)) {
-                    nodeJson.add(nodeJson(writeContext, fromId, fromCell));
-                }
-                if (emittedNodes.add(toId)) {
-                    nodeJson.add(nodeJson(readContext, toId, toCell));
-                }
-            }
-
-            String roleFromCell = roleCell(fromCell);
-            String roleToCell = roleCell(toCell);
-            String roleFromId = roleNodeId(writeContext, roleFromCell);
-            String roleToId = roleNodeId(readContext, roleToCell);
-            String roleEdgeKey = roleEdgeKey(edge, roleFromId, roleToId);
-            EdgeAccumulator roleAccumulator = emittedRoleEdges.get(roleEdgeKey);
-            if (roleAccumulator == null) {
-                if (emittedRoleEdges.size() >= maxGraphEdges) {
-                    stats.roleTruncated = true;
-                    stats.skippedRoleGraphEdgeInstances++;
-                } else {
-                    roleAccumulator = new EdgeAccumulator(edge, roleFromId,
-                            roleToId, writeContext, readContext);
-                    emittedRoleEdges.put(roleEdgeKey, roleAccumulator);
-                }
-            } else {
-                roleAccumulator.observe(edge, writeContext, readContext);
-                stats.roleMergedInputCount++;
-            }
-            if (roleAccumulator != null) {
-                if (emittedRoleNodes.add(roleFromId)) {
-                    roleNodeJson.add(roleNodeJson(writeContext, roleFromId,
-                            roleFromCell));
-                }
-                if (emittedRoleNodes.add(roleToId)) {
-                    roleNodeJson.add(roleNodeJson(readContext, roleToId,
-                            roleToCell));
-                }
-            }
-        }
-        return stats;
-    }
-
-    private static ContextPairSelection contextsForGraphEdge(StaticEdge edge,
-            Map<String, List<MethodContext>> contextsByMethod) {
-        if (isCrossBoundaryMappingEdge(edge)) {
-            String fromEndpointMethod = embeddedMethodSignature(edge.fromCell);
-            String toEndpointMethod = embeddedMethodSignature(edge.toCell);
-            if (toEndpointMethod.isEmpty()) {
-                toEndpointMethod = edge.method;
-            }
-            List<MethodContext> fromContexts = contextsByMethod.get(fromEndpointMethod);
-            List<MethodContext> toContexts = contextsByMethod.get(toEndpointMethod);
-            if (fromContexts != null && !fromContexts.isEmpty()
-                    && toContexts != null && !toContexts.isEmpty()) {
-                return pairContexts(fromContexts, toContexts);
-            }
-        }
-        List<MethodContext> contexts = contextsByMethod.get(edge.method);
-        if (contexts == null || contexts.isEmpty()) {
-            return ContextPairSelection.empty();
-        }
-        List<InstantiatedContextPair> pairs = new ArrayList<>();
-        int limit = Math.max(1, maxContextPairsPerEdge);
-        int emitted = Math.min(contexts.size(), limit);
-        for (int index = 0; index < emitted; index++) {
-            MethodContext context = contexts.get(index);
-            pairs.add(new InstantiatedContextPair(context, context));
-        }
-        long skipped = Math.max(0L, (long) contexts.size() - emitted);
-        return new ContextPairSelection(pairs, skipped > 0L, skipped);
-    }
-
-    private static ContextPairSelection pairContexts(
-            List<MethodContext> fromContexts, List<MethodContext> toContexts) {
-        List<InstantiatedContextPair> pairs = new ArrayList<>();
-        int limit = Math.max(1, maxContextPairsPerEdge);
-        long total = saturatedProduct(fromContexts.size(), toContexts.size());
-        for (MethodContext fromContext : fromContexts) {
-            for (MethodContext toContext : toContexts) {
-                pairs.add(new InstantiatedContextPair(fromContext, toContext));
-                if (pairs.size() >= limit) {
-                    long skipped = Math.max(0L, total - pairs.size());
-                    return new ContextPairSelection(pairs, skipped > 0L,
-                            skipped);
-                }
-            }
-        }
-        return new ContextPairSelection(pairs, false, 0L);
-    }
-
-    private static long saturatedProduct(int left, int right) {
-        if (left <= 0 || right <= 0) {
-            return 0L;
-        }
-        long result = (long) left * (long) right;
-        return result < 0L ? Long.MAX_VALUE : result;
-    }
-
-    private static String edgeKey(StaticEdge edge, String fromId, String toId) {
-        return edge.kind + "\n" + edge.method + "\n" + fromId + "\n" + toId;
-    }
-
-    private static String roleEdgeKey(StaticEdge edge, String fromId, String toId) {
-        return edge.kind + "\n" + edge.method + "\n" + fromId + "\n" + toId;
-    }
-
-    private static List<StaticEdge> readStaticEdges(File file)
-            throws IOException {
-        List<StaticEdge> edges = new ArrayList<>();
-        if (file == null || !file.isFile()) {
-            return edges;
-        }
-        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String id = jsonField(line, "id");
-                String kind = jsonField(line, "kind");
-                String fromCell = jsonField(line, "fromCell");
-                String toCell = jsonField(line, "toCell");
-                String method = jsonField(line, "method");
-                int unitIndex = jsonIntField(line, "unitIndex", -1);
-                if (!method.isEmpty() && !fromCell.isEmpty() && !toCell.isEmpty()) {
-                    edges.add(new StaticEdge(id, kind, fromCell, toCell, method, unitIndex));
-                }
-            }
-        }
-        return edges;
-    }
-
-    private static String nodeJson(MethodContext context, String id, String cell) {
-        return jsonObject(
-                "id", id,
-                "process", context.process,
-                "threadName", context.threadName,
-                "tid", context.tid,
-                "objectId", context.objectId,
-                "method", context.method,
-                "cell", cell,
-                "label", "[" + context.process + ", " + context.threadName
-                        + "#" + context.tid + "] " + cell);
-    }
-
-    private static String nodeId(MethodContext context, String cell) {
-        return context.process + "|" + context.threadName + "|" + context.tid
-                + "|" + context.objectId + "|" + context.method + "|" + cell;
-    }
-
-    private static String roleNodeJson(MethodContext context, String id, String cell) {
-        String threadRole = threadRole(context.threadName);
-        return jsonObject(
-                "id", id,
-                "process", context.process,
-                "threadRole", threadRole,
-                "method", context.method,
-                "cell", cell,
-                "label", "[" + context.process + ", " + threadRole + "] " + cell);
-    }
-
-    private static String roleNodeId(MethodContext context, String cell) {
-        return context.process + "|" + threadRole(context.threadName)
-                + "|" + context.method + "|" + cell;
-    }
-
-    private static String roleCell(String cell) {
-        if (cell == null) {
-            return "";
-        }
-        int cut = -1;
-        String[] markers = new String[]{
-                "@methodObject:", "@fieldObject:", "@valueObject:", "@value:"};
-        for (String marker : markers) {
-            int index = cell.indexOf(marker);
-            if (index >= 0 && (cut < 0 || index < cut)) {
-                cut = index;
-            }
-        }
-        return cut < 0 ? cell : cell.substring(0, cut);
-    }
-
-    private static String instantiateCell(MethodContext context, StaticEdge edge, String cell) {
-        if (!isFieldCell(cell)) {
-            return cell;
-        }
-        FieldEvent event = FIELD_EVENTS_BY_CONTEXT_UNIT.get(fieldEventKey(
-                context.process, context.threadName, context.tid, context.method,
-                context.objectId, edge.unitIndex, cell));
-        if (event == null) {
-            return cell + "@methodObject:" + context.objectId;
-        }
-        StringBuilder builder = new StringBuilder(cell)
-                .append("@fieldObject:").append(event.receiverObjectId);
-        if (event.valueObjectId != 0) {
-            builder.append("@valueObject:").append(event.valueObjectId);
-        }
-        if (event.primitiveValue != null && !event.primitiveValue.isEmpty()) {
-            builder.append("@value:").append(event.primitiveValue);
-        }
-        return builder.toString();
-    }
-
-    private static boolean isFieldCell(String cell) {
-        return cell != null
-                && cell.startsWith("<")
-                && cell.contains(":")
-                && !cell.contains(">(")
-                && !cell.endsWith(".return")
-                && !cell.contains(".param");
-    }
-
-    private static String fieldEventKey(String process, String threadName, long tid,
-                                        String method, int methodObjectId,
-                                        int unitIndex, String field) {
-        return process + "|" + threadName + "|" + tid + "|" + methodObjectId
-                + "|" + method + "|" + unitIndex + "|" + field;
-    }
-
-    private static String fieldEventContextKey(FieldEvent event) {
-        return event.process + "|" + event.threadName + "|" + event.tid
-                + "|" + event.methodObjectId + "|" + event.method;
-    }
-
-    private static String runtimeFieldCell(FieldEvent event) {
-        StringBuilder builder = new StringBuilder(event.field)
-                .append("@fieldObject:").append(event.receiverObjectId);
-        if (event.valueObjectId != 0) {
-            builder.append("@valueObject:").append(event.valueObjectId);
-        }
-        if (event.primitiveValue != null && !event.primitiveValue.isEmpty()) {
-            builder.append("@value:").append(event.primitiveValue);
-        }
-        return builder.toString();
-    }
-
     private static String inferProcessName(String method, String threadName) {
         StringBuilder evidence = new StringBuilder();
         evidence.append(method == null ? "" : method).append(' ')
@@ -1924,29 +1043,6 @@ public final class CausynthTraceRecorder {
     private static String normalizeRecordedProcess(String recorded, String method,
                                                    String threadName) {
         return firstNonBlank(recorded, inferProcessName(method, threadName), "unknown");
-    }
-
-    private static String threadRole(String threadName) {
-        if (threadName == null || threadName.trim().isEmpty()) {
-            return "unknown-thread";
-        }
-        String value = threadName.trim();
-        String configuredRole = matchConfiguredRole(
-                "causynth.trace.thread.roles",
-                "CAUSYNTH_TRACE_THREAD_ROLES",
-                value);
-        if (!configuredRole.isEmpty()) {
-            return configuredRole;
-        }
-        String lower = value.toLowerCase(Locale.ROOT);
-        if ("main".equals(lower)) {
-            return "main";
-        }
-        if (value.matches("Thread-\\d+")) {
-            return "Thread";
-        }
-        return value.replaceAll("@[0-9a-fA-F]+", "@*")
-                .replaceAll("\\d+", "#");
     }
 
     private static String matchConfiguredRole(String propertyName, String envName,
@@ -2062,214 +1158,7 @@ public final class CausynthTraceRecorder {
         return params;
     }
 
-    private static void writeSeedChainSummary(List<StaticEdge> staticEdges)
-            throws IOException {
-        File file = new File(outputDir, "seed_chain_summary.jsonl");
-        SummarySelection selection = summarySelection(staticEdges);
-        TreeMap<Long, String> lines = new TreeMap<>();
-        for (TraceEvent event : EVENTS) {
-            if (selection.methods.contains(event.method)) {
-                lines.put(event.id, jsonObject(
-                        "event", "METHOD_ENTER",
-                        "seq", event.id,
-                        "process", event.process,
-                        "threadName", event.threadName,
-                        "tid", event.tid,
-                        "objectId", event.objectId,
-                        "method", event.method,
-                        "timeNanos", event.timeNanos));
-            }
-        }
-        for (FieldEvent event : FIELD_EVENTS) {
-            if (summaryFieldRelevant(selection, event)) {
-                lines.put(event.id, jsonObject(
-                        "event", event.kind,
-                        "seq", event.id,
-                        "process", event.process,
-                        "threadName", event.threadName,
-                        "tid", event.tid,
-                        "objectId", event.methodObjectId,
-                        "unitIndex", event.unitIndex,
-                        "field", event.field,
-                        "fieldReceiverObjectId", event.receiverObjectId,
-                        "valueObjectId", event.valueObjectId,
-                        "primitiveValue", event.primitiveValue,
-                        "method", event.method,
-                        "timeNanos", event.timeNanos));
-            }
-        }
-        StringBuilder builder = new StringBuilder();
-        int count = 0;
-        for (String line : lines.values()) {
-            if (count++ >= 5000) {
-                break;
-            }
-            builder.append(line).append('\n');
-        }
-        writeFile(file, builder.toString());
-    }
-
-    private static SummarySelection summarySelection(List<StaticEdge> staticEdges) {
-        SummarySelection selection = new SummarySelection();
-        if (staticEdges == null) {
-            return selection;
-        }
-        for (StaticEdge edge : staticEdges) {
-            if (edge == null) {
-                continue;
-            }
-            if (edge.method != null && !edge.method.isEmpty()) {
-                selection.methods.add(edge.method);
-            }
-            collectSummaryCell(selection, edge.fromCell);
-            collectSummaryCell(selection, edge.toCell);
-        }
-        return selection;
-    }
-
-    private static void collectSummaryCell(SummarySelection selection, String cell) {
-        if (cell == null || cell.isEmpty()) {
-            return;
-        }
-        String method = embeddedMethodSignature(cell);
-        if (!method.isEmpty()) {
-            selection.methods.add(method);
-        }
-        Matcher field = Pattern.compile("<[^:]+:\\s+[^()<>]+\\s+[^\\s()>]+>")
-                .matcher(cell);
-        while (field.find()) {
-            String signature = field.group();
-            if (signature.contains("(")) {
-                continue;
-            }
-            selection.fieldSignatures.add(signature);
-            String name = fieldNameFromSignature(signature);
-            if (!name.isEmpty()) {
-                selection.fieldNames.add(name);
-            }
-        }
-        Matcher projected = Pattern.compile("#field:([^#@]+)").matcher(cell);
-        while (projected.find()) {
-            String name = projected.group(1).trim();
-            if (!name.isEmpty()) {
-                selection.fieldNames.add(name);
-            }
-        }
-    }
-
-    private static boolean summaryFieldRelevant(SummarySelection selection,
-                                                FieldEvent event) {
-        if (event == null || !selection.methods.contains(event.method)) {
-            return false;
-        }
-        if (selection.fieldSignatures.contains(event.field)) {
-            return true;
-        }
-        String name = fieldNameFromSignature(event.field);
-        return !name.isEmpty() && selection.fieldNames.contains(name);
-    }
-
-    private static void writeRuntimeRefinedSymbolicPlan(File staticGraph)
-            throws IOException {
-        File configured = new File(firstNonBlank(
-                System.getProperty("causynth.symbolic.plan"),
-                System.getenv("CAUSYNTH_SYMBOLIC_PLAN"),
-                staticGraph == null || staticGraph.getParentFile() == null
-                        ? "symbolic_execution_plan.jsonl"
-                        : new File(staticGraph.getParentFile(),
-                        "symbolic_execution_plan.jsonl").getPath()));
-        if (!configured.isFile()) {
-            return;
-        }
-
-        Map<String, MethodRuntimeEvidence> evidenceByMethod = new LinkedHashMap<>();
-        Map<Long, ExecutionEvent> callSitesByInvocation = new LinkedHashMap<>();
-        for (TraceEvent event : EVENTS) {
-            MethodRuntimeEvidence evidence = runtimeEvidence(evidenceByMethod,
-                    event.method);
-            evidence.methodEnterCount++;
-            if (!event.receiverType.isEmpty()) {
-                evidence.receiverTypes.add(event.receiverType);
-            }
-            evidence.processes.add(event.process);
-            evidence.threadRoles.add(threadRole(event.threadName));
-        }
-        for (ExecutionEvent event : EXECUTION_EVENTS) {
-            MethodRuntimeEvidence evidence = runtimeEvidence(evidenceByMethod,
-                    event.method);
-            evidence.observe(event);
-            if ("CALL_SITE_ENTER".equals(event.kind)) {
-                callSitesByInvocation.put(event.invocationId, event);
-            }
-        }
-
-        Map<String, RuntimeCallEdgeEvidence> callEdges = new LinkedHashMap<>();
-        for (TraceEvent event : EVENTS) {
-            if (event.parentSiteId <= 0L) {
-                continue;
-            }
-            ExecutionEvent site = callSitesByInvocation.get(event.parentSiteId);
-            if (site == null) {
-                continue;
-            }
-            MethodRuntimeEvidence callerEvidence = runtimeEvidence(evidenceByMethod,
-                    site.method);
-            callerEvidence.observedCallees.add(event.method);
-            callerEvidence.actualCalleesBySite.add(site.siteId + "=>" + event.method);
-            String key = site.method + "\n" + site.siteId + "\n"
-                    + site.declaredCallee + "\n" + event.method + "\n"
-                    + event.process + "\n" + threadRole(event.threadName);
-            RuntimeCallEdgeEvidence edge = callEdges.get(key);
-            if (edge == null) {
-                edge = new RuntimeCallEdgeEvidence(site.method, site.siteId,
-                        site.declaredCallee, event.method, event.process,
-                        threadRole(event.threadName), event.receiverType);
-                callEdges.put(key, edge);
-            }
-            edge.occurrences++;
-        }
-
-        StringBuilder refined = new StringBuilder();
-        try (BufferedReader reader = Files.newBufferedReader(configured.toPath(),
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty()) {
-                    continue;
-                }
-                String method = jsonField(trimmed, "method");
-                MethodRuntimeEvidence evidence = evidenceByMethod.get(method);
-                if (evidence == null) {
-                    evidence = new MethodRuntimeEvidence(method);
-                }
-                refined.append('{')
-                        .append("\"staticPlan\":").append(trimmed).append(',')
-                        .append("\"runtimeEvidence\":")
-                        .append(evidence.toJson())
-                        .append("}\n");
-            }
-        }
-        writeFile(new File(outputDir, "runtime_refined_symbolic_plan.jsonl"),
-                refined.toString());
-
-        StringBuilder callEdgeRows = new StringBuilder();
-        int emitted = 0;
-        for (RuntimeCallEdgeEvidence edge : callEdges.values()) {
-            if (emitted++ >= 10000) {
-                break;
-            }
-            callEdgeRows.append(edge.toJson()).append('\n');
-        }
-        writeFile(new File(outputDir, "runtime_call_edges.jsonl"),
-                callEdgeRows.toString());
-    }
-
-    /**
-     * Binds static same-thread regions to concrete unit-test invocations.  The
-     * resulting activation plan is consumed by the concolic replay runner; it
-     * is intentionally separate from the descriptive runtime graph.
-     */
+    /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(File staticGraph)
             throws IOException {
         File parent = staticGraph == null ? null : staticGraph.getParentFile();
@@ -2324,148 +1213,12 @@ public final class CausynthTraceRecorder {
                 runtimeEvents, fields);
         writeFile(new File(outputDir, "runtime_region_instances.jsonl"),
                 planned.instancesJsonl());
-        writeFile(new File(outputDir, "runtime_region_validation.jsonl"),
-                planned.regionValidationsJsonl());
         writeFile(new File(outputDir, "runtime_region_edge_validation.jsonl"),
                 planned.edgeValidationsJsonl());
         writeFile(new File(outputDir, "concolic_activation_plan.jsonl"),
                 planned.activationsJsonl());
         writeFile(new File(outputDir, "runtime_region_summary.json"),
                 planned.summaryJson());
-    }
-
-    private static MethodRuntimeEvidence runtimeEvidence(
-            Map<String, MethodRuntimeEvidence> evidenceByMethod, String method) {
-        String key = safe(method);
-        MethodRuntimeEvidence evidence = evidenceByMethod.get(key);
-        if (evidence == null) {
-            evidence = new MethodRuntimeEvidence(key);
-            evidenceByMethod.put(key, evidence);
-        }
-        return evidence;
-    }
-
-    private static void writeRuntimeValidationSummary(List<StaticEdge> staticEdges,
-                                                      Map<String, List<MethodContext>> contextsByMethod)
-            throws IOException {
-        File file = new File(outputDir, "runtime_validation_summary.jsonl");
-        StringBuilder builder = new StringBuilder();
-        int count = 0;
-        for (StaticEdge edge : staticEdges) {
-            if (!isCrossBoundaryMappingEdge(edge)) {
-                continue;
-            }
-            String fromEndpointMethod = embeddedMethodSignature(edge.fromCell);
-            String toEndpointMethod = embeddedMethodSignature(edge.toCell);
-            List<MethodContext> contexts = contextsForEdge(edge, fromEndpointMethod,
-                    toEndpointMethod, contextsByMethod);
-            if (contexts == null || contexts.isEmpty()) {
-                continue;
-            }
-            for (MethodContext context : contexts) {
-                builder.append(jsonObject(
-                        "event", "CROSS_BOUNDARY_MAPPING",
-                        "relation", crossBoundaryRelation(edge.kind),
-                        "kind", edge.kind,
-                        "staticEdgeId", edge.id,
-                        "validated", true,
-                        "validationSource", "static_mapping_plus_runtime_method_coverage",
-                        "valueCompared", false,
-                        "method", edge.method,
-                        "process", context.process,
-                        "threadName", context.threadName,
-                        "tid", context.tid,
-                        "objectId", context.objectId,
-                        "occurrences", context.occurrences,
-                        "firstSeq", context.firstSeq,
-                        "lastSeq", context.lastSeq,
-                        "fromCell", edge.fromCell,
-                        "toCell", edge.toCell,
-                        "fromEndpointMethod", fromEndpointMethod,
-                        "fromEndpointObserved", fromEndpointMethod.isEmpty()
-                                || contextsByMethod.containsKey(fromEndpointMethod),
-                        "toEndpointMethod", toEndpointMethod,
-                        "toEndpointObserved", toEndpointMethod.isEmpty()
-                                || contextsByMethod.containsKey(toEndpointMethod)))
-                        .append('\n');
-                if (++count >= 2000) {
-                    writeFile(file, builder.toString());
-                    return;
-                }
-            }
-        }
-        writeFile(file, builder.toString());
-    }
-
-    private static List<MethodContext> contextsForEdge(StaticEdge edge,
-                                                       String fromEndpointMethod,
-                                                       String toEndpointMethod,
-                                                       Map<String, List<MethodContext>> contextsByMethod) {
-        List<MethodContext> contexts = contextsByMethod.get(edge.method);
-        if (contexts != null && !contexts.isEmpty()) {
-            return contexts;
-        }
-        if (fromEndpointMethod != null && !fromEndpointMethod.isEmpty()) {
-            contexts = contextsByMethod.get(fromEndpointMethod);
-            if (contexts != null && !contexts.isEmpty()) {
-                return contexts;
-            }
-        }
-        if (toEndpointMethod != null && !toEndpointMethod.isEmpty()) {
-            contexts = contextsByMethod.get(toEndpointMethod);
-            if (contexts != null && !contexts.isEmpty()) {
-                return contexts;
-            }
-        }
-        return Collections.emptyList();
-    }
-
-    private static boolean isCrossBoundaryMappingEdge(StaticEdge edge) {
-        if (edge == null || edge.kind == null) {
-            return false;
-        }
-        String kind = edge.kind.toLowerCase(Locale.ROOT);
-        return kind.contains("rpc") || kind.contains("protocol")
-                || kind.contains("transfer");
-    }
-
-    private static String crossBoundaryRelation(String kind) {
-        if (kind == null) {
-            return "cross_boundary_mapping";
-        }
-        String lower = kind.toLowerCase(Locale.ROOT);
-        if (lower.contains("rpc")) {
-            return "rpc_field_mapping";
-        }
-        if (lower.contains("protocol") || lower.contains("transfer")) {
-            return "protocol_field_mapping";
-        }
-        return "cross_boundary_mapping";
-    }
-
-    private static String embeddedMethodSignature(String cell) {
-        if (cell == null) {
-            return "";
-        }
-        int start = cell.indexOf('<');
-        if (start < 0) {
-            return "";
-        }
-        int end = cell.indexOf('>', start);
-        if (end < 0) {
-            return "";
-        }
-        String candidate = cell.substring(start, end + 1);
-        return candidate.contains("(") && candidate.contains(":") ? candidate : "";
-    }
-
-    private static String fieldNameFromSignature(String fieldSignature) {
-        if (fieldSignature == null) {
-            return "";
-        }
-        Matcher matcher = Pattern.compile("<[^:]+:\\s+.+\\s+([^\\s>]+)>")
-                .matcher(fieldSignature);
-        return matcher.find() ? matcher.group(1) : "";
     }
 
     private static String jsonObject(Object... values) {
@@ -2484,32 +1237,6 @@ public final class CausynthTraceRecorder {
             }
         }
         builder.append('}');
-        return builder.toString();
-    }
-
-    private static String join(Collection<String> values) {
-        StringBuilder builder = new StringBuilder();
-        boolean first = true;
-        for (String value : values) {
-            if (!first) {
-                builder.append(',');
-            }
-            first = false;
-            builder.append(value);
-        }
-        return builder.toString();
-    }
-
-    private static String join(Collection<String> values, String delimiter) {
-        StringBuilder builder = new StringBuilder();
-        boolean first = true;
-        for (String value : values) {
-            if (!first) {
-                builder.append(delimiter);
-            }
-            first = false;
-            builder.append(value);
-        }
         return builder.toString();
     }
 
@@ -2603,55 +1330,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void writeGraphFile(File file, String summary,
-                                       List<String> nodes,
-                                       Map<String, EdgeAccumulator> edges,
-                                       boolean roleMerged) throws IOException {
-        File parent = file.getParentFile();
-        if (parent != null) {
-            Files.createDirectories(parent.toPath());
-        }
-        try (BufferedWriter writer = Files.newBufferedWriter(file.toPath(),
-                StandardCharsets.UTF_8)) {
-            writer.write("{\"summary\":");
-            writer.write(summary);
-            writer.write(",\"nodes\":[");
-            writeJsonElements(writer, nodes);
-            writer.write("],\"edges\":[");
-            writeEdgeJsonElements(writer, edges.values(), roleMerged);
-            writer.write("]}");
-        }
-    }
-
-    private static void writeEdgeJsonElements(BufferedWriter writer,
-                                              Collection<EdgeAccumulator> edges,
-                                              boolean roleMerged)
-            throws IOException {
-        boolean first = true;
-        int index = 0;
-        for (EdgeAccumulator edge : edges) {
-            if (!first) {
-                writer.write(',');
-            }
-            String id = (roleMerged ? "ROLE." : "DYN.") + index++;
-            writer.write(roleMerged ? edge.toRoleJson(id) : edge.toJson(id));
-            first = false;
-        }
-    }
-
-    private static void writeJsonElements(BufferedWriter writer,
-                                          List<String> elements)
-            throws IOException {
-        boolean first = true;
-        for (String element : elements) {
-            if (!first) {
-                writer.write(',');
-            }
-            writer.write(element);
-            first = false;
-        }
-    }
-
     private static void writeShutdownFailure(Throwable throwable) {
         File directory = outputDir == null ? new File("target/causynth-trace") : outputDir;
         String message = throwable == null ? "" : throwable.toString();
@@ -2663,9 +1341,7 @@ public final class CausynthTraceRecorder {
                 "traceEventCount", EVENTS.size(),
                 "fieldEventCount", FIELD_EVENTS.size(),
                 "executionEventCount", EXECUTION_EVENTS.size(),
-                "maxEvents", maxEvents,
-                "maxGraphEdges", maxGraphEdges,
-                "maxContextPairsPerEdge", maxContextPairsPerEdge));
+                "maxEvents", maxEvents));
     }
 
     private static String firstNonBlank(String... values) {
@@ -2685,273 +1361,6 @@ public final class CausynthTraceRecorder {
             return Integer.parseInt(value);
         } catch (RuntimeException ignored) {
             return fallback;
-        }
-    }
-
-    private static final class InstantiatedContextPair {
-        private final MethodContext fromContext;
-        private final MethodContext toContext;
-
-        private InstantiatedContextPair(MethodContext fromContext,
-                                        MethodContext toContext) {
-            this.fromContext = fromContext;
-            this.toContext = toContext;
-        }
-    }
-
-    private static final class ContextPairSelection {
-        private final List<InstantiatedContextPair> pairs;
-        private final boolean truncated;
-        private final long skipped;
-
-        private ContextPairSelection(List<InstantiatedContextPair> pairs,
-                                     boolean truncated, long skipped) {
-            this.pairs = pairs;
-            this.truncated = truncated;
-            this.skipped = skipped;
-        }
-
-        private static ContextPairSelection empty() {
-            return new ContextPairSelection(
-                    Collections.<InstantiatedContextPair>emptyList(), false,
-                    0L);
-        }
-    }
-
-    private static final class RuntimeFieldBridgeStats {
-        private int inputCount;
-        private int mergedInputCount;
-        private int roleMergedInputCount;
-        private int skippedGraphEdgeInstances;
-        private int skippedRoleGraphEdgeInstances;
-        private boolean truncated;
-        private boolean roleTruncated;
-    }
-
-    private static final class EdgeAccumulator {
-        private final String kind;
-        private final String from;
-        private final String to;
-        private final String method;
-        private final String firstStaticEdgeId;
-        private final MethodContext firstFromContext;
-        private final MethodContext firstToContext;
-        private final Set<String> staticEdgeIds = new LinkedHashSet<>();
-        private final Set<String> fromContexts = new LinkedHashSet<>();
-        private final Set<String> toContexts = new LinkedHashSet<>();
-        private int mergedInstances;
-        private int occurrences;
-        private long firstSeq = Long.MAX_VALUE;
-        private long lastSeq = Long.MIN_VALUE;
-
-        private EdgeAccumulator(StaticEdge edge, String from, String to,
-                                MethodContext fromContext,
-                                MethodContext toContext) {
-            this.kind = edge.kind;
-            this.from = from;
-            this.to = to;
-            this.method = edge.method;
-            this.firstStaticEdgeId = edge.id;
-            this.firstFromContext = fromContext;
-            this.firstToContext = toContext;
-            observe(edge, fromContext, toContext);
-        }
-
-        private void observe(StaticEdge edge, MethodContext fromContext,
-                             MethodContext toContext) {
-            staticEdgeIds.add(edge.id);
-            fromContexts.add(fromContext.contextKey());
-            toContexts.add(toContext.contextKey());
-            mergedInstances++;
-            occurrences += Math.max(1,
-                    Math.max(fromContext.occurrences, toContext.occurrences));
-            firstSeq = Math.min(firstSeq,
-                    Math.min(fromContext.firstSeq, toContext.firstSeq));
-            lastSeq = Math.max(lastSeq,
-                    Math.max(fromContext.lastSeq, toContext.lastSeq));
-        }
-
-        private String toJson(String id) {
-            return jsonObject(
-                    "id", id,
-                    "staticEdgeId", firstStaticEdgeId,
-                    "staticEdgeIds", join(staticEdgeIds, ";"),
-                    "kind", kind,
-                    "from", from,
-                    "to", to,
-                    "process", firstToContext.process,
-                    "threadName", firstToContext.threadName,
-                    "tid", firstToContext.tid,
-                    "objectId", firstToContext.objectId,
-                    "fromProcess", firstFromContext.process,
-                    "fromThreadName", firstFromContext.threadName,
-                    "fromTid", firstFromContext.tid,
-                    "fromObjectId", firstFromContext.objectId,
-                    "toProcess", firstToContext.process,
-                    "toThreadName", firstToContext.threadName,
-                    "toTid", firstToContext.tid,
-                    "toObjectId", firstToContext.objectId,
-                    "method", method,
-                    "occurrences", occurrences,
-                    "mergedInstances", mergedInstances,
-                    "fromContextCount", fromContexts.size(),
-                    "toContextCount", toContexts.size(),
-                    "firstSeq", firstSeq == Long.MAX_VALUE ? 0 : firstSeq,
-                    "lastSeq", lastSeq == Long.MIN_VALUE ? 0 : lastSeq);
-        }
-
-        private String toRoleJson(String id) {
-            return jsonObject(
-                    "id", id,
-                    "staticEdgeId", firstStaticEdgeId,
-                    "staticEdgeIds", join(staticEdgeIds, ";"),
-                    "kind", kind,
-                    "from", from,
-                    "to", to,
-                    "fromProcess", firstFromContext.process,
-                    "fromThreadRole", threadRole(firstFromContext.threadName),
-                    "toProcess", firstToContext.process,
-                    "toThreadRole", threadRole(firstToContext.threadName),
-                    "method", method,
-                    "occurrences", occurrences,
-                    "mergedInstances", mergedInstances,
-                    "fromContextCount", fromContexts.size(),
-                    "toContextCount", toContexts.size(),
-                    "firstSeq", firstSeq == Long.MAX_VALUE ? 0 : firstSeq,
-                    "lastSeq", lastSeq == Long.MIN_VALUE ? 0 : lastSeq);
-        }
-    }
-
-    private static final class SummarySelection {
-        private final Set<String> methods = new LinkedHashSet<>();
-        private final Set<String> fieldSignatures = new LinkedHashSet<>();
-        private final Set<String> fieldNames = new LinkedHashSet<>();
-    }
-
-    private static final class MethodRuntimeEvidence {
-        private final String method;
-        private final Set<String> receiverTypes = new LinkedHashSet<>();
-        private final Set<String> argumentTypes = new LinkedHashSet<>();
-        private final Set<String> returnTypes = new LinkedHashSet<>();
-        private final Set<String> exceptionTypes = new LinkedHashSet<>();
-        private final Set<String> branchOutcomes = new LinkedHashSet<>();
-        private final Set<String> observedCallSites = new LinkedHashSet<>();
-        private final Set<String> callsiteReceiverTypes = new LinkedHashSet<>();
-        private final Set<String> declaredCallees = new LinkedHashSet<>();
-        private final Set<String> observedCallees = new LinkedHashSet<>();
-        private final Set<String> actualCalleesBySite = new LinkedHashSet<>();
-        private final Set<String> processes = new LinkedHashSet<>();
-        private final Set<String> threadRoles = new LinkedHashSet<>();
-        private int methodEnterCount;
-        private int normalExitCount;
-        private int throwExitCount;
-        private int callSiteCount;
-
-        private MethodRuntimeEvidence(String method) {
-            this.method = safe(method);
-        }
-
-        private void observe(ExecutionEvent event) {
-            if (event == null) {
-                return;
-            }
-            if (!event.process.isEmpty()) {
-                processes.add(event.process);
-            }
-            if (!event.threadName.isEmpty()) {
-                threadRoles.add(threadRole(event.threadName));
-            }
-            if ("METHOD_ARGUMENT".equals(event.kind)) {
-                argumentTypes.add("arg" + event.argumentIndex + ":"
-                        + firstNonBlank(event.runtimeType, event.declaredType, "unknown"));
-            } else if ("METHOD_EXIT_NORMAL".equals(event.kind)) {
-                normalExitCount++;
-                if (!event.runtimeType.isEmpty()) {
-                    returnTypes.add(event.runtimeType);
-                }
-            } else if ("METHOD_EXIT_THROW".equals(event.kind)) {
-                throwExitCount++;
-                if (!event.exceptionType.isEmpty()) {
-                    exceptionTypes.add(event.exceptionType);
-                }
-            } else if ("BRANCH".equals(event.kind)) {
-                branchOutcomes.add(event.siteId + "=" + event.outcome);
-            } else if ("CALL_SITE_ENTER".equals(event.kind)) {
-                callSiteCount++;
-                observedCallSites.add(event.siteId);
-                if (!event.declaredCallee.isEmpty()) {
-                    declaredCallees.add(event.declaredCallee);
-                }
-                if (!event.runtimeType.isEmpty()) {
-                    callsiteReceiverTypes.add(event.siteId + ":" + event.runtimeType);
-                }
-            } else if ("CALL_SITE_THROW".equals(event.kind)
-                    && !event.exceptionType.isEmpty()) {
-                exceptionTypes.add(event.exceptionType);
-            }
-        }
-
-        private String toJson() {
-            return jsonObject(
-                    "observed", methodEnterCount > 0,
-                    "method", method,
-                    "methodEnterCount", methodEnterCount,
-                    "normalExitCount", normalExitCount,
-                    "throwExitCount", throwExitCount,
-                    "callSiteCount", callSiteCount,
-                    "receiverTypes", join(receiverTypes, ";"),
-                    "argumentTypes", join(argumentTypes, ";"),
-                    "returnTypes", join(returnTypes, ";"),
-                    "exceptionTypes", join(exceptionTypes, ";"),
-                    "branchOutcomes", join(branchOutcomes, ";"),
-                    "observedCallSites", join(observedCallSites, ";"),
-                    "callsiteReceiverTypes", join(callsiteReceiverTypes, ";"),
-                    "declaredCallees", join(declaredCallees, ";"),
-                    "observedCallees", join(observedCallees, ";"),
-                    "actualCalleesBySite", join(actualCalleesBySite, ";"),
-                    "processes", join(processes, ";"),
-                    "threadRoles", join(threadRoles, ";"),
-                    "evidenceLevel", actualCalleesBySite.isEmpty()
-                            ? (methodEnterCount > 0 ? "METHOD_OBSERVED" : "UNOBSERVED")
-                            : "CALLSITE_CORRELATED");
-        }
-    }
-
-    private static final class RuntimeCallEdgeEvidence {
-        private final String caller;
-        private final String siteId;
-        private final String declaredCallee;
-        private final String actualCallee;
-        private final String process;
-        private final String threadRole;
-        private final String receiverType;
-        private int occurrences;
-
-        private RuntimeCallEdgeEvidence(String caller, String siteId,
-                                        String declaredCallee, String actualCallee,
-                                        String process, String threadRole,
-                                        String receiverType) {
-            this.caller = safe(caller);
-            this.siteId = safe(siteId);
-            this.declaredCallee = safe(declaredCallee);
-            this.actualCallee = safe(actualCallee);
-            this.process = safe(process);
-            this.threadRole = safe(threadRole);
-            this.receiverType = safe(receiverType);
-        }
-
-        private String toJson() {
-            return jsonObject(
-                    "event", "RUNTIME_CALL_EDGE",
-                    "caller", caller,
-                    "siteId", siteId,
-                    "declaredCallee", declaredCallee,
-                    "actualCallee", actualCallee,
-                    "receiverType", receiverType,
-                    "process", process,
-                    "threadRole", threadRole,
-                    "occurrences", occurrences,
-                    "evidenceLevel", "CALLSITE_CORRELATED");
         }
     }
 
@@ -2993,10 +1402,6 @@ public final class CausynthTraceRecorder {
             this.parentSiteId = parentSiteId;
             this.siteId = safe(siteId);
             this.receiverType = safe(receiverType);
-        }
-
-        private String contextKey() {
-            return process + "|" + threadName + "|" + tid + "|" + objectId + "|" + method;
         }
     }
 
@@ -3596,52 +2001,4 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static final class MethodContext {
-        private final String process;
-        private final String threadName;
-        private final long tid;
-        private final int objectId;
-        private final String method;
-        private long firstSeq;
-        private long lastSeq;
-        private int occurrences;
-
-        private MethodContext(TraceEvent event) {
-            this.process = event.process;
-            this.threadName = event.threadName;
-            this.tid = event.tid;
-            this.objectId = event.objectId;
-            this.method = event.method;
-            this.firstSeq = event.id;
-        }
-
-        private void observe(TraceEvent event) {
-            occurrences++;
-            firstSeq = Math.min(firstSeq, event.id);
-            lastSeq = Math.max(lastSeq, event.id);
-        }
-
-        private String contextKey() {
-            return process + "|" + threadName + "|" + tid + "|" + objectId + "|" + method;
-        }
-    }
-
-    private static final class StaticEdge {
-        private final String id;
-        private final String kind;
-        private final String fromCell;
-        private final String toCell;
-        private final String method;
-        private final int unitIndex;
-
-        private StaticEdge(String id, String kind, String fromCell,
-                           String toCell, String method, int unitIndex) {
-            this.id = id;
-            this.kind = kind;
-            this.fromCell = fromCell;
-            this.toCell = toCell;
-            this.method = method;
-            this.unitIndex = unitIndex;
-        }
-    }
 }

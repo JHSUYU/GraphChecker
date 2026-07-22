@@ -749,50 +749,25 @@ debug_static_artifacts() {
        toRegion, toPort, requiresOrder, runtimeStatus}'
 }
 
-debug_runtime_graph() {
-  local label=$1
-  local path=$2
-  debug_json_projection "${label}" "${path}" '
-    def stable_cell:
-      if type == "string" then gsub("@methodObject:[0-9-]+"; "@methodObject") else "" end;
-    def stable_node:
-      {process: (.process // ""),
-       threadRole: (.threadRole // .threadName // ""),
-       method: (.method // ""), cell: ((.cell // "") | stable_cell)};
-    (.nodes // []) as $raw_nodes
-    | ($raw_nodes | map({key: (.id | tostring), value: (. | stable_node)})
-       | from_entries) as $by_id
-    | ($raw_nodes | map(stable_node)
-       | sort_by([.process, .threadRole, .method, .cell])) as $nodes
-    | ([((.edges // [])[]) as $edge
-        | {kind: ($edge.kind // ""),
-           staticEdgeId: ($edge.staticEdgeId // ""),
-           staticEdgeIds: ($edge.staticEdgeIds // ""),
-           from: ($by_id[($edge.from | tostring)] // {cell: ($edge.from // "")}),
-           to: ($by_id[($edge.to | tostring)] // {cell: ($edge.to // "")}),
-           method: ($edge.method // ""),
-           occurrences: ($edge.occurrences // 0),
-           mergedInstances: ($edge.mergedInstances // 0)}]
-       | sort_by([.kind, .staticEdgeId, (.from | tojson), (.to | tojson)])) as $edges
-    | {summary: ((.summary // {})
-         | {test, traceEventCount, fieldEventCount, executionEventCount,
-            staticEdgeCount, instantiatedNodeCount, instantiatedEdgeCount,
-            roleMergedNodeCount, roleMergedEdgeCount, truncated, roleTruncated}),
-       nodes: {total: ($nodes | length),
-               shown: ([($nodes[:$max])[]] | length),
-               truncated: (($nodes | length) > $max), items: $nodes[:$max]},
-       edges: {total: ($edges | length),
-               shown: ([($edges[:$max])[]] | length),
-               truncated: (($edges | length) > $max), items: $edges[:$max]}}'
-}
-
 debug_runtime_artifacts() {
-  local runtime_dir
-  runtime_dir=$(dirname "${runtime_activation_plan}")
-  debug_runtime_graph runtime_instantiated_graph \
-    "${runtime_dir}/unit_test_instantiated_graph.json"
-  debug_runtime_graph runtime_role_merged_graph \
-    "${runtime_dir}/unit_test_role_merged_graph.json"
+  debug_jsonl_projection runtime_region_instances \
+    "${runtime_region_instances}" '
+    select(type == "object")
+    | {regionInstanceId, regionId, rootMethod, observedRootMethod,
+       validationStatus, symbolicReady, replayable, boundaryReady,
+       concreteInputPortCount, observedBranchCount, runtimeGaps}'
+  debug_jsonl_projection runtime_region_edge_validation \
+    "${runtime_edge_validations}" '
+    select(type == "object")
+    | {edgeId, status, kind, relation, fromRegion, toRegion,
+       fromRegionInstance, toRegionInstance, runtimeStatus,
+       validationAuthority}'
+  debug_jsonl_projection concolic_activation_plan \
+    "${runtime_activation_plan}" '
+    select(type == "object")
+    | {activationId, regionInstanceId, regionId, rootMethod,
+       symbolicReady, replayable, boundaryReady,
+       activationInputPortCount, branchCount}'
 }
 
 debug_schedule_artifacts() {

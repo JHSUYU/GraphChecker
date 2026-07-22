@@ -43,8 +43,6 @@ for file in \
   artifacts/runtime/concolic_activation_plan.jsonl \
   artifacts/runtime/runtime_region_instances.jsonl \
   artifacts/runtime/runtime_region_edge_validation.jsonl \
-  artifacts/runtime/unit_test_instantiated_graph.json \
-  artifacts/runtime/unit_test_role_merged_graph.json \
   artifacts/schedule/concolic_region_results.jsonl \
   artifacts/schedule/scheduled_activation_plan.jsonl \
   artifacts/schedule/concolic_region_summaries.jsonl \
@@ -71,10 +69,14 @@ printf '%s\n' \
   '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","fromPort":"out.0","toRegion":"REGION.0","toPort":"in.0"}' \
   > "${fixture_root}/artifacts/symbolic_region_edges.jsonl"
 printf '%s\n' \
-  '{"summary":{"test":"fixture","instantiatedNodeCount":2,"instantiatedEdgeCount":1},"nodes":[{"id":"n-z","process":"p","threadName":"worker","method":"m","cell":"z-cell"},{"id":"n-a","process":"p","threadName":"worker","method":"m","cell":"a-cell"}],"edges":[{"id":"DYN.9","kind":"transfer","staticEdgeId":"DF.A","from":"n-a","to":"n-z","method":"m","occurrences":1}]}' \
-  > "${fixture_root}/artifacts/runtime/unit_test_instantiated_graph.json"
-cp "${fixture_root}/artifacts/runtime/unit_test_instantiated_graph.json" \
-  "${fixture_root}/artifacts/runtime/unit_test_role_merged_graph.json"
+  '{"regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","validationStatus":"FULLY_OBSERVED","symbolicReady":true,"replayable":true}' \
+  > "${fixture_root}/artifacts/runtime/runtime_region_instances.jsonl"
+printf '%s\n' \
+  '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","toRegion":"REGION.0","status":"VALIDATED"}' \
+  > "${fixture_root}/artifacts/runtime/runtime_region_edge_validation.jsonl"
+printf '%s\n' \
+  '{"activationId":"ACT.0","regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","symbolicReady":true,"replayable":true}' \
+  > "${fixture_root}/artifacts/runtime/concolic_activation_plan.jsonl"
 printf '%s\n' \
   '{"equalityClasses":[{"canonicalSymbol":"EQ.Z","members":["z","a"]},{"canonicalSymbol":"EQ.A","members":["b","a"]}],"equalityRelations":[{"edgeId":"E.0","kind":"SYMBOLIC_EQUALITY","fromEndpoint":"out.0","toEndpoint":"in.0","runtimeBindings":[]}],"versionedStateMerges":[{"edgeId":"E.1","kind":"VERSIONED_HEAP_READ_FROM","fromEndpoint":"state.out","toEndpoint":"state.in","runtimeBindings":[]}],"alternativeWriterGroups":[]}' \
   > "${fixture_root}/artifacts/schedule/symbolic_merge_plan.json"
@@ -180,10 +182,11 @@ assert_not_contains "${debug_text}" 'z-static'
   >"${debug_stdout}" 2>"${debug_stderr}"
 assert_contains "$(<"${debug_stdout}")" 'workflow'
 debug_text=$(<"${debug_stderr}")
-assert_contains "${debug_text}" 'artifact=runtime_instantiated_graph'
-assert_contains "${debug_text}" 'artifact=runtime_role_merged_graph'
-assert_contains "${debug_text}" 'artifact=runtime_instantiated_graph path='
-assert_contains "${debug_text}" 'status=shown'
+assert_contains "${debug_text}" 'artifact=runtime_region_instances'
+assert_contains "${debug_text}" 'artifact=runtime_region_edge_validation'
+assert_contains "${debug_text}" 'artifact=concolic_activation_plan'
+assert_contains "${debug_text}" 'artifact=runtime_region_instances path='
+assert_contains "${debug_text}" 'total=1 shown=1 truncated=false'
 assert_not_contains "${debug_text}" 'status=invalid-json'
 
 GRAPH_CHECKER_DEBUG=true "${runner}" --config "${config}" schedule \

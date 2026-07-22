@@ -3,9 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import java.io.IOException;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -281,7 +279,7 @@ public class CausynthTraceRecorderTest {
     }
 
     @Test
-    public void offlineAggregationUsesSequenceOrderForContextsAndLatestWrite()
+    public void offlineAggregationSortsRecorderSequencesAndWritesOnlyRuntimePlans()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -292,18 +290,17 @@ public class CausynthTraceRecorderTest {
         String writer = "<test.Writer: void write()>";
         String reader = "<test.Reader: void read()>";
         String field = "<test.State: int value>";
-        List<String> rows = new ArrayList<>();
-        // File order deliberately differs from recorder sequence order.
-        rows.add(methodRow(10, writer, "writer", 1, 11, 10));
-        rows.add(methodRow(2, reader, "reader", 2, 22, 2));
-        rows.add(methodRow(1, writer, "writer", 1, 11, 1));
-        rows.add(fieldRow(5, "FIELD_WRITE", writer, "writer", 1,
-                11, 5, field, 77, "5"));
-        rows.add(fieldRow(3, "FIELD_WRITE", writer, "writer", 1,
-                11, 3, field, 77, "3"));
-        rows.add(fieldRow(6, "FIELD_READ", reader, "reader", 2,
-                22, 6, field, 77, "5"));
-        Files.write(trace, rows, StandardCharsets.UTF_8);
+        Files.write(trace, java.util.Arrays.asList(
+                methodRow(10, writer, "writer", 1, 11, 10),
+                methodRow(2, reader, "reader", 2, 22, 2),
+                methodRow(1, writer, "writer", 1, 11, 1),
+                fieldRow(5, "FIELD_WRITE", writer, "writer", 1,
+                        11, 5, field, 77, "5"),
+                fieldRow(3, "FIELD_WRITE", writer, "writer", 1,
+                        11, 3, field, 77, "3"),
+                fieldRow(6, "FIELD_READ", reader, "reader", 2,
+                        22, 6, field, 77, "5")),
+                StandardCharsets.UTF_8);
         Files.write(graph, Collections.singletonList("{"
                         + "\"id\":\"DF.FIELD\","
                         + "\"kind\":\"value_flow\","
@@ -312,293 +309,36 @@ public class CausynthTraceRecorderTest {
                         + "\"method\":\"" + writer + "\","
                         + "\"unitIndex\":1}"),
                 StandardCharsets.UTF_8);
+        Files.write(output.resolve("symbolic_regions.jsonl"),
+                Collections.<String>emptyList(), StandardCharsets.UTF_8);
+        Files.write(output.resolve("symbolic_region_edges.jsonl"),
+                Collections.<String>emptyList(), StandardCharsets.UTF_8);
 
         try {
-            aggregateExistingTrace(output, graph, 100, 100);
-            String instantiated = new String(Files.readAllBytes(output.resolve(
-                    "unit_test_instantiated_graph.json")),
-                    StandardCharsets.UTF_8);
-            assertTrue(instantiated.contains("\"kind\":\"runtime_field_state\""));
-            assertTrue(instantiated.contains("@value:5"));
-            assertFalse("lower-sequence write that appeared later in the file "
-                            + "must not become the latest write",
-                    instantiated.contains("@value:3"));
-            assertTrue(instantiated.contains("\"firstSeq\":1"));
-            assertTrue(instantiated.contains("\"lastSeq\":10"));
-        } finally {
-            resetRecorder();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void streamedGraphEdgesPreserveInsertionOrderIdsAndCounts()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path output = folder.getRoot().toPath().resolve("streamed-edges");
-        Files.createDirectories(output);
-        Path trace = output.resolve("runtime_trace.jsonl");
-        Path graph = output.resolve("static_dataflow_edges.jsonl");
-        String method = "<test.StreamedEdges: void run()>";
-        Files.write(trace, Collections.singletonList(
-                methodRow(1, method, "worker", 1, 11, 1)),
-                StandardCharsets.UTF_8);
-        Files.write(graph, java.util.Arrays.asList(
-                "{\"id\":\"DF.FIRST\","
-                        + "\"kind\":\"first_flow\","
-                        + "\"fromCell\":\"local:firstFrom\","
-                        + "\"toCell\":\"local:firstTo\","
-                        + "\"method\":\"" + method + "\","
-                        + "\"unitIndex\":1}",
-                "{\"id\":\"DF.SECOND\","
-                        + "\"kind\":\"second_flow\","
-                        + "\"fromCell\":\"local:secondFrom\","
-                        + "\"toCell\":\"local:secondTo\","
-                        + "\"method\":\"" + method + "\","
-                        + "\"unitIndex\":2}"),
-                StandardCharsets.UTF_8);
-
-        try {
-            aggregateExistingTrace(output, graph, 100, 100);
-            String instantiated = new String(Files.readAllBytes(output.resolve(
-                    "unit_test_instantiated_graph.json")),
-                    StandardCharsets.UTF_8);
-            int first = instantiated.indexOf("\"id\":\"DYN.0\"");
-            int second = instantiated.indexOf("\"id\":\"DYN.1\"");
-            assertTrue(first >= 0);
-            assertTrue(second > first);
-            assertTrue(instantiated.indexOf("\"staticEdgeId\":\"DF.FIRST\"",
-                    first) < second);
-            assertTrue(instantiated.indexOf("\"staticEdgeId\":\"DF.SECOND\"",
-                    second) > second);
-            assertFalse(instantiated.contains("\"id\":\"DYN.2\""));
-            assertTrue(instantiated.contains("\"instantiatedEdgeCount\":2"));
-
-            String roleMerged = new String(Files.readAllBytes(output.resolve(
-                    "unit_test_role_merged_graph.json")),
-                    StandardCharsets.UTF_8);
-            int roleFirst = roleMerged.indexOf("\"id\":\"ROLE.0\"");
-            int roleSecond = roleMerged.indexOf("\"id\":\"ROLE.1\"");
-            assertTrue(roleFirst >= 0);
-            assertTrue(roleSecond > roleFirst);
-            assertFalse(roleMerged.contains("\"id\":\"ROLE.2\""));
-            assertTrue(roleMerged.contains("\"roleMergedEdgeCount\":2"));
-        } finally {
-            resetRecorder();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rpcGuidanceSummarizesOnlyIncomingEdgesAtMergeTarget()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path output = folder.getRoot().toPath().resolve("merge-guidance");
-        Files.createDirectories(output);
-        Path trace = output.resolve("runtime_trace.jsonl");
-        Path graph = output.resolve("static_dataflow_edges.jsonl");
-        String method = "<test.MergeGuidance: void run()>";
-        Files.write(trace, Collections.singletonList(
-                methodRow(1, method, "worker", 1, 11, 1)),
-                StandardCharsets.UTF_8);
-        Files.write(graph, java.util.Arrays.asList(
-                "{\"id\":\"DF.RPC_A\","
-                        + "\"kind\":\"rpc_transfer_a\","
-                        + "\"fromCell\":\"local:a\","
-                        + "\"toCell\":\"local:joined\","
-                        + "\"method\":\"" + method + "\","
-                        + "\"unitIndex\":1}",
-                "{\"id\":\"DF.RPC_B\","
-                        + "\"kind\":\"rpc_transfer_b\","
-                        + "\"fromCell\":\"local:b\","
-                        + "\"toCell\":\"local:joined\","
-                        + "\"method\":\"" + method + "\","
-                        + "\"unitIndex\":2}"),
-                StandardCharsets.UTF_8);
-
-        try {
-            aggregateExistingTrace(output, graph, 100, 100);
-            String guidance = new String(Files.readAllBytes(output.resolve(
-                    "symbolic_guidance_dag.json")), StandardCharsets.UTF_8);
-            assertTrue(guidance.contains("\"mergePointCount\":1"));
-            assertTrue(guidance.contains("\"incomingCount\":2"));
-            assertTrue(guidance.contains(
-                    "\"suggestedModel\":\"Merge(incomingExpressions)\""));
-            assertTrue(guidance.contains(
-                    "\"model\":\"port_mapping_candidate\""));
-        } finally {
-            resetRecorder();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void malformedStaticGraphFailsClosedInsteadOfUsingPrefix()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path output = folder.getRoot().toPath().resolve("malformed-graph");
-        Files.createDirectories(output);
-        Path trace = output.resolve("runtime_trace.jsonl");
-        Path graph = output.resolve("static_dataflow_edges.jsonl");
-        String method = "<test.MalformedGraph: void run()>";
-        Files.write(trace, Collections.singletonList(
-                methodRow(1, method, "worker", 1, 11, 1)),
-                StandardCharsets.UTF_8);
-        Files.write(graph, new byte[]{'{', (byte) 0xc3, '('});
-
-        try {
-            aggregateExistingTrace(output, graph, 100, 100);
-            throw new AssertionError("malformed UTF-8 graph was accepted");
-        } catch (InvocationTargetException failure) {
-            assertTrue(failure.getCause() instanceof IOException);
-            assertFalse(Files.exists(output.resolve(
-                    "unit_test_instantiated_graph.json")));
-        } finally {
-            resetRecorder();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void graphWriteFailureFailsOfflineAggregation() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path output = folder.getRoot().toPath().resolve("graph-write-failure");
-        Files.createDirectories(output);
-        Path trace = output.resolve("runtime_trace.jsonl");
-        Path graph = output.resolve("static_dataflow_edges.jsonl");
-        String method = "<test.GraphWriteFailure: void run()>";
-        Files.write(trace, Collections.singletonList(
-                methodRow(1, method, "worker", 1, 11, 1)),
-                StandardCharsets.UTF_8);
-        Files.write(graph, Collections.singletonList(
-                "{\"id\":\"DF.1\",\"kind\":\"flow\","
-                        + "\"fromCell\":\"local:from\","
-                        + "\"toCell\":\"local:to\","
-                        + "\"method\":\"" + method + "\","
-                        + "\"unitIndex\":1}"),
-                StandardCharsets.UTF_8);
-        Files.createDirectory(output.resolve(
-                "unit_test_instantiated_graph.json"));
-
-        try {
-            aggregateExistingTrace(output, graph, 100, 100);
-            throw new AssertionError("graph write failure was ignored");
-        } catch (InvocationTargetException failure) {
-            assertTrue(failure.getCause() instanceof IOException);
-            assertFalse(Files.exists(output.resolve("summary.json")));
-        } finally {
-            resetRecorder();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void graphEdgeCapDoesNotEmitNodesForSkippedStaticOrRuntimeEdges()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path output = folder.getRoot().toPath().resolve("edge-cap");
-        Files.createDirectories(output);
-        Path trace = output.resolve("runtime_trace.jsonl");
-        Path graph = output.resolve("static_dataflow_edges.jsonl");
-        String writer = "<test.CapWriter: void write()>";
-        String reader = "<test.CapReader: void read()>";
-        String field = "<test.CapState: int value>";
-        Files.write(trace, java.util.Arrays.asList(
-                methodRow(1, writer, "writer", 1, 11, 1),
-                methodRow(2, reader, "reader", 2, 22, 2),
-                fieldRow(3, "FIELD_WRITE", writer, "writer", 1,
-                        11, 1, field, 77, "5"),
-                fieldRow(4, "FIELD_READ", reader, "reader", 2,
-                        22, 2, field, 77, "5")),
-                StandardCharsets.UTF_8);
-        Files.write(graph, java.util.Arrays.asList(
-                "{\"id\":\"DF.KEPT\","
-                        + "\"kind\":\"kept_flow\","
-                        + "\"fromCell\":\"local:keptFrom\","
-                        + "\"toCell\":\"local:keptTo\","
-                        + "\"method\":\"" + writer + "\","
-                        + "\"unitIndex\":1}",
-                "{\"id\":\"DF.SKIPPED\","
-                        + "\"kind\":\"skipped_flow\","
-                        + "\"fromCell\":\"local:skippedFrom\","
-                        + "\"toCell\":\"local:skippedTo\","
-                        + "\"method\":\"" + writer + "\","
-                        + "\"unitIndex\":2}"),
-                StandardCharsets.UTF_8);
-
-        try {
-            aggregateExistingTrace(output, graph, 1, 100);
-            String instantiated = new String(Files.readAllBytes(output.resolve(
-                    "unit_test_instantiated_graph.json")),
-                    StandardCharsets.UTF_8);
-            assertTrue(instantiated.contains("\"cell\":\"local:keptFrom\""));
-            assertTrue(instantiated.contains("\"cell\":\"local:keptTo\""));
-            assertFalse(instantiated.contains("local:skippedFrom"));
-            assertFalse(instantiated.contains("local:skippedTo"));
-            assertFalse(instantiated.contains(field));
-            assertTrue(instantiated.contains("\"instantiatedNodeCount\":2"));
-            assertTrue(instantiated.contains("\"instantiatedEdgeCount\":1"));
-            assertTrue(instantiated.contains(
-                    "\"skippedGraphEdgeInstances\":1"));
-            assertTrue(instantiated.contains(
-                    "\"skippedRuntimeFieldBridgeInstances\":1"));
-
-            String roleMerged = new String(Files.readAllBytes(output.resolve(
-                    "unit_test_role_merged_graph.json")),
-                    StandardCharsets.UTF_8);
-            assertTrue(roleMerged.contains("\"cell\":\"local:keptFrom\""));
-            assertTrue(roleMerged.contains("\"cell\":\"local:keptTo\""));
-            assertFalse(roleMerged.contains("local:skippedFrom"));
-            assertFalse(roleMerged.contains("local:skippedTo"));
-            assertFalse(roleMerged.contains(field));
-            assertTrue(roleMerged.contains("\"roleMergedNodeCount\":2"));
-            assertTrue(roleMerged.contains("\"roleMergedEdgeCount\":1"));
-            assertTrue(roleMerged.contains(
-                    "\"skippedRoleGraphEdgeInstances\":1"));
-            assertTrue(roleMerged.contains(
-                    "\"skippedRuntimeRoleFieldBridgeInstances\":1"));
-        } finally {
-            resetRecorder();
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void contextPairLimitIsReportedAsGraphTruncation()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        Path output = folder.getRoot().toPath().resolve("context-cap");
-        Files.createDirectories(output);
-        Path trace = output.resolve("runtime_trace.jsonl");
-        Path graph = output.resolve("static_dataflow_edges.jsonl");
-        String method = "<test.Contexts: void run()>";
-        Files.write(trace, java.util.Arrays.asList(
-                methodRow(1, method, "thread-1", 1, 11, 1),
-                methodRow(2, method, "thread-2", 2, 22, 2)),
-                StandardCharsets.UTF_8);
-        Files.write(graph, Collections.singletonList("{"
-                        + "\"id\":\"DF.CAP\","
-                        + "\"kind\":\"value_flow\","
-                        + "\"fromCell\":\"local:a\","
-                        + "\"toCell\":\"local:b\","
-                        + "\"method\":\"" + method + "\","
-                        + "\"unitIndex\":1}"),
-                StandardCharsets.UTF_8);
-
-        try {
-            aggregateExistingTrace(output, graph, 100, 1);
-            String summary = new String(Files.readAllBytes(output.resolve(
-                    "summary.json")), StandardCharsets.UTF_8);
-            assertTrue(summary.contains("\"contextPairTruncated\":true"));
-            assertTrue(summary.contains("\"skippedContextPairInstances\":1"));
-            assertTrue(summary.contains("\"truncated\":true"));
-            assertTrue(summary.contains("\"roleTruncated\":true"));
+            aggregateExistingTrace(output, graph);
+            assertEquals(java.util.Arrays.asList(1L, 2L, 10L),
+                    retainedEventSequences("EVENTS"));
+            assertEquals(java.util.Arrays.asList(3L, 5L, 6L),
+                    retainedEventSequences("FIELD_EVENTS"));
+            for (String maintained : new String[]{
+                    "runtime_region_instances.jsonl",
+                    "runtime_region_edge_validation.jsonl",
+                    "concolic_activation_plan.jsonl",
+                    "runtime_region_summary.json"}) {
+                assertTrue(maintained, Files.isRegularFile(
+                        output.resolve(maintained)));
+            }
+            for (String retired : new String[]{
+                    "unit_test_instantiated_graph.json",
+                    "unit_test_role_merged_graph.json",
+                    "symbolic_guidance_dag.json",
+                    "seed_chain_summary.jsonl",
+                    "runtime_validation_summary.jsonl",
+                    "runtime_refined_symbolic_plan.jsonl",
+                    "runtime_call_edges.jsonl",
+                    "runtime_region_validation.jsonl"}) {
+                assertFalse(retired, Files.exists(output.resolve(retired)));
+            }
         } finally {
             resetRecorder();
             folder.delete();
@@ -764,9 +504,7 @@ public class CausynthTraceRecorderTest {
         }
     }
 
-    private static void aggregateExistingTrace(Path output, Path graph,
-                                               int maxEdges,
-                                               int maxContextPairs)
+    private static void aggregateExistingTrace(Path output, Path graph)
             throws Exception {
         String previousGraph = System.getProperty("causynth.static.graph");
         String previousRegions = System.getProperty(
@@ -780,10 +518,9 @@ public class CausynthTraceRecorderTest {
                     output.resolve("symbolic_region_edges.jsonl").toString());
             Method aggregate = CausynthTraceRecorder.class.getDeclaredMethod(
                     "aggregateExistingTrace", java.io.File.class,
-                    java.io.File.class, String.class, int.class, int.class);
+                    java.io.File.class, String.class);
             aggregate.setAccessible(true);
-            aggregate.invoke(null, output.toFile(), graph.toFile(), "test",
-                    maxEdges, maxContextPairs);
+            aggregate.invoke(null, output.toFile(), graph.toFile(), "test");
         } finally {
             restoreProperty("causynth.static.graph", previousGraph);
             restoreProperty("causynth.symbolic.regions", previousRegions);
@@ -897,6 +634,19 @@ public class CausynthTraceRecorderTest {
         Field field = CausynthTraceRecorder.class.getDeclaredField(fieldName);
         field.setAccessible(true);
         return ((List<?>) field.get(null)).size();
+    }
+
+    private static List<Long> retainedEventSequences(String fieldName)
+            throws Exception {
+        Field field = CausynthTraceRecorder.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        List<Long> result = new ArrayList<>();
+        for (Object event : (List<?>) field.get(null)) {
+            Field id = event.getClass().getDeclaredField("id");
+            id.setAccessible(true);
+            result.add(id.getLong(event));
+        }
+        return result;
     }
 
     private static Object staticObject(String fieldName) throws Exception {
