@@ -421,16 +421,6 @@ public final class RegionSummaryMerger {
                 ? value.getAsJsonArray() : new JsonArray();
     }
 
-    private static JsonArray firstArray(JsonObject owner, String... fields) {
-        for (String field : fields) {
-            JsonElement value = owner == null ? null : owner.get(field);
-            if (value != null && value.isJsonArray()) {
-                return value.getAsJsonArray();
-            }
-        }
-        return new JsonArray();
-    }
-
     private static String string(JsonObject owner, String field) {
         JsonElement value = owner == null ? null : owner.get(field);
         try {

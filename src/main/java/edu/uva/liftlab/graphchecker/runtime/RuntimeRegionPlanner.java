@@ -7132,18 +7132,6 @@ final class RuntimeRegionPlanner {
             return resolution;
         }
 
-        private long firstMethodSeq(String method) {
-            if (method == null || method.isEmpty()) {
-                return 0L;
-            }
-            for (MethodEvent event : methodEvents) {
-                if (method.equals(event.method)) {
-                    return event.seq;
-                }
-            }
-            return 0L;
-        }
-
         private int runtimeOccurrence(RuntimeEvent target) {
             if (target == null) {
                 return 1;

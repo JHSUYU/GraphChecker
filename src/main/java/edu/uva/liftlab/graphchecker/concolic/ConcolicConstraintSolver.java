@@ -15,7 +15,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -2524,29 +2523,6 @@ public final class ConcolicConstraintSolver {
             return parsed.signum() < 0
                     ? "(- " + parsed.negate().toString() + ")"
                     : parsed.toString();
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
-    }
-
-    private static String realLiteral(String value) {
-        String raw = firstNonBlank(value).trim();
-        if (raw.isEmpty() || raw.length() > 1024
-                || "nan".equalsIgnoreCase(raw)
-                || "inf".equalsIgnoreCase(raw)
-                || "+inf".equalsIgnoreCase(raw)
-                || "-inf".equalsIgnoreCase(raw)
-                || "infinity".equalsIgnoreCase(raw)
-                || "+infinity".equalsIgnoreCase(raw)
-                || "-infinity".equalsIgnoreCase(raw)) {
-            return null;
-        }
-        try {
-            BigDecimal parsed = new BigDecimal(raw);
-            if (Math.abs((long) parsed.scale()) > 1024L
-                    || parsed.precision() > 1024) return null;
-            String plain = parsed.abs().toPlainString();
-            return parsed.signum() < 0 ? "(- " + plain + ")" : plain;
         } catch (NumberFormatException ignored) {
             return null;
         }

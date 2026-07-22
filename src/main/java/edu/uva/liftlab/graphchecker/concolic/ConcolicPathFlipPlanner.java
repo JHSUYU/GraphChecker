@@ -407,17 +407,6 @@ public final class ConcolicPathFlipPlanner {
         }
     }
 
-    private static int integer(JsonObject object, String field,
-                               int fallback) {
-        try {
-            JsonElement value = object == null ? null : object.get(field);
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsInt() : fallback;
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
     private static boolean bool(JsonObject object, String field,
                                 boolean fallback) {
         try {

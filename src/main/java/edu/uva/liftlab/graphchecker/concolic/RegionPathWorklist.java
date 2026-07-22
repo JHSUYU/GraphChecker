@@ -1158,20 +1158,6 @@ public final class RegionPathWorklist {
         }
     }
 
-    private static String strictString(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString() : "";
-    }
-
-    private static Boolean strictBoolean(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isBoolean()
-                ? value.getAsBoolean() : null;
-    }
-
     private static boolean bool(JsonObject object, String name,
                                 boolean fallback) {
         if (object == null) return fallback;
@@ -1190,18 +1176,6 @@ public final class RegionPathWorklist {
         try {
             return value == null || value.isJsonNull()
                     ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String name,
-                                    long fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
         } catch (RuntimeException ignored) {
             return fallback;
         }

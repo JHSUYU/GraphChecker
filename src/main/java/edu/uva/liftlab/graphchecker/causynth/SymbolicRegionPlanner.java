@@ -7758,37 +7758,6 @@ final class SymbolicRegionPlanner {
             return matcher.find() ? matcher.group(1) : "";
         }
 
-        private String chooseRoot(Set<String> methods, String anchor) {
-            List<String> entryRoots = new ArrayList<>();
-            for (String method : methods) {
-                if (isEntryRoot(method) && reaches(method, anchor, methods)) {
-                    entryRoots.add(method);
-                }
-            }
-            if (!entryRoots.isEmpty()) {
-                Collections.sort(entryRoots);
-                return entryRoots.get(0);
-            }
-            List<String> roots = new ArrayList<>();
-            for (String method : methods) {
-                boolean hasParent = false;
-                for (String parent : values(parentsByCallee.get(method))) {
-                    if (methods.contains(parent)) {
-                        hasParent = true;
-                        break;
-                    }
-                }
-                if (!hasParent && reaches(method, anchor, methods)) {
-                    roots.add(method);
-                }
-            }
-            if (roots.isEmpty()) {
-                return anchor;
-            }
-            Collections.sort(roots);
-            return roots.get(0);
-        }
-
         private boolean reaches(String from, String target, Set<String> within) {
             if (from.equals(target)) {
                 return true;
@@ -8687,11 +8656,6 @@ final class SymbolicRegionPlanner {
 
     private static boolean globalFieldCell(String value) {
         return looksLikeField(value) && methodForCell(value).isEmpty();
-    }
-
-    private static String firstRegionId(List<Map<String, Object>> regions) {
-        return regions == null || regions.isEmpty()
-                ? "EXTERNAL" : string(regions.get(0).get("regionId"));
     }
 
     private static String pair(String from, String to) {

@@ -1587,67 +1587,12 @@ public final class CausynthTraceRecorder {
         return limitations;
     }
 
-    private static StaticEdge findStaticEdge(Collection<StaticEdge> edges,
-                                             String kindNeedle,
-                                             String... needles) {
-        String kind = lower(kindNeedle);
-        for (StaticEdge edge : edges) {
-            if (edge == null) {
-                continue;
-            }
-            if (!kind.isEmpty() && !lower(edge.kind).contains(kind)) {
-                continue;
-            }
-            String text = staticEdgeText(edge);
-            boolean matches = true;
-            if (needles != null) {
-                for (String needle : needles) {
-                    String value = lower(needle);
-                    if (!value.isEmpty() && !text.contains(value)) {
-                        matches = false;
-                        break;
-                    }
-                }
-            }
-            if (matches) {
-                return edge;
-            }
-        }
-        return null;
-    }
-
     private static String staticEdgeText(StaticEdge edge) {
         if (edge == null) {
             return "";
         }
         return lower(edge.kind + "\n" + edge.fromCell + "\n" + edge.toCell
                 + "\n" + edge.method + "\n" + edge.id);
-    }
-
-    private static EdgeAccumulator findRoleEdge(Collection<EdgeAccumulator> edges,
-                                                String kindNeedle,
-                                                String... needles) {
-        String kind = lower(kindNeedle);
-        for (EdgeAccumulator edge : edges) {
-            if (!kind.isEmpty() && !lower(edge.kind).contains(kind)) {
-                continue;
-            }
-            String text = edgeText(edge);
-            boolean matches = true;
-            if (needles != null) {
-                for (String needle : needles) {
-                    String value = lower(needle);
-                    if (!value.isEmpty() && !text.contains(value)) {
-                        matches = false;
-                        break;
-                    }
-                }
-            }
-            if (matches) {
-                return edge;
-            }
-        }
-        return null;
     }
 
     private static String edgeText(EdgeAccumulator edge) {
