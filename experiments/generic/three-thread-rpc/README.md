@@ -192,7 +192,10 @@ experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
 
 The matrix recompiles each selected workload, runs the complete concolic
 workflow, invokes Z3 on the emitted SMT, and validates the expected root-input
-catalog and truth-table profile.  Unit tests are not run by this command.
+catalog and truth-table profile. `containers` additionally checks exact
+`array[1].state.guard.enabled` and map-key-7 rebinding, two-path guarded merges,
+schema-3 witness/context separation, input-only unforced replay, and its exact
+four-row reach profile. Unit tests are not run by this command.
 
 ## Completed: one binary-branch replay authority
 
@@ -203,14 +206,17 @@ variant (`VM_PC` or `CERTIFIED_NO_PC`). `BranchPredicateAlgebra` is the only
 predicate-complement implementation, and only `BranchReplayContract.flip()`
 may derive the required opposite outcome/predicate.
 
-The worklist emits a schema-2 task containing that contract. The solver,
-activation builder, static instrumentation gate, runtime, importer, scheduler,
-and replay verifier consume the same contract; they no longer reconstruct or
-cross-compare `targetBranch`, `expectedBranchPrefix`, replay constraints, or a
-scheduled-target envelope. Runtime observations carry new witnesses, and one
-validator checks the ordered prefix followed by the exact required target.
-Duplicate branch-event identities and content-hash tampering fail closed.
-Multiway `switch` remains a separate successor-aware observation.
+The worklist emits a schema-3 task containing that contract. A separate
+immutable, content-hashed `SolverPathContext` retains positioned non-branch
+`_array_expr`/`MethodExpression` nodes needed by the solver; it rejects an
+unwitnessed Boolean predicate and is never consumed as runtime branch evidence.
+The solver, activation builder, static instrumentation gate, runtime, importer,
+scheduler, and replay verifier consume the same replay contract; they no longer
+reconstruct or cross-compare `targetBranch`, `expectedBranchPrefix`, replay
+constraints, or a scheduled-target envelope. Runtime observations carry new
+witnesses, and one validator checks the ordered prefix followed by the exact
+required target. Duplicate branch-event identities and content-hash tampering
+fail closed. Multiway `switch` remains a separate successor-aware observation.
 
 The three core workloads pass this protocol through candidate SMT generation,
 independent Z3 checking, and their exact expected reach profiles.

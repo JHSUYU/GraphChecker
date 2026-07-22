@@ -408,6 +408,13 @@ activation、静态插桩、runtime、importer 和 verifier 都传递或解析�
 重建 `targetBranch`、`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。
 `switch` 仍作为独立的 successor-aware observation，不伪装成二元 branch。
 
+源 path condition 中夹在 branch 之间的 array-load 或 method-relation 节点不是 branch
+evidence。schema-3 worklist 把它们放入另一个不可变、内容哈希的 `SolverPathContext`，并保留
+原始 `summaryPcIndex`；该对象只接受 `_array_expr` 和 `MethodExpression`，遇到没有 witness
+的 Boolean predicate 会直接拒绝。solver 分别断言 context 与 contract，runtime replay 只
+消费 contract。这样既不会丢掉求解所需的非 branch 关系，也不会再把同一个 branch witness
+复制成多套 path-condition/target/prefix JSON 来相互确认。
+
 invocation ordinal 只表示同一 receiver-class/thread context 中的第几次调用，用于定位动态
 activation，不代表程序语义，也不进入稳定 worklist key。
 
@@ -458,7 +465,8 @@ candidate；当前流程没有 final/trusted 发布状态。
 Manifest 中的来源检查不是密码学“证书系统”，而是防止把不同 execution、旧 summary 或
 merged relation 内部的错误 case 拼在一起。核心规则是：选中的 case 必须唯一属于本次
 composer 实际使用的 merged summary，同时其原始 summary 和 activation 必须唯一存在且
-身份一致。
+身份一致。branch 层的检查以 `BranchWitness`/`BranchReplayContract` 的 canonical JSON 与
+content hash 为准；下游只解析并消费该权威对象，不再逐字段重建一份“等价证书”。
 
 领域 adapter 在 final relationship 中只能提供候选映射，不能把程序没有执行出来的
 equality、cache、expiry、membership 或 codec 语义冒充 runtime fact。研究用 bootstrap
@@ -513,6 +521,7 @@ producer campaigns、bootstrap composition、Z3 projection 和 candidate manifes
 | `ConcolicScheduler` | 为 target 或 producer 选择 activation 并生成 capture/materialization plan |
 | `ConcolicPathFlipPlanner` / `RegionPathWorklist` | pending flip、稳定去重、Z3 输入和 closure |
 | `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
+| `SolverPathContext` | 与 branch authority 分离的、有位置且内容哈希的非 branch solver constraints |
 | `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
 | `ConcolicSummaryImporter` | 将 raw custom-JDK 结果严格导入 `R(in,out)` path summary |
 | `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |
