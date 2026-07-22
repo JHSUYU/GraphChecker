@@ -14,10 +14,12 @@ die() {
 
 usage() {
   cat <<'EOF'
-Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [core|all]
+Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [MODE]
 
   core  Run baseline, cross-method-fields, and multitype (default).
   all   Also run dependent-scalar and containers.
+  baseline | cross-method-fields | multitype | dependent-scalar | containers
+        Run one named workload. This is useful for an exact post-fix gate.
 
 Each entry runs the fixture runner's clean and candidate commands, invokes Z3
 on the emitted SMT, and validates the exact candidate reach profile. Natural
@@ -118,143 +120,6 @@ validate_composition_common() {
     and (.resolvedProducerCount // 0) > 0
   ' "${manifest}" >/dev/null \
     || die "composition manifest is incomplete: ${manifest}"
-}
-
-validate_reachable() {
-  local final_root=$1
-  local smt=$2
-  local composition=$3
-  local reach_report=$4
-  local proof="${final_root}/symbolic_relationship_proofs.json"
-  local optional_final="${final_root}/final_result_manifest.json"
-
-  jq -e '
-    .compositionStage == "VALIDATED_FINAL"
-    and .complete == true
-    and .boundedComposition == true
-    and .fatalReplayValidated == true
-    and .eligibleToReportAutomaticRelationship == true
-    and .caseProjectionCatalogComplete == true
-  ' "${composition}" >/dev/null \
-    || die "reachable composition is not replay-validated final output"
-  jq -e '
-    .schemaVersion == 1
-    and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
-    and .status == "COMPLETE_EXACT_BOOLEAN_REACH_CONDITION"
-    and .complete == true
-    and .extractionMode == "FINAL_REPORT"
-    and .replayBootstrapOnly == false
-    and .reportableFinalReachCondition == true
-    and .fatalReplayValidated == true
-    and .fatalReplaySkippedBecauseUnreachable == false
-    and .reachabilityStatus == "REACHABLE"
-    and .truthTableComplete == true
-    and .exactFiniteProjection == true
-    and .solverErrorCount == 0
-    and ((.discoveryGaps // []) | length) == 0
-    and .satisfyingValuationCount > 0
-    and (.satisfyingValuationCount + .unsatisfyingValuationCount
-      == .valuationCount)
-    and .rootBooleanInputCount == ((.rootBooleanInputs // []) | length)
-    and (.existentialNonBooleanRootInputCount // 0)
-      == ((.existentialNonBooleanRootInputs // []) | length)
-  ' "${reach_report}" >/dev/null \
-    || die "reachable Boolean reach report is incomplete"
-  validate_json_object "relationship proof" "${proof}"
-  jq -e '
-    .schemaVersion == 1
-    and .kind == "SYMBOLIC_RELATIONSHIP_PROOF_REPORT"
-    and .status == "COMPLETE_RELATIONSHIP_PROOF"
-    and .complete == true
-    and .automaticVerificationEligible == true
-    and .baseSatisfiable == true
-    and .verificationErrorCount == 0
-    and .requiredRelationshipCount == .requiredRelationshipProvedCount
-  ' "${proof}" >/dev/null \
-    || die "reachable relationship proof is incomplete"
-  validate_artifact_binding "${composition}" composedSmtArtifact "${smt}"
-  validate_artifact_binding "${reach_report}" composedSmtArtifact "${smt}"
-  validate_artifact_binding "${reach_report}" \
-    compositionManifestArtifact "${composition}"
-
-  # Current reachable workflows have no native final_result_manifest. If a
-  # future schema publishes one, validate it rather than silently ignoring it.
-  if [[ -e "${optional_final}" ]]; then
-    validate_json_object "final result manifest" "${optional_final}"
-    jq -e '
-      .schemaVersion == 1
-      and .complete == true
-      and .reachabilityStatus == "REACHABLE"
-      and .fatalReplayValidated == true
-      and (.status | type == "string" and length > 0)
-    ' "${optional_final}" >/dev/null \
-      || die "reachable final result manifest is incomplete"
-  fi
-}
-
-validate_unreachable() {
-  local final_root=$1
-  local smt=$2
-  local composition=$3
-  local reach_report=$4
-  local final_manifest="${final_root}/final_result_manifest.json"
-  local relationships="${final_root}/symbolic_relationship_candidates.json"
-  local work_root bootstrap_smt bootstrap_composition
-  work_root=$(dirname "${final_root}")
-  bootstrap_smt="${work_root}/bootstrap/composed_fatal.smt2"
-  bootstrap_composition="${work_root}/bootstrap/composed_smt_manifest.json"
-
-  validate_json_object "final result manifest" "${final_manifest}"
-  jq -e '
-    .compositionStage == "BOOTSTRAP"
-    and .complete == false
-    and .structurallyComplete == true
-    and .eligibleForBootstrapModel == true
-    and .fatalReplayValidated == false
-  ' "${composition}" >/dev/null \
-    || die "unreachable composition is not an authoritative bootstrap output"
-  jq -e '
-    .schemaVersion == 1
-    and .kind == "CONCOLIC_UNREACHABLE_FINAL"
-    and .status == "COMPLETE_EXACT_UNREACHABLE"
-    and .complete == true
-    and .reachabilityStatus == "UNREACHABLE"
-    and .fatalReplayAttempted == false
-    and .fatalReplayValidated == false
-    and .campaignAttempted == false
-  ' "${final_manifest}" >/dev/null \
-    || die "unreachable final result manifest is incomplete"
-  jq -e '
-    .schemaVersion == 1
-    and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
-    and .status == "COMPLETE_EXACT_UNREACHABLE_REACH_CONDITION"
-    and .complete == true
-    and .extractionMode == "FINAL_UNREACHABLE_REPORT"
-    and .reportableFinalReachCondition == true
-    and .fatalReplayValidated == false
-    and .fatalReplaySkippedBecauseUnreachable == true
-    and .reachabilityStatus == "UNREACHABLE"
-    and .truthTableComplete == true
-    and .exactFiniteProjection == true
-    and .satisfyingValuationCount == 0
-    and .unsatisfyingValuationCount == .valuationCount
-    and .reachConditionSmtLib == "false"
-  ' "${reach_report}" >/dev/null \
-    || die "unreachable Boolean reach report is incomplete"
-  validate_artifact_binding "${final_manifest}" z3ReadySmtArtifact "${smt}"
-  validate_artifact_binding "${final_manifest}" \
-    compositionManifestArtifact "${composition}"
-  validate_artifact_binding "${final_manifest}" \
-    relationshipCandidatesArtifact "${relationships}"
-  validate_artifact_binding "${final_manifest}" \
-    finalReachReportArtifact "${reach_report}"
-  # The unreachable reach extractor cites the structurally complete
-  # bootstrap inputs it proved UNSAT; final_result_manifest binds their exact
-  # final copies independently above.
-  validate_artifact_binding "${reach_report}" composedSmtArtifact \
-    "${bootstrap_smt}"
-  validate_artifact_binding "${reach_report}" \
-    compositionManifestArtifact "${bootstrap_composition}"
 }
 
 validate_multitype_producer_artifacts() {
@@ -515,55 +380,6 @@ validate_candidate_outputs() {
   echo "[three-thread-rpc-matrix] ${label}: candidate ${reachability}, z3=${solver_status}"
 }
 
-validate_final_outputs() {
-  local label=$1
-  local work_root=$2
-  local z3=$3
-  local final_root="${work_root}/final"
-  local smt="${final_root}/composed_fatal.smt2"
-  local composition="${final_root}/composed_smt_manifest.json"
-  local reach_report="${final_root}/boolean_reach_condition.json"
-  local reachability solver_output solver_status expected_status
-
-  require_file "composed SMT" "${smt}"
-  [[ -s "${smt}" ]] || die "composed SMT is empty: ${smt}"
-  grep -Eq '^[[:space:]]*\(check-sat\)' "${smt}" \
-    || die "composed SMT has no check-sat command: ${smt}"
-  validate_json_object "composition manifest" "${composition}"
-  validate_json_object "Boolean reach report" "${reach_report}"
-  validate_composition_common "${composition}"
-
-  reachability=$(jq -er '
-    .reachabilityStatus
-    | select(. == "REACHABLE" or . == "UNREACHABLE")
-  ' "${reach_report}") \
-    || die "reach report has no final reachability status"
-  case "${reachability}" in
-    REACHABLE)
-      validate_reachable "${final_root}" "${smt}" "${composition}" \
-        "${reach_report}"
-      expected_status=sat
-      ;;
-    UNREACHABLE)
-      validate_unreachable "${final_root}" "${smt}" "${composition}" \
-        "${reach_report}"
-      expected_status=unsat
-      ;;
-    *) die "unsupported reachability status: ${reachability}" ;;
-  esac
-
-  solver_output=$("${z3}" "${smt}") \
-    || die "z3 failed for ${label}"
-  printf '%s\n' "${solver_output}" | grep -Fq '(error' \
-    && die "z3 reported an SMT error for ${label}"
-  solver_status=$(awk 'NF { print $1; exit }' <<< "${solver_output}")
-  [[ "${solver_status}" == "${expected_status}" ]] \
-    || die "${label} expected z3 ${expected_status}, got ${solver_status}"
-  validate_semantic_profile "${label}" "${smt}" "${reach_report}" \
-    "${work_root}"
-  echo "[three-thread-rpc-matrix] ${label}: ${reachability}, z3=${solver_status}"
-}
-
 run_case() {
   local label=$1
   local relative_config=$2
@@ -587,8 +403,7 @@ run_case() {
 mode=${1:-core}
 [[ $# -le 1 ]] || die "expected at most one mode argument"
 case "${mode}" in
-  core) ;;
-  all) ;;
+  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers) ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; die "unknown matrix mode: ${mode}" ;;
 esac
@@ -605,13 +420,39 @@ require_command stat
 [[ -x "${engine_runner}" ]] \
   || die "engine runner is not executable: ${engine_runner}"
 
-labels=(baseline cross-method-fields multitype)
-configs=(workflow.properties cross-method-fields/workflow.properties \
-  multitype/workflow.properties)
-if [[ "${mode}" == "all" ]]; then
-  labels+=(dependent-scalar containers)
-  configs+=(dependent-scalar/workflow.properties containers/workflow.properties)
-fi
+case "${mode}" in
+  core)
+    labels=(baseline cross-method-fields multitype)
+    configs=(workflow.properties cross-method-fields/workflow.properties \
+      multitype/workflow.properties)
+    ;;
+  all)
+    labels=(baseline cross-method-fields multitype dependent-scalar containers)
+    configs=(workflow.properties cross-method-fields/workflow.properties \
+      multitype/workflow.properties dependent-scalar/workflow.properties \
+      containers/workflow.properties)
+    ;;
+  baseline)
+    labels=(baseline)
+    configs=(workflow.properties)
+    ;;
+  cross-method-fields)
+    labels=(cross-method-fields)
+    configs=(cross-method-fields/workflow.properties)
+    ;;
+  multitype)
+    labels=(multitype)
+    configs=(multitype/workflow.properties)
+    ;;
+  dependent-scalar)
+    labels=(dependent-scalar)
+    configs=(dependent-scalar/workflow.properties)
+    ;;
+  containers)
+    labels=(containers)
+    configs=(containers/workflow.properties)
+    ;;
+esac
 
 for index in "${!labels[@]}"; do
   run_case "${labels[${index}]}" "${configs[${index}]}"
