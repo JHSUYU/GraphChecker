@@ -45,9 +45,10 @@ if (a > b) {
 ```
 
 `@CausynthExceptionTarget` 使用 `RetentionPolicy.CLASS`，不产生运行时行为。GraphChecker
-直接读取 classfile 的 `NEW` type annotation，得到 declaring class、JVM method descriptor、
-exception type、source line、bytecode instruction index 和同类型 construction ordinal，再将
-该唯一位置解析到对应的 Soot method/Jimple throw。静态 backward slice 因而从这一点开始，
+直接读取 classfile 的 `NEW` type annotation。目标的稳定语义身份由 declaring class、方法名与
+JVM descriptor、exception type，以及同一方法中同类型 construction ordinal 共同组成；source
+line 和 bytecode instruction index 只用于诊断与 classfile/Jimple 对齐，不属于语义身份。该身份
+被唯一解析到对应的 Soot method/Jimple throw，静态 backward slice 因而直接从这一点开始，
 不再扫描源码寻找同名 exception，也不再把同类型的其他 throw 当成候选。
 
 当一个输入 class tree 有多个 marker 时，`target.yaml` 只用稳定 id 选择一个：
@@ -255,10 +256,13 @@ Producer 的模型只能 materialize 到静态分析找到并由 instrumentation
 保持 observation-only，不得给 consumer 注入 model、返回值或 branch outcome。
 
 Map 变异只通过 VM `MethodExpression` 导入通用的 `MAP_PUT` / `MAP_REMOVE` /
-`MAP_CLEAR` / `MAP_PUT_ALL` heap transformer。直接 `Map.remove(key)` 受支持；
-`Iterator.remove()` 当前会被静态 invoke 契约精确识别并标记为 unsupported，使
-summary fail closed，不会猜测 backing map/key 或生成不可信 SMT。iterator
-`next()`、entry/key/value 读取、有限 Map snapshot 和深层字段绑定不受影响。
+`MAP_CLEAR` / `MAP_PUT_ALL` heap transformer。直接 `Map.remove(key)` 受支持；maintained
+contract 刻意不支持 `Iterator.remove()` 变异：精确 static causal-edge `invoke` 可以识别该
+调用，但 VM `HashMap.removeNode` 证据无法证明对应的 application call 与 current entry。
+importer 因此报告 `INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE`，并令
+`heapEffectModel.complete=false`、`relationallyComplete=false`，而不是通过 side channel
+猜测 backing map/key 或生成不可信 SMT。iterator `next()`、entry/key/value 读取、有限 Map
+snapshot 和深层字段绑定不受影响。
 
 ## 递归 SMT composition
 

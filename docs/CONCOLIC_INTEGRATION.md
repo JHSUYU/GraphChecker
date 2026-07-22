@@ -144,7 +144,15 @@ contract is validated.
 
 The scheduler resolves the requested output, loads its static backward slice,
 and prepares executable materializations with the same definition index used
-for target scheduling. A seed capture contains no forced branch.
+for target scheduling. The runtime activation's `symbolize` array is the input
+declaration authority; the scheduler re-derives executable `materializations`
+from those declarations, so pre-existing materializations cannot authorize
+themselves. A seed capture contains no forced branch.
+
+Every output closure must explicitly carry
+`requestedOutputCaptureComplete=true`. A legacy transition template,
+occurrence `0`, or `TRANSITION_DISCOVERY_ONLY` goal cannot bypass that gate.
+Failure leaves `schedulerReady=false` and `symbolicReady=false`.
 
 The importer rejects relational completeness unless every slice input has a
 runtime symbolization event. A structured symbol such as
@@ -190,12 +198,15 @@ specific static allocation witness plus runtime receiver binding; it is not a
 domain assumption.
 
 Direct `Map.remove(key)` is normalized through its ordinary VM
-`MethodExpression`. `Iterator.remove()` is recognized from the exact static
-causal-edge `invoke`, but its backing-map/current-entry transformer is not yet
-supported: the importer reports an explicit incomplete provenance gap. It
-never reconstructs that mutation from an iterator side channel. Non-mutating
-iterator entry reads, finite map snapshots, and nested value-field bindings
-remain supported.
+`MethodExpression`. The maintained contract deliberately does not support an
+`Iterator.remove()` mutation. Its exact static causal-edge `invoke` is
+recognized, but the VM `HashMap.removeNode` evidence cannot prove the
+corresponding application call and current entry. The importer reports
+`INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE`, sets
+`heapEffectModel.complete=false` and `relationallyComplete=false`, and never
+reconstructs the mutation from an iterator side channel. Non-mutating iterator
+entry reads, finite map snapshots, and nested value-field bindings remain
+supported.
 
 ## 7. Worklists
 
@@ -203,7 +214,10 @@ remain supported.
 
 The graph worklist starts at the fatal query's input ports and walks only
 runtime-validated equality/read-from relations for automatic composition.
-Mapping-only edges can identify a gap but stop recursive expansion.
+Mapping-only or otherwise unobserved transitions produce terminal gaps and
+stop recursive expansion. `RegionTransitionDiscoveryWorklist` has been
+deleted: no discovery capture is synthesized for such a transition, and no
+static transition template fallback exists.
 
 Its stable query key includes semantic region/output/relation context and
 excludes activation IDs. Cache lookup is output-specific. Multiple confirmed

@@ -117,10 +117,12 @@ with `CAUSYNTH_REACH_REPORT`; solver timeout is configured through
 `CAUSYNTH_SOLVER_TIMEOUT_MS`.
 
 Use `--dry-run` or `GRAPH_CHECKER_DRY_RUN=true` to inspect constructed commands.
-For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded,
-deterministic graph projections after analyze/workload/schedule, guarded
-symbolic merges after merge, and the generated SMT after compose, all on
-stderr. The item and byte caps are configurable through
+For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded
+stage artifacts on stderr: analyze shows the static graph, symbolic regions,
+and symbolic region edges; workload shows `runtime_region_instances.jsonl`,
+`runtime_region_edge_validation.jsonl`, and `concolic_activation_plan.jsonl`;
+schedule shows `symbolic_merge_plan.json`; merge and compose show the guarded
+merge and generated SMT. The item and byte caps are configurable through
 `GRAPH_CHECKER_DEBUG_MAX_ITEMS` and `GRAPH_CHECKER_DEBUG_MAX_BYTES`.
 Run the shell regression with:
 
