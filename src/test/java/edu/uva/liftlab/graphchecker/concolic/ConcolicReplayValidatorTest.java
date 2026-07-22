@@ -621,6 +621,7 @@ public class ConcolicReplayValidatorTest {
         JsonObject task = new JsonObject();
         task.addProperty("queryKey", "Q");
         task.addProperty("regionId", "REGION.3");
+        task.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
         BranchWitness prefix = branchWitness("SITE.0", true,
                 branchPredicate("REGION.3.in.0", ">"), 0);
         BranchWitness source = branchWitness("SITE.1", true,
