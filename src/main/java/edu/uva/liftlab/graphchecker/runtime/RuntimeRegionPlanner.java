@@ -8370,7 +8370,8 @@ final class RuntimeRegionPlanner {
                     "fromCell", jsonString(json, "fromCell"),
                     "toCell", jsonString(json, "toCell"),
                     "transferKind", jsonString(json, "transferKind"),
-                    "kind", jsonString(json, "kind"));
+                    "kind", jsonString(json, "kind"),
+                    "invoke", jsonString(json, "invoke"));
             int projectionVersion = jsonInt(json,
                     "containerProjectionContractVersion", -1);
             if (projectionVersion >= 0) {

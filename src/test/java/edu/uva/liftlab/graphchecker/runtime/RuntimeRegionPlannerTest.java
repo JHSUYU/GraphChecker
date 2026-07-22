@@ -1527,7 +1527,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"fromCell\":\"" + updater + "::key\","
                     + "\"toCell\":\"" + field + "\","
                     + "\"transferKind\":\"HEAP_WRITE\","
-                    + "\"kind\":\"field_mutation\"}],"
+                    + "\"kind\":\"field_mutation\","
+                    + "\"invoke\":\"<java.util.Iterator: void remove()>\"}],"
                     + "\"requestedStateTransformerContractVersion\":1,"
                     + "\"requestedStateTransformerContractApplicable\":true,"
                     + "\"requestedStateTransformerContractOutputPort\":"
@@ -1702,6 +1703,8 @@ public class RuntimeRegionPlannerTest {
                     .contains("STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
                     .contains("guardedMutationSiteId=" + updater + "#u15"));
+            assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
+                    .contains("invoke=<java.util.Iterator: void remove()>"));
             assertTrue(result.activationsJsonl().contains(
                     "\"fromOutputPort\":\"REGION.W.out.0\""));
             assertTrue(result.activationsJsonl().contains(

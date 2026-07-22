@@ -428,8 +428,8 @@ public final class CausynthPipeline {
                 materializationSelection, refs);
         int outputCaptureHookCount = instrumentConcolicOutputCaptures(
                 outputCaptureSelection, refs);
-        int backedViewMutationHookCount =
-                instrumentConcolicBackedViewMutations(backedViewMethods, refs);
+        int mapEntryObservationHookCount =
+                instrumentConcolicMapEntryObservations(backedViewMethods, refs);
         int branchCount = instrumentConcolicBranches(branchSelection, refs);
         result.slices.put("concolicRegionRootCount", roots.size());
         result.slices.put("concolicRegionInstrumentedRootCount", instrumented);
@@ -441,8 +441,8 @@ public final class CausynthPipeline {
                 accessorCallContextCount);
         result.slices.put("concolicOutputCaptureHookCount",
                 outputCaptureHookCount);
-        result.slices.put("concolicBackedViewMutationHookCount",
-                backedViewMutationHookCount);
+        result.slices.put("concolicMapEntryObservationHookCount",
+                mapEntryObservationHookCount);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
     }
@@ -1086,13 +1086,12 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Instruments the Java collection-view protocol which implements
-     * {@code Iterator.remove()} as a mutation of the backing map.  Static
-     * analysis deliberately supplies a broad set of same-thread region
-     * methods; the runtime's active activation and identity bindings decide
-     * which concrete views actually belong to the selected heap state.
+     * Instruments non-mutating Map entry observations. Static analysis
+     * deliberately supplies a broad set of same-thread region methods; the
+     * runtime's active activation and identity bindings decide which concrete
+     * views actually belong to the selected heap state.
      */
-    private int instrumentConcolicBackedViewMutations(
+    private int instrumentConcolicMapEntryObservations(
             Set<String> methods, ConcolicRegionRefs refs) {
         int count = 0;
         for (String signature : methods) {
@@ -1160,20 +1159,6 @@ public final class CausynthPipeline {
                                         IntConstant.v(unitIndex),
                                         objectArg(body, instance.getBase(), after),
                                         objectArg(body, element, after))));
-                        recognized = true;
-                    } else if ("remove".equals(name)
-                            && invoke.getMethodRef().returnType()
-                            instanceof VoidType) {
-                        // A post-call hook is reached only when remove()
-                        // returns normally. IllegalStateException and other
-                        // exceptional removals therefore cannot become
-                        // applied heap effects.
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.recordMapIteratorRemove,
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex),
-                                        objectArg(body, instance.getBase(), after))));
                         recognized = true;
                     }
                     if (!recognized) {
@@ -2435,7 +2420,6 @@ public final class CausynthPipeline {
         private final SootMethodRef registerMapView;
         private final SootMethodRef registerMapViewIterator;
         private final SootMethodRef recordMapIteratorNext;
-        private final SootMethodRef recordMapIteratorRemove;
         private final SootMethodRef recordOutputCapture;
         private final SootMethodRef activeToken;
         private final SootMethodRef recordFieldAssignmentOutput;
@@ -2464,7 +2448,6 @@ public final class CausynthPipeline {
                                    SootMethodRef registerMapView,
                                    SootMethodRef registerMapViewIterator,
                                    SootMethodRef recordMapIteratorNext,
-                                   SootMethodRef recordMapIteratorRemove,
                                    SootMethodRef recordOutputCapture,
                                    SootMethodRef activeToken,
                                    SootMethodRef recordFieldAssignmentOutput,
@@ -2493,7 +2476,6 @@ public final class CausynthPipeline {
             this.registerMapView = registerMapView;
             this.registerMapViewIterator = registerMapViewIterator;
             this.recordMapIteratorNext = recordMapIteratorNext;
-            this.recordMapIteratorRemove = recordMapIteratorRemove;
             this.recordOutputCapture = recordOutputCapture;
             this.activeToken = activeToken;
             this.recordFieldAssignmentOutput =
@@ -2578,10 +2560,6 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(runtime,
                             "recordMapIteratorNext",
                             Arrays.asList(string, IntType.v(), object, object),
-                            VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "recordMapIteratorRemove",
-                            Arrays.asList(string, IntType.v(), object),
                             VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime,
                             "recordOutputCapture",

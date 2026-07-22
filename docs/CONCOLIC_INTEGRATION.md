@@ -1,7 +1,7 @@
 # Concolic Region Integration Contract
 
 Status: the maintained generic workflow produces hash-bound, independently
-Z3-checked candidate models for the five reference profiles. Natural replay
+Z3-checked candidate models for the six reference profiles. Natural replay
 promotion remains the explicit final TODO.
 
 This document defines the project-independent contract between GraphChecker's
@@ -188,6 +188,14 @@ Map mutations are ordered state transitions such as `MAP_PUT`, `MAP_REMOVE`,
 input/output ports, and expression operands. A fresh empty map requires a
 specific static allocation witness plus runtime receiver binding; it is not a
 domain assumption.
+
+Direct `Map.remove(key)` is normalized through its ordinary VM
+`MethodExpression`. `Iterator.remove()` is recognized from the exact static
+causal-edge `invoke`, but its backing-map/current-entry transformer is not yet
+supported: the importer reports an explicit incomplete provenance gap. It
+never reconstructs that mutation from an iterator side channel. Non-mutating
+iterator entry reads, finite map snapshots, and nested value-field bindings
+remain supported.
 
 ## 7. Worklists
 

@@ -4186,7 +4186,8 @@ final class SymbolicRegionPlanner {
                         "fromCell", string(edge.get("fromCell")),
                         "toCell", string(edge.get("toCell")),
                         "transferKind", string(edge.get("transferKind")),
-                        "kind", string(edge.get("kind")));
+                        "kind", string(edge.get("kind")),
+                        "invoke", string(edge.get("invoke")));
                 copyStructuredGuardMetadata(edge, reference);
                 result.add(reference);
             }

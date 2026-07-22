@@ -1546,7 +1546,9 @@ public class ConcolicSmtComposerTest {
         }
     }
     @Test
-    public void composesVersionedJavaMapMutationChain() throws Exception {
+    public void composesAndSolvesVersionedJavaMapMutationChain()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
@@ -1567,6 +1569,7 @@ public class ConcolicSmtComposerTest {
                     "(map_remove port__local_heap__summary_SUMMARY_P__"));
             assertTrue(result.smtLib.contains(
                     "__REGION_P_out_heapMap0_state3 port__REGION_P_in_1)"));
+            assertZ3Status(result.smtLib, "sat");
         } finally {
             folder.delete();
         }
@@ -2052,116 +2055,6 @@ public class ConcolicSmtComposerTest {
 
             assertFalse(binding.isEmpty());
             assertFalse(binding.contains("(=>"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void mapRemoveBindsRemovedExpiryToPreStateEntry() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Fixture fixture = fixture(folder.getRoot().toPath(), true);
-            JsonObject remove = mapEffect("MAP_REMOVE", "REGION.P.in.0",
-                    "REGION.P.out.0", 0);
-            remove.addProperty("requiresKeyPresent", true);
-            remove.add("removedValueExpression", symbol("J", "expiry_value"));
-            remove.addProperty("entryBindingAuthority",
-                    "JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT");
-            remove.addProperty("valueBindingAuthority",
-                    "SAME_MAP_ENTRY_GET_VALUE_AT_NEXT");
-            JsonArray effects = new JsonArray();
-            effects.add(remove);
-            JsonObject summary = producerSummary(effects, true);
-            summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-            JsonObject requested = new JsonObject();
-            requested.addProperty("portId", "REGION.P.out.0");
-            summary.add("requestedOutput", requested);
-            summary.getAsJsonArray("pathCondition").add(
-                    integerCondition(">", 0));
-            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
-                    java.util.Collections.singletonList(summary),
-                    closedPathManifest());
-            writeSummary(fixture, merged.summaries.get(0));
-
-            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
-                    arguments(fixture));
-            String present = lineContaining(result.smtLib,
-                    ":named heap_remove_key_present_");
-            String value = lineContaining(result.smtLib,
-                    ":named heap_remove_value_binding_");
-
-            assertTrue(present.contains("(=>"));
-            assertTrue(present.contains(
-                    "(map_has port__REGION_P_in_0 (VMapInteger 7))"));
-            assertTrue(value.contains("(=>"));
-            assertTrue(value.contains(
-                    "(map_select port__REGION_P_in_0 (VMapInteger 7))"));
-            assertTrue(value.contains("expiry_value"));
-
-            // The same generic remove transformer, when selected by an exact
-            // post-state edge into a fatal Map.get == null, must derive key
-            // equality from map semantics rather than asserting it directly.
-            Fixture causalFixture = fixture(folder.newFolder("causal")
-                    .toPath(), true);
-            JsonObject causalRemove = mapEffect("MAP_REMOVE",
-                    "REGION.P.in.0", "REGION.P.out.0", 0);
-            causalRemove.addProperty("requiresKeyPresent", true);
-            causalRemove.addProperty("provenanceAuthority",
-                    "STATIC_EXACT_ITERATOR_REMOVE_V1");
-            JsonArray causalEffects = new JsonArray();
-            causalEffects.add(causalRemove);
-            JsonObject causalSummary = producerSummary(causalEffects, true);
-            JsonObject exactEdge = runtimeEdgeBinding("REGION.P",
-                    "REGION.P@fixture#call1", "REGION.P.out.0",
-                    "REGION.F", "REGION.F@fixture#call2",
-                    "REGION.F.in.0", 10, 20, 41);
-            JsonArray exactEdges = new JsonArray();
-            exactEdges.add(exactEdge);
-            causalSummary.add("edgeBindings", exactEdges.deepCopy());
-            writeSummary(causalFixture, causalSummary);
-            installFatalRelations(causalFixture, exactEdges);
-
-            ConcolicSmtComposer.Result causalResult =
-                    ConcolicSmtComposer.compose(arguments(causalFixture));
-            assertEquals(causalResult.manifest.toString(), 1,
-                    causalResult.manifest.get(
-                            "causalMapRemoveMissBindingCount").getAsInt());
-            assertEquals(2, causalResult.manifest.get(
-                    "causalMapRemoveMissConstraintCount").getAsInt());
-            JsonObject causalAudit = causalResult.manifest.getAsJsonArray(
-                    "causalMapRemoveMissBindings").get(0).getAsJsonObject();
-            assertFalse(causalAudit.get("directKeyEqualityAsserted")
-                    .getAsBoolean());
-            String derivedEquality = causalAudit.get(
-                    "derivedKeyEqualityFormula").getAsString();
-            assertFalse(causalResult.smtLib.contains(
-                    "(assert (! " + derivedEquality));
-            assertTrue(causalResult.relationships.getAsJsonArray(
-                    "relationships").toString().contains(
-                    "DERIVED_MAP_REMOVE_FATAL_MISS_KEY_EQUALITY"));
-            assertTrue(lineContaining(causalResult.smtLib,
-                    ":named causal_map_miss_post_absent_")
-                    .contains("(not (map_has port__REGION_F_in_0"));
-            assertTrue(lineContaining(causalResult.smtLib,
-                    ":named causal_map_miss_pre_present_")
-                    .contains("(map_has port__REGION_P_in_0"));
-
-            Path causalSmt = causalFixture.output.resolveSibling(
-                    "causal-distinct.smt2");
-            Path causalZ3 = causalFixture.output.resolveSibling(
-                    "causal-distinct.z3.out");
-            Files.write(causalSmt, causalResult.smtLib.replace(
-                    "(check-sat)", "(assert (not " + derivedEquality
-                            + "))\n(check-sat)").getBytes(
-                    StandardCharsets.UTF_8));
-            Process causalProcess = new ProcessBuilder("/usr/local/bin/z3",
-                    causalSmt.toString()).redirectOutput(
-                    causalZ3.toFile()).start();
-            assertEquals(0, causalProcess.waitFor());
-            assertTrue(new String(Files.readAllBytes(causalZ3),
-                    StandardCharsets.UTF_8).startsWith("unsat"));
         } finally {
             folder.delete();
         }

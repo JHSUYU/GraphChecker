@@ -4426,7 +4426,7 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void instrumentsApplicationOriginForBackedViewIteratorRemoval()
+    public void instrumentsBackedMapEntryObservationsWithoutRemoveHook()
             throws Exception {
         IteratorMutationFixture fixture = iteratorMutationFixture();
         Class<?> refsClass = Class.forName(
@@ -4435,7 +4435,7 @@ public class CausynthPipelineTest {
         create.setAccessible(true);
         Object refs = create.invoke(null);
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                "instrumentConcolicBackedViewMutations", Set.class,
+                "instrumentConcolicMapEntryObservations", Set.class,
                 refsClass);
         instrument.setAccessible(true);
 
@@ -4443,7 +4443,7 @@ public class CausynthPipelineTest {
                 new CausynthPipeline(null),
                 Collections.singleton(fixture.method.getSignature()), refs);
 
-        assertEquals(4, count);
+        assertEquals(3, count);
         Map<String, InvokeExpr> hooks = new LinkedHashMap<>();
         for (Unit unit : fixture.method.getActiveBody().getUnits()) {
             if (!(unit instanceof Stmt)
@@ -4460,17 +4460,9 @@ public class CausynthPipelineTest {
         assertTrue(hooks.containsKey("registerMapView"));
         assertTrue(hooks.containsKey("registerMapViewIterator"));
         assertTrue(hooks.containsKey("recordMapIteratorNext"));
-        assertTrue(hooks.containsKey("recordMapIteratorRemove"));
-        InvokeExpr remove = hooks.get("recordMapIteratorRemove");
-        assertEquals(fixture.method.getSignature(),
-                remove.getArg(0).toString().replace("\"", ""));
-        assertEquals(fixture.removeUnitIndex,
-                ((soot.jimple.IntConstant) remove.getArg(1)).value);
-        List<Unit> ordered = new ArrayList<>();
-        Unit originalRemove = null;
-        Unit removeHook = null;
+        assertFalse(hooks.containsKey("recordMapIteratorRemove"));
+        boolean originalRemovePresent = false;
         for (Unit unit : fixture.method.getActiveBody().getUnits()) {
-            ordered.add(unit);
             if (!(unit instanceof Stmt)
                     || !((Stmt) unit).containsInvokeExpr()) {
                 continue;
@@ -4481,15 +4473,38 @@ public class CausynthPipelineTest {
                     .getMethodRef().declaringClass().getName();
             if ("remove".equals(name)
                     && "java.util.Iterator".equals(owner)) {
-                originalRemove = unit;
-            } else if ("recordMapIteratorRemove".equals(name)) {
-                removeHook = unit;
+                originalRemovePresent = true;
             }
         }
-        assertNotNull(originalRemove);
-        assertNotNull(removeHook);
-        assertTrue("remove provenance must be a normal-return post hook",
-                ordered.indexOf(originalRemove) < ordered.indexOf(removeHook));
+        assertTrue("the application remove call must remain unmodified",
+                originalRemovePresent);
+    }
+
+    @Test
+    public void retainsReadOnlyMapViewAndIteratorObservationFactories()
+            throws Exception {
+        Method viewFactory = CausynthPipeline.class.getDeclaredMethod(
+                "isBackedMapViewFactory", String.class);
+        Method viewKind = CausynthPipeline.class.getDeclaredMethod(
+                "mapViewKind", String.class);
+        Method iteratorFactory = CausynthPipeline.class.getDeclaredMethod(
+                "isIteratorFactory", String.class);
+        viewFactory.setAccessible(true);
+        viewKind.setAccessible(true);
+        iteratorFactory.setAccessible(true);
+
+        assertTrue((Boolean) viewFactory.invoke(null, "entrySet"));
+        assertTrue((Boolean) viewFactory.invoke(null, "keySet"));
+        assertTrue((Boolean) viewFactory.invoke(null, "values"));
+        assertFalse((Boolean) viewFactory.invoke(null, "remove"));
+        assertEquals("ENTRY_SET", viewKind.invoke(null, "entrySet"));
+        assertEquals("KEY_SET", viewKind.invoke(null, "keySet"));
+        assertEquals("VALUES", viewKind.invoke(null, "values"));
+        assertTrue((Boolean) iteratorFactory.invoke(null, "iterator"));
+        assertTrue((Boolean) iteratorFactory.invoke(null, "listIterator"));
+        assertTrue((Boolean) iteratorFactory.invoke(
+                null, "descendingIterator"));
+        assertFalse((Boolean) iteratorFactory.invoke(null, "remove"));
     }
 
     private static boolean hasHeapMutationGuard(

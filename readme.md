@@ -254,6 +254,12 @@ Producer 的模型只能 materialize 到静态分析找到并由 instrumentation
 `forcedBranches` 不能作为关系证据。当前输出到候选模型为止；未来的可信升级必须让 target
 保持 observation-only，不得给 consumer 注入 model、返回值或 branch outcome。
 
+Map 变异只通过 VM `MethodExpression` 导入通用的 `MAP_PUT` / `MAP_REMOVE` /
+`MAP_CLEAR` / `MAP_PUT_ALL` heap transformer。直接 `Map.remove(key)` 受支持；
+`Iterator.remove()` 当前会被静态 invoke 契约精确识别并标记为 unsupported，使
+summary fail closed，不会猜测 backing map/key 或生成不可信 SMT。iterator
+`next()`、entry/key/value 读取、有限 Map snapshot 和深层字段绑定不受影响。
+
 ## 递归 SMT composition
 
 Composer 从 fatal query 反向遍历 region graph。若下游端口 `D.in.j` 由上游端口

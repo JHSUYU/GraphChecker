@@ -2582,6 +2582,7 @@ public class SymbolicRegionPlannerTest {
                 "field_mutation", prune + "#u15", allKeys, 15);
         mutation.put("id", "DF.REMOVE");
         mutation.put("siteId", prune + "#u15");
+        mutation.put("invoke", "<java.util.Iterator: void remove()>");
         edges.add(mutation);
         Map<String, Object> loopGuard = edge(prune, "GUARD",
                 "heap_mutation_path_guard", loopPredicate, allKeys, 6);
@@ -2704,6 +2705,12 @@ public class SymbolicRegionPlannerTest {
                 outerGuardReference.get("guardedMutationCount"));
         assertEquals(1, ((List<?>) outerGuardReference.get(
                 "guardedMutations")).size());
+        Map<String, Object> removeReference = causalReferences.stream()
+                .filter(reference -> "DF.REMOVE".equals(reference.get(
+                        "edgeId")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals("<java.util.Iterator: void remove()>",
+                removeReference.get("invoke"));
         @SuppressWarnings("unchecked")
         List<String> causalIds = (List<String>) slice.get("causalEdgeIds");
         assertTrue(causalIds.containsAll(Arrays.asList(

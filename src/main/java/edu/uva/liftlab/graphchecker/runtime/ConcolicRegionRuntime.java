@@ -82,7 +82,8 @@ public final class ConcolicRegionRuntime {
                     + "AND_EXACT_OUTPUT_RECHECK";
     private static final String FINITE_MAP_SNAPSHOT_AUTHORITY =
             "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT_EXACT_HASHMAP_OR_"
-                    + "LINKEDHASHMAP_SAME_EXECUTION_PRE_REMOVE_STABLE_SIZE_"
+                    + "LINKEDHASHMAP_SAME_EXECUTION_"
+                    + "AT_ITERATOR_NEXT_STABLE_SIZE_"
                     + "AND_ENTRY_SET_DISTINCT_IMMUTABLE_KEYS_V1";
     private static final String FINITE_MAP_VALUE_EXPRESSION_AUTHORITY =
             "PER_ENTRY_EXACT_RUNTIME_NULL_OR_ACTIVATION_LOCAL_OBJECT_TOKEN_"
@@ -1401,7 +1402,7 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Binds a concrete Java Map view to its backing map for the currently
-     * selected activation.  Instrumentation calls this only after the view
+     * selected activation. Instrumentation calls this only after the view
      * factory returned normally and while path-condition recording is paused.
      */
     public static void registerMapView(String method, int unitIndex,
@@ -1432,9 +1433,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Captures the entry selected by {@code Iterator.next()} before a later
-     * remove mutates the map.  Expressions are obtained from the custom JDK's
-     * public expression API, never reconstructed from domain-specific fields.
+     * Captures the entry selected by {@code Iterator.next()}. Expressions are
+     * obtained from the custom JDK's public expression API, never
+     * reconstructed from domain-specific fields.
      */
     public static void recordMapIteratorNext(String method, int unitIndex,
                                              Object iterator,
@@ -1468,9 +1469,8 @@ public final class ConcolicRegionRuntime {
                 cursor.valueKnown = true;
             } else if ("VALUES".equals(cursor.binding.viewKind)) {
                 // Values views do not reveal a unique key when values are
-                // duplicated.  The native remove expression may supply that
-                // key after the successful call; until then this remains an
-                // explicit fail-closed binding obligation.
+                // duplicated; preserve the exact value observation without
+                // inventing a key binding.
                 cursor.value = element;
                 cursor.valueKnown = true;
             } else {
@@ -1663,7 +1663,6 @@ public final class ConcolicRegionRuntime {
             observation.addProperty("firstIteratorEntryMatched", true);
             observation.addProperty("sizeStable", true);
             observation.addProperty("entrySetStable", true);
-            observation.addProperty("preRemove", true);
             observation.addProperty("authority",
                     FINITE_MAP_SNAPSHOT_AUTHORITY);
             observation.addProperty("complete", true);
@@ -1846,10 +1845,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Persists the non-mutating entry read independently of a later
-     * {@code Iterator.remove()}.  Keeping this separate from heap effects is
-     * important: a path which retains the entry still needs an exact witness
-     * that its guard value came from one key/value pair in the backing map.
+     * Persists a non-mutating entry read. A guard that consumes the entry
+     * still needs an exact witness that its value came from one key/value pair
+     * in the backing map.
      */
     private static void recordMapEntryRead(ActiveRegion active,
                                            String method, int unitIndex,
@@ -2087,8 +2085,6 @@ public final class ConcolicRegionRuntime {
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT".equals(
                         cursor.valueExpressionAuthority)
                         || "AFTER_MATCHED_FIELD_SYMBOLIZATION".equals(
-                        cursor.valueExpressionAuthority)
-                        || "BEFORE_ITERATOR_REMOVE_JOIN".equals(
                         cursor.valueExpressionAuthority)
                         || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT"
                         .equals(cursor.valueExpressionAuthority)
@@ -2425,271 +2421,6 @@ public final class ConcolicRegionRuntime {
                 string(target, "kind")) || bool(target, "complete", true);
         target.addProperty("complete", binding.complete
                 && enclosingComplete);
-    }
-
-    /**
-     * Records one canonical map removal after {@code Iterator.remove()}
-     * returned normally.  Because the hook is post-call, an exceptional
-     * remove never sets {@code applied=true}.  The application site is joined
-     * to the unique native MethodExpression in the newly recorded VM suffix.
-     */
-    public static void recordMapIteratorRemove(String method, int unitIndex,
-                                               Object iterator) {
-        ActiveRegion active = activeRegion();
-        if (active == null || iterator == null) {
-            return;
-        }
-        MapIteratorCursor cursor = active.mapIterators.get(iterator);
-        if (cursor == null) {
-            // Most Iterator.remove calls in a broad static region are not map
-            // backed. Identity provenance, rather than the method name alone,
-            // is the admission authority.
-            return;
-        }
-
-        // A field hook between next() and remove() may have made the entry
-        // value's custom-JDK expression available.  Refresh once more before
-        // joining application provenance to the native map transformer.
-        refreshMapEntryValueExpression(active, cursor,
-                "BEFORE_ITERATOR_REMOVE_JOIN");
-
-        String originSite = siteId(method, unitIndex);
-        JsonObject effect = new JsonObject();
-        effect.addProperty("schemaVersion", 1);
-        effect.addProperty("kind", "MAP_REMOVE");
-        effect.addProperty("operation", "java.util.Iterator.remove");
-        effect.addProperty("originMethod", safe(method));
-        effect.addProperty("originUnitIndex", unitIndex);
-        effect.addProperty("siteId", originSite);
-        effect.addProperty("occurrence",
-                active.nextHeapEffectOccurrence(originSite));
-        effect.addProperty("eventSequence",
-                active.nextRuntimeEventSequence());
-        effect.addProperty("applied", true);
-        effect.addProperty("viewKind", cursor.binding.viewKind);
-        effect.addProperty("viewOriginSiteId",
-                cursor.binding.originSiteId);
-        effect.addProperty("iteratorOriginSiteId",
-                cursor.iteratorOriginSiteId);
-        effect.addProperty("nextOriginSiteId", cursor.nextOriginSiteId);
-        effect.addProperty("provenanceAuthority",
-                "ACTIVATION_LOCAL_BACKED_VIEW_IDENTITY_AND_NORMAL_RETURN");
-        effect.addProperty("portBindingAuthority",
-                "DEFERRED_TO_IMPORTER_EXACT_ACTIVATION_PORT");
-        effect.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        effect.addProperty("objectTokenScope",
-                active.activation.activationId);
-        effect.addProperty("entryReadObservationId",
-                cursor.entryObservationId);
-        effect.addProperty("entryReadObservationSequence",
-                cursor.entryObservationSequence);
-        effect.addProperty("entryReadObservationComplete",
-                cursor.entryObservationComplete);
-        effect.addProperty("backingMapObjectToken",
-                active.objectToken(cursor.binding.map));
-        effect.addProperty("backingMapObjectTokenKnown", true);
-        effect.addProperty("keyObjectToken", cursor.keyKnown
-                ? active.objectToken(cursor.key) : 0L);
-        effect.addProperty("keyObjectTokenKnown", cursor.keyKnown);
-        effect.addProperty("keyWasNull",
-                cursor.keyKnown && cursor.key == null);
-        long valueObjectToken = cursor.valueKnown
-                ? active.objectToken(cursor.value) : 0L;
-        effect.addProperty("valueObjectToken", valueObjectToken);
-        effect.addProperty("valueObjectTokenKnown", cursor.valueKnown);
-        effect.addProperty("valueWasNull",
-                cursor.valueKnown && cursor.value == null);
-        effect.addProperty("entryObjectToken",
-                active.objectToken(cursor.element));
-        effect.addProperty("entryObjectTokenKnown",
-                cursor.element instanceof Map.Entry);
-        effect.addProperty("valueRequiredForTransformer", false);
-        boolean entrySet = "ENTRY_SET".equals(cursor.binding.viewKind);
-        effect.addProperty("valueRequiredForGuardProvenance", entrySet);
-        if (entrySet && cursor.element instanceof Map.Entry) {
-            effect.addProperty("entryBindingAuthority",
-                    "JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT");
-            effect.addProperty("valueBindingAuthority",
-                    "SAME_MAP_ENTRY_GET_VALUE_AT_NEXT");
-            effect.addProperty("keyBindingAuthority",
-                    "SAME_MAP_ENTRY_GET_KEY_AT_NEXT");
-        } else if ("KEY_SET".equals(cursor.binding.viewKind)) {
-            effect.addProperty("keyBindingAuthority",
-                    "BOUND_KEY_SET_NEXT_ELEMENT");
-            effect.addProperty("valueBindingAuthority",
-                    "BACKING_MAP_LOOKUP_AT_NEXT");
-        } else if ("VALUES".equals(cursor.binding.viewKind)) {
-            effect.addProperty("valueBindingAuthority",
-                    "BOUND_VALUES_NEXT_ELEMENT");
-        }
-
-        String unresolved = cursor.hasCurrent ? safe(cursor.bindingError)
-                : "Iterator.remove returned normally without a bound next element";
-        JsonArray conditions = new JsonArray();
-        int start = Math.max(cursor.pathConditionSize,
-                active.lastPathConditionSize);
-        int end = start;
-        if (active.engineBacked) {
-            try {
-                JsonElement parsed = parseJson(engine().pathCondition());
-                conditions = parsed.isJsonArray()
-                        ? parsed.getAsJsonArray() : new JsonArray();
-                end = conditions.size();
-            } catch (Throwable throwable) {
-                unresolved = appendReason(unresolved,
-                        "VM path condition unavailable: "
-                                + rootCause(throwable));
-            }
-        }
-        effect.addProperty("rawPathConditionStart", start);
-        effect.addProperty("rawPathConditionEnd", end);
-
-        if (cursor.mapExpression != null) {
-            effect.add("mapExpression", cursor.mapExpression);
-        }
-        effect.addProperty("mapExpressionAuthority",
-                cursor.mapExpressionAuthority);
-        if (cursor.keyExpression != null) {
-            effect.add("keyExpression", cursor.keyExpression);
-        }
-        if (!safe(cursor.keyExpressionAuthority).isEmpty()) {
-            effect.addProperty("keyExpressionAuthority",
-                    cursor.keyExpressionAuthority);
-        }
-        if (cursor.valueExpression != null) {
-            effect.add("valueExpression", cursor.valueExpression);
-        }
-        effect.addProperty("valueExpressionAuthority",
-                cursor.valueExpressionAuthority);
-        annotateValueRefWitness(effect, active, cursor);
-
-        if (active.engineBacked && cursor.mapExpression != null
-                && "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT"
-                .equals(cursor.mapExpressionAuthority)) {
-            List<Integer> matches = nativeRemoveConditionIndices(conditions,
-                    start, cursor.mapExpression, cursor.keyKnown
-                            ? cursor.keyExpression : null);
-            boolean runtimeEntryKeyFallback = false;
-            if (matches.isEmpty() && entrySet && cursor.hasCurrent
-                    && cursor.entryObservationComplete && cursor.keyKnown
-                    && cursor.valueKnown && cursor.keyExpression != null
-                    && cursor.valueExpression != null
-                    && "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT".equals(
-                    cursor.keyExpressionAuthority)) {
-                List<Integer> receiverMatches = nativeRemoveConditionIndices(
-                        conditions, start, cursor.mapExpression, null);
-                if (receiverMatches.size() == 1
-                        && nativeRemoveSupportsIntegerEntryKeyRebind(
-                        conditions.get(receiverMatches.get(0)),
-                        cursor.mapExpression, cursor.keyExpression,
-                        cursor.valueExpression)) {
-                    matches = receiverMatches;
-                    runtimeEntryKeyFallback = true;
-                } else if (receiverMatches.size() > 1) {
-                    // Preserve ambiguity.  A key representation fallback is
-                    // admissible only for one remove on the exact receiver in
-                    // the post-call PC suffix.
-                    matches = receiverMatches;
-                }
-            }
-            if (matches.size() == 1) {
-                int index = matches.get(0);
-                JsonObject nativeEffect = conditions.get(index)
-                        .getAsJsonObject();
-                effect.addProperty("vmJoinStatus", "UNIQUE_MATCH");
-                effect.addProperty("vmKeyJoinAuthority",
-                        runtimeEntryKeyFallback
-                                ? "UNIQUE_HASHMAP_REMOVENODE_RECEIVER_RESULT_"
-                                + "HASH_PLUS_RUNTIME_ENTRY_KEY_V1"
-                                : "EXACT_NATIVE_REMOVE_MAP_AND_KEY_"
-                                + "EXPRESSION_V1");
-                effect.addProperty("vmConditionIndex", index);
-                effect.add("vmExpression", nativeEffect);
-                if (runtimeEntryKeyFallback) {
-                    effect.add("nativeKeyExpression",
-                            copyJsonTree(nativeRemoveKey(nativeEffect)));
-                }
-                JsonElement resolvedKey = resolvedIteratorRemoveKey(
-                        cursor.keyExpression, nativeEffect);
-                if (cursor.keyExpression == null && resolvedKey != null) {
-                    cursor.keyExpression = resolvedKey;
-                    effect.add("keyExpression", resolvedKey);
-                    effect.addProperty("keyBindingAuthority",
-                            "UNIQUE_NATIVE_REMOVE_EXPRESSION_EXACT_JOIN");
-                }
-            } else {
-                String status = matches.isEmpty() ? "NO_MATCH" : "AMBIGUOUS";
-                effect.addProperty("vmJoinStatus", status);
-                unresolved = appendReason(unresolved,
-                        status + " native map-remove expression in selected PC suffix");
-            }
-        } else if (!active.engineBacked) {
-            effect.addProperty("vmJoinStatus", "NOT_SYMBOLIC_EXECUTION");
-        } else {
-            boolean syntheticMapWitness = MAP_REF_WITNESS_AUTHORITY.equals(
-                    cursor.mapExpressionAuthority);
-            effect.addProperty("vmJoinStatus", syntheticMapWitness
-                    ? "UNSUPPORTED_SYNTHETIC_MAP_WITNESS_FOR_NATIVE_JOIN"
-                    : "MISSING_MAP_EXPRESSION");
-            unresolved = appendReason(unresolved,
-                    syntheticMapWitness
-                            ? "activation-local map witness is not a native "
-                            + "effect expression"
-                            : "map expression unavailable for native effect "
-                            + "join");
-        }
-
-        int guardIndex = latestGuardMapping(active, method,
-                cursor.pathConditionSize, end);
-        if (guardIndex >= 0) {
-            JsonObject guard = active.branchMappings.get(guardIndex);
-            effect.addProperty("guardCandidateMappingIndex", guardIndex);
-            effect.addProperty("guardCandidateSiteId",
-                    string(guard, "siteId"));
-            effect.addProperty("guardCandidateAuthority",
-                    "ORDERED_CANDIDATE_REQUIRES_STATIC_DOMINANCE_VALIDATION");
-            if (guard.has("condition")) {
-                effect.add("guardCandidateCondition",
-                        guard.get("condition"));
-            }
-        }
-
-        if (cursor.mapExpression == null || cursor.keyExpression == null) {
-            unresolved = appendReason(unresolved,
-                    "map/key symbolic transformer binding is incomplete");
-        }
-        boolean transformerComplete = cursor.mapExpression != null
-                && cursor.keyExpression != null
-                && (!active.engineBacked
-                || "UNIQUE_MATCH".equals(string(effect, "vmJoinStatus")));
-        boolean guardValueBindingComplete = !entrySet
-                || cursor.valueExpression != null
-                && cursor.element instanceof Map.Entry
-                && valueObjectToken > 0L;
-        if (!guardValueBindingComplete) {
-            unresolved = appendReason(unresolved,
-                    "entry value expression is unavailable for guard provenance");
-        }
-        effect.addProperty("transformerComplete", transformerComplete);
-        effect.addProperty("guardValueBindingComplete",
-                guardValueBindingComplete);
-        effect.addProperty("valueCaptureComplete",
-                cursor.valueExpression != null);
-        boolean complete = unresolved.isEmpty() && transformerComplete
-                && guardValueBindingComplete;
-        effect.addProperty("runtimeProvenanceComplete", complete);
-        effect.addProperty("complete", complete);
-        if (!complete) {
-            effect.addProperty("unresolvedReason", unresolved);
-            active.unresolved.add(originSite
-                    + ": backed-view heap effect unresolved: " + unresolved);
-        }
-        annotateMapStateInputBinding(effect, active, cursor.binding.map);
-        active.runtimeHeapEffects.add(effect);
-        active.lastPathConditionSize = Math.max(
-                active.lastPathConditionSize, end);
-        cursor.hasCurrent = false;
     }
 
     private static void captureIteratorExpressions(ActiveRegion active,
@@ -3096,195 +2827,6 @@ public final class ConcolicRegionRuntime {
             row.addProperty("expressionEnvelopeJavaTypeDescriptor",
                     javaTypeDescriptor);
         }
-    }
-
-    /** Returns every exact native remove match in the selected raw suffix. */
-    static List<Integer> nativeRemoveConditionIndices(
-            JsonArray conditions, int baseline, JsonElement mapExpression,
-            JsonElement keyExpression) {
-        List<Integer> matches = new ArrayList<>();
-        if (conditions == null || mapExpression == null) {
-            return matches;
-        }
-        int first = Math.max(0, Math.min(baseline, conditions.size()));
-        for (int index = first; index < conditions.size(); index++) {
-            JsonElement candidate = conditions.get(index);
-            if (!candidate.isJsonObject()) {
-                continue;
-            }
-            JsonObject object = candidate.getAsJsonObject();
-            if (!"MethodExpression".equals(jsonString(object, "_type"))
-                    || !jsonString(object, "_name").endsWith(" remove")) {
-                continue;
-            }
-            JsonArray parameters = array(object, "_param_list");
-            int keyIndex = parameters.size() == 2 ? 1
-                    : parameters.size() == 5 ? 2 : -1;
-            if (keyIndex < 0 || parameters.size() == 5
-                    && (!"java/util/HashMap remove".equals(
-                    jsonString(object, "_name"))
-                    || !concreteFalseBoolean(parameters.get(3)))
-                    || !mapExpression.equals(parameters.get(0))) {
-                continue;
-            }
-            if (keyExpression != null
-                    && !keyExpression.equals(parameters.get(keyIndex))) {
-                continue;
-            }
-            matches.add(index);
-        }
-        return matches;
-    }
-
-    static int findNativeRemoveConditionIndex(
-            JsonArray conditions, int baseline, JsonElement mapExpression,
-            JsonElement keyExpression) {
-        List<Integer> matches = nativeRemoveConditionIndices(conditions,
-                baseline, mapExpression, keyExpression);
-        return matches.size() == 1 ? matches.get(0) : -1;
-    }
-
-    private static JsonElement nativeRemoveKey(JsonObject expression) {
-        JsonArray parameters = array(expression, "_param_list");
-        int index = parameters.size() == 2 ? 1
-                : parameters.size() == 5 ? 2 : -1;
-        return index < 0 ? null : parameters.get(index);
-    }
-
-    private static boolean opaqueNativeIntegerRemoveKey(
-            JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) {
-            return false;
-        }
-        JsonElement key = nativeRemoveKey(expression.getAsJsonObject());
-        if (key == null || !key.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = key.getAsJsonObject();
-        return "SymbolExpression".equals(jsonString(object, "_type"))
-                && "java/lang/Integer".equals(jsonString(object,
-                "_java_type"))
-                && "P_L'java/lang/Integer'_".equals(jsonString(object,
-                "_exp"));
-    }
-
-    /**
-     * Certifies the narrow Java-8 HashMap.removeNode shape emitted for a
-     * normally-returning ENTRY_SET Iterator.remove when the VM exposes the
-     * boxed key only as an opaque P_L reference.  The concrete immutable
-     * runtime entry key is authoritative only when the native hash and removed
-     * value independently identify that same entry.
-     */
-    static boolean nativeRemoveSupportsIntegerEntryKeyRebind(
-            JsonElement expression, JsonElement mapExpression,
-            JsonElement runtimeKeyExpression,
-            JsonElement runtimeValueExpression) {
-        if (expression == null || !expression.isJsonObject()
-                || mapExpression == null || runtimeValueExpression == null
-                || !opaqueNativeIntegerRemoveKey(expression)) {
-            return false;
-        }
-        JsonObject object = expression.getAsJsonObject();
-        JsonArray parameters = array(object, "_param_list");
-        Integer key = boxedIntegerConstant(runtimeKeyExpression);
-        if (!"MethodExpression".equals(jsonString(object, "_type"))
-                || !"java/util/HashMap remove".equals(jsonString(object,
-                "_name"))
-                || parameters.size() != 5
-                || !mapExpression.equals(parameters.get(0))
-                || key == null
-                || !exactIntConstant(parameters.get(1),
-                key ^ key >>> 16)
-                || !concreteFalseBoolean(parameters.get(3))
-                || !concreteFalseBoolean(parameters.get(4))
-                || !object.has("_res_exp")
-                || !runtimeValueExpression.equals(object.get("_res_exp"))) {
-            return false;
-        }
-        return true;
-    }
-
-    private static Integer boxedIntegerConstant(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return null;
-        JsonObject object = expression.getAsJsonObject();
-        String encoded = jsonString(object, "_exp");
-        if (!"ConstExpr".equals(jsonString(object, "_type"))
-                || !"java/lang/Integer".equals(jsonString(object,
-                "_java_type")) || !encoded.startsWith("Y_I_")) {
-            return null;
-        }
-        try {
-            int value = Integer.parseInt(encoded.substring(4));
-            return ("Y_I_" + value).equals(encoded) ? value : null;
-        } catch (NumberFormatException malformed) {
-            return null;
-        }
-    }
-
-    private static boolean exactIntConstant(JsonElement expression,
-                                            int expected) {
-        if (expression == null || !expression.isJsonObject()) return false;
-        JsonObject object = expression.getAsJsonObject();
-        return "ConstExpr".equals(jsonString(object, "_type"))
-                && "I".equals(jsonString(object, "_java_type"))
-                && ("Y_I_" + expected).equals(jsonString(object, "_exp"));
-    }
-
-    static List<Integer> nativeRemoveConditionIndicesWithRuntimeEntryKey(
-            JsonArray conditions, int baseline, JsonElement mapExpression,
-            JsonElement keyExpression, JsonElement valueExpression) {
-        List<Integer> exact = nativeRemoveConditionIndices(conditions,
-                baseline, mapExpression, keyExpression);
-        if (!exact.isEmpty()) {
-            return exact;
-        }
-        List<Integer> receiver = nativeRemoveConditionIndices(conditions,
-                baseline, mapExpression, null);
-        return receiver.size() == 1
-                && nativeRemoveSupportsIntegerEntryKeyRebind(
-                conditions.get(receiver.get(0)), mapExpression,
-                keyExpression, valueExpression)
-                ? receiver : Collections.<Integer>emptyList();
-    }
-
-    static JsonElement resolvedIteratorRemoveKey(
-            JsonElement captured, JsonObject nativeExpression) {
-        return captured != null ? captured
-                : nativeRemoveKey(nativeExpression);
-    }
-
-    private static boolean concreteFalseBoolean(JsonElement expression) {
-        if (expression == null || expression.isJsonNull()) {
-            return false;
-        }
-        if (expression.isJsonPrimitive()
-                && expression.getAsJsonPrimitive().isBoolean()) {
-            return !expression.getAsBoolean();
-        }
-        if (!expression.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = expression.getAsJsonObject();
-        return "ConstExpr".equals(jsonString(object, "_type"))
-                && "Z".equals(jsonString(object, "_java_type"))
-                && "Y_Z_0".equals(jsonString(object, "_exp"));
-    }
-
-    private static int latestGuardMapping(ActiveRegion active,
-                                          String method,
-                                          int baseline, int end) {
-        for (int index = active.branchMappings.size() - 1;
-             index >= 0; index--) {
-            JsonObject mapping = active.branchMappings.get(index);
-            if (!safe(method).equals(string(mapping, "method"))) {
-                continue;
-            }
-            int condition = integer(mapping, "rawConditionIndex", -1);
-            if (condition >= baseline && condition < end) {
-                return index;
-            }
-        }
-        return -1;
     }
 
     private static String siteId(String method, int unitIndex) {
@@ -4487,8 +4029,6 @@ public final class ConcolicRegionRuntime {
             result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
             result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
             result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
-            result.add("runtimeHeapEffects",
-                    GSON.toJsonTree(active.runtimeHeapEffects));
             result.add("runtimeHeapObservations",
                     active.runtimeHeapObservationsJson());
             result.add("modelAssignmentsApplied",
@@ -4609,8 +4149,6 @@ public final class ConcolicRegionRuntime {
             result.add("symbolizedInputs", new JsonArray());
             result.add("branchMappings",
                     GSON.toJsonTree(active.branchMappings));
-            result.add("runtimeHeapEffects",
-                    GSON.toJsonTree(active.runtimeHeapEffects));
             result.add("runtimeHeapObservations",
                     active.runtimeHeapObservationsJson());
             result.add("modelAssignmentsApplied",
@@ -7611,7 +7149,6 @@ public final class ConcolicRegionRuntime {
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
         private final List<BranchWitness> branchWitnesses = new ArrayList<>();
-        private final List<JsonObject> runtimeHeapEffects = new ArrayList<>();
         private final List<JsonObject> runtimeHeapObservations =
                 new ArrayList<>();
         private final List<JsonObject> finiteMapSnapshots =
@@ -7655,8 +7192,6 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
         private final Map<Long, PreparedBranch> preparedBranches =
-                new LinkedHashMap<>();
-        private final Map<String, Integer> heapEffectOccurrences =
                 new LinkedHashMap<>();
         private final Map<String, Integer> heapObservationOccurrences =
                 new LinkedHashMap<>();
@@ -7808,13 +7343,6 @@ public final class ConcolicRegionRuntime {
 
         private PreparedBranch takePreparedBranch(long handle) {
             return handle <= 0L ? null : preparedBranches.remove(handle);
-        }
-
-        private int nextHeapEffectOccurrence(String siteId) {
-            Integer previous = heapEffectOccurrences.get(siteId);
-            int occurrence = previous == null ? 1 : previous + 1;
-            heapEffectOccurrences.put(siteId, occurrence);
-            return occurrence;
         }
 
         private int nextHeapObservationOccurrence(String siteId) {

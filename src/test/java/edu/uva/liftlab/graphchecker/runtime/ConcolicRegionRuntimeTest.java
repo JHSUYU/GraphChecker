@@ -1232,93 +1232,7 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void nativeIteratorRemoveJoinRequiresUnconditionalHashMapShape() {
-        JsonElement map = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\",\"_exp\":\"map\"}");
-        JsonElement key = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\",\"_exp\":\"key\"}");
-        JsonArray conditions = JsonParser.parseString("["
-                + nativeRemove(map, key, "Y_Z_0") + ","
-                + nativeRemove(map, key, "Y_Z_1") + ","
-                + nativeRemove(map, key, "M_Z_match") + "]")
-                .getAsJsonArray();
-
-        assertEquals(0, ConcolicRegionRuntime.findNativeRemoveConditionIndex(
-                conditions, 0, map, key));
-        assertEquals(-1, ConcolicRegionRuntime.findNativeRemoveConditionIndex(
-                conditions, 1, map, key));
-        assertEquals(1, ConcolicRegionRuntime.nativeRemoveConditionIndices(
-                conditions, 0, map, key).size());
-        assertEquals(key, ConcolicRegionRuntime.resolvedIteratorRemoveKey(
-                null, conditions.get(0).getAsJsonObject()));
-        assertEquals(0, ConcolicRegionRuntime.findNativeRemoveConditionIndex(
-                conditions, 0, map, null));
-    }
-
-    @Test
-    public void nativeIteratorRemoveJoinUsesUniqueOpaqueBoxedKeyOnlyWithRuntimeEntry() {
-        JsonElement map = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\",\"_exp\":\"map\"}");
-        JsonElement runtimeKey = JsonParser.parseString(
-                "{\"_type\":\"ConstExpr\",\"_java_type\":"
-                        + "\"java/lang/Integer\",\"_exp\":\"Y_I_7\"}");
-        JsonElement runtimeValue = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\","
-                        + "\"_java_type\":\"example/Value\","
-                        + "\"_exp\":\"removedValue\"}");
-        JsonElement opaqueBoxedKey = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\","
-                        + "\"_java_type\":\"java/lang/Integer\","
-                        + "\"_exp\":\"P_L'java/lang/Integer'_\"}");
-        JsonArray opaque = JsonParser.parseString("["
-                + nativeRemove(map, opaqueBoxedKey, "Y_Z_0") + "]")
-                .getAsJsonArray();
-
-        assertEquals(0, ConcolicRegionRuntime.nativeRemoveConditionIndices(
-                opaque, 0, map, runtimeKey).size());
-        assertEquals(1, ConcolicRegionRuntime
-                .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                        opaque, 0, map, runtimeKey, runtimeValue).size());
-
-        JsonElement differentConcreteKey = JsonParser.parseString(
-                "{\"_type\":\"ConstExpr\",\"_java_type\":\"I\","
-                        + "\"_exp\":\"Y_I_42\"}");
-        JsonArray concreteMismatch = JsonParser.parseString("["
-                + nativeRemove(map, differentConcreteKey, "Y_Z_0") + "]")
-                .getAsJsonArray();
-        assertEquals(0, ConcolicRegionRuntime
-                .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                        concreteMismatch, 0, map, runtimeKey,
-                        runtimeValue).size());
-
-        JsonElement wrongRuntimeKey = JsonParser.parseString(
-                "{\"_type\":\"ConstExpr\",\"_java_type\":"
-                        + "\"java/lang/Integer\",\"_exp\":\"Y_I_42\"}");
-        assertEquals("native hash must identify the exact runtime key", 0,
-                ConcolicRegionRuntime
-                        .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                                opaque, 0, map, wrongRuntimeKey,
-                                runtimeValue).size());
-
-        JsonElement wrongValue = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\","
-                        + "\"_java_type\":\"example/Value\","
-                        + "\"_exp\":\"otherValue\"}");
-        assertEquals("native result must identify the same entry value", 0,
-                ConcolicRegionRuntime
-                        .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                                opaque, 0, map, runtimeKey,
-                                wrongValue).size());
-
-        opaque.add(opaque.get(0).deepCopy());
-        assertEquals(0, ConcolicRegionRuntime
-                .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                        opaque, 0, map, runtimeKey,
-                        runtimeValue).size());
-    }
-
-    @Test
-    public void unwrapsEngineExpressionEnvelopeForStructuralVmJoin() {
+    public void unwrapsEngineExpressionEnvelopeForRuntimeObservation() {
         JsonElement canonical = ConcolicRegionRuntime
                 .canonicalEngineExpression("{\"schemaVersion\":1,"
                         + "\"active\":true,\"symbolic\":true,"
@@ -1378,13 +1292,13 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void recordsCanonicalEntrySetRemovalAtApplicationSite()
+    public void recordsCanonicalEntrySetObservationWithoutMutation()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
-        String root = "<example.Pruner: void prune()>";
+        String root = "<example.Pruner: void observe()>";
         JsonObject activation = concreteActivation(
                 "ACT.OBSERVE.BACKED.VIEW", root, 1);
         Files.write(plan, (activation + "\n")
@@ -1407,8 +1321,6 @@ public class ConcolicRegionRuntimeTest {
             Object entry = iterator.next();
             ConcolicRegionRuntime.recordMapIteratorNext(root, 5, iterator,
                     entry);
-            iterator.remove();
-            ConcolicRegionRuntime.recordMapIteratorRemove(root, 8, iterator);
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
             JsonObject row = JsonParser.parseString(new String(
@@ -1419,8 +1331,7 @@ public class ConcolicRegionRuntimeTest {
             assertEquals(2, observations.size());
             JsonObject observation = observations.get(0).getAsJsonObject();
             JsonObject snapshot = observations.get(1).getAsJsonObject();
-            JsonObject effect = row.getAsJsonArray("runtimeHeapEffects")
-                    .get(0).getAsJsonObject();
+            assertFalse(row.has("runtimeHeapEffects"));
             assertEquals("MAP_ENTRY_READ",
                     observation.get("kind").getAsString());
             assertTrue(observation.get("complete").getAsBoolean());
@@ -1428,7 +1339,7 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("FINITE_MAP_ENTRY_SNAPSHOT",
                     snapshot.get("kind").getAsString());
             assertTrue(snapshot.get("complete").getAsBoolean());
-            assertTrue(snapshot.get("preRemove").getAsBoolean());
+            assertFalse(snapshot.has("preRemove"));
             assertEquals(1, snapshot.get("entryCount").getAsInt());
             assertEquals("java.util.HashMap", snapshot.get(
                     "mapImplementationClass").getAsString());
@@ -1452,44 +1363,8 @@ public class ConcolicRegionRuntimeTest {
             assertTrue(snapshot.get("firstIteratorEntryMatched")
                     .getAsBoolean());
             assertTrue(snapshot.get("authority").getAsString().contains(
-                    "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT"));
-            assertEquals(observation.get("observationId").getAsString(),
-                    effect.get("entryReadObservationId").getAsString());
-            assertTrue(effect.get("entryReadObservationComplete")
-                    .getAsBoolean());
-            assertEquals(2L, effect.get("eventSequence").getAsLong());
-            assertEquals("MAP_REMOVE", effect.get("kind").getAsString());
-            assertEquals(root, effect.get("originMethod").getAsString());
-            assertEquals(root + "#u8", effect.get("siteId").getAsString());
-            assertTrue(effect.get("applied").getAsBoolean());
-            assertTrue(effect.get("transformerComplete").getAsBoolean());
-            assertTrue(effect.get("guardValueBindingComplete")
-                    .getAsBoolean());
-            assertTrue(effect.get("complete").getAsBoolean());
-            assertEquals("JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT",
-                    effect.get("entryBindingAuthority").getAsString());
-            assertEquals("SAME_MAP_ENTRY_GET_VALUE_AT_NEXT",
-                    effect.get("valueBindingAuthority").getAsString());
-            assertFalse(effect.has("backingMapIdentity"));
-            assertFalse(effect.has("backingMapIdentityKnown"));
-            assertFalse(effect.has("keyIdentity"));
-            assertFalse(effect.has("keyIdentityKnown"));
-            assertFalse(effect.get("keyWasNull").getAsBoolean());
-            assertFalse(effect.has("valueIdentity"));
-            assertFalse(effect.has("valueIdentityKnown"));
-            assertFalse(effect.get("valueWasNull").getAsBoolean());
-            assertEquals(observation.get("backingMapObjectToken").getAsLong(),
-                    effect.get("backingMapObjectToken").getAsLong());
-            assertEquals(observation.get("keyObjectToken").getAsLong(),
-                    effect.get("keyObjectToken").getAsLong());
-            assertEquals(observation.get("valueObjectToken").getAsLong(),
-                    effect.get("valueObjectToken").getAsLong());
-            assertEquals(observation.get("entryObjectToken").getAsLong(),
-                    effect.get("entryObjectToken").getAsLong());
-            assertTrue(effect.has("mapExpression"));
-            assertTrue(effect.has("keyExpression"));
-            assertTrue(effect.has("valueExpression"));
-            assertTrue(manager.allKeys.isEmpty());
+                    "AT_ITERATOR_NEXT_STABLE_SIZE"));
+            assertEquals("value", manager.allKeys.get("expired"));
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -1498,7 +1373,7 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void recordsEntryReadAndFieldOwnerWhenRemoveIsSkipped()
+    public void recordsEntryReadAndDeepFieldOwner()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1520,7 +1395,7 @@ public class ConcolicRegionRuntimeTest {
         fieldAction.add("fieldPath",
                 JsonParser.parseString("[\"expiry\"]"));
         JsonObject activation = concreteActivation(
-                "ACT.OBSERVE.BACKED.VIEW.NO.REMOVE", root, 1);
+                "ACT.OBSERVE.BACKED.VIEW.READ", root, 1);
         activation.add("symbolize", singleton(fieldAction));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -1548,13 +1423,13 @@ public class ConcolicRegionRuntimeTest {
                     expiryField, "expiry");
             assertTrue(ConcolicRegionRuntime.resolveBranch(0L, 0L, root, 7,
                     "expiry >= now", true));
-            // Deliberately retain the entry: Iterator.remove is never called.
+            // Entry observation is read-only; the backing map remains intact.
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
             JsonObject row = JsonParser.parseString(new String(
                     Files.readAllBytes(results), StandardCharsets.UTF_8)
                     .trim()).getAsJsonObject();
-            assertEquals(0, row.getAsJsonArray("runtimeHeapEffects").size());
+            assertFalse(row.has("runtimeHeapEffects"));
             JsonArray observations = row.getAsJsonArray(
                     "runtimeHeapObservations");
             assertEquals(2, observations.size());
@@ -1680,7 +1555,7 @@ public class ConcolicRegionRuntimeTest {
             JsonObject row = JsonParser.parseString(new String(
                     Files.readAllBytes(results), StandardCharsets.UTF_8)
                     .trim()).getAsJsonObject();
-            assertEquals(0, row.getAsJsonArray("runtimeHeapEffects").size());
+            assertFalse(row.has("runtimeHeapEffects"));
             assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
             JsonObject observation = row.getAsJsonArray(
                     "runtimeHeapObservations").get(0).getAsJsonObject();
@@ -5653,22 +5528,6 @@ public class ConcolicRegionRuntimeTest {
                 + "\"_right\":{\"_type\":\"SymbolExpression\","
                 + "\"_exp\":\"N\"},\"_code_position\":\""
                 + codePosition + "\"}";
-    }
-
-    private static String nativeRemove(JsonElement map, JsonElement key,
-                                       String matchValue) {
-        return "{\"_type\":\"MethodExpression\","
-                + "\"_name\":\"java/util/HashMap remove\","
-                + "\"_param_list\":[" + map + ","
-                + "{\"_type\":\"ConstExpr\",\"_java_type\":\"I\","
-                + "\"_exp\":\"Y_I_7\"}," + key + ","
-                + "{\"_type\":\"ConstExpr\",\"_java_type\":\"Z\","
-                + "\"_exp\":\"" + matchValue + "\"},"
-                + "{\"_type\":\"ConstExpr\",\"_java_type\":\"Z\","
-                + "\"_exp\":\"Y_Z_0\"}],"
-                + "\"_res_exp\":{\"_type\":\"SymbolExpression\","
-                + "\"_java_type\":\"example/Value\","
-                + "\"_exp\":\"removedValue\"}}";
     }
 
     private static final class Envelope {
