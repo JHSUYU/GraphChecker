@@ -1143,7 +1143,7 @@ do_bootstrap_project() {
       == .existentialNonBooleanRootInputCount
     and .existentialNonBooleanRootAssignmentCount
       == ((.existentialNonBooleanRootAssignments // []) | length)
-    and .supplementalPrimitiveAssignmentCount
+    and .existentialNonBooleanRootAssignmentCount
       == (.upstreamModelAssignmentCount - .rootBooleanInputCount)
     and .upstreamModelAssignmentCount >= .producerReplayActivationCount
     and .downstreamModelAssignmentCount == 0
