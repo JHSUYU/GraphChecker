@@ -266,8 +266,12 @@ public final class ConcolicSummaryImporter {
                     raw.get("dynamicFieldBindings"), rawBranchMappings,
                     activation, regionId, dynamicPcFallbacks,
                     engineArrayBindings.bindings);
+            OutputExpressionExtraction outputExtraction =
+                    outputExpressions(raw, activation, captureGoal,
+                            normalization);
             InputAdmission inputAdmission = inputAdmission(raw, activation,
-                    outputClosure, heapEffects.staticCoverage);
+                    outputClosure, heapEffects.staticCoverage,
+                    pathCondition, outputExtraction);
             VmIntrinsicPlaceholderBindingExtraction placeholderBindings =
                     vmIntrinsicPlaceholderBindings(pathCondition,
                             inputAdmission);
@@ -420,9 +424,6 @@ public final class ConcolicSummaryImporter {
             normalizationSummary.add("filteredConditions",
                     normalization.filteredConditions());
             summary.add("pathConditionNormalization", normalizationSummary);
-            OutputExpressionExtraction outputExtraction =
-                    outputExpressions(raw, activation, captureGoal,
-                            normalization);
             JsonObject outputs = outputExtraction.expressions;
             heapEffects.bindOutputExpressions(outputs);
             summary.add("outputExpressions", outputs);
@@ -3227,27 +3228,7 @@ public final class ConcolicSummaryImporter {
 
     private static void collectSymbolicExpressionSymbols(
             JsonElement expression, Set<String> result) {
-        if (expression == null || expression.isJsonNull()) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement item : expression.getAsJsonArray()) {
-                collectSymbolicExpressionSymbols(item, result);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
-        if ("SymbolExpression".equals(type)
-                || "ConSymbolExp".equals(type)) {
-            String symbol = string(object, "_exp");
-            if (!symbol.isEmpty()) result.add(symbol);
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            if (!"_exp".equals(entry.getKey())
-                    && !"_code_position".equals(entry.getKey())) {
-                collectSymbolicExpressionSymbols(entry.getValue(), result);
-            }
-        }
+        result.addAll(PathRelationInputClosure.freeSymbols(expression));
     }
 
     private static boolean exactOutputCaptureMatch(JsonObject request,
@@ -11767,7 +11748,10 @@ public final class ConcolicSummaryImporter {
                                                  JsonObject activation,
                                                  boolean outputClosure,
                                                  StaticHeapTransformerCoverage
-                                                         staticCoverage) {
+                                                         staticCoverage,
+                                                 JsonArray pathCondition,
+                                                 OutputExpressionExtraction
+                                                         outputExtraction) {
         if (!outputClosure) return new InputAdmission(true,
                 new LinkedHashSet<String>(), new LinkedHashSet<String>(),
                 new LinkedHashSet<String>(), new LinkedHashSet<String>(),
@@ -11806,6 +11790,16 @@ public final class ConcolicSummaryImporter {
             JsonObject inactiveProof = found ? null
                     : pathInactiveInputProof(raw, activation, requiredInput,
                     staticCoverage);
+            if (inactiveProof == null && !found) {
+                inactiveProof = PathRelationInputClosure
+                        .proveGuardedConstantUnusedInput(
+                                activation, requiredInput, pathCondition,
+                                outputExtraction.expressions,
+                                outputExtraction.complete,
+                                outputExtraction.authority,
+                                requestedOutputSliceOperationallyAdmitted(
+                                        activation));
+            }
             if (inactiveProof != null) {
                 required.remove(requiredInput);
                 pathInactive.add(requiredInput);

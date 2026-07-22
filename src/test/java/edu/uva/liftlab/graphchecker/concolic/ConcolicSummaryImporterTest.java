@@ -3897,6 +3897,36 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void guardedNullEarlyReturnDropsOnlyUnexecutedLazyInputs()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            MapFixture imported = importExactFieldAssignmentCaptureFixture(
+                    folder.getRoot().toPath(), "NORMAL", true, true,
+                    "<example.State: int value>",
+                    constant("Y_I_10", "I"),
+                    "EXACT_NULL_WITH_UNUSED_INPUT");
+
+            assertTrue(imported.diagnostics, imported.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            JsonObject admission = imported.summary.getAsJsonObject(
+                    "inputMaterializationAdmission");
+            assertTrue(admission.get("complete").getAsBoolean());
+            assertEquals("[\"REGION.FIELD.in.1\"]", admission
+                    .getAsJsonArray("pathInactiveSliceInputs").toString());
+            assertEquals("EXACT_VM_WITNESS_GUARDED_CONSTANT_OUTPUT_PLUS_"
+                            + "UNEXECUTED_LAZY_INPUT_V1",
+                    admission.getAsJsonArray("pathInactiveProofs").get(0)
+                            .getAsJsonObject().get("authority").getAsString());
+            assertFalse(imported.diagnostics.contains(
+                    "SLICE_INPUT_NOT_SYMBOLIZED:REGION.FIELD.in.1"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void importsVmAttestedStringPredicateGuardedConstant()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -7144,6 +7174,8 @@ public class ConcolicSummaryImporterTest {
             JsonElement expression, String guardMode) throws Exception {
         boolean causalMapObservation =
                 "CAUSAL_MAP_OBSERVATION".equals(guardMode);
+        boolean nullGuardWithUnusedInput =
+                "EXACT_NULL_WITH_UNUSED_INPUT".equals(guardMode);
         boolean exactVmGuard = !"NONE".equals(guardMode)
                 && !causalMapObservation;
         boolean projectedDischarge = expression == null
@@ -7240,7 +7272,11 @@ public class ConcolicSummaryImporterTest {
                 "REGION.FIELD.out.0");
         slice.addProperty("outputPort", "REGION.FIELD.out.0");
         slice.addProperty("outputCell", field);
-        slice.add("inputPorts", singletonString("REGION.FIELD.in.0"));
+        JsonArray sliceInputs = singletonString("REGION.FIELD.in.0");
+        if (nullGuardWithUnusedInput) {
+            sliceInputs.add("REGION.FIELD.in.1");
+        }
+        slice.add("inputPorts", sliceInputs);
         slice.add("methods", singletonString(method));
         slice.add("causalEdges", causalEdges);
         JsonArray causalEdgeIds = singletonString(edgeId);
@@ -7285,7 +7321,17 @@ public class ConcolicSummaryImporterTest {
                 + (projectedDischarge ? "example.Snapshot"
                 : "java.lang.String"));
         input.addProperty("location", "ARGUMENT");
-        activation.add("symbolize", singletonObject(input));
+        JsonArray symbolize = singletonObject(input);
+        if (nullGuardWithUnusedInput) {
+            JsonObject unused = new JsonObject();
+            unused.addProperty("symbol", "REGION.FIELD.in.1");
+            unused.addProperty("cell", method + ".param1:int");
+            unused.addProperty("location", "ARGUMENT");
+            unused.addProperty("bindingMode", "LOCAL_DEFINITION");
+            unused.addProperty("lazy", true);
+            symbolize.add(unused);
+        }
+        activation.add("symbolize", symbolize);
         if (projectedDischarge) {
             JsonObject fallback = input.deepCopy();
             fallback.addProperty("bindingMode", "CONCRETE_PASSTHROUGH");
@@ -7410,9 +7456,12 @@ public class ConcolicSummaryImporterTest {
                                 "java/lang/String"),
                         stringConstant("ready"));
             } else {
+                JsonObject right = nullGuardWithUnusedInput
+                        ? symbol("N", "")
+                        : constant("Y_L_NULL", "L");
                 condition = binaryCondition(
                         codePosition, "!=", rawLeft,
-                        constant("Y_L_NULL", "L"));
+                        right);
             }
             JsonObject semanticCondition = condition.deepCopy();
             if ("FORGED_SEMANTIC".equals(guardMode)) {
