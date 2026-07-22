@@ -1125,6 +1125,46 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
+    public void schedulerBuildsExecutablePlanOnlyFromDeclarations() {
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("symbol", "REGION.CANONICAL.in.0");
+        declaration.addProperty("cell", "example.Input.value");
+        declaration.addProperty("location", "ARGUMENT");
+        JsonObject activation = new JsonObject();
+        activation.addProperty("activationId", "ACT.CANONICAL");
+        activation.addProperty("regionId", "REGION.CANONICAL");
+        RegionCaptureGoal.outputClosure().writeTo(activation);
+        activation.addProperty("requestedOutputSliceComplete", true);
+
+        JsonArray retiredExecutablePlan = new JsonArray();
+        retiredExecutablePlan.add(declaration.deepCopy());
+        activation.add("materializations", retiredExecutablePlan);
+        JsonObject missingDeclaration =
+                ConcolicScheduler.prepareOutputCapture(activation,
+                        Collections.<JsonObject>emptyList());
+        assertTrue(missingDeclaration.get("schedulerReady").getAsBoolean());
+        assertEquals(0, missingDeclaration.getAsJsonArray(
+                "materializations").size());
+
+        activation.add("symbolize", new JsonArray());
+        JsonObject explicitEmptyDeclaration =
+                ConcolicScheduler.prepareOutputCapture(activation,
+                        Collections.<JsonObject>emptyList());
+        assertEquals(0, explicitEmptyDeclaration.getAsJsonArray(
+                "materializations").size());
+
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration.deepCopy());
+        activation.add("symbolize", declarations);
+        JsonObject scheduled = ConcolicScheduler.prepareOutputCapture(
+                activation, Collections.<JsonObject>emptyList());
+        JsonArray executable = scheduled.getAsJsonArray("materializations");
+        assertEquals(1, executable.size());
+        assertEquals("ROOT_ENTRY", executable.get(0).getAsJsonObject()
+                .get("bindingMode").getAsString());
+    }
+
+    @Test
     public void exactArrayFieldEvidenceSurvivesSchedulerMaterialization() {
         String method = "<example.ArrayReader: void run()>";
         JsonObject activation = arrayFieldCaptureActivation(

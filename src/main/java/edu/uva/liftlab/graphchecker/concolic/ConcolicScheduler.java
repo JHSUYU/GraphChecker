@@ -1061,9 +1061,6 @@ public final class ConcolicScheduler {
         int deferredCount = 0;
         int vmIntrinsicPlaceholderCount = 0;
         JsonArray sourceActions = array(activation, "symbolize");
-        if (sourceActions.size() == 0) {
-            sourceActions = array(activation, "materializations");
-        }
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;

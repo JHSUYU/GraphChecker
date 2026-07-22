@@ -11341,7 +11341,8 @@ public final class ConcolicRegionRuntime {
                     : BranchReplayContract.fromJson(
                     requireObject(encodedReplayContract,
                             "replayContract"));
-            JsonArray materializations = array(json, "materializations");
+            JsonArray materializations = executableMaterializations(json,
+                    replayable, activationId);
             JsonArray declaredActions = array(json, "symbolize");
             for (JsonElement element : declaredActions) {
                 if (element.isJsonObject()) {
@@ -11349,16 +11350,9 @@ public final class ConcolicRegionRuntime {
                             element.getAsJsonObject()));
                 }
             }
-            JsonArray actions = json.has("materializations")
-                    && json.get("materializations").isJsonArray()
-                    ? materializations : declaredActions;
-            for (JsonElement element : actions) {
-                if (element.isJsonObject()) {
-                    this.symbolize.add(new SymbolizeAction(element.getAsJsonObject()));
-                }
-            }
-            if (declaredSymbolize.isEmpty()) {
-                declaredSymbolize.addAll(symbolize);
+            for (JsonElement element : materializations) {
+                this.symbolize.add(new SymbolizeAction(
+                        element.getAsJsonObject()));
             }
             JsonArray branches = array(json, "branches");
             for (JsonElement element : branches) {
@@ -11429,6 +11423,29 @@ public final class ConcolicRegionRuntime {
                         + " must be a JSON object");
             }
             return copyJsonTree(value.getAsJsonObject());
+        }
+
+        private static JsonArray executableMaterializations(
+                JsonObject activation, boolean replayable,
+                String activationId) {
+            if (!replayable) {
+                return new JsonArray();
+            }
+            JsonElement encoded = activation.get("materializations");
+            if (encoded == null || !encoded.isJsonArray()) {
+                throw new IllegalArgumentException("Replayable activation "
+                        + activationId + " requires materializations to be a "
+                        + "JSON array");
+            }
+            JsonArray actions = encoded.getAsJsonArray();
+            for (int index = 0; index < actions.size(); index++) {
+                if (!actions.get(index).isJsonObject()) {
+                    throw new IllegalArgumentException("Replayable activation "
+                            + activationId + " materializations[" + index
+                            + "] must be a JSON object");
+                }
+            }
+            return actions;
         }
 
         private List<ContainerElementFieldBindingSpec>
@@ -11719,9 +11736,13 @@ public final class ConcolicRegionRuntime {
                             }
                         }
                     }
-                } catch (IOException | RuntimeException exception) {
+                } catch (IOException exception) {
                     System.err.println("Causynth could not load activation plan: "
                             + exception);
+                } catch (RuntimeException exception) {
+                    throw new IllegalStateException("Causynth rejected "
+                            + "activation plan " + plan + ": "
+                            + exception.getMessage(), exception);
                 }
             }
             validateEffectiveActivationKeys(activations, selected, plan);

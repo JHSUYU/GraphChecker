@@ -140,6 +140,93 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void executableInstrumentationRequiresCanonicalMaterializations()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path plan = folder.getRoot().toPath().resolve(
+                    "canonical-materializations.jsonl");
+            String activationId = "ACT.CANONICAL.MATERIALIZATIONS";
+            JsonObject action = new JsonObject();
+            action.addProperty("symbol", "REGION.CANONICAL.in.0");
+            action.addProperty("cell",
+                    "<example.CanonicalInput: int value>");
+            action.addProperty("field",
+                    "<example.CanonicalInput: int value>");
+            action.addProperty("location", "HEAP_OBJECT_FIELD");
+            action.addProperty("bindingMode", "FIELD_ACCESS");
+            action.addProperty("accessOwnerClass",
+                    "example.CanonicalInput");
+            action.addProperty("accessField", "value");
+
+            JsonObject missing = executableActivationRow(activationId,
+                    action);
+            JsonObject wrongType = executableActivationRow(activationId,
+                    action);
+            wrongType.addProperty("materializations", "not-an-array");
+            JsonObject nonObject = executableActivationRow(activationId,
+                    action);
+            JsonArray malformedMembers = new JsonArray();
+            malformedMembers.add("not-an-action");
+            nonObject.add("materializations", malformedMembers);
+            for (JsonObject invalid : Arrays.asList(
+                    missing, wrongType, nonObject)) {
+                writePlanRow(plan, invalid);
+                try {
+                    ConcolicInstrumentationSelections
+                            .ConcolicMaterializationSelection.from(
+                            plan, activationId);
+                    throw new AssertionError("non-canonical executable "
+                            + "materializations must fail closed");
+                } catch (java.io.IOException expected) {
+                    assertTrue(expected.getMessage(), expected.getMessage()
+                            .contains("materializations"));
+                    assertTrue(expected.getMessage(), expected.getMessage()
+                            .contains(activationId));
+                }
+            }
+
+            JsonObject declarationOnly = executableActivationRow(
+                    activationId, action);
+            declarationOnly.add("materializations", new JsonArray());
+            writePlanRow(plan, declarationOnly);
+            ConcolicInstrumentationSelections
+                    .ConcolicMaterializationSelection empty =
+                    ConcolicInstrumentationSelections
+                            .ConcolicMaterializationSelection.from(
+                            plan, activationId);
+            assertTrue("symbolize is a declaration catalog, not an "
+                    + "instrumentation fallback", empty.isEmpty());
+
+            JsonObject executable = executableActivationRow(
+                    activationId, action);
+            executable.add("materializations",
+                    singletonJsonArray(action.deepCopy()));
+            writePlanRow(plan, executable);
+            ConcolicInstrumentationSelections
+                    .ConcolicMaterializationSelection selected =
+                    ConcolicInstrumentationSelections
+                            .ConcolicMaterializationSelection.from(
+                            plan, activationId);
+            assertFalse("canonical direct materialization remains selected",
+                    selected.isEmpty());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static JsonObject executableActivationRow(
+            String activationId, JsonObject declaration) {
+        JsonObject activation = new JsonObject();
+        activation.addProperty("activationId", activationId);
+        activation.addProperty("replayable", true);
+        activation.add("symbolize",
+                singletonJsonArray(declaration.deepCopy()));
+        return activation;
+    }
+
+    @Test
     public void arrayFieldReadUsesOneExactConsumedLocalAtNestedLeaf()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

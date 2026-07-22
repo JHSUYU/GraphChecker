@@ -22,6 +22,135 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
     @Test
+    public void executableActivationRequiresCanonicalMaterializationObjects()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            Path regions = root.resolve("regions.jsonl");
+            JsonObject region = new JsonObject();
+            region.addProperty("regionId", "REGION.ACTIVATION.SCHEMA");
+            write(regions, region + "\n");
+
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.ACTIVATION.SCHEMA");
+            raw.addProperty("regionId", "REGION.ACTIVATION.SCHEMA");
+            raw.addProperty("exitKind", "NORMAL");
+            raw = canonicalRuntimeResultForTest(raw);
+
+            JsonObject base = new JsonObject();
+            base.addProperty("activationId", "ACT.ACTIVATION.SCHEMA");
+            base.addProperty("regionId", "REGION.ACTIVATION.SCHEMA");
+            RegionCaptureGoal.outputClosure().writeTo(base);
+            JsonObject[] invalid = new JsonObject[]{
+                    base.deepCopy(), base.deepCopy(), base.deepCopy()};
+            invalid[1].add("materializations", new JsonObject());
+            JsonArray nonObject = new JsonArray();
+            nonObject.add("declaration-is-not-an-action");
+            invalid[2].add("materializations", nonObject);
+            String[] expected = new String[]{
+                    "materializations must be present as a JSON object array",
+                    "materializations must be a JSON array",
+                    "materializations[0] must be a JSON object"};
+
+            for (int index = 0; index < invalid.length; index++) {
+                Path caseRoot = root.resolve("activation-case-" + index);
+                Files.createDirectories(caseRoot);
+                Path activations = caseRoot.resolve("activations.jsonl");
+                Path results = caseRoot.resolve("results.jsonl");
+                Path output = caseRoot.resolve("summaries.jsonl");
+                Path diagnostics = caseRoot.resolve("diagnostics.jsonl");
+                // Bypass the canonical fixture writer: malformed scheduler
+                // output is the subject of this test.
+                writeVerbatim(activations, invalid[index] + "\n");
+                writeVerbatim(results, raw + "\n");
+
+                ConcolicSummaryImporter.ImportResult imported =
+                        ConcolicSummaryImporter.importSummaries(
+                                results, activations, regions, output,
+                                diagnostics, caseRoot.resolve("cache"));
+
+                assertEquals(0, imported.validSummaryCount);
+                JsonObject diagnostic = JsonParser.parseString(new String(
+                        Files.readAllBytes(diagnostics),
+                        StandardCharsets.UTF_8).trim()).getAsJsonObject();
+                assertEquals("INVALID_EXECUTABLE_ACTIVATION_SCHEMA",
+                        diagnostic.get("code").getAsString());
+                assertTrue(diagnostic.get("detail").getAsString(),
+                        diagnostic.get("detail").getAsString().contains(
+                                expected[index]));
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void pathRelationClosureUsesOnlyExecutableMaterializations() {
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("symbol", "REGION.CLOSURE.in.0");
+        declaration.addProperty("lazy", true);
+        declaration.addProperty("bindingMode", "ROOT_ENTRY");
+        JsonObject activation = new JsonObject();
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration);
+        activation.add("symbolize", declarations);
+
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_java_type", "I");
+        constant.addProperty("_exp", "Y_I_7");
+        JsonArray pathCondition = new JsonArray();
+        pathCondition.add(constant.deepCopy());
+        JsonObject outputs = new JsonObject();
+        outputs.add("REGION.CLOSURE.out.0", constant.deepCopy());
+
+        activation.add("materializations", new JsonArray());
+        assertEquals(null,
+                PathRelationInputClosure.proveGuardedConstantUnusedInput(
+                        activation, "REGION.CLOSURE.in.0", pathCondition,
+                        outputs, true,
+                        "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                                + "PATH_GUARD",
+                        true));
+
+        JsonArray executable = new JsonArray();
+        executable.add(declaration.deepCopy());
+        activation.add("materializations", executable);
+        assertTrue(PathRelationInputClosure
+                .proveGuardedConstantUnusedInput(activation,
+                        "REGION.CLOSURE.in.0", pathCondition, outputs, true,
+                        "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                                + "PATH_GUARD",
+                        true) != null);
+
+        JsonObject[] malformed = new JsonObject[]{activation.deepCopy(),
+                activation.deepCopy(), activation.deepCopy()};
+        malformed[0].remove("materializations");
+        malformed[1].addProperty("materializations", "not-an-array");
+        JsonArray nonObject = new JsonArray();
+        nonObject.add(1);
+        malformed[2].add("materializations", nonObject);
+        for (JsonObject value : malformed) {
+            try {
+                PathRelationInputClosure.proveGuardedConstantUnusedInput(
+                        value, "REGION.CLOSURE.in.0", pathCondition,
+                        outputs, true,
+                        "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                                + "PATH_GUARD",
+                        true);
+                throw new AssertionError(
+                        "malformed executable activation must fail closed");
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage().contains(
+                        "materializations"));
+            }
+        }
+    }
+
+    @Test
     public void canonicalRuntimeEnvelopeRejectsMissingOrMismatchedAuthority()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -404,6 +533,7 @@ public class ConcolicSummaryImporterTest {
                     + RegionCaptureGoal.outputClosure().toJson() + ","
                     + "\"receiverType\":\"Handler\","
                     + "\"symbolize\":[{\"symbol\":\"REGION.0.in.0\"}],"
+                    + "\"materializations\":[],"
                     + "\"outputs\":[{\"symbol\":\"REGION.0.out.0\","
                     + "\"location\":\"THROW_OR_BRANCH\"}]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
@@ -435,7 +565,10 @@ public class ConcolicSummaryImporterTest {
                     StandardCharsets.UTF_8);
             assertTrue(summary.contains("RUNTIME_CONCOLIC"));
             assertTrue(summary.contains("InvalidToken"));
-            assertTrue(summary.contains("REGION.0.in.0"));
+            JsonObject importedSummary = JsonParser.parseString(
+                    summary.trim()).getAsJsonObject();
+            assertEquals(0, importedSummary.getAsJsonArray(
+                    "symbolicInputs").size());
             assertEquals(1, Files.list(cache).count());
         } finally {
             folder.delete();
@@ -6824,6 +6957,19 @@ public class ConcolicSummaryImporterTest {
                                 .getAsString() : "")) {
                     line = canonicalRuntimeResultForTest(
                             parsed.getAsJsonObject()).toString();
+                } else if (parsed.isJsonObject()
+                        && parsed.getAsJsonObject().has("activationId")) {
+                    JsonObject activation = parsed.getAsJsonObject();
+                    if (!activation.has("materializations")) {
+                        JsonElement declarations = activation.get(
+                                "symbolize");
+                        activation.add("materializations",
+                                declarations != null
+                                        && declarations.isJsonArray()
+                                        ? declarations.deepCopy()
+                                        : new JsonArray());
+                    }
+                    line = activation.toString();
                 }
             }
             canonical.append(line);

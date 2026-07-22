@@ -142,6 +142,14 @@ public final class ConcolicSummaryImporter {
                         activationId));
                 continue;
             }
+            String activationSchemaIssue =
+                    canonicalExecutableActivationSchemaIssue(activation);
+            if (!activationSchemaIssue.isEmpty()) {
+                diagnostics.add(diagnostic(raw,
+                        "INVALID_EXECUTABLE_ACTIVATION_SCHEMA",
+                        activationSchemaIssue));
+                continue;
+            }
             JsonObject region = regions.get(regionId);
             if (region == null) {
                 diagnostics.add(diagnostic(raw, "UNKNOWN_REGION", regionId));
@@ -455,16 +463,37 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
-    /**
-     * Mirrors {@code ConcolicRegionRuntime.Activation}: a non-empty refined
-     * materialization plan replaces (rather than augments) the raw static
-     * symbolize list.  Older activation artifacts have no refined list and
-     * retain the legacy symbolize behavior.
-     */
+    /** Returns the scheduler-produced executable plan. */
     private static JsonArray runtimeMaterializationActions(
             JsonObject activation) {
-        JsonArray refined = array(activation, "materializations");
-        return refined.size() > 0 ? refined : array(activation, "symbolize");
+        return activation.get("materializations").getAsJsonArray();
+    }
+
+    /**
+     * Validates the executable half of an activation at the importer trust
+     * boundary.  {@code symbolize} is a discovery declaration; only the
+     * scheduler-produced {@code materializations} array may drive runtime
+     * interpretation.  An explicit empty plan is therefore meaningful and
+     * must not fall back to the declarations.
+     */
+    private static String canonicalExecutableActivationSchemaIssue(
+            JsonObject activation) {
+        JsonElement encoded = activation == null
+                ? null : activation.get("materializations");
+        if (encoded == null || encoded.isJsonNull()) {
+            return "materializations must be present as a JSON object array";
+        }
+        if (!encoded.isJsonArray()) {
+            return "materializations must be a JSON array";
+        }
+        JsonArray actions = encoded.getAsJsonArray();
+        for (int index = 0; index < actions.size(); index++) {
+            if (!actions.get(index).isJsonObject()) {
+                return "materializations[" + index
+                        + "] must be a JSON object";
+            }
+        }
+        return "";
     }
 
     /**

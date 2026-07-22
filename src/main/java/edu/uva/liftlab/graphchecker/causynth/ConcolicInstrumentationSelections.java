@@ -763,18 +763,22 @@ final class ConcolicInstrumentationSelections {
                     if (!jsonBoolean(row, "replayable", true)) {
                         continue;
                     }
-                    JsonElement materializations = row.get("materializations");
-                    JsonElement legacy = row.get("symbolize");
-                    JsonElement actions = materializations != null
-                            && materializations.isJsonArray()
-                            ? materializations : legacy;
+                    String activationId = jsonString(row, "activationId");
+                    JsonElement actions = row.get("materializations");
                     if (actions == null || !actions.isJsonArray()) {
-                        continue;
+                        throw new IOException("Replayable activation "
+                                + activationId + " requires materializations "
+                                + "to be a JSON array");
                     }
+                    int actionIndex = 0;
                     for (JsonElement element : actions.getAsJsonArray()) {
-                        if (element.isJsonObject()) {
-                            result.add(element.getAsJsonObject());
+                        if (!element.isJsonObject()) {
+                            throw new IOException("Replayable activation "
+                                    + activationId + " materializations["
+                                    + actionIndex + "] must be a JSON object");
                         }
+                        result.add(element.getAsJsonObject());
+                        actionIndex++;
                     }
                 }
             }
