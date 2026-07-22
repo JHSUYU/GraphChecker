@@ -11064,9 +11064,15 @@ public final class ConcolicSummaryImporter {
         if (contextId == null || contextId <= 0L) {
             return "engineSummary.threadContextId must be positive";
         }
-        if (!Integer.valueOf(1).equals(strictInteger(engine,
-                "pathConditionPauseDepth"))) {
-            return "engineSummary.pathConditionPauseDepth must be 1";
+        if (!Boolean.TRUE.equals(strictBoolean(engine,
+                "pathConditionRecordingPaused"))) {
+            return "engineSummary.pathConditionRecordingPaused must be true";
+        }
+        Integer pauseDepth = strictInteger(engine,
+                "pathConditionPauseDepth");
+        if (pauseDepth == null || pauseDepth < 1) {
+            return "engineSummary.pathConditionPauseDepth must be a positive "
+                    + "integer";
         }
         JsonElement pathCondition = engine.get("pathCondition");
         if (pathCondition == null || !pathCondition.isJsonArray()) {

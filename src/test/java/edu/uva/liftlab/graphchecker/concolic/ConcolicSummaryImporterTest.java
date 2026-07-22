@@ -46,7 +46,7 @@ public class ConcolicSummaryImporterTest {
             raw.addProperty("exitKind", "NORMAL");
             raw = canonicalRuntimeResultForTest(raw);
 
-            JsonObject[] invalid = new JsonObject[9];
+            JsonObject[] invalid = new JsonObject[15];
             String[] expected = new String[]{
                     "engineSummary must be a JSON object",
                     "engineSummary.engine must be openjdk8-zero-concolic",
@@ -56,7 +56,13 @@ public class ConcolicSummaryImporterTest {
                     "regionId must be a nonempty JSON string",
                     "runtimeHeapEffects must be a JSON array",
                     "runtimeHeapObservations must be a JSON array",
-                    "dynamicFieldBindings must be a JSON array"};
+                    "dynamicFieldBindings must be a JSON array",
+                    "pathConditionRecordingPaused must be true",
+                    "pathConditionRecordingPaused must be true",
+                    "pathConditionPauseDepth must be a positive integer",
+                    "pathConditionPauseDepth must be a positive integer",
+                    "pathConditionPauseDepth must be a positive integer",
+                    "pathConditionPauseDepth must be a positive integer"};
             for (int index = 0; index < invalid.length; index++) {
                 invalid[index] = raw.deepCopy();
             }
@@ -72,6 +78,18 @@ public class ConcolicSummaryImporterTest {
             invalid[6].remove("runtimeHeapEffects");
             invalid[7].remove("runtimeHeapObservations");
             invalid[8].remove("dynamicFieldBindings");
+            invalid[9].getAsJsonObject("engineSummary").addProperty(
+                    "pathConditionRecordingPaused", false);
+            invalid[10].getAsJsonObject("engineSummary").remove(
+                    "pathConditionRecordingPaused");
+            invalid[11].getAsJsonObject("engineSummary").addProperty(
+                    "pathConditionPauseDepth", 0);
+            invalid[12].getAsJsonObject("engineSummary").addProperty(
+                    "pathConditionPauseDepth", -1);
+            invalid[13].getAsJsonObject("engineSummary").remove(
+                    "pathConditionPauseDepth");
+            invalid[14].getAsJsonObject("engineSummary").addProperty(
+                    "pathConditionPauseDepth", "2");
 
             for (int index = 0; index < invalid.length; index++) {
                 Path caseRoot = root.resolve("case-" + index);
@@ -550,7 +568,8 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void validatesNormalizesAndCachesRegionSummary() throws Exception {
+    public void validatesRegionSummaryWithNestedPathConditionPause()
+            throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
@@ -574,6 +593,8 @@ public class ConcolicSummaryImporterTest {
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"rootMethod\":\"" + method + "\","
                     + "\"methods\":[\"" + method + "\"]}\n");
+            // The observation boundary and finish-time bookkeeping each hold
+            // a pause, so a real custom-Zero result can legitimately report 2.
             write(results, "{\"event\":\"CONCOLIC_REGION_RESULT\","
                     + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
                     + "\"exitKind\":\"THROW\",\"exceptionType\":\"InvalidToken\","
@@ -582,6 +603,8 @@ public class ConcolicSummaryImporterTest {
                     + "\"engineSummary\":{\"active\":true,"
                     + "\"engine\":\"openjdk8-zero-concolic\","
                     + "\"regionId\":\"REGION.0\",\"activationId\":\"ACT.0\","
+                    + "\"pathConditionRecordingPaused\":true,"
+                    + "\"pathConditionPauseDepth\":2,"
                     + "\"pathCondition\":[{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"==\",\"_code_position\":"
                     + "\"virtual void example.Handler.handle():12\"}]}}\n");
@@ -7403,6 +7426,9 @@ public class ConcolicSummaryImporterTest {
         }
         if (!engine.has("threadContextId")) {
             engine.addProperty("threadContextId", 1L);
+        }
+        if (!engine.has("pathConditionRecordingPaused")) {
+            engine.addProperty("pathConditionRecordingPaused", true);
         }
         if (!engine.has("pathConditionPauseDepth")) {
             engine.addProperty("pathConditionPauseDepth", 1);
