@@ -773,36 +773,34 @@ public class RecursiveRegionWorklistTest {
         assertFalse(result.upstreamRequests.toString()
                 .contains("source.out"));
 
-        JsonObject bounded = activations.get(1).deepCopy();
-        bounded.add("captureGoal", RegionCaptureGoal.outputClosure()
+        JsonObject incomplete = activations.get(1).deepCopy();
+        incomplete.add("captureGoal", RegionCaptureGoal.outputClosure()
                 .toJson());
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", "upstream.out");
-        bounded.add("requestedOutput", requested);
+        incomplete.add("requestedOutput", requested);
         JsonObject partialSlice = outputSlice("upstream.out", false,
                 "upstream.in");
-        bounded.add("requestedOutputSlice", partialSlice);
-        bounded.addProperty("requestedOutputSliceComplete", false);
-        bounded.addProperty("boundedPartialOutputSliceAdmitted", true);
+        incomplete.add("requestedOutputSlice", partialSlice);
+        incomplete.addProperty("requestedOutputSliceComplete", false);
 
-        RecursiveRegionWorklist.Result admitted =
+        RecursiveRegionWorklist.Result rejected =
                 RecursiveRegionWorklist.explore(regions,
-                        Arrays.asList(activations.get(0), bounded,
+                        Arrays.asList(activations.get(0), incomplete,
                                 activations.get(2)), edges,
                         Collections.<JsonObject>emptyList(),
                         Collections.singletonList(activations.get(0)),
                         RecursiveRegionWorklist.Bounds.defaults());
-        JsonObject admittedRequest = requestForOutput(admitted,
+        JsonObject rejectedRequest = requestForOutput(rejected,
                 "upstream.out");
-        assertTrue(admittedRequest.get("recursiveExpansionAllowed")
+        assertFalse(rejectedRequest.get("recursiveExpansionAllowed")
                 .getAsBoolean());
-        assertEquals("COMPLETE_OUTPUT_ACTIVATION_SLICE",
-                admittedRequest.get("outputDependencyClosureAuthority")
-                        .getAsString());
-        assertEquals("[\"upstream.in\"]", admittedRequest
-                .getAsJsonArray("outputDependencyInputPorts").toString());
-        assertFalse(bounded.get("requestedOutputSliceComplete")
+        assertFalse(rejectedRequest.get("outputDependencyClosureComplete")
                 .getAsBoolean());
+        assertTrue(rejected.manifest.getAsJsonArray("gaps").toString()
+                .contains("MISSING_OUTPUT_DEPENDENCY_CLOSURE"));
+        assertFalse(rejected.upstreamRequests.toString()
+                .contains("source.out"));
     }
 
     @Test

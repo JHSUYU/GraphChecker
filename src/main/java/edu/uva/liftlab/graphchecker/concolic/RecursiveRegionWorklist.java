@@ -486,7 +486,7 @@ public final class RecursiveRegionWorklist {
                     bool(activation, "anchorObserved", false),
                     bool(activation, "replayable", false),
                     activationOutputMatches(activation, output),
-                    requestedOutputSliceOperationallyAdmitted(activation),
+                    bool(activation, "requestedOutputSliceComplete", false),
                     bool(activation, "symbolicReady", false),
                     bool(activation, "staticInputSelectionComplete", false),
                     methodCount == 0 ? Integer.MAX_VALUE : methodCount);
@@ -646,7 +646,7 @@ public final class RecursiveRegionWorklist {
 
         private DependencyClosure activationDependencies(
                 JsonObject activation, String region, OutputRef output) {
-            if (!requestedOutputSliceOperationallyAdmitted(activation)) {
+            if (!bool(activation, "requestedOutputSliceComplete", false)) {
                 return DependencyClosure.gap(
                         "INCOMPLETE_OUTPUT_DEPENDENCY_CLOSURE",
                         "ACTIVATION_OUTPUT_SLICE_INCOMPLETE", "NONE");
@@ -668,9 +668,7 @@ public final class RecursiveRegionWorklist {
                         "ACTIVATION_OUTPUT_IS_NOT_UNAMBIGUOUS", "NONE");
             }
             JsonObject slice = object(activation, "requestedOutputSlice");
-            if (!bool(slice, "complete", true)
-                    && !bool(activation,
-                    "boundedPartialOutputSliceAdmitted", false)) {
+            if (!bool(slice, "complete", false)) {
                 return DependencyClosure.gap(
                         "INCOMPLETE_OUTPUT_DEPENDENCY_CLOSURE",
                         "ACTIVATION_OUTPUT_SLICE_INCOMPLETE", "NONE");
@@ -707,11 +705,9 @@ public final class RecursiveRegionWorklist {
                     "outputPort")) || output.matches(string(slice,
                     "outputCell")) || output.matches(string(requested,
                     "portId")) || output.matches(string(requested, "cell"));
-            boolean sliceComplete =
-                    requestedOutputSliceOperationallyAdmitted(summary)
-                            || !summary.has(
-                            "requestedOutputSliceComplete")
-                            && bool(slice, "complete", false);
+            boolean sliceComplete = bool(summary,
+                    "requestedOutputSliceComplete", false)
+                    && bool(slice, "complete", false);
             if (sliceMatches && sliceComplete
                     && hasArray(slice, "inputPorts")) {
                 return DependencyClosure.complete(primitiveStringSet(
@@ -1011,7 +1007,7 @@ public final class RecursiveRegionWorklist {
             if (RegionCaptureGoal.from(activation).isOutputClosure()) {
                 score += 1_000;
             }
-            if (requestedOutputSliceOperationallyAdmitted(activation)) {
+            if (bool(activation, "requestedOutputSliceComplete", false)) {
                 score += 100;
             }
             if (bool(activation, "anchorObserved", false)) score += 40;
@@ -1096,11 +1092,9 @@ public final class RecursiveRegionWorklist {
                     return result;
                 }
                 JsonObject slice = object(summary, "requestedOutputSlice");
-                boolean sliceComplete =
-                        requestedOutputSliceOperationallyAdmitted(summary)
-                                || !summary.has(
-                                "requestedOutputSliceComplete")
-                                && bool(slice, "complete", false);
+                boolean sliceComplete = bool(summary,
+                        "requestedOutputSliceComplete", false)
+                        && bool(slice, "complete", false);
                 observedPath |= RegionCaptureGoal.from(summary)
                         .isOutputClosure() && sliceComplete
                         && hasArray(slice, "inputPorts");
@@ -1857,17 +1851,6 @@ public final class RecursiveRegionWorklist {
         } catch (RuntimeException ignored) {
             return fallback;
         }
-    }
-
-    /**
-     * Keeps discovery completeness as provenance while allowing a scheduler
-     * to explicitly admit one bounded partial output transformer for
-     * operational composition.  The admission bit is never inferred here.
-     */
-    private static boolean requestedOutputSliceOperationallyAdmitted(
-            JsonObject value) {
-        return bool(value, "requestedOutputSliceComplete", false)
-                || bool(value, "boundedPartialOutputSliceAdmitted", false);
     }
 
     private static int integer(JsonObject object, String field, int fallback) {

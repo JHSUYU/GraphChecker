@@ -3264,9 +3264,6 @@ public class ConcolicSmtComposerTest {
                     "REGION.P.out.0", symbol("java/util/Map",
                             "M_L_field_REGION.P.in.0_example/Store"));
             outputOnly.addProperty("requestedOutputCaptureComplete", true);
-            outputOnly.addProperty("boundedPartialOutputSliceAdmitted", true);
-            outputOnly.addProperty(
-                    "requestedOutputSliceOperationallyAdmitted", true);
             JsonObject slice = requestedSlice("REGION.P.in.0");
             slice.addProperty("outputPort", "REGION.P.out.0");
             slice.addProperty("complete", false);
@@ -3285,16 +3282,13 @@ public class ConcolicSmtComposerTest {
             outputOnly.add("requestedOutputCapture", captures);
             writeSummary(fixture, outputOnly);
 
-            ConcolicSmtComposer.Result admitted =
+            ConcolicSmtComposer.Result rejected =
                     ConcolicSmtComposer.compose(arguments(fixture));
-            assertTrue(admitted.manifest.toString(), admitted.manifest.get(
+            assertFalse(rejected.manifest.toString(), rejected.manifest.get(
                     "structurallyComplete").getAsBoolean());
-            assertFalse(admitted.manifest.getAsJsonArray(
+            assertTrue(rejected.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString().contains(
                     "IncompleteRelationalSummary@REGION.P"));
-            assertTrue(admitted.manifest.getAsJsonArray(
-                    "requestedOutputOnlySummaryAdmissions").toString()
-                    .contains("SUMMARY.P"));
         } finally {
             folder.delete();
         }

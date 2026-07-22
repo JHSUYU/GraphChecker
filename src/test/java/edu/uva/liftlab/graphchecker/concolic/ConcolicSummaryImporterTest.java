@@ -143,172 +143,6 @@ public class ConcolicSummaryImporterTest {
         assertFalse(ConcolicSummaryImporter.validMapRefWitnessForTests(
                 witness, "ACT.Q"));
     }
-
-    @Test
-    public void synthesizesOneEntryIteratorRemoveFromExactStaticPorts()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path root = folder.getRoot().toPath();
-            Path summaries = root.resolve("summaries.jsonl");
-            Path activations = root.resolve("activations.jsonl");
-            Path regions = root.resolve("regions.jsonl");
-            Path graph = root.resolve("graph.jsonl");
-            Path output = root.resolve("bounded.jsonl");
-            String regionId = "REGION.B";
-            String activationId = "ACT.B";
-            String instance = "REGION.B@test#call9";
-            String method = "<example.Store: void sweep()>";
-            String mapCell = "<example.Store: java.util.Map entries>";
-            String keyCell = "<example.Entry: int key>";
-            String expiryCell = "<example.Entry: long expiry>";
-            String timeCell = "<example.Clock: long now()>";
-            String mutationSite = method + "#u5";
-
-            JsonObject requested = new JsonObject();
-            requested.addProperty("portId", regionId + ".out.0");
-            requested.addProperty("cell", mapCell);
-            requested.addProperty("kind", "HEAP_STATE");
-
-            JsonArray inputPorts = new JsonArray();
-            inputPorts.add(regionId + ".in.0");
-            inputPorts.add(regionId + ".in.1");
-            inputPorts.add(regionId + ".in.2");
-            inputPorts.add(regionId + ".in.3");
-            JsonArray causalEdges = new JsonArray();
-            for (String id : new String[]{"E.MUTATE", "E.GUARD",
-                    "E.CMP.L", "E.CMP.R", "E.EXPIRY", "E.TIME"}) {
-                JsonObject edge = new JsonObject();
-                edge.addProperty("edgeId", id);
-                causalEdges.add(edge);
-            }
-            JsonObject obligation = new JsonObject();
-            obligation.addProperty("siteId", mutationSite);
-            obligation.addProperty("targetCell", mapCell);
-            obligation.addProperty("transferKind", "HEAP_WRITE");
-            obligation.addProperty("authority", "EXACT_STATIC_TEST_PROOF");
-            JsonArray obligationEdges = new JsonArray();
-            obligationEdges.add("E.MUTATE");
-            obligation.add("causalEdgeIds", obligationEdges);
-            JsonArray obligations = new JsonArray();
-            obligations.add(obligation);
-            JsonObject slice = new JsonObject();
-            slice.addProperty("structuralComplete", true);
-            slice.addProperty("truncated", false);
-            slice.addProperty(
-                    "requestedStateTransformerContractApplicable", true);
-            slice.addProperty(
-                    "requestedStateTransformerContractComplete", true);
-            slice.add("inputPorts", inputPorts.deepCopy());
-            slice.add("causalEdges", causalEdges);
-            slice.add("requestedStateTransformerObligations", obligations);
-
-            JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", activationId);
-            activation.addProperty("regionId", regionId);
-            activation.addProperty("regionInstanceId", instance);
-            activation.addProperty("boundedPartialOutputSliceAdmitted", true);
-            activation.add("requestedOutput", requested.deepCopy());
-            activation.add("requestedOutputSlice", slice);
-            write(activations, activation + "\n");
-
-            JsonObject region = new JsonObject();
-            region.addProperty("regionId", regionId);
-            JsonArray regionInputs = new JsonArray();
-            regionInputs.add(boundedInput(regionId + ".in.0", mapCell,
-                    "SHARED_HEAP", "java.util.Map"));
-            regionInputs.add(boundedInput(regionId + ".in.1", keyCell,
-                    "SHARED_HEAP", "int"));
-            regionInputs.add(boundedInput(regionId + ".in.2", expiryCell,
-                    "SHARED_HEAP", "long"));
-            regionInputs.add(boundedInput(regionId + ".in.3", timeCell,
-                    "ENVIRONMENT", "long"));
-            region.add("symbolicInputs", regionInputs);
-            write(regions, region + "\n");
-
-            JsonObject summary = new JsonObject();
-            summary.addProperty("activationId", activationId);
-            summary.addProperty("regionId", regionId);
-            summary.addProperty("regionInstanceId", instance);
-            summary.addProperty("rootCallId", 9);
-            summary.addProperty("rootMethod", "<example.Worker: void run()>");
-            summary.addProperty("valid", true);
-            summary.add("captureGoal",
-                    RegionCaptureGoal.outputClosure().toJson());
-            summary.add("requestedOutput", requested.deepCopy());
-            summary.add("edgeBindings", new JsonArray());
-            summary.add("heapEffects", new JsonArray());
-            JsonObject snapshot = new JsonObject();
-            snapshot.addProperty("snapshotId", "SNAP.EMPTY");
-            snapshot.addProperty("statePort", regionId + ".in.0");
-            snapshot.addProperty("cardinality", 0);
-            snapshot.addProperty("complete", true);
-            snapshot.addProperty("mapKeysFullyCaptured", true);
-            JsonArray snapshots = new JsonArray();
-            snapshots.add(snapshot);
-            summary.add("finiteMapSnapshots", snapshots);
-            write(summaries, summary + "\n");
-
-            JsonArray staticEdges = new JsonArray();
-            staticEdges.add(boundedEdge("E.MUTATE", method, mutationSite,
-                    "field_mutation", "", mapCell,
-                    "interfaceinvoke $it.<java.util.Iterator: void remove()>()"));
-            JsonObject mutation = staticEdges.get(0).getAsJsonObject();
-            mutation.addProperty("invoke",
-                    "<java.util.Iterator: void remove()>");
-            JsonObject guard = boundedEdge("E.GUARD", method,
-                    method + "#u4", "heap_mutation_path_guard", "$i0",
-                    "$i0", "if $i0 >= 0 goto label0");
-            guard.addProperty("guardedMutationSiteId", mutationSite);
-            guard.addProperty("requiredOutcome", false);
-            staticEdges.add(guard);
-            staticEdges.add(boundedEdge("E.CMP.L", method, method + "#u3",
-                    "local", "$l0", "$i0", "$i0 = $l0 cmp $l1"));
-            staticEdges.add(boundedEdge("E.CMP.R", method, method + "#u3",
-                    "local", "$l1", "$i0", "$i0 = $l0 cmp $l1"));
-            staticEdges.add(boundedEdge("E.EXPIRY", method,
-                    method + "#u2", "field_read", expiryCell, "$l0",
-                    "$l0 = $entry.<example.Entry: long expiry>"));
-            staticEdges.add(boundedEdge("E.TIME", method, method + "#u1",
-                    "environment", timeCell, "$l1",
-                    "$l1 = staticinvoke <example.Clock: long now()>()"));
-            StringBuilder graphLines = new StringBuilder();
-            for (JsonElement edge : staticEdges) {
-                graphLines.append(edge).append('\n');
-            }
-            write(graph, graphLines.toString());
-
-            ConcolicSummaryImporter.BoundedIteratorResult result =
-                    ConcolicSummaryImporter
-                            .synthesizeBoundedOneEntryMapIteratorSummaries(
-                                    summaries, activations, regions, graph,
-                                    output);
-            assertEquals(1, result.candidateCount);
-            assertEquals(1, result.generatedSummaryCount);
-            assertEquals(0, result.diagnostics.size());
-            JsonObject bounded = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8)
-                    .trim()).getAsJsonObject();
-            assertFalse(bounded.get("relationallyComplete").getAsBoolean());
-            assertTrue(bounded.get("boundedRelationallyComplete")
-                    .getAsBoolean());
-            assertEquals("<", bounded.getAsJsonArray("pathCondition").get(0)
-                    .getAsJsonObject().get("_op").getAsString());
-            assertEquals("MAP_REMOVE", bounded.getAsJsonArray("heapEffects")
-                    .get(0).getAsJsonObject().get("kind").getAsString());
-            assertEquals(4, bounded.getAsJsonObject("requestedOutputSlice")
-                    .getAsJsonArray("inputPorts").size());
-            assertEquals(0, bounded.getAsJsonObject("requestedOutputSlice")
-                    .getAsJsonArray("containerElementFieldBindings").size());
-            assertFalse(bounded.has("inputMaterializationAdmission"));
-            assertFalse(bounded.has(
-                    "vmIntrinsicPlaceholderBindingAdmission"));
-        } finally {
-            folder.delete();
-        }
-    }
-
     private static JsonObject valueRefWitnessRecord(boolean certified) {
         JsonObject record = new JsonObject();
         record.addProperty("valueExpressionAuthority",
@@ -1071,14 +905,13 @@ public class ConcolicSummaryImporterTest {
             assertEquals(putAll.get("postState").getAsString(),
                     output.get("stateId").getAsString());
 
-            JsonObject boundedActivation = JsonParser.parseString(new String(
+            JsonObject incompleteActivation = JsonParser.parseString(new String(
                     Files.readAllBytes(root.resolve("activation.jsonl")),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            boundedActivation.addProperty("requestedOutputSliceComplete",
-                    false);
-            boundedActivation.addProperty(
-                    "boundedPartialOutputSliceAdmitted", true);
-            boundedActivation.getAsJsonObject("requestedOutputSlice")
+            // A stale outer claim cannot override an incomplete inner slice.
+            incompleteActivation.addProperty("requestedOutputSliceComplete",
+                    true);
+            incompleteActivation.getAsJsonObject("requestedOutputSlice")
                     .addProperty("complete", false);
             JsonObject fallback = new JsonObject();
             fallback.addProperty("symbol", "REGION.P.in.0");
@@ -1086,51 +919,34 @@ public class ConcolicSummaryImporterTest {
             fallback.addProperty("concreteFallback", true);
             JsonArray fallbacks = new JsonArray();
             fallbacks.add(fallback);
-            boundedActivation.add("concreteFallbacks", fallbacks);
-            write(root.resolve("activation.jsonl"), boundedActivation
+            incompleteActivation.add("concreteFallbacks", fallbacks);
+            write(root.resolve("activation.jsonl"), incompleteActivation
                     + "\n");
 
-            JsonObject boundedRaw = JsonParser.parseString(new String(
+            JsonObject incompleteRaw = JsonParser.parseString(new String(
                     Files.readAllBytes(root.resolve("results.jsonl")),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            boundedRaw.add("symbolizedInputs", new JsonArray());
+            incompleteRaw.add("symbolizedInputs", new JsonArray());
             JsonArray unresolved = new JsonArray();
             unresolved.add("REGION.P.in.0:concrete passthrough");
-            boundedRaw.add("unresolvedInputs", unresolved);
-            write(root.resolve("results.jsonl"), boundedRaw + "\n");
+            incompleteRaw.add("unresolvedInputs", unresolved);
+            write(root.resolve("results.jsonl"), incompleteRaw + "\n");
 
-            Path boundedOutput = root.resolve("bounded-summaries.jsonl");
-            Path boundedDiagnostics = root.resolve(
-                    "bounded-diagnostics.jsonl");
+            Path incompleteOutput = root.resolve("incomplete-summaries.jsonl");
+            Path incompleteDiagnostics = root.resolve(
+                    "incomplete-diagnostics.jsonl");
             ConcolicSummaryImporter.importSummaries(
                     root.resolve("results.jsonl"),
-                    root.resolve("activation.jsonl"),
-                    root.resolve("regions.jsonl"), boundedOutput,
-                    boundedDiagnostics, root.resolve("bounded-cache"));
-            JsonObject boundedSummary = JsonParser.parseString(new String(
-                    Files.readAllBytes(boundedOutput),
+                    root.resolve("activation.jsonl"), root.resolve(
+                            "regions.jsonl"), incompleteOutput,
+                    incompleteDiagnostics, root.resolve("incomplete-cache"));
+            JsonObject incompleteSummary = JsonParser.parseString(new String(
+                    Files.readAllBytes(incompleteOutput),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            assertFalse(boundedSummary.get("requestedOutputSliceComplete")
+            assertFalse(incompleteSummary.get("requestedOutputSliceComplete")
                     .getAsBoolean());
-            assertTrue(boundedSummary.get(
-                    "boundedPartialOutputSliceAdmitted").getAsBoolean());
-            assertTrue(boundedSummary.get(
-                    "requestedOutputSliceOperationallyAdmitted")
+            assertFalse(incompleteSummary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(boundedSummary.get("relationallyComplete")
-                    .getAsBoolean());
-            JsonObject boundedInputAdmission = boundedSummary
-                    .getAsJsonObject("inputMaterializationAdmission");
-            assertTrue(boundedInputAdmission.get("complete")
-                    .getAsBoolean());
-            assertEquals("[\"REGION.P.in.0\"]", boundedInputAdmission
-                    .getAsJsonArray("admittedConcreteFallbackInputs")
-                    .toString());
-            assertEquals(0, boundedInputAdmission.getAsJsonArray(
-                    "requiredSliceInputs").size());
-            assertFalse(new String(Files.readAllBytes(boundedDiagnostics),
-                    StandardCharsets.UTF_8).contains(
-                    "INCOMPLETE_OUTPUT_INPUT_MATERIALIZATION"));
         } finally {
             folder.delete();
         }
@@ -7320,32 +7136,6 @@ public class ConcolicSummaryImporterTest {
             this.summary = summary;
             this.diagnostics = diagnostics;
         }
-    }
-
-    private static JsonObject boundedInput(String port, String cell,
-                                           String sourceKind,
-                                           String javaType) {
-        JsonObject result = new JsonObject();
-        result.addProperty("portId", port);
-        result.addProperty("cell", cell);
-        result.addProperty("sourceKind", sourceKind);
-        result.addProperty("javaType", javaType);
-        return result;
-    }
-
-    private static JsonObject boundedEdge(String id, String method,
-                                          String siteId, String kind,
-                                          String fromCell, String toCell,
-                                          String unit) {
-        JsonObject result = new JsonObject();
-        result.addProperty("id", id);
-        result.addProperty("method", method);
-        result.addProperty("siteId", siteId);
-        result.addProperty("kind", kind);
-        result.addProperty("fromCell", fromCell);
-        result.addProperty("toCell", toCell);
-        result.addProperty("unit", unit);
-        return result;
     }
 
     private static void write(Path path, String value) throws Exception {

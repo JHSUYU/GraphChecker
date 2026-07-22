@@ -590,64 +590,11 @@ public class ConcolicSchedulerTest {
                     .getAsBoolean());
             assertFalse(blocked.scheduledActivations.get(0)
                     .get("symbolicReady").getAsBoolean());
-
-            JsonObject boundedValue = JsonParser.parseString(activation)
-                    .getAsJsonObject();
-            boundedValue.addProperty("requestedOutputSliceComplete", false);
-            boundedValue.getAsJsonObject("requestedOutput")
-                    .addProperty("kind", "VALUE");
-            boundedValue.remove("edgeBindings");
-            JsonObject valueInput = new JsonObject();
-            valueInput.addProperty("symbol", "REGION.11.in.value");
-            valueInput.addProperty("cell",
-                    "<example.Carrier: java.lang.String value>");
-            valueInput.addProperty("location", "ARGUMENT");
-            valueInput.addProperty("parameterIndex", 0);
-            valueInput.addProperty("observed", true);
-            boundedValue.getAsJsonArray("symbolize").add(valueInput);
-            JsonObject boundedSlice = new JsonObject();
-            boundedSlice.addProperty("structuralComplete", true);
-            boundedSlice.addProperty("truncated", false);
-            boundedSlice.addProperty("unresolvedInputProvenanceComplete",
-                    true);
-            JsonArray unresolved = new JsonArray();
-            unresolved.add("<example.Carrier: example.Value value>");
-            boundedSlice.add("unresolvedInputs", unresolved);
-            boundedValue.add("requestedOutputSlice", boundedSlice);
-            Files.write(fixture.activations,
-                    (boundedValue + "\n").getBytes(StandardCharsets.UTF_8));
-            ConcolicScheduler.Arguments boundedArguments =
-                    ConcolicScheduler.Arguments.parse(new String[]{
-                            "--regions", fixture.regions.toString(),
-                            "--activation-plan",
-                            fixture.activations.toString(),
-                            "--edge-validations", fixture.edges.toString(),
-                            "--static-graph", fixture.staticGraph.toString(),
-                            "--output-dir", fixture.output.toString(),
-                            "--activation-id", "ACT.PRODUCER.0",
-                            "--capture-only",
-                            "--allow-bounded-partial-output-slice"});
-            ConcolicScheduler.Result admitted =
-                    ConcolicScheduler.schedule(boundedArguments);
-            JsonObject admittedActivation = admitted.scheduledActivations
-                    .get(0);
-            assertTrue(admittedActivation.get("schedulerReady")
+            assertFalse(blocked.jobs.get(0).get("captureReady")
                     .getAsBoolean());
-            assertTrue(admittedActivation.get(
-                    "boundedPartialOutputSliceAdmitted").getAsBoolean());
-            assertEquals("CONFIGURED_STRUCTURALLY_COMPLETE_OUTPUT_SLICE_"
-                            + "PLUS_CONCRETE_FALLBACK_V1",
-                    admittedActivation.get(
-                            "boundedPartialOutputSliceAuthority")
-                            .getAsString());
-            assertEquals("VALUE_OR_SINK_OUTPUT", admittedActivation.get(
-                    "boundedPartialOutputSliceSemanticClass").getAsString());
-            assertEquals(1, admittedActivation.getAsJsonArray(
-                    "materializations").size());
-            assertEquals(0, admittedActivation.getAsJsonArray(
-                    "concreteFallbacks").size());
 
-            JsonObject autoCapture = boundedValue.deepCopy();
+            JsonObject autoCapture = JsonParser.parseString(activation)
+                    .getAsJsonObject();
             autoCapture.addProperty("requestedOutputCaptureRequired", true);
             autoCapture.addProperty("requestedOutputCaptureComplete", false);
             JsonArray captureTemplates = new JsonArray();
@@ -687,8 +634,7 @@ public class ConcolicSchedulerTest {
                             fixture.runtimeInstances.toString(),
                             "--output-dir", fixture.output.toString(),
                             "--activation-id", "ACT.PRODUCER.0",
-                            "--capture-only",
-                            "--allow-bounded-partial-output-slice"});
+                            "--capture-only"});
             JsonObject automaticallyRefined = ConcolicScheduler.schedule(
                     autoCaptureArguments).scheduledActivations.get(0);
             JsonObject automaticCapture = automaticallyRefined
@@ -713,7 +659,6 @@ public class ConcolicSchedulerTest {
                             "--output-dir", fixture.output.toString(),
                             "--activation-id", "ACT.PRODUCER.0",
                             "--capture-only",
-                            "--allow-bounded-partial-output-slice",
                             "--requested-output-capture-site",
                             "<example.Client: void plain()>#u9",
                             "--requested-output-capture-occurrence", "3"});
@@ -728,14 +673,6 @@ public class ConcolicSchedulerTest {
                     explicitlyRefined.get(
                             "requestedOutputCaptureSelectionAuthority")
                             .getAsString());
-
-            boundedSlice.addProperty("truncated", true);
-            Files.write(fixture.activations,
-                    (boundedValue + "\n").getBytes(StandardCharsets.UTF_8));
-            ConcolicScheduler.Result truncated =
-                    ConcolicScheduler.schedule(boundedArguments);
-            assertFalse(truncated.scheduledActivations.get(0)
-                    .get("schedulerReady").getAsBoolean());
 
             String deferred = activation.replace("\"symbolize\":[]",
                     "\"symbolize\":[{\"symbol\":\"REGION.11.in.env\","

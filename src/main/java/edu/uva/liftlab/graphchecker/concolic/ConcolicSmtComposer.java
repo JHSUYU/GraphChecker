@@ -172,12 +172,6 @@ public final class ConcolicSmtComposer {
         boolean instanceScopedContext = resolutionContext.size() > 0
                 && !string(resolutionContext, "regionInstanceId").isEmpty();
 
-        // An explicit source-scope boundary also permits a certified bounded
-        // approximation for the same region. There is no second, independent
-        // relational composition scope.
-        Set<String> boundedRelationalRegions = new LinkedHashSet<>(
-                arguments.boundedUpstreamRegions);
-
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
                 resolutionContext,
                 summaries, arguments.boundedUpstreamRegions);
@@ -191,11 +185,8 @@ public final class ConcolicSmtComposer {
         ContextScope resolvedScoped = boundedContext(resolutionContext,
                 relevantRegions);
         JsonObject context = resolvedScoped.context;
-        Emitter emitter = new Emitter(ports,
-                boundedRelationalRegions);
+        Emitter emitter = new Emitter(ports);
         emitter.begin(fatal);
-        emitter.registerDemandedSummaryOutputs(
-                resolved.selectedRegionSummaries.values());
         emitter.registerExactEqualityBoundExpressions(
                 resolved.selectedEdges);
         if (!instanceScopedContext) {
@@ -290,15 +281,13 @@ public final class ConcolicSmtComposer {
                         ? "SCHEDULER_SELECTED_RUNTIME_BINDINGS_FOR_FATAL_INSTANCE"
                         : "MISSING_INSTANCE_SCOPED_SYMBOLIC_CONTEXT");
         manifest.addProperty("boundedComposition",
-                !boundedRelationalRegions.isEmpty());
+                !arguments.boundedUpstreamRegions.isEmpty());
         manifest.addProperty("compositionScope",
                 arguments.boundedUpstreamRegions.isEmpty()
                         ? "FULL_INSTANCE_SCOPED_CONTEXT"
                         : "EXPLICIT_BOUNDED_UPSTREAM_REGIONS");
         manifest.add("boundedUpstreamRegions", GSON.toJsonTree(
                 arguments.boundedUpstreamRegions));
-        manifest.add("boundedRelationalRegions", GSON.toJsonTree(
-                boundedRelationalRegions));
         manifest.addProperty("excludedContextRelationCount",
                 scoped.excludedRelations
                         + resolvedScoped.excludedRelations);
@@ -329,12 +318,6 @@ public final class ConcolicSmtComposer {
         manifest.add("resolvedEdgeBindings",
                 resolved.resolvedEdgeCatalog());
         manifest.add("includedSummaries", GSON.toJsonTree(includedSummaries));
-        manifest.addProperty("boundedRelationalApproximationUsed",
-                !emitter.boundedRelationalAdmissions.isEmpty());
-        manifest.add("boundedRelationalSummaryRegions", GSON.toJsonTree(
-                emitter.boundedRelationalAdmissions));
-        manifest.add("requestedOutputOnlySummaryAdmissions",
-                GSON.toJsonTree(emitter.requestedOutputOnlyAdmissions));
         manifest.add("missingSummaryRegions",
                 GSON.toJsonTree(missingSummaries));
         manifest.add("incompleteSummaryRegions",
@@ -1521,7 +1504,6 @@ public final class ConcolicSmtComposer {
 
     private static final class Emitter {
         private final PortIndex ports;
-        private final Set<String> boundedRelationalRegions;
         private final List<String> preamble = new ArrayList<>();
         private final List<String> declarations = new ArrayList<>();
         private final List<String> assertions = new ArrayList<>();
@@ -1547,8 +1529,6 @@ public final class ConcolicSmtComposer {
         private final Set<String> mentionedPorts = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> incompleteSummaries = new LinkedHashSet<>();
-        private final Set<String> boundedRelationalAdmissions =
-                new LinkedHashSet<>();
         private final Set<String> unboundPorts = new LinkedHashSet<>();
         private final Set<String> canonicalPortTermBindings =
                 new LinkedHashSet<>();
@@ -1558,10 +1538,6 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private final Map<String, EqualityBoundExpression>
                 exactEqualityBoundExpressions = new LinkedHashMap<>();
-        private final Map<String, Set<String>> demandedSummaryOutputs =
-                new LinkedHashMap<>();
-        private final Set<String> requestedOutputOnlyAdmissions =
-                new LinkedHashSet<>();
         private final Set<String> ambiguousEqualityBoundExpressionPorts =
                 new LinkedHashSet<>();
         private final Set<String> validatedIncomingEdgeInputs =
@@ -1606,13 +1582,8 @@ public final class ConcolicSmtComposer {
         private String currentSummaryIdentity = "";
         private CaseProjectionCapture currentCaseProjection;
 
-        private Emitter(PortIndex ports,
-                        Set<String> boundedRelationalRegions) {
+        private Emitter(PortIndex ports) {
             this.ports = ports;
-            this.boundedRelationalRegions = new LinkedHashSet<>(
-                    boundedRelationalRegions == null
-                            ? Collections.<String>emptySet()
-                            : boundedRelationalRegions);
         }
 
         private String enterSymbolScope(String scope) {
@@ -1765,15 +1736,6 @@ public final class ConcolicSmtComposer {
                     unsupported.add(
                             "AmbiguousExactEqualityBoundExpression:" + input);
                 }
-            }
-        }
-
-        private void registerDemandedSummaryOutputs(
-                Iterable<RegionSummarySelection> selections) {
-            for (RegionSummarySelection selection : selections) {
-                demandedSummaryOutputs.put(summarySelectionIdentity(
-                        selection.summary), new LinkedHashSet<>(
-                        selection.demandedOutputs));
             }
         }
 
@@ -3472,14 +3434,6 @@ public final class ConcolicSmtComposer {
 
             JsonArray rows = declared.getAsJsonArray();
             JsonObject admission = admissionElement.getAsJsonObject();
-            // A certified requested-output-only relation need not validate
-            // VM materializations that occur elsewhere in the activation.
-            // This exemption is syntax checked: no demanded output or kept
-            // path condition may contain a PlaceholderExpression.
-            if (admitRequestedOutputOnlyRelation(container)
-                    && !requestedOutputOnlyUsesVmPlaceholder(container)) {
-                return;
-            }
             if (integer(admission, "schemaVersion", -1) != 1
                     || !"VM_INTRINSIC_PLACEHOLDER_BINDING_ADMISSION".equals(
                     string(admission, "kind"))
@@ -3613,98 +3567,6 @@ public final class ConcolicSmtComposer {
                     || (base + "_AND_EXPLICIT_CONCRETE_FALLBACKS").equals(
                     authority);
         }
-
-        private boolean admitRequestedOutputOnlyRelation(
-                JsonObject summary) {
-            String identity = summarySelectionIdentity(summary);
-            Set<String> demanded = demandedSummaryOutputs.get(identity);
-            JsonObject slice = object(summary, "requestedOutputSlice");
-            JsonObject requested = object(summary, "requestedOutput");
-            JsonObject outputAdmission = object(summary,
-                    "outputExpressionAdmission");
-            JsonObject heapModel = object(summary, "heapEffectModel");
-            String output = string(slice, "outputPort");
-            JsonElement expression = object(summary,
-                    "outputExpressions").get(output);
-            if (demanded == null || demanded.size() != 1
-                    || !demanded.contains(output) || output.isEmpty()
-                    || !ports.contains(output)
-                    || !output.equals(string(requested, "portId"))
-                    || expression == null || !expression.isJsonObject()
-                    || !bool(summary, "requestedOutputCaptureComplete", false)
-                    || !bool(summary,
-                    "boundedPartialOutputSliceAdmitted", false)
-                    || !bool(summary,
-                    "requestedOutputSliceOperationallyAdmitted", false)
-                    || !bool(slice, "structuralComplete", false)
-                    || bool(slice, "complete", true)
-                    || !bool(outputAdmission, "complete", false)
-                    || array(outputAdmission, "issues").size() != 0
-                    || string(outputAdmission, "authority").isEmpty()
-                    || array(summary, "heapEffects").size() != 0
-                    || array(summary, "heapStateInitializers").size() != 0
-                    || !bool(heapModel, "complete", false)) {
-                return false;
-            }
-            boolean captureMatched = false;
-            for (JsonElement element : array(summary,
-                    "requestedOutputCapture")) {
-                if (element.isJsonObject() && output.equals(string(
-                        element.getAsJsonObject(), "outputPort"))) {
-                    captureMatched = true;
-                }
-            }
-            if (!captureMatched) return false;
-
-            Set<String> declaredInputs = strictStringSet(array(slice,
-                    "inputPorts"));
-            if (declaredInputs == null) return false;
-            Set<String> referenced = new LinkedHashSet<>();
-            collectExpressionInputPorts(expression, regionOf(output),
-                    referenced);
-            collectExpressionInputPorts(array(summary, "pathCondition"),
-                    regionOf(output), referenced);
-            if (!declaredInputs.containsAll(referenced)) return false;
-
-            requestedOutputOnlyAdmissions.add(identity);
-            return true;
-        }
-
-        private boolean requestedOutputOnlyUsesVmPlaceholder(
-                JsonObject summary) {
-            String identity = summarySelectionIdentity(summary);
-            Set<String> demanded = demandedSummaryOutputs.get(identity);
-            if (demanded == null || demanded.size() != 1) return true;
-            String output = demanded.iterator().next();
-            return containsExpressionType(object(summary,
-                    "outputExpressions").get(output),
-                    "PlaceholderExpression")
-                    || containsExpressionType(array(summary,
-                    "pathCondition"), "PlaceholderExpression");
-        }
-
-        private boolean containsExpressionType(JsonElement value,
-                                               String expectedType) {
-            if (value == null || value.isJsonNull()) return false;
-            if (value.isJsonArray()) {
-                for (JsonElement element : value.getAsJsonArray()) {
-                    if (containsExpressionType(element, expectedType)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-            if (!value.isJsonObject()) return false;
-            JsonObject object = value.getAsJsonObject();
-            if (expectedType.equals(string(object, "_type"))) return true;
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                if (containsExpressionType(entry.getValue(), expectedType)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
         private boolean inputAdmissionOwnsVmPlaceholder(
                 JsonObject admission, JsonArray requirements, String port,
                 String identity, String function, String cell) {
@@ -4775,14 +4637,7 @@ public final class ConcolicSmtComposer {
                                                JsonArray effects) {
             if (summary.has("relationallyComplete")
                     && !bool(summary, "relationallyComplete", false)) {
-                if (admitBoundedRelationalSummary(region, summary)) {
-                    boundedRelationalAdmissions.add(region);
-                } else if (admitRequestedOutputOnlyRelation(summary)) {
-                    // Only the exact demanded output closure is composed;
-                    // unrelated activation semantics remain outside scope.
-                } else {
-                    heapGap(region, "IncompleteRelationalSummary@" + region);
-                }
+                heapGap(region, "IncompleteRelationalSummary@" + region);
             }
             boolean modelDeclared = summary.has("heapEffectModel")
                     && summary.get("heapEffectModel").isJsonObject();
@@ -4916,26 +4771,6 @@ public final class ConcolicSmtComposer {
                             + ":" + declaredFamilies + "!=" + cursors.size());
                 }
             }
-        }
-
-        /**
-         * Admits an explicitly bounded relation only when the caller selected
-         * that region as a composition boundary and the summary carries its
-         * own complete approximation certificate.  This authorizes emitting
-         * the bounded transition; it deliberately does not promote the
-         * summary's global {@code relationallyComplete} bit.
-         */
-        private boolean admitBoundedRelationalSummary(
-                String region, JsonObject summary) {
-            JsonObject approximation = object(summary,
-                    "boundedApproximation");
-            JsonObject execution = object(summary, "executionAdmission");
-            return boundedRelationalRegions.contains(region)
-                    && bool(summary, "boundedRelationallyComplete", false)
-                    && bool(approximation, "complete", false)
-                    && bool(approximation, "approximation", false)
-                    && !string(approximation, "scope").isEmpty()
-                    && bool(execution, "valid", false);
         }
 
         private Map<String, JsonObject> validateHeapInitializers(
