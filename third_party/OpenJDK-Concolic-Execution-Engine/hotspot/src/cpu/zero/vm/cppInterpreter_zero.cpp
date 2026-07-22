@@ -670,30 +670,49 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
   }
 #ifdef ENABLE_CONCOLIC
   if (ConcolicMngr::can_do_concolic()) {
-    if (object->is_symbolic() && entry->flag_state() != atos) {
-      ZeroFrame *top_frame = thread->top_zero_frame();
-      int field_offset = entry->f2_as_index();
-      sym_rid_t sym_rid = object->get_sym_rid();
-      SymInstance* sym_inst = ConcolicMngr::ctx->get_sym_inst(sym_rid);
-      Expression* sym_exp = sym_inst->get(field_offset);
-      // Zero uses this fast entry for trivial Java getters, bypassing the
-      // ordinary GETFIELD bytecode handler.  Preserve the same demand-driven
-      // primitive-field semantics for symbolic object-array elements here.
+    // Zero executes trivial getters through this fast entry without creating
+    // a Java frame, so neither the ordinary GETFIELD handler nor the normal
+    // return bridge runs.  Reproduce their exact value semantics here for
+    // every field type, including object and array references.  The shadow is
+    // read from the receiver's exact field slot; it is never attached to the
+    // returned oop, so aliases of the same reference remain independent.
+    ZeroFrame *top_frame = thread->top_zero_frame();
+    int field_offset = entry->f2_as_index();
+    // The TosState collapses object and array references to atos.  The
+    // accessor's declared result retains the exact Java field category.
+    BasicType field_type = method->result_type();
+    int result_slots = type2size[field_type];
+    assert(result_slots == 1 || result_slots == 2,
+           "a fast accessor result occupies one or two JVM words");
+
+    SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(object);
+    Expression *sym_exp = NULL;
+    sym_rid_t sym_rid = NULL_SYM_RID;
+    if (sym_inst != NULL) {
+      sym_rid = sym_inst->get_sym_rid();
+      sym_exp = sym_inst->get(field_offset);
       if (sym_exp == NULL && sym_inst->demand_symbolic_fields_enabled()) {
-        BasicType field_type = as_BasicType(entry->flag_state());
         sym_inst->init_sym_exp(field_offset, field_type);
         sym_exp = sym_inst->get(field_offset);
       }
-      if (top_frame->is_interpreter_frame()) {
-        interpreterState istate = thread->top_zero_frame()->as_interpreter_frame()->interpreter_state();
-        int stack_offset = istate->stack_base() - locals - 1;
-        ConcolicMngr::ctx->set_stack_slot(stack_offset, sym_exp, sym_rid, field_offset);
-      } else if (top_frame->is_entry_frame()){
-        int offset = type2size[as_BasicType(entry->flag_state())] - 1;
-        ConcolicMngr::ctx->set_stack_slot(offset, sym_exp, sym_rid, field_offset);
-      } else {
-        ShouldNotReachHere();
+    }
+
+    if (top_frame->is_interpreter_frame()) {
+      interpreterState istate =
+          top_frame->as_interpreter_frame()->interpreter_state();
+      int result_begin = istate->stack_base() - locals - 1;
+      int result_anchor = result_begin + result_slots - 1;
+      ConcolicMngr::ctx->set_stack_value(
+          result_anchor, result_slots, sym_exp, sym_rid, field_offset);
+    } else if (top_frame->is_entry_frame()) {
+      ShadowTable &result_stack = ConcolicMngr::ctx->get_shadow_stack()
+          .get_last_frame().get_opr_stack();
+      if (result_stack.size() != 0) {
+        ConcolicMngr::ctx->set_stack_value(
+            result_slots - 1, result_slots, sym_exp, sym_rid, field_offset);
       }
+    } else {
+      ShouldNotReachHere();
     }
   }
 #endif

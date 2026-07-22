@@ -62,6 +62,10 @@ public class ConcolicRegionRuntimeTest {
         action.addProperty("accessSiteId", method + "#u7");
         action.addProperty("accessSiteAuthority",
                 "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+        action.addProperty("javaType", "int");
+        JsonArray fieldPath = new JsonArray();
+        fieldPath.add("t");
+        action.add("fieldPath", fieldPath);
         activation.add("materializations", singleton(action));
 
         JsonObject assignment = new JsonObject();
@@ -73,6 +77,9 @@ public class ConcolicRegionRuntimeTest {
         assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
         assignment.addProperty("materializeAtRealDefinition", true);
         assignment.add("target", action.deepCopy());
+        JsonArray materializationPath = new JsonArray();
+        materializationPath.add("t");
+        assignment.add("materializationPath", materializationPath);
         activation.add("modelAssignments", singleton(assignment));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
@@ -97,6 +104,73 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("STATIC_FIELD_READ",
                     applied.get("appliedAt").getAsString());
             assertEquals("21", applied.get("value").getAsString());
+            assertEquals("t", applied.getAsJsonArray(
+                    "materializationPath").get(0).getAsString());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void nonNullNullableStringReplayPreservesFalseNullAttestation()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.NullableInput: void run(java.lang.String)>";
+        String symbol = "REGION.NULLABLE.in.0";
+
+        JsonObject activation = concreteActivation(
+                "ACT.MODEL.NULLABLE.NON_NULL", root, 1);
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", symbol);
+        action.addProperty("cell", root + ".param0:java.lang.String");
+        action.addProperty("location", "ARGUMENT");
+        action.addProperty("bindingMode", "ROOT_ENTRY");
+        action.addProperty("index", 0);
+        action.addProperty("javaType", "java.lang.String");
+        activation.add("symbolize", singleton(action));
+
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", "M_L_String_nullable");
+        assignment.addProperty("solverSymbol", "sym__nullable_content");
+        assignment.addProperty("nullnessSolverSymbol",
+                "sym__nullable_is_null");
+        assignment.addProperty("modelIsNull", false);
+        assignment.addProperty("inputSymbol", symbol);
+        assignment.addProperty("valueType", "STRING");
+        assignment.addProperty("value", "\"modeled\"");
+        assignment.addProperty("nullableStringEncodingAuthority",
+                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        assignment.addProperty("materializeAtRealDefinition", true);
+        assignment.add("target", action.deepCopy());
+        activation.add("modelAssignments", singleton(assignment));
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "concrete-model-test");
+        try {
+            long token = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[]{"seed"});
+            assertTrue(token > 0L);
+            assertEquals("modeled", ConcolicRegionRuntime
+                    .materializeArgument(token, 0, "seed", ""));
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+
+            JsonObject result = resultRows(results).get(0);
+            assertTrue(result.get("allModelAssignmentsApplied")
+                    .getAsBoolean());
+            JsonObject applied = result.getAsJsonArray(
+                    "modelAssignmentsApplied").get(0).getAsJsonObject();
+            assertTrue("explicit false is part of the replay attestation",
+                    applied.has("modelIsNull"));
+            assertFalse(applied.get("modelIsNull").getAsBoolean());
+            assertEquals("java.lang.String",
+                    applied.get("concreteValueClass").getAsString());
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -595,6 +669,575 @@ public class ConcolicRegionRuntimeTest {
                 mapping.get("mappingPolicy").getAsString());
     }
 
+    @Test
+    public void exactZeroPcNullReplayProducesCertifiedConcreteGuard()
+            throws Exception {
+        JsonObject row = runCertifiedNullGuard(false);
+        assertEquals("QUERY.NULL.GUARD",
+                row.get("pathQueryKey").getAsString());
+        JsonArray retainedProofs = row.getAsJsonArray(
+                "concreteGuardReplayProofs");
+        assertEquals(1, retainedProofs.size());
+        JsonObject retainedProof = retainedProofs.get(0).getAsJsonObject();
+        assertEquals("REFERENCE_NULL_CONCRETE_GUARD_REPLAY_PROOF",
+                retainedProof.get("kind").getAsString());
+        assertEquals("ACT.NULL.GUARD",
+                retainedProof.get("activationId").getAsString());
+        assertEquals(retainedProof.get("conditionSha256").getAsString(),
+                sha256JsonForTest(retainedProof.getAsJsonObject(
+                        "condition")));
+        assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
+        assertTrue(row.get("allModelAssignmentsApplied").getAsBoolean());
+        JsonObject applied = row.getAsJsonArray("modelAssignmentsApplied")
+                .get(0).getAsJsonObject();
+        assertEquals("M_L_REGION.NULL.in.0_java/lang/String",
+                applied.get("modelAssignmentKey").getAsString());
+        assertEquals("NULL", applied.get("valueType").getAsString());
+        assertEquals("null", applied.get("value").getAsString());
+        assertTrue(applied.has("target"));
+        assertEquals(64, applied.get("targetActionSha256").getAsString()
+                .length());
+
+        JsonObject mapping = row.getAsJsonArray("branchMappings")
+                .get(0).getAsJsonObject();
+        assertTrue(mapping.get("certifiedConcreteGuard").getAsBoolean());
+        assertEquals("EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1",
+                mapping.get("conditionAuthority").getAsString());
+        assertEquals("RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
+                        + "VM_BRANCH_EVENT_V1",
+                mapping.get("concreteGuardCertificateAuthority")
+                        .getAsString());
+        assertEquals("ACT.NULL.GUARD",
+                mapping.get("certificateActivationId").getAsString());
+        assertEquals("QUERY.NULL.GUARD",
+                mapping.get("certificatePathQueryKey").getAsString());
+        assertEquals("TARGET",
+                mapping.get("certificateProofRole").getAsString());
+        assertEquals(0, mapping.get("certificateSourceConditionIndex")
+                .getAsInt());
+        assertEquals(0, mapping.get("certificateConstraintIndex")
+                .getAsInt());
+        assertEquals(-1, mapping.get(
+                "certificateExpectedBranchPrefixOrdinal").getAsInt());
+        assertEquals("M_L_REGION.NULL.in.0_java/lang/String",
+                mapping.get("certificateModelAssignmentKey").getAsString());
+        assertEquals(-1, mapping.get("conditionIndex").getAsInt());
+        assertEquals(-1, mapping.get("rawConditionIndex").getAsInt());
+        assertEquals(-1, mapping.get("engineConditionIndex").getAsInt());
+        assertEquals(mapping.get("rawPathConditionBaseline").getAsInt(),
+                mapping.get("rawPathConditionSize").getAsInt());
+        assertEquals(0, mapping.get("rawPathConditionsAdded").getAsInt());
+        assertEquals(0, mapping.getAsJsonArray("vmConditionIndices").size());
+        assertFalse(mapping.has("rawCondition"));
+        assertEquals("==", mapping.getAsJsonObject("condition")
+                .get("_op").getAsString());
+        assertEquals("PASS", mapping.get("replayValidation").getAsString());
+    }
+
+    @Test
+    public void tamperedNullReplayCertificateFailsClosed() throws Exception {
+        JsonObject row = runCertifiedNullGuard(true);
+        assertEquals("0", row.getAsJsonArray("concreteGuardReplayProofs")
+                .get(0).getAsJsonObject().get("conditionSha256")
+                .getAsString());
+        JsonObject mapping = row.getAsJsonArray("branchMappings")
+                .get(0).getAsJsonObject();
+        assertFalse(mapping.get("certifiedConcreteGuard").getAsBoolean());
+        assertFalse(mapping.has("replayValidation"));
+        assertFalse(mapping.has("condition"));
+        assertTrue(mapping.get("mappingWarning").getAsString().contains(
+                "certificate rejected"));
+        assertTrue(row.getAsJsonArray("unresolvedInputs").toString(),
+                row.getAsJsonArray("unresolvedInputs").toString().contains(
+                        "certificate rejected"));
+    }
+
+    @Test
+    public void nullPrefixAndTargetUseOneExactProofPerEvent()
+            throws Exception {
+        JsonObject row = runCertifiedNullGuard(false, true, false);
+        assertEquals(row.toString(), 0,
+                row.getAsJsonArray("unresolvedInputs").size());
+        JsonArray mappings = row.getAsJsonArray("branchMappings");
+        assertEquals(2, mappings.size());
+        assertEquals("PREFIX", mappings.get(0).getAsJsonObject()
+                .get("certificateProofRole").getAsString());
+        assertFalse(mappings.get(0).getAsJsonObject()
+                .get("scheduledTarget").getAsBoolean());
+        assertEquals("TARGET", mappings.get(1).getAsJsonObject()
+                .get("certificateProofRole").getAsString());
+        assertTrue(mappings.get(1).getAsJsonObject()
+                .get("scheduledTarget").getAsBoolean());
+        assertEquals(2, row.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
+        assertEquals(1, row.getAsJsonArray(
+                "modelAssignmentsApplied").size());
+
+        JsonObject vmSymbolic = runCertifiedNullGuard(false, false,
+                false, false, true);
+        assertEquals(vmSymbolic.toString(), 0,
+                vmSymbolic.getAsJsonArray("unresolvedInputs").size());
+        assertEquals(0, vmSymbolic.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
+        JsonObject symbolicMapping = vmSymbolic.getAsJsonArray(
+                "branchMappings").get(0).getAsJsonObject();
+        assertEquals("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX",
+                symbolicMapping.get("conditionAuthority").getAsString());
+        assertFalse(symbolicMapping.has("certifiedConcreteGuard"));
+    }
+
+    @Test
+    public void missingNullPrefixProofFailsClosedAtCoverageBoundary()
+            throws Exception {
+        JsonObject row = runCertifiedNullGuard(false, true, true);
+        assertTrue(row.getAsJsonArray("unresolvedInputs").toString(),
+                row.getAsJsonArray("unresolvedInputs").toString().contains(
+                        "required NULL concrete-guard event"));
+        JsonArray mappings = row.getAsJsonArray("branchMappings");
+        assertFalse(mappings.get(0).getAsJsonObject().has(
+                "certifiedConcreteGuard"));
+        assertTrue(mappings.get(1).getAsJsonObject()
+                .get("certifiedConcreteGuard").getAsBoolean());
+    }
+
+    @Test
+    public void appliedNullWithoutPathConstraintFailsClosed()
+            throws Exception {
+        JsonObject row = runCertifiedNullGuard(false, false, false, true);
+        assertTrue(row.getAsJsonArray("unresolvedInputs").toString(),
+                row.getAsJsonArray("unresolvedInputs").toString().contains(
+                        "no exact reference-null constraint"));
+        assertFalse(row.getAsJsonArray("branchMappings").get(0)
+                .getAsJsonObject().get("certifiedConcreteGuard")
+                .getAsBoolean());
+    }
+
+    @Test
+    public void distinctNullAssignmentsCertifyRepeatedSiteOccurrences()
+            throws Exception {
+        JsonObject row = runRepeatedSiteNullGuards(false);
+
+        assertEquals(row.toString(), 0,
+                row.getAsJsonArray("unresolvedInputs").size());
+        assertEquals(2, row.getAsJsonArray(
+                "modelAssignmentsApplied").size());
+        JsonArray mappings = row.getAsJsonArray("branchMappings");
+        assertEquals(2, mappings.size());
+        JsonObject first = mappings.get(0).getAsJsonObject();
+        JsonObject second = mappings.get(1).getAsJsonObject();
+        assertEquals(1, first.get("occurrence").getAsInt());
+        assertEquals(2, second.get("occurrence").getAsInt());
+        assertEquals("PREFIX", first.get("certificateProofRole")
+                .getAsString());
+        assertEquals("TARGET", second.get("certificateProofRole")
+                .getAsString());
+        assertEquals("M_L_REGION.NULL.in.0_java/lang/String",
+                first.get("certificateModelAssignmentKey").getAsString());
+        assertEquals("M_L_REGION.NULL.in.1_java/lang/String",
+                second.get("certificateModelAssignmentKey").getAsString());
+    }
+
+    @Test
+    public void duplicateRepeatedSiteOccurrenceProofFailsClosed()
+            throws Exception {
+        JsonObject row = runRepeatedSiteNullGuards(true);
+
+        assertTrue(row.getAsJsonArray("unresolvedInputs").toString(),
+                row.getAsJsonArray("unresolvedInputs").toString()
+                        .contains("proof catalog"));
+        JsonArray mappings = row.getAsJsonArray("branchMappings");
+        assertEquals(2, mappings.size());
+        assertFalse(mappings.get(0).getAsJsonObject()
+                .get("certifiedConcreteGuard").getAsBoolean());
+        assertFalse(mappings.get(1).getAsJsonObject().has(
+                "certifiedConcreteGuard"));
+    }
+
+    private static JsonObject runCertifiedNullGuard(boolean tamper)
+            throws Exception {
+        return runCertifiedNullGuard(tamper, false, false, false);
+    }
+
+    private static JsonObject runCertifiedNullGuard(
+            boolean tamper, boolean includePrefix,
+            boolean omitPrefixProof) throws Exception {
+        return runCertifiedNullGuard(tamper, includePrefix,
+                omitPrefixProof, false);
+    }
+
+    private static JsonObject runCertifiedNullGuard(
+            boolean tamper, boolean includePrefix,
+            boolean omitPrefixProof, boolean omitReplayConstraints)
+            throws Exception {
+        return runCertifiedNullGuard(tamper, includePrefix,
+                omitPrefixProof, omitReplayConstraints, false);
+    }
+
+    private static JsonObject runCertifiedNullGuard(
+            boolean tamper, boolean includePrefix,
+            boolean omitPrefixProof, boolean omitReplayConstraints,
+            boolean vmSymbolicTarget)
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.NullableTarget: void run(java.lang.String)>";
+        String siteId = root + "#u7";
+        String symbol = "REGION.NULL.in.0";
+        String engineSymbol = "M_L_REGION.NULL.in.0_java/lang/String";
+        JsonObject activation = concreteActivation("ACT.NULL.GUARD",
+                root, 1);
+        activation.addProperty("regionId", "REGION.NULL");
+        activation.addProperty("test", "nullable-guard-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.addProperty("pathQueryKey", "QUERY.NULL.GUARD");
+
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", symbol);
+        action.addProperty("cell", root + ".param0:java.lang.String");
+        action.addProperty("location", "ARGUMENT");
+        action.addProperty("bindingMode", "ROOT_ENTRY");
+        action.addProperty("index", 0);
+        action.addProperty("javaType", "java.lang.String");
+        activation.add("symbolize", singleton(action));
+        activation.add("materializations", singleton(action.deepCopy()));
+
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", engineSymbol);
+        assignment.addProperty("solverSymbol", "sym__nullable_content");
+        assignment.addProperty("nullnessSolverSymbol",
+                "sym__nullable_is_null");
+        assignment.addProperty("modelIsNull", true);
+        assignment.addProperty("inputSymbol", symbol);
+        assignment.addProperty("valueType", "NULL");
+        assignment.addProperty("value", "null");
+        assignment.addProperty("nullableStringEncodingAuthority",
+                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        assignment.addProperty("materializeAtRealDefinition", true);
+        assignment.add("target", action.deepCopy());
+        activation.add("modelAssignments", singleton(assignment));
+
+        JsonArray branches = new JsonArray();
+        if (includePrefix) {
+            JsonObject prefixBranch = new JsonObject();
+            prefixBranch.addProperty("siteId", root + "#u6");
+            prefixBranch.addProperty("policy", "EXPLORE");
+            branches.add(prefixBranch);
+        }
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", siteId);
+        branch.addProperty("policy", "EXPLORE");
+        branches.add(branch);
+        activation.add("branches", branches);
+        JsonObject target = new JsonObject();
+        target.addProperty("siteId", siteId);
+        target.addProperty("occurrence", 1);
+        target.addProperty("desiredOutcome", true);
+        target.addProperty("validationOnly", true);
+        target.addProperty("branchOverrideAllowed", false);
+        target.addProperty("concreteGuardReplayProofRequired",
+                !vmSymbolicTarget);
+        activation.add("targetBranch", target);
+
+        JsonObject condition = exactNullCondition(engineSymbol);
+        JsonArray expectedPrefix = new JsonArray();
+        JsonArray replayConstraints = new JsonArray();
+        if (includePrefix) {
+            JsonObject expected = new JsonObject();
+            expected.addProperty("siteId", root + "#u6");
+            expected.addProperty("occurrence", 1);
+            expected.addProperty("outcome", true);
+            expected.addProperty("conditionIndex", 0);
+            expected.addProperty("concreteGuardReplayProofRequired", true);
+            expectedPrefix.add(expected);
+            replayConstraints.add(condition.deepCopy());
+        }
+        if (!omitReplayConstraints) {
+            replayConstraints.add(condition.deepCopy());
+        }
+        activation.add("expectedBranchPrefix", expectedPrefix);
+        activation.add("pathReplayConstraints", replayConstraints);
+        activation.add("pathReplayNegatedCondition",
+                condition.deepCopy());
+        int targetConditionIndex = includePrefix ? 1 : 0;
+        activation.addProperty("pathReplayTargetConditionIndex",
+                targetConditionIndex);
+        JsonArray proofs = new JsonArray();
+        if (includePrefix && !omitPrefixProof) {
+            proofs.add(nullGuardProof("PREFIX", root + "#u6", 0, 0,
+                    0, condition, engineSymbol, symbol, action, false));
+        }
+        if (!vmSymbolicTarget) {
+            proofs.add(nullGuardProof("TARGET", siteId,
+                    targetConditionIndex, targetConditionIndex, -1,
+                    condition, engineSymbol, symbol, action, tamper));
+        }
+        activation.add("concreteGuardReplayProofs", proofs);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "nullable-guard-test");
+        try {
+            ExactBranchEngine.reset();
+            ExactBranchEngine.conditionless = !vmSymbolicTarget;
+            ExactBranchEngine.symbolicCondition = vmSymbolicTarget
+                    ? condition.toString() : "";
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    ExactBranchEngine.class);
+            long token = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), new Object[]{"seed"});
+            assertTrue(token > 0L);
+            Object modeled = ConcolicRegionRuntime.materializeArgument(
+                    token, 0, "seed", "");
+            assertNull(modeled);
+            ConcolicRegionRuntime.symbolizeArgument(token, 0, modeled, "");
+            if (includePrefix) {
+                long prefixHandle = ConcolicRegionRuntime.prepareBranch(
+                        root, 6, "input == null");
+                assertTrue(prefixHandle > 0L);
+                long prefixEvent = ExactBranchEngine.markBranch(
+                        root + "#u6", (int) prefixHandle);
+                assertTrue(ConcolicRegionRuntime.resolveBranch(prefixHandle,
+                        prefixEvent, root, 6, "input == null", true));
+            }
+            long handle = ConcolicRegionRuntime.prepareBranch(root, 7,
+                    "input == null");
+            assertTrue(handle > 0L);
+            long eventId = ExactBranchEngine.markBranch(siteId,
+                    (int) handle);
+            assertTrue(ConcolicRegionRuntime.resolveBranch(handle, eventId,
+                    root, 7, "input == null", true));
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            return resultRows(results).get(0);
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    private static JsonObject runRepeatedSiteNullGuards(
+            boolean duplicateOccurrence) throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.NullableTarget: void run(java.lang.String,"
+                + "java.lang.String)>";
+        String siteId = root + "#u6";
+        String activationId = "ACT.NULL.REPEATED";
+        String queryKey = "QUERY.NULL.REPEATED";
+        String inputA = "REGION.NULL.in.0";
+        String inputB = "REGION.NULL.in.1";
+        String engineA = "M_L_REGION.NULL.in.0_java/lang/String";
+        String engineB = "M_L_REGION.NULL.in.1_java/lang/String";
+
+        JsonObject activation = concreteActivation(activationId, root, 1);
+        activation.addProperty("regionId", "REGION.NULL");
+        activation.addProperty("test", "nullable-repeated-site-test");
+        activation.addProperty("concreteReplayOnly", false);
+        activation.addProperty("pathQueryKey", queryKey);
+
+        JsonObject actionA = nullArgumentAction(root, inputA, 0);
+        JsonObject actionB = nullArgumentAction(root, inputB, 1);
+        JsonArray actions = new JsonArray();
+        actions.add(actionA.deepCopy());
+        actions.add(actionB.deepCopy());
+        activation.add("symbolize", actions.deepCopy());
+        activation.add("materializations", actions.deepCopy());
+
+        JsonObject assignmentA = nullArgumentAssignment(engineA,
+                inputA, actionA, 0);
+        JsonObject assignmentB = nullArgumentAssignment(engineB,
+                inputB, actionB, 1);
+        JsonArray assignments = new JsonArray();
+        assignments.add(assignmentA);
+        assignments.add(assignmentB);
+        activation.add("modelAssignments", assignments);
+
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", siteId);
+        branch.addProperty("policy", "EXPLORE");
+        activation.add("branches", singleton(branch));
+        JsonObject target = new JsonObject();
+        target.addProperty("siteId", siteId);
+        target.addProperty("occurrence", duplicateOccurrence ? 1 : 2);
+        target.addProperty("desiredOutcome", true);
+        target.addProperty("validationOnly", true);
+        target.addProperty("branchOverrideAllowed", false);
+        activation.add("targetBranch", target);
+
+        JsonObject conditionA = exactNullCondition(engineA);
+        JsonObject conditionB = exactNullCondition(engineB);
+        JsonObject expected = new JsonObject();
+        expected.addProperty("siteId", siteId);
+        expected.addProperty("occurrence", 1);
+        expected.addProperty("outcome", true);
+        expected.addProperty("conditionIndex", 0);
+        activation.add("expectedBranchPrefix", singleton(expected));
+        JsonArray replayConstraints = new JsonArray();
+        replayConstraints.add(conditionA.deepCopy());
+        replayConstraints.add(conditionB.deepCopy());
+        activation.add("pathReplayConstraints", replayConstraints);
+        activation.add("pathReplayNegatedCondition", conditionB.deepCopy());
+        activation.addProperty("pathReplayTargetConditionIndex", 1);
+
+        JsonObject prefixProof = nullGuardProof("PREFIX", siteId,
+                0, 0, 0, conditionA, engineA, inputA, actionA, false);
+        prefixProof.addProperty("activationId", activationId);
+        prefixProof.addProperty("pathQueryKey", queryKey);
+        JsonObject targetProof = nullGuardProof("TARGET", siteId,
+                1, 1, -1, conditionB, engineB, inputB, actionB, false);
+        targetProof.addProperty("activationId", activationId);
+        targetProof.addProperty("pathQueryKey", queryKey);
+        targetProof.addProperty("occurrence",
+                duplicateOccurrence ? 1 : 2);
+        JsonArray proofs = new JsonArray();
+        proofs.add(prefixProof);
+        proofs.add(targetProof);
+        activation.add("concreteGuardReplayProofs", proofs);
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results,
+                "nullable-repeated-site-test");
+        try {
+            ExactBranchEngine.reset();
+            ExactBranchEngine.conditionless = true;
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    ExactBranchEngine.class);
+            Object[] arguments = new Object[]{"seed-a", "seed-b"};
+            long token = ConcolicRegionRuntime.enterRegionFrame(root,
+                    new Object(), arguments);
+            assertTrue(token > 0L);
+            Object modeledA = ConcolicRegionRuntime.materializeArgument(
+                    token, 0, arguments[0], "");
+            Object modeledB = ConcolicRegionRuntime.materializeArgument(
+                    token, 1, arguments[1], "");
+            assertNull(modeledA);
+            assertNull(modeledB);
+            ConcolicRegionRuntime.symbolizeArgument(token, 0, modeledA, "");
+            ConcolicRegionRuntime.symbolizeArgument(token, 1, modeledB, "");
+            for (int occurrence = 1; occurrence <= 2; occurrence++) {
+                long handle = ConcolicRegionRuntime.prepareBranch(root, 6,
+                        "input == null");
+                assertTrue(handle > 0L);
+                long eventId = ExactBranchEngine.markBranch(siteId,
+                        (int) handle);
+                assertTrue(ConcolicRegionRuntime.resolveBranch(handle,
+                        eventId, root, 6, "input == null", true));
+            }
+            ConcolicRegionRuntime.exitRegionFrame(root, null, "");
+            return resultRows(results).get(0);
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    private static JsonObject nullArgumentAction(
+            String root, String inputSymbol, int index) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", inputSymbol);
+        action.addProperty("cell", root + ".param" + index
+                + ":java.lang.String");
+        action.addProperty("location", "ARGUMENT");
+        action.addProperty("bindingMode", "ROOT_ENTRY");
+        action.addProperty("index", index);
+        action.addProperty("javaType", "java.lang.String");
+        return action;
+    }
+
+    private static JsonObject nullArgumentAssignment(
+            String engineSymbol, String inputSymbol, JsonObject action,
+            int ordinal) {
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", engineSymbol);
+        assignment.addProperty("solverSymbol", "sym__nullable_content_"
+                + ordinal);
+        assignment.addProperty("nullnessSolverSymbol",
+                "sym__nullable_is_null_" + ordinal);
+        assignment.addProperty("modelIsNull", true);
+        assignment.addProperty("inputSymbol", inputSymbol);
+        assignment.addProperty("valueType", "NULL");
+        assignment.addProperty("value", "null");
+        assignment.addProperty("nullableStringEncodingAuthority",
+                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        assignment.addProperty("materializeAtRealDefinition", true);
+        assignment.add("target", action.deepCopy());
+        return assignment;
+    }
+
+    private static JsonObject nullGuardProof(
+            String role, String siteId, int sourceConditionIndex,
+            int constraintIndex, int prefixOrdinal, JsonObject condition,
+            String engineSymbol, String symbol, JsonObject action,
+            boolean tamper) {
+        JsonObject proof = new JsonObject();
+        proof.addProperty("schemaVersion", 1);
+        proof.addProperty("kind",
+                "REFERENCE_NULL_CONCRETE_GUARD_REPLAY_PROOF");
+        proof.addProperty("authority", "SOLVER_EXACT_REFERENCE_NULL_GUARD_"
+                + "AND_MODEL_ASSIGNMENT_V1");
+        proof.addProperty("activationId", "ACT.NULL.GUARD");
+        proof.addProperty("pathQueryKey", "QUERY.NULL.GUARD");
+        proof.addProperty("proofRole", role);
+        proof.addProperty("sourceConditionIndex", sourceConditionIndex);
+        proof.addProperty("constraintIndex", constraintIndex);
+        proof.addProperty("expectedBranchPrefixOrdinal", prefixOrdinal);
+        proof.addProperty("siteId", siteId);
+        proof.addProperty("occurrence", 1);
+        proof.addProperty("outcome", true);
+        proof.addProperty("modelAssignmentKey", engineSymbol);
+        proof.addProperty("engineSymbol", engineSymbol);
+        proof.addProperty("inputSymbol", symbol);
+        proof.addProperty("targetActionSha256",
+                sha256JsonForTest(action));
+        proof.add("condition", condition.deepCopy());
+        proof.addProperty("conditionSha256", tamper
+                ? "0" : sha256JsonForTest(condition));
+        proof.addProperty("requiresExactVmBranchEvent", true);
+        proof.addProperty("requiresZeroPathConditionSuffix", true);
+        proof.addProperty("requiresUniqueAppliedNullModelAssignment", true);
+        proof.addProperty("branchOverrideProhibited", true);
+        return proof;
+    }
+
+    private static JsonObject exactNullCondition(String engineSymbol) {
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "java/lang/String");
+        symbol.addProperty("_exp", engineSymbol);
+        JsonObject nil = new JsonObject();
+        nil.addProperty("_type", "SymbolExpression");
+        nil.addProperty("_java_type", "Ljava/lang/Object;");
+        nil.addProperty("_exp", "N");
+        JsonObject condition = new JsonObject();
+        condition.addProperty("_type", "BinaryExpression");
+        condition.add("_left", symbol);
+        condition.addProperty("_op", "==");
+        condition.add("_right", nil);
+        return condition;
+    }
+
+    private static String sha256JsonForTest(JsonElement value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(
+                    value.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : digest) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (Exception impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
     private static JsonObject runExactBranchEvent(boolean foreignOwner)
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -777,6 +1420,10 @@ public class ConcolicRegionRuntimeTest {
                 "BOOL", "true", boolean.class));
         assertEquals("hello", ConcolicRegionRuntime.coerceModelValue(
                 "STRING", "\"hello\"", String.class));
+        assertNull(ConcolicRegionRuntime.coerceModelValue(
+                "NULL", "null", String.class));
+        assertEquals("null", ConcolicRegionRuntime.coerceModelValue(
+                "STRING", "\"null\"", String.class));
         assertEquals(2.5d, ConcolicRegionRuntime.coerceModelValue(
                 "REAL", "(/ 5.0 2.0)", double.class));
         assertEquals(-2.5d, ConcolicRegionRuntime.coerceModelValue(
@@ -6046,6 +6693,8 @@ public class ConcolicRegionRuntimeTest {
         private static int markerSequence;
         private static long ownerThreadId;
         private static boolean foreignOwner;
+        private static boolean conditionless;
+        private static String symbolicCondition;
         private static final long EVENT_ID = 41L;
         private static final long CONTEXT_ID = 77L;
         private static final long OS_THREAD_ID = 9001L;
@@ -6057,6 +6706,8 @@ public class ConcolicRegionRuntimeTest {
             markerSequence = 0;
             ownerThreadId = 0L;
             foreignOwner = false;
+            conditionless = false;
+            symbolicCondition = "";
         }
 
         @SuppressWarnings("unused")
@@ -6091,6 +6742,10 @@ public class ConcolicRegionRuntimeTest {
 
         @SuppressWarnings("unused")
         private static String pathCondition() {
+            if (conditionless) return "[]";
+            if (!symbolicCondition.isEmpty()) {
+                return "[" + symbolicCondition + "]";
+            }
             return "[" + condition(
                     "virtual jobject example.Target.lookup(jint):41")
                     + "," + condition(
@@ -6130,9 +6785,11 @@ public class ConcolicRegionRuntimeTest {
             event.addProperty("codePosition",
                     "virtual jobject example.Target.lookup(jint):42");
             JsonArray indices = new JsonArray();
-            indices.add(1);
+            if (!conditionless) {
+                indices.add(symbolicCondition.isEmpty() ? 1 : 0);
+            }
             event.add("conditionIndices", indices);
-            event.addProperty("conditionCount", 1);
+            event.addProperty("conditionCount", indices.size());
             event.addProperty("authority",
                     "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
 

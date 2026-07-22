@@ -25,6 +25,109 @@ public class SymbolicRegionPlannerTest {
             "<example.SecretManager: byte[] retrievePassword(example.Token)>";
 
     @Test
+    public void requestedOutputDraftCachesDoNotAliasBroadRegionId()
+            throws Exception {
+        String root = "<example.Worker: void run(int)>";
+        String helper = "<example.Helper: int compute(int)>";
+        String returned = helper + ".return";
+        String target = root + "::value";
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(root, Collections.singletonList(
+                                root + ".param0:int"),
+                        Collections.singletonList(target)),
+                plan(helper, Collections.singletonList(
+                                helper + ".param0:int"),
+                        Collections.singletonList(returned)));
+
+        Class<?> plannerType = Class.forName(
+                SymbolicRegionPlanner.class.getName() + "$Planner");
+        java.lang.reflect.Constructor<?> plannerConstructor = plannerType
+                .getDeclaredConstructor(List.class, List.class);
+        plannerConstructor.setAccessible(true);
+        Object planner = plannerConstructor.newInstance(
+                Collections.emptyList(), plans);
+
+        Class<?> draftType = Class.forName(
+                SymbolicRegionPlanner.class.getName() + "$RegionDraft");
+        java.lang.reflect.Constructor<?> draftConstructor = draftType
+                .getDeclaredConstructor(String.class);
+        draftConstructor.setAccessible(true);
+        Object broad = draftConstructor.newInstance(root);
+        Object requested = draftConstructor.newInstance(root);
+        java.lang.reflect.Field regionId = draftType.getDeclaredField(
+                "regionId");
+        java.lang.reflect.Field rootMethod = draftType.getDeclaredField(
+                "rootMethod");
+        java.lang.reflect.Field methods = draftType.getDeclaredField(
+                "methods");
+        java.lang.reflect.Field causalEdges = draftType.getDeclaredField(
+                "causalEdges");
+        java.lang.reflect.Field exceptionDirected = draftType
+                .getDeclaredField("exceptionDirected");
+        for (java.lang.reflect.Field field : Arrays.asList(regionId,
+                rootMethod, methods, causalEdges, exceptionDirected)) {
+            field.setAccessible(true);
+        }
+        for (Object draft : Arrays.asList(broad, requested)) {
+            regionId.set(draft, "REGION.SAME");
+            rootMethod.set(draft, root);
+            exceptionDirected.set(draft, true);
+        }
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> broadMethods =
+                (java.util.Set<String>) methods.get(broad);
+        broadMethods.add(root);
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> requestedMethods =
+                (java.util.Set<String>) methods.get(requested);
+        requestedMethods.add(root);
+        requestedMethods.add(helper);
+
+        Map<String, Object> returnEdge = edge(root, "FUNCTION_RETURN",
+                "call_return", returned, target, 1);
+        Map<String, Object> operandEdge = edge(root, "IDENTITY_BINDING",
+                "call_argument", root + ".param0:int", target, 1);
+        @SuppressWarnings("unchecked")
+        java.util.Set<Map<String, Object>> requestedEdges =
+                (java.util.Set<Map<String, Object>>) causalEdges.get(
+                        requested);
+        requestedEdges.add(returnEdge);
+        requestedEdges.add(operandEdge);
+
+        java.lang.reflect.Method derivedTargets = plannerType
+                .getDeclaredMethod("internallyDerivedTargets", draftType);
+        derivedTargets.setAccessible(true);
+        java.lang.reflect.Method alternatives = plannerType
+                .getDeclaredMethod("callResultsWithCausalAlternative",
+                        draftType);
+        alternatives.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> broadTargets =
+                (java.util.Set<String>) derivedTargets.invoke(planner, broad);
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> requestedTargets =
+                (java.util.Set<String>) derivedTargets.invoke(planner,
+                        requested);
+        assertFalse(broadTargets.contains(returned));
+        assertTrue("the helper body belongs to the expanded same-thread "
+                        + "requested-output closure",
+                requestedTargets.contains(returned));
+
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> broadAlternatives =
+                (java.util.Set<String>) alternatives.invoke(planner, broad);
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> requestedAlternatives =
+                (java.util.Set<String>) alternatives.invoke(planner,
+                        requested);
+        assertTrue(broadAlternatives.isEmpty());
+        assertTrue("the expanded draft must retain its own exact call-site "
+                        + "alias proof",
+                requestedAlternatives.contains(returned));
+    }
+
+    @Test
     public void transportNamedDeclaredFieldIsStillSharedHeap()
             throws Exception {
         java.lang.reflect.Method sourceKind = SymbolicRegionPlanner.class
@@ -766,6 +869,81 @@ public class SymbolicRegionPlannerTest {
                         + "ACCESSOR_CALLSITE_V1",
                 expiryPort.get("accessorCallSiteAuthority"));
         assertTrue(((List<?>) slice.get("methods")).contains(getter));
+    }
+
+    @Test
+    public void outputSlicePromotesExactDirectInstanceAndStaticScalarReads() {
+        String dispatch = "<example.Client: void dispatch()>";
+        String handshake =
+                "<example.Client: void handshake(java.lang.String)>";
+        String receive =
+                "<example.Server: void receive(java.lang.String)>";
+        String instanceWeight =
+                "<example.ExternalProfile: int instanceWeight>";
+        String processWeight =
+                "<example.ExternalTuning: int processWeight>";
+        String instanceLocal = dispatch + "::instanceWeight";
+        String processLocal = dispatch + "::processWeight";
+        String combined = dispatch + "::combined";
+        String outbound = handshake + ".param0:java.lang.String";
+        String inbound = receive + ".param0:java.lang.String";
+
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(dispatch, Collections.<String>emptyList(),
+                        Collections.singletonList(combined)),
+                plan(handshake, Collections.singletonList(outbound),
+                        Collections.singletonList(outbound)),
+                plan(receive, Collections.singletonList(inbound),
+                        Collections.singletonList(receive
+                                + "#failure:weight")));
+        List<Map<String, Object>> edges = new ArrayList<>();
+        Map<String, Object> instanceRead = edge(dispatch, "HEAP_READ",
+                "field_read", instanceWeight, instanceLocal, 11);
+        instanceRead.put("siteId", dispatch + "#u11");
+        instanceRead.put("unit", "instanceWeight = profile."
+                + instanceWeight);
+        authoritativeValueFlow(instanceRead);
+        declaredMetadata(instanceRead, instanceWeight,
+                "example.ExternalProfile", "int", "instanceWeight");
+        edges.add(instanceRead);
+        Map<String, Object> staticRead = edge(dispatch, "HEAP_READ",
+                "field_read", processWeight, processLocal, 12);
+        staticRead.put("siteId", dispatch + "#u12");
+        staticRead.put("unit", "processWeight = " + processWeight);
+        authoritativeValueFlow(staticRead);
+        declaredMetadata(staticRead, processWeight,
+                "example.ExternalTuning", "int", "processWeight");
+        edges.add(staticRead);
+        edges.add(edge(dispatch, "COMPUTE", "local_def_use",
+                instanceLocal, combined, 13));
+        edges.add(edge(dispatch, "COMPUTE", "local_def_use",
+                processLocal, combined, 13));
+        edges.add(invocation(dispatch, handshake, combined, outbound, 14));
+        edges.add(edge(receive, "PROTOCOL_TRANSFER", "weight_handoff",
+                outbound, inbound, 15));
+        edges.add(edge(receive, "SEED", "seed_exception_throw", inbound,
+                receive + "#failure:weight", 16));
+
+        Map<String, Object> producer = regionForRoot(
+                SymbolicRegionPlanner.plan(edges, plans), dispatch);
+        Map<String, Object> slice = requestedOutputSlice(producer, outbound);
+        assertEquals(Boolean.TRUE, slice.get("complete"));
+        assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> ports =
+                (List<Map<String, Object>>) producer.get("symbolicInputs");
+        for (String field : Arrays.asList(instanceWeight, processWeight)) {
+            Map<String, Object> port = ports.stream()
+                    .filter(candidate -> field.equals(candidate.get("cell")))
+                    .findFirst().orElseThrow(() -> new AssertionError(
+                            "missing direct scalar field port " + field));
+            assertEquals("OUTPUT_SLICE_MATERIALIZABLE_DECLARED_FIELD_"
+                            + "FRONTIER",
+                    port.get("selectionReason"));
+            assertEquals("FIELD_ACCESS", port.get("bindingMode"));
+            assertEquals(field, port.get("accessFieldSignature"));
+        }
     }
 
     @Test
@@ -2071,6 +2249,105 @@ public class SymbolicRegionPlannerTest {
         assertTrue(inputs.stream().anyMatch(input -> second.equals(
                 input.get("cell")) && "REQUESTED_OUTPUT_FRONTIER_PROMOTION"
                 .equals(input.get("portOrigin"))));
+    }
+
+    @Test
+    public void contractingGetfieldCanonicalLeafIsPromotedBeforeAliasBinding() {
+        String root = "<example.FieldPathProducer: void produce()>";
+        String rootField =
+                "<example.Envelope: example.Profile profile>";
+        String canonical = rootField + "#field:weight";
+        String profileLocal = root + "::$profile";
+        String localProjection = profileLocal + "#field:weight";
+        String ownerProjection = root + "::$envelope"
+                + "#field:profile#field:weight";
+        String output = "<example.A0RequestedState: int weight>";
+
+        Map<String, Object> region =
+                latePromotedContractingGetfieldRegion(false);
+        assertEquals(128, region.get("broadInputPortCount"));
+        assertEquals(Boolean.TRUE, region.get("broadInputPortTruncated"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inputs =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        assertTrue("the canonical path must be absent from the frozen broad "
+                        + "frontier and admitted by the output slice",
+                inputs.stream().anyMatch(input -> canonical.equals(
+                        input.get("cell"))
+                        && "REQUESTED_OUTPUT_FRONTIER_PROMOTION".equals(
+                        input.get("portOrigin"))));
+        Map<String, Object> canonicalPort = inputs.stream()
+                .filter(input -> canonical.equals(input.get("cell")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals("FIELD_ACCESS", canonicalPort.get("bindingMode"));
+        assertEquals(Arrays.asList("profile", "weight"),
+                canonicalPort.get("fieldPath"));
+        assertEquals("<example.Profile: int weight>",
+                canonicalPort.get("leafFieldSignature"));
+        assertEquals("STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1",
+                canonicalPort.get("fieldPathAuthority"));
+
+        Map<String, Object> slice = requestedOutputSlice(region, output);
+        assertEquals(String.valueOf(slice), Boolean.TRUE,
+                slice.get("complete"));
+        assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
+        assertFalse(String.valueOf(slice.get("unresolvedInputDetails"))
+                .contains("INCOMPATIBLE_PROMOTED_DECLARED_FIELD_PORT"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> bindings =
+                (List<Map<String, Object>>) slice.get("inputBindings");
+        String canonicalPortId = String.valueOf(canonicalPort.get("portId"));
+        for (String dependency : Arrays.asList(localProjection,
+                ownerProjection)) {
+            Map<String, Object> binding = bindings.stream()
+                    .filter(candidate -> dependency.equals(candidate.get(
+                            "dependencyCell")))
+                    .findFirst().orElseThrow(() -> new AssertionError(
+                            "missing exact projected binding for "
+                                    + dependency + ": " + bindings));
+            assertEquals(canonicalPortId, binding.get("inputPort"));
+            assertEquals("UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN",
+                    binding.get("bindingAuthority"));
+        }
+    }
+
+    @Test
+    public void competingContractingGetfieldLeavesFailClosedAfterPromotion() {
+        String root = "<example.FieldPathProducer: void produce()>";
+        String dependency = root + "::$profile#field:weight";
+        String first = "<example.Envelope: example.Profile profile>"
+                + "#field:weight";
+        String second =
+                "<example.AlternateEnvelope: example.Profile alternateProfile>"
+                        + "#field:weight";
+        String output = "<example.A0RequestedState: int weight>";
+
+        Map<String, Object> region =
+                latePromotedContractingGetfieldRegion(true);
+        Map<String, Object> slice = requestedOutputSlice(region, output);
+        assertEquals(Boolean.FALSE, slice.get("complete"));
+        assertTrue(String.valueOf(slice.get("unresolvedInputs")),
+                ((List<?>) slice.get("unresolvedInputs")).stream()
+                        .anyMatch(value -> String.valueOf(value).contains(
+                                dependency)));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> bindings =
+                (List<Map<String, Object>>) slice.get("inputBindings");
+        assertFalse(bindings.stream().anyMatch(binding -> dependency.equals(
+                binding.get("dependencyCell"))));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inputs =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        for (String canonical : Arrays.asList(first, second)) {
+            assertTrue(String.valueOf(inputs), inputs.stream().anyMatch(
+                    input -> canonical.equals(input.get("cell"))
+                            && "REQUESTED_OUTPUT_FRONTIER_PROMOTION".equals(
+                            input.get("portOrigin"))));
+        }
     }
 
     @Test
@@ -3915,6 +4192,202 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
+    public void planBackedHelperBeyondBroadDepthIsNotAnOpaqueInput() {
+        String root = "<example.Worker: void run()>";
+        String first = "<example.First: int compute()>";
+        String second = "<example.Second: int compute()>";
+        String helper = "<example.Helper: int compute()>";
+        String opaque = "<example.NativeBridge: int read()>";
+        String helperReturn = helper + ".return";
+        String opaqueReturn = opaque + ".return";
+        String secondValue = second + "::value";
+        String failure = root + "#failure:observed";
+
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(root, Collections.emptyList(),
+                        Collections.singletonList(failure)),
+                plan(first, Collections.emptyList(),
+                        Collections.singletonList(first + ".return")),
+                plan(second, Arrays.asList(helperReturn, opaqueReturn),
+                        Collections.singletonList(second + ".return")),
+                plan(helper, Collections.emptyList(),
+                        Collections.singletonList(helperReturn)));
+        List<Map<String, Object>> edges = new ArrayList<>();
+        edges.add(call(root, first, 1));
+        edges.add(call(first, second, 2));
+
+        // includeRelevantCallees deliberately stops after two broad rounds,
+        // so Helper is not a broad region method.  Its exact return edge and
+        // plan still prove that it is executed and defined in this thread.
+        Map<String, Object> helperReturnEdge = edge(second,
+                "FUNCTION_RETURN", "call_return", helperReturn,
+                secondValue, 3);
+        helperReturnEdge.put("invoke", helper);
+        authoritativeValueFlow(helperReturnEdge);
+        edges.add(helperReturnEdge);
+
+        // The otherwise identical call has no analysed producer plan and
+        // must remain a real opaque frontier.
+        Map<String, Object> opaqueReturnEdge = edge(second,
+                "FUNCTION_RETURN", "call_return", opaqueReturn,
+                second + "::nativeValue", 4);
+        opaqueReturnEdge.put("invoke", opaque);
+        authoritativeValueFlow(opaqueReturnEdge);
+        edges.add(opaqueReturnEdge);
+        edges.add(edge(root, "SEED", "seed", root + "::observed",
+                failure, 5));
+
+        Map<String, Object> region = regionForRoot(
+                SymbolicRegionPlanner.plan(edges, plans), root);
+        @SuppressWarnings("unchecked")
+        List<String> methods = (List<String>) region.get("methods");
+        assertFalse("the broad discovery region stays compact",
+                methods.contains(helper));
+        assertFalse(inputCells(region).contains(helperReturn));
+        assertTrue(inputCells(region).contains(opaqueReturn));
+        assertTrue(String.valueOf(region.get("derivedInputs"))
+                .contains(helperReturn));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> inputs =
+                (List<Map<String, Object>>) region.get("symbolicInputs");
+        assertTrue(inputs.stream().anyMatch(input ->
+                opaqueReturn.equals(input.get("cell"))
+                        && "OPAQUE_CALL_RETURN_FRONTIER".equals(
+                        input.get("selectionReason"))));
+    }
+
+    @Test
+    public void requestedOutputHelperGuardIsMergedAsExplorePolicy() {
+        String root = "<example.OutputRoot: int dispatch()>";
+        String first = "<example.OutputFirst: int compute()>";
+        String second = "<example.OutputSecond: int compute()>";
+        String helper = "<example.OutputHelper: int choose(int)>";
+        String consumer = "<example.OutputConsumer: void accept(int)>";
+        String input = helper + ".param0:int";
+        String helperReturn = helper + ".return";
+        String secondReturn = second + ".return";
+        String firstReturn = first + ".return";
+        String rootReturn = root + ".return";
+        String inbound = consumer + ".param0:int";
+        String failure = consumer + "#failure:bad";
+
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(root, Collections.emptyList(),
+                        Collections.singletonList(rootReturn)),
+                plan(first, Collections.emptyList(),
+                        Collections.singletonList(firstReturn)),
+                plan(second, Collections.emptyList(),
+                        Collections.singletonList(secondReturn)),
+                plan(helper, Collections.singletonList(input),
+                        Collections.singletonList(helperReturn)),
+                plan(consumer, Collections.singletonList(inbound),
+                        Collections.singletonList(failure)));
+        List<Map<String, Object>> edges = new ArrayList<>();
+        Map<String, Object> helperGuard = edge(helper, "GUARD",
+                "path_guard_dependency", input, helperReturn, 2);
+        helperGuard.put("requiredOutcome", true);
+        helperGuard.put("guardSiteId", helper + "#u2");
+        helperGuard.put("siteId", helper + "#u2");
+        helperGuard.put("controlDependenceAuthority",
+                "SOOT_CFG_REQUIRED_OUTCOME_TO_EXACT_RELEVANT_"
+                        + "DEFINITION_V1");
+        edges.add(helperGuard);
+        edges.add(authoritativeCallReturn(second, helper, helperReturn,
+                secondReturn, 3));
+        edges.add(authoritativeCallReturn(first, second, secondReturn,
+                firstReturn, 4));
+        edges.add(authoritativeCallReturn(root, first, firstReturn,
+                rootReturn, 5));
+        Map<String, Object> boundary = edge(consumer,
+                "PROTOCOL_TRANSFER", "output_handoff", rootReturn,
+                inbound, 6);
+        authoritativeValueFlow(boundary);
+        edges.add(boundary);
+        edges.add(edge(consumer, "SEED", "seed_exception_throw", inbound,
+                failure, 7));
+
+        Map<String, Object> region = regionForRoot(
+                SymbolicRegionPlanner.plan(edges, plans), root);
+        @SuppressWarnings("unchecked")
+        List<String> broadMethods = (List<String>) region.get("methods");
+        assertFalse("the compact broad region must not be the source of the "
+                        + "helper policy",
+                broadMethods.contains(helper));
+        Map<String, Object> slice = requestedOutputSlice(region, rootReturn);
+        assertTrue(((List<?>) slice.get("methods")).contains(helper));
+        assertTrue(((List<?>) slice.get("causalEdgeIds")).contains(
+                helperGuard.get("id")));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> policies =
+                (List<Map<String, Object>>) region.get("branchPolicies");
+        Map<String, Object> helperPolicy = policies.stream()
+                .filter(policy -> (helper + "#u2").equals(
+                        policy.get("siteId")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals("EXPLORE", helperPolicy.get("policy"));
+        assertEquals("STATIC_REQUESTED_OUTPUT_SLICE_CONTROL_DEPENDENCE_"
+                        + "REQUIRES_EXPLORATION_V1",
+                helperPolicy.get("policyAuthority"));
+        assertTrue(((List<?>) region.get("exploreBranchSites")).contains(
+                helper + "#u2"));
+        assertFalse(((List<?>) region.get("pathAssumptionSites")).contains(
+                helper + "#u2"));
+    }
+
+    @Test
+    public void exactProjectedAliasPrefersUniqueMaterializableLeafPort()
+            throws Exception {
+        ProjectedAliasFixture fixture = projectedAliasFixture(false);
+        Map<String, String> resolution = projectedAliasResolution(
+                fixture.edges, fixture.inputPorts, fixture.dependency);
+
+        assertFalse(fixture.inputPorts.get(0).containsKey("bindingMode"));
+        assertEquals("REGION.ALIAS.in.1", resolution.get("portId"));
+        assertEquals("UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN",
+                resolution.get("authority"));
+    }
+
+    @Test
+    public void exactProjectedAliasWithMultipleMaterializableLeavesFailsClosed()
+            throws Exception {
+        ProjectedAliasFixture fixture = projectedAliasFixture(true);
+        Map<String, String> resolution = projectedAliasResolution(
+                fixture.edges, fixture.inputPorts, fixture.dependency);
+
+        assertEquals("", resolution.get("portId"));
+        assertEquals("UNRESOLVED", resolution.get("authority"));
+    }
+
+    @Test
+    public void declaredFieldSuffixEntryTraversesContractingGetfieldProjection()
+            throws Exception {
+        ProjectedAliasFixture fixture = contractingGetfieldAliasFixture();
+        Map<String, String> resolution = projectedAliasResolution(
+                fixture.edges, fixture.inputPorts, fixture.dependency);
+
+        assertTrue("the entry itself is a declared-field-plus-suffix cell",
+                fixture.dependency.startsWith(
+                        "<example.Envelope: example.Profile profile>"
+                                + "#field:"));
+        assertFalse(fixture.inputPorts.get(0).containsKey("bindingMode"));
+        Map<String, Object> contraction = fixture.edges.stream()
+                .filter(edge -> "projected_instance_field_read".equals(
+                        edge.get("kind")))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals("#field:profile#field:weight",
+                contraction.get("fieldPath"));
+        assertFalse("a getfield consumes the profile prefix instead of "
+                        + "copying the full path onto its result",
+                (String.valueOf(contraction.get("objectToCell"))
+                        + String.valueOf(contraction.get("fieldPath")))
+                        .equals(contraction.get("toCell")));
+        assertEquals("REGION.ALIAS.in.1", resolution.get("portId"));
+        assertEquals("UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN",
+                resolution.get("authority"));
+    }
+
+    @Test
     public void canonicalGuardInputCarriesItsUniqueExactAccessorSite() {
         String field = "<javax.security.auth.callback.NameCallback: "
                 + "java.lang.String defaultName>";
@@ -4469,6 +4942,386 @@ public class SymbolicRegionPlannerTest {
         return slices.stream().filter(slice -> outputCell.equals(
                 slice.get("outputCell"))).findFirst()
                 .orElseThrow(AssertionError::new);
+    }
+
+    private static Map<String, Object> authoritativeCallReturn(
+            String caller, String callee, String returned, String target,
+            int unit) {
+        Map<String, Object> row = edge(caller, "FUNCTION_RETURN",
+                "call_return", returned, target, unit);
+        row.put("invoke", callee);
+        authoritativeValueFlow(row);
+        return row;
+    }
+
+    /**
+     * Builds the smallest exact projected-alias equivalence class that
+     * distinguishes a merely named broad projection from a replayable field
+     * leaf.  Both cells preserve the same relative path into one synthetic
+     * dependency; only the canonical ports carry exact materialization
+     * metadata.
+     */
+    private static ProjectedAliasFixture projectedAliasFixture(
+            boolean competingCanonicalLeaf) {
+        String method = "<example.AliasConsumer: void consume()>";
+        String dependencyBase = method + "::$value";
+        String path = "#field:enabled";
+        String dependency = dependencyBase + path;
+        String broadBase =
+                "<example.BroadEnvelope: example.State state>";
+        String canonicalBase =
+                "<example.CanonicalEnvelope: example.State state>";
+
+        List<Map<String, Object>> edges = new ArrayList<>();
+        edges.add(projectedAliasProof(method, "FUNCTION_RETURN",
+                "projected_call_return", broadBase, dependencyBase, path,
+                1));
+        edges.add(projectedAliasProof(method, "FUNCTION_RETURN",
+                "projected_call_return", canonicalBase, dependencyBase,
+                path, 2));
+
+        List<Map<String, Object>> ports = new ArrayList<>();
+        Map<String, Object> broad = new LinkedHashMap<>();
+        broad.put("portId", "REGION.ALIAS.in.0");
+        broad.put("cell", broadBase + path);
+        broad.put("javaType", "boolean");
+        broad.put("selectionReason", "HEAP_READ_FRONTIER");
+        ports.add(broad);
+        ports.add(materializableProjectedLeafPort("REGION.ALIAS.in.1",
+                canonicalBase + path,
+                "<example.State: boolean enabled>"));
+
+        if (competingCanonicalLeaf) {
+            String secondBase =
+                    "<example.SecondEnvelope: example.State state>";
+            edges.add(projectedAliasProof(method, "FUNCTION_RETURN",
+                    "projected_call_return", secondBase, dependencyBase,
+                    path, 3));
+            ports.add(materializableProjectedLeafPort(
+                    "REGION.ALIAS.in.2", secondBase + path,
+                    "<example.SecondState: boolean enabled>"));
+        }
+        return new ProjectedAliasFixture(dependency, edges, ports);
+    }
+
+    /**
+     * Models the two exact representations of a getfield chain.  Reading
+     * {@code envelope.profile} contracts
+     * {@code owner#field:profile#field:weight} to
+     * {@code profileLocal#field:weight}; both projected rows inherit from
+     * their unique raw getfield rows.
+     */
+    private static ProjectedAliasFixture contractingGetfieldAliasFixture() {
+        String method = "<example.AliasConsumer: void consume()>";
+        String rootField =
+                "<example.Envelope: example.Profile profile>";
+        String dependency = rootField + "#field:weight";
+        String ownerLocal = method + "::$envelope";
+        String profileLocal = method + "::$profile";
+        String path = "#field:weight";
+
+        List<Map<String, Object>> edges = new ArrayList<>();
+        Map<String, Object> declaredRead = edge(method, "HEAP_READ",
+                "field_read", rootField, profileLocal, 11);
+        declaredRead.put("siteId", method + "#u11");
+        declaredRead.put("unit", "$profile = $envelope." + rootField);
+        authoritativeValueFlow(declaredRead);
+        edges.add(declaredRead);
+        Map<String, Object> declaredProjection = projectedAliasProof(method,
+                "HEAP_READ", "projected_field_read", rootField,
+                profileLocal, path, 11);
+        declaredProjection.put("siteId", declaredRead.get("siteId"));
+        declaredProjection.put("unit", declaredRead.get("unit"));
+        declaredProjection.put("projectionBaseEdgeId",
+                declaredRead.get("id"));
+        declaredProjection.put("authorityInheritance",
+                "PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1");
+        edges.add(declaredProjection);
+
+        String instanceBase = ownerLocal + "#field:profile";
+        Map<String, Object> instanceRead = edge(method, "HEAP_READ",
+                "instance_field_read", instanceBase, profileLocal, 12);
+        instanceRead.put("siteId", method + "#u12");
+        instanceRead.put("unit", "$profile = $envelope." + rootField);
+        authoritativeValueFlow(instanceRead);
+        edges.add(instanceRead);
+        Map<String, Object> contractingProjection = projectedAliasProof(
+                method, "HEAP_READ", "projected_instance_field_read",
+                instanceBase, profileLocal, path, 12);
+        contractingProjection.put("siteId", instanceRead.get("siteId"));
+        contractingProjection.put("unit", instanceRead.get("unit"));
+        contractingProjection.put("objectFromCell", ownerLocal);
+        contractingProjection.put("fieldPath",
+                "#field:profile#field:weight");
+        contractingProjection.put("projectionBaseEdgeId",
+                instanceRead.get("id"));
+        contractingProjection.put("authorityInheritance",
+                "PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1");
+        edges.add(contractingProjection);
+
+        List<Map<String, Object>> ports = new ArrayList<>();
+        Map<String, Object> broad = new LinkedHashMap<>();
+        broad.put("portId", "REGION.ALIAS.in.0");
+        broad.put("cell", dependency);
+        broad.put("javaType", "int");
+        broad.put("selectionReason", "HEAP_READ_FRONTIER");
+        ports.add(broad);
+        Map<String, Object> canonical = materializableProjectedLeafPort(
+                "REGION.ALIAS.in.1", instanceBase + path,
+                "<example.Profile: int weight>");
+        canonical.put("javaType", "int");
+        canonical.put("fieldPath", Arrays.asList("profile", "weight"));
+        canonical.put("fieldPathAuthority",
+                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
+        ports.add(canonical);
+        return new ProjectedAliasFixture(dependency, edges, ports);
+    }
+
+    private static Map<String, Object> materializableProjectedLeafPort(
+            String portId, String cell, String leafFieldSignature) {
+        Map<String, Object> port = new LinkedHashMap<>();
+        port.put("portId", portId);
+        port.put("cell", cell);
+        port.put("javaType", "boolean");
+        port.put("bindingMode", "FIELD_ACCESS");
+        port.put("fieldPath", Collections.singletonList("enabled"));
+        port.put("leafFieldSignature", leafFieldSignature);
+        port.put("accessSiteAuthority",
+                "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
+        return port;
+    }
+
+    private static Map<String, String> projectedAliasResolution(
+            List<Map<String, Object>> edges,
+            List<Map<String, Object>> inputPorts, String dependency)
+            throws Exception {
+        Class<?> plannerType = Class.forName(
+                SymbolicRegionPlanner.class.getName() + "$Planner");
+        java.lang.reflect.Constructor<?> plannerConstructor = plannerType
+                .getDeclaredConstructor(List.class, List.class);
+        plannerConstructor.setAccessible(true);
+        Object planner = plannerConstructor.newInstance(edges,
+                Collections.emptyList());
+
+        Class<?> draftType = Class.forName(
+                SymbolicRegionPlanner.class.getName() + "$RegionDraft");
+        java.lang.reflect.Constructor<?> draftConstructor = draftType
+                .getDeclaredConstructor(String.class);
+        draftConstructor.setAccessible(true);
+        Object draft = draftConstructor.newInstance(
+                "<example.AliasConsumer: void consume()>");
+        java.lang.reflect.Field regionId = draftType.getDeclaredField(
+                "regionId");
+        java.lang.reflect.Field rootMethod = draftType.getDeclaredField(
+                "rootMethod");
+        java.lang.reflect.Field causalEdges = draftType.getDeclaredField(
+                "causalEdges");
+        for (java.lang.reflect.Field field : Arrays.asList(regionId,
+                rootMethod, causalEdges)) {
+            field.setAccessible(true);
+        }
+        regionId.set(draft, "REGION.ALIAS");
+        rootMethod.set(draft,
+                "<example.AliasConsumer: void consume()>");
+        @SuppressWarnings("unchecked")
+        java.util.Set<Map<String, Object>> selected =
+                (java.util.Set<Map<String, Object>>) causalEdges.get(draft);
+        selected.addAll(edges);
+
+        java.lang.reflect.Method resolver = plannerType.getDeclaredMethod(
+                "inputPortForCell", String.class, List.class, String.class,
+                draftType);
+        resolver.setAccessible(true);
+        Object resolution = resolver.invoke(planner, dependency, inputPorts,
+                "<example.AliasConsumer: void consume()>", draft);
+        Class<?> resolutionType = resolution.getClass();
+        java.lang.reflect.Field portId = resolutionType.getDeclaredField(
+                "portId");
+        java.lang.reflect.Field authority = resolutionType.getDeclaredField(
+                "authority");
+        portId.setAccessible(true);
+        authority.setAccessible(true);
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("portId", String.valueOf(portId.get(resolution)));
+        result.put("authority", String.valueOf(authority.get(resolution)));
+        return result;
+    }
+
+    private static final class ProjectedAliasFixture {
+        private final String dependency;
+        private final List<Map<String, Object>> edges;
+        private final List<Map<String, Object>> inputPorts;
+
+        private ProjectedAliasFixture(String dependency,
+                                      List<Map<String, Object>> edges,
+                                      List<Map<String, Object>> inputPorts) {
+            this.dependency = dependency;
+            this.edges = edges;
+            this.inputPorts = inputPorts;
+        }
+    }
+
+    /**
+     * Exercises the full requested-output promotion path for a direct
+     * {@code envelope.profile.weight} getfield chain.  The broad frontier is
+     * deliberately saturated before the meaningful declarations sort into
+     * it.  The requested-output slice must therefore first promote the
+     * complete canonical declared path and only then resolve the two local
+     * projected encodings of that path.
+     */
+    private static Map<String, Object>
+    latePromotedContractingGetfieldRegion(boolean competingCanonicalField) {
+        String root = "<example.FieldPathProducer: void produce()>";
+        String reader = "<example.FieldPathReader: void check()>";
+        String profileLocal = root + "::$profile";
+        String weightLocal = root + "::$weight";
+        String leafField = "<example.Profile: int weight>";
+        String output = "<example.A0RequestedState: int weight>";
+        String suffix = "#field:weight";
+
+        List<String> rootInputs = new ArrayList<>();
+        List<Map<String, Object>> edges = new ArrayList<>();
+        rootInputs.add(output);
+        for (int index = 0; index < 127; index++) {
+            String filler = String.format(
+                    "<example.AFill%03d: int value>", index);
+            rootInputs.add(filler);
+            edges.add(edge(root, "HEAP_READ", "field_read", filler,
+                    root + "::filler" + index, 1000 + index));
+        }
+
+        String firstRoot =
+                "<example.Envelope: example.Profile profile>";
+        String firstOwner = root + "::$envelope";
+        addExactContractingRootRead(edges, root, firstRoot,
+                "example.Envelope", "profile", firstOwner, profileLocal,
+                suffix, 10);
+        rootInputs.add(firstRoot + suffix);
+        rootInputs.add(firstOwner + "#field:profile" + suffix);
+        // Keep both runtime carrier encodings as genuine region live-ins.
+        // Their in-region getfield definitions remain present as alternate
+        // exact aliases, while the protocol rows establish that the caller
+        // must bind them at the region boundary.
+        edges.add(projectedAliasProof(root, "PROTOCOL_TRANSFER",
+                "projected_profile_payload",
+                "<example.Upstream: example.Profile publishProfile()>"
+                        + ".return",
+                profileLocal, suffix, 8));
+        edges.add(projectedAliasProof(root, "PROTOCOL_TRANSFER",
+                "projected_envelope_payload",
+                "<example.Upstream: example.Envelope publishEnvelope()>"
+                        + ".return",
+                firstOwner, "#field:profile" + suffix, 9));
+
+        if (competingCanonicalField) {
+            String secondRoot = "<example.AlternateEnvelope: "
+                    + "example.Profile alternateProfile>";
+            String secondOwner = root + "::$alternateEnvelope";
+            addExactContractingRootRead(edges, root, secondRoot,
+                    "example.AlternateEnvelope", "alternateProfile",
+                    secondOwner, profileLocal, suffix, 20);
+            rootInputs.add(secondRoot + suffix);
+            rootInputs.add(secondOwner + "#field:alternateProfile"
+                    + suffix);
+        }
+
+        String leafUnit = "$weight = $profile." + leafField;
+        Map<String, Object> declaredLeaf = edge(root, "HEAP_READ",
+                "field_read", leafField, weightLocal, 30);
+        exactReadSite(declaredLeaf, root, 30, leafUnit);
+        declaredMetadata(declaredLeaf, leafField, "example.Profile",
+                "int", "weight");
+        edges.add(declaredLeaf);
+        Map<String, Object> instanceLeaf = edge(root, "HEAP_READ",
+                "instance_field_read", profileLocal + suffix,
+                weightLocal, 30);
+        exactReadSite(instanceLeaf, root, 30, leafUnit);
+        edges.add(instanceLeaf);
+
+        // A projected scalar depends on the successful production of its
+        // base object as well as on the projected leaf.  Retaining this
+        // ordinary base prerequisite makes the raw getfield rows part of the
+        // same requested-output causal slice, exactly as the runtime replay
+        // contract requires.
+        Map<String, Object> basePrerequisite = edge(root, "COMPUTE",
+                "projection_base_dependency", profileLocal, weightLocal,
+                31);
+        authoritativeValueFlow(basePrerequisite);
+        edges.add(basePrerequisite);
+        rootInputs.add(profileLocal + suffix);
+        rootInputs.add(leafField);
+
+        edges.add(edge(root, "HEAP_WRITE", "field_mutation", weightLocal,
+                output, 32));
+        edges.add(edge(reader, "HEAP_READ", "field_read", output,
+                reader + "::weight", 1));
+        edges.add(edge(reader, "SEED", "seed_exception_throw",
+                reader + "::weight", reader + "#failure:weight", 2));
+
+        List<Map<String, Object>> plans = Arrays.asList(
+                plan(root, rootInputs, Collections.singletonList(output)),
+                plan(reader, Collections.singletonList(output),
+                        Collections.singletonList(reader
+                                + "#failure:weight")));
+        return regionForRoot(SymbolicRegionPlanner.plan(edges, plans), root);
+    }
+
+    private static void addExactContractingRootRead(
+            List<Map<String, Object>> edges, String method,
+            String rootField, String ownerType, String fieldName,
+            String ownerLocal, String resultLocal, String suffix,
+            int unitIndex) {
+        String unit = "$profile = "
+                + ownerLocal.substring(ownerLocal.indexOf("::") + 2)
+                + "." + rootField;
+        Map<String, Object> declared = edge(method, "HEAP_READ",
+                "field_read", rootField, resultLocal, unitIndex);
+        exactReadSite(declared, method, unitIndex, unit);
+        declaredMetadata(declared, rootField, ownerType,
+                "example.Profile", fieldName);
+        edges.add(declared);
+
+        Map<String, Object> declaredProjection = projectedAliasProof(method,
+                "HEAP_READ", "projected_field_read", rootField,
+                resultLocal, suffix, unitIndex);
+        exactProjectionSite(declaredProjection, declared, method, unitIndex,
+                unit);
+        edges.add(declaredProjection);
+
+        String instanceBase = ownerLocal + "#field:" + fieldName;
+        Map<String, Object> instance = edge(method, "HEAP_READ",
+                "instance_field_read", instanceBase, resultLocal,
+                unitIndex);
+        exactReadSite(instance, method, unitIndex, unit);
+        edges.add(instance);
+
+        Map<String, Object> contraction = projectedAliasProof(method,
+                "HEAP_READ", "projected_instance_field_read",
+                instanceBase, resultLocal, suffix, unitIndex);
+        contraction.put("objectFromCell", ownerLocal);
+        contraction.put("objectToCell", resultLocal);
+        contraction.put("fieldPath", "#field:" + fieldName + suffix);
+        exactProjectionSite(contraction, instance, method, unitIndex, unit);
+        edges.add(contraction);
+    }
+
+    private static void exactReadSite(Map<String, Object> edge,
+                                      String method, int unitIndex,
+                                      String unit) {
+        edge.put("siteId", method + "#u" + unitIndex);
+        edge.put("unit", unit);
+        authoritativeValueFlow(edge);
+    }
+
+    private static void exactProjectionSite(Map<String, Object> projection,
+                                            Map<String, Object> base,
+                                            String method, int unitIndex,
+                                            String unit) {
+        projection.put("siteId", method + "#u" + unitIndex);
+        projection.put("unit", unit);
+        projection.put("projectionBaseEdgeId", base.get("id"));
+        projection.put("authorityInheritance",
+                "PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1");
     }
 
     /**

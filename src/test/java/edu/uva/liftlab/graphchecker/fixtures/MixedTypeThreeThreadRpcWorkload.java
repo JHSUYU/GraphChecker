@@ -35,7 +35,8 @@ public final class MixedTypeThreeThreadRpcWorkload {
                             if (bounded > 3) {
                                 bounded = 3;
                             }
-                            for (int index = 0; index < bounded; index++) {
+                            for (int remaining = bounded;
+                                 remaining > 0; remaining--) {
                                 score++;
                             }
                         }

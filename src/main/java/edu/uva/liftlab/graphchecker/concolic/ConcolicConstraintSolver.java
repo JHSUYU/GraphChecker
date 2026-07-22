@@ -72,6 +72,12 @@ public final class ConcolicConstraintSolver {
         record.addProperty("floatingPointEncodingAuthority",
                 "JAVA_IEEE_754_BINARY32_BINARY64_RNE_WITH_"
                         + "UNSUPPORTED_OPERATIONS_FAIL_CLOSED_V1");
+        record.addProperty("nullableJavaStringModeled", true);
+        record.addProperty("nullableStringEncodingAuthority",
+                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        record.addProperty("nullableJavaReferenceModeled", true);
+        record.addProperty("referenceNullnessEncodingAuthority",
+                "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1");
         record.addProperty("uncontrolledEnvironmentTermCount",
                 encoder.uncontrolledEnvironmentTerms.size());
         record.add("uncontrolledEnvironmentTerms",
@@ -172,6 +178,20 @@ public final class ConcolicConstraintSolver {
             return new Result(record, smt, new JsonArray());
         }
 
+        // Reference prefix inputs are partitioned after reading the model.
+        // A non-null prefix can preserve the source activation's real object
+        // and rely on exact ordered-prefix validation.  A null prefix cannot:
+        // it must be materialized as an explicit NULL assignment so a later
+        // branch flip replays the same path instead of silently restoring the
+        // source object's non-null value.  Target references always remain
+        // projected; null is materializable, while a requested non-null
+        // object fails closed because this layer cannot fabricate one.
+        Set<String> targetControlledSymbols = new LinkedHashSet<>(
+                targetSymbols);
+        targetControlledSymbols.retainAll(encoder.controlledSymbols);
+        Set<String> projectedControlledSymbols = new LinkedHashSet<>(
+                encoder.controlledSymbols);
+
         Path executable = z3 == null ? Paths.get("z3") : z3;
         SolverOutput output = run(executable, smt,
                 Math.max(1L, timeoutMillis));
@@ -198,18 +218,54 @@ public final class ConcolicConstraintSolver {
         }
 
         Map<String, String> values = parseGetValues(output.stdout);
-        Set<String> targetControlledSymbols = new LinkedHashSet<>(
-                targetSymbols);
-        targetControlledSymbols.retainAll(encoder.controlledSymbols);
+        Set<String> unforcedPrefixReferenceSymbols = new LinkedHashSet<>();
+        Set<String> materializedNullPrefixReferenceSymbols =
+                new LinkedHashSet<>();
+        for (String raw : encoder.controlledSymbols) {
+            if (targetControlledSymbols.contains(raw)
+                    || encoder.rawToSort.get(raw) != Sort.REF) {
+                continue;
+            }
+            String nullnessName = encoder.rawToReferenceNullName.get(raw);
+            String nullnessValue = nullnessName == null ? null
+                    : values.get(nullnessName);
+            if ("false".equals(nullnessValue)) {
+                unforcedPrefixReferenceSymbols.add(raw);
+                projectedControlledSymbols.remove(raw);
+            } else if ("true".equals(nullnessValue)) {
+                materializedNullPrefixReferenceSymbols.add(raw);
+            }
+            // A missing/non-Boolean nullness value intentionally leaves the
+            // symbol projected. modelAssignments will omit it and the normal
+            // all-path-input completeness check below will fail closed.
+        }
+        record.addProperty("unforcedPrefixReferenceSymbolCount",
+                unforcedPrefixReferenceSymbols.size());
+        record.add("unforcedPrefixReferenceSymbols",
+                GSON.toJsonTree(unforcedPrefixReferenceSymbols));
+        record.addProperty("unforcedPrefixReferenceAuthority",
+                "SOURCE_NON_NULL_REFERENCE_PRESERVATION_PLUS_EXACT_"
+                        + "ORDERED_PREFIX_REPLAY_VALIDATION_V2");
+        record.addProperty("materializedNullPrefixReferenceSymbolCount",
+                materializedNullPrefixReferenceSymbols.size());
+        record.add("materializedNullPrefixReferenceSymbols",
+                GSON.toJsonTree(materializedNullPrefixReferenceSymbols));
+        record.addProperty("nullPrefixReferenceMaterializationAuthority",
+                "Z3_EXACT_REFERENCE_NULLNESS_TO_RUNTIME_NULL_"
+                        + "MATERIALIZATION_V1");
+        if (!unforcedPrefixReferenceSymbols.isEmpty()) {
+            record.addProperty("requiresUnforcedEnvironmentValidation", true);
+        }
         Set<String> unforcedPrefixSymbols = new LinkedHashSet<>(
-                encoder.controlledSymbols);
+                projectedControlledSymbols);
         unforcedPrefixSymbols.removeAll(targetControlledSymbols);
         JsonArray assignments = modelAssignments(encoder, values,
-                activation, dynamicBindings, encoder.controlledSymbols);
+                activation, dynamicBindings, projectedControlledSymbols);
         record.add("modelAssignments", assignments.deepCopy());
         record.addProperty("modelAssignmentCount", assignments.size());
         record.addProperty("modelProjectionPolicy",
-                "FULL_PATH_CONTROLLED_INPUTS_V2");
+                "FULL_PATH_MATERIALIZABLE_INPUTS_PLUS_MODEL_"
+                        + "PARTITIONED_PREFIX_REFERENCES_V4");
         record.addProperty("controlledSymbolCount",
                 encoder.controlledSymbols.size());
         record.addProperty("targetControlledSymbolCount",
@@ -223,14 +279,14 @@ public final class ConcolicConstraintSolver {
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
-        } else if (assignments.size() < encoder.controlledSymbols.size()) {
+        } else if (assignments.size() < projectedControlledSymbols.size()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "NOT_ALL_PATH_INPUT_SYMBOLS_HAVE_MATERIALIZATION_TARGETS");
             record.add("unmappedInputSymbols", GSON.toJsonTree(
-                    unmapped(encoder.controlledSymbols, assignments)));
+                    unmapped(projectedControlledSymbols, assignments)));
             Set<String> resolutionGaps = new LinkedHashSet<>();
-            for (String raw : unmapped(encoder.controlledSymbols,
+            for (String raw : unmapped(projectedControlledSymbols,
                     assignments)) {
                 MaterializationResolution resolution =
                         materializationResolution(raw, actions,
@@ -266,6 +322,17 @@ public final class ConcolicConstraintSolver {
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
         private final Map<String, String> rawToName = new LinkedHashMap<>();
         private final Map<String, Sort> rawToSort = new LinkedHashMap<>();
+        /**
+         * Java String inputs have both reference nullability and character
+         * contents.  SMT-LIB String represents only the latter, so every
+         * controlled String symbol gets a companion Bool instead of
+         * conflating Java null with either an SMT string or {@code nullRef}.
+         */
+        private final Map<String, String> rawToStringNullName =
+                new LinkedHashMap<>();
+        /** Exact null predicate for non-String Java reference inputs. */
+        private final Map<String, String> rawToReferenceNullName =
+                new LinkedHashMap<>();
         private final Map<String, IntegralWidth> rawToIntegralWidth =
                 new LinkedHashMap<>();
         private final Map<String, String> rawToModelName =
@@ -373,6 +440,20 @@ public final class ConcolicConstraintSolver {
                 rawToSort.put(raw, sort);
                 rawToIntegralWidth.put(raw, width);
                 declarations.put(name, sort);
+                if (sort == Sort.STRING) {
+                    String nullName = "sym__string_is_null__"
+                            + safeName(raw) + "__"
+                            + sha256("string-null\u0000" + raw)
+                            .substring(0, 10);
+                    rawToStringNullName.put(raw, nullName);
+                    declarations.put(nullName, Sort.BOOL);
+                } else if (sort == Sort.REF) {
+                    String nullName = "sym__reference_is_null__"
+                            + safeName(raw) + "__"
+                            + sha256("reference-null\u0000" + raw)
+                            .substring(0, 10);
+                    rawToReferenceNullName.put(raw, nullName);
+                }
                 if (regionInput(raw)) controlledSymbols.add(raw);
                 constrainIntegralInput(raw, name, javaType, sort);
             } else {
@@ -390,7 +471,12 @@ public final class ConcolicConstraintSolver {
                 }
             }
             IntegralWidth actualWidth = rawToIntegralWidth.get(raw);
-            return new Term(name, rawToSort.get(raw), actualWidth);
+            Sort actualSort = rawToSort.get(raw);
+            if (actualSort == Sort.STRING) {
+                return Term.javaString(name,
+                        rawToStringNullName.get(raw), raw);
+            }
+            return new Term(name, actualSort, actualWidth);
         }
 
         private void constrainIntegralInput(String raw, String name,
@@ -467,7 +553,7 @@ public final class ConcolicConstraintSolver {
                 return new Term(literal, sort);
             }
             if (sort == Sort.STRING) {
-                return new Term(quote(payload), Sort.STRING);
+                return Term.nonNullString(quote(payload));
             }
             if ("N".equals(raw)) return new Term("nullRef", Sort.REF);
             String name = "const__" + safeName(raw) + "__"
@@ -486,35 +572,32 @@ public final class ConcolicConstraintSolver {
             JsonElement sourceExpression = expression.get("_exp");
             Term source = term(sourceExpression, null, origin + ":castSource");
             String sourceType = castDescriptor(
-                    expressionJavaType(sourceExpression));
-            String targetType = castTargetDescriptor(string(expression,
-                    "_java_type"), sourceType);
+                    firstNonBlank(string(expression, "sourceJavaType"),
+                            expressionJavaType(sourceExpression)));
+            String targetType = castTargetDescriptor(firstNonBlank(
+                    string(expression, "targetJavaType"),
+                    string(expression, "_java_type")), sourceType);
+            Sort sourceSort = castSort(sourceType);
             Sort targetSort = castSort(targetType);
-            if (source != null && exactIdentityOrIntegralWidening(
-                    sourceType, targetType) && source.sort == targetSort) {
-                return new Term(source.text, source.sort,
-                        JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                targetType));
-            }
-            FloatingKind sourceFloating = JavaPrimitiveSmtSemantics
-                    .floatingKindOfJavaType(sourceType);
-            FloatingKind targetFloating = JavaPrimitiveSmtSemantics
-                    .floatingKindOfJavaType(targetType);
-            if (source != null && source.sort.floating()
-                    && targetSort.floating()) {
-                String conversion = JavaPrimitiveSmtSemantics
-                        .floatingConversion(source.text, sourceFloating,
-                                targetFloating);
-                if (conversion != null) return new Term(conversion,
-                        targetSort);
-            }
-            if (source != null && source.sort == Sort.INT
-                    && targetSort.floating()
-                    && source.integralWidth != IntegralWidth.NONE) {
-                String conversion = JavaPrimitiveSmtSemantics
-                        .integralToFloating(source.text, targetFloating);
-                if (conversion != null) return new Term(conversion,
-                        targetSort);
+            boolean primitivePair = JavaPrimitiveSmtSemantics
+                    .primitiveNumericDescriptor(sourceType)
+                    && JavaPrimitiveSmtSemantics
+                    .primitiveNumericDescriptor(targetType);
+            if (source != null && primitivePair
+                    && source.sort == sourceSort) {
+                String conversion = JavaPrimitiveSmtSemantics.primitiveCast(
+                        source.text, sourceType, targetType);
+                if (conversion != null) {
+                    return new Term(conversion, targetSort,
+                            JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                    targetType));
+                }
+            } else if (source != null && primitivePair) {
+                unsupported.add(origin + ":JAVA_CAST_SOURCE_SORT_CONFLICT:"
+                        + firstNonBlank(sourceType, "UNKNOWN") + ":"
+                        + source.sort + "!=" + sourceSort);
+                return diagnosticTerm("unsupported_cast", origin,
+                        targetSort == Sort.UNKNOWN ? Sort.REF : targetSort);
             }
             unsupported.add(origin + ":UNSUPPORTED_JAVA_CAST:"
                     + firstNonBlank(sourceType, "UNKNOWN") + "->"
@@ -607,6 +690,27 @@ public final class ConcolicConstraintSolver {
                 if (left == null || right == null) return null;
             }
             if ("==".equals(operator) || "!=".equals(operator)) {
+                Term stringNullComparison = stringNullComparison(
+                        left, right, operator);
+                if (stringNullComparison != null) {
+                    return stringNullComparison;
+                }
+                if (left.sort == Sort.STRING && right.sort == Sort.STRING) {
+                    if (!left.stringReferenceKey.isEmpty()
+                            && left.stringReferenceKey.equals(
+                            right.stringReferenceKey)) {
+                        return new Term("==".equals(operator)
+                                ? "true" : "false", Sort.BOOL);
+                    }
+                    // A BinaryExpression over Java Strings comes from JVM
+                    // reference comparison.  SMT string equality is content
+                    // equality and would therefore be unsound here.  Content
+                    // equality is lowered separately from OpStrExpression.
+                    unsupported.add(origin
+                            + ":JAVA_STRING_REFERENCE_IDENTITY_"
+                            + "MATERIALIZATION_UNMODELED");
+                    return null;
+                }
                 if (left.sort != right.sort) {
                     unsupported.add(origin + ":SORT_MISMATCH:" + left.sort
                             + ":" + right.sort);
@@ -707,6 +811,29 @@ public final class ConcolicConstraintSolver {
             return null;
         }
 
+        /**
+         * Lowers the Java reference-null view of a String without confusing
+         * it with the String's SMT character-content view.  Constants and
+         * derived String values carry the exact literal {@code false}; a
+         * symbolic input carries its companion nullness Bool.
+         */
+        private Term stringNullComparison(Term left, Term right,
+                                          String operator) {
+            Term string = null;
+            if (left.sort == Sort.STRING && right.isNullReference()) {
+                string = left;
+            } else if (right.sort == Sort.STRING
+                    && left.isNullReference()) {
+                string = right;
+            }
+            if (string == null || string.stringNullnessText.isEmpty()) {
+                return null;
+            }
+            String isNull = string.stringNullnessText;
+            return new Term("!=".equals(operator)
+                    ? "(not " + isNull + ")" : isNull, Sort.BOOL);
+        }
+
         private Term floatingPromotion(Term term, Sort target,
                                        String origin) {
             FloatingKind targetKind = floatingKind(target);
@@ -736,6 +863,9 @@ public final class ConcolicConstraintSolver {
                         operation);
                 if (strings == null) return null;
                 Term receiver = strings.get(0);
+                if (!requireNonNullStrings(strings, origin, operation)) {
+                    return null;
+                }
                 return booleanStringResult("(= (str.len " + receiver.text
                         + ") 0)", negated);
             }
@@ -748,6 +878,9 @@ public final class ConcolicConstraintSolver {
                 List<Term> strings = stringParameters(parameters, 1, origin,
                         operation);
                 if (strings == null) return null;
+                if (!requireNonNullStrings(strings, origin, operation)) {
+                    return null;
+                }
                 Term length = new Term("(str.len "
                         + strings.get(0).text + ")", Sort.INT,
                         IntegralWidth.JAVA_INT);
@@ -772,15 +905,22 @@ public final class ConcolicConstraintSolver {
                 List<Term> strings = stringParameters(parameters,
                         parameters.size(), origin, operation);
                 if (strings == null) return null;
-                if (strings.size() == 1) return strings.get(0);
+                if (!requireNonNullStrings(strings, origin, operation)) {
+                    return null;
+                }
+                if (strings.size() == 1) {
+                    return Term.nonNullString(strings.get(0).text);
+                }
                 StringBuilder result = new StringBuilder("(str.++");
                 for (Term value : strings) {
                     result.append(' ').append(value.text);
                 }
-                return new Term(result.append(')').toString(), Sort.STRING);
+                return Term.nonNullString(result.append(')').toString());
+            }
+            if ("equals".equals(operation)) {
+                return stringEquals(parameters, origin, negated);
             }
             if (!("contains".equals(operation)
-                    || "equals".equals(operation)
                     || "startsWith".equals(operation)
                     || "endsWith".equals(operation))) {
                 unsupported.add(origin + ":OP_STRING_OPERATOR:"
@@ -790,21 +930,67 @@ public final class ConcolicConstraintSolver {
             List<Term> strings = stringParameters(parameters, 2, origin,
                     operation);
             if (strings == null) return null;
+            if (!requireNonNullStrings(strings, origin, operation)) {
+                return null;
+            }
             Term receiver = strings.get(0);
             Term argument = strings.get(1);
             String predicate;
             if ("contains".equals(operation)) {
                 predicate = "(str.contains " + receiver.text + " "
                         + argument.text + ")";
-            } else if ("equals".equals(operation)) {
-                predicate = "(= " + receiver.text + " " + argument.text
-                        + ")";
             } else if ("startsWith".equals(operation)) {
                 predicate = "(str.prefixof " + argument.text + " "
                         + receiver.text + ")";
             } else {
                 predicate = "(str.suffixof " + argument.text + " "
                         + receiver.text + ")";
+            }
+            return booleanStringResult(predicate, negated);
+        }
+
+        /** Java String.equals requires a non-null receiver but accepts null. */
+        private Term stringEquals(JsonArray parameters, String origin,
+                                  boolean negated) {
+            if (parameters.size() != 2) {
+                unsupported.add(origin + ":STRING_EQUALS_ARITY:"
+                        + parameters.size());
+                return null;
+            }
+            Term receiver = term(parameters.get(0), null,
+                    origin + ":equals:parameter0");
+            Term argument = term(parameters.get(1), null,
+                    origin + ":equals:parameter1");
+            if (receiver == null || argument == null) return null;
+            if (receiver.sort != Sort.STRING) {
+                unsupported.add(origin
+                        + ":STRING_EQUALS_SORT_MISMATCH:0:"
+                        + receiver.sort);
+                return null;
+            }
+            if (!requireNonNullString(receiver, origin, "equals", 0)) {
+                return null;
+            }
+            String predicate;
+            if (argument.isNullReference()) {
+                predicate = "false";
+            } else if (argument.sort == Sort.STRING) {
+                if (argument.stringNullnessText.isEmpty()) {
+                    unsupported.add(origin
+                            + ":STRING_EQUALS_NULLABILITY_UNKNOWN:1");
+                    return null;
+                }
+                String contentEquals = "(= " + receiver.text + " "
+                        + argument.text + ")";
+                predicate = "false".equals(argument.stringNullnessText)
+                        ? contentEquals : "(and (not "
+                        + argument.stringNullnessText + ") "
+                        + contentEquals + ")";
+            } else {
+                unsupported.add(origin
+                        + ":STRING_EQUALS_SORT_MISMATCH:1:"
+                        + argument.sort);
+                return null;
             }
             return booleanStringResult(predicate, negated);
         }
@@ -837,6 +1023,36 @@ public final class ConcolicConstraintSolver {
                 result.add(value);
             }
             return result;
+        }
+
+        private boolean requireNonNullStrings(List<Term> strings,
+                                              String origin,
+                                              String operation) {
+            for (int index = 0; index < strings.size(); index++) {
+                if (!requireNonNullString(strings.get(index), origin,
+                        operation, index)) return false;
+            }
+            return true;
+        }
+
+        /**
+         * Evaluation of an instance String operation proves its receiver
+         * (and each Java-required String argument) non-null.  Keeping that
+         * proof separate from the content predicate prevents a null model
+         * from satisfying, for example, {@code str.contains}.
+         */
+        private boolean requireNonNullString(Term value, String origin,
+                                             String operation, int index) {
+            if (value.stringNullnessText.isEmpty()) {
+                unsupported.add(origin + ":STRING_"
+                        + operation.toUpperCase(java.util.Locale.ROOT)
+                        + "_NULLABILITY_UNKNOWN:" + index);
+                return false;
+            }
+            if (!"false".equals(value.stringNullnessText)) {
+                assertions.add("(not " + value.stringNullnessText + ")");
+            }
+            return true;
         }
 
         private Term booleanStringResult(String predicate,
@@ -948,6 +1164,15 @@ public final class ConcolicConstraintSolver {
                 result.append(") ").append(entry.getValue().result.smt)
                         .append(")\n");
             }
+            for (Map.Entry<String, String> entry
+                    : rawToReferenceNullName.entrySet()) {
+                String reference = rawToName.get(entry.getKey());
+                if (reference != null) {
+                    result.append("(define-fun ").append(entry.getValue())
+                            .append(" () Bool (= ").append(reference)
+                            .append(" nullRef))\n");
+                }
+            }
             // Ask Z3 for both the IEEE bits and an explicit NaN discriminator.
             // SMT deliberately leaves fp.to_ieee_bv(NaN) unspecified (Z3
             // 4.8 may return all-zero bits), so replay must never interpret
@@ -981,10 +1206,15 @@ public final class ConcolicConstraintSolver {
             for (String raw : controlledSymbols) {
                 String name = rawToName.get(raw);
                 Sort sort = rawToSort.get(raw);
-                if (name != null && sort != Sort.REF && !sort.isArray()) {
+                if (name != null && !sort.isArray()) {
                     if (sort.floating()) {
                         modelNames.add(rawToModelName.get(raw));
                         modelNames.add(rawToModelNaNName.get(raw));
+                    } else if (sort == Sort.STRING) {
+                        modelNames.add(name);
+                        modelNames.add(rawToStringNullName.get(raw));
+                    } else if (sort == Sort.REF) {
+                        modelNames.add(rawToReferenceNullName.get(raw));
                     } else {
                         modelNames.add(name);
                     }
@@ -1043,21 +1273,50 @@ public final class ConcolicConstraintSolver {
         private final String text;
         private final Sort sort;
         private final IntegralWidth integralWidth;
+        private final String stringNullnessText;
+        private final String stringReferenceKey;
 
         private Term(String text, Sort sort) {
-            this(text, sort, IntegralWidth.NONE);
+            this(text, sort, IntegralWidth.NONE, "", "");
         }
 
         private Term(String text, Sort sort,
                      IntegralWidth integralWidth) {
+            this(text, sort, integralWidth, "", "");
+        }
+
+        private Term(String text, Sort sort,
+                     IntegralWidth integralWidth,
+                     String stringNullnessText,
+                     String stringReferenceKey) {
             this.text = text;
             this.sort = sort;
             this.integralWidth = sort == Sort.INT && integralWidth != null
                     ? integralWidth : IntegralWidth.NONE;
+            this.stringNullnessText = stringNullnessText == null
+                    ? "" : stringNullnessText;
+            this.stringReferenceKey = stringReferenceKey == null
+                    ? "" : stringReferenceKey;
+        }
+
+        private static Term javaString(String content,
+                                       String nullness,
+                                       String referenceKey) {
+            return new Term(content, Sort.STRING, IntegralWidth.NONE,
+                    nullness, referenceKey);
+        }
+
+        private static Term nonNullString(String content) {
+            return new Term(content, Sort.STRING, IntegralWidth.NONE,
+                    "false", "");
         }
 
         private boolean isZero() {
             return "0".equals(text);
+        }
+
+        private boolean isNullReference() {
+            return sort == Sort.REF && "nullRef".equals(text);
         }
     }
 
@@ -1113,9 +1372,32 @@ public final class ConcolicConstraintSolver {
             String nanModelName = encoder.rawToModelNaNName.get(raw);
             String nanValue = nanModelName == null ? ""
                     : values.get(nanModelName);
-            if (value == null || sort == Sort.REF || sort.isArray()
+            String stringNullModelName = sort == Sort.STRING
+                    ? encoder.rawToStringNullName.get(raw) : "";
+            String stringNullValue = stringNullModelName == null
+                    || stringNullModelName.isEmpty() ? ""
+                    : values.get(stringNullModelName);
+            String referenceNullModelName = sort == Sort.REF
+                    ? encoder.rawToReferenceNullName.get(raw) : "";
+            String referenceNullValue = referenceNullModelName == null
+                    || referenceNullModelName.isEmpty() ? ""
+                    : values.get(referenceNullModelName);
+            boolean reference = sort == Sort.REF;
+            if ((!reference && value == null) || sort.isArray()
                     || sort.floating() && !("true".equals(nanValue)
-                    || "false".equals(nanValue))) continue;
+                    || "false".equals(nanValue))
+                    || sort == Sort.STRING
+                    && !("true".equals(stringNullValue)
+                    || "false".equals(stringNullValue))
+                    || reference
+                    && !("true".equals(referenceNullValue)
+                    || "false".equals(referenceNullValue))) continue;
+            // A concrete non-null Java object cannot be reconstructed from
+            // the SMT Ref sort.  Prefix reference guards are deliberately
+            // kept out of projectedSymbols above and replayed from the source
+            // object.  A target reference is materializable exactly when the
+            // model selects null, which has a real runtime action.
+            if (reference && !"true".equals(referenceNullValue)) continue;
             MaterializationResolution resolution =
                     materializationResolution(raw, actions, registry);
             if (!resolution.resolved()) continue;
@@ -1123,9 +1405,24 @@ public final class ConcolicConstraintSolver {
             JsonObject assignment = new JsonObject();
             assignment.addProperty("engineSymbol", raw);
             assignment.addProperty("solverSymbol", solverName);
+            if (sort == Sort.STRING) {
+                assignment.addProperty("nullnessSolverSymbol",
+                        stringNullModelName);
+                assignment.addProperty("modelIsNull",
+                        "true".equals(stringNullValue));
+            } else if (reference) {
+                assignment.addProperty("nullnessSolverSymbol",
+                        referenceNullModelName);
+                assignment.addProperty("modelIsNull", true);
+            }
             assignment.addProperty("inputSymbol", string(match.action,
                     "symbol"));
-            if (sort.floating()) {
+            if (reference) {
+                assignment.addProperty("valueType", "NULL");
+                assignment.addProperty("value", "null");
+                assignment.addProperty("referenceNullnessEncodingAuthority",
+                        "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1");
+            } else if (sort.floating()) {
                 String descriptor = sort == Sort.FLOAT32 ? "F" : "D";
                 boolean isNaN = "true".equals(nanValue);
                 String decoded = isNaN ? "NaN" : SmtModelValueCodec
@@ -1143,9 +1440,21 @@ public final class ConcolicConstraintSolver {
                     assignment.addProperty("modelIeeeBits", value);
                 }
                 assignment.addProperty("value", decoded);
+            } else if (sort == Sort.STRING
+                    && "true".equals(stringNullValue)) {
+                assignment.addProperty("valueType", "NULL");
+                assignment.addProperty("value", "null");
+                assignment.addProperty("nullableStringEncodingAuthority",
+                        "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
             } else {
                 assignment.addProperty("valueType", sort.name());
                 assignment.addProperty("value", normalizeModelValue(value));
+                if (sort == Sort.STRING) {
+                    assignment.addProperty(
+                            "nullableStringEncodingAuthority",
+                            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_"
+                                    + "NULLNESS_BOOL_V1");
+                }
             }
             assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
             assignment.addProperty("materializeAtRealDefinition", true);
@@ -2029,7 +2338,13 @@ public final class ConcolicConstraintSolver {
         if ("D".equals(value) || "double".equals(value)
                 || "java/lang/Double".equals(value)
                 || "java.lang.Double".equals(value)) return Sort.FLOAT64;
-        if (value.contains("String")) return Sort.STRING;
+        // Only java.lang.String has the SMT String/content semantics.  A
+        // user class whose name happens to contain "String" (for example
+        // StringHolder or StringBuilder) is an ordinary reference and may be
+        // modeled here only through exact reference/null equality.
+        if ("java.lang.String".equals(value)
+                || "java/lang/String".equals(value)
+                || "Ljava/lang/String;".equals(value)) return Sort.STRING;
         if (value.startsWith("L") || value.startsWith("[")
                 || value.contains("/") || value.contains(".")) {
             return Sort.REF;
@@ -2074,16 +2389,7 @@ public final class ConcolicConstraintSolver {
     }
 
     private static String castDescriptor(String javaType) {
-        String value = firstNonBlank(javaType).trim().replace('.', '/');
-        if ("boolean".equals(value)) return "Z";
-        if ("byte".equals(value)) return "B";
-        if ("char".equals(value)) return "C";
-        if ("short".equals(value)) return "S";
-        if ("int".equals(value)) return "I";
-        if ("long".equals(value)) return "J";
-        if ("float".equals(value)) return "F";
-        if ("double".equals(value)) return "D";
-        return value;
+        return JavaPrimitiveSmtSemantics.primitiveDescriptor(javaType);
     }
 
     /** The VM uses bare L for primitive long conversions, while other IR
@@ -2091,28 +2397,8 @@ public final class ConcolicConstraintSolver {
      * disambiguates conversion bytecodes without mistyping a reference cast. */
     private static String castTargetDescriptor(String javaType,
                                                String sourceType) {
-        String target = castDescriptor(javaType);
-        return "L".equals(target) && primitiveNumericDescriptor(sourceType)
-                ? "J" : target;
-    }
-
-    private static boolean primitiveNumericDescriptor(String descriptor) {
-        return descriptor != null && descriptor.length() == 1
-                && "BCSIJFD".contains(descriptor);
-    }
-
-    private static boolean exactIdentityOrIntegralWidening(String source,
-                                                            String target) {
-        if (source.isEmpty() || target.isEmpty()) return false;
-        if (source.equals(target) && "ZBCSIJFD".contains(source)) {
-            return true;
-        }
-        if (("B".equals(source) || "C".equals(source)
-                || "S".equals(source))
-                && ("I".equals(target) || "J".equals(target))) {
-            return true;
-        }
-        return "I".equals(source) && "J".equals(target);
+        return JavaPrimitiveSmtSemantics.primitiveTargetDescriptor(
+                javaType, sourceType);
     }
 
     private static FloatingKind floatingKind(Sort sort) {

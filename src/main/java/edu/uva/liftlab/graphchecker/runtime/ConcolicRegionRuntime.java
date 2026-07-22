@@ -87,6 +87,19 @@ public final class ConcolicRegionRuntime {
                     + "REF_WITNESS_V1";
     private static final String EXACT_RUNTIME_NULL_AUTHORITY =
             "EXACT_RUNTIME_NULL_AT_SAME_EXECUTION_ENTRY_SET_SNAPSHOT";
+    private static final String CONCRETE_GUARD_PROOF_KIND =
+            "REFERENCE_NULL_CONCRETE_GUARD_REPLAY_PROOF";
+    private static final String CONCRETE_GUARD_PROOF_AUTHORITY =
+            "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1";
+    private static final String CERTIFIED_CONCRETE_GUARD_AUTHORITY =
+            "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1";
+    private static final String RUNTIME_CONCRETE_GUARD_CERTIFICATE_AUTHORITY =
+            "RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
+                    + "VM_BRANCH_EVENT_V1";
+    private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
+            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
+    private static final String REFERENCE_NULLNESS_ENCODING_AUTHORITY =
+            "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1";
     private static final String ROOT_ARGUMENT_SELECTOR_SCHEMA_V1 =
             "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_V1";
     private static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY_V1 =
@@ -601,7 +614,14 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             if (value == null) {
-                if ("ARGUMENT".equals(action.location)
+                if (active.hasAppliedExactNullReferenceAssignment(action)) {
+                    // The exact model assignment has already replaced this
+                    // declared reference argument with null.  A null Java
+                    // reference has no object that the VM can symbolize;
+                    // its branch evidence is admitted only later through the
+                    // separately verified concrete-guard certificate.
+                    continue;
+                } else if ("ARGUMENT".equals(action.location)
                         && action.declaresArrayInput(
                         Collections.<String>emptyList())) {
                     symbolize(active, action, null, engine());
@@ -838,8 +858,15 @@ public final class ConcolicRegionRuntime {
                 || !active.materialized.add(selected.symbol)) {
             return boxedValue;
         }
+        List<String> logicalPath = selected.exactStaticFieldPath(
+                fieldSignature, fieldName);
+        if (logicalPath == null) {
+            active.addUnresolvedOnce(siteId(method, unitIndex)
+                    + ": STATIC_FIELD_LOGICAL_PATH_OR_DECLARATION_MISMATCH");
+            return boxedValue;
+        }
         return materializePrimitiveValue(active, selected, boxedValue,
-                "STATIC_FIELD_READ", null);
+                "STATIC_FIELD_READ", logicalPath);
     }
 
     /**
@@ -3447,6 +3474,22 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    private static String sha256Json(JsonElement value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest((value == null ? "null"
+                    : value.toString()).getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : bytes) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable",
+                    impossible);
+        }
+    }
+
     static String dynamicFieldSymbolForTests(String baseInputSymbol,
                                              String siteId,
                                              int occurrence) {
@@ -4152,6 +4195,147 @@ public final class ConcolicRegionRuntime {
         active.branchMappings.add(mapping);
     }
 
+    private static ConcreteGuardCertification certifyConcreteGuard(
+            ActiveRegion active, VmBranchEventAttestation vmAttestation,
+            String siteId, int occurrence, boolean observedOutcome,
+            boolean effectiveOutcome, boolean overrideApplied,
+            JsonArray conditions, int baseline) {
+        if (!active.activation.concreteGuardProofCatalogValid) {
+            return ConcreteGuardCertification.invalid(null,
+                    "activation concrete-guard proof catalog is malformed "
+                            + "or has duplicate event identities");
+        }
+        List<ConcreteGuardReplayProof> eventProofs = active.activation
+                .concreteGuardProofs(siteId, occurrence);
+        if (eventProofs.size() != 1) {
+            return ConcreteGuardCertification.invalid(null,
+                    "event has " + eventProofs.size()
+                            + " concrete-guard proofs; expected exactly one");
+        }
+        ConcreteGuardReplayProof proof = eventProofs.get(0);
+        if (!proof.structurallyValid || proof.schemaVersion != 1
+                || !CONCRETE_GUARD_PROOF_KIND.equals(proof.kind)
+                || !CONCRETE_GUARD_PROOF_AUTHORITY.equals(proof.authority)
+                || !proof.requiresExactVmBranchEvent
+                || !proof.requiresZeroPathConditionSuffix
+                || !proof.requiresUniqueAppliedNullModelAssignment
+                || !proof.branchOverrideProhibited) {
+            return ConcreteGuardCertification.invalid(proof,
+                    firstNonBlank(proof.structuralError,
+                    "proof schema, authority, or required checks are invalid"));
+        }
+        if (!active.activation.activationId.equals(proof.activationId)
+                || active.activation.pathQueryKey.isEmpty()
+                || !active.activation.pathQueryKey.equals(
+                proof.pathQueryKey)
+                || !siteId.equals(proof.siteId)
+                || occurrence != proof.occurrence
+                || observedOutcome != proof.outcome
+                || effectiveOutcome != observedOutcome
+                || overrideApplied) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "proof activation, path, branch, outcome, or override "
+                            + "contract does not match this event");
+        }
+        if (!active.activation.proofMatchesReplayConstraint(proof)) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "proof does not join one exact replay constraint and "
+                            + "prefix/target declaration");
+        }
+        ScheduledTarget target = active.activation.target(siteId,
+                occurrence);
+        if ("TARGET".equals(proof.proofRole)
+                && (target == null
+                || target.desiredOutcome != observedOutcome)
+                || "PREFIX".equals(proof.proofRole)
+                && target != null) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "proof role does not match the exact prefix/target event");
+        }
+        if (!vmAttestation.valid
+                || vmAttestation.conditionIndices.size() != 0
+                || conditions == null || baseline < 0
+                || conditions.size() != baseline) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "target is not an exact zero-PC VM branch event");
+        }
+        if (proof.condition.size() == 0
+                || !proof.conditionSha256.equals(
+                sha256Json(proof.condition))
+                || !exactSatisfiedNullEquality(proof.condition,
+                proof.engineSymbol)) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "proof condition is not the hashed exact reference-null "
+                            + "equality");
+        }
+
+        SymbolizeAction action = active.activation.uniqueAction(
+                proof.inputSymbol);
+        SymbolizeAction declaredAction = active.activation
+                .uniqueDeclaredAction(proof.inputSymbol);
+        if (active.activation.actionCount(proof.inputSymbol) != 1
+                || active.activation.declaredActionCount(
+                proof.inputSymbol) != 1
+                || action == null || declaredAction == null
+                || !action.declaresReferenceInput()
+                || !javaTypeDescriptor(action.javaType).equals(
+                javaTypeDescriptor(declaredAction.javaType))) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "proof input does not have one exact executable declared "
+                            + "reference action");
+        }
+
+        ModelAssignment selected = null;
+        int selectedCount = 0;
+        for (ModelAssignment assignment
+                : active.activation.modelAssignments) {
+            if (proof.modelAssignmentKey.equals(assignment.key)
+                    && proof.engineSymbol.equals(assignment.engineSymbol)
+                    && proof.inputSymbol.equals(assignment.inputSymbol)
+                    && proof.targetActionSha256.equals(
+                    assignment.targetActionSha256)
+                    && assignment.exactNullReferenceModel(action)) {
+                selected = assignment;
+                selectedCount++;
+            }
+        }
+        if (selectedCount != 1 || selected == null
+                || !active.activation.modelAssignmentKeysUnique
+                || active.exactAppliedNullRows(selected) != 1) {
+            return ConcreteGuardCertification.invalid(proof,
+                    "proof requires one matching planned NULL assignment "
+                            + "and one exact applied-row witness");
+        }
+        return ConcreteGuardCertification.valid(proof, selected);
+    }
+
+    private static boolean exactSatisfiedNullEquality(
+            JsonObject condition, String engineSymbol) {
+        if (condition == null || engineSymbol == null
+                || engineSymbol.isEmpty()
+                || !"BinaryExpression".equals(string(condition, "_type"))
+                || !"==".equals(string(condition, "_op"))) {
+            return false;
+        }
+        JsonObject left = jsonObject(condition, "_left");
+        JsonObject right = jsonObject(condition, "_right");
+        return exactEngineSymbol(left, engineSymbol) && exactNull(right)
+                || exactNull(left) && exactEngineSymbol(right, engineSymbol);
+    }
+
+    private static boolean exactEngineSymbol(JsonObject expression,
+                                             String engineSymbol) {
+        return expression != null
+                && "SymbolExpression".equals(string(expression, "_type"))
+                && engineSymbol.equals(string(expression, "_exp"));
+    }
+
+    private static boolean exactNull(JsonObject expression) {
+        return expression != null
+                && "SymbolExpression".equals(string(expression, "_type"))
+                && "N".equals(string(expression, "_exp"));
+    }
+
     private static void recordBranchPaused(
             ActiveRegion active, EngineApi api, String method, int unitIndex,
             String expression, int occurrence, boolean observedOutcome,
@@ -4196,6 +4380,7 @@ public final class ConcolicRegionRuntime {
                 conditionCandidates);
         mapping.addProperty("conditionIndex", conditionIndex);
         mapping.addProperty("rawConditionIndex", conditionIndex);
+        mapping.addProperty("engineConditionIndex", conditionIndex);
         mapping.addProperty("mappingPolicy",
                 "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
         mapping.addProperty("vmBranchEventExpected", true);
@@ -4223,9 +4408,6 @@ public final class ConcolicRegionRuntime {
         addBranchPolicyResolution(active, mapping, siteId);
         ScheduledTarget scheduledTarget = active.activation.target(
                 siteId, occurrence);
-        boolean replayValidated = scheduledTarget != null
-                && scheduledTarget.desiredOutcome == observedOutcome
-                && active.hasAppliedSolverReplay();
         mapping.addProperty("scheduledTarget", scheduledTarget != null);
         if (scheduledTarget != null) {
             mapping.addProperty("scheduledDesiredOutcome",
@@ -4274,12 +4456,71 @@ public final class ConcolicRegionRuntime {
             mapping.addProperty("conditionAuthority",
                     "UNRESOLVED_VM_EXACT_BRANCH_EVENT");
         } else if (conditionIndex < 0 && conditionCandidates == 0
-                && replayValidated) {
-            mapping.addProperty("conditionAuthority",
-                    "SCHEDULED_NEGATED_CONDITION_CONCRETE_REPLAY");
-            mapping.addProperty("replayValidation", "PASS");
-            mapping.addProperty("mappingNote",
-                    "modeled reference became concrete null; no new VM PC element");
+                && (scheduledTarget != null
+                || !active.activation.concreteGuardProofs(siteId,
+                occurrence).isEmpty())) {
+            ConcreteGuardCertification certification =
+                    certifyConcreteGuard(active, vmAttestation, siteId,
+                            occurrence, observedOutcome, effectiveOutcome,
+                            overrideApplied, conditions, baseline);
+            if (certification.valid) {
+                ConcreteGuardReplayProof proof = certification.proof;
+                mapping.addProperty("certifiedConcreteGuard", true);
+                mapping.addProperty("conditionAuthority",
+                        CERTIFIED_CONCRETE_GUARD_AUTHORITY);
+                mapping.addProperty("concreteGuardCertificateAuthority",
+                        RUNTIME_CONCRETE_GUARD_CERTIFICATE_AUTHORITY);
+                mapping.addProperty("certificateActivationId",
+                        proof.activationId);
+                mapping.addProperty("certificatePathQueryKey",
+                        proof.pathQueryKey);
+                mapping.addProperty("certificateProofRole",
+                        proof.proofRole);
+                mapping.addProperty("certificateSourceConditionIndex",
+                        proof.sourceConditionIndex);
+                mapping.addProperty("certificateConstraintIndex",
+                        proof.constraintIndex);
+                mapping.addProperty(
+                        "certificateExpectedBranchPrefixOrdinal",
+                        proof.expectedBranchPrefixOrdinal);
+                mapping.addProperty("certificateSiteId", proof.siteId);
+                mapping.addProperty("certificateOccurrence",
+                        proof.occurrence);
+                mapping.addProperty("certificateOutcome", proof.outcome);
+                mapping.addProperty("certificateModelAssignmentKey",
+                        certification.assignment.key);
+                mapping.addProperty("certificateEngineSymbol",
+                        proof.engineSymbol);
+                mapping.addProperty("certificateInputSymbol",
+                        proof.inputSymbol);
+                mapping.addProperty("certificateTargetActionSha256",
+                        proof.targetActionSha256);
+                mapping.addProperty("certificateConditionSha256",
+                        proof.conditionSha256);
+                mapping.addProperty("certificateProofAuthority",
+                        proof.authority);
+                mapping.add("condition", copyJsonTree(proof.condition));
+                mapping.addProperty("conditionIndex", -1);
+                mapping.addProperty("rawConditionIndex", -1);
+                mapping.addProperty("engineConditionIndex", -1);
+                mapping.addProperty("replayValidation", "PASS");
+                active.certifiedConcreteGuardProofEvents.add(
+                        proof.siteId + "\u0000" + proof.occurrence);
+                mapping.addProperty("mappingNote",
+                        "exact applied reference-null model produced an "
+                                + "exact VM branch event with an empty PC "
+                                + "suffix for one " + proof.proofRole
+                                + " constraint; no raw VM condition is "
+                                + "claimed");
+            } else {
+                mapping.addProperty("certifiedConcreteGuard", false);
+                mapping.addProperty("mappingWarning",
+                        "concrete guard replay certificate rejected: "
+                                + certification.error);
+                active.addUnresolvedOnce(siteId + "#" + occurrence
+                        + ": concrete guard replay certificate rejected: "
+                        + certification.error);
+            }
         } else if (conditionIndex < 0) {
             mapping.addProperty("mappingWarning",
                     "no newly added target-method condition matches selected branch");
@@ -4737,6 +4978,7 @@ public final class ConcolicRegionRuntime {
             result.addProperty("regionId", active.activation.regionId);
             result.addProperty("rootMethod", active.activation.rootMethod);
             result.addProperty("test", active.activation.test);
+            addActivationReplayEvidence(result, active.activation);
             result.addProperty("invocationOrdinal",
                     active.activation.invocationOrdinal);
             result.addProperty("runtimeThread", active.thread.getName());
@@ -4755,6 +4997,7 @@ public final class ConcolicRegionRuntime {
                                 + ": ARRAY_VALUE_PREPARED_NOT_CONSUMED");
                 active.pendingArrayFieldMaterialization = null;
             }
+            active.validateConcreteGuardProofCoverage();
             active.validateContainerElementFieldCoverage();
             result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
             result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
@@ -4827,6 +5070,7 @@ public final class ConcolicRegionRuntime {
             result.addProperty("rootMethod", active.activation.rootMethod);
             result.addProperty("exitKind", exitKind);
             result.addProperty("exceptionType", safe(exceptionType));
+            addActivationReplayEvidence(result, active.activation);
         }
         if (!result.has("runtimeHeapObservations")) {
             result.add("runtimeHeapObservations",
@@ -4851,6 +5095,7 @@ public final class ConcolicRegionRuntime {
             result.addProperty("regionId", active.activation.regionId);
             result.addProperty("rootMethod", active.activation.rootMethod);
             result.addProperty("test", active.activation.test);
+            addActivationReplayEvidence(result, active.activation);
             result.addProperty("invocationOrdinal",
                     active.activation.invocationOrdinal);
             result.addProperty("runtimeThread", active.thread.getName());
@@ -4871,6 +5116,7 @@ public final class ConcolicRegionRuntime {
                                 + ": ARRAY_VALUE_PREPARED_NOT_CONSUMED");
                 active.pendingArrayFieldMaterialization = null;
             }
+            active.validateConcreteGuardProofCoverage();
             active.validateContainerElementFieldCoverage();
             result.add("unresolvedInputs",
                     GSON.toJsonTree(active.unresolved));
@@ -4943,12 +5189,29 @@ public final class ConcolicRegionRuntime {
             result.addProperty("rootMethod", active.activation.rootMethod);
             result.addProperty("exitKind", exitKind);
             result.addProperty("exceptionType", safe(exceptionType));
+            addActivationReplayEvidence(result, active.activation);
         }
         if (!result.has("runtimeHeapObservations")) {
             result.add("runtimeHeapObservations",
                     active.runtimeHeapObservationsJson());
         }
         appendResult(result);
+    }
+
+    /**
+     * Retains the planner-authored concrete-guard proof in the raw runtime
+     * result.  Importers must be able to join the activation, this immutable
+     * proof, and the runtime certificate instead of trusting a branch mapping
+     * that merely repeats certificate-looking strings.
+     */
+    private static void addActivationReplayEvidence(
+            JsonObject result, Activation activation) {
+        if (result == null || activation == null) return;
+        if (!activation.pathQueryKey.isEmpty()) {
+            result.addProperty("pathQueryKey", activation.pathQueryKey);
+        }
+        result.add("concreteGuardReplayProofs",
+                activation.concreteGuardReplayProofsJson());
     }
 
     private static boolean branchOverrideUsed(List<JsonObject> mappings) {
@@ -5272,6 +5535,14 @@ public final class ConcolicRegionRuntime {
         String type = safe(valueType).toUpperCase();
         String raw = safe(value).trim();
         try {
+            // Reference null must be decided before type-specific String
+            // decoding.  Otherwise a NULL model for a String-typed field is
+            // silently materialized as the four-character string "null".
+            if ((requestedType == null || !requestedType.isPrimitive())
+                    && ("NULL".equals(type)
+                    || "null".equalsIgnoreCase(raw))) {
+                return null;
+            }
             if (requestedType == boolean.class
                     || requestedType == Boolean.class
                     || "BOOL".equals(type)) {
@@ -5308,10 +5579,6 @@ public final class ConcolicRegionRuntime {
             }
             if (requestedType == String.class || "STRING".equals(type)) {
                 return SmtModelValueCodec.decodeString(raw);
-            }
-            if ((requestedType == null || !requestedType.isPrimitive())
-                    && ("NULL".equals(type) || "null".equalsIgnoreCase(raw))) {
-                return null;
             }
         } catch (RuntimeException ignored) {
             return UnsupportedReplayValue.INSTANCE;
@@ -5956,13 +6223,13 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The Zero interpreter records a concrete {@code lcmp}/{@code dcmp}
-     * trichotomy ({@code <}, {@code ==}, or {@code >}) before Jimple consumes
-     * the compare result.  A true Jimple {@code >=} branch is therefore
-     * witnessed by either raw {@code >} or raw {@code ==}.  Both imply the
-     * branch predicate, but negating either raw witness would not flip the
-     * branch.  Admit the implication here and canonicalize the retained
-     * condition to the actual Jimple predicate below.
+     * Soot may describe one selected Jimple edge as {@code >=}/{@code <=}
+     * while the asserted VM relation for that concrete edge is the stronger
+     * {@code >}, {@code <}, or {@code ==}.  Admit only that forward
+     * implication, then canonicalize the retained condition to the actual
+     * Jimple predicate below.  Numeric {@code *cmp*} bytecodes now propagate
+     * their symbolic trichotomy result to the consuming branch; this is not a
+     * fallback to the removed concrete compare-witness mechanism.
      */
     private static boolean observedOperatorImpliesBranch(
             String expected, String observed, boolean nullComparison) {
@@ -6033,6 +6300,12 @@ public final class ConcolicRegionRuntime {
         JsonElement value = object == null ? null : object.get(member);
         return value == null || value.isJsonNull()
                 ? "" : value.getAsString();
+    }
+
+    private static JsonObject jsonObject(JsonObject object, String member) {
+        JsonElement value = object == null ? null : object.get(member);
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : new JsonObject();
     }
 
     private static Configuration configuration() {
@@ -7924,6 +8197,8 @@ public final class ConcolicRegionRuntime {
         private final Set<String> materialized = new LinkedHashSet<>();
         private final Set<String> appliedModelAssignments =
                 new LinkedHashSet<>();
+        private final Set<String> certifiedConcreteGuardProofEvents =
+                new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
         private final Map<Long, PreparedBranch> preparedBranches =
@@ -7977,6 +8252,14 @@ public final class ConcolicRegionRuntime {
             this.thread = thread;
             this.startNanos = startNanos;
             this.engineBacked = !activation.concreteReplayOnly;
+            if (!activation.modelAssignmentKeysUnique) {
+                addUnresolvedOnce("activation has duplicate or empty model "
+                        + "assignment keys");
+            }
+            if (!activation.concreteGuardProofCatalogValid) {
+                addUnresolvedOnce("activation concrete-guard proof catalog "
+                        + "is malformed or has duplicate event identities");
+            }
             registerReceiverArrayRoots();
         }
 
@@ -8932,15 +9215,89 @@ public final class ConcolicRegionRuntime {
 
         private ModelAssignment assignment(SymbolizeAction action,
                                            List<String> path) {
+            if (!activation.modelAssignmentKeysUnique) return null;
+            ModelAssignment selected = null;
             for (ModelAssignment assignment
                     : activation.modelAssignments) {
                 if (assignment.matches(action, path)
                         && !appliedModelAssignments.contains(
                         assignment.key)) {
-                    return assignment;
+                    if (selected != null) {
+                        addUnresolvedOnce(action.symbol
+                                + ": ambiguous model assignments at exact "
+                                + "materialization path");
+                        return null;
+                    }
+                    selected = assignment;
                 }
             }
-            return null;
+            return selected;
+        }
+
+        private int exactAppliedNullRows(ModelAssignment assignment) {
+            if (assignment == null || !assignment.explicitNullModel()) {
+                return 0;
+            }
+            int matches = 0;
+            for (JsonObject row : modelAssignmentsApplied) {
+                Boolean modelIsNull = strictBoolean(row, "modelIsNull");
+                Boolean realDefinition = strictBoolean(row,
+                        "materializeAtRealDefinition");
+                Boolean branchOverride = strictBoolean(row,
+                        "branchOverride");
+                if (assignment.key.equals(strictString(row,
+                        "modelAssignmentKey"))
+                        && assignment.engineSymbol.equals(strictString(row,
+                        "engineSymbol"))
+                        && assignment.inputSymbol.equals(strictString(row,
+                        "inputSymbol"))
+                        && assignment.targetActionSha256.equals(
+                        strictString(row, "targetActionSha256"))
+                        && "NULL".equals(strictString(row, "valueType"))
+                        && "null".equals(strictString(row, "value"))
+                        && "Z3_PATH_FLIP_MODEL".equals(strictString(row,
+                        "authority"))
+                        && Boolean.TRUE.equals(modelIsNull)
+                        && Boolean.TRUE.equals(realDefinition)
+                        && Boolean.FALSE.equals(branchOverride)
+                        && "null".equals(strictString(row,
+                        "concreteValueClass"))
+                        && assignment.target.toString().equals(
+                        jsonObject(row, "target").toString())) {
+                    matches++;
+                }
+            }
+            return matches;
+        }
+
+        private boolean hasAnyAppliedNullRow() {
+            for (JsonObject row : modelAssignmentsApplied) {
+                if ("NULL".equals(strictString(row, "valueType"))
+                        && "null".equals(strictString(row, "value"))
+                        && "null".equals(strictString(row,
+                        "concreteValueClass"))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean hasAppliedExactNullReferenceAssignment(
+                SymbolizeAction action) {
+            if (action == null || !action.declaresReferenceInput()
+                    || !activation.modelAssignmentKeysUnique) {
+                return false;
+            }
+            int matches = 0;
+            for (ModelAssignment assignment
+                    : activation.modelAssignments) {
+                if (assignment.matches(action, null)
+                        && assignment.exactNullReferenceModel(action)
+                        && exactAppliedNullRows(assignment) == 1) {
+                    matches++;
+                }
+            }
+            return matches == 1;
         }
 
         private List<ModelAssignment> fieldAssignments(
@@ -9067,6 +9424,205 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
+         * Proves exact catalog coverage after the replay has finished.  A
+         * NULL assignment may support several different guards, while other
+         * NULL assignments may coexist in the same activation.  Coverage is
+         * therefore one-to-one between required guard events and proofs, and
+         * many-to-one from proofs to an exact applied assignment row.
+         */
+        private void validateConcreteGuardProofCoverage() {
+            if (!hasAnyAppliedNullRow()
+                    && activation.concreteGuardReplayProofs.isEmpty()) {
+                return;
+            }
+            if (!activation.modelAssignmentKeysUnique
+                    || !activation.concreteGuardProofCatalogValid) {
+                addUnresolvedOnce("concrete-guard catalog coverage cannot be "
+                        + "validated with duplicate assignments or proofs");
+                return;
+            }
+            Set<String> requiredEvents = new LinkedHashSet<>();
+            Set<String> replayEvents = new LinkedHashSet<>();
+            for (ModelAssignment assignment
+                    : activation.modelAssignments) {
+                if (exactAppliedNullRows(assignment) == 0) continue;
+                SymbolizeAction action = activation.uniqueAction(
+                        assignment.inputSymbol);
+                if (action == null
+                        || !assignment.exactNullReferenceModel(action)
+                        || exactAppliedNullRows(assignment) != 1) {
+                    addUnresolvedOnce(assignment.key
+                            + ": applied NULL assignment has no unique "
+                            + "exact reference-row witness");
+                    continue;
+                }
+                int matchingNullConstraints = 0;
+                for (int index = 0; index
+                        < activation.pathReplayConstraints.size(); index++) {
+                    JsonElement rawCondition = activation
+                            .pathReplayConstraints.get(index);
+                    if (!rawCondition.isJsonObject()
+                            || !exactSatisfiedNullEquality(
+                            rawCondition.getAsJsonObject(),
+                            assignment.engineSymbol)) {
+                        continue;
+                    }
+                    matchingNullConstraints++;
+                    ExpectedConcreteGuardEvent expected = activation
+                            .replayEventForConstraint(index);
+                    if (expected == null) {
+                        addUnresolvedOnce(assignment.key
+                                + ": NULL replay constraint " + index
+                                + " has no unique prefix/target event");
+                        continue;
+                    }
+                    if (!replayEvents.add(expected.identity())) {
+                        addUnresolvedOnce(expected.siteId + "#"
+                                + expected.occurrence
+                                + ": NULL replay constraint does not map "
+                                + "to one unique branch event");
+                        continue;
+                    }
+                    List<ConcreteGuardReplayProof> proofs = activation
+                            .concreteGuardProofs(expected.siteId,
+                                    expected.occurrence);
+                    if (!expected.proofRequired) {
+                        int exactMappings = exactSymbolicGuardMappings(
+                                expected, rawCondition);
+                        if (exactMappings != 1) {
+                            addUnresolvedOnce(expected.siteId + "#"
+                                    + expected.occurrence
+                                    + ": VM-symbolic NULL guard has "
+                                    + exactMappings + " exact branch/PC "
+                                    + "mappings; expected 1");
+                        }
+                        continue;
+                    }
+                    int exactProofs = 0;
+                    for (ConcreteGuardReplayProof proof : proofs) {
+                        if (proof.structurallyValid
+                                && proof.proofRole.equals(expected.role)
+                                && proof.expectedBranchPrefixOrdinal
+                                == expected.prefixOrdinal
+                                && proof.sourceConditionIndex
+                                == expected.conditionIndex
+                                && proof.constraintIndex == index
+                                && proof.outcome == expected.outcome
+                                && proof.modelAssignmentKey.equals(
+                                assignment.key)
+                                && proof.engineSymbol.equals(
+                                assignment.engineSymbol)
+                                && proof.inputSymbol.equals(
+                                assignment.inputSymbol)
+                                && proof.targetActionSha256.equals(
+                                assignment.targetActionSha256)
+                                && proof.conditionSha256.equals(
+                                sha256Json(proof.condition))
+                                && proof.condition.toString().equals(
+                                rawCondition.toString())) {
+                            exactProofs++;
+                        }
+                    }
+                    if (exactProofs != 1
+                            || !requiredEvents.add(expected.identity())) {
+                        addUnresolvedOnce(expected.siteId + "#"
+                                + expected.occurrence
+                                + ": required NULL concrete-guard event has "
+                                + exactProofs + " exact proofs; expected 1");
+                    }
+                }
+                if (matchingNullConstraints == 0
+                        && activation.expectsPathReplayProofCatalog()) {
+                    addUnresolvedOnce(assignment.key
+                            + ": applied NULL assignment has no exact "
+                            + "reference-null constraint in this path replay");
+                }
+            }
+            for (ConcreteGuardReplayProof proof
+                    : activation.concreteGuardReplayProofs) {
+                String event = proof.siteId + "\u0000" + proof.occurrence;
+                if (!requiredEvents.contains(event)) {
+                    addUnresolvedOnce(proof.siteId + "#" + proof.occurrence
+                            + ": concrete-guard proof has no exact applied "
+                            + "NULL constraint witness");
+                }
+            }
+            for (String event : requiredEvents) {
+                if (!certifiedConcreteGuardProofEvents.contains(event)) {
+                    addUnresolvedOnce(event.replace('\u0000', '#')
+                            + ": required NULL concrete-guard proof was not "
+                            + "consumed by one exact zero-PC VM event");
+                }
+            }
+        }
+
+        private int exactSymbolicGuardMappings(
+                ExpectedConcreteGuardEvent expected,
+                JsonElement replayCondition) {
+            int matches = 0;
+            for (JsonObject mapping : branchMappings) {
+                Integer conditionIndex = strictInteger(mapping,
+                        "conditionIndex", 0);
+                Integer rawConditionIndex = strictInteger(mapping,
+                        "rawConditionIndex", 0);
+                Integer engineConditionIndex = strictInteger(mapping,
+                        "engineConditionIndex", 0);
+                JsonArray vmIndices = array(mapping,
+                        "vmConditionIndices");
+                Integer vmConditionIndex = vmIndices.size() == 1
+                        ? strictInteger(vmIndices.get(0), 0) : null;
+                if (!expected.siteId.equals(string(mapping, "siteId"))
+                        || integer(mapping, "occurrence", -1)
+                        != expected.occurrence
+                        || !Boolean.valueOf(expected.outcome).equals(
+                        strictBoolean(mapping, "observedOutcome"))
+                        || !Boolean.valueOf(expected.outcome).equals(
+                        strictBoolean(mapping, "effectiveOutcome"))
+                        || !Boolean.FALSE.equals(strictBoolean(mapping,
+                        "overrideApplied"))
+                        || !Boolean.TRUE.equals(strictBoolean(mapping,
+                        "vmBranchEventValidated"))
+                        || !"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1"
+                        .equals(string(mapping, "vmBranchEventAuthority"))
+                        || !"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_"
+                        .concat("PC_INDEX").equals(string(mapping,
+                        "mappingPolicy"))
+                        || !"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
+                        .equals(string(mapping, "conditionAuthority"))
+                        || conditionIndex == null || conditionIndex < 0
+                        || !conditionIndex.equals(rawConditionIndex)
+                        || !conditionIndex.equals(engineConditionIndex)
+                        || integer(mapping,
+                        "branchConditionCandidateCount", -1) != 1
+                        || vmConditionIndex == null
+                        || !vmConditionIndex.equals(conditionIndex)
+                        || mapping.get("condition") == null
+                        || !mapping.get("condition").toString().equals(
+                        replayCondition.toString())) {
+                    continue;
+                }
+                Boolean scheduled = strictBoolean(mapping,
+                        "scheduledTarget");
+                if ("TARGET".equals(expected.role)) {
+                    if (!Boolean.TRUE.equals(scheduled)
+                            || !Boolean.valueOf(expected.outcome).equals(
+                            strictBoolean(mapping,
+                                    "scheduledDesiredOutcome"))
+                            || !Boolean.TRUE.equals(strictBoolean(mapping,
+                            "scheduledOutcomeMatched"))) {
+                        continue;
+                    }
+                } else if (!Boolean.FALSE.equals(scheduled)
+                        || mapping.has("scheduledDesiredOutcome")
+                        || mapping.has("scheduledOutcomeMatched")) {
+                    continue;
+                }
+                matches++;
+            }
+            return matches;
+        }
+
+        /**
          * Owner-wide field hooks may legitimately observe unrelated objects,
          * so a zero identity match is ignored at the hook.  This activation
          * boundary is the complementary fail-closed check: every exact static
@@ -9181,6 +9737,7 @@ public final class ConcolicRegionRuntime {
                                            List<String> path,
                                            Object concreteValue) {
             appliedModelAssignments.add(assignment.key);
+            row.addProperty("modelAssignmentKey", assignment.key);
             row.addProperty("appliedAt", location);
             row.addProperty("branchOverride", false);
             row.addProperty("concreteValueClass", concreteValue == null
@@ -9790,6 +10347,16 @@ public final class ConcolicRegionRuntime {
             return javaTypeDescriptor(javaType).startsWith("[");
         }
 
+        private boolean declaresReferenceInput() {
+            String descriptor = javaTypeDescriptor(javaType);
+            return descriptor.startsWith("L") || descriptor.startsWith("[");
+        }
+
+        private boolean declaresJavaString() {
+            return "Ljava/lang/String;".equals(
+                    javaTypeDescriptor(javaType));
+        }
+
         private DeclaredArrayInputType exactLeafArrayType(
                 Object owner, String field, List<String> actualPath) {
             Set<String> candidates = new LinkedHashSet<>();
@@ -10065,6 +10632,33 @@ public final class ConcolicRegionRuntime {
                     actualUnitIndex))
                     && (cell.contains(exactSignature)
                     || field.equals(exactSignature));
+        }
+
+        /**
+         * Reconstructs the activation's logical path for an exact getstatic
+         * materialization.  The runtime hook observes the consumed primitive
+         * value rather than mutating process-global state, but model matching
+         * must still use the same declared field path that the solver bound.
+         */
+        private List<String> exactStaticFieldPath(
+                String signature, String actualField) {
+            String exactSignature = safe(signature);
+            String[] declaration = declaredField(exactSignature);
+            if (declaration == null
+                    || !declaration[2].equals(safe(actualField))
+                    || fieldPath.size() != 1
+                    || !fieldPath.get(0).equals(actualField)
+                    || !accessField.equals(actualField)
+                    || !accessFieldSignature.isEmpty()
+                    && !accessFieldSignature.equals(exactSignature)
+                    || !accessOwnerClass.isEmpty()
+                    && !accessOwnerClass.equals(declaration[0])
+                    || !javaType.isEmpty()
+                    && !javaTypeDescriptor(javaType).equals(
+                    javaTypeDescriptor(declaration[1]))) {
+                return null;
+            }
+            return Collections.singletonList(actualField);
         }
 
         private boolean matchesField(String actualMethod,
@@ -10676,6 +11270,7 @@ public final class ConcolicRegionRuntime {
                         + "IDENTITY_REBIND_V1";
         private final String key;
         private final String engineSymbol;
+        private final String solverSymbol;
         private final String inputSymbol;
         private final String baseInputSymbol;
         private final String valueType;
@@ -10730,10 +11325,19 @@ public final class ConcolicRegionRuntime {
         private final String dynamicReplayRebindingAuthority;
         private final boolean sourceEntrySelectorRetained;
         private final boolean legacyUniqueFieldTarget;
+        private final boolean materializeAtRealDefinition;
+        private final boolean modelIsNull;
+        private final boolean modelIsNullDeclared;
+        private final String nullnessSolverSymbol;
+        private final String nullableStringEncodingAuthority;
+        private final String referenceNullnessEncodingAuthority;
+        private final JsonObject target;
+        private final String targetActionSha256;
         private final List<String> path = new ArrayList<>();
 
         private ModelAssignment(JsonObject json) {
             this.engineSymbol = string(json, "engineSymbol");
+            this.solverSymbol = string(json, "solverSymbol");
             this.inputSymbol = string(json, "inputSymbol");
             this.baseInputSymbol = string(json, "baseInputSymbol");
             this.valueType = string(json, "valueType");
@@ -10855,6 +11459,20 @@ public final class ConcolicRegionRuntime {
                     "sourceEntrySelectorRetained", true);
             this.legacyUniqueFieldTarget = bool(json,
                     "legacyUniqueFieldTarget", false);
+            this.materializeAtRealDefinition = bool(json,
+                    "materializeAtRealDefinition", false);
+            Boolean declaredModelIsNull = strictBoolean(json,
+                    "modelIsNull");
+            this.modelIsNullDeclared = declaredModelIsNull != null;
+            this.modelIsNull = Boolean.TRUE.equals(declaredModelIsNull);
+            this.nullnessSolverSymbol = string(json,
+                    "nullnessSolverSymbol");
+            this.nullableStringEncodingAuthority = string(json,
+                    "nullableStringEncodingAuthority");
+            this.referenceNullnessEncodingAuthority = string(json,
+                    "referenceNullnessEncodingAuthority");
+            this.target = copyJsonTree(jsonObject(json, "target"));
+            this.targetActionSha256 = sha256Json(this.target);
             for (JsonElement element : array(json,
                     "materializationPath")) {
                 if (element.isJsonPrimitive()) path.add(
@@ -10862,6 +11480,41 @@ public final class ConcolicRegionRuntime {
             }
             this.key = firstNonBlank(dynamicBindingId, engineSymbol,
                     inputSymbol + ":" + joinFieldPath(path));
+        }
+
+        private boolean exactNullReferenceModel(SymbolizeAction action) {
+            if (action == null || !action.declaresReferenceInput()
+                    || !"NULL".equalsIgnoreCase(valueType)
+                    || !"null".equalsIgnoreCase(value)
+                    || !"Z3_PATH_FLIP_MODEL".equals(authority)
+                    || !materializeAtRealDefinition
+                    || engineSymbol.isEmpty() || solverSymbol.isEmpty()
+                    || inputSymbol.isEmpty()
+                    || !inputSymbol.equals(action.symbol)
+                    || !inputSymbol.equals(string(target, "symbol"))) {
+                return false;
+            }
+            String targetJavaType = firstNonBlank(
+                    string(target, "javaType"),
+                    string(target, "inputJavaType"));
+            if (targetJavaType.isEmpty()
+                    || !javaTypeDescriptor(action.javaType).equals(
+                    javaTypeDescriptor(targetJavaType))) {
+                return false;
+            }
+            if (!modelIsNull || nullnessSolverSymbol.isEmpty()) {
+                return false;
+            }
+            return action.declaresJavaString()
+                    ? NULLABLE_STRING_ENCODING_AUTHORITY.equals(
+                    nullableStringEncodingAuthority)
+                    : REFERENCE_NULLNESS_ENCODING_AUTHORITY.equals(
+                    referenceNullnessEncodingAuthority);
+        }
+
+        private boolean explicitNullModel() {
+            return "NULL".equalsIgnoreCase(valueType)
+                    && "null".equalsIgnoreCase(value);
         }
 
         private boolean matches(SymbolizeAction action,
@@ -11256,6 +11909,7 @@ public final class ConcolicRegionRuntime {
 
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
+            result.addProperty("modelAssignmentKey", key);
             result.addProperty("engineSymbol", engineSymbol);
             result.addProperty("inputSymbol", inputSymbol);
             if (!baseInputSymbol.isEmpty()) {
@@ -11264,6 +11918,29 @@ public final class ConcolicRegionRuntime {
             result.addProperty("valueType", valueType);
             result.addProperty("value", value);
             result.addProperty("authority", authority);
+            result.add("target", copyJsonTree(target));
+            result.addProperty("targetActionSha256", targetActionSha256);
+            // This field is an attestation, not a truthy-only option.  A
+            // nullable reference model explicitly distinguishes non-null
+            // (false) from an absent/malformed nullness decision.  Preserve
+            // the declaration exactly so replay admission can compare the
+            // planned and applied assignment cores without weakening either
+            // side of that boundary.
+            if (modelIsNullDeclared) {
+                result.addProperty("modelIsNull", modelIsNull);
+            }
+            if (!nullnessSolverSymbol.isEmpty()) {
+                result.addProperty("nullnessSolverSymbol",
+                        nullnessSolverSymbol);
+            }
+            if (!nullableStringEncodingAuthority.isEmpty()) {
+                result.addProperty("nullableStringEncodingAuthority",
+                        nullableStringEncodingAuthority);
+            }
+            if (!referenceNullnessEncodingAuthority.isEmpty()) {
+                result.addProperty("referenceNullnessEncodingAuthority",
+                        referenceNullnessEncodingAuthority);
+            }
             if (!modelOperation.isEmpty()) {
                 result.addProperty("modelOperation", modelOperation);
             }
@@ -11387,7 +12064,8 @@ public final class ConcolicRegionRuntime {
             if (legacyUniqueFieldTarget) {
                 result.addProperty("legacyUniqueFieldTarget", true);
             }
-            result.addProperty("materializeAtRealDefinition", true);
+            result.addProperty("materializeAtRealDefinition",
+                    materializeAtRealDefinition);
             return result;
         }
     }
@@ -11484,16 +12162,252 @@ public final class ConcolicRegionRuntime {
         private final String siteId;
         private final int occurrence;
         private final boolean desiredOutcome;
+        private final boolean concreteGuardReplayProofRequired;
+        private final boolean concreteGuardReplayProofMarkerValid;
 
         private ScheduledTarget(JsonObject json) {
             this.siteId = string(json, "siteId");
             this.occurrence = Math.max(1, integer(json, "occurrence", 1));
             this.desiredOutcome = bool(json, "desiredOutcome", false);
+            Boolean proofRequired = strictBoolean(json,
+                    "concreteGuardReplayProofRequired");
+            this.concreteGuardReplayProofMarkerValid = !json.has(
+                    "concreteGuardReplayProofRequired")
+                    || proofRequired != null;
+            // Missing is the legacy, fail-closed interpretation: a NULL
+            // guard needs a certificate.  New worklist rows always carry the
+            // exact boolean and may explicitly select the ordinary VM-PC
+            // route with false.
+            this.concreteGuardReplayProofRequired = proofRequired == null
+                    || proofRequired;
         }
 
         private boolean matches(String actualSiteId, int actualOccurrence) {
             return siteId.equals(actualSiteId)
                     && occurrence == actualOccurrence;
+        }
+    }
+
+    private static final class ExpectedConcreteGuardEvent {
+        private final String role;
+        private final int prefixOrdinal;
+        private final String siteId;
+        private final int occurrence;
+        private final boolean outcome;
+        private final int conditionIndex;
+        private final boolean proofRequired;
+
+        private ExpectedConcreteGuardEvent(String role, int prefixOrdinal,
+                                           String siteId, int occurrence,
+                                           boolean outcome,
+                                           int conditionIndex,
+                                           boolean proofRequired) {
+            this.role = safe(role);
+            this.prefixOrdinal = prefixOrdinal;
+            this.siteId = safe(siteId);
+            this.occurrence = occurrence;
+            this.outcome = outcome;
+            this.conditionIndex = conditionIndex;
+            this.proofRequired = proofRequired;
+        }
+
+        private String identity() {
+            return siteId + "\u0000" + occurrence;
+        }
+    }
+
+    private static final class ConcreteGuardReplayProof {
+        private final boolean structurallyValid;
+        private final String structuralError;
+        private final int schemaVersion;
+        private final String kind;
+        private final String authority;
+        private final String activationId;
+        private final String pathQueryKey;
+        private final String proofRole;
+        private final int sourceConditionIndex;
+        private final int constraintIndex;
+        private final int expectedBranchPrefixOrdinal;
+        private final String siteId;
+        private final int occurrence;
+        private final boolean outcome;
+        private final String modelAssignmentKey;
+        private final String engineSymbol;
+        private final String inputSymbol;
+        private final String targetActionSha256;
+        private final JsonObject condition;
+        private final String conditionSha256;
+        private final boolean requiresExactVmBranchEvent;
+        private final boolean requiresZeroPathConditionSuffix;
+        private final boolean requiresUniqueAppliedNullModelAssignment;
+        private final boolean branchOverrideProhibited;
+
+        private ConcreteGuardReplayProof(JsonObject json) {
+            Integer parsedSchema = strictInteger(json, "schemaVersion", 0);
+            Integer parsedSourceIndex = strictInteger(json,
+                    "sourceConditionIndex", 0);
+            Integer parsedConstraintIndex = strictInteger(json,
+                    "constraintIndex", 0);
+            Integer parsedPrefixOrdinal = strictInteger(json,
+                    "expectedBranchPrefixOrdinal", -1);
+            Integer parsedOccurrence = strictInteger(json, "occurrence", 1);
+            Boolean parsedOutcome = strictBoolean(json, "outcome");
+            Boolean parsedExactEvent = strictBoolean(json,
+                    "requiresExactVmBranchEvent");
+            Boolean parsedZeroSuffix = strictBoolean(json,
+                    "requiresZeroPathConditionSuffix");
+            Boolean parsedUniqueNull = strictBoolean(json,
+                    "requiresUniqueAppliedNullModelAssignment");
+            Boolean parsedNoOverride = strictBoolean(json,
+                    "branchOverrideProhibited");
+            this.schemaVersion = parsedSchema == null ? -1 : parsedSchema;
+            this.kind = strictString(json, "kind");
+            this.authority = strictString(json, "authority");
+            this.activationId = strictString(json, "activationId");
+            this.pathQueryKey = strictString(json, "pathQueryKey");
+            this.proofRole = strictString(json, "proofRole");
+            this.sourceConditionIndex = parsedSourceIndex == null
+                    ? -1 : parsedSourceIndex;
+            this.constraintIndex = parsedConstraintIndex == null
+                    ? -1 : parsedConstraintIndex;
+            this.expectedBranchPrefixOrdinal = parsedPrefixOrdinal == null
+                    ? Integer.MIN_VALUE : parsedPrefixOrdinal;
+            this.siteId = strictString(json, "siteId");
+            this.occurrence = parsedOccurrence == null
+                    ? -1 : parsedOccurrence;
+            this.outcome = parsedOutcome != null && parsedOutcome;
+            this.modelAssignmentKey = strictString(json,
+                    "modelAssignmentKey");
+            this.engineSymbol = strictString(json, "engineSymbol");
+            this.inputSymbol = strictString(json, "inputSymbol");
+            this.targetActionSha256 = strictString(json,
+                    "targetActionSha256");
+            this.condition = copyJsonTree(jsonObject(json, "condition"));
+            this.conditionSha256 = strictString(json, "conditionSha256");
+            this.requiresExactVmBranchEvent = parsedExactEvent != null
+                    && parsedExactEvent;
+            this.requiresZeroPathConditionSuffix = parsedZeroSuffix != null
+                    && parsedZeroSuffix;
+            this.requiresUniqueAppliedNullModelAssignment =
+                    parsedUniqueNull != null && parsedUniqueNull;
+            this.branchOverrideProhibited = parsedNoOverride != null
+                    && parsedNoOverride;
+            this.structurallyValid = parsedSchema != null
+                    && parsedSourceIndex != null
+                    && parsedConstraintIndex != null
+                    && parsedPrefixOrdinal != null
+                    && parsedOccurrence != null && parsedOutcome != null
+                    && parsedExactEvent != null && parsedZeroSuffix != null
+                    && parsedUniqueNull != null && parsedNoOverride != null
+                    && !kind.isEmpty() && !authority.isEmpty()
+                    && !activationId.isEmpty() && !pathQueryKey.isEmpty()
+                    && ("PREFIX".equals(proofRole)
+                    && expectedBranchPrefixOrdinal >= 0
+                    || "TARGET".equals(proofRole)
+                    && expectedBranchPrefixOrdinal == -1)
+                    && !siteId.isEmpty() && occurrence > 0
+                    && !modelAssignmentKey.isEmpty()
+                    && !engineSymbol.isEmpty() && !inputSymbol.isEmpty()
+                    && targetActionSha256.matches("[0-9a-f]{64}")
+                    && condition.size() > 0
+                    && conditionSha256.matches("[0-9a-f]{64}");
+            this.structuralError = structurallyValid ? ""
+                    : "proof contains missing, malformed, or non-canonical "
+                    + "catalog fields";
+        }
+
+        private ConcreteGuardReplayProof(String error) {
+            this.structurallyValid = false;
+            this.structuralError = safe(error);
+            this.schemaVersion = -1;
+            this.kind = "";
+            this.authority = "";
+            this.activationId = "";
+            this.pathQueryKey = "";
+            this.proofRole = "";
+            this.sourceConditionIndex = -1;
+            this.constraintIndex = -1;
+            this.expectedBranchPrefixOrdinal = Integer.MIN_VALUE;
+            this.siteId = "";
+            this.occurrence = -1;
+            this.outcome = false;
+            this.modelAssignmentKey = "";
+            this.engineSymbol = "";
+            this.inputSymbol = "";
+            this.targetActionSha256 = "";
+            this.condition = new JsonObject();
+            this.conditionSha256 = "";
+            this.requiresExactVmBranchEvent = false;
+            this.requiresZeroPathConditionSuffix = false;
+            this.requiresUniqueAppliedNullModelAssignment = false;
+            this.branchOverrideProhibited = false;
+        }
+
+        private static ConcreteGuardReplayProof malformed(String error) {
+            return new ConcreteGuardReplayProof(error);
+        }
+
+        private JsonObject toJson() {
+            JsonObject result = new JsonObject();
+            result.addProperty("schemaVersion", schemaVersion);
+            result.addProperty("kind", kind);
+            result.addProperty("authority", authority);
+            result.addProperty("activationId", activationId);
+            result.addProperty("pathQueryKey", pathQueryKey);
+            result.addProperty("proofRole", proofRole);
+            result.addProperty("sourceConditionIndex",
+                    sourceConditionIndex);
+            result.addProperty("constraintIndex", constraintIndex);
+            result.addProperty("expectedBranchPrefixOrdinal",
+                    expectedBranchPrefixOrdinal);
+            result.addProperty("siteId", siteId);
+            result.addProperty("occurrence", occurrence);
+            result.addProperty("outcome", outcome);
+            result.addProperty("modelAssignmentKey", modelAssignmentKey);
+            result.addProperty("engineSymbol", engineSymbol);
+            result.addProperty("inputSymbol", inputSymbol);
+            result.addProperty("targetActionSha256", targetActionSha256);
+            result.add("condition", copyJsonTree(condition));
+            result.addProperty("conditionSha256", conditionSha256);
+            result.addProperty("requiresExactVmBranchEvent",
+                    requiresExactVmBranchEvent);
+            result.addProperty("requiresZeroPathConditionSuffix",
+                    requiresZeroPathConditionSuffix);
+            result.addProperty("requiresUniqueAppliedNullModelAssignment",
+                    requiresUniqueAppliedNullModelAssignment);
+            result.addProperty("branchOverrideProhibited",
+                    branchOverrideProhibited);
+            return result;
+        }
+    }
+
+    private static final class ConcreteGuardCertification {
+        private final boolean valid;
+        private final String error;
+        private final ConcreteGuardReplayProof proof;
+        private final ModelAssignment assignment;
+
+        private ConcreteGuardCertification(
+                boolean valid, String error,
+                ConcreteGuardReplayProof proof,
+                ModelAssignment assignment) {
+            this.valid = valid;
+            this.error = safe(error);
+            this.proof = proof;
+            this.assignment = assignment;
+        }
+
+        private static ConcreteGuardCertification valid(
+                ConcreteGuardReplayProof proof,
+                ModelAssignment assignment) {
+            return new ConcreteGuardCertification(true, "", proof,
+                    assignment);
+        }
+
+        private static ConcreteGuardCertification invalid(
+                ConcreteGuardReplayProof proof, String error) {
+            return new ConcreteGuardCertification(false, error, proof,
+                    null);
         }
     }
 
@@ -11966,6 +12880,7 @@ public final class ConcolicRegionRuntime {
         private final String test;
         private final String rootMethod;
         private final String observedRootMethod;
+        private final String pathQueryKey;
         private final int invocationOrdinal;
         private final RootContextSelector rootContextSelector;
         private final RootArgumentSelector rootArgumentSelector;
@@ -11991,6 +12906,14 @@ public final class ConcolicRegionRuntime {
                 mapValueElementFieldProjections;
         private final List<OutputCaptureRequest> outputCaptures;
         private final ScheduledTarget targetBranch;
+        private final JsonArray expectedBranchPrefix;
+        private final JsonArray pathReplayConstraints;
+        private final JsonObject pathReplayNegatedCondition;
+        private final int pathReplayTargetConditionIndex;
+        private final List<ConcreteGuardReplayProof>
+                concreteGuardReplayProofs;
+        private boolean concreteGuardProofCatalogValid = true;
+        private boolean modelAssignmentKeysUnique = true;
 
         private Activation(JsonObject json) {
             this.activationId = string(json, "activationId");
@@ -11998,6 +12921,7 @@ public final class ConcolicRegionRuntime {
             this.test = string(json, "test");
             this.rootMethod = string(json, "rootMethod");
             this.observedRootMethod = string(json, "observedRootMethod");
+            this.pathQueryKey = string(json, "pathQueryKey");
             this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
             this.rootContextSelector = RootContextSelector.from(json);
             this.rootArgumentSelector = RootArgumentSelector.from(json);
@@ -12046,6 +12970,48 @@ public final class ConcolicRegionRuntime {
             JsonElement target = json.get("targetBranch");
             this.targetBranch = target != null && target.isJsonObject()
                     ? new ScheduledTarget(target.getAsJsonObject()) : null;
+            if (targetBranch != null
+                    && !targetBranch.concreteGuardReplayProofMarkerValid) {
+                concreteGuardProofCatalogValid = false;
+            }
+            this.expectedBranchPrefix = copyJsonTree(array(json,
+                    "expectedBranchPrefix"));
+            for (JsonElement expected : expectedBranchPrefix) {
+                if (expected.isJsonObject()
+                        && expected.getAsJsonObject().has(
+                        "concreteGuardReplayProofRequired")
+                        && strictBoolean(expected.getAsJsonObject(),
+                        "concreteGuardReplayProofRequired") == null) {
+                    concreteGuardProofCatalogValid = false;
+                }
+            }
+            this.pathReplayConstraints = copyJsonTree(array(json,
+                    "pathReplayConstraints"));
+            this.pathReplayNegatedCondition = copyJsonTree(jsonObject(json,
+                    "pathReplayNegatedCondition"));
+            this.pathReplayTargetConditionIndex = integer(json,
+                    "pathReplayTargetConditionIndex", -1);
+            this.concreteGuardReplayProofs = new ArrayList<>();
+            for (JsonElement proof : array(json,
+                    "concreteGuardReplayProofs")) {
+                if (proof.isJsonObject()) {
+                    concreteGuardReplayProofs.add(
+                            new ConcreteGuardReplayProof(
+                                    proof.getAsJsonObject()));
+                } else {
+                    concreteGuardReplayProofs.add(
+                            ConcreteGuardReplayProof.malformed(
+                                    "catalog member is not an object"));
+                }
+            }
+            Set<String> proofEvents = new LinkedHashSet<>();
+            for (ConcreteGuardReplayProof proof
+                    : concreteGuardReplayProofs) {
+                String event = proof.siteId + "\u0000" + proof.occurrence;
+                if (!proof.structurallyValid || !proofEvents.add(event)) {
+                    concreteGuardProofCatalogValid = false;
+                }
+            }
             JsonArray materializations = array(json, "materializations");
             JsonArray declaredActions = array(json, "symbolize");
             for (JsonElement element : declaredActions) {
@@ -12100,6 +13066,13 @@ public final class ConcolicRegionRuntime {
                             && !assignment.valueType.isEmpty()) {
                         modelAssignments.add(assignment);
                     }
+                }
+            }
+            Set<String> assignmentKeys = new LinkedHashSet<>();
+            for (ModelAssignment assignment : modelAssignments) {
+                if (assignment.key.isEmpty()
+                        || !assignmentKeys.add(assignment.key)) {
+                    modelAssignmentKeysUnique = false;
                 }
             }
             // Keep every declared union member, including malformed ones.  A
@@ -12269,6 +13242,115 @@ public final class ConcolicRegionRuntime {
             return targetBranch != null
                     && targetBranch.matches(siteId, occurrence)
                     ? targetBranch : null;
+        }
+
+        private List<ConcreteGuardReplayProof> concreteGuardProofs(
+                String siteId, int occurrence) {
+            List<ConcreteGuardReplayProof> matches = new ArrayList<>();
+            for (ConcreteGuardReplayProof proof
+                    : concreteGuardReplayProofs) {
+                if (proof.siteId.equals(safe(siteId))
+                        && proof.occurrence == occurrence) {
+                    matches.add(proof);
+                }
+            }
+            return matches;
+        }
+
+        private boolean expectsPathReplayProofCatalog() {
+            return !pathQueryKey.isEmpty() && targetBranch != null
+                    && pathReplayTargetConditionIndex >= 0;
+        }
+
+        private ExpectedConcreteGuardEvent replayEventForConstraint(
+                int conditionIndex) {
+            if (conditionIndex == pathReplayTargetConditionIndex
+                    && targetBranch != null) {
+                return new ExpectedConcreteGuardEvent("TARGET", -1,
+                        targetBranch.siteId, targetBranch.occurrence,
+                        targetBranch.desiredOutcome, conditionIndex,
+                        targetBranch.concreteGuardReplayProofRequired);
+            }
+            ExpectedConcreteGuardEvent match = null;
+            for (int ordinal = 0; ordinal
+                    < expectedBranchPrefix.size(); ordinal++) {
+                JsonElement raw = expectedBranchPrefix.get(ordinal);
+                if (!raw.isJsonObject()) return null;
+                JsonObject row = raw.getAsJsonObject();
+                Integer sourceIndex = strictInteger(row,
+                        "conditionIndex", 0);
+                if (sourceIndex == null
+                        || sourceIndex != conditionIndex) continue;
+                Integer occurrence = strictInteger(row,
+                        "occurrence", 1);
+                Boolean outcome = strictBoolean(row, "outcome");
+                Boolean proofRequired = strictBoolean(row,
+                        "concreteGuardReplayProofRequired");
+                String siteId = strictString(row, "siteId");
+                if (occurrence == null || outcome == null
+                        || row.has("concreteGuardReplayProofRequired")
+                        && proofRequired == null
+                        || siteId.isEmpty() || match != null) {
+                    return null;
+                }
+                match = new ExpectedConcreteGuardEvent("PREFIX", ordinal,
+                        siteId, occurrence, outcome, conditionIndex,
+                        proofRequired == null || proofRequired);
+            }
+            return match;
+        }
+
+        private boolean proofMatchesReplayConstraint(
+                ConcreteGuardReplayProof proof) {
+            if (proof == null || proof.constraintIndex < 0
+                    || proof.constraintIndex
+                    >= pathReplayConstraints.size()
+                    || !proof.condition.toString().equals(
+                    pathReplayConstraints.get(proof.constraintIndex)
+                            .toString())) {
+                return false;
+            }
+            if ("TARGET".equals(proof.proofRole)) {
+                return proof.expectedBranchPrefixOrdinal == -1
+                        && proof.sourceConditionIndex
+                        == pathReplayTargetConditionIndex
+                        && proof.constraintIndex
+                        == pathReplayTargetConditionIndex
+                        && proof.condition.toString().equals(
+                        pathReplayNegatedCondition.toString());
+            }
+            if (!"PREFIX".equals(proof.proofRole)
+                    || proof.expectedBranchPrefixOrdinal < 0
+                    || proof.expectedBranchPrefixOrdinal
+                    >= expectedBranchPrefix.size()) {
+                return false;
+            }
+            JsonElement rawExpected = expectedBranchPrefix.get(
+                    proof.expectedBranchPrefixOrdinal);
+            if (!rawExpected.isJsonObject()) return false;
+            JsonObject expected = rawExpected.getAsJsonObject();
+            Integer sourceIndex = strictInteger(expected,
+                    "conditionIndex", 0);
+            Integer occurrence = strictInteger(expected,
+                    "occurrence", 1);
+            Boolean outcome = strictBoolean(expected, "outcome");
+            return sourceIndex != null && occurrence != null
+                    && outcome != null
+                    && proof.sourceConditionIndex == sourceIndex
+                    && proof.constraintIndex == sourceIndex
+                    && proof.siteId.equals(strictString(expected,
+                    "siteId"))
+                    && proof.occurrence == occurrence
+                    && proof.outcome == outcome;
+        }
+
+        private JsonArray concreteGuardReplayProofsJson() {
+            JsonArray result = new JsonArray();
+            for (ConcreteGuardReplayProof proof
+                    : concreteGuardReplayProofs) {
+                result.add(proof.toJson());
+            }
+            return result;
         }
 
         private OutputCaptureRequest callArgumentCapture(
@@ -12780,7 +13862,10 @@ public final class ConcolicRegionRuntime {
 
     private static Integer strictInteger(JsonObject object, String field,
                                          int minimum) {
-        JsonElement value = object.get(field);
+        return strictInteger(object.get(field), minimum);
+    }
+
+    private static Integer strictInteger(JsonElement value, int minimum) {
         if (value == null || !value.isJsonPrimitive()
                 || !value.getAsJsonPrimitive().isNumber()) {
             return null;
@@ -12795,5 +13880,12 @@ public final class ConcolicRegionRuntime {
         } catch (NumberFormatException ignored) {
             return null;
         }
+    }
+
+    private static Boolean strictBoolean(JsonObject object, String field) {
+        JsonElement value = object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean()
+                ? value.getAsBoolean() : null;
     }
 }

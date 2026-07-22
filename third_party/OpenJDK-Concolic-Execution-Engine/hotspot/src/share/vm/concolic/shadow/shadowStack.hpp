@@ -48,6 +48,9 @@ public:
         && _s_frames.back()->symbolic_tracking_enabled();
   }
 
+  const ZeroFrame *marker_owner_frame() const;
+  bool is_current_frame(const ZeroFrame *frame) const;
+
   /**
    * get index-th ShadowFrame from top
    * no inline here, for debugging

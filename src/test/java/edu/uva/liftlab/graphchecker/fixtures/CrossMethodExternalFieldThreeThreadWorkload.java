@@ -71,10 +71,12 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
 
         public int compute(Boolean enabled, int baseInput,
                            String routeInput) {
-            if (enabled == null || routeInput == null) {
-                throw new IllegalArgumentException(
-                        "producer inputs must be non-null");
-            }
+            // Null is a legitimate concolic branch value in this robustness
+            // fixture.  Return a deterministic non-bug sentinel so either
+            // null edge still reaches publishA and preserves the workload's
+            // producer/consumer protocol during an unforced replay.
+            if (enabled == null) return -20;
+            if (routeInput == null) return -20;
             return firstHop(enabled, baseInput, routeInput);
         }
 

@@ -196,6 +196,150 @@ final class JavaPrimitiveSmtSemantics {
         return null;
     }
 
+    /**
+     * Lowers one Java primitive conversion without introducing a fresh SMT
+     * value.  The source and target descriptors are part of the operation's
+     * semantics: the common SMT {@code Int} transport sort alone cannot
+     * distinguish {@code l2i}, {@code i2b}, and {@code i2l}.
+     *
+     * <p>The returned term implements the JVM conversion instructions (and
+     * the corresponding JLS narrowing conversions) exactly.  Integral
+     * narrowing retains the low bits, IEEE-754 conversions use round-to-
+     * nearest/ties-to-even, and floating-to-integral conversion uses Java's
+     * NaN-zero, round-toward-zero, and saturation rules.  {@code null} means
+     * the descriptor pair is not a supported primitive conversion.</p>
+     */
+    static String primitiveCast(String value, String sourceJavaType,
+                                String targetJavaType) {
+        String source = primitiveDescriptor(sourceJavaType);
+        String target = primitiveTargetDescriptor(targetJavaType, source);
+        if (value == null || !primitiveNumericDescriptor(source)
+                || !primitiveNumericDescriptor(target)) {
+            return null;
+        }
+        if (source.equals(target)) return value;
+
+        boolean sourceIntegral = integralDescriptor(source);
+        boolean targetIntegral = integralDescriptor(target);
+        if (sourceIntegral && targetIntegral) {
+            return integralCast(value, source, target);
+        }
+
+        FloatingKind sourceFloating = floatingKindOfJavaType(source);
+        FloatingKind targetFloating = floatingKindOfJavaType(target);
+        if (sourceIntegral && targetFloating != FloatingKind.NONE) {
+            return integralToFloating(value, targetFloating);
+        }
+        if (sourceFloating != FloatingKind.NONE
+                && targetFloating != FloatingKind.NONE) {
+            return floatingConversion(value, sourceFloating,
+                    targetFloating);
+        }
+        if (sourceFloating != FloatingKind.NONE && targetIntegral
+                && ("I".equals(target) || "J".equals(target))) {
+            return floatingToIntegral(value, sourceFloating, target);
+        }
+        return null;
+    }
+
+    /** Normalizes source descriptors emitted by both old and current VMs. */
+    static String primitiveDescriptor(String javaType) {
+        String type = javaType == null ? ""
+                : javaType.trim().replace('.', '/');
+        if ("boolean".equals(type)) return "Z";
+        if ("byte".equals(type)) return "B";
+        if ("char".equals(type)) return "C";
+        if ("short".equals(type)) return "S";
+        if ("int".equals(type)) return "I";
+        if ("long".equals(type)) return "J";
+        if ("float".equals(type)) return "F";
+        if ("double".equals(type)) return "D";
+        // Do not rewrite reference descriptors: diagnostics and legacy
+        // readers rely on their exact L...; spelling.
+        return type;
+    }
+
+    /**
+     * Normalizes a cast target while preserving compatibility with the old
+     * VM's ambiguous bare {@code L} spelling for primitive long.
+     */
+    static String primitiveTargetDescriptor(String javaType,
+                                            String sourceDescriptor) {
+        String target = primitiveDescriptor(javaType);
+        return "L".equals(target)
+                && primitiveNumericDescriptor(sourceDescriptor)
+                ? "J" : target;
+    }
+
+    static boolean primitiveNumericDescriptor(String descriptor) {
+        return descriptor != null && descriptor.length() == 1
+                && "BCSIJFD".contains(descriptor);
+    }
+
+    private static boolean integralDescriptor(String descriptor) {
+        return descriptor != null && descriptor.length() == 1
+                && "BCSIJ".contains(descriptor);
+    }
+
+    private static String integralCast(String value, String source,
+                                       String target) {
+        if ("B".equals(target)) return signedLowBits(value, 8);
+        if ("C".equals(target)) return "(mod " + value + " 65536)";
+        if ("S".equals(target)) return signedLowBits(value, 16);
+        if ("I".equals(target)) {
+            return "J".equals(source) ? "(java_int_wrap " + value + ")"
+                    : value;
+        }
+        if ("J".equals(target)) {
+            // Every B/C/S/I value is exactly representable as a Java long.
+            return value;
+        }
+        return null;
+    }
+
+    private static String signedLowBits(String value, int width) {
+        long modulus = 1L << width;
+        long half = modulus >>> 1;
+        return "(- (mod (+ " + value + " " + half + ") " + modulus
+                + ") " + half + ")";
+    }
+
+    private static String floatingToIntegral(String value,
+                                             FloatingKind source,
+                                             String target) {
+        final int width;
+        final String lower;
+        final String upper;
+        final String modulus;
+        if ("I".equals(target)) {
+            width = 32;
+            lower = "(- 2147483648)";
+            upper = "2147483647";
+            modulus = "4294967296";
+        } else if ("J".equals(target)) {
+            width = 64;
+            lower = "(- 9223372036854775808)";
+            upper = "9223372036854775807";
+            modulus = "18446744073709551616";
+        } else {
+            return null;
+        }
+
+        String lowerFloating = integralToFloating(lower, source);
+        String upperFloating = integralToFloating(upper, source);
+        String bits = "((_ fp.to_sbv " + width + ") RTZ " + value + ")";
+        String signedInteger = "(let ((java_cast_bits " + bits + "))"
+                + " (ite (= ((_ extract " + (width - 1) + " "
+                + (width - 1) + ") java_cast_bits) #b1)"
+                + " (- (bv2int java_cast_bits) " + modulus + ")"
+                + " (bv2int java_cast_bits)))";
+        return "(ite (fp.isNaN " + value + ") 0"
+                + " (ite (fp.geq " + value + " " + upperFloating + ") "
+                + upper + " (ite (fp.leq " + value + " "
+                + lowerFloating + ") " + lower + " " + signedInteger
+                + ")))";
+    }
+
     private static String floatingParserLiteral(String value) {
         String lower = value.toLowerCase(Locale.ROOT);
         if ("nan".equals(lower) || "+nan".equals(lower)

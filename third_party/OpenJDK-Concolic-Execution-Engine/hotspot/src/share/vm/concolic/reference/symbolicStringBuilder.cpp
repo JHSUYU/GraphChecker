@@ -183,32 +183,44 @@ Expression *
 SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
   BasicType type = handle.get_result_type();
   Expression *exp = NULL;
-  oop obj = handle.get_result<oop>(type);
+  oop result = type == T_OBJECT ? handle.get_result<oop>(type) : NULL;
 
   const std::string &callee_name = handle.get_callee_name();
   if (callee_name == "append") {
-    SymStrBuilder *sym_res_strBuilder =
-        (SymStrBuilder *)ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
     exp_list_t string_exp_list;
     add_to_string_for_param_list(handle, string_exp_list);
-    sym_res_strBuilder->set_ref_exp(
-        new OpStrExpression("concat", string_exp_list));
+    exp = new OpStrExpression("concat", string_exp_list);
+    SymStrBuilder *sym_res_strBuilder =
+        (SymStrBuilder *)ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
+    if (sym_res_strBuilder != NULL) {
+      // append mutates the receiver, so updating its object state is
+      // intentional; the same expression also travels on the return edge.
+      sym_res_strBuilder->set_ref_exp(exp);
+    }
   } else if (callee_name == "toString") {
-    SymString *sym_res_str =
-        (SymString *)ConcolicMngr::ctx->alloc_sym_inst(obj);
-    oop obj = handle.get_param<oop>(0);
-    SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
-    sym_res_str->set_ref_exp(sym_inst->get_ref_exp());
+    oop receiver = handle.get_param<oop>(0);
+    SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(receiver);
+    exp = sym_inst == NULL ? NULL : sym_inst->get_ref_exp();
+    if (exp != NULL && result != NULL && result != receiver
+        && !ConcolicMngr::ctx->requires_detached_object_shadow(result)) {
+      SymString *sym_res_str = (SymString *)
+          ConcolicMngr::ctx->get_or_alloc_sym_inst(result);
+      if (sym_res_str != NULL) {
+        sym_res_str->set_ref_exp(exp);
+      }
+    }
+  } else {
+    exp = new OpStrExpression(callee_name, handle.get_param_list());
   }
   return exp;
 }
 
 Expression *SymStrBuilder::get_exp_of(oop obj) {
-  if (obj->is_symbolic()) {
-    return ConcolicMngr::ctx->get_sym_inst(obj)->get_ref_exp();
-  } else {
-    return new ConStringSymbolExp(obj);
-  }
+  if (obj == NULL) return SymbolExpression::get(Sym_NULL);
+  SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+  return sym_inst == NULL
+      ? static_cast<Expression *>(new ConStringSymbolExp(obj))
+      : sym_inst->get_ref_exp();
 }
 
 #endif

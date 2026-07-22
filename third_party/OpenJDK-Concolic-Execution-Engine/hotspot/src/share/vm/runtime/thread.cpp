@@ -29,6 +29,7 @@
 #include "classfile/vmSymbols.hpp"
 #include "code/scopeDesc.hpp"
 #include "compiler/compileBroker.hpp"
+#include "concolic/concolicMngr.hpp"
 #include "interpreter/interpreter.hpp"
 #include "interpreter/linkResolver.hpp"
 #include "interpreter/oopMapCache.hpp"
@@ -1732,6 +1733,12 @@ void JavaThread::exit(bool destroy_vm, ExitType exit_type) {
   HandleMark hm(this);
   Handle uncaught_exception(this, this->pending_exception());
   this->clear_pending_exception();
+#ifdef ENABLE_CONCOLIC
+  // No Java region frame can execute after JavaThread::exit begins.  Mark an
+  // unclosed context terminal before uncaught-exception callbacks enter Java;
+  // final destruction remains below at the owner-thread cleanup boundary.
+  ConcolicMngr::abortCurrentContext("OWNER_JAVA_THREAD_EXIT");
+#endif
   Handle threadObj(this, this->threadObj());
   assert(threadObj.not_null(), "Java thread object should be created");
 
@@ -1853,6 +1860,16 @@ void JavaThread::exit(bool destroy_vm, ExitType exit_type) {
   } else {
     // before_exit() has already posted JVMTI THREAD_END events
   }
+
+#ifdef ENABLE_CONCOLIC
+  // A region owner can terminate by exception without executing its Java
+  // finish hook.  ShadowStack marks such a context terminal before this
+  // method dispatches uncaught-exception/Thread.exit Java callbacks, so those
+  // callbacks run with tracking disabled.  This owner-thread VM boundary is
+  // then the safe place to destroy the abandoned context and release the
+  // process-global concolic mutex.
+  ConcolicMngr::cleanupAbandonedContext(this);
+#endif
 
   // Notify waiters on thread object. This has to be done after exit() is called
   // on the thread (if the thread is the last thread in a daemon ThreadGroup the

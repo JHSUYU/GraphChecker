@@ -21,6 +21,62 @@ import static org.junit.Assert.fail;
 
 public class ConcolicComposedModelProjectorTest {
     @Test
+    public void nullableDynamicStringModelUsesCompanionForOneAssignment()
+            throws Exception {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("solverSort", "String");
+        binding.addProperty("baseInputSymbol", "REGION.A.in.0");
+        binding.add("fieldPath", new JsonArray());
+        ConcolicComposedModelProjector.DynamicTermProjection projection =
+                new ConcolicComposedModelProjector.DynamicTermProjection(
+                        binding, "raw.string", "string_content",
+                        "string_is_null", "", new JsonObject());
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("string_content", "\"payload\"");
+        values.put("string_is_null", "true");
+
+        JsonObject nullAssignment = ConcolicComposedModelProjector
+                .dynamicScalarAssignment(projection, values);
+        assertEquals("NULL", nullAssignment.get("valueType").getAsString());
+        assertEquals("null", nullAssignment.get("value").getAsString());
+        assertEquals("true", nullAssignment.get(
+                "nullnessModelValue").getAsString());
+        assertEquals("\"payload\"", nullAssignment.get(
+                "contentModelValue").getAsString());
+
+        values.put("string_is_null", "false");
+        JsonObject stringAssignment = ConcolicComposedModelProjector
+                .dynamicScalarAssignment(projection, values);
+        assertEquals("STRING", stringAssignment.get(
+                "valueType").getAsString());
+        assertEquals("\"payload\"", stringAssignment.get(
+                "value").getAsString());
+    }
+
+    @Test
+    public void nullableDynamicStringWithoutCompanionModelFailsClosed()
+            throws Exception {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("solverSort", "String");
+        binding.addProperty("baseInputSymbol", "REGION.A.in.0");
+        binding.add("fieldPath", new JsonArray());
+        ConcolicComposedModelProjector.DynamicTermProjection projection =
+                new ConcolicComposedModelProjector.DynamicTermProjection(
+                        binding, "raw.string", "string_content",
+                        "string_is_null", "", new JsonObject());
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("string_content", "\"payload\"");
+        try {
+            ConcolicComposedModelProjector.dynamicScalarAssignment(
+                    projection, values);
+            fail("missing String nullness model must fail closed");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains(
+                    "DYNAMIC_STRING_NULLNESS_MODEL_INVALID"));
+        }
+    }
+
+    @Test
     public void mergedSelectorModelChoosesExactlyOneSourceSummary()
             throws Exception {
         JsonObject composition = compositionManifest(

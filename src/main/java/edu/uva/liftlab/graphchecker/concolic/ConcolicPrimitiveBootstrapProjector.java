@@ -45,6 +45,8 @@ import java.util.regex.Pattern;
  * activation rows.</p>
  */
 public final class ConcolicPrimitiveBootstrapProjector {
+    private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
+            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final String DYNAMIC_CONTAINER_FIELD_KIND =
             "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
     private static final String DYNAMIC_MAP_ENTRY_FIELD_KIND =
@@ -172,6 +174,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
         int projectedPrimitiveInputCount = 0;
         int supplementalPrimitiveAssignmentCount = 0;
         int existentialNonBooleanRootAssignmentCount = 0;
+        int nullableStringAssignmentCount = 0;
+        int nullStringAssignmentCount = 0;
         for (Map.Entry<String, List<Map.Entry<String, JsonObject>>>
                 regionEntry : rootsByRegion.entrySet()) {
             String region = regionEntry.getKey();
@@ -245,15 +249,39 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 String valueType = scalarPrimitiveValueType(action, mapping,
                         port, string(scalarRoot, "javaType"),
                         string(scalarRoot, "javaTypeDescriptor"));
+                String nullnessSolverTerm = canonicalNullnessProjectionTerm(
+                        mapping);
+                String nullnessModelValue = "";
+                if ("STRING".equals(valueType)) {
+                    nullnessModelValue = values.get(nullnessSolverTerm);
+                    if (!("true".equals(nullnessModelValue)
+                            || "false".equals(nullnessModelValue))) {
+                        throw gap("Z3_STRING_NULLNESS_VALUE_INVALID:"
+                                + port + ":" + nullnessModelValue);
+                    }
+                    if ("true".equals(nullnessModelValue)) {
+                        valueType = "NULL";
+                    }
+                }
                 String floatingDescriptor = scalarFloatingDescriptor(action,
                         mapping, string(scalarRoot, "javaType"),
                         string(scalarRoot, "javaTypeDescriptor"));
-                String normalizedValue = normalizePrimitiveModelValue(
-                        valueType, modelValue, port, floatingDescriptor);
+                String normalizedValue = "NULL".equals(valueType) ? "null"
+                        : normalizePrimitiveModelValue(valueType, modelValue,
+                        port, floatingDescriptor);
                 String actionIdentity = actionIdentitySha256(action);
                 JsonObject modelAssignment = primitiveModelAssignment(mapping,
                         port, valueType, normalizedValue, action,
                         actionIdentity);
+                if (!nullnessSolverTerm.isEmpty()) {
+                    addNullableStringModelProvenance(modelAssignment,
+                            nullnessSolverTerm, nullnessModelValue,
+                            solverTerm, modelValue);
+                    nullableStringAssignmentCount++;
+                    if ("true".equals(nullnessModelValue)) {
+                        nullStringAssignmentCount++;
+                    }
+                }
                 if (!floatingDescriptor.isEmpty()) {
                     modelAssignment.addProperty("floatingPointFormat",
                             floatingDescriptor);
@@ -271,6 +299,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 JsonObject projection = projectedInputManifest(region, port,
                         selectedCase, mapping, solverTerm, normalizedValue,
                         action, actionIdentity);
+                if (!nullnessSolverTerm.isEmpty()) {
+                    addNullableStringModelProvenance(projection,
+                            nullnessSolverTerm, nullnessModelValue,
+                            solverTerm, modelValue);
+                }
                 if (scalarRoots.present) {
                     projection.addProperty("projectionRole",
                             "EXISTENTIAL_NON_BOOLEAN_ROOT");
@@ -377,6 +410,16 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 projectedPrimitiveInputCount);
         manifest.addProperty("supplementalPrimitiveAssignmentCount",
                 supplementalPrimitiveAssignmentCount);
+        manifest.addProperty("nullableJavaStringModeled",
+                nullableStringAssignmentCount > 0);
+        manifest.addProperty("nullableStringAssignmentCount",
+                nullableStringAssignmentCount);
+        manifest.addProperty("nullStringAssignmentCount",
+                nullStringAssignmentCount);
+        if (nullableStringAssignmentCount > 0) {
+            manifest.addProperty("nullableStringEncodingAuthority",
+                    NULLABLE_STRING_ENCODING_AUTHORITY);
+        }
         manifest.add("supplementalPrimitiveAssignments",
                 supplementalManifest);
         manifest.addProperty("selectedProducerCaseCount", caseManifest.size());
@@ -683,6 +726,10 @@ public final class ConcolicPrimitiveBootstrapProjector {
             String descriptor = string(root, "javaTypeDescriptor");
             String solverTerm = string(root, "solverTerm");
             String solverSort = string(root, "solverSort");
+            String nullnessSolverTerm = string(root,
+                    "nullnessSolverTerm");
+            boolean stringRoot = "String".equals(solverSort)
+                    && "Ljava/lang/String;".equals(descriptor);
             if (port.isEmpty() || region.isEmpty()
                     || !port.startsWith(region + ".in.")
                     || booleanRootPorts.contains(port)
@@ -691,6 +738,12 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     || bool(root, "upstreamSupplied", true)
                     || !safeSmtAtom(solverTerm)
                     || !solverTerms.add(solverTerm)
+                    || stringRoot && (!safeSmtAtom(nullnessSolverTerm)
+                    || !solverTerms.add(nullnessSolverTerm)
+                    || !"Bool".equals(string(root,
+                    "nullnessSolverSort"))
+                    || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                    root, "nullableStringEncodingAuthority")))
                     || !scalarDescriptorMatchesSort(descriptor, solverSort)
                     || string(root, "cell").isEmpty()
                     || string(root, "javaType").isEmpty()
@@ -838,6 +891,12 @@ public final class ConcolicPrimitiveBootstrapProjector {
             throw gap("MISSING_CASE_INPUT_MAPPING:" + port);
         }
         String canonical = canonicalProjectionTerm(selected);
+        if ("STRING".equals(string(selected, "sort"))
+                && (!safeSmtAtom(canonicalNullnessProjectionTerm(selected))
+                || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                selected, "nullableStringEncodingAuthority")))) {
+            throw gap("CASE_STRING_NULLNESS_MAPPING_NOT_EXACT:" + port);
+        }
         if (!string(selected, "solverTerm").equals(canonical)
                 && !exactDynamicCanonicalBridge(pathCase, selected, port,
                 canonical, smt)) {
@@ -868,6 +927,15 @@ public final class ConcolicPrimitiveBootstrapProjector {
                             + string(mapping, "canonicalPort"));
                 }
                 result.add(term);
+                String nullness = canonicalNullnessProjectionTerm(mapping);
+                if ("STRING".equals(string(mapping, "sort"))) {
+                    if (!safeSmtAtom(nullness)) {
+                        throw gap("CANONICAL_STRING_NULLNESS_TERM_IS_NOT_"
+                                + "AN_ATOM:" + string(mapping,
+                                "canonicalPort"));
+                    }
+                    result.add(nullness);
+                }
             }
         }
         return result;
@@ -916,11 +984,17 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     ? "FLOAT32" : "(_ FloatingPoint 11 53)".equals(
                     solverSort) ? "FLOAT64" : "String".equals(solverSort)
                     ? "STRING" : "";
+            String rootNullness = string(root, "nullnessSolverTerm");
+            String mappingNullness = canonicalNullnessProjectionTerm(mapping);
             if (!scalarCanonicalMapping(mapping)
                     || !string(root, "solverTerm").equals(solverTerm)
                     || !solverSort.equals(string(mapping, "solverSort"))
                     || !expectedMappingSort.equals(string(mapping,
-                    "sort"))) {
+                    "sort"))
+                    || "STRING".equals(expectedMappingSort)
+                    && (!rootNullness.equals(mappingNullness)
+                    || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                    mapping, "nullableStringEncodingAuthority")))) {
                 throw gap("EXISTENTIAL_SCALAR_ROOT_MAPPING_MISMATCH:"
                         + port);
             }
@@ -953,12 +1027,35 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 string(mapping, "solverTerm"));
     }
 
-    private static boolean exactDynamicCanonicalBridge(
+    private static String canonicalNullnessProjectionTerm(
+            JsonObject mapping) {
+        if (!"STRING".equals(string(mapping, "sort"))) return "";
+        return firstNonBlank(string(mapping,
+                "canonicalNullnessSolverTerm"), string(mapping,
+                "nullnessSolverTerm"));
+    }
+
+    static boolean exactDynamicCanonicalBridge(
             JsonObject pathCase, JsonObject mapping, String port,
             String canonical, String smt) {
         String actual = string(mapping, "solverTerm");
+        String sort = string(mapping, "sort");
+        String solverSort = string(mapping, "solverSort");
+        String suffix = "INT".equals(sort) && "Int".equals(solverSort)
+                ? "int" : "FLOAT32".equals(sort)
+                && "(_ FloatingPoint 8 24)".equals(solverSort)
+                ? "float32" : "FLOAT64".equals(sort)
+                && "(_ FloatingPoint 11 53)".equals(solverSort)
+                ? "float64" : "STRING".equals(sort)
+                && "String".equals(solverSort) ? "string" : "";
+        boolean stringTerm = "STRING".equals(sort);
+        String actualNullness = string(mapping, "nullnessSolverTerm");
+        String canonicalNullness = canonicalNullnessProjectionTerm(mapping);
         String guard = string(mapping, "canonicalBridgeGuard");
-        String expression = "(= " + actual + " " + canonical + ")";
+        String expression = stringTerm
+                ? "(and (= " + actual + " " + canonical + ") (= "
+                + actualNullness + " " + canonicalNullness + "))"
+                : "(= " + actual + " " + canonical + ")";
         String formula = "(=> " + guard + " " + expression + ")";
         String assertionName = string(mapping,
                 "canonicalBridgeAssertionName");
@@ -968,12 +1065,15 @@ public final class ConcolicPrimitiveBootstrapProjector {
         if (actual.isEmpty() || canonical.isEmpty()
                 || actual.equals(canonical)
                 || !safeSmtAtom(actual) || !safeSmtAtom(canonical)
+                || suffix.isEmpty()
                 || !canonical.equals("sym__port__" + smtName(port)
-                + "__int")
+                + "__" + suffix)
+                || stringTerm && (!safeSmtAtom(actualNullness)
+                || !safeSmtAtom(canonicalNullness)
+                || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                mapping, "nullableStringEncodingAuthority")))
                 || !port.equals(string(mapping, "canonicalPort"))
                 || !port.startsWith(string(pathCase, "regionId") + ".in.")
-                || !"INT".equals(string(mapping, "sort"))
-                || !"Int".equals(string(mapping, "solverSort"))
                 || !guard.equals(string(pathCase,
                 "selectorSolverSymbol"))
                 || assertionName.isEmpty()
@@ -1008,10 +1108,15 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return selected != null
                 && port.equals(string(selected, "baseInputSymbol"))
                 && actual.equals(string(selected, "solverTerm"))
+                && (!stringTerm || actualNullness.equals(string(selected,
+                "nullnessSolverTerm")))
                 && string(mapping, "rawEngineSymbol").equals(string(selected,
                 "fieldExpressionRawEngineSymbol"))
                 && bool(selected, "complete", false)
                 && bool(selected, "observationMatched", false)
+                && (!stringTerm
+                || NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                selected, "nullableStringEncodingAuthority")))
                 && "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM".equals(string(
                 selected, "termBindingAuthority"));
     }
@@ -1749,6 +1854,18 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 actionIdentity);
         result.add("materializationActionIdentity", actionIdentity(action));
         return result;
+    }
+
+    private static void addNullableStringModelProvenance(
+            JsonObject target, String nullnessSolverTerm,
+            String nullnessModelValue, String contentSolverTerm,
+            String contentModelValue) {
+        target.addProperty("nullnessSolverTerm", nullnessSolverTerm);
+        target.addProperty("nullnessModelValue", nullnessModelValue);
+        target.addProperty("contentSolverTerm", contentSolverTerm);
+        target.addProperty("contentModelValue", contentModelValue);
+        target.addProperty("nullableStringEncodingAuthority",
+                NULLABLE_STRING_ENCODING_AUTHORITY);
     }
 
     private static void retainDynamicLeafSelector(JsonObject assignment,
@@ -2493,6 +2610,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
             Set<String> result = new LinkedHashSet<>();
             for (JsonObject root : byPort.values()) {
                 result.add(string(root, "solverTerm"));
+                String nullness = string(root, "nullnessSolverTerm");
+                if (!nullness.isEmpty()) result.add(nullness);
             }
             return result;
         }

@@ -54,14 +54,15 @@ public:
 ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
     : _thread(jt), _s_stack(jt), _sym_rid_counter(), _sym_tmp_id_counter(),
       _path_condition_enabled(true), _path_condition_pause_depth(0),
+      _aborted(false),
       _context_id(context_id),
       _owner_java_thread_id(jt == NULL || jt->threadObj() == NULL
           ? 0 : java_lang_Thread::thread_id(jt->threadObj())),
       _owner_os_thread_id(jt == NULL || jt->osthread() == NULL
           ? 0 : (jlong) jt->osthread()->thread_id()),
       _branch_sequence(0), _pending_branch_active(false),
-      _pending_branch_event_id(0), _pending_branch_occurrence(0),
-      _pending_compare_condition_index(-1) {
+      _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
+      _pending_branch_occurrence(0) {
   init_sym_rid_counter();
   init_sym_tmp_id_counter();
 
@@ -69,25 +70,47 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
   SymbolExpression::init_single_instances();
 }
 
+void ThreadContext::abort_symbolic_execution(const char *reason) {
+  if (_aborted) {
+    return;
+  }
+  _aborted = true;
+  _abort_reason = reason == NULL ? "UNSPECIFIED" : reason;
+  _path_condition_enabled = false;
+  cancel_pending_branch();
+}
+
 jlong ThreadContext::mark_branch(const char *site_id, int occurrence) {
   // A malformed/missed after-hook must not let an old marker authorize a
   // later branch.  Replacing the single pending slot is deterministic and
   // fail-closed: only the newly returned id can be claimed by Java.
+  const ZeroFrame *owner_frame = _s_stack.marker_owner_frame();
+  if (owner_frame == NULL) {
+    cancel_pending_branch();
+    return 0;
+  }
   _pending_branch_event_id = ++_branch_sequence;
   _pending_branch_site_id = site_id == NULL ? "" : site_id;
   _pending_branch_occurrence = occurrence;
+  _pending_branch_owner_frame = owner_frame;
   _pending_branch_active = true;
   return _pending_branch_event_id;
 }
 
-void ThreadContext::record_compare_witness(Expression *expression) {
-  if (!_path_condition_enabled || _path_condition_pause_depth > 0
-      || expression == NULL) {
-    return;
+void ThreadContext::cancel_pending_branch() {
+  _pending_branch_active = false;
+  _pending_branch_event_id = 0;
+  _pending_branch_owner_frame = NULL;
+  _pending_branch_site_id.clear();
+  _pending_branch_occurrence = 0;
+}
+
+void ThreadContext::cancel_pending_branch_for_frame(
+    const ZeroFrame *owner_frame) {
+  if (_pending_branch_active && owner_frame != NULL
+      && _pending_branch_owner_frame == owner_frame) {
+    cancel_pending_branch();
   }
-  // lcmp/fcmp/dcmp materialize their symbolic trichotomy before the following
-  // if bytecode.  Retain the exact index until that conditional executes.
-  _pending_compare_condition_index = _path_condition.add(expression);
 }
 
 void ThreadContext::record_branch_condition(Expression *expression,
@@ -101,7 +124,11 @@ void ThreadContext::record_branch_condition(Expression *expression,
 
 void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
                                               bool outcome, int opcode) {
-  if (!_path_condition_enabled || _path_condition_pause_depth > 0) {
+  if (_aborted || !_path_condition_enabled
+      || _path_condition_pause_depth > 0) {
+    // A marker identifies one concrete branch execution, not the next branch
+    // after recording happens to resume.
+    cancel_pending_branch();
     return;
   }
 
@@ -112,7 +139,12 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     }
   }
 
-  if (_pending_branch_active) {
+  // The VM marker is issued through a native System call.  Only a branch in
+  // its non-native Java caller may claim it.  Nested accessors are allowed to
+  // return a symbolic guard value, but their own implementation branches (or
+  // Throwable construction branches) are unrelated to the marked site.
+  if (_pending_branch_active
+      && _s_stack.is_current_frame(_pending_branch_owner_frame)) {
     BranchEvent event;
     event.event_id = _pending_branch_event_id;
     event.context_id = _context_id;
@@ -125,21 +157,11 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     event.outcome = outcome;
     event.opcode = opcode;
     event.code_position = get_current_code_pos();
-    if (!direct_indices.empty()) {
-      event.condition_indices = direct_indices;
-    } else if (_pending_compare_condition_index >= 0) {
-      event.condition_indices.push_back(_pending_compare_condition_index);
-    }
+    event.condition_indices = direct_indices;
     _branch_events.push_back(event);
-    _pending_branch_active = false;
-    _pending_branch_event_id = 0;
-    _pending_branch_site_id.clear();
-    _pending_branch_occurrence = 0;
+    cancel_pending_branch();
   }
 
-  // A compare witness belongs only to the immediately following conditional,
-  // whether or not that branch had a Soot marker.
-  _pending_compare_condition_index = -1;
 }
 
 std::string ThreadContext::get_branch_events() const {
@@ -152,7 +174,11 @@ std::string ThreadContext::get_branch_events() const {
   writer.Key("kind");
   writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
   writer.Key("active");
-  writer.Bool(true);
+  writer.Bool(!_aborted);
+  writer.Key("aborted");
+  writer.Bool(_aborted);
+  writer.Key("abortReason");
+  writer.String(_abort_reason.c_str());
   writer.Key("contextId");
   writer.Int64(_context_id);
   writer.Key("ownerJavaThreadId");
@@ -221,6 +247,18 @@ ThreadContext::~ThreadContext() {
   }
   _array_store.clear();
 
+  // DetachedObjectStore does not own its SymInstance values.  Release its GC
+  // roots before deleting the instances from SymStore so no stale oop can be
+  // resolved during the remaining teardown.
+  DetachedObjectStore::iterator detached_it;
+  for (detached_it = _detached_object_store.begin();
+       detached_it != _detached_object_store.end(); ++detached_it) {
+    guarantee(detached_it->second != NULL,
+              "Detached symbolic object should not be null");
+    JNIHandles::destroy_global(detached_it->first);
+  }
+  _detached_object_store.clear();
+
   for (SymStore::iterator iter = _sym_refs.begin(); iter != _sym_refs.end();
        ++iter) {
     guarantee(iter->second != NULL, "Sym instance should not be null");
@@ -240,22 +278,22 @@ ThreadContext::~ThreadContext() {
   VMThread::execute(&restore);
 
   Expression::finalize_dangling_objects();
-  SymString::INTERN_MAP.clear();
   SymStmt::resetGlobalCounter();
 }
 
 SymInstance *ThreadContext::get_or_alloc_sym_inst(oop obj) {
   if (obj == NULL) return NULL;
-  if (obj->is_symbolic()) {
-    return this->get_sym_inst(obj->get_sym_rid());
-  } else {
-    return this->alloc_sym_inst(obj);
-  }
+  SymInstance *existing = find_sym_inst(obj);
+  return existing == NULL ? this->alloc_sym_inst(obj) : existing;
 }
 
 SymInstance *ThreadContext::alloc_sym_inst(oop obj) {
+  if (obj == NULL || obj->is_array()) return NULL;
+  SymInstance *existing = find_sym_inst(obj);
+  if (existing != NULL) return existing;
+
   sym_rid_t sym_rid = get_next_sym_rid();
-  SymInstance *sym_inst;
+  SymInstance *sym_inst = NULL;
   ResourceMark rm;
 
   Symbol *klass_symbol = obj->klass()->name();
@@ -270,15 +308,13 @@ SymInstance *ThreadContext::alloc_sym_inst(oop obj) {
   std::string class_name(klass_symbol->as_C_string());
 //  tty->print_cr("alloc_sym_inst for %s", klass_symbol->as_C_string());
 
+  bool detached_from_oop_header = requires_detached_object_shadow(obj);
   if (klass_symbol->equals(SymString::TYPE_NAME)) {
-    if (OopUtils::is_java_string_interned(obj)) {
-      ResourceMark rm;
-      const char *str = OopUtils::java_string_to_c(obj);
-      tty->print_cr("Unsupported symbolizing behavior of interned String!: [%s]", str);
-      /**
-       * we do not support symbolize interned Java string
-       */
-      return NULL;
+    if (detached_from_oop_header) {
+      // Intern-table entries are VM-global and may be concurrently shared by
+      // unrelated Java code.  Never write this context's sym_rid into that
+      // shared oop.  A ThreadContext-local, GC-stable shadow gives the value a
+      // symbolic identity without changing Java reference/content semantics.
     }
     sym_inst = new SymString(sym_rid);
   } else if (klass_symbol->equals(SymStrBuilder::TYPE_NAME)) {
@@ -316,6 +352,28 @@ SymInstance *ThreadContext::alloc_sym_inst(oop obj) {
   else {
     sym_inst = new SymObj(sym_rid);
   }
+
+  if (sym_inst == NULL) {
+    tty->print_cr("Warning: failed to allocate symbolic object shadow");
+    return NULL;
+  }
+
+  if (detached_from_oop_header) {
+    Handle stable_oop(_thread, obj);
+    jobject stable_handle = JNIHandles::make_global(stable_oop);
+    if (stable_handle == NULL) {
+      // Do not publish a partial shadow.  Callers treat NULL as an
+      // unsupported symbolic value and continue with concrete semantics.
+      delete sym_inst;
+      tty->print_cr("Warning: failed to retain interned String shadow");
+      return NULL;
+    }
+    this->set_sym_ref(sym_rid, sym_inst);
+    _detached_object_store.insert(
+        std::make_pair(stable_handle, sym_inst));
+    return sym_inst;
+  }
+
   obj->set_sym_rid(sym_rid);
   this->set_sym_ref(sym_rid, sym_inst);
 //  _allocated_objs.insert(obj);
@@ -333,10 +391,30 @@ SymInstance *ThreadContext::get_sym_inst(sym_rid_t sym_rid) {
 }
 
 SymInstance *ThreadContext::find_sym_inst(oop obj) const {
-  if (obj == NULL || obj->is_array() || !obj->is_symbolic()) return NULL;
-  SymStore::const_iterator found = _sym_refs.find(obj->get_sym_rid());
-  if (found == _sym_refs.end()) return NULL;
-  return static_cast<SymInstance *>(found->second);
+  if (obj == NULL || obj->is_array()) return NULL;
+  if (obj->is_symbolic()) {
+    SymStore::const_iterator found = _sym_refs.find(obj->get_sym_rid());
+    if (found != _sym_refs.end()) {
+      return static_cast<SymInstance *>(found->second);
+    }
+  }
+  for (DetachedObjectStore::const_iterator found =
+           _detached_object_store.begin();
+       found != _detached_object_store.end(); ++found) {
+    if (JNIHandles::resolve(found->first) == obj) return found->second;
+  }
+  return NULL;
+}
+
+bool ThreadContext::requires_detached_object_shadow(oop obj) const {
+  if (obj == NULL || obj->is_array() || obj->klass() == NULL
+      || obj->klass()->name() == NULL) {
+    return false;
+  }
+  // Keep this policy in ThreadContext so bytecode producers do not need to
+  // know which VM-managed objects are unsafe to annotate in their oop header.
+  return obj->klass()->name()->equals(SymString::TYPE_NAME)
+      && OopUtils::is_java_string_interned(obj);
 }
 
 SymArr *ThreadContext::get_or_alloc_sym_array(arrayOop array,
@@ -554,7 +632,9 @@ PathCondition &ThreadContext::get_path_condition() {
 }
 
 void ThreadContext::set_pc_enabled(bool pathConditionEnabled) {
-  _path_condition_enabled = pathConditionEnabled;
+  if (!_aborted) {
+    _path_condition_enabled = pathConditionEnabled;
+  }
 }
 
 int ThreadContext::pause_path_condition_recording() {

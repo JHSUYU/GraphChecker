@@ -143,6 +143,14 @@ void OpSymExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuff
   writer.Key("_op");
   writer.String(SymbolicOpStr[(int) _op]);
 
+  // JVM lcmp/fcmp*/dcmp* instructions produce an int trichotomy even when
+  // their operands are long/float/double.  Make that result type explicit so
+  // external consumers do not have to recover it from stack shape.
+  if (_op == op_cmp || _op == op_cmpl || _op == op_cmpg) {
+    writer.Key("_java_type");
+    writer.String("I");
+  }
+
   writer.Key("_right");
   if (_right) {
 //    _right->serialize(writer);
@@ -173,6 +181,11 @@ std::string OpSymExpression::get_name() {
     name = name + "null";
   }
   return name;
+}
+
+bool OpSymExpression::is_boolean_expression() {
+  return _op == op_lt || _op == op_gt || _op == op_le || _op == op_ge
+      || _op == op_eq || _op == op_ne || _op == op_land || _op == op_lor;
 }
 
 ConExpression::ConExpression(jboolean z) {
@@ -221,6 +234,10 @@ ConExpression::ConExpression(jdouble d) {
   _type = type2char(T_DOUBLE);
   int ret = sprintf(_str, "Y_D_%.17e", d);
   assert(ret <= EXP_NAME_LENGTH, "SYM_NAME_LENGTH exceeded!");
+}
+
+bool ConExpression::is_boolean_expression() {
+  return _type.size() == 1 && _type[0] == type2char(T_BOOLEAN);
 }
 
 void ConExpression::print() {

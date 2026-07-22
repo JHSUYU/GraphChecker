@@ -7,6 +7,7 @@
 #include "oops/arrayKlass.hpp"
 #include "oops/objArrayOop.hpp"
 #include "oops/typeArrayOop.hpp"
+#include "runtime/thread.hpp"
 #include "webridge/webridgeMngr.hpp"
 #include "utilities/ostream.hpp"
 #include "utilities/vmError.hpp"
@@ -302,6 +303,35 @@ jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
   return result;
 }
 
+void ConcolicMngr::abandonPendingBranchForException(Thread *thread) {
+  if (ctx == NULL || ctx->is_aborted() || thread == NULL
+      || !thread->is_Java_thread()
+      || ctx->get_thread() != (JavaThread *) thread) {
+    return;
+  }
+  // The marker belongs to one concrete conditional execution.  Exception
+  // construction may call Java (notably Throwable.fillInStackTrace), so it
+  // must be invalidated before any such call can consume the marker.
+  ctx->cancel_pending_branch();
+}
+
+void ConcolicMngr::abortCurrentContext(const char *reason) {
+  if (ctx != NULL) {
+    ctx->abort_symbolic_execution(reason);
+  }
+}
+
+void ConcolicMngr::cleanupAbandonedContext(JavaThread *thread) {
+  if (ctx == NULL || thread == NULL || ctx->get_thread() != thread) {
+    return;
+  }
+  ctx->abort_symbolic_execution("OWNER_JAVA_THREAD_EXIT");
+  // This is a safe owner-thread boundary: no concolic Java frame remains and
+  // uncaught-exception callbacks have already completed.  Release the
+  // process-global single-context lock before the JavaThread is destroyed.
+  endConcolic();
+}
+
 std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   using namespace rapidjson;
   StringBuffer buffer;
@@ -311,10 +341,16 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   writer.Int(1);
   writer.Key("active");
   writer.Bool(has_active_context());
+  writer.Key("aborted");
+  writer.Bool(ctx != NULL && ctx->is_aborted());
+  writer.Key("abortReason");
+  writer.String(ctx == NULL ? "" : ctx->get_abort_reason().c_str());
 
   if (!has_active_context() || handle.is_null()) {
     writer.Key("kind");
-    writer.String(handle.is_null() ? "NULL" : "CONCOLIC_DISABLED");
+    writer.String(handle.is_null() ? "NULL"
+        : (ctx != NULL && ctx->is_aborted()
+            ? "CONCOLIC_ABORTED" : "CONCOLIC_DISABLED"));
     writer.Key("symbolic");
     writer.Bool(false);
     writer.EndObject();
@@ -323,7 +359,9 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
 
   oop obj = handle();
   BasicType primitive_type = boxed_primitive_type(obj);
-  bool symbolic = obj->is_symbolic();
+  SymInstance *object_instance = obj->is_array()
+      ? NULL : ctx->find_sym_inst(obj);
+  bool symbolic = object_instance != NULL;
   if (obj->is_array()) {
     arrayOop array = arrayOop(obj);
     BasicType component_type =
@@ -341,9 +379,8 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   } else if (symbolic) {
     writer.Key("kind");
     writer.String("SYMBOLIC_OBJECT");
-    SymInstance *instance = ctx->get_sym_inst(obj);
-    if (instance != NULL) {
-      expression = instance->get_ref_exp();
+    if (object_instance != NULL) {
+      expression = object_instance->get_ref_exp();
     }
   } else {
     expression = concrete_boxed_primitive_expression(obj);
@@ -392,6 +429,15 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.String("openjdk8-zero-concolic");
   writer.Key("active");
   writer.Bool(has_active_context());
+  writer.Key("aborted");
+  writer.Bool(ctx != NULL && ctx->is_aborted());
+  writer.Key("abortReason");
+  writer.String(ctx == NULL ? "" : ctx->get_abort_reason().c_str());
+  writer.Key("complete");
+  writer.Bool(has_active_context());
+  writer.Key("status");
+  writer.String(ctx == NULL ? "INACTIVE"
+      : (ctx->is_aborted() ? "ABORTED" : "ACTIVE"));
   writer.Key("regionId");
   writer.String(ctx == NULL ? "" : ctx->get_region_id().c_str());
   writer.Key("activationId");
@@ -411,7 +457,7 @@ std::string ConcolicMngr::getRegionSummary() {
     writer.EndArray();
   }
   writer.Key("branchEvents");
-  if (has_active_context()) {
+  if (ctx != NULL) {
     std::string branch_events = ctx->get_branch_events();
     writer.RawValue(branch_events.c_str(), branch_events.length(),
                     kObjectType);
@@ -433,7 +479,12 @@ std::string ConcolicMngr::getRegionSummary() {
 }
 
 jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
-  if (ctx == NULL || ctx->path_condition_pause_depth() > 0) {
+  // A marker is meaningful only when the current Java subtree can propagate
+  // symbolic operands.  In particular, reject paused, non-tracking, and
+  // method-symbolized frames rather than leaving a marker that a later frame
+  // could accidentally claim.
+  if (!can_do_concolic()) {
+    if (ctx != NULL) ctx->cancel_pending_branch();
     return 0;
   }
   return ctx->mark_branch(site_id, occurrence);
@@ -449,13 +500,13 @@ std::string ConcolicMngr::getBranchEvents() {
 }
 
 void ConcolicMngr::pausePathConditionRecording() {
-  if (ctx != NULL) {
+  if (has_active_context()) {
     ctx->pause_path_condition_recording();
   }
 }
 
 void ConcolicMngr::resumePathConditionRecording() {
-  if (ctx != NULL) {
+  if (has_active_context()) {
     ctx->resume_path_condition_recording();
   }
 }

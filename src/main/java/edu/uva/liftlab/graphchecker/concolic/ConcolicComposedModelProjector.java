@@ -46,6 +46,8 @@ import java.util.regex.Pattern;
  * emitted plan.</p>
  */
 public final class ConcolicComposedModelProjector {
+    private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
+            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final String TARGET_MAP_STATE = "TARGET_MAP_STATE";
     private static final String LOOKUP_KEY_PRODUCER =
             "LOOKUP_KEY_PRODUCER";
@@ -195,9 +197,14 @@ public final class ConcolicComposedModelProjector {
             valueNames.add(projection.valueSolverTerm);
         }
         List<String> dynamicNames = new ArrayList<>();
+        List<String> dynamicQueryNames = new ArrayList<>();
         List<String> dynamicKeys = new ArrayList<>();
         for (DynamicTermProjection projection : dynamicProjections) {
             dynamicNames.add(projection.solverTerm);
+            dynamicQueryNames.add(projection.solverTerm);
+            if (!projection.nullnessSolverTerm.isEmpty()) {
+                dynamicQueryNames.add(projection.nullnessSolverTerm);
+            }
             if (!projection.concreteEntryKey.isEmpty()) {
                 dynamicKeys.add(projection.concreteEntryKey);
             }
@@ -209,7 +216,7 @@ public final class ConcolicComposedModelProjector {
         queriedSet.addAll(selectorTerms);
         queriedSet.add(targetKeyName);
         queriedSet.addAll(keyNames);
-        queriedSet.addAll(dynamicNames);
+        queriedSet.addAll(dynamicQueryNames);
         List<String> queried = new ArrayList<>(queriedSet);
 
         String solverInput = solverInput(baseSmt, refinements, queried);
@@ -264,9 +271,7 @@ public final class ConcolicComposedModelProjector {
         }
         for (DynamicTermProjection projection : dynamicProjections) {
             assignments.add(dynamicBindings.retainSelector(
-                    dynamicScalarAssignment(projection,
-                            normalizeModelValue(values.get(
-                                    projection.solverTerm))),
+                    dynamicScalarAssignment(projection, values),
                     upstreamActivation));
         }
         List<String> controlledTerms = new ArrayList<>();
@@ -939,6 +944,11 @@ public final class ConcolicComposedModelProjector {
             for (DynamicTermProjection projection
                     : group.dynamicProjections) {
                 group.dynamicNames.add(projection.solverTerm);
+                group.dynamicQueryNames.add(projection.solverTerm);
+                if (!projection.nullnessSolverTerm.isEmpty()) {
+                    group.dynamicQueryNames.add(
+                            projection.nullnessSolverTerm);
+                }
                 group.dynamicKeys.add(projection.concreteEntryKey);
             }
         }
@@ -975,7 +985,7 @@ public final class ConcolicComposedModelProjector {
                         group.spec.groupId);
             }
             queriedSet.addAll(group.keyNames);
-            queriedSet.addAll(group.dynamicNames);
+            queriedSet.addAll(group.dynamicQueryNames);
         }
         List<String> queried = new ArrayList<>(queriedSet);
         String solverInput = solverInput(baseSmt, refinements, queried);
@@ -1046,9 +1056,7 @@ public final class ConcolicComposedModelProjector {
             for (DynamicTermProjection projection
                     : group.dynamicProjections) {
                 group.assignments.add(group.dynamicBindings.retainSelector(
-                        dynamicScalarAssignment(projection,
-                                normalizeModelValue(values.get(
-                                        projection.solverTerm))),
+                        dynamicScalarAssignment(projection, values),
                         group.upstreamActivation));
             }
             List<String> controlled = new ArrayList<>();
@@ -1579,8 +1587,8 @@ public final class ConcolicComposedModelProjector {
         return assignment;
     }
 
-    private static JsonObject dynamicScalarAssignment(
-            DynamicTermProjection projection, String value)
+    static JsonObject dynamicScalarAssignment(
+            DynamicTermProjection projection, Map<String, String> values)
             throws IOException {
         String solverSort = string(projection.binding, "solverSort");
         String valueType;
@@ -1596,24 +1604,52 @@ public final class ConcolicComposedModelProjector {
         else if ("Bool".equals(solverSort)) valueType = "BOOL";
         else if ("String".equals(solverSort)) valueType = "STRING";
         else valueType = "INT";
-        String replayValue = value;
+        String modelValue = normalizeModelValue(values.get(
+                projection.solverTerm));
+        String replayValue = modelValue;
+        String nullnessModelValue = "";
+        if ("String".equals(solverSort)) {
+            nullnessModelValue = normalizeModelValue(values.get(
+                    projection.nullnessSolverTerm));
+            if (!("true".equals(nullnessModelValue)
+                    || "false".equals(nullnessModelValue))) {
+                throw projectionGap("DYNAMIC_STRING_NULLNESS_MODEL_INVALID:"
+                        + projection.nullnessSolverTerm + ":"
+                        + nullnessModelValue);
+            }
+            if ("true".equals(nullnessModelValue)) {
+                valueType = "NULL";
+                replayValue = "null";
+            }
+        }
         if (!floatingDescriptor.isEmpty()) {
             replayValue = SmtModelValueCodec
-                    .floatingPointTermToJavaLiteral(value,
+                    .floatingPointTermToJavaLiteral(modelValue,
                             floatingDescriptor);
             if (replayValue == null) {
                 throw projectionGap("FLOATING_MODEL_TERM_UNSUPPORTED:"
-                        + projection.solverTerm + ":" + value);
+                        + projection.solverTerm + ":" + modelValue);
             }
         }
         JsonObject assignment = assignmentBase(projection.rawEngineSymbol,
                 projection.solverTerm, string(projection.binding,
                         "baseInputSymbol"), valueType, replayValue,
                 projection.targetAction);
+        if (!projection.nullnessSolverTerm.isEmpty()) {
+            assignment.addProperty("nullnessSolverTerm",
+                    projection.nullnessSolverTerm);
+            assignment.addProperty("nullnessModelValue",
+                    nullnessModelValue);
+            assignment.addProperty("contentSolverTerm",
+                    projection.solverTerm);
+            assignment.addProperty("contentModelValue", modelValue);
+            assignment.addProperty("nullableStringEncodingAuthority",
+                    NULLABLE_STRING_ENCODING_AUTHORITY);
+        }
         if (!floatingDescriptor.isEmpty()) {
             assignment.addProperty("floatingPointFormat",
                     floatingDescriptor);
-            assignment.addProperty("modelFloatingPointTerm", value);
+            assignment.addProperty("modelFloatingPointTerm", modelValue);
         }
         assignment.add("materializationPath", array(projection.binding,
                 "fieldPath").deepCopy());
@@ -1684,16 +1720,37 @@ public final class ConcolicComposedModelProjector {
                 throw projectionGap("INCOMPLETE_SELECTED_DYNAMIC_TERM:"
                         + string(binding, "dynamicBindingId"));
             }
-            String mapped = caseSolverTerm(selectedCase, raw,
-                    string(binding, "solverSort"));
+            String bindingSort = string(binding, "solverSort");
+            JsonObject caseMapping = caseSolverMapping(selectedCase, raw,
+                    bindingSort);
+            String mapped = string(caseMapping, "solverTerm");
             if (!solver.equals(mapped)) {
                 throw projectionGap("DYNAMIC_TERM_CATALOG_MISMATCH:"
                         + string(binding, "dynamicBindingId"));
             }
+            String nullnessSolverTerm = "";
+            if ("String".equals(bindingSort)) {
+                nullnessSolverTerm = string(caseMapping,
+                        "nullnessSolverTerm");
+                if (nullnessSolverTerm.isEmpty()
+                        || !nullnessSolverTerm.equals(string(binding,
+                        "nullnessSolverTerm"))
+                        || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                        caseMapping, "nullableStringEncodingAuthority"))
+                        || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                        binding, "nullableStringEncodingAuthority"))) {
+                    throw projectionGap("DYNAMIC_STRING_NULLNESS_CATALOG_"
+                            + "MISMATCH:" + string(binding,
+                            "dynamicBindingId"));
+                }
+            }
             boolean mapEntry = "DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(
                     string(binding, "kind"));
             if (!mapProjection
-                    && !formulaReferencesTerm(selectorGuard, solver)) {
+                    && !formulaReferencesTerm(selectorGuard, solver)
+                    && (nullnessSolverTerm.isEmpty()
+                    || !formulaReferencesTerm(selectorGuard,
+                    nullnessSolverTerm))) {
                 continue;
             }
             if (registry.byDynamic.get(dynamic) == null) {
@@ -1706,6 +1763,11 @@ public final class ConcolicComposedModelProjector {
                 throw projectionGap("DUPLICATE_DYNAMIC_SOLVER_TERM:"
                         + solver);
             }
+            if (!nullnessSolverTerm.isEmpty()
+                    && !solverTerms.add(nullnessSolverTerm)) {
+                throw projectionGap("DUPLICATE_DYNAMIC_SOLVER_TERM:"
+                        + nullnessSolverTerm);
+            }
             if (!concreteKey.isEmpty() && !entryKeys.add(concreteKey)) {
                 throw projectionGap("AMBIGUOUS_DYNAMIC_ENTRY_KEY:"
                         + concreteKey);
@@ -1717,7 +1779,8 @@ public final class ConcolicComposedModelProjector {
                         + base);
             }
             result.add(new DynamicTermProjection(binding.deepCopy(), raw,
-                    solver, concreteKey, target.deepCopy()));
+                    solver, nullnessSolverTerm, concreteKey,
+                    target.deepCopy()));
         }
         return result;
     }
@@ -1761,6 +1824,14 @@ public final class ConcolicComposedModelProjector {
     private static String caseSolverTerm(JsonObject selectedCase, String raw,
                                          String expectedSolverSort)
             throws IOException {
+        return string(caseSolverMapping(selectedCase, raw,
+                expectedSolverSort), "solverTerm");
+    }
+
+    private static JsonObject caseSolverMapping(JsonObject selectedCase,
+                                                String raw,
+                                                String expectedSolverSort)
+            throws IOException {
         JsonObject selected = null;
         for (JsonElement element : array(selectedCase,
                 "rawEngineSymbolMappings")) {
@@ -1787,7 +1858,14 @@ public final class ConcolicComposedModelProjector {
                     + ":expected=" + expectedSolverSort + ":actual="
                     + string(selected, "solverSort"));
         }
-        return string(selected, "solverTerm");
+        if ("String".equals(string(selected, "solverSort"))
+                && (string(selected, "nullnessSolverTerm").isEmpty()
+                || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                selected, "nullableStringEncodingAuthority")))) {
+            throw projectionGap("CASE_STRING_NULLNESS_MAPPING_INCOMPLETE:"
+                    + raw);
+        }
+        return selected;
     }
 
     private static final class DynamicProjectionRegistry {
@@ -3776,6 +3854,7 @@ public final class ConcolicComposedModelProjector {
         private final List<String> keyNames = new ArrayList<>();
         private final List<String> valueNames = new ArrayList<>();
         private final List<String> dynamicNames = new ArrayList<>();
+        private final List<String> dynamicQueryNames = new ArrayList<>();
         private final List<String> dynamicKeys = new ArrayList<>();
         private DynamicTermProjection targetDynamic;
         private String lookupKeyProducerSolverTerm;
@@ -3828,21 +3907,24 @@ public final class ConcolicComposedModelProjector {
         }
     }
 
-    private static final class DynamicTermProjection {
+    static final class DynamicTermProjection {
         private final JsonObject binding;
         private final String rawEngineSymbol;
         private final String solverTerm;
+        private final String nullnessSolverTerm;
         private final String concreteEntryKey;
         private final JsonObject targetAction;
 
-        private DynamicTermProjection(JsonObject binding,
-                                      String rawEngineSymbol,
-                                      String solverTerm,
-                                      String concreteEntryKey,
-                                      JsonObject targetAction) {
+        DynamicTermProjection(JsonObject binding,
+                              String rawEngineSymbol,
+                              String solverTerm,
+                              String nullnessSolverTerm,
+                              String concreteEntryKey,
+                              JsonObject targetAction) {
             this.binding = binding;
             this.rawEngineSymbol = rawEngineSymbol;
             this.solverTerm = solverTerm;
+            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
             this.concreteEntryKey = concreteEntryKey;
             this.targetAction = targetAction;
         }

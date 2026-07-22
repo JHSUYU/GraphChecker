@@ -143,14 +143,16 @@ Expression *SymBigDecimal::finish_method_helper(MethodSymbolizerHandle &handle) 
   if (signature == "java.math.BigDecimal.<init>(Ljava/lang/String;)V") {
     oop paramStr = handle.get_param<oop>(1);
     assert(paramStr->klass()->name()->equals(SymString::TYPE_NAME), "should be string");
-    if (!paramStr->is_symbolic()) {
+    SymString *symStr = reinterpret_cast<SymString *>(
+        ConcolicMngr::ctx->find_sym_inst(paramStr));
+    if (symStr == NULL) {
       return NULL;
     }
-    SymString *symStr = reinterpret_cast<SymString *>(ConcolicMngr::ctx->get_sym_inst(paramStr));
     oop thisDecimal = handle.get_param<oop>(0);
     SymBigDecimal *symObj = reinterpret_cast<SymBigDecimal *>(
         ConcolicMngr::ctx->get_or_alloc_sym_inst(thisDecimal)
     );
+    if (symObj == NULL) return NULL;
     Expression *refExp = symStr->get_ref_exp();
 
     guarantee(refExp != NULL, "Should not be null");
@@ -240,7 +242,8 @@ Expression *SymBigDecimal::finish_method_helper(MethodSymbolizerHandle &handle) 
     oop resultDecimal = handle.get_result<oop>(T_OBJECT);
     assert(thisDecimal->klass()->name() == vmSymbols::java_math_BigDecimal(), "should be");
     assert(resultDecimal->klass()->name() == vmSymbols::java_math_BigDecimal(), "should be");
-    SymBigDecimal *symThisDecimal = reinterpret_cast<SymBigDecimal *>(ConcolicMngr::ctx->get_sym_inst(thisDecimal));
+    SymBigDecimal *symThisDecimal = reinterpret_cast<SymBigDecimal *>(
+        ConcolicMngr::ctx->find_sym_inst(thisDecimal));
     SymBigDecimal *symResDecimal = reinterpret_cast<SymBigDecimal *>(ConcolicMngr::ctx->get_or_alloc_sym_inst(
         resultDecimal));
     guarantee(symThisDecimal != NULL, "Only handle symbolic decimal case[symThisDecimal]");
@@ -337,11 +340,8 @@ Expression *SymBigDecimal::finish_method_helper(MethodSymbolizerHandle &handle) 
 }
 
 Expression *SymBigDecimal::get_exp_of(oop obj) {
-  if (obj->is_symbolic()) {
-    return ConcolicMngr::ctx->get_sym_inst(obj)->get_ref_exp();
-  } else {
-    return get_con_exp(obj);
-  }
+  SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+  return sym_inst == NULL ? get_con_exp(obj) : sym_inst->get_ref_exp();
 }
 
 Expression *SymBigDecimal::get_con_exp(oop obj) {

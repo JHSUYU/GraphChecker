@@ -41,6 +41,15 @@ Expression *MethodSymbolizerHandle::get_primitive_exp(int offset, BasicType type
   return exp;
 }
 
+Expression *MethodSymbolizerHandle::get_reference_exp(int offset, oop obj) {
+  Expression *exp = ConcolicMngr::ctx->find_stack_slot(
+      this->get_caller_stack_begin_offset() + offset);
+  if (exp != NULL || obj == NULL || obj->is_array()) return exp;
+
+  SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+  return sym_inst == NULL ? NULL : sym_inst->get_or_create_ref_exp(obj);
+}
+
 
 void MethodSymbolizerHandle::general_prepare_param(int max_param_num) {
   Method *callee_method = this->get_callee_method();
@@ -70,12 +79,19 @@ int __attribute__((optimize("O0"))) MethodSymbolizerHandle::general_prepare_para
   } else if (type == T_OBJECT || type == T_ARRAY) {
     oop obj = this->get_param<oop>(locals_offset);
     if (obj != NULL) {
-      if (obj->is_symbolic()) {
+      exp = this->get_reference_exp(locals_offset, obj);
+      if (exp != NULL) {
+        // Prefer the alias-specific expression propagated by getfield.  This
+        // is essential when the concrete receiver is an interned String that
+        // intentionally cannot carry a symbolic id in its shared oop header.
+      } else if (obj->is_symbolic()) {
         SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
         exp = sym_inst->get_or_create_ref_exp(obj);
       } else if (is_this) {
         SymInstance *sym_inst = ConcolicMngr::ctx->alloc_sym_inst(obj);
-        exp = sym_inst->get_or_create_ref_exp(obj);
+        if (sym_inst != NULL) {
+          exp = sym_inst->get_or_create_ref_exp(obj);
+        }
       } else {
         exp = SymInstance::get_exp_of(obj);
       }
@@ -119,7 +135,8 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
     }
   } else if (type == T_OBJECT || type == T_ARRAY) {
     oop obj = this->get_param<oop>(locals_offset);
-    if (obj != NULL && obj->is_symbolic()) {
+    Expression *exp = this->get_reference_exp(locals_offset, obj);
+    if (exp != NULL || (obj != NULL && obj->is_symbolic())) {
       recording = true;
     }
   } else {
@@ -141,8 +158,8 @@ Expression __attribute__((optimize("O0")))  *MethodSymbolizerHandle::general_pre
     case T_OBJECT:
       obj = this->get_result<oop>(type);
       if (obj != NULL) {
-        if (obj->is_symbolic()) {
-          SymInstance *sym_inst = ConcolicMngr::ctx->get_sym_inst(obj);
+        SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+        if (sym_inst != NULL) {
           exp = sym_inst->get_or_create_ref_exp(obj);
         } else {
           exp = SymbolExpression::get(Sym_NULL);

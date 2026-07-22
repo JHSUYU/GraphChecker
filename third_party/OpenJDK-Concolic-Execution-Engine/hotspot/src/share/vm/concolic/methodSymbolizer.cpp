@@ -26,6 +26,7 @@
 #include "concolic/reference/symbolicHttpServletRequest.hpp"
 #include "concolic/reference/symbolicNDFunc.hpp"
 #include "memory/resourceArea.hpp"
+#include "runtime/thread.hpp"
 #include "runtime/signature.hpp"
 #include "utilities/exceptions.hpp"
 #include "utilities/ostream.hpp"
@@ -153,6 +154,13 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
   }
 
   if (need_symbolize) {
+    // MethodSymbolizer captures arguments directly at the call boundary and
+    // then pauses ordinary bytecode propagation for the callee.  Its
+    // structural shadow frame cannot perform normal caller cleanup, so
+    // consume the complete JVM-word argument footprint here.
+    ConcolicMngr::ctx->clear_stack_words(
+        _handle.get_caller_stack_begin_offset(),
+        callee_method->size_of_parameters());
     this->set_symbolizing_method(true);
   } else {
     _handle.reset();
@@ -161,6 +169,13 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
 
 void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *caller_frame) {
   if (caller_frame == _handle.get_caller_frame()) {
+    if (ConcolicMngr::ctx->get_thread()->has_pending_exception()) {
+      // Exceptional unwind has no Java result.  Reset symbolizer state only;
+      // the real handler will establish the new operand-stack contents.
+      this->_handle.reset();
+      this->set_symbolizing_method(false);
+      return;
+    }
     Expression *exp = NULL;
     BasicType basicType = primitive_target(_handle.get_callee_holder_name());
     const std::string& callee_holder_name = _handle.get_callee_holder_name();
@@ -174,10 +189,17 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     }
 
     BasicType type = _handle.get_result_type();
-    int delta = type2size[type] > 1; // long and double are 1; 0, otherwise
-    assert(delta >= 0, "should be");
-    ConcolicMngr::ctx->set_stack_slot_if_possible(
-        _handle.get_caller_stack_begin_offset() + delta, exp);
+    int result_slots = type2size[type];
+    if (result_slots > 0) {
+      assert(result_slots == 1 || result_slots == 2,
+             "a JVM result occupies one or two stack words");
+      // A category-2 result is anchored in its second word.  Clear the whole
+      // result footprint even when a helper returns no symbolic expression;
+      // otherwise a prior category-1 value can survive in the companion word.
+      ConcolicMngr::ctx->set_stack_value_if_possible(
+          _handle.get_caller_stack_begin_offset() + result_slots - 1,
+          result_slots, exp);
+    }
     this->_handle.reset();
     this->set_symbolizing_method(false);
   }
@@ -248,8 +270,8 @@ MethodSymbolizer::finish_method_helper(MethodSymbolizerHandle &handle) {
           We hope only symbolize the method whose return value
           is the object we support like SymString and SymInterger.
         */
-        exp = ConcolicMngr::ctx->get_sym_inst(obj)->get_ref_exp();
-        assert(exp != NULL, "should be");
+        SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+        exp = sym_inst == NULL ? NULL : sym_inst->get_ref_exp();
       } else {
         exp = SymbolExpression::get(Sym_NULL);
       }
@@ -270,13 +292,19 @@ MethodSymbolizer::finish_method_helper(MethodSymbolizerHandle &handle) {
 int MethodSymbolizer::prepare_param(MethodSymbolizerHandle &handle,
                                     BasicType type, intptr_t *locals,
                                     int offset) {
-  Expression *exp;
+  Expression *exp = NULL;
 
   if (type == T_OBJECT) {
     oop obj = *(oop *) (locals - offset);
     if (obj != NULL) {
-      SymInstance *sym_inst = ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
-      exp = sym_inst->get_or_create_ref_exp(obj);
+      exp = handle.get_reference_exp(offset, obj);
+      if (exp == NULL) {
+        SymInstance *sym_inst =
+            ConcolicMngr::ctx->get_or_alloc_sym_inst(obj);
+        if (sym_inst != NULL) {
+          exp = sym_inst->get_or_create_ref_exp(obj);
+        }
+      }
     }
   } else if (type == T_ARRAY) {
     arrayOop arrObj = *(arrayOop *) (locals - offset);

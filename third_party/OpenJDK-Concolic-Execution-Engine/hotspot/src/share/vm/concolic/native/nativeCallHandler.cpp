@@ -9,7 +9,8 @@ void NativeCallHandler::handle_native(Method *method, intptr_t *locals) {
   BasicType result_type = method->result_type();
   if (is_java_primitive(result_type)) {
     if (NativeGetPrimitiveHandler::target(name_sig)) {
-      NativeGetPrimitiveHandler::handle_native(locals, result_type);
+      NativeGetPrimitiveHandler::handle_native(
+          locals, result_type, method->size_of_parameters());
     }
   }
 }

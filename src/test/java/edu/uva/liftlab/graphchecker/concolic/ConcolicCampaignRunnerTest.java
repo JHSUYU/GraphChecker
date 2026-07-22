@@ -25,6 +25,234 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicCampaignRunnerTest {
     @Test
+    public void replayActivationCertificatesExactGenericReferenceNullGuard() {
+        String engine = "M_L_REGION.9.in.0_example/Payload";
+        JsonObject task = nullGuardTask(engine);
+        JsonObject source = nullGuardSource("example.Payload");
+        JsonObject assignment = nullGuardAssignment(engine,
+                "example.Payload");
+
+        JsonObject replay = ConcolicCampaignRunner.replayActivation(task,
+                source, singleton(assignment));
+
+        JsonArray proofs = replay.getAsJsonArray(
+                "concreteGuardReplayProofs");
+        assertEquals(replay.toString(), 1, proofs.size());
+        JsonObject proof = proofs.get(0).getAsJsonObject();
+        assertEquals("REFERENCE_NULL_CONCRETE_GUARD_REPLAY_PROOF",
+                proof.get("kind").getAsString());
+        assertEquals("SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_"
+                        + "MODEL_ASSIGNMENT_V1",
+                proof.get("authority").getAsString());
+        assertEquals(engine, proof.get("modelAssignmentKey").getAsString());
+        assertEquals(engine, proof.get("engineSymbol").getAsString());
+        assertEquals("REGION.9.in.0",
+                proof.get("inputSymbol").getAsString());
+        assertEquals("ROOT#u7", proof.get("siteId").getAsString());
+        assertEquals("TARGET", proof.get("proofRole").getAsString());
+        assertEquals(0, proof.get("sourceConditionIndex").getAsInt());
+        assertEquals(0, proof.get("constraintIndex").getAsInt());
+        assertEquals(-1, proof.get("expectedBranchPrefixOrdinal")
+                .getAsInt());
+        assertEquals(1, proof.get("occurrence").getAsInt());
+        assertTrue(proof.get("outcome").getAsBoolean());
+        assertEquals("==", proof.getAsJsonObject("condition")
+                .get("_op").getAsString());
+        assertEquals(64, proof.get("conditionSha256").getAsString()
+                .length());
+        assertTrue(proof.get("requiresExactVmBranchEvent").getAsBoolean());
+        assertTrue(proof.get("requiresZeroPathConditionSuffix")
+                .getAsBoolean());
+        assertTrue(proof.get("requiresUniqueAppliedNullModelAssignment")
+                .getAsBoolean());
+    }
+
+    @Test
+    public void replayActivationDoesNotCertificateMismatchedOrPrimitiveNull() {
+        String engine = "M_L_REGION.9.in.0_example/Payload";
+        JsonObject task = nullGuardTask(engine);
+        JsonObject source = nullGuardSource("example.Payload");
+        JsonObject mismatch = nullGuardAssignment(
+                "M_L_REGION.9.in.1_example/Payload", "example.Payload");
+        JsonObject mismatchedReplay = ConcolicCampaignRunner
+                .replayActivation(task, source, singleton(mismatch));
+        assertEquals(0, mismatchedReplay.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
+
+        JsonObject primitive = nullGuardAssignment(engine, "int");
+        primitive.remove("referenceNullnessEncodingAuthority");
+        JsonObject primitiveReplay = ConcolicCampaignRunner
+                .replayActivation(task, nullGuardSource("int"),
+                        singleton(primitive));
+        assertEquals(0, primitiveReplay.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
+
+        JsonArray duplicate = new JsonArray();
+        duplicate.add(nullGuardAssignment(engine, "example.Payload"));
+        duplicate.add(nullGuardAssignment(engine, "example.Payload"));
+        JsonObject ambiguousReplay = ConcolicCampaignRunner
+                .replayActivation(task, source, duplicate);
+        assertEquals(0, ambiguousReplay.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
+
+        JsonObject vmSymbolicTask = nullGuardTask(engine);
+        vmSymbolicTask.addProperty("concreteGuardReplayProofRequired",
+                false);
+        JsonObject vmSymbolicReplay = ConcolicCampaignRunner
+                .replayActivation(vmSymbolicTask, source, singleton(
+                        nullGuardAssignment(engine, "example.Payload")));
+        assertEquals("a VM-symbolic NULL guard must use its real PC instead "
+                        + "of a conditionless-guard certificate", 0,
+                vmSymbolicReplay.getAsJsonArray(
+                        "concreteGuardReplayProofs").size());
+        assertFalse(vmSymbolicReplay.getAsJsonObject("targetBranch")
+                .get("concreteGuardReplayProofRequired").getAsBoolean());
+    }
+
+    @Test
+    public void replayActivationCertificatesNullPrefixAndTargetCatalog() {
+        String engine = "M_L_REGION.9.in.0_example/Payload";
+        JsonObject task = nullGuardTask(engine);
+        JsonObject condition = task.getAsJsonObject(
+                "negatedCondition").deepCopy();
+        JsonObject semantic = JsonParser.parseString(
+                "{\"_type\":\"BinaryExpression\","
+                        + "\"_left\":{\"_type\":\"SymbolExpression\","
+                        + "\"_java_type\":\"I\",\"_exp\":\"M_I_x\"},"
+                        + "\"_op\":\">=\",\"_right\":{"
+                        + "\"_type\":\"ConstExpr\","
+                        + "\"_java_type\":\"I\",\"_exp\":\"Y_I_0\"}}")
+                .getAsJsonObject();
+        JsonArray prefix = new JsonArray();
+        prefix.add(semantic.deepCopy());
+        prefix.add(condition.deepCopy());
+        task.add("prefix", prefix);
+        JsonArray constraints = new JsonArray();
+        constraints.add(semantic.deepCopy());
+        constraints.add(condition.deepCopy());
+        constraints.add(condition.deepCopy());
+        task.add("constraints", constraints);
+        JsonObject expected = new JsonObject();
+        expected.addProperty("siteId", "ROOT#u7");
+        expected.addProperty("occurrence", 1);
+        expected.addProperty("outcome", true);
+        expected.addProperty("conditionIndex", 1);
+        expected.addProperty("concreteGuardReplayProofRequired", true);
+        task.add("expectedBranchPrefix", singleton(expected));
+        task.addProperty("flipSite", "ROOT#u8");
+        task.addProperty("conditionIndex", 2);
+
+        JsonObject replay = ConcolicCampaignRunner.replayActivation(task,
+                nullGuardSource("example.Payload"), singleton(
+                        nullGuardAssignment(engine, "example.Payload")));
+
+        JsonArray proofs = replay.getAsJsonArray(
+                "concreteGuardReplayProofs");
+        assertEquals(replay.toString(), 2, proofs.size());
+        JsonObject prefixProof = proofs.get(0).getAsJsonObject();
+        JsonObject targetProof = proofs.get(1).getAsJsonObject();
+        assertEquals("PREFIX", prefixProof.get("proofRole").getAsString());
+        assertEquals("ROOT#u7", prefixProof.get("siteId").getAsString());
+        assertEquals(0, prefixProof.get("expectedBranchPrefixOrdinal")
+                .getAsInt());
+        assertEquals(1, prefixProof.get("sourceConditionIndex").getAsInt());
+        assertEquals("TARGET", targetProof.get("proofRole").getAsString());
+        assertEquals("ROOT#u8", targetProof.get("siteId").getAsString());
+        assertEquals(2, targetProof.get("sourceConditionIndex").getAsInt());
+        assertEquals(3, replay.getAsJsonArray(
+                "pathReplayConstraints").size());
+    }
+
+    @Test
+    public void replayActivationDistinguishesTwoNullAssignmentsAtRepeatedSite()
+            throws Exception {
+        String engineA = "M_L_REGION.9.in.0_example/Payload";
+        String engineB = "M_L_REGION.9.in.1_example/Payload";
+        JsonObject conditionA = nullGuardTask(engineA)
+                .getAsJsonObject("negatedCondition").deepCopy();
+        JsonObject conditionB = nullGuardTask(engineB)
+                .getAsJsonObject("negatedCondition").deepCopy();
+        JsonObject task = nullGuardTask(engineB);
+        task.addProperty("flipOccurrence", 2);
+        task.addProperty("conditionIndex", 1);
+        task.add("prefix", singleton(conditionA.deepCopy()));
+        JsonArray constraints = new JsonArray();
+        constraints.add(conditionA.deepCopy());
+        constraints.add(conditionB.deepCopy());
+        task.add("constraints", constraints);
+        JsonObject expected = new JsonObject();
+        expected.addProperty("siteId", "ROOT#u7");
+        expected.addProperty("occurrence", 1);
+        expected.addProperty("outcome", true);
+        expected.addProperty("conditionIndex", 0);
+        expected.addProperty("concreteGuardReplayProofRequired", true);
+        task.add("expectedBranchPrefix", singleton(expected));
+
+        JsonObject actionA = nullGuardAction("example.Payload",
+                "REGION.9.in.0", 0);
+        JsonObject actionB = nullGuardAction("example.Payload",
+                "REGION.9.in.1", 1);
+        JsonObject source = nullGuardSource("example.Payload");
+        JsonArray actions = new JsonArray();
+        actions.add(actionA.deepCopy());
+        actions.add(actionB.deepCopy());
+        source.add("symbolize", actions.deepCopy());
+        source.add("materializations", actions.deepCopy());
+        JsonArray assignments = new JsonArray();
+        assignments.add(nullGuardAssignment(engineA, "example.Payload",
+                "REGION.9.in.0", 0));
+        assignments.add(nullGuardAssignment(engineB, "example.Payload",
+                "REGION.9.in.1", 1));
+
+        JsonObject replay = ConcolicCampaignRunner.replayActivation(task,
+                source, assignments);
+
+        JsonArray proofs = replay.getAsJsonArray(
+                "concreteGuardReplayProofs");
+        assertEquals(replay.toString(), 2, proofs.size());
+        JsonObject first = proofs.get(0).getAsJsonObject();
+        JsonObject second = proofs.get(1).getAsJsonObject();
+        assertEquals("PREFIX", first.get("proofRole").getAsString());
+        assertEquals("TARGET", second.get("proofRole").getAsString());
+        assertEquals("ROOT#u7", first.get("siteId").getAsString());
+        assertEquals("ROOT#u7", second.get("siteId").getAsString());
+        assertEquals(1, first.get("occurrence").getAsInt());
+        assertEquals(2, second.get("occurrence").getAsInt());
+        assertEquals(engineA, first.get("modelAssignmentKey")
+                .getAsString());
+        assertEquals(engineB, second.get("modelAssignmentKey")
+                .getAsString());
+    }
+
+    @Test
+    public void replayActivationRejectsDuplicateConcreteGuardEventIdentity() {
+        String engine = "M_L_REGION.9.in.0_example/Payload";
+        JsonObject condition = nullGuardTask(engine)
+                .getAsJsonObject("negatedCondition").deepCopy();
+        JsonObject task = nullGuardTask(engine);
+        task.addProperty("conditionIndex", 1);
+        task.add("prefix", singleton(condition.deepCopy()));
+        JsonArray constraints = new JsonArray();
+        constraints.add(condition.deepCopy());
+        constraints.add(condition.deepCopy());
+        task.add("constraints", constraints);
+        JsonObject expected = new JsonObject();
+        expected.addProperty("siteId", "ROOT#u7");
+        expected.addProperty("occurrence", 1);
+        expected.addProperty("outcome", true);
+        expected.addProperty("conditionIndex", 0);
+        expected.addProperty("concreteGuardReplayProofRequired", true);
+        task.add("expectedBranchPrefix", singleton(expected));
+
+        JsonObject replay = ConcolicCampaignRunner.replayActivation(task,
+                nullGuardSource("example.Payload"), singleton(
+                        nullGuardAssignment(engine, "example.Payload")));
+
+        assertEquals(replay.toString(), 0, replay.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
+    }
+
+    @Test
     public void exactReplayScheduleAdmissionAcceptsOrderedPrefixAndTarget() {
         JsonObject task = exactScheduleTask();
         JsonObject raw = exactScheduleRaw();
@@ -3063,6 +3291,99 @@ public class ConcolicCampaignRunnerTest {
         mapping.addProperty("effectiveOutcome", outcome);
         mapping.addProperty("overrideApplied", false);
         return mapping;
+    }
+
+    private static JsonObject nullGuardTask(String engineSymbol) {
+        JsonObject task = new JsonObject();
+        task.addProperty("queryKey", "QUERY.NULL.GUARD");
+        task.addProperty("flipSite", "ROOT#u7");
+        task.addProperty("flipOccurrence", 1);
+        task.addProperty("conditionIndex", 0);
+        task.addProperty("desiredOutcome", true);
+        task.addProperty("concreteGuardReplayProofRequired", true);
+        task.add("expectedBranchPrefix", new JsonArray());
+        task.add("prefix", new JsonArray());
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "Ljava/lang/Object;");
+        symbol.addProperty("_exp", engineSymbol);
+        JsonObject nil = new JsonObject();
+        nil.addProperty("_type", "SymbolExpression");
+        nil.addProperty("_java_type", "Ljava/lang/Object;");
+        nil.addProperty("_exp", "N");
+        JsonObject condition = new JsonObject();
+        condition.addProperty("_type", "BinaryExpression");
+        condition.add("_left", symbol);
+        condition.addProperty("_op", "==");
+        condition.add("_right", nil);
+        task.add("negatedCondition", condition);
+        task.add("constraints", singleton(condition.deepCopy()));
+        return task;
+    }
+
+    private static JsonObject nullGuardSource(String javaType) {
+        JsonObject source = new JsonObject();
+        source.addProperty("activationId", "ACT.SEED");
+        source.addProperty("regionId", "REGION.9");
+        source.addProperty("rootMethod", "<example.Root: void run("
+                + javaType + ")>");
+        JsonObject action = nullGuardAction(javaType);
+        source.add("symbolize", singleton(action));
+        source.add("materializations", singleton(action.deepCopy()));
+        return source;
+    }
+
+    private static JsonObject nullGuardAction(String javaType) {
+        return nullGuardAction(javaType, "REGION.9.in.0", 0);
+    }
+
+    private static JsonObject nullGuardAction(String javaType,
+                                              String inputSymbol,
+                                              int argumentIndex) {
+        JsonObject action = new JsonObject();
+        action.addProperty("symbol", inputSymbol);
+        action.addProperty("cell", "<example.Root: " + javaType
+                + " input>");
+        action.addProperty("location", "ARGUMENT");
+        action.addProperty("bindingMode", "ROOT_ENTRY");
+        action.addProperty("index", argumentIndex);
+        action.addProperty("javaType", javaType);
+        return action;
+    }
+
+    private static JsonObject nullGuardAssignment(String engineSymbol,
+                                                  String javaType) {
+        return nullGuardAssignment(engineSymbol, javaType,
+                "REGION.9.in.0", 0);
+    }
+
+    private static JsonObject nullGuardAssignment(String engineSymbol,
+                                                  String javaType,
+                                                  String inputSymbol,
+                                                  int argumentIndex) {
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", engineSymbol);
+        assignment.addProperty("solverSymbol", "sym__payload__ref_"
+                + argumentIndex);
+        assignment.addProperty("nullnessSolverSymbol",
+                "sym__payload__is_null_" + argumentIndex);
+        assignment.addProperty("modelIsNull", true);
+        assignment.addProperty("inputSymbol", inputSymbol);
+        assignment.addProperty("valueType", "NULL");
+        assignment.addProperty("value", "null");
+        assignment.addProperty("referenceNullnessEncodingAuthority",
+                "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1");
+        assignment.addProperty("authority", "Z3_PATH_FLIP_MODEL");
+        assignment.addProperty("materializeAtRealDefinition", true);
+        assignment.add("target", nullGuardAction(javaType, inputSymbol,
+                argumentIndex));
+        return assignment;
+    }
+
+    private static JsonArray singleton(JsonElement value) {
+        JsonArray result = new JsonArray();
+        result.add(value);
+        return result;
     }
 
     private static JsonObject exactScheduleTask() {

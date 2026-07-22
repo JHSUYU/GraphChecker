@@ -72,7 +72,6 @@ runtime_edge_validations=$(configured_value runtime_edge_validations)
 graphchecker_jar=$(configured_value graphchecker_jar)
 maven_bin=$(configured_value maven_bin)
 fixture_class=$(workflow_property fixture_class)
-fixture_test_class=$(workflow_property fixture_test_class)
 trace_test=$(workflow_property trace_test)
 custom_jdk_docker_image=$(workflow_property custom_jdk_docker_image)
 custom_jdk_library_path=$(workflow_property custom_jdk_library_path false)
@@ -101,7 +100,6 @@ usage() {
   cat <<'EOF'
 Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
 
-  test                    Run the three-real-thread JUnit contract
   prepare                 Build GraphChecker and isolate fixture classes
   analyze                 Static analysis plus trace instrumentation
   trace                   Run a non-bug concrete discovery execution
@@ -202,7 +200,7 @@ runtime_channel_rows() {
 
 validate_discovery_inputs() {
   require_command jq
-  require_command rg
+  require_command grep
   require_file "runtime activation plan" "${activation_plan}"
   require_file "runtime edge validations" "${runtime_edge_validations}"
   require_file "static data-flow graph" "${static_graph}"
@@ -234,7 +232,7 @@ validate_discovery_inputs() {
     and (([.[].targetRegionInstance] | unique | length) == 1)
   ' <<< "${channels}" >/dev/null \
     || die "runtime read-from discovery did not produce unique local channels"
-  if rg -q '"kind":"configured_rpc_return_mapping"' "${static_graph}"; then
+  if grep -Fq '"kind":"configured_rpc_return_mapping"' "${static_graph}"; then
     die "local fixture unexpectedly contains a configured RPC mapping"
   fi
 }
@@ -394,12 +392,6 @@ scheduled_target_activation() {
   [[ ${#matches[@]} -eq 1 ]] || die \
     "expected one scheduled PRIMARY target activation; found ${#matches[@]}"
   printf '%s\n' "${matches[0]}"
-}
-
-do_test() {
-  (cd "${graphchecker_dir}" && "${maven_bin}" -q \
-    -Dtest="${fixture_test_class}" \
-    test)
 }
 
 do_prepare() {
@@ -1845,7 +1837,6 @@ command_name=${1:-help}
 shift || true
 case "${command_name}" in
   help|-h|--help) usage ;;
-  test) do_test ;;
   prepare) do_prepare ;;
   analyze) do_analyze ;;
   trace) do_trace ;;

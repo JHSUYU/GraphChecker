@@ -21,11 +21,20 @@
 class TypeCastExpression : public SymbolExpression {
 private:
   Expression *_exp_to_cast;
+  std::string _source_type;
+  std::string _target_type;
 public:
-  TypeCastExpression(Expression *exp) : _exp_to_cast(exp) {
+  TypeCastExpression(Expression *exp, const char *source_type,
+                     const char *target_type)
+      : _exp_to_cast(exp),
+        _source_type(source_type == NULL ? "" : source_type),
+        _target_type(target_type == NULL ? "" : target_type) {
     if (exp) {
       exp->inc_ref();
     }
+    // SymbolExpression::_type remains the legacy result descriptor consumed
+    // by existing JSON readers.  Keep it in sync with the explicit target.
+    set_type(_target_type);
   }
 
   ~TypeCastExpression() {

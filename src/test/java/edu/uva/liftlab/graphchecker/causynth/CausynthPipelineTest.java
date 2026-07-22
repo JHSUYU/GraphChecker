@@ -2866,6 +2866,101 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void exactFieldReadEdgesRetainDistinctConcreteSites()
+            throws Exception {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+
+        SootClass fixture = new SootClass(
+                "example.DistinctFieldReadSites", Modifier.PUBLIC);
+        fixture.setSuperclass(object);
+        fixture.setApplicationClass();
+        Scene.v().addClass(fixture);
+        SootField shared = new SootField("shared", IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        fixture.addField(shared);
+        SootMethod read = new SootMethod("read",
+                Collections.singletonList(BooleanType.v()), IntType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        fixture.addMethod(read);
+
+        Body body = Jimple.v().newBody(read);
+        read.setActiveBody(body);
+        Local choose = Jimple.v().newLocal("choose", BooleanType.v());
+        Local value = Jimple.v().newLocal("value", IntType.v());
+        body.getLocals().addAll(Arrays.asList(choose, value));
+        IdentityStmt parameter = Jimple.v().newIdentityStmt(choose,
+                Jimple.v().newParameterRef(BooleanType.v(), 0));
+        AssignStmt trueRead = Jimple.v().newAssignStmt(value,
+                Jimple.v().newStaticFieldRef(shared.makeRef()));
+        AssignStmt falseRead = Jimple.v().newAssignStmt(value,
+                Jimple.v().newStaticFieldRef(shared.makeRef()));
+        ReturnStmt returned = Jimple.v().newReturnStmt(value);
+        IfStmt chooseFalse = Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(choose, IntConstant.v(0)), falseRead);
+        GotoStmt join = Jimple.v().newGotoStmt(returned);
+        body.getUnits().add(parameter);
+        body.getUnits().add(chooseFalse);
+        body.getUnits().add(trueRead);
+        body.getUnits().add(join);
+        body.getUnits().add(falseRead);
+        body.getUnits().add(returned);
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, read);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> relevantCells = (Set<String>) relevant.invoke(
+                analyzer, read.getSignature());
+        relevantCells.add(read.getSignature() + ".return");
+
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 4; round++) {
+            processMethod.invoke(analyzer, read.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String target = read.getSignature() + "::value";
+        List<Map<String, Object>> reads = new ArrayList<>();
+        for (Map<String, Object> edge : edges) {
+            if ("field_read".equals(edge.get("kind"))
+                    && shared.getSignature().equals(edge.get("fromCell"))
+                    && target.equals(edge.get("toCell"))) {
+                reads.add(edge);
+            }
+        }
+
+        assertEquals("same endpoints at two branch-arm units are two exact "
+                + "materialization sites", 2, reads.size());
+        Set<Object> ids = new java.util.LinkedHashSet<>();
+        Set<Object> sites = new java.util.LinkedHashSet<>();
+        Set<Object> units = new java.util.LinkedHashSet<>();
+        for (Map<String, Object> edge : reads) {
+            ids.add(edge.get("id"));
+            sites.add(edge.get("siteId"));
+            units.add(edge.get("unitIndex"));
+            assertEquals("HEAP_READ", edge.get("transferKind"));
+            assertEquals(shared.getSignature(),
+                    edge.get("declaredFieldSignature"));
+            assertEquals("SOOT_RESOLVED_DECLARATION_HIERARCHY",
+                    edge.get("declaredFieldAuthority"));
+        }
+        assertEquals(2, ids.size());
+        assertEquals(2, sites.size());
+        assertEquals(2, units.size());
+    }
+
+    @Test
     public void exactGetterReturnLocalAndLateProjectionRetainCopyAuthority()
             throws Exception {
         G.reset();
@@ -3021,9 +3116,141 @@ public class CausynthPipelineTest {
                 .findFirst().orElseThrow(() -> new AssertionError(
                         "missing canonical field read"));
         assertEquals("value_flow", fieldRead.get("relation"));
+        assertEquals(payload.getSignature(),
+                fieldRead.get("declaredFieldSignature"));
+        assertEquals(command.getName(),
+                fieldRead.get("declaredFieldOwner"));
+        assertEquals(keys.getType().toString(),
+                fieldRead.get("declaredFieldType"));
+        assertEquals(payload.getName(),
+                fieldRead.get("declaredFieldName"));
+        assertEquals("SOOT_RESOLVED_DECLARATION_HIERARCHY",
+                fieldRead.get("declaredFieldAuthority"));
         assertFalse("a heap read is exact for its own reason, not a local "
                         + "direct-copy proof",
                 fieldRead.containsKey("valueFlowAuthority"));
+
+        Map<String, Object> receiverRead = edges.stream().filter(edge ->
+                "instance_field_read".equals(edge.get("kind"))
+                        && (getter.getSignature() +
+                        "::self#field:keys").equals(edge.get("fromCell"))
+                        && loadedCell.equals(edge.get("toCell")))
+                .findFirst().orElseThrow(() -> new AssertionError(
+                        "missing receiver-sensitive field read"));
+        assertEquals(payload.getSignature(),
+                receiverRead.get("declaredFieldSignature"));
+        assertEquals("SOOT_RESOLVED_DECLARATION_HIERARCHY",
+                receiverRead.get("declaredFieldAuthority"));
+    }
+
+    @Test
+    public void projectedParameterIdentityRetainsUniqueRawSootAuthority()
+            throws Exception {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+
+        SootClass payload = new SootClass("example.IdentityPayload",
+                Modifier.PUBLIC);
+        payload.setSuperclass(object);
+        payload.setApplicationClass();
+        payload.addField(new SootField("enabled", BooleanType.v(),
+                Modifier.PUBLIC));
+        Scene.v().addClass(payload);
+
+        SootClass fixture = new SootClass("example.IdentityFixture",
+                Modifier.PUBLIC);
+        fixture.setSuperclass(object);
+        fixture.setApplicationClass();
+        Scene.v().addClass(fixture);
+        SootMethod echo = new SootMethod("echo",
+                Collections.singletonList(payload.getType()),
+                payload.getType(), Modifier.PUBLIC | Modifier.STATIC);
+        fixture.addMethod(echo);
+        Body body = Jimple.v().newBody(echo);
+        echo.setActiveBody(body);
+        Local parameter = Jimple.v().newLocal("payload", payload.getType());
+        body.getLocals().add(parameter);
+        body.getUnits().add(Jimple.v().newIdentityStmt(parameter,
+                Jimple.v().newParameterRef(payload.getType(), 0)));
+        body.getUnits().add(Jimple.v().newReturnStmt(parameter));
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, echo);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> relevantCells = (Set<String>) relevant.invoke(analyzer,
+                echo.getSignature());
+        String formal = echo.getSignature() + ".param0:"
+                + payload.getType();
+        String local = echo.getSignature() + "::payload";
+        String returned = echo.getSignature() + ".return";
+        relevantCells.add(returned);
+
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 3; round++) {
+            processMethod.invoke(analyzer, echo.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        List<Map<String, Object>> rawIdentities = new ArrayList<>();
+        for (Map<String, Object> edge : edges) {
+            if ("local_def_use".equals(edge.get("kind"))
+                    && formal.equals(edge.get("fromCell"))
+                    && local.equals(edge.get("toCell"))) {
+                rawIdentities.add(edge);
+            }
+        }
+        assertEquals("the Soot ParameterRef identity must have one raw "
+                + "authority row", 1, rawIdentities.size());
+        Map<String, Object> raw = rawIdentities.get(0);
+        assertEquals("VALUE_PASS", raw.get("transferKind"));
+        assertEquals("value_flow", raw.get("relation"));
+        assertEquals("SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1",
+                raw.get("valueFlowAuthority"));
+        assertEquals("PARAMETER_IDENTITY", raw.get("directCopyKind"));
+
+        String path = "#field:enabled";
+        relevantCells.add(returned + path);
+        Method propagate = analyzer.getClass().getDeclaredMethod(
+                "propagateProjectedEdgesFromExistingEdges");
+        propagate.setAccessible(true);
+        for (int round = 0; round < 4; round++) {
+            propagate.invoke(analyzer);
+        }
+
+        List<Map<String, Object>> projectedIdentities = new ArrayList<>();
+        for (Map<String, Object> edge : edges) {
+            if ("projected_local_def_use".equals(edge.get("kind"))
+                    && (formal + path).equals(edge.get("fromCell"))
+                    && (local + path).equals(edge.get("toCell"))) {
+                projectedIdentities.add(edge);
+            }
+        }
+        assertEquals("the suffix must inherit from exactly one raw "
+                + "ParameterRef identity", 1, projectedIdentities.size());
+        Map<String, Object> projected = projectedIdentities.get(0);
+        assertEquals("VALUE_PASS", projected.get("transferKind"));
+        assertEquals("value_flow", projected.get("relation"));
+        assertEquals("PROJECTED_FROM_SOOT_EXACT_PARAMETER_IDENTITY_"
+                        + "BINDING_V1",
+                projected.get("valueFlowAuthority"));
+        assertEquals(raw.get("id"),
+                projected.get("baseValueFlowEdgeId"));
+        assertEquals("SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1",
+                projected.get("baseValueFlowAuthority"));
+        assertEquals(raw.get("id"), projected.get("projectionBaseEdgeId"));
+        assertEquals("PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1",
+                projected.get("authorityInheritance"));
     }
 
     @Test
@@ -3331,7 +3558,7 @@ public class CausynthPipelineTest {
 
         Object analyzer = newStaticAnalyzer();
         loadFacts(analyzer, fixture.callerMethod);
-        Method parseMethodSig = CausynthPipeline.class.getDeclaredMethod(
+        Method parseMethodSig = analyzer.getClass().getDeclaredMethod(
                 "parseMethodSig", String.class);
         parseMethodSig.setAccessible(true);
         Object declared = parseMethodSig.invoke(null,
@@ -3770,19 +3997,18 @@ public class CausynthPipelineTest {
             throws Exception {
         CollectionProjectionFixture fixture = collectionProjectionFixture();
         Object analyzer = newStaticAnalyzer();
-        Class<?> pipeline = CausynthPipeline.class;
-        Method parse = pipeline.getDeclaredMethod("parseMethodSig",
+        Method parse = analyzer.getClass().getDeclaredMethod("parseMethodSig",
                 String.class);
         parse.setAccessible(true);
-        Class<?> signature = Class.forName(CausynthPipeline.class.getName()
-                + "$MethodSig");
+        Object sampleSignature = parse.invoke(null,
+                "<java.util.Map: java.util.Collection values()>");
+        Class<?> signature = sampleSignature.getClass();
         Method operation = analyzer.getClass().getDeclaredMethod(
                 "semanticContainerProjectionOperation", signature);
         operation.setAccessible(true);
 
         assertEquals("MAP_VALUES_VIEW", operation.invoke(analyzer,
-                parse.invoke(null, "<java.util.Map: java.util.Collection "
-                        + "values()>")));
+                sampleSignature));
         assertEquals("MAP_KEY_SET_VIEW", operation.invoke(analyzer,
                 parse.invoke(null, "<java.util.Map: java.util.Set "
                         + "keySet()>")));
@@ -4696,9 +4922,7 @@ public class CausynthPipelineTest {
                 current, current,
                 current, current, Collections.emptyList(), null, null,
                 analysisScope, rpcMappingFile);
-        Class<?> analyzerClass = Class.forName(
-                CausynthPipeline.class.getName()
-                        + "$SeedBackwardStaticAnalyzer");
+        Class<?> analyzerClass = SeedBackwardStaticAnalyzer.class;
         Constructor<?> constructor = analyzerClass.getDeclaredConstructor(
                 CausynthTargetContext.class);
         constructor.setAccessible(true);

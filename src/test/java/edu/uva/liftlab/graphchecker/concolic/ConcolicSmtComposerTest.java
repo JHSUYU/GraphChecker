@@ -581,6 +581,63 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void lowersComposedStringPredicatesAsBooleanLogic()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray constraints = new JsonArray();
+            constraints.add(binaryCondition(
+                    opString("contains", receiver.deepCopy(),
+                            conString("ready")),
+                    "&&",
+                    opString("contains", receiver.deepCopy(),
+                            conString("stable"))));
+            constraints.add(binaryCondition(
+                    opString("contains", receiver.deepCopy(),
+                            conString("primary")),
+                    "||",
+                    opString("contains", receiver.deepCopy(),
+                            conString("fallback"))));
+            constraints.add(binaryCondition(
+                    opString("contains", receiver.deepCopy(),
+                            conString("enabled")),
+                    "==", constant("Z", "Y_Z_1")));
+            for (JsonElement constraint : fatal.getAsJsonArray(
+                    "constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(and (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(or (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(= (str.contains "));
+            assertTrue(fatalPath, fatalPath.contains(" true)"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void lowersCoreStringOperationsWithBothPredicatePolarities()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -650,6 +707,186 @@ public class ConcolicSmtComposerTest {
             assertTrue(fatalPath, fatalPath.contains(") 11)"));
             assertTrue(fatalPath, fatalPath.contains(
                     "(str.++ \"prefix\" \"_tail\")"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void modelsNullableStringPortsAndNullGuardsExactly()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray constraints = new JsonArray();
+            constraints.add(binaryCondition(receiver.deepCopy(), "!=",
+                    symbol("", "N")));
+            constraints.add(negatedOpString("equals", receiver.deepCopy(),
+                    symbol("", "N")));
+            constraints.add(opString("contains", receiver.deepCopy(),
+                    conString("ready")));
+            for (JsonElement constraint : fatal.getAsJsonArray(
+                    "constraints")) {
+                constraints.add(constraint);
+            }
+            fatal.add("constraints", constraints);
+            Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String companion =
+                    "sym__port__REGION_F_in_2__string_is_null";
+            String fatalPath = lineContaining(result.smtLib,
+                    ":named fatal_path");
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(result.manifest.get(
+                    "nullableJavaStringModeled").getAsBoolean());
+            assertEquals("JAVA_STRING_CONTENT_PLUS_EXPLICIT_"
+                            + "NULLNESS_BOOL_V1",
+                    result.manifest.get(
+                            "nullableStringEncodingAuthority").getAsString());
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(declare-const " + companion + " Bool)"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(ite " + companion + " (VRef nullRef) (VString "
+                            + "sym__port__REGION_F_in_2__string))"));
+            assertTrue(fatalPath, fatalPath.contains(
+                    "(not " + companion + ")"));
+            assertTrue(fatalPath, fatalPath.contains("(str.contains "
+                    + "sym__port__REGION_F_in_2__string \"ready\")"));
+            assertZ3Status(result.smtLib, "sat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void nullableStringShortCircuitAndDereferenceDefinednessMatchJava()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject original = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonElement isNull = binaryCondition(receiver.deepCopy(), "==",
+                    symbol("", "N"));
+            JsonArray shortCircuitConstraints = new JsonArray();
+            shortCircuitConstraints.add(binaryCondition(isNull, "||",
+                    opString("contains", receiver.deepCopy(),
+                            conString("ready"))));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) {
+                shortCircuitConstraints.add(constraint.deepCopy());
+            }
+            JsonObject shortCircuit = original.deepCopy();
+            shortCircuit.add("constraints", shortCircuitConstraints);
+            Files.write(fixture.fatal, (shortCircuit + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result shortCircuitResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            String companion =
+                    "sym__port__REGION_F_in_2__string_is_null";
+            String forceNull = shortCircuitResult.smtLib.replace(
+                    "(check-sat)", "(assert " + companion
+                            + ")\n(check-sat)");
+            assertEquals(shortCircuitResult.manifest.toString(), 0,
+                    shortCircuitResult.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertZ3Status(forceNull, "sat");
+
+            JsonArray invalidDereferenceConstraints = new JsonArray();
+            invalidDereferenceConstraints.add(binaryCondition(
+                    receiver.deepCopy(), "==", symbol("", "N")));
+            invalidDereferenceConstraints.add(opString("contains",
+                    receiver.deepCopy(), conString("ready")));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) {
+                invalidDereferenceConstraints.add(constraint.deepCopy());
+            }
+            JsonObject invalidDereference = original.deepCopy();
+            invalidDereference.add("constraints",
+                    invalidDereferenceConstraints);
+            Files.write(fixture.fatal, (invalidDereference + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result invalidDereferenceResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertZ3Status(invalidDereferenceResult.smtLib, "unsat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void javaStringReferenceEqualityRequiresExactProvenance()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject original = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            JsonElement receiver = symbol("java/lang/String",
+                    "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonArray sameConstraints = new JsonArray();
+            sameConstraints.add(binaryCondition(receiver.deepCopy(), "==",
+                    receiver.deepCopy()));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) sameConstraints.add(constraint.deepCopy());
+            JsonObject same = original.deepCopy();
+            same.add("constraints", sameConstraints);
+            Files.write(fixture.fatal, (same + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result sameResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertEquals(sameResult.manifest.toString(), 0,
+                    sameResult.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+
+            JsonArray distinctConstraints = new JsonArray();
+            distinctConstraints.add(binaryCondition(receiver.deepCopy(),
+                    "==", symbol("java/lang/String",
+                            "M_L'String'_distinct_reference")));
+            for (JsonElement constraint : original.getAsJsonArray(
+                    "constraints")) {
+                distinctConstraints.add(constraint.deepCopy());
+            }
+            JsonObject distinct = original.deepCopy();
+            distinct.add("constraints", distinctConstraints);
+            Files.write(fixture.fatal, (distinct + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicSmtComposer.Result distinctResult =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+            assertFalse(distinctResult.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertTrue(distinctResult.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString(),
+                    distinctResult.manifest.getAsJsonArray(
+                            "unsupportedExpressions").toString().contains(
+                            "MODEL_SEMANTICS_MISSING:"
+                                    + "JAVA_STRING_REFERENCE_IDENTITY:=="));
         } finally {
             folder.delete();
         }
@@ -918,6 +1155,81 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void primitiveCastsPreserveJavaBoundarySemanticsInComposition()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            prependFatalConstraints(fixture,
+                    binaryCondition(explicitCast(
+                            constant("J", "Y_J_4294967297"), "J", "I"),
+                            "==", constant("I", "Y_I_1")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_257"), "I", "B"),
+                            "==", constant("B", "Y_B_1")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_65535"), "I", "S"),
+                            "==", constant("S", "Y_S_-1")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_-1"), "I", "C"),
+                            "==", constant("C", "Y_C_65535")),
+                    binaryCondition(explicitCast(
+                            constant("I", "Y_I_-1"), "I", "J"),
+                            "==", constant("J", "Y_J_-1")),
+                    binaryCondition(explicitCast(
+                            constant("J", "Y_J_4294967297"), "J", "D"),
+                            "==", constant("D", "Y_D_4294967297.0")),
+                    binaryCondition(explicitCast(
+                            constant("F", "Y_F_1.5"), "F", "D"),
+                            "==", constant("D", "Y_D_1.5")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_1.5"), "D", "F"),
+                            "==", constant("F", "Y_F_1.5")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_NaN"), "D", "I"),
+                            "==", constant("I", "Y_I_0")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_Infinity"), "D", "I"),
+                            "==", constant("I", "Y_I_2147483647")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_-Infinity"), "D", "I"),
+                            "==", constant("I", "Y_I_-2147483648")),
+                    binaryCondition(explicitCast(
+                            constant("D", "Y_D_-2.9"), "D", "I"),
+                            "==", constant("I", "Y_I_-2")),
+                    binaryCondition(explicitCast(
+                            constant("F", "Y_F_Infinity"), "F", "J"),
+                            "==", constant("J",
+                                    "Y_J_9223372036854775807")),
+                    // Old captures carry only _java_type; retain that path.
+                    binaryCondition(cast(constant("I", "Y_I_257"), "B"),
+                            "==", constant("B", "Y_B_1")));
+
+            ConcolicSmtComposer.Result result =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertEquals(result.manifest.toString(), 0,
+                    result.manifest.getAsJsonArray(
+                            "unsupportedExpressions").size());
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(java_int_wrap 4294967297)"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(fp.isNaN "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "((_ fp.to_sbv 32) RTZ "));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "((_ fp.to_sbv 64) RTZ "));
+            assertZ3Status(result.smtLib, "sat");
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void composedIntAndLongArithmeticWrapsAtJavaWidths()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -997,7 +1309,7 @@ public class ConcolicSmtComposerTest {
             assertTrue(unsupported, unsupported.contains(
                     "MODEL_SEMANTICS_MISSING:MethodExpression:"
                             + "example/Codec mystery"));
-            assertTrue(unsupported, unsupported.contains(
+            assertFalse(unsupported, unsupported.contains(
                     "MODEL_SEMANTICS_MISSING:TypeCastExpression:I->B"));
             assertFalse(unsupported, unsupported.contains(
                     "MODEL_SEMANTICS_MISSING:TypeCastExpression:I->D"));
@@ -5248,6 +5560,15 @@ public class ConcolicSmtComposerTest {
         result.addProperty("_type", "TypeCastExpression");
         result.addProperty("_java_type", javaType);
         result.add("_exp", source);
+        return result;
+    }
+
+    private static JsonObject explicitCast(JsonElement source,
+                                           String sourceJavaType,
+                                           String targetJavaType) {
+        JsonObject result = cast(source, targetJavaType);
+        result.addProperty("sourceJavaType", sourceJavaType);
+        result.addProperty("targetJavaType", targetJavaType);
         return result;
     }
 

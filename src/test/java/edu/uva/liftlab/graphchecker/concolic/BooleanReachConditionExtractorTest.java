@@ -197,8 +197,10 @@ public class BooleanReachConditionExtractorTest {
                 .append(smtName(suppliedOutput)).append(" Value)\n");
         String smt = fixture.smt.replace(
                 "(declare-datatypes () ((Value (VInt (v Int)))))",
-                "(declare-datatypes () ((Value (VInt (v Int)) "
-                        + "(VString (s String)))))")
+                "(declare-sort Ref 0)\n"
+                        + "(declare-datatypes () ((Value (VInt (v Int)) "
+                        + "(VString (s String)) (VRef (r Ref)))))\n"
+                        + "(declare-const nullRef Ref)")
                 .replace("(check-sat)\n",
                         scalarSmt + "(check-sat)\n");
 
@@ -226,6 +228,11 @@ public class BooleanReachConditionExtractorTest {
                 "upstreamSuppliedNonBooleanScalarInputCount").getAsInt());
         assertEquals(3, report.get(
                 "existentialNonBooleanRootInputCount").getAsInt());
+        assertTrue(report.get("nullableJavaStringModeled").getAsBoolean());
+        assertEquals(1, report.get(
+                "nullableJavaStringInputCount").getAsInt());
+        assertEquals("JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1",
+                report.get("nullableStringEncodingAuthority").getAsString());
 
         JsonArray existential = report.getAsJsonArray(
                 "existentialNonBooleanRootInputs");
@@ -832,10 +839,20 @@ public class BooleanReachConditionExtractorTest {
         smt.append("(declare-const port__").append(normalized)
                 .append(" Value)\n")
                 .append("(declare-const ").append(term).append(' ')
-                .append(sort).append(")\n")
-                .append("(assert (= port__").append(normalized)
-                .append(" (").append(constructor).append(' ')
-                .append(term).append(")))\n");
+                .append(sort).append(")\n");
+        if ("String".equals(sort)) {
+            String nullness = term + "_is_null";
+            smt.append("(declare-const ").append(nullness)
+                    .append(" Bool)\n")
+                    .append("(assert (= port__").append(normalized)
+                    .append(" (ite ").append(nullness)
+                    .append(" (VRef nullRef) (VString ")
+                    .append(term).append("))))\n");
+        } else {
+            smt.append("(assert (= port__").append(normalized)
+                    .append(" (").append(constructor).append(' ')
+                    .append(term).append(")))\n");
+        }
     }
 
     private static JsonObject scalarMapping(String port, String sort,
@@ -850,6 +867,13 @@ public class BooleanReachConditionExtractorTest {
         mapping.addProperty("sort", sort);
         mapping.addProperty("solverSort", solverSort);
         mapping.addProperty("termKind", "CANONICAL_PORT_TERM");
+        if ("STRING".equals(sort)) {
+            mapping.addProperty("nullnessSolverTerm",
+                    "sym__port__" + smtName(port)
+                            + "__string_is_null");
+            mapping.addProperty("nullableStringEncodingAuthority",
+                    "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        }
         mapping.addProperty("authority", "EMITTER_ACTUAL_TERM");
         return mapping;
     }
@@ -864,6 +888,13 @@ public class BooleanReachConditionExtractorTest {
         assertEquals("sym__port__" + smtName(port) + "__" + suffix,
                 input.get("solverTerm").getAsString());
         assertEquals(solverSort, input.get("solverSort").getAsString());
+        if ("String".equals(solverSort)) {
+            assertEquals("sym__port__" + smtName(port)
+                            + "__string_is_null",
+                    input.get("nullnessSolverTerm").getAsString());
+            assertEquals("Bool",
+                    input.get("nullnessSolverSort").getAsString());
+        }
         assertTrue(input.get("root").getAsBoolean());
         assertFalse(input.get("upstreamSupplied").getAsBoolean());
         assertEquals("EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION",

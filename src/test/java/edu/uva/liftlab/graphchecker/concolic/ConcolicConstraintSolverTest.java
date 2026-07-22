@@ -101,6 +101,326 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
+    public void nullableJavaStringGuardsProjectNullnessAndContentModels()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String raw = "M_L'String'_field_REGION.3.in.0_example/Input";
+        JsonObject symbol = stringSymbol(raw);
+        JsonObject nonNull = binaryExpression(symbol.deepCopy(), "!=",
+                nullReference());
+        JsonObject symmetricNonNull = binaryExpression(nullReference(),
+                "!=", symbol.deepCopy());
+        JsonObject positiveTask = task(nonNull);
+        JsonArray positiveConstraints = new JsonArray();
+        positiveConstraints.add(nonNull);
+        positiveConstraints.add(symmetricNonNull);
+        positiveTask.add("constraints", positiveConstraints);
+
+        ConcolicConstraintSolver.Result positive =
+                ConcolicConstraintSolver.solve(positiveTask, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(positive.record.toString(), "SAT_MODEL_READY",
+                positive.record.get("status").getAsString());
+        assertEquals(0, positive.record.getAsJsonArray("unsupported").size());
+        assertTrue(positive.record.get("nullableJavaStringModeled")
+                .getAsBoolean());
+        assertEquals("JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1",
+                positive.record.get("nullableStringEncodingAuthority")
+                        .getAsString());
+        assertTrue(positive.smtLib,
+                positive.smtLib.contains("sym__string_is_null__"));
+        assertTrue(positive.smtLib,
+                positive.smtLib.contains("(not sym__string_is_null__"));
+        assertEquals(1, positive.modelAssignments.size());
+        JsonObject positiveAssignment = positive.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("STRING", positiveAssignment.get("valueType")
+                .getAsString());
+        assertFalse(positiveAssignment.get("modelIsNull").getAsBoolean());
+        assertEquals("JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1",
+                positiveAssignment.get("nullableStringEncodingAuthority")
+                        .getAsString());
+
+        JsonObject isNull = binaryExpression(symbol.deepCopy(), "==",
+                nullReference());
+        JsonObject symmetricNull = binaryExpression(nullReference(), "==",
+                symbol.deepCopy());
+        JsonObject nullTask = task(isNull);
+        JsonArray nullConstraints = new JsonArray();
+        nullConstraints.add(isNull);
+        nullConstraints.add(symmetricNull);
+        nullTask.add("constraints", nullConstraints);
+        ConcolicConstraintSolver.Result nullable =
+                ConcolicConstraintSolver.solve(nullTask, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(nullable.record.toString(), "SAT_MODEL_READY",
+                nullable.record.get("status").getAsString());
+        assertEquals(0,
+                nullable.record.getAsJsonArray("unsupported").size());
+        assertEquals(1, nullable.modelAssignments.size());
+        JsonObject nullAssignment = nullable.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("NULL", nullAssignment.get("valueType").getAsString());
+        assertEquals("null", nullAssignment.get("value").getAsString());
+        assertTrue(nullAssignment.get("modelIsNull").getAsBoolean());
+    }
+
+    @Test
+    public void genericReferenceNullTargetProducesAnExactNullAssignment()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String raw = "M_L_field_REGION.3.in.0_example/Input";
+        JsonObject isNull = binaryExpression(referenceSymbol(raw,
+                        "Ljava/lang/Boolean;"), "==", nullReference());
+        JsonObject query = task(isNull);
+        query.add("negatedCondition", isNull.deepCopy());
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertTrue(result.record.get("nullableJavaReferenceModeled")
+                .getAsBoolean());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "sym__reference_is_null__"));
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("REGION.3.in.0",
+                assignment.get("inputSymbol").getAsString());
+        assertEquals("NULL", assignment.get("valueType").getAsString());
+        assertEquals("null", assignment.get("value").getAsString());
+        assertTrue(assignment.get("modelIsNull").getAsBoolean());
+        assertEquals("JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1",
+                assignment.get("referenceNullnessEncodingAuthority")
+                        .getAsString());
+    }
+
+    @Test
+    public void classNameContainingStringRemainsAnOrdinaryReference()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String raw = "M_L_field_REGION.3.in.0_example/StringHolder";
+        JsonObject isNull = binaryExpression(referenceSymbol(raw,
+                        "Lexample/StringHolder;"), "==", nullReference());
+        JsonObject query = task(isNull);
+        query.add("negatedCondition", isNull.deepCopy());
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "sym__reference_is_null__"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "sym__string_is_null__"));
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals("NULL", assignment.get("valueType").getAsString());
+        assertEquals("JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1",
+                assignment.get("referenceNullnessEncodingAuthority")
+                        .getAsString());
+    }
+
+    @Test
+    public void genericReferenceNonNullTargetFailsClosedWithoutAnObjectModel()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String raw = "M_L_field_REGION.3.in.0_example/Input";
+        JsonObject nonNull = binaryExpression(referenceSymbol(raw,
+                        "Ljava/lang/Boolean;"), "!=", nullReference());
+        JsonObject query = task(nonNull);
+        query.add("negatedCondition", nonNull.deepCopy());
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
+                result.record.get("status").getAsString());
+        assertEquals("NOT_ALL_PATH_INPUT_SYMBOLS_HAVE_"
+                        + "MATERIALIZATION_TARGETS",
+                result.record.get("reason").getAsString());
+        assertEquals(0, result.modelAssignments.size());
+        assertTrue(result.record.getAsJsonArray("unmappedInputSymbols")
+                .toString().contains(raw));
+    }
+
+    @Test
+    public void nonTargetReferencePrefixRetainsItsConcreteReplayObject()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String prefixRaw = "M_L_field_REGION.3.in.0_example/Input";
+        String targetRaw = "M_I_field_REGION.3.in.1_java/lang/Integer";
+        JsonObject prefix = binaryExpression(referenceSymbol(prefixRaw,
+                        "Ljava/lang/Boolean;"), "!=", nullReference());
+        JsonObject target = binarySymbol(targetRaw, ">", 3);
+        JsonObject query = task(target);
+        JsonArray constraints = new JsonArray();
+        constraints.add(prefix);
+        constraints.add(target);
+        query.add("constraints", constraints);
+        query.add("negatedCondition", target.deepCopy());
+
+        JsonObject replay = new JsonObject();
+        JsonArray materializations = new JsonArray();
+        materializations.add(materialization("REGION.3.in.0", 0));
+        materializations.add(materialization("REGION.3.in.1", 1));
+        replay.add("materializations", materializations);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query, replay,
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(1, result.record.get(
+                "unforcedPrefixReferenceSymbolCount").getAsInt());
+        assertTrue(result.record.getAsJsonArray(
+                "unforcedPrefixReferenceSymbols").toString().contains(
+                prefixRaw));
+        assertTrue(result.record.get(
+                "requiresUnforcedEnvironmentValidation").getAsBoolean());
+        assertEquals(1, result.modelAssignments.size());
+        assertEquals("REGION.3.in.1", result.modelAssignments.get(0)
+                .getAsJsonObject().get("inputSymbol").getAsString());
+    }
+
+    @Test
+    public void nullReferencePrefixIsMaterializedForALaterScalarFlip()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String prefixRaw = "M_L_field_REGION.3.in.0_example/Input";
+        String targetRaw = "M_I_field_REGION.3.in.1_java/lang/Integer";
+        JsonObject prefix = binaryExpression(referenceSymbol(prefixRaw,
+                        "Ljava/lang/Boolean;"), "==", nullReference());
+        JsonObject target = binarySymbol(targetRaw, ">", 3);
+        JsonObject query = task(target);
+        JsonArray constraints = new JsonArray();
+        constraints.add(prefix);
+        constraints.add(target);
+        query.add("constraints", constraints);
+        query.add("negatedCondition", target.deepCopy());
+
+        JsonObject replay = new JsonObject();
+        JsonArray materializations = new JsonArray();
+        materializations.add(materialization("REGION.3.in.0", 0));
+        materializations.add(materialization("REGION.3.in.1", 1));
+        replay.add("materializations", materializations);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query, replay,
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(0, result.record.get(
+                "unforcedPrefixReferenceSymbolCount").getAsInt());
+        assertEquals(1, result.record.get(
+                "materializedNullPrefixReferenceSymbolCount").getAsInt());
+        assertTrue(result.record.getAsJsonArray(
+                "materializedNullPrefixReferenceSymbols").toString()
+                .contains(prefixRaw));
+        assertEquals(2, result.modelAssignments.size());
+        JsonObject nullAssignment = null;
+        for (JsonElement element : result.modelAssignments) {
+            JsonObject assignment = element.getAsJsonObject();
+            if ("REGION.3.in.0".equals(assignment.get("inputSymbol")
+                    .getAsString())) {
+                nullAssignment = assignment;
+            }
+        }
+        assertTrue(result.modelAssignments.toString(),
+                nullAssignment != null);
+        assertEquals("NULL", nullAssignment.get("valueType").getAsString());
+        assertEquals("null", nullAssignment.get("value").getAsString());
+        assertTrue(nullAssignment.get("modelIsNull").getAsBoolean());
+    }
+
+    @Test
+    public void nullStringCannotSatisfyAnEvaluatedContentPredicate()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String raw = "M_L'String'_field_REGION.3.in.0_example/Input";
+        JsonObject symbol = stringSymbol(raw);
+        JsonObject isNull = binaryExpression(symbol.deepCopy(), "==",
+                nullReference());
+        JsonObject contains = stringOperation("contains", false,
+                symbol.deepCopy(), stringConstant("needle"));
+        JsonObject task = task(contains);
+        JsonArray constraints = new JsonArray();
+        constraints.add(isNull);
+        constraints.add(contains);
+        task.add("constraints", constraints);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(task, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "UNSAT",
+                result.record.get("status").getAsString());
+        assertEquals(0, result.record.getAsJsonArray("unsupported").size());
+        assertTrue(result.smtLib,
+                result.smtLib.contains("(not sym__string_is_null__"));
+    }
+
+    @Test
+    public void arbitraryReferenceAndStringEqualityStillFailsClosed()
+            throws Exception {
+        JsonObject reference = new JsonObject();
+        reference.addProperty("_type", "SymbolExpression");
+        reference.addProperty("_java_type", "Ljava/lang/Object;");
+        reference.addProperty("_exp",
+                "M_L_field_REGION.3.in.1_example/Input");
+        JsonObject equality = binaryExpression(stringSymbol(
+                "M_L'String'_field_REGION.3.in.0_example/Input"), "==",
+                reference);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(task(equality), activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "UNSUPPORTED",
+                result.record.get("status").getAsString());
+        assertTrue(result.record.getAsJsonArray("unsupported").toString(),
+                result.record.getAsJsonArray("unsupported").toString()
+                        .contains("SORT_MISMATCH:STRING:REF"));
+
+        String firstRaw =
+                "M_L'String'_field_REGION.3.in.0_example/Input";
+        String secondRaw =
+                "M_L'String'_field_REGION.3.in.1_example/Input";
+        ConcolicConstraintSolver.Result distinctStrings =
+                ConcolicConstraintSolver.solve(task(binaryExpression(
+                                stringSymbol(firstRaw), "==",
+                                stringSymbol(secondRaw))), activation(),
+                        Paths.get("z3"), 10_000L);
+        assertEquals(distinctStrings.record.toString(), "UNSUPPORTED",
+                distinctStrings.record.get("status").getAsString());
+        assertTrue(distinctStrings.record.getAsJsonArray("unsupported")
+                        .toString(), distinctStrings.record
+                        .getAsJsonArray("unsupported").toString().contains(
+                        "JAVA_STRING_REFERENCE_IDENTITY_"
+                                + "MATERIALIZATION_UNMODELED"));
+
+        Assume.assumeTrue(z3Available());
+        JsonObject self = binaryExpression(stringSymbol(firstRaw), "==",
+                stringSymbol(firstRaw));
+        ConcolicConstraintSolver.Result selfComparison =
+                ConcolicConstraintSolver.solve(task(self), activation(),
+                        Paths.get("z3"), 10_000L);
+        assertEquals(selfComparison.record.toString(), "SAT_MODEL_READY",
+                selfComparison.record.get("status").getAsString());
+    }
+
+    @Test
     public void coreStringOperationsLowerExactlyWithBothPredicatePolarities()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -493,6 +813,74 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
+    public void primitiveCastsPreserveJavaBoundarySemanticsInPathSolving()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonArray constraints = new JsonArray();
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("J", "4294967297"), "J", "I"), "==",
+                numericConstant("I", "1")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("I", "257"), "I", "B"), "==",
+                numericConstant("B", "1")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("I", "65535"), "I", "S"), "==",
+                numericConstant("S", "-1")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("I", "-1"), "I", "C"), "==",
+                numericConstant("C", "65535")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("I", "-1"), "I", "J"), "==",
+                numericConstant("J", "-1")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("J", "4294967297"), "J", "D"), "==",
+                numericConstant("D", "4294967297.0")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("F", "1.5"), "F", "D"), "==",
+                numericConstant("D", "1.5")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("D", "1.5"), "D", "F"), "==",
+                numericConstant("F", "1.5")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("D", "NaN"), "D", "I"), "==",
+                numericConstant("I", "0")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("D", "Infinity"), "D", "I"), "==",
+                numericConstant("I", "2147483647")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("D", "-Infinity"), "D", "I"), "==",
+                numericConstant("I", "-2147483648")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("D", "-2.9"), "D", "I"), "==",
+                numericConstant("I", "-2")));
+        constraints.add(binaryExpression(explicitCast(
+                numericConstant("F", "Infinity"), "F", "J"), "==",
+                numericConstant("J", "9223372036854775807")));
+        // Legacy VM JSON has no explicit source/target pair.
+        constraints.add(binaryExpression(cast(
+                numericConstant("I", "257"), "B"), "==",
+                numericConstant("B", "1")));
+        JsonObject query = task(constraints.get(0).getAsJsonObject());
+        query.add("constraints", constraints);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query, activation(),
+                        Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "sat",
+                result.record.get("solverStatus").getAsString());
+        assertEquals(result.record.toString(), 0,
+                result.record.getAsJsonArray("unsupported").size());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(java_int_wrap 4294967297)"));
+        assertTrue(result.smtLib, result.smtLib.contains("(fp.isNaN "));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "((_ fp.to_sbv 32) RTZ "));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "((_ fp.to_sbv 64) RTZ "));
+    }
+
+    @Test
     public void unknownMethodsCastsAndNonNumericOperatorsFailClosed()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -526,7 +914,7 @@ public class ConcolicConstraintSolverTest {
                 result.record.get("status").getAsString());
         assertTrue(unsupported, unsupported.contains(
                 "METHOD_SEMANTICS_MISSING:example/Codec mystery"));
-        assertTrue(unsupported, unsupported.contains(
+        assertFalse(unsupported, unsupported.contains(
                 "UNSUPPORTED_JAVA_CAST:I->B"));
         assertFalse(unsupported, unsupported.contains(
                 "UNSUPPORTED_JAVA_CAST:I->D"));
@@ -638,8 +1026,9 @@ public class ConcolicConstraintSolverTest {
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
                 result.record.get("status").getAsString());
-        assertEquals("FULL_PATH_CONTROLLED_INPUTS_V2", result.record.get(
-                "modelProjectionPolicy").getAsString());
+        assertEquals("FULL_PATH_MATERIALIZABLE_INPUTS_PLUS_MODEL_"
+                        + "PARTITIONED_PREFIX_REFERENCES_V4",
+                result.record.get("modelProjectionPolicy").getAsString());
         assertEquals(2, result.record.get("controlledSymbolCount").getAsInt());
         assertEquals(1, result.record.get(
                 "targetControlledSymbolCount").getAsInt());
@@ -1123,6 +1512,14 @@ public class ConcolicConstraintSolverTest {
         return numericSymbol(raw, "I");
     }
 
+    private static JsonObject referenceSymbol(String raw, String javaType) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "SymbolExpression");
+        result.addProperty("_java_type", javaType);
+        result.addProperty("_exp", raw);
+        return result;
+    }
+
     private static JsonObject numericSymbol(String raw, String javaType) {
         JsonObject result = new JsonObject();
         result.addProperty("_type", "SymbolExpression");
@@ -1160,6 +1557,15 @@ public class ConcolicConstraintSolverTest {
         result.addProperty("_type", "TypeCastExpression");
         result.addProperty("_java_type", javaType);
         result.add("_exp", source);
+        return result;
+    }
+
+    private static JsonObject explicitCast(JsonElement source,
+                                           String sourceJavaType,
+                                           String targetJavaType) {
+        JsonObject result = cast(source, targetJavaType);
+        result.addProperty("sourceJavaType", sourceJavaType);
+        result.addProperty("targetJavaType", targetJavaType);
         return result;
     }
 

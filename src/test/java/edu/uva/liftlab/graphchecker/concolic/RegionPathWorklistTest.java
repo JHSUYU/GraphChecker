@@ -4,6 +4,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -475,6 +478,39 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void certifiedConcreteGuardRequiresValidTargetActionDigest() {
+        JsonObject summary = certifiedNullGuardSummary("ACT.NULL.CERT");
+        JsonObject activation = activation("ACT.NULL.CERT",
+                RegionCaptureGoal.outputClosure());
+
+        RegionPathWorklist.Result accepted = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(accepted.manifest.toString(), 1, accepted.tasks.size());
+        assertEquals("SITE.NULL", accepted.tasks.get(0).get("flipSite")
+                .getAsString());
+        assertTrue(accepted.tasks.get(0).get(
+                "concreteGuardReplayProofRequired").getAsBoolean());
+
+        JsonObject tampered = summary.deepCopy();
+        tampered.getAsJsonArray("branchMappings").get(0).getAsJsonObject()
+                .addProperty("certificateTargetActionSha256", "not-a-sha");
+        RegionPathWorklist.Result rejected = RegionPathWorklist.plan(
+                Collections.singletonList(tampered),
+                Collections.singletonList(activation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertTrue(rejected.tasks.isEmpty());
+        assertEquals("INVALID_CERTIFIED_CONCRETE_GUARD",
+                rejected.manifest.getAsJsonArray("gaps").get(0)
+                        .getAsJsonObject().get("kind").getAsString());
+    }
+
+    @Test
     public void boundedNumericLoopKeepsEveryOccurrenceAndFailsClosedWhenUnmapped() {
         JsonObject summary = summary("ACT.NUMERIC.LOOP",
                 RegionCaptureGoal.outputClosure());
@@ -641,6 +677,116 @@ public class RegionPathWorklistTest {
         mappings.add(upper);
         result.add("branchMappings", mappings);
         return result;
+    }
+
+    private static JsonObject certifiedNullGuardSummary(String activationId) {
+        JsonObject result = summary(activationId,
+                RegionCaptureGoal.outputClosure());
+        JsonObject condition = new JsonObject();
+        condition.addProperty("_type", "BinaryExpression");
+        condition.addProperty("_op", "==");
+        JsonObject reference = new JsonObject();
+        reference.addProperty("_type", "SymbolExpression");
+        reference.addProperty("_java_type", "Ljava/lang/Object;");
+        reference.addProperty("_exp", "M_L_REGION.3.in.0");
+        condition.add("_left", reference);
+        JsonObject nullValue = new JsonObject();
+        nullValue.addProperty("_type", "SymbolExpression");
+        nullValue.addProperty("_exp", "N");
+        condition.add("_right", nullValue);
+        JsonArray conditions = new JsonArray();
+        conditions.add(condition);
+        result.add("pathCondition", conditions);
+
+        String site = "SITE.NULL";
+        int occurrence = 1;
+        boolean outcome = true;
+        String queryKey = "QUERY.NULL";
+        String assignmentKey = "REGION.3.in.0=NULL";
+        String conditionHash = sha256(condition.toString());
+        String proofRole = "TARGET";
+        JsonObject mapping = mapping(site, 0, occurrence);
+        mapping.addProperty("policy", "EXPLORE");
+        mapping.addProperty("outcome", outcome);
+        mapping.addProperty("observedOutcome", outcome);
+        mapping.addProperty("effectiveOutcome", outcome);
+        mapping.addProperty("conditionAuthority",
+                "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1");
+        mapping.addProperty("syntheticConditionAuthority",
+                "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1");
+        mapping.addProperty("concreteGuardCertificateAuthority",
+                "RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
+                        + "VM_BRANCH_EVENT_V1");
+        mapping.addProperty("certificateProofAuthority",
+                "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1");
+        mapping.addProperty("certifiedConcreteGuard", true);
+        mapping.addProperty("syntheticCondition", true);
+        mapping.addProperty("certificateActivationId", activationId);
+        mapping.addProperty("certificatePathQueryKey", queryKey);
+        mapping.addProperty("certificateProofRole", proofRole);
+        mapping.addProperty("certificateSourceConditionIndex", 0);
+        mapping.addProperty("certificateConstraintIndex", 0);
+        mapping.addProperty("certificateExpectedBranchPrefixOrdinal", -1);
+        mapping.addProperty("certificateSiteId", site);
+        mapping.addProperty("certificateOccurrence", occurrence);
+        mapping.addProperty("certificateOutcome", outcome);
+        mapping.addProperty("certificateModelAssignmentKey", assignmentKey);
+        mapping.addProperty("certificateConditionSha256", conditionHash);
+        mapping.addProperty("certificateEngineSymbol", "M_L_REGION.3.in.0");
+        mapping.addProperty("certificateInputSymbol", "REGION.3.in.0");
+        mapping.addProperty("certificateTargetActionSha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        mapping.addProperty("syntheticConditionKey", activationId + "\n"
+                + queryKey + "\n" + proofRole + "\n0\n0\n-1\n" + site
+                + "\n" + occurrence + "\n" + outcome + "\n"
+                + assignmentKey + "\n" + conditionHash);
+        mapping.addProperty("rawConditionIndex", -1);
+        mapping.addProperty("engineConditionIndex", -1);
+        mapping.addProperty("normalizedConditionIndex", 0);
+        mapping.addProperty("normalizedPathConditionBaseline", 0);
+        mapping.addProperty("normalizedPathConditionSize", 1);
+        mapping.addProperty("pathConditionBaseline", 0);
+        mapping.addProperty("pathConditionSize", 1);
+        mapping.addProperty("rawPathConditionBaseline", 0);
+        mapping.addProperty("rawPathConditionSize", 0);
+        mapping.addProperty("rawPathConditionsAdded", 0);
+        mapping.addProperty("vmBranchEventExpected", true);
+        mapping.addProperty("vmBranchEventValidated", true);
+        mapping.addProperty("vmBranchEventId", 17);
+        mapping.addProperty("vmOccurrence", occurrence);
+        mapping.addProperty("vmThreadContextId", 7L);
+        mapping.addProperty("vmOwnerJavaThreadId", 11L);
+        mapping.addProperty("vmOwnerOsThreadId", 13L);
+        mapping.add("vmConditionIndices", new JsonArray());
+        mapping.addProperty("vmBranchEventAuthority",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+        mapping.addProperty("mappingPolicy",
+                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
+        mapping.addProperty("overrideApplied", false);
+        mapping.addProperty("overrideMode", "NONE");
+        mapping.addProperty("replayValidation", "PASS");
+        mapping.addProperty("scheduledTarget", true);
+        mapping.addProperty("scheduledDesiredOutcome", outcome);
+        mapping.addProperty("scheduledOutcomeMatched", true);
+        mapping.add("condition", condition.deepCopy());
+        JsonArray mappings = new JsonArray();
+        mappings.add(mapping);
+        result.add("branchMappings", mappings);
+        return result;
+    }
+
+    private static String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : bytes) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
     }
 
     private static JsonObject exactVmIfMapping(String site,

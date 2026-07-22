@@ -257,6 +257,57 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     }
 
     @Test
+    public void nullableStringRootProjectsNullWithoutMaterializingContent()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installScalarOnlyProducerCatalog(fixture, false);
+        String smt = new String(Files.readAllBytes(fixture.smt),
+                StandardCharsets.UTF_8).replace(
+                "(assert (= scalar_b_is_null false))",
+                "(assert (= scalar_b_is_null true))");
+        Files.write(fixture.smt, smt.getBytes(StandardCharsets.UTF_8));
+        refreshBootstrapArtifacts(fixture);
+
+        ConcolicPrimitiveBootstrapProjector.Result result =
+                ConcolicPrimitiveBootstrapProjector.project(
+                        fixture.arguments());
+
+        JsonObject assignment = assertSupplemental(producer(result,
+                "REGION.B").getAsJsonArray("modelAssignments"),
+                "REGION.B.in.0", "NULL", "null");
+        assertEquals("scalar_b_is_null", assignment.get(
+                "nullnessSolverTerm").getAsString());
+        assertEquals("true", assignment.get(
+                "nullnessModelValue").getAsString());
+        assertEquals("scalar_b", assignment.get(
+                "contentSolverTerm").getAsString());
+        assertEquals(1, result.manifest.get(
+                "nullableStringAssignmentCount").getAsInt());
+        assertEquals(1, result.manifest.get(
+                "nullStringAssignmentCount").getAsInt());
+    }
+
+    @Test
+    public void stringRootWithoutExplicitNullnessCompanionFailsClosed()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installScalarOnlyProducerCatalog(fixture, false);
+        JsonObject reach = fixture.reach;
+        JsonObject stringRoot = reach.getAsJsonArray(
+                "existentialNonBooleanRootInputs").get(0)
+                .getAsJsonObject();
+        stringRoot.remove("nullnessSolverTerm");
+        Files.write(fixture.reachPath, reach.toString().getBytes(
+                StandardCharsets.UTF_8));
+        refreshBootstrapArtifacts(fixture);
+
+        expectFailure(fixture.arguments(),
+                "INVALID_EXISTENTIAL_NON_BOOLEAN_ROOT:REGION.B.in.0");
+    }
+
+    @Test
     public void pureScalarCatalogAllowsEmptyBooleanValuation()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -465,6 +516,79 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 bridge.get("canonicalBridgeAuthority").getAsString());
         assertEquals(1, bridge.getAsJsonArray(
                 "dynamicBindingIds").size());
+    }
+
+    @Test
+    public void dynamicStringBridgeAttestsContentAndNullnessTogether()
+            throws Exception {
+        String port = "REGION.A.in.4";
+        String actual = "actual_string";
+        String actualNullness = "actual_string_is_null";
+        String canonical = "sym__port__REGION_A_in_4__string";
+        String canonicalNullness = canonical + "_is_null";
+        String guard = "case_a";
+        String expression = "(and (= " + actual + " " + canonical
+                + ") (= " + actualNullness + " " + canonicalNullness
+                + "))";
+        String formula = "(=> " + guard + " " + expression + ")";
+        String assertionName = "bridge_nullable_string";
+        String assertion = "(assert (! " + formula + " :named "
+                + assertionName + "))";
+
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("rawEngineSymbol", "dynamic.string.field");
+        mapping.addProperty("solverTerm", actual);
+        mapping.addProperty("nullnessSolverTerm", actualNullness);
+        mapping.addProperty("sort", "STRING");
+        mapping.addProperty("solverSort", "String");
+        mapping.addProperty("canonicalPort", port);
+        mapping.addProperty("canonicalSolverTerm", canonical);
+        mapping.addProperty("canonicalNullnessSolverTerm",
+                canonicalNullness);
+        mapping.addProperty("canonicalBridgeGuard", guard);
+        mapping.addProperty("canonicalBridgeExpression", expression);
+        mapping.addProperty("canonicalBridgeFormula", formula);
+        mapping.addProperty("canonicalBridgeAssertionName", assertionName);
+        mapping.addProperty("canonicalBridgeAssertion", assertion);
+        mapping.addProperty("canonicalBridgeAssertionSha256",
+                sha256(assertion));
+        mapping.addProperty("canonicalBridgeAuthority",
+                "CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
+                        + "GUARDED_EQUALITY_V1");
+        mapping.addProperty("nullableStringEncodingAuthority",
+                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        mapping.addProperty("termKind", "SCOPED_DYNAMIC_FIELD");
+        JsonArray ids = new JsonArray();
+        ids.add("BIND.STRING");
+        mapping.add("dynamicBindingIds", ids);
+
+        JsonObject binding = new JsonObject();
+        binding.addProperty("dynamicBindingId", "BIND.STRING");
+        binding.addProperty("baseInputSymbol", port);
+        binding.addProperty("solverTerm", actual);
+        binding.addProperty("nullnessSolverTerm", actualNullness);
+        binding.addProperty("fieldExpressionRawEngineSymbol",
+                "dynamic.string.field");
+        binding.addProperty("complete", true);
+        binding.addProperty("observationMatched", true);
+        binding.addProperty("termBindingAuthority",
+                "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM");
+        binding.addProperty("nullableStringEncodingAuthority",
+                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        JsonObject pathCase = new JsonObject();
+        pathCase.addProperty("regionId", "REGION.A");
+        pathCase.addProperty("selectorSolverSymbol", guard);
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        pathCase.add("dynamicFieldBindings", bindings);
+
+        assertTrue(ConcolicPrimitiveBootstrapProjector
+                .exactDynamicCanonicalBridge(pathCase, mapping, port,
+                        canonical, assertion + "\n"));
+        mapping.remove("canonicalNullnessSolverTerm");
+        assertFalse(ConcolicPrimitiveBootstrapProjector
+                .exactDynamicCanonicalBridge(pathCase, mapping, port,
+                        canonical, assertion + "\n"));
     }
 
     @Test
@@ -867,11 +991,13 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 + "(declare-const tl Int)\n"
                 + "(declare-const td (_ FloatingPoint 11 53))\n"
                 + "(declare-const ts String)\n"
+                + "(declare-const ts_is_null Bool)\n"
                 + "(assert (= ti 37))\n"
                 + "(assert (= tl 5000000000))\n"
                 + "(assert (fp.eq td ((_ to_fp 11 53)"
                 + " #x4004000000000000)))\n"
-                + "(assert (= ts \"needle\"))\n";
+                + "(assert (= ts \"needle\"))\n"
+                + "(assert (= ts_is_null false))\n";
         String smt = new String(Files.readAllBytes(fixture.smt),
                 StandardCharsets.UTF_8).replace("(check-sat)\n",
                 declarations + "(check-sat)\n");
@@ -938,7 +1064,9 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                                                          boolean pureScalar)
             throws Exception {
         String declarations = "(declare-const scalar_b String)\n"
-                + "(assert (= scalar_b \"needle\"))\n";
+                + "(declare-const scalar_b_is_null Bool)\n"
+                + "(assert (= scalar_b \"needle\"))\n"
+                + "(assert (= scalar_b_is_null false))\n";
         if (pureScalar) {
             declarations += "(declare-const scalar_a Int)\n"
                     + "(assert (= scalar_a 37))\n";
@@ -1039,6 +1167,12 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         result.addProperty("javaTypeDescriptor", descriptor);
         result.addProperty("solverTerm", solver);
         result.addProperty("solverSort", sort);
+        if ("String".equals(sort)) {
+            result.addProperty("nullnessSolverTerm", solver + "_is_null");
+            result.addProperty("nullnessSolverSort", "Bool");
+            result.addProperty("nullableStringEncodingAuthority",
+                    "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        }
         result.addProperty("root", true);
         result.addProperty("upstreamSupplied", false);
         result.addProperty("projectionRole",
@@ -1067,6 +1201,11 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         mapping.addProperty("solverSort", solverSort);
         mapping.addProperty("termKind", "CANONICAL_PORT_TERM");
         mapping.addProperty("canonicalPort", port);
+        if ("STRING".equals(sort)) {
+            mapping.addProperty("nullnessSolverTerm", solver + "_is_null");
+            mapping.addProperty("nullableStringEncodingAuthority",
+                    "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
+        }
         mapping.add("dynamicBindingIds", new JsonArray());
         mapping.addProperty("authority", "EMITTER_ACTUAL_TERM");
         return mapping;

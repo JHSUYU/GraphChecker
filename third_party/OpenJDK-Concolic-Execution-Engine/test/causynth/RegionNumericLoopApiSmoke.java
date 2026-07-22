@@ -14,7 +14,7 @@ public final class RegionNumericLoopApiSmoke {
         Input input = new Input();
         require(!Double.isNaN(input.ratio)
                         && !Double.isInfinite(input.ratio),
-                "the double smoke must stay in the finite-Real subset");
+                "the loop smoke intentionally uses an ordinary finite double");
 
         long status = System.startConcolicRegion("REGION.numeric-loop",
                 "ACT.numeric-loop");

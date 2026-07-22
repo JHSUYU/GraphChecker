@@ -39,6 +39,29 @@ ShadowStack::ShadowStack(JavaThread *jt) : _reflection_ret_exp(NULL) {
   }
 }
 
+const ZeroFrame *ShadowStack::marker_owner_frame() const {
+  // markConcolicBranch is itself a native call.  Bind its one-shot marker to
+  // the closest non-native Java caller so branches in nested accessors or VM
+  // exception construction cannot steal it.
+  for (ShadowFrames::const_reverse_iterator iter = _s_frames.rbegin();
+       iter != _s_frames.rend(); ++iter) {
+    const ZeroFrame *candidate = (*iter)->get_zero_frame();
+    if (candidate != NULL && candidate->is_interpreter_frame()) {
+      Method *method = candidate->as_interpreter_frame()
+          ->interpreter_state()->method();
+      if (method != NULL && !method->is_native()) {
+        return candidate;
+      }
+    }
+  }
+  return NULL;
+}
+
+bool ShadowStack::is_current_frame(const ZeroFrame *frame) const {
+  return frame != NULL && !_s_frames.empty()
+      && _s_frames.back()->get_zero_frame() == frame;
+}
+
 ShadowStack::~ShadowStack() {
   for (ShadowFrames::iterator iter = _s_frames.begin(); iter != _s_frames.end();
        ++iter) {
@@ -52,6 +75,15 @@ void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
   // ConcolicMngr::ctx->print_stack_trace();
   // ConcolicMngr::ctx->get_shadow_stack().print();
 
+  if (_s_frames.empty()) {
+    // There is no sound caller state from which to seed this frame.  This can
+    // only occur after the region owner has escaped without a matching
+    // finish; permanently disable the context instead of rebasing arbitrary
+    // JVM cleanup frames onto stale symbolic state.
+    ConcolicMngr::abortCurrentContext("SHADOW_STACK_HAS_NO_CALLER");
+    return;
+  }
+
   _s_frames.back()->check(caller_frame);
 
   ShadowFrame &last_s_frame = get_frame(0);
@@ -62,6 +94,24 @@ void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
                                          effective_tracking);
   s_frame->copy();
   if (!effective_tracking) {
+    // Paused and method-symbolized callees still perform real JVM stack
+    // transitions.  Consume their caller arguments even though no expression
+    // is propagated into the deliberately non-tracking callee frame.
+    if (callee_frame->is_interpreter_frame()) {
+      interpreterState callee_istate =
+          callee_frame->as_interpreter_frame()->interpreter_state();
+      int parameter_slots = callee_istate->method()->size_of_parameters();
+      if (parameter_slots > 0 && last_opr_stack.size() != 0) {
+        int begin_offset = 0;
+        if (caller_frame->is_interpreter_frame()) {
+          interpreterState caller_istate =
+              caller_frame->as_interpreter_frame()->interpreter_state();
+          begin_offset = caller_istate->stack_base()
+              - callee_istate->locals() - 1;
+        }
+        last_opr_stack.clear_slots(begin_offset, parameter_slots);
+      }
+    }
     _s_frames.push_back(s_frame);
     return;
   }
@@ -69,38 +119,39 @@ void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
     interpreterState callee_istate =
         callee_frame->as_interpreter_frame()->interpreter_state();
     Method *callee_method = callee_istate->method();
-    /**
-     * TODO: skip native here. Need to confirm correctness
-     */
-    if (!callee_method->is_native()) {
-      if (caller_frame->is_interpreter_frame()) {
-        interpreterState caller_istate =
-            caller_frame->as_interpreter_frame()->interpreter_state();
-        /**
-         * At this time, `istate->locals()` points to the start of locals,
-         * while `caller_istate->stack()` points to end of locals
-         */
-        int begin_offset =
-            caller_istate->stack_base() - callee_istate->locals() - 1;
-        int end_offset =
-            caller_istate->stack_base() - caller_istate->stack() - 1;
+    if (caller_frame->is_interpreter_frame()) {
+      interpreterState caller_istate =
+          caller_frame->as_interpreter_frame()->interpreter_state();
+      /**
+       * At this time, `istate->locals()` points to the start of locals,
+       * while `caller_istate->stack()` points to end of locals
+       */
+      int begin_offset =
+          caller_istate->stack_base() - callee_istate->locals() - 1;
+      int end_offset =
+          caller_istate->stack_base() - caller_istate->stack() - 1;
+      if (!callee_method->is_native()) {
         s_frame->get_local_tbl().copy_entries(last_opr_stack, begin_offset, 0,
                                               end_offset - begin_offset);
-      } else if (caller_frame->is_entry_frame()) {
-        if (last_opr_stack.size() != 0) {
-          int begin_offset = 0;
-          int end_offset = (intptr_t *) caller_frame - (intptr_t *) callee_frame - 3;
-          s_frame->get_local_tbl().copy_entries(last_opr_stack, begin_offset, 0,
-                                                end_offset - begin_offset);
-        }
       }
-    } else {
-      /**
-       * For performance issue, we ignore native call,
-       * as they so not support execute symbolically
-       * TODO: heck the effect of this code path
-       */
-//        ShouldNotCallThis();
+      // Every invocation consumes the complete caller argument footprint.
+      // Native callees have no bytecode locals to populate, but their dead
+      // argument slots must still be cleared before a result reuses them.
+      last_opr_stack.clear_slots(begin_offset,
+                                 end_offset - begin_offset);
+    } else if (caller_frame->is_entry_frame()) {
+      if (last_opr_stack.size() != 0) {
+        int begin_offset = 0;
+        int end_offset = (intptr_t *) caller_frame
+            - (intptr_t *) callee_frame - 3;
+        if (!callee_method->is_native()) {
+          s_frame->get_local_tbl().copy_entries(
+              last_opr_stack, begin_offset, 0,
+              end_offset - begin_offset);
+        }
+        last_opr_stack.clear_slots(begin_offset,
+                                   end_offset - begin_offset);
+      }
     }
   } else if (callee_frame->is_entry_frame()) {
     ShadowTable &reflection_stack = ConcolicMngr::ctx->get_shadow_stack().get_reflection_stack();
@@ -126,12 +177,41 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
    */
   ShadowFrame *s_frame = _s_frames.back();
   s_frame->check(callee_frame);
+  // A marker is owned by one concrete Java activation.  Invalidate it before
+  // releasing that frame address so a later activation cannot reuse the
+  // address and accidentally claim the stale marker.
+  ConcolicMngr::ctx->cancel_pending_branch_for_frame(callee_frame);
   _s_frames.pop_back();
+
+  if (_s_frames.empty()) {
+    delete s_frame;
+    ConcolicMngr::abortCurrentContext("SHADOW_STACK_EXHAUSTED");
+    return;
+  }
 
   // Observation helpers entered while concolic propagation is paused still
   // need a structural frame so push/pop remains balanced.  Their values are
   // deliberately not copied back into the symbolic caller state.
   if (!s_frame->symbolic_tracking_enabled()) {
+    if (callee_frame->is_interpreter_frame()) {
+      interpreterState callee_istate =
+          callee_frame->as_interpreter_frame()->interpreter_state();
+      int result_slots = type2size[callee_istate->method()->result_type()];
+      if (result_slots > 0) {
+        ShadowTable &caller_stack = get_last_frame().get_opr_stack();
+        ZeroFrame *caller_frame = callee_frame->next();
+        if (caller_frame->is_interpreter_frame()) {
+          interpreterState caller_istate =
+              caller_frame->as_interpreter_frame()->interpreter_state();
+          int result_begin = caller_istate->stack_base()
+              - callee_istate->locals() - 1;
+          caller_stack.clear_slots(result_begin, result_slots);
+        } else if (caller_frame->is_entry_frame()
+                   && caller_stack.size() != 0) {
+          caller_stack.clear_slots(0, result_slots);
+        }
+      }
+    }
     delete s_frame;
     return;
   }
@@ -146,21 +226,43 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
     interpreterState callee_istate =
         callee_frame->as_interpreter_frame()->interpreter_state();
     Method *callee_method = callee_istate->method();
+    if (callee_method->is_native()) {
+      int result_slots = type2size[callee_method->result_type()];
+      if (result_slots > 0) {
+        assert(result_slots == 1 || result_slots == 2,
+               "a JVM native result occupies one or two words");
+        ZeroFrame *caller_frame = callee_frame->next();
+        if (caller_frame->is_interpreter_frame()) {
+          interpreterState caller_istate =
+              caller_frame->as_interpreter_frame()->interpreter_state();
+          int caller_result_offset = caller_istate->stack_base()
+              - callee_istate->locals() - 1;
+          next_opr_stack.clear_slots(caller_result_offset, result_slots);
+        } else if (caller_frame->is_entry_frame()
+                   && next_opr_stack.size() != 0) {
+          next_opr_stack.clear_slots(0, result_slots);
+        }
+      }
+      // A specialized native handler may install a symbolic result after the
+      // concrete interpreter has popped arguments.  Until then the native
+      // result is concrete and its complete footprint must stay empty.
+      delete s_frame;
+      return;
+    }
     BasicType res_type = callee_method->result_type();
-    /**
-     * TODO: skip native here. Need to confirm correctness
-     */
-    if (is_java_primitive(res_type) && !callee_method->is_native()) {
-      // An exceptional unwind has no Java return value on the callee
-      // operand stack, even when the method's declared result is primitive.
-      // Treating the declaration as an actual return shifts past stack_base
-      // and used to trip the guarantee below (or copy an invalid slot).
+    if (res_type != T_VOID) {
+      // An exceptional unwind has no Java return value on the callee operand
+      // stack, regardless of its declared result type.  Normal object and
+      // array returns carry a one-word expression edge just like category-1
+      // primitives; long/double retain their exact two-word footprint.
       if (callee_istate->thread()->has_pending_exception()) {
         delete s_frame;
         return;
       }
       // here `result` describes whatever returned
       int result_slots = type2size[res_type];
+      assert(result_slots == 1 || result_slots == 2,
+             "a non-void JVM result occupies one or two words");
 
       intptr_t *callee_result = callee_istate->stack() + result_slots;
       /**

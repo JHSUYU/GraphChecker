@@ -41,6 +41,8 @@ import java.util.regex.Pattern;
  * canonical DNF are therefore derived artifacts of the final composed SMT.</p>
  */
 public final class BooleanReachConditionExtractor {
+    private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
+            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
     private static final Gson BINDING_GSON = new GsonBuilder()
@@ -154,6 +156,14 @@ public final class BooleanReachConditionExtractor {
         report.add("existentialNonBooleanRootInputs",
                 scalarInputCatalog(
                         discovery.existentialNonBooleanRootInputs));
+        report.addProperty("nullableJavaStringModeled",
+                discovery.nullableJavaStringInputCount > 0);
+        report.addProperty("nullableJavaStringInputCount",
+                discovery.nullableJavaStringInputCount);
+        if (discovery.nullableJavaStringInputCount > 0) {
+            report.addProperty("nullableStringEncodingAuthority",
+                    NULLABLE_STRING_ENCODING_AUTHORITY);
+        }
         report.addProperty(
                 "existentialNonBooleanRootInputDiscoveryAuthority",
                 "STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_CANONICAL_"
@@ -432,6 +442,7 @@ public final class BooleanReachConditionExtractor {
         int staticScalar = 0;
         int usedScalar = 0;
         int suppliedScalar = 0;
+        int nullableStrings = 0;
         for (PortInfo port : ports.sortedInputs()) {
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
             if (!port.javaBoolean && encoding == null) continue;
@@ -443,18 +454,14 @@ public final class BooleanReachConditionExtractor {
             }
             String solverTerm = encoding.solverTerm(port.id);
             String portTerm = "port__" + smtName(port.id);
-            boolean declared = smt.contains("(declare-const " + solverTerm
-                    + " " + encoding.solverSort + ")")
-                    && smt.contains("(declare-const " + portTerm + " Value)")
-                    && (smt.contains("(= " + portTerm + " ("
-                    + encoding.valueConstructor + " "
-                    + solverTerm + "))")
-                    || smt.contains("(= (" + encoding.valueConstructor
-                    + " " + solverTerm + ") "
-                    + portTerm + ")"));
             List<JsonObject> evidence = mappingsByPort.get(port.id);
             int regionCaseCount = caseCountByRegion.containsKey(port.regionId)
                     ? caseCountByRegion.get(port.regionId) : 0;
+            String nullnessSolverTerm = encoding == ScalarEncoding.STRING
+                    ? exactCanonicalStringNullnessTerm(evidence, port,
+                    gaps) : "";
+            boolean declared = canonicalScalarBindingDeclared(smt, portTerm,
+                    solverTerm, nullnessSolverTerm, encoding);
             if (!declared && (evidence == null || evidence.isEmpty())) {
                 continue;
             }
@@ -481,9 +488,21 @@ public final class BooleanReachConditionExtractor {
                             "solverTerm"));
                     boolean bridged = !direct
                             && exactDynamicCanonicalBridge(smt, mapping,
-                            port.id, solverTerm, encoding);
+                            port.id, solverTerm, nullnessSolverTerm,
+                            encoding);
+                    boolean stringNullnessMatches = encoding
+                            != ScalarEncoding.STRING
+                            || direct && nullnessSolverTerm.equals(string(
+                            mapping, "nullnessSolverTerm"))
+                            || !direct && nullnessSolverTerm.equals(string(
+                            mapping, "canonicalNullnessSolverTerm"));
                     if ((!direct && !bridged)
                             || direct && hasDynamicBridgeMetadata(mapping)
+                            || !stringNullnessMatches
+                            || encoding == ScalarEncoding.STRING
+                            && !NULLABLE_STRING_ENCODING_AUTHORITY.equals(
+                            string(mapping,
+                                    "nullableStringEncodingAuthority"))
                             || !encoding.solverSort.equals(string(mapping,
                             "solverSort"))
                             || !"EMITTER_ACTUAL_TERM".equals(string(mapping,
@@ -510,7 +529,8 @@ public final class BooleanReachConditionExtractor {
                 continue;
             } else {
                 scalarRoots.add(new ScalarInput(port, solverTerm,
-                        encoding, evidence));
+                        nullnessSolverTerm, encoding, evidence));
+                if (encoding == ScalarEncoding.STRING) nullableStrings++;
             }
         }
         Collections.sort(roots, Comparator.comparing(value -> value.port.id));
@@ -520,7 +540,59 @@ public final class BooleanReachConditionExtractor {
                 value -> value.port.id));
         return new Discovery(roots, domainInputs, staticBoolean,
                 usedBoolean, suppliedBoolean, scalarRoots, staticScalar,
-                usedScalar, suppliedScalar);
+                usedScalar, suppliedScalar, nullableStrings);
+    }
+
+    private static String exactCanonicalStringNullnessTerm(
+            List<JsonObject> evidence, PortInfo port, List<String> gaps) {
+        if (evidence == null || evidence.isEmpty()) return "";
+        String selected = "";
+        for (JsonObject mapping : evidence) {
+            if (!NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(mapping,
+                    "nullableStringEncodingAuthority"))) {
+                gaps.add("STRING_CASE_NULLNESS_AUTHORITY_MISSING:"
+                        + port.id);
+                return "";
+            }
+            String candidate = firstNonBlank(string(mapping,
+                    "canonicalNullnessSolverTerm"), string(mapping,
+                    "nullnessSolverTerm"));
+            if (!safeSmtAtom(candidate)) {
+                gaps.add("STRING_CASE_NULLNESS_TERM_MISSING:" + port.id);
+                return "";
+            }
+            if (!selected.isEmpty() && !selected.equals(candidate)) {
+                gaps.add("STRING_CASE_NULLNESS_TERM_CONFLICT:" + port.id);
+                return "";
+            }
+            selected = candidate;
+        }
+        return selected;
+    }
+
+    private static boolean canonicalScalarBindingDeclared(
+            String smt, String portTerm, String solverTerm,
+            String nullnessSolverTerm, ScalarEncoding encoding) {
+        if (!smt.contains("(declare-const " + solverTerm + " "
+                + encoding.solverSort + ")")
+                || !smt.contains("(declare-const " + portTerm + " Value)")) {
+            return false;
+        }
+        if (encoding == ScalarEncoding.STRING) {
+            if (!safeSmtAtom(nullnessSolverTerm)
+                    || !smt.contains("(declare-const " + nullnessSolverTerm
+                    + " Bool)")) {
+                return false;
+            }
+            String boxed = "(ite " + nullnessSolverTerm
+                    + " (VRef nullRef) (VString " + solverTerm + "))";
+            return smt.contains("(= " + portTerm + " " + boxed + ")")
+                    || smt.contains("(= " + boxed + " " + portTerm + ")");
+        }
+        return smt.contains("(= " + portTerm + " ("
+                + encoding.valueConstructor + " " + solverTerm + "))")
+                || smt.contains("(= (" + encoding.valueConstructor + " "
+                + solverTerm + ") " + portTerm + ")");
     }
 
     private static boolean exactlyOneMappingPerCase(
@@ -545,11 +617,17 @@ public final class BooleanReachConditionExtractor {
      */
     private static boolean exactDynamicCanonicalBridge(
             String smt, JsonObject mapping, String port,
-            String canonicalSolverTerm, ScalarEncoding encoding) {
+            String canonicalSolverTerm,
+            String canonicalNullnessSolverTerm,
+            ScalarEncoding encoding) {
         String actual = string(mapping, "solverTerm");
+        String actualNullness = string(mapping, "nullnessSolverTerm");
         String guard = string(mapping, "canonicalBridgeGuard");
-        String expression = "(= " + actual + " "
-                + canonicalSolverTerm + ")";
+        String expression = encoding == ScalarEncoding.STRING
+                ? "(and (= " + actual + " " + canonicalSolverTerm
+                + ") (= " + actualNullness + " "
+                + canonicalNullnessSolverTerm + "))"
+                : "(= " + actual + " " + canonicalSolverTerm + ")";
         String formula = "(=> " + guard + " " + expression + ")";
         String assertionName = string(mapping,
                 "canonicalBridgeAssertionName");
@@ -560,6 +638,13 @@ public final class BooleanReachConditionExtractor {
                 || actual.isEmpty() || actual.equals(canonicalSolverTerm)
                 || !safeSmtAtom(actual)
                 || !safeSmtAtom(canonicalSolverTerm)
+                || encoding == ScalarEncoding.STRING
+                && (!safeSmtAtom(actualNullness)
+                || !safeSmtAtom(canonicalNullnessSolverTerm)
+                || !canonicalNullnessSolverTerm.equals(string(mapping,
+                "canonicalNullnessSolverTerm"))
+                || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                mapping, "nullableStringEncodingAuthority")))
                 || !canonicalSolverTerm.equals("sym__port__"
                 + smtName(port) + "__" + encoding.suffix)
                 || !port.startsWith(string(mapping, "regionId") + ".in.")
@@ -600,16 +685,23 @@ public final class BooleanReachConditionExtractor {
         return selected != null
                 && port.equals(string(selected, "baseInputSymbol"))
                 && actual.equals(string(selected, "solverTerm"))
+                && (encoding != ScalarEncoding.STRING
+                || actualNullness.equals(string(selected,
+                "nullnessSolverTerm")))
                 && string(mapping, "rawEngineSymbol").equals(string(selected,
                 "fieldExpressionRawEngineSymbol"))
                 && bool(selected, "complete", false)
                 && bool(selected, "observationMatched", false)
+                && (encoding != ScalarEncoding.STRING
+                || NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
+                selected, "nullableStringEncodingAuthority")))
                 && "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM".equals(string(
                 selected, "termBindingAuthority"));
     }
 
     private static boolean hasDynamicBridgeMetadata(JsonObject mapping) {
         for (String member : new String[]{"canonicalSolverTerm",
+                "canonicalNullnessSolverTerm",
                 "canonicalBridgeGuard", "canonicalBridgeExpression",
                 "canonicalBridgeFormula", "canonicalBridgeAssertionName",
                 "canonicalBridgeAssertion",
@@ -747,10 +839,13 @@ public final class BooleanReachConditionExtractor {
             row.addProperty("rawEngineSymbol", string(evidence,
                     "rawEngineSymbol"));
             for (String member : new String[]{"solverTerm",
+                    "nullnessSolverTerm",
                     "canonicalSolverTerm", "canonicalBridgeGuard",
+                    "canonicalNullnessSolverTerm",
                     "canonicalBridgeAssertionName",
                     "canonicalBridgeAssertionSha256",
-                    "canonicalBridgeAuthority"}) {
+                    "canonicalBridgeAuthority",
+                    "nullableStringEncodingAuthority"}) {
                 JsonElement value = evidence.get(member);
                 if (value != null) row.add(member, value.deepCopy());
             }
@@ -949,6 +1044,7 @@ public final class BooleanReachConditionExtractor {
         private final int staticNonBooleanScalarInputCount;
         private final int usedNonBooleanScalarInputCount;
         private final int upstreamSuppliedNonBooleanScalarInputCount;
+        private final int nullableJavaStringInputCount;
 
         private Discovery(List<BooleanInput> rootInputs,
                           List<BooleanInput> booleanDomainInputs,
@@ -958,7 +1054,8 @@ public final class BooleanReachConditionExtractor {
                           List<ScalarInput> existentialNonBooleanRootInputs,
                           int staticNonBooleanScalarInputCount,
                           int usedNonBooleanScalarInputCount,
-                          int upstreamSuppliedNonBooleanScalarInputCount) {
+                          int upstreamSuppliedNonBooleanScalarInputCount,
+                          int nullableJavaStringInputCount) {
             this.rootInputs = rootInputs;
             this.booleanDomainInputs = booleanDomainInputs;
             this.staticBooleanInputCount = staticBooleanInputCount;
@@ -973,6 +1070,7 @@ public final class BooleanReachConditionExtractor {
                     usedNonBooleanScalarInputCount;
             this.upstreamSuppliedNonBooleanScalarInputCount =
                     upstreamSuppliedNonBooleanScalarInputCount;
+            this.nullableJavaStringInputCount = nullableJavaStringInputCount;
         }
     }
 
@@ -1030,14 +1128,17 @@ public final class BooleanReachConditionExtractor {
     private static final class ScalarInput {
         private final PortInfo port;
         private final String solverTerm;
+        private final String nullnessSolverTerm;
         private final ScalarEncoding encoding;
         private final List<JsonObject> caseEvidence;
 
         private ScalarInput(PortInfo port, String solverTerm,
+                            String nullnessSolverTerm,
                             ScalarEncoding encoding,
                             List<JsonObject> caseEvidence) {
             this.port = port;
             this.solverTerm = solverTerm;
+            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
             this.encoding = encoding;
             this.caseEvidence = caseEvidence == null
                     ? Collections.<JsonObject>emptyList()
@@ -1053,6 +1154,13 @@ public final class BooleanReachConditionExtractor {
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
             result.addProperty("solverSort", encoding.solverSort);
+            if (encoding == ScalarEncoding.STRING) {
+                result.addProperty("nullnessSolverTerm",
+                        nullnessSolverTerm);
+                result.addProperty("nullnessSolverSort", "Bool");
+                result.addProperty("nullableStringEncodingAuthority",
+                        NULLABLE_STRING_ENCODING_AUTHORITY);
+            }
             result.addProperty("root", true);
             result.addProperty("upstreamSupplied", false);
             result.addProperty("projectionRole",

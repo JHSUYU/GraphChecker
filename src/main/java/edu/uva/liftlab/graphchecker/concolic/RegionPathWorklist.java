@@ -33,6 +33,13 @@ import java.util.TreeSet;
 public final class RegionPathWorklist {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
+    private static final String CERTIFIED_CONCRETE_GUARD_AUTHORITY =
+            "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1";
+    private static final String CONCRETE_GUARD_CERTIFICATE_AUTHORITY =
+            "RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
+                    + "VM_BRANCH_EVENT_V1";
+    private static final String CONCRETE_GUARD_PROOF_AUTHORITY =
+            "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1";
 
     private RegionPathWorklist() {
     }
@@ -225,6 +232,15 @@ public final class RegionPathWorklist {
                 if (policyAware && !isExplorePolicy(mapping)) {
                     continue;
                 }
+                if (certifiedConcreteGuardCandidate(mapping)
+                        && !exactCertifiedConcreteGuard(mapping,
+                        conditions)) {
+                    gap("INVALID_CERTIFIED_CONCRETE_GUARD",
+                            "CERTIFICATE_OR_SYNTHETIC_INDEX_MISMATCH",
+                            string(summary, "regionId"), pathKey, site,
+                            integer(mapping, "occurrence", -1));
+                    continue;
+                }
                 int conditionIndex = integer(mapping, "conditionIndex", -1);
                 if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
                     ConcreteBranchTemplate template =
@@ -397,6 +413,190 @@ public final class RegionPathWorklist {
                     && "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT"
                     .equals(string(mapping, "conditionAuthority"))
                     && exactVmIfEnvelope(mapping, 0);
+        }
+
+        private boolean certifiedConcreteGuardCandidate(
+                JsonObject mapping) {
+            return mapping.has("certifiedConcreteGuard")
+                    || mapping.has("syntheticCondition")
+                    || CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(string(
+                    mapping, "conditionAuthority"))
+                    || mapping.has("concreteGuardCertificateAuthority");
+        }
+
+        private boolean exactCertifiedConcreteGuard(
+                JsonObject mapping, JsonArray conditions) {
+            int index = integer(mapping, "conditionIndex", -1);
+            String conditionHash = strictString(mapping,
+                    "certificateConditionSha256");
+            String expectedIdentity = strictString(mapping,
+                    "certificateActivationId") + "\n"
+                    + strictString(mapping,
+                    "certificatePathQueryKey") + "\n"
+                    + strictString(mapping, "certificateProofRole") + "\n"
+                    + integer(mapping,
+                    "certificateSourceConditionIndex", -1) + "\n"
+                    + integer(mapping,
+                    "certificateConstraintIndex", -1) + "\n"
+                    + integer(mapping,
+                    "certificateExpectedBranchPrefixOrdinal", -2) + "\n"
+                    + strictString(mapping, "certificateSiteId") + "\n"
+                    + integer(mapping, "certificateOccurrence", -1) + "\n"
+                    + strictBoolean(mapping, "certificateOutcome") + "\n"
+                    + strictString(mapping,
+                    "certificateModelAssignmentKey") + "\n"
+                    + conditionHash;
+            String role = strictString(mapping, "certificateProofRole");
+            int sourceIndex = integer(mapping,
+                    "certificateSourceConditionIndex", -1);
+            int constraintIndex = integer(mapping,
+                    "certificateConstraintIndex", -1);
+            int prefixOrdinal = integer(mapping,
+                    "certificateExpectedBranchPrefixOrdinal", -2);
+            return index >= 0 && index < conditions.size()
+                    && Boolean.TRUE.equals(strictBoolean(mapping,
+                    "certifiedConcreteGuard"))
+                    && Boolean.TRUE.equals(strictBoolean(mapping,
+                    "syntheticCondition"))
+                    && CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(
+                    strictString(mapping, "conditionAuthority"))
+                    && CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(
+                    strictString(mapping,
+                            "syntheticConditionAuthority"))
+                    && CONCRETE_GUARD_CERTIFICATE_AUTHORITY.equals(
+                    strictString(mapping,
+                            "concreteGuardCertificateAuthority"))
+                    && !strictString(mapping,
+                    "certificateModelAssignmentKey").isEmpty()
+                    && !strictString(mapping,
+                    "certificatePathQueryKey").isEmpty()
+                    && !strictString(mapping,
+                    "certificateEngineSymbol").isEmpty()
+                    && !strictString(mapping,
+                    "certificateInputSymbol").isEmpty()
+                    && strictString(mapping,
+                    "certificateTargetActionSha256").matches(
+                    "[0-9a-f]{64}")
+                    && CONCRETE_GUARD_PROOF_AUTHORITY.equals(strictString(
+                    mapping, "certificateProofAuthority"))
+                    && sourceIndex == index
+                    && constraintIndex == index
+                    && ("PREFIX".equals(role) && prefixOrdinal == index
+                    || "TARGET".equals(role) && prefixOrdinal == -1)
+                    && expectedIdentity.equals(strictString(mapping,
+                    "syntheticConditionKey"))
+                    && strictString(mapping, "siteId").equals(strictString(
+                    mapping, "certificateSiteId"))
+                    && integer(mapping, "occurrence", -1) == integer(
+                    mapping, "certificateOccurrence", -2)
+                    && bool(mapping, "outcome", false) == bool(mapping,
+                    "certificateOutcome", !bool(mapping, "outcome", false))
+                    && integer(mapping, "rawConditionIndex", -2) == -1
+                    && integer(mapping, "engineConditionIndex", -2) == -1
+                    && !mapping.has("rawCondition")
+                    && integer(mapping, "normalizedConditionIndex", -1)
+                    == index
+                    && integer(mapping,
+                    "normalizedPathConditionBaseline", -1) == index
+                    && integer(mapping,
+                    "normalizedPathConditionSize", -1) == index + 1
+                    && integer(mapping, "pathConditionBaseline", -1)
+                    == index
+                    && integer(mapping, "pathConditionSize", -1)
+                    == index + 1
+                    && integer(mapping, "rawPathConditionBaseline", -1)
+                    == integer(mapping, "rawPathConditionSize", -2)
+                    && integer(mapping, "rawPathConditionsAdded", -1) == 0
+                    && exactCertifiedVmEnvelope(mapping, role)
+                    && mapping.has("condition")
+                    && canonical(mapping.get("condition")).equals(canonical(
+                    conditions.get(index)))
+                    && conditionHash.equals(sha256(GSON.toJson(
+                    mapping.get("condition"))))
+                    && exactReferenceNullCondition(
+                    mapping.get("condition"));
+        }
+
+        private boolean exactCertifiedVmEnvelope(JsonObject mapping,
+                                                 String role) {
+            JsonElement conditionIndices = mapping.get(
+                    "vmConditionIndices");
+            boolean common = Boolean.TRUE.equals(strictBoolean(mapping,
+                    "vmBranchEventExpected"))
+                    && Boolean.TRUE.equals(strictBoolean(mapping,
+                    "vmBranchEventValidated"))
+                    && integer(mapping, "vmBranchEventId", 0) > 0
+                    && integer(mapping, "vmOccurrence", -1)
+                    == integer(mapping, "occurrence", -2)
+                    && longInteger(mapping, "vmThreadContextId", 0L) > 0L
+                    && longInteger(mapping,
+                    "vmOwnerJavaThreadId", 0L) > 0L
+                    && longInteger(mapping,
+                    "vmOwnerOsThreadId", 0L) > 0L
+                    && conditionIndices != null
+                    && conditionIndices.isJsonArray()
+                    && conditionIndices.getAsJsonArray().size() == 0
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
+                    string(mapping, "vmBranchEventAuthority"))
+                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
+                    .equals(string(mapping, "mappingPolicy"))
+                    && Boolean.FALSE.equals(strictBoolean(mapping,
+                    "overrideApplied"))
+                    && "NONE".equals(string(mapping, "overrideMode"))
+                    && bool(mapping, "outcome", false) == bool(mapping,
+                    "observedOutcome", !bool(mapping, "outcome", false))
+                    && bool(mapping, "outcome", false) == bool(mapping,
+                    "effectiveOutcome", !bool(mapping, "outcome", false))
+                    && "PASS".equals(strictString(mapping,
+                    "replayValidation"));
+            if (!common) return false;
+            if ("TARGET".equals(role)) {
+                return Boolean.TRUE.equals(strictBoolean(mapping,
+                        "scheduledTarget"))
+                        && strictBoolean(mapping,
+                        "scheduledDesiredOutcome") != null
+                        && strictBoolean(mapping,
+                        "scheduledDesiredOutcome").equals(strictBoolean(
+                        mapping, "observedOutcome"))
+                        && Boolean.TRUE.equals(strictBoolean(mapping,
+                        "scheduledOutcomeMatched"));
+            }
+            return "PREFIX".equals(role)
+                    && Boolean.FALSE.equals(strictBoolean(mapping,
+                    "scheduledTarget"))
+                    && !mapping.has("scheduledDesiredOutcome")
+                    && !mapping.has("scheduledOutcomeMatched");
+        }
+
+        private boolean exactReferenceNullCondition(JsonElement value) {
+            if (value == null || !value.isJsonObject()) return false;
+            JsonObject expression = value.getAsJsonObject();
+            if (!"BinaryExpression".equals(strictString(expression,
+                    "_type")) || !"==".equals(strictString(expression,
+                    "_op"))) return false;
+            JsonObject left = object(expression, "_left");
+            JsonObject right = object(expression, "_right");
+            return exactReferenceSymbol(left) && exactNull(right)
+                    || exactNull(left) && exactReferenceSymbol(right);
+        }
+
+        private boolean exactReferenceSymbol(JsonObject expression) {
+            String type = strictString(expression, "_type");
+            String javaType = strictString(expression, "_java_type");
+            String symbol = strictString(expression, "_exp");
+            return ("SymbolExpression".equals(type)
+                    || "ConSymbolExp".equals(type))
+                    && !symbol.isEmpty()
+                    && (javaType.startsWith("L")
+                    || javaType.startsWith("[")
+                    || symbol.startsWith("M_L")
+                    || symbol.startsWith("M_["));
+        }
+
+        private boolean exactNull(JsonObject expression) {
+            return "SymbolExpression".equals(strictString(expression,
+                    "_type"))
+                    && "N".equals(strictString(expression, "_exp"));
         }
 
         private boolean exactModeledIf(JsonObject mapping,
@@ -656,12 +856,14 @@ public final class RegionPathWorklist {
             task.addProperty("observedOutcome", bool(mapping, "outcome",
                     false));
             task.addProperty("desiredOutcome", desired);
+            task.addProperty("concreteGuardReplayProofRequired",
+                    exactCertifiedConcreteGuard(mapping, conditions));
             task.addProperty("prefixPolicy", "KEEP_BEFORE_FLIP");
             task.addProperty("targetPolicy", "NEGATE_SELECTED_CONDITION");
             task.addProperty("suffixPolicy", "DROP_OLD_SUFFIX");
             task.add("prefix", prefix);
             task.add("expectedBranchPrefix", expectedBranchPrefix(
-                    mappingsFor(summary), conditionIndex));
+                    mappingsFor(summary), conditions, conditionIndex));
             task.add("originalCondition", original.deepCopy());
             task.add("negatedCondition", negated);
             task.add("constraints", query);
@@ -764,6 +966,7 @@ public final class RegionPathWorklist {
         }
 
         private JsonArray expectedBranchPrefix(JsonArray mappings,
+                                               JsonArray conditions,
                                                int flipConditionIndex) {
             List<JsonObject> ordered = new ArrayList<>();
             for (JsonElement element : mappings) {
@@ -786,6 +989,8 @@ public final class RegionPathWorklist {
                         false));
                 expected.addProperty("conditionIndex", integer(mapping,
                         "conditionIndex", -1));
+                expected.addProperty("concreteGuardReplayProofRequired",
+                        exactCertifiedConcreteGuard(mapping, conditions));
                 result.add(expected);
             }
             return result;
@@ -1418,6 +1623,20 @@ public final class RegionPathWorklist {
         } catch (RuntimeException ignored) {
             return "";
         }
+    }
+
+    private static String strictString(JsonObject object, String name) {
+        JsonElement value = object == null ? null : object.get(name);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isString()
+                ? value.getAsString() : "";
+    }
+
+    private static Boolean strictBoolean(JsonObject object, String name) {
+        JsonElement value = object == null ? null : object.get(name);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean()
+                ? value.getAsBoolean() : null;
     }
 
     private static boolean bool(JsonObject object, String name,
