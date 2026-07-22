@@ -112,7 +112,7 @@ discovered from runtime-confirmed shared-field read-from evidence; this
 fixture has no declared RPC mapping.
 The terminal artifact is deliberately CANDIDATE_ONLY.  Promoting it to a
 trusted result by a natural replay is a documented follow-up TODO.
-Independent producer regions run concurrently, with two worker processes by
+Independent producer regions run concurrently, with eight worker processes by
 default. Set CAUSYNTH_REGION_JOBS=N to change the cap; N=1 preserves the
 serial execution order.
 EOF
@@ -994,7 +994,7 @@ run_producers_parallel() {
   mapfile -t channels < <(discovered_channels)
   [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
 
-  max_jobs=${CAUSYNTH_REGION_JOBS:-2}
+  max_jobs=${CAUSYNTH_REGION_JOBS:-8}
   [[ "${max_jobs}" =~ ^[1-9][0-9]*$ ]] \
     || die "CAUSYNTH_REGION_JOBS must be a positive integer"
   if (( max_jobs > ${#channels[@]} )); then
