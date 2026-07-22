@@ -1172,7 +1172,12 @@ final class SeedBackwardStaticAnalyzer {
     private boolean processFieldWrites(String method, List<Fact> facts, Fact fact,
                                        Set<String> relevant) {
         boolean changed = false;
+        Set<String> affectedRelevantHeapCells = new LinkedHashSet<>();
         for (String field : fact.fieldDefs) {
+            String fieldNode = canonical(method, field);
+            if (relevant.contains(fieldNode)) {
+                affectedRelevantHeapCells.add(fieldNode);
+            }
             changed |= processFieldWrite(method, fact, relevant, field,
                     fieldWriteSources(method, fact, field), "field_write",
                     "assignment writes relevant field");
@@ -1193,6 +1198,10 @@ final class SeedBackwardStaticAnalyzer {
             boolean receiverHit = receiverExactHit || receiverProjectionHit;
             boolean classFieldHit = relevant.contains(classField);
             if (receiverHit || classFieldHit) {
+                if (receiverHit) {
+                    affectedRelevantHeapCells.add(receiverField);
+                }
+                affectedRelevantHeapCells.add(classField);
                 for (String source : sources) {
                     if (ignoreNode(source)) {
                         continue;
@@ -1227,20 +1236,23 @@ final class SeedBackwardStaticAnalyzer {
                     "field_mutation",
                     "mutator call updates object stored in relevant field");
             if (mutationAffectsRelevantState) {
-                changed |= processHeapMutationPathGuards(method, fact,
-                        mutatedFieldNode, relevant);
+                affectedRelevantHeapCells.add(mutatedFieldNode);
             }
+        }
+        for (String affectedCell : affectedRelevantHeapCells) {
+            changed |= processHeapMutationPathGuards(method, fact,
+                    affectedCell, relevant);
         }
         return changed;
     }
 
     /**
-     * A heap mutation has no Jimple definition local, so the ordinary
+     * A heap write may have no exactly relevant Jimple definition local, so the ordinary
      * {@link #processRequiredPathGuards(String, Fact, List, Set)} path
-     * cannot attach the branches that make the mutation execute.  Treat
-     * the mutated heap cell as the definition for control-dependence
-     * purposes.  This is required for conditional collection updates,
-     * including an {@code Iterator.remove()} guarded by a predicate.
+     * cannot reliably attach the branches that make the write execute.
+     * Treat the affected heap cell as the definition for control-dependence
+     * purposes. This covers ordinary field assignments and collection
+     * updates, including an {@code Iterator.remove()} guarded by a predicate.
      */
     private boolean processHeapMutationPathGuards(
             String method, Fact mutation, String mutatedCell,

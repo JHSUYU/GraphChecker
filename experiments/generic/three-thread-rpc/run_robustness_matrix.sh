@@ -347,13 +347,13 @@ validate_container_producer_artifacts() {
     -maxdepth 3 -type f -name region_path_worklist.jsonl \
     -size +0c | sort)
   mapfile -t replay_reports < <(find "${campaign_root}" -mindepth 3 \
-    -maxdepth 3 -type f -name path_replay_verification.json | sort)
+    -maxdepth 4 -type f -name path_replay_verification.json | sort)
   [[ ${#path_manifests[@]} -eq 2 ]] \
     || die "containers expected two producer path manifests"
-  [[ ${#worklists[@]} -eq 2 ]] \
-    || die "containers expected one non-empty path worklist per producer"
-  [[ ${#replay_reports[@]} -eq 2 ]] \
-    || die "containers expected one replay verification per producer"
+  [[ ${#worklists[@]} -eq 10 ]] \
+    || die "containers expected ten explored producer path flips"
+  [[ ${#replay_reports[@]} -eq 10 ]] \
+    || die "containers expected ten validated producer path replays"
   require_file "array guarded merge" "${array_summary}"
   require_file "map guarded merge" "${map_summary}"
 
@@ -368,17 +368,17 @@ validate_container_producer_artifacts() {
       and .gapCount == 0
       and ((.gaps // []) | length) == 0
       and .pendingTaskCount == 0
-      and .observedPathCount == 2
+      and .observedPathCount >= 2
       and .candidateFlipCount > 0
       and ([.pathCountByRegion[]] | add) == .observedPathCount)
+    and ([.[].observedPathCount] | sort) == [2, 10]
   ' "${path_manifests[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
   # Path tasks carry one immutable replay contract for branch truth and a
   # separate, content-addressed context only for non-branch solver nodes.
   jq -e -s '
-    length == 2
-    and all(.[];
+    all(.[];
       .schemaVersion == 3
       and .kind == "REGION_PATH_FLIP"
       and .dynamicIdsExcludedFromQueryKey == true
@@ -472,11 +472,40 @@ validate_container_producer_artifacts() {
       == "COMPLETE_BOUNDED_PATH_CLOSURE"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
-    and .regionRelation.caseCount == 2
-    and ([.regionRelation.cases[].guard.conditions[]._op] | sort)
-      == ["!=", "=="]
-    and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
-      == ["Y_I_0", "Y_I_10"]
+    and .regionRelation.caseCount == 10
+    and (.requestedOutputSlice.inputAliasCanonicalizations | length) == 2
+    and all(.requestedOutputSlice.inputAliasCanonicalizations[];
+      .schemaVersion == 1
+      and .kind == "CANONICAL_PRIMITIVE_INPUT_ALIAS"
+      and .staticAuthority
+        == "PROJECTED_FRONTIER_TO_EXACT_PRIMITIVE_FIELD_V1"
+      and .runtimeIdentityAuthority
+        == "BASE_FIELD_VALUE_EQUALS_EXACT_LEAF_RECEIVER_V1"
+      and .intermediateOwnerObjectId == .canonicalLeafReceiverObjectId
+      and .aliasBindingCount == 1
+      and .aliasBindingAuthorities
+        == ["UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"]
+      and .runtimeCutAuthority
+        == "BASE_READ_BEFORE_LEAF_READ_WITH_NO_INTERVENING_LEAF_WRITE_V1"
+      and .baseFieldEventSeq > 0
+      and .baseFieldCallId > 0
+      and .canonicalLeafFieldEventSeq > 0
+      and .canonicalLeafFieldCallId > 0
+      and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
+      and .complete == true)
+    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+      | .canonicalInputCell] | sort) == [
+        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input1>",
+        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input2>"
+      ]
+    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+      | contains("MapProducer: int input1"))
+    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+      | contains("MapProducer: int input2"))
+    and (any(.regionRelation.cases[].outputExpressions[]?;
+      ._type == "ConstExpr" and ._exp == "Y_I_10"))
+    and (any(.regionRelation.cases[].outputExpressions[]?;
+      ._type == "BinaryExpression" and ._op == "+"))
     and all(.regionRelation.cases[];
       .relationallyComplete == true
       and (.dynamicFieldBindings | length) == 1
@@ -511,7 +540,7 @@ validate_container_producer_artifacts() {
   # Replays mutate inputs only.  The VM observes the requested contract; it
   # never receives a forced branch decision.
   jq -e -s '
-    length == 2
+    length == 10
     and all(.[];
       .schemaVersion == 1
       and .kind == "CONCOLIC_PATH_REPLAY_VERIFICATION_MANIFEST"
@@ -530,7 +559,7 @@ validate_container_producer_artifacts() {
       and .replayValidation.outputClosureAdmissionGap == false
       and ((.replayValidation.failures // []) | length) == 0)
     and ([.[].replayValidation.containerReplayRebindingCount] | add) == 1
-    and ([.[].replayValidation.freshMapEntryRebindingCount] | add) == 1
+    and ([.[].replayValidation.freshMapEntryRebindingCount] | add) > 0
   ' "${replay_reports[@]}" >/dev/null \
     || die "container path replay was forced or lost exact rebinding"
 }
@@ -689,9 +718,9 @@ validate_semantic_profile() {
       ;;
     dependent-scalar)
       jq -e '
-        .status == "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
+        .status == "COMPLETE_CANDIDATE_MODEL"
         and .reachabilityStatus == "REACHABLE"
-        and .bootstrapReplayModelAvailable == true
+        and .candidateModelAvailable == true
         and .rootBooleanInputCount == 1
         and .existentialNonBooleanRootInputCount == 2
         and .valuationCount == 2
@@ -724,7 +753,7 @@ validate_semantic_profile() {
       jq -e '
         .fatalSite
           | startswith("<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$ConsumerThread: void executeWorker()>#")
-      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+      ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "dependent-scalar composition moved away from the annotated target"
       jq -e '
         . as $root
@@ -748,7 +777,7 @@ validate_semantic_profile() {
           and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
           and .binding.objectIdentityConfirmed == true
           and .binding.orderConfirmed == true)
-      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+      ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "dependent-scalar lost either producer relation"
       grep -Fq 'str.contains' "${smt}" \
         || die "dependent-scalar SMT omitted String.contains"
@@ -761,31 +790,39 @@ validate_semantic_profile() {
     containers)
       jq -e '
         .rootBooleanInputCount == 2
-        and .existentialNonBooleanRootInputCount == 0
+        and .existentialNonBooleanRootInputCount == 2
+        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
+          | sort) == ["I", "I"]
+        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+          | contains("MapProducer: int input1"))
+        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+          | contains("MapProducer: int input2"))
         and .valuationCount == 4
-        and .satisfyingValuationCount == 1
-        and .unsatisfyingValuationCount == 3
-        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
-          == ["11"])
+        and .satisfyingValuationCount == 4
+        and .unsatisfyingValuationCount == 0
+        and all(.truthTable[];
+          .solverStatus == "sat" and .reachesBug == true)
       ' "${reach_report}" >/dev/null \
-        || die "containers lost its exact nested-field reach profile"
+        || die "containers lost its Boolean/int existential reach profile"
       jq -e '
         .resolvedProducerCount == 2
         and .guardedRegionRelationCount == 2
-        and .guardedPathCaseCount == 4
+        and .guardedPathCaseCount == 12
         and .caseProjectionCatalogComplete == true
-        and .caseProjectionCatalogCount == 4
-        and .heapObservationCount == 2
-        and .heapObservationFieldBindingCount == 2
-      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+        and .caseProjectionCatalogCount == 12
+        and .heapObservationCount == 10
+        and .heapObservationFieldBindingCount == 10
+      ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "containers lost guarded array/map composition evidence"
+      grep -Fq '(define-fun java_int_wrap' "${smt}" \
+        || die "containers SMT omitted Java int wrap semantics"
       validate_container_producer_artifacts "${work_root}"
       ;;
     unreachable-parity)
       jq -e '
-        .status == "COMPLETE_BOOTSTRAP_UNREACHABLE"
+        .status == "COMPLETE_CANDIDATE_UNREACHABLE"
         and .reachabilityStatus == "UNREACHABLE"
-        and .bootstrapReplayModelAvailable == false
+        and .candidateModelAvailable == false
         and .rootBooleanInputCount == 2
         and .existentialNonBooleanRootInputCount == 0
         and .valuationCount == 4
@@ -803,7 +840,7 @@ validate_semantic_profile() {
         and .caseProjectionCatalogCount == 4
         and .heapObservationCount == 2
         and .heapObservationFieldBindingCount == 2
-      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+      ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "unreachable-parity lost guarded container composition evidence"
       validate_unreachable_parity_producer_artifacts "${work_root}"
       ;;
@@ -815,10 +852,10 @@ validate_candidate_outputs() {
   local label=$1
   local work_root=$2
   local z3=$3
-  local candidate_root="${work_root}/bootstrap"
-  local smt="${candidate_root}/composed_fatal.smt2"
-  local composition="${candidate_root}/composed_smt_manifest.json"
-  local reach_report="${candidate_root}/bootstrap_boolean_model.json"
+  local candidate_root="${work_root}/candidate"
+  local smt="${candidate_root}/candidate.smt2"
+  local composition="${candidate_root}/candidate_composition_manifest.json"
+  local reach_report="${candidate_root}/candidate_boolean_model.json"
   local relationships="${candidate_root}/symbolic_relationship_candidates.json"
   local candidate_manifest="${candidate_root}/candidate_result_manifest.json"
   local reachability solver_output solver_status expected_status
@@ -834,22 +871,28 @@ validate_candidate_outputs() {
   validate_composition_common "${composition}"
 
   jq -e '
-    .compositionStage == "BOOTSTRAP"
+    .compositionStage == "CANDIDATE"
     and .boundedComposition == true
     and .structurallyComplete == true
-    and .eligibleForBootstrapModel == true
+    and .eligibleForCandidateModel == true
     and .fatalReplayValidated == false
     and .complete == false
     and .eligibleToReportAutomaticRelationship == false
     and .caseProjectionCatalogComplete == true
   ' "${composition}" >/dev/null \
-    || die "candidate composition escaped BOOTSTRAP trust state"
+    || die "candidate composition escaped CANDIDATE trust state"
   jq -e '
     .schemaVersion == 1
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
     and .complete == true
-    and .extractionMode == "BOOTSTRAP_REPLAY_MODEL"
-    and .replayBootstrapOnly == true
+    and .extractionMode == "CANDIDATE_MODEL"
+    and .candidateOnly == true
+    and ((.status == "COMPLETE_CANDIDATE_MODEL"
+        and .reachabilityStatus == "REACHABLE"
+        and .candidateModelAvailable == true)
+      or (.status == "COMPLETE_CANDIDATE_UNREACHABLE"
+        and .reachabilityStatus == "UNREACHABLE"
+        and .candidateModelAvailable == false))
     and .reportableFinalReachCondition == false
     and .fatalReplayValidated == false
     and .truthTableComplete == true

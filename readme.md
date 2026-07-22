@@ -19,7 +19,8 @@ registry 已退出维护并从仓库删除；通用 RPC、container、Java 语�
 ## 三线程候选模型 milestone（2026-07-21）
 
 generic 三线程流程当前自动完成 annotation 定位、静态切片、runtime discovery、逐 producer
-路径闭合、递归 SMT composition、Z3 求解和有限 root-input 投影。终态 manifest 明确写为
+路径闭合、candidate SMT composition、Z3 求解和有限 Boolean-root 枚举（其余 scalar root
+保持 existential）。终态 manifest 明确写为
 `COMPLETE_Z3_CHECKED_CANDIDATE / CANDIDATE_ONLY`；它绑定 SMT、composition manifest、
 reach model 和 relationship candidates 的路径、大小及 SHA-256，但不会声称已经得到可信最终
 结果。`run.sh all` 是 `candidate` 的别名。
@@ -107,16 +108,17 @@ Producer B: base = ite(b2, 0, 10)
   从生成的 root-input catalog 自动枚举，不由 fixture 提供公式
 ```
 
-对应的 bootstrap SMT 和布尔报告由代码自动写入：
+对应的 candidate SMT、composition manifest 和布尔模型由代码自动写入：
 
 ```text
-target/three-thread-rpc/bootstrap/composed_fatal.smt2
-target/three-thread-rpc/bootstrap/bootstrap_boolean_model.json
+target/three-thread-rpc/candidate/candidate.smt2
+target/three-thread-rpc/candidate/candidate_composition_manifest.json
+target/three-thread-rpc/candidate/candidate_boolean_model.json
 ```
 
-这里的 `BOOTSTRAP` 只表示 SMT 组合和候选输入已得到，不能冒充经过最终自然回放验证的
-用户报告。`run.sh all` 最终生成
-`target/three-thread-rpc/bootstrap/candidate_result_manifest.json`，其中
+这些 artifact 只表示 candidate composition 已完成且 Z3 已检查，不能冒充经过最终自然回放
+验证的用户报告。`run.sh all` 最终生成
+`target/three-thread-rpc/candidate/candidate_result_manifest.json`，其中
 `naturalReplayPromotionImplemented=false`。
 
 ## 核心抽象
@@ -147,6 +149,13 @@ VM placeholder 都可以成为 input。一个 region 可以有多个 input。
 leaf getter，静态 output demand 仍可把 leaf 反投影到 exact container snapshot；运行时必须
 再确认数组元素 identity、逐级 owner、declared field signature 和类型，不能把整个对象引用
 当作 scalar symbol。
+
+maintained `containers` workload 还要求 `MapProducer.input1`、`input2` 成为两个 existential
+`int` root：两者分别在小于 10 时 clamp 到 10，随后按 Java `int` wrap 语义求和。跨方法发现的
+`producer#field:inputN` 端口只有在唯一 exact static chain、相同非零 runtime owner identity、
+有序 field-read cut 且中间没有 leaf write 时，才 canonicalize 到声明字段端口。最终闭合关系为
+array producer 2 cases、map producer 10 cases；两个 Boolean root 的四行 candidate truth table
+均为 `sat`，因为两个 `int` root 在每一行仍按 existential 求解。
 
 ### `region.out`
 
@@ -187,9 +196,9 @@ Scheduler
 Guarded merge
   -> 每个 producer 的 R_region(in, out)
 Recursive composer
-  -> 上游 out 绑定下游 in，递归接入 target condition
+  -> 上游 out 绑定下游 in，递归生成 candidate composition
 Z3
-  -> composed SMT、truth table、候选 reach condition
+  -> candidate SMT、Boolean truth table、候选 reach condition
 Candidate manifest
   -> hash-bind SMT、composition、reach model 和 relationship candidates
 TODO: 自然传播可信升级
@@ -355,8 +364,8 @@ experiments/generic/three-thread-rpc/run.sh all
 ```
 
 `all` 串联 build、annotation-directed static analysis、trace、discovery、target seed、
-producer campaigns、bootstrap composition、Z3 projection 和 candidate manifest。成功时会
-生成 `bootstrap/candidate_result_manifest.json`；它不是 trusted result。
+producer campaigns、candidate composition、Z3 solve 和 candidate manifest。成功时会生成
+`candidate/candidate_result_manifest.json`；它不是 trusted result。
 
 ## 关键实现
 
@@ -373,7 +382,6 @@ producer campaigns、bootstrap composition、Z3 projection 和 candidate manifes
 | `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
-| `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
 
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、

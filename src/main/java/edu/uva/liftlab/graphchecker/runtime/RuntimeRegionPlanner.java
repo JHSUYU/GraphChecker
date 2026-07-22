@@ -1054,6 +1054,10 @@ final class RuntimeRegionPlanner {
                         observation.put("valueObjectId", field.valueObjectId);
                         observation.put("primitiveValue", field.primitiveValue);
                         observation.put("accessKind", field.kind);
+                        observation.put("fieldEventSeq", field.seq);
+                        observation.put("fieldCallId", field.callId);
+                        observation.put("fieldEventIdentityAuthority",
+                                "CONTAINED_RUNTIME_FIELD_EVENT_SEQ_AND_CALL_ID_V1");
                         if (protocolFieldRequiresExactSite) {
                             observation.put("bindingMode", "FIELD_ACCESS");
                         }
@@ -1589,6 +1593,8 @@ final class RuntimeRegionPlanner {
                     "rebaseAuthority", "crossMethodArgument",
                     "rebaseRejectedAuthority", "fieldBindingGap",
                     "accessKind", "observationAuthority", "bindingMode",
+                    "fieldEventSeq", "fieldCallId",
+                    "fieldEventIdentityAuthority",
                     "accessMethod", "accessUnitIndex", "accessSiteId",
                     "accessSiteAuthority",
                     "accessorInvocationId", "accessorRuntimeType");
@@ -3166,16 +3172,17 @@ final class RuntimeRegionPlanner {
                 applySliceDrivenArgumentFieldPaths(selectedInputs, outputSlice);
                 List<Map<String, Object>> containerBindings = copyRows(
                         outputSlice.containerElementFieldBindings);
-                // Canonicalize a promoted array alias before a container
-                // declaration tries to resolve its input port.  Otherwise a
-                // declaration that truthfully names the weak projected port
-                // fails before that port can be rewritten to the exact leaf.
+                // Canonicalize a projected field alias before replay (and
+                // before a container declaration resolves its input port).
+                // Static type/name equality is insufficient: this join also
+                // requires exact runtime receiver/value identity.
                 applyExactConsumedArrayFieldEvidence(selectedInputs,
                         first.upstream.root, first.upstream.fieldEvents);
                 boolean inputAliasesReady =
-                        canonicalizeExactRuntimeArrayInputAliases(
+                        canonicalizeExactRuntimeInputAliases(
                                 selectedInputs, outputSlice,
-                                containerBindings);
+                                containerBindings,
+                                first.upstream.fieldEvents);
                 boolean containerBindingsReady = inputAliasesReady
                         && applyContainerElementFieldBindings(selectedInputs,
                         containerBindings);
@@ -3280,21 +3287,22 @@ final class RuntimeRegionPlanner {
     }
 
     /**
-     * Coalesces a promoted nested-field input with the exact consumed array
-     * leaf that denotes the same live Java field in this region instance.
+     * Coalesces a projected nested-field input with an exact primitive field
+     * or consumed array leaf that denotes the same live Java field in this
+     * region instance.
      *
-     * <p>The custom VM assigns one engine array id to one live Java array.
-     * Consequently, symbolizing the same array through two region ports does
-     * not create two independent inputs: it creates an alias that the
-     * importer intentionally rejects.  Canonicalization must therefore happen
-     * before replay, while the discovery execution's exact receiver/value
-     * identities and the planner's consumed-leaf declaration are still
-     * available.  A field name or Java type alone is never sufficient.</p>
+     * <p>Symbolizing the same field through two region ports does not create
+     * two independent inputs: it creates an alias that the importer
+     * intentionally rejects. Canonicalization must therefore happen before
+     * replay, while the discovery execution's exact receiver/value identities
+     * are still available. A field name or Java type alone is never
+     * sufficient.</p>
      */
-    private static boolean canonicalizeExactRuntimeArrayInputAliases(
+    private static boolean canonicalizeExactRuntimeInputAliases(
             List<Map<String, Object>> selectedInputs,
             StaticOutputSlice outputSlice,
-            List<Map<String, Object>> containerBindings) {
+            List<Map<String, Object>> containerBindings,
+            List<FieldAccessEvent> fieldEvents) {
         Map<String, List<Map<String, Object>>> actionsByPort =
                 new LinkedHashMap<>();
         for (Map<String, Object> action : values(selectedInputs)) {
@@ -3318,7 +3326,7 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> staticCandidates = new ArrayList<>();
             for (Map<String, Object> candidate : values(selectedInputs)) {
                 if (candidate == aliasAction) continue;
-                FieldCell leaf = exactConsumedArrayLeaf(candidate);
+                FieldCell leaf = exactRuntimeAliasLeaf(candidate);
                 if (leaf.declaredSignature
                         && baseField.type.equals(leaf.owner)
                         && path.get(1).equals(leaf.name)) {
@@ -3326,31 +3334,39 @@ final class RuntimeRegionPlanner {
                 }
             }
             if (staticCandidates.isEmpty()) {
-                // This is an ordinary nested scalar/object projection, not a
-                // duplicate representation of a selected exact array leaf.
+                // This projection has no exact selected leaf representation.
                 continue;
             }
 
+            FieldCell leaf = exactRuntimeAliasLeaf(staticCandidates.get(0));
+            boolean arrayAlias = isArrayJavaType(leaf.type);
+            String aliasKind = arrayAlias ? "ARRAY" : "PRIMITIVE";
             String authorityIssue = projectedAliasAuthorityIssue(
-                    outputSlice, aliasPort);
+                    outputSlice, aliasAction, path, aliasKind);
             if (!authorityIssue.isEmpty()) {
                 issues.add(aliasPort + ":" + authorityIssue);
                 continue;
             }
             if (staticCandidates.size() != 1) {
                 issues.add(aliasPort
-                        + ":EXACT_ARRAY_ALIAS_CANONICAL_PORT_NOT_UNIQUE:"
+                        + ":EXACT_" + aliasKind
+                        + "_ALIAS_CANONICAL_PORT_NOT_UNIQUE:"
                         + staticCandidates.size());
                 continue;
             }
 
             Map<String, Object> canonicalAction = staticCandidates.get(0);
             String canonicalPort = string(canonicalAction.get("symbol"));
-            FieldCell leaf = exactConsumedArrayLeaf(canonicalAction);
+            leaf = exactRuntimeAliasLeaf(canonicalAction);
             String runtimeIssue = hasExactCellIdentityBinding(outputSlice,
-                    canonicalPort) ? exactRuntimeArrayAliasIssue(aliasAction,
-                    canonicalAction, baseField, leaf)
-                    : "CANONICAL_ARRAY_PORT_LACKS_EXACT_CELL_IDENTITY";
+                    canonicalPort)
+                    ? arrayAlias
+                    ? exactRuntimeArrayAliasIssue(aliasAction,
+                    canonicalAction, baseField, leaf, fieldEvents)
+                    : exactRuntimePrimitiveAliasIssue(aliasAction,
+                    canonicalAction, baseField, leaf, fieldEvents)
+                    : "CANONICAL_" + aliasKind
+                    + "_PORT_LACKS_EXACT_CELL_IDENTITY";
             if (!runtimeIssue.isEmpty()) {
                 issues.add(aliasPort + ":" + runtimeIssue);
                 continue;
@@ -3358,7 +3374,8 @@ final class RuntimeRegionPlanner {
             String old = canonicalByAlias.put(aliasPort, canonicalPort);
             if (old != null && !old.equals(canonicalPort)) {
                 issues.add(aliasPort
-                        + ":ARRAY_ALIAS_CANONICALIZATION_NOT_FUNCTIONAL");
+                        + ":" + aliasKind
+                        + "_ALIAS_CANONICALIZATION_NOT_FUNCTIONAL");
                 continue;
             }
 
@@ -3367,7 +3384,7 @@ final class RuntimeRegionPlanner {
             int intermediateOwner = number(aliasAction, "valueObjectId");
             Map<String, Object> proof = object(
                     "schemaVersion", 1,
-                    "kind", "CANONICAL_ARRAY_INPUT_ALIAS",
+                    "kind", "CANONICAL_" + aliasKind + "_INPUT_ALIAS",
                     "aliasInputPort", aliasPort,
                     "canonicalInputPort", canonicalPort,
                     "aliasInputCell", aliasCell,
@@ -3380,12 +3397,12 @@ final class RuntimeRegionPlanner {
                     "intermediateOwnerObjectId", intermediateOwner,
                     "canonicalLeafReceiverObjectId", number(
                             canonicalAction, "fieldReceiverObjectId"),
-                    "canonicalArrayValueObjectId", number(
-                            canonicalAction, "valueObjectId"),
-                    "consumedFieldSiteId", string(canonicalAction.get(
-                            "consumedFieldSiteId")),
                     "staticAuthority",
-                    "PROJECTED_FRONTIER_TO_EXACT_CONSUMED_ARRAY_LEAF_V1",
+                    arrayAlias
+                            ? "PROJECTED_FRONTIER_TO_EXACT_CONSUMED_"
+                            + "ARRAY_LEAF_V1"
+                            : "PROJECTED_FRONTIER_TO_EXACT_PRIMITIVE_"
+                            + "FIELD_V1",
                     "runtimeIdentityAuthority",
                     "BASE_FIELD_VALUE_EQUALS_EXACT_LEAF_RECEIVER_V1",
                     "aliasBindingCount", aliasBindingCount(outputSlice,
@@ -3395,6 +3412,26 @@ final class RuntimeRegionPlanner {
                     "aliasDependencyCells", aliasBindingValues(outputSlice,
                             aliasPort, "dependencyCell"),
                     "complete", true);
+            FieldAccessEvent baseRead = exactActionFieldEvent(aliasAction,
+                    fieldEvents);
+            FieldAccessEvent leafRead = exactActionFieldEvent(
+                    canonicalAction, fieldEvents);
+            proof.put("runtimeCutAuthority",
+                    "BASE_READ_BEFORE_LEAF_READ_WITH_NO_INTERVENING_"
+                            + "LEAF_WRITE_V1");
+            proof.put("baseFieldEventSeq", baseRead.seq);
+            proof.put("baseFieldCallId", baseRead.callId);
+            proof.put("canonicalLeafFieldEventSeq", leafRead.seq);
+            proof.put("canonicalLeafFieldCallId", leafRead.callId);
+            if (arrayAlias) {
+                proof.put("canonicalArrayValueObjectId", number(
+                        canonicalAction, "valueObjectId"));
+                proof.put("consumedFieldSiteId", string(canonicalAction.get(
+                        "consumedFieldSiteId")));
+            } else {
+                proof.put("canonicalPrimitiveValue", string(
+                        canonicalAction.get("primitiveValue")));
+            }
             proofs.add(proof);
         }
 
@@ -3437,6 +3474,35 @@ final class RuntimeRegionPlanner {
         return true;
     }
 
+    private static FieldCell exactRuntimeAliasLeaf(
+            Map<String, Object> action) {
+        FieldCell primitive = exactRuntimePrimitiveLeaf(action);
+        return primitive.declaredSignature
+                ? primitive : exactConsumedArrayLeaf(action);
+    }
+
+    /** Returns the exact observed primitive field represented by an action. */
+    private static FieldCell exactRuntimePrimitiveLeaf(
+            Map<String, Object> action) {
+        FieldCell cell = fieldCell(string(action.get("cell")));
+        FieldCell observed = fieldCell(string(action.get(
+                "accessFieldSignature")));
+        String javaType = string(action.get("javaType"));
+        return Boolean.TRUE.equals(action.get("observed"))
+                && "HEAP_OBJECT_FIELD".equals(string(action.get(
+                "location")))
+                && "FIELD_READ".equals(string(action.get("accessKind")))
+                && "RUNTIME_FIELD_ACCESS_DECLARATION".equals(string(
+                action.get("accessFieldAuthority")))
+                && cell.declaredSignature && observed.declaredSignature
+                && cell.signature().equals(observed.signature())
+                && primitiveType(cell.type) && cell.type.equals(javaType)
+                && exactPrimitiveValue(cell.type, string(action.get(
+                "primitiveValue")))
+                && number(action, "fieldReceiverObjectId") != 0
+                ? cell : FieldCell.unresolved();
+    }
+
     private static FieldCell exactConsumedArrayLeaf(
             Map<String, Object> action) {
         if (!Boolean.TRUE.equals(action.get("observed"))
@@ -3459,27 +3525,139 @@ final class RuntimeRegionPlanner {
     }
 
     private static String projectedAliasAuthorityIssue(
-            StaticOutputSlice slice, String aliasPort) {
-        boolean found = false;
+            StaticOutputSlice slice, Map<String, Object> aliasAction,
+            List<String> path, String aliasKind) {
+        String aliasPort = string(aliasAction.get("symbol"));
+        String aliasCell = string(aliasAction.get("cell"));
+        String projection = string(aliasAction.get("projection"));
+        if (path.size() != 2
+                || !projection.equals("field:" + path.get(1))) {
+            return "PROJECTED_" + aliasKind
+                    + "_ALIAS_ACTION_PATH_MISMATCH";
+        }
+        int count = 0;
         for (Map<String, Object> binding : slice.inputBindings) {
             if (!aliasPort.equals(string(binding.get("inputPort")))) {
                 continue;
             }
-            found = true;
+            count++;
+            if (!aliasCell.equals(string(binding.get("dependencyCell")))) {
+                return "PROJECTED_" + aliasKind
+                        + "_ALIAS_DEPENDENCY_CELL_MISMATCH";
+            }
             String authority = string(binding.get("bindingAuthority"));
-            if (!("OUTPUT_SLICE_FRONTIER_PROMOTION".equals(authority)
-                    || "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
-                    authority))) {
-                return "PROJECTED_ARRAY_ALIAS_AUTHORITY_INVALID:"
-                        + authority;
+            boolean exactChain = "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN".equals(
+                    authority);
+            boolean arrayPromotion = "ARRAY".equals(aliasKind)
+                    && "OUTPUT_SLICE_FRONTIER_PROMOTION".equals(authority);
+            if (!exactChain && !arrayPromotion) {
+                return "PROJECTED_" + aliasKind
+                        + "_ALIAS_AUTHORITY_INVALID:" + authority;
             }
         }
-        return found ? "" : "PROJECTED_ARRAY_ALIAS_BINDING_MISSING";
+        if (count == 0) {
+            return "PROJECTED_" + aliasKind + "_ALIAS_BINDING_MISSING";
+        }
+        return "PRIMITIVE".equals(aliasKind) && count != 1
+                ? "PROJECTED_PRIMITIVE_ALIAS_BINDING_COUNT:" + count : "";
+    }
+
+    private static String exactRuntimePrimitiveAliasIssue(
+            Map<String, Object> alias, Map<String, Object> canonical,
+            FieldCell baseField, FieldCell leaf,
+            List<FieldAccessEvent> fieldEvents) {
+        FieldCell observedBase = fieldCell(string(alias.get(
+                "accessFieldSignature")));
+        int baseReceiver = number(alias, "fieldReceiverObjectId");
+        int intermediateOwner = number(alias, "valueObjectId");
+        int leafReceiver = number(canonical, "fieldReceiverObjectId");
+        if (!Boolean.TRUE.equals(alias.get("observed"))
+                || !"HEAP_OBJECT_FIELD".equals(string(alias.get(
+                "location")))
+                || !"FIELD_READ".equals(string(alias.get("accessKind")))
+                || !"RUNTIME_FIELD_ACCESS_DECLARATION".equals(string(
+                alias.get("accessFieldAuthority")))
+                || !baseField.signature().equals(observedBase.signature())) {
+            return "PROJECTED_PRIMITIVE_BASE_FIELD_OBSERVATION_NOT_EXACT";
+        }
+        if (!baseField.type.equals(leaf.owner)
+                || !primitiveType(leaf.type)) {
+            return "PROJECTED_PRIMITIVE_LEAF_DECLARATION_MISMATCH";
+        }
+        if (baseReceiver == 0 || intermediateOwner == 0
+                || leafReceiver == 0) {
+            return "PROJECTED_PRIMITIVE_RUNTIME_IDENTITY_MISSING";
+        }
+        if (intermediateOwner != leafReceiver) {
+            return "PROJECTED_PRIMITIVE_RUNTIME_FIELD_CHAIN_MISMATCH";
+        }
+        return exactRuntimeFieldAliasCutIssue(alias, canonical, leaf,
+                fieldEvents, "PRIMITIVE");
+    }
+
+    private static String exactRuntimeFieldAliasCutIssue(
+            Map<String, Object> alias, Map<String, Object> canonical,
+            FieldCell leaf, List<FieldAccessEvent> fieldEvents,
+            String aliasKind) {
+        FieldAccessEvent baseRead = exactActionFieldEvent(alias, fieldEvents);
+        FieldAccessEvent leafRead = exactActionFieldEvent(canonical,
+                fieldEvents);
+        if (baseRead == null || leafRead == null
+                || baseRead.seq >= leafRead.seq) {
+            return "PROJECTED_" + aliasKind
+                    + "_RUNTIME_EVENT_ORDER_MISMATCH";
+        }
+        for (FieldAccessEvent event : values(fieldEvents)) {
+            if (event.seq <= baseRead.seq || event.seq >= leafRead.seq
+                    || !"FIELD_WRITE".equals(event.kind)
+                    || event.receiverObjectId != leafRead.receiverObjectId
+                    || !leaf.signature().equals(
+                    event.parsedField.signature())) {
+                continue;
+            }
+            return "PROJECTED_" + aliasKind
+                    + "_INTERVENING_LEAF_WRITE";
+        }
+        return "";
+    }
+
+    private static FieldAccessEvent exactActionFieldEvent(
+            Map<String, Object> action,
+            List<FieldAccessEvent> fieldEvents) {
+        if (!"CONTAINED_RUNTIME_FIELD_EVENT_SEQ_AND_CALL_ID_V1".equals(
+                string(action.get("fieldEventIdentityAuthority")))) {
+            return null;
+        }
+        long seq = longNumber(action, "fieldEventSeq");
+        long callId = longNumber(action, "fieldCallId");
+        FieldCell field = fieldCell(string(action.get(
+                "accessFieldSignature")));
+        int receiver = number(action, "fieldReceiverObjectId");
+        if (seq <= 0L || callId <= 0L || !field.declaredSignature
+                || receiver == 0) {
+            return null;
+        }
+        FieldAccessEvent selected = null;
+        for (FieldAccessEvent event : values(fieldEvents)) {
+            if (event.seq != seq || event.callId != callId
+                    || !"FIELD_READ".equals(event.kind)
+                    || event.receiverObjectId != receiver
+                    || !field.signature().equals(
+                    event.parsedField.signature())) {
+                continue;
+            }
+            if (selected != null) {
+                return null;
+            }
+            selected = event;
+        }
+        return selected;
     }
 
     private static String exactRuntimeArrayAliasIssue(
             Map<String, Object> alias, Map<String, Object> canonical,
-            FieldCell baseField, FieldCell leaf) {
+            FieldCell baseField, FieldCell leaf,
+            List<FieldAccessEvent> fieldEvents) {
         FieldCell observedBase = fieldCell(string(alias.get(
                 "accessFieldSignature")));
         int baseReceiver = number(alias, "fieldReceiverObjectId");
@@ -3501,7 +3679,8 @@ final class RuntimeRegionPlanner {
         if (intermediateOwner != leafReceiver) {
             return "PROJECTED_ARRAY_RUNTIME_FIELD_CHAIN_MISMATCH";
         }
-        return "";
+        return exactRuntimeFieldAliasCutIssue(alias, canonical, leaf,
+                fieldEvents, "ARRAY");
     }
 
     private static boolean hasExactCellIdentityBinding(
@@ -3564,6 +3743,11 @@ final class RuntimeRegionPlanner {
     private static int number(Map<String, Object> row, String field) {
         Object value = row == null ? null : row.get(field);
         return value instanceof Number ? ((Number) value).intValue() : 0;
+    }
+
+    private static long longNumber(Map<String, Object> row, String field) {
+        Object value = row == null ? null : row.get(field);
+        return value instanceof Number ? ((Number) value).longValue() : 0L;
     }
 
     /**

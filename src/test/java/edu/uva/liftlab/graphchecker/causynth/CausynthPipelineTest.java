@@ -4009,6 +4009,103 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void conditionalInstanceFieldWriteRetainsItsHeapGuard()
+            throws Exception {
+        G.reset();
+        SootClass owner = new SootClass(
+                "example.ConditionalInstanceFieldWrite", Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootField valueField = new SootField("value", IntType.v(),
+                Modifier.PUBLIC);
+        SootField unrelatedField = new SootField("unrelated", IntType.v(),
+                Modifier.PUBLIC);
+        owner.addField(valueField);
+        owner.addField(unrelatedField);
+        SootMethod method = new SootMethod("normalize",
+                Collections.singletonList(IntType.v()), IntType.v(),
+                Modifier.PUBLIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = Jimple.v().newLocal("receiver", owner.getType());
+        Local input = Jimple.v().newLocal("input", IntType.v());
+        Local result = Jimple.v().newLocal("result", IntType.v());
+        body.getLocals().addAll(Arrays.asList(receiver, input, result));
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newThisRef(owner.getType())));
+        body.getUnits().add(Jimple.v().newIdentityStmt(input,
+                Jimple.v().newParameterRef(IntType.v(), 0)));
+        AssignStmt read = Jimple.v().newAssignStmt(result,
+                Jimple.v().newInstanceFieldRef(receiver,
+                        valueField.makeRef()));
+        IfStmt guard = Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(input, IntConstant.v(10)), read);
+        AssignStmt write = Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(receiver,
+                        valueField.makeRef()), IntConstant.v(10));
+        AssignStmt unrelatedWrite = Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(receiver,
+                        unrelatedField.makeRef()), IntConstant.v(99));
+        body.getUnits().add(guard);
+        body.getUnits().add(write);
+        body.getUnits().add(unrelatedWrite);
+        body.getUnits().add(read);
+        body.getUnits().add(Jimple.v().newReturnStmt(result));
+
+        Object analyzer = newStaticAnalyzer();
+        loadFacts(analyzer, method);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> relevantCells = (Set<String>) relevant.invoke(
+                analyzer, method.getSignature());
+        relevantCells.add(method.getSignature() + ".return");
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        for (int round = 0; round < 5; round++) {
+            processMethod.invoke(analyzer, method.getSignature());
+        }
+
+        Field edgesField = analyzer.getClass().getDeclaredField("edges");
+        edgesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> edges =
+                (List<Map<String, Object>>) edgesField.get(analyzer);
+        String inputCell = method.getSignature() + "::input";
+        List<Map<String, Object>> fieldGuards = new ArrayList<>();
+        for (Map<String, Object> edge : edges) {
+            if ("heap_mutation_path_guard".equals(edge.get("kind"))
+                    && inputCell.equals(edge.get("fromCell"))
+                    && valueField.getSignature().equals(
+                    edge.get("toCell"))) {
+                fieldGuards.add(edge);
+            }
+        }
+        assertEquals("one branch-to-declared-field guard", 1,
+                fieldGuards.size());
+        Map<String, Object> fieldGuard = fieldGuards.get(0);
+        assertEquals(method.getSignature() + "#u2",
+                fieldGuard.get("guardSiteId"));
+        assertEquals(method.getSignature() + "#u3",
+                fieldGuard.get("guardedMutationSiteId"));
+        assertEquals(Boolean.FALSE, fieldGuard.get("requiredOutcome"));
+        assertTrue(edges.stream().anyMatch(edge ->
+                "field_write".equals(edge.get("kind"))
+                        && valueField.getSignature().equals(
+                        edge.get("toCell"))
+                        && fieldGuard.get("guardedMutationSiteId").equals(
+                        edge.get("siteId"))));
+        assertFalse("irrelevant writes must not gain branch authority",
+                edges.stream().anyMatch(edge ->
+                        "heap_mutation_path_guard".equals(edge.get("kind"))
+                                && unrelatedField.getSignature().equals(
+                                edge.get("toCell"))));
+    }
+
+    @Test
     public void distinctSameCellGuardsRetainDistinctControlSites()
             throws Exception {
         G.reset();

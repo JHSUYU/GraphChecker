@@ -101,8 +101,9 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("callerProvidedConditionUsed", false);
         report.addProperty("composedBugPathAlreadyConstrained", true);
         report.addProperty("composedSmtSha256", sha256(composedSmt));
-        report.addProperty("extractionMode", "BOOTSTRAP_REPLAY_MODEL");
-        report.addProperty("replayBootstrapOnly", true);
+        report.addProperty("extractionMode", "CANDIDATE_MODEL");
+        report.addProperty("candidateOnly", true);
+        report.addProperty("candidateModelAvailable", false);
         report.addProperty("reportableFinalReachCondition", false);
         report.addProperty("fatalReplayValidated",
                 bool(manifest, "fatalReplayValidated", false));
@@ -253,7 +254,7 @@ public final class BooleanReachConditionExtractor {
                 && satisfying + unsatisfying == valuationCount;
         boolean truthTableDecided = solverErrors == 0
                 && satisfying + unsatisfying == valuationCount;
-        report.addProperty("bootstrapReplayModelAvailable",
+        report.addProperty("candidateModelAvailable",
                 truthTableDecided && satisfying > 0);
         report.addProperty("reachabilityStatus", !truthTableDecided
                 ? "UNKNOWN" : satisfying > 0
@@ -264,8 +265,8 @@ public final class BooleanReachConditionExtractor {
         String status = "BOOLEAN_REACH_CONDITION_WITH_SOLVER_GAPS";
         if (complete) {
             status = satisfying > 0
-                    ? "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
-                    : "COMPLETE_BOOTSTRAP_UNREACHABLE";
+                    ? "COMPLETE_CANDIDATE_MODEL"
+                    : "COMPLETE_CANDIDATE_UNREACHABLE";
         }
         report.addProperty("status", status);
         return new Extraction(report);
@@ -283,20 +284,20 @@ public final class BooleanReachConditionExtractor {
                 && "SYMBOLIC_RELATIONSHIP_CANDIDATES".equals(string(
                 relationships, "kind"));
         if (!commonManifest
-                || !"BOOTSTRAP".equals(string(manifest,
+                || !"CANDIDATE".equals(string(manifest,
                 "compositionStage"))
                 || !bool(manifest, "structurallyComplete", false)
                 || bool(manifest, "fatalReplayValidated", true)
                 || bool(manifest, "complete", true)
-                || !bool(manifest, "eligibleForBootstrapModel", false)
+                || !bool(manifest, "eligibleForCandidateModel", false)
                 || bool(manifest,
                 "eligibleToReportAutomaticRelationship", true)) {
-            gaps.add("COMPOSITION_MANIFEST_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
+            gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
         if (!commonRelationships
                 || bool(relationships,
                 "eligibleForAutomaticVerification", true)) {
-            gaps.add("RELATIONSHIP_CATALOG_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
+            gaps.add("RELATIONSHIP_CATALOG_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
     }
 

@@ -157,15 +157,15 @@ public class ConcolicSmtComposerTest {
             assertFalse(result.manifest.get("complete").getAsBoolean());
             assertFalse(result.manifest.get("fatalReplayValidated")
                     .getAsBoolean());
-            assertEquals("BOOTSTRAP", result.manifest.get(
+            assertEquals("CANDIDATE", result.manifest.get(
                     "compositionStage").getAsString());
-            assertTrue(result.manifest.get("eligibleForBootstrapModel")
+            assertTrue(result.manifest.get("eligibleForCandidateModel")
                     .getAsBoolean());
             assertFalse(result.manifest.get(
                     "eligibleToReportAutomaticRelationship").getAsBoolean());
             assertFalse(result.relationships.get(
                     "eligibleForAutomaticVerification").getAsBoolean());
-            assertEquals("STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION",
+            assertEquals("STRUCTURALLY_COMPLETE_CANDIDATE_COMPOSITION",
                     result.manifest.get("status").getAsString());
             assertEquals(1, result.manifest.get(
                     "readFromConstraintCount").getAsInt());

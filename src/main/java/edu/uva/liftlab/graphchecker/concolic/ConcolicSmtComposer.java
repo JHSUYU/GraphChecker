@@ -42,8 +42,8 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
  * Composes one selected fatal-region query with concolic summaries of its
  * upstream regions and runtime-validated equality/read-from edges.  The
  * resulting SMT is a structurally checked candidate formula used to obtain a
- * bootstrap replay model. Promoting it with an unforced natural target replay
- * is deliberately outside this component and remains the documented TODO.
+ * candidate model. Promoting it with an unforced natural target replay is
+ * deliberately outside this component and remains the documented TODO.
  *
  * <p>This class is intentionally project independent. It consumes only common
  * region, summary, branch-contract, solver-context, and runtime-edge schemas;
@@ -387,12 +387,13 @@ public final class ConcolicSmtComposer {
                 && emitter.unboundPorts.isEmpty()
                 && emitter.caseProjectionCatalogComplete
                 && bool(fatal, "readyForSolver", false);
-        manifest.addProperty("compositionStage", "BOOTSTRAP");
+        manifest.addProperty("compositionStage", "CANDIDATE");
         manifest.addProperty("structurallyComplete", structurallyComplete);
-        manifest.addProperty("eligibleForBootstrapModel", structurallyComplete);
+        manifest.addProperty("eligibleForCandidateModel",
+                structurallyComplete);
         manifest.addProperty("complete", false);
         manifest.addProperty("status", structurallyComplete
-                ? "STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION"
+                ? "STRUCTURALLY_COMPLETE_CANDIDATE_COMPOSITION"
                 : "COMPOSITION_WITH_EXPLICIT_GAPS");
         manifest.addProperty("soundnessScope",
                 "SELECTED_REGION_PATHS_AND_RUNTIME_VALIDATED_BINDINGS");

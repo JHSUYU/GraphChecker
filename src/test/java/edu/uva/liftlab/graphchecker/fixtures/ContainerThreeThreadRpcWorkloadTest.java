@@ -44,7 +44,7 @@ public class ContainerThreeThreadRpcWorkloadTest {
                 assertEquals(mapInput, result.getMapInput());
                 assertEquals(arrayInput.booleanValue() ? 1 : -1,
                         result.getArrayValue());
-                assertEquals(mapInput.booleanValue() ? 0 : 10,
+                assertEquals(mapInput.booleanValue() ? 20 : 10,
                         result.getMapValue());
                 assertEquals(result.getArrayValue() > result.getMapValue(),
                         result.isBugReached());
@@ -65,7 +65,24 @@ public class ContainerThreeThreadRpcWorkloadTest {
                 }
             }
         }
-        assertEquals(1, reachingExecutions);
+        assertEquals(0, reachingExecutions);
+    }
+
+    @Test
+    public void mapProducerClampsInputsAndPreservesJavaIntOverflow() {
+        assertMapValue(false, 10, 9, 10);
+        assertMapValue(false, 11, 9, 21);
+        assertMapValue(true, Integer.MAX_VALUE, Integer.MAX_VALUE, -2);
+    }
+
+    private static void assertMapValue(boolean enabled, int input1,
+                                       int input2, int expected) {
+        ContainerThreeThreadRpcWorkload.MapProducer producer =
+                new ContainerThreeThreadRpcWorkload.MapProducer(
+                        Boolean.valueOf(enabled));
+        producer.input1 = input1;
+        producer.input2 = input2;
+        assertEquals(expected, producer.compute());
     }
 
     private static void assertWorkerAndChannelIdentity(

@@ -38,6 +38,8 @@ public final class ConcolicSummaryImporter {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     public static final String PATH_CONDITION_ISOLATION_POLICY =
             "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1";
+    private static final String UNMAPPED_BINARY_CONDITION =
+            "BINARY_CONDITION_WITHOUT_INSTRUMENTED_BRANCH_MAPPING";
     private static final Pattern REGION_INPUT_PORT = Pattern.compile(
             "(REGION(?:\\.[A-Za-z0-9-]+)+\\.in\\.[0-9]+)");
     private static final Pattern FAILURE_EXCEPTION = Pattern.compile(
@@ -196,8 +198,11 @@ public final class ConcolicSummaryImporter {
             PathNormalization normalization = normalizePathCondition(
                     enginePathCondition, admission, mappedConditions,
                     semanticBranchConditions,
-                    !mappedConditions.isEmpty(), activation,
+                    outputClosure || !mappedConditions.isEmpty(), activation,
                     dynamicPcFallbacks);
+            boolean outputClosurePathMappingComplete = !outputClosure
+                    || !normalization.hasFilteredReason(
+                    UNMAPPED_BINARY_CONDITION);
             JsonArray pathCondition = normalization.conditions;
             RuntimePathContamination residualRuntimePath =
                     runtimePathContamination(pathCondition);
@@ -358,7 +363,8 @@ public final class ConcolicSummaryImporter {
                             && inputAdmission.complete
                             && placeholderBindings.complete
                             && engineArrayBindings.complete
-                            && outputExtraction.complete);
+                            && outputExtraction.complete
+                            && outputClosurePathMappingComplete);
             summary.add("inputMaterializationAdmission",
                     inputAdmission.toJson());
             summary.add("unforcedEnvironmentValidationRequirements",
@@ -2339,8 +2345,7 @@ public final class ConcolicSummaryImporter {
                     && !dynamicPcFallbacks.byRawIndex.containsKey(index)
                     && !mappedBinarySignatures.contains(
                     GSON.toJson(rawCondition))) {
-                rejection = "BINARY_CONDITION_WITHOUT_"
-                        + "INSTRUMENTED_BRANCH_MAPPING";
+                rejection = UNMAPPED_BINARY_CONDITION;
             }
             if (rejection.isEmpty()
                     && dynamicPcFallbacks.byRawIndex.containsKey(index)) {
@@ -6693,7 +6698,10 @@ public final class ConcolicSummaryImporter {
             boolean nonMutatingDynamicRead) {
         List<HeapEffectIssue> issues = new ArrayList<>(inheritedIssues);
         JsonArray bindings = new JsonArray();
-        if (nonMutatingDynamicRead && guardSites.isEmpty()) {
+        // Direct writes to unrelated fields may have structured guards in
+        // the same method. They do not turn this read-only map observation
+        // into a guarded map mutation.
+        if (nonMutatingDynamicRead) {
             return nonMutatingDynamicObservationFieldBindings(observation,
                     activation, branchMappings, catalog, issues,
                     rawPathCondition, normalization);
@@ -11869,6 +11877,16 @@ public final class ConcolicSummaryImporter {
                 result.add(item);
             }
             return result;
+        }
+
+        private boolean hasFilteredReason(String reason) {
+            for (int index = 0; index < statuses.length; index++) {
+                if ("FILTERED".equals(statuses[index])
+                        && reason.equals(reasons[index])) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }

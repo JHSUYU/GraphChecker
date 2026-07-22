@@ -4087,6 +4087,101 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
+    public void canonicalizesProjectedPrimitivePortToExactField()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = primitiveInputAliasRuntimeResult(
+                false, false);
+        assertEquals(3, result.activations.size());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> upstream = result.activations.get(2);
+        assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> actions =
+                (List<Map<String, Object>>) upstream.get("symbolize");
+        assertEquals(1, actions.size());
+        assertEquals("REGION.W.in.exact", actions.get(0).get("symbol"));
+        assertEquals("3", actions.get(0).get("primitiveValue"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        assertEquals(Boolean.TRUE, slice.get("complete"));
+        assertEquals(Collections.singletonList("REGION.W.in.exact"),
+                slice.get("inputPorts"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> aliases =
+                (List<Map<String, Object>>) slice.get(
+                        "inputAliasCanonicalizations");
+        assertEquals(1, aliases.size());
+        assertEquals("CANONICAL_PRIMITIVE_INPUT_ALIAS",
+                aliases.get(0).get("kind"));
+        assertEquals("REGION.W.in.projected",
+                aliases.get(0).get("aliasInputPort"));
+        assertEquals("REGION.W.in.exact",
+                aliases.get(0).get("canonicalInputPort"));
+        assertEquals(800,
+                aliases.get(0).get("intermediateOwnerObjectId"));
+        assertEquals(800,
+                aliases.get(0).get("canonicalLeafReceiverObjectId"));
+        assertEquals("<example.Producer: int input>",
+                aliases.get(0).get("leafFieldSignature"));
+        assertEquals(Collections.singletonList(
+                        "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"),
+                aliases.get(0).get("aliasBindingAuthorities"));
+        assertEquals("BASE_READ_BEFORE_LEAF_READ_WITH_NO_INTERVENING_"
+                        + "LEAF_WRITE_V1",
+                aliases.get(0).get("runtimeCutAuthority"));
+        assertEquals(2L, aliases.get(0).get("baseFieldEventSeq"));
+        assertEquals(11L, aliases.get(0).get("baseFieldCallId"));
+        assertEquals(3L,
+                aliases.get(0).get("canonicalLeafFieldEventSeq"));
+        assertEquals(11L,
+                aliases.get(0).get("canonicalLeafFieldCallId"));
+        assertEquals("3", aliases.get(0).get("canonicalPrimitiveValue"));
+        assertEquals(Boolean.TRUE, aliases.get(0).get("complete"));
+        assertEquals(Boolean.TRUE,
+                slice.get("inputAliasCanonicalizationComplete"));
+    }
+
+    @Test
+    public void projectedPrimitiveAliasWithDifferentReceiverFailsClosed()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = primitiveInputAliasRuntimeResult(
+                true, false);
+        assertEquals(3, result.activations.size());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> upstream = result.activations.get(2);
+        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        assertEquals(Boolean.FALSE, slice.get("complete"));
+        assertEquals(Boolean.FALSE,
+                slice.get("inputAliasCanonicalizationComplete"));
+        assertTrue(String.valueOf(slice.get(
+                "inputAliasCanonicalizationIssues")).contains(
+                "PROJECTED_PRIMITIVE_RUNTIME_FIELD_CHAIN_MISMATCH"));
+        assertEquals(Boolean.FALSE, slice.get("runtimeRefinementComplete"));
+    }
+
+    @Test
+    public void projectedPrimitiveAliasAcrossAWriteFailsClosed()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = primitiveInputAliasRuntimeResult(
+                false, true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> upstream = result.activations.get(2);
+        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> slice = (Map<String, Object>) upstream.get(
+                "requestedOutputSlice");
+        assertTrue(String.valueOf(slice.get(
+                "inputAliasCanonicalizationIssues")).contains(
+                "PROJECTED_PRIMITIVE_INTERVENING_LEAF_WRITE"));
+    }
+
+    @Test
     public void liftsSelectedArrayElementDemandToMapOutputProjectionCatalog() {
         RuntimeRegionPlanner.Result result =
                 mapValueProjectionActivationResult(true);
@@ -5034,6 +5129,116 @@ public class RuntimeRegionPlannerTest {
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(carrierRead, exactArrayRead, keyRead,
                             write, read));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static RuntimeRegionPlanner.Result primitiveInputAliasRuntimeResult(
+            boolean differentReceiver, boolean interveningWrite)
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            String writer = "<example.Handler: void process()>";
+            String reader = "<example.Reader: void consume()>";
+            String carrier = "<example.Handler: example.Producer producer>";
+            String projected = carrier + "#field:input";
+            String exact = "<example.Producer: int input>";
+            String state = "<example.Handler: int state>";
+            String writerRegion = "{\"regionId\":\"REGION.W\","
+                    + "\"rootMethod\":\"" + writer + "\","
+                    + "\"anchorMethod\":\"" + writer + "\","
+                    + "\"methods\":[\"" + writer + "\"],"
+                    + "\"symbolicInputs\":[{\"portId\":"
+                    + "\"REGION.W.in.projected\",\"cell\":\""
+                    + projected + "\",\"sourceKind\":\"SHARED_HEAP\","
+                    + "\"projection\":\"field:input\"},{\"portId\":"
+                    + "\"REGION.W.in.exact\",\"cell\":\"" + exact
+                    + "\",\"sourceKind\":\"SHARED_HEAP\","
+                    + "\"projection\":\"value\"}],"
+                    + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
+                    + "\"cell\":\"" + state
+                    + "\",\"kind\":\"HEAP_STATE\"}],"
+                    + "\"outputSlices\":[{\"outputPort\":"
+                    + "\"REGION.W.out.0\",\"outputCell\":\"" + state
+                    + "\",\"inputPorts\":[\"REGION.W.in.projected\","
+                    + "\"REGION.W.in.exact\"],\"inputBindings\":[{"
+                    + "\"dependencyCell\":\"" + projected + "\","
+                    + "\"inputPort\":\"REGION.W.in.projected\","
+                    + "\"bindingAuthority\":"
+                    + "\"UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN\","
+                    + "\"dependencyMethods\":[\"" + writer + "\"]},"
+                    + sliceBinding(exact, "REGION.W.in.exact", writer)
+                    + "],\"methods\":[\"" + writer + "\"],"
+                    + "\"sites\":[],\"causalEdgeIds\":[\"P\"],"
+                    + "\"causalEdges\":["
+                    + causalReference("P", writer, writer + "#u5") + "],"
+                    + "\"complete\":true,\"selection\":"
+                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            String readerRegion = "{\"regionId\":\"REGION.R\","
+                    + "\"rootMethod\":\"" + reader + "\","
+                    + "\"anchorMethod\":\"" + reader + "\","
+                    + "\"methods\":[\"" + reader + "\"],"
+                    + "\"symbolicInputs\":[{\"portId\":"
+                    + "\"REGION.R.in.0\",\"cell\":\"" + state
+                    + "\",\"sourceKind\":\"SHARED_HEAP\","
+                    + "\"projection\":\"value\"}],\"outputs\":[],"
+                    + "\"branchPolicies\":[],\"models\":[]}\n";
+            Files.write(regions, (writerRegion + readerRegion).getBytes(
+                    StandardCharsets.UTF_8));
+            Files.write(edges, ("{\"edgeId\":\"E.STATE\","
+                    + "\"fromRegion\":\"REGION.W\","
+                    + "\"toRegion\":\"REGION.R\","
+                    + "\"fromPort\":\"" + state + "\","
+                    + "\"toPort\":\"" + state + "\","
+                    + "\"kind\":\"SHARED_STATE\","
+                    + "\"relation\":\"READ_FROM_CANDIDATE\","
+                    + "\"requiresOrder\":true,"
+                    + "\"requiresObjectIdentity\":true}\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.MethodEvent writeRoot = methodContext(1,
+                    writer, 11, "PROCESS", "writer", 101L);
+            RuntimeRegionPlanner.MethodEvent readRoot = methodContext(10,
+                    reader, 22, "PROCESS", "reader", 202L);
+            RuntimeRegionPlanner.FieldAccessEvent carrierRead =
+                    new RuntimeRegionPlanner.FieldAccessEvent(2,
+                            "FIELD_READ", writer, 11, carrier, 700, 800, "");
+            RuntimeRegionPlanner.FieldAccessEvent leafWrite =
+                    new RuntimeRegionPlanner.FieldAccessEvent(3,
+                            "FIELD_WRITE", writer, 11, exact, 800, 0, "9");
+            RuntimeRegionPlanner.FieldAccessEvent exactRead =
+                    new RuntimeRegionPlanner.FieldAccessEvent(
+                            interveningWrite ? 4 : 3,
+                            "FIELD_READ", writer, 11, 6, writer + "#u6",
+                            exact, differentReceiver ? 801 : 800, 0, "3",
+                            "", false, 0, "");
+            RuntimeRegionPlanner.FieldAccessEvent write =
+                    new RuntimeRegionPlanner.FieldAccessEvent(
+                            interveningWrite ? 5 : 4,
+                            "FIELD_WRITE", writer, 11, state, 42, 88, "");
+            RuntimeRegionPlanner.FieldAccessEvent read =
+                    new RuntimeRegionPlanner.FieldAccessEvent(11,
+                            "FIELD_READ", reader, 22, state, 42, 88, "");
+            List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents =
+                    new ArrayList<>();
+            fieldEvents.add(carrierRead);
+            if (interveningWrite) {
+                fieldEvents.add(leafWrite);
+            }
+            fieldEvents.add(exactRead);
+            fieldEvents.add(write);
+            fieldEvents.add(read);
+            return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    Arrays.asList(writeRoot, readRoot),
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    fieldEvents);
         } finally {
             folder.delete();
         }

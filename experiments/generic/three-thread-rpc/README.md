@@ -94,33 +94,35 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    shared-field read-from bindings. Re-slice the frozen graph inside the
    concrete call closure; unresolved dependencies stay concrete rather than
    becoming free symbols. No generated `REGION.*` identity is assumed.
-3. Capture an unforced target seed and schedule its solver-ready bootstrap
-   query. The seed schedule contains no forced branch.
+3. Capture an unforced target seed and schedule its solver-ready target query.
+   The seed schedule contains no forced branch.
 4. Capture every producer seed. For each producer,
    `ConcolicPathFlipPlanner` repeatedly selects one pending path, Z3 derives
    its input model, the custom JDK executes that model naturally, and the
    strict importer validates the result. Exploration stops only when the
    worklist manifest is closed, then `RegionSummaryMerger` builds the guarded
    producer relation.
-5. Compose the closed producer relations with the target seed. This produces
-   a structurally complete `BOOTSTRAP` SMT model, but it is explicitly
-   ineligible as a final report.
-6. Exhaustively project the bootstrap SMT over its discovered Boolean roots,
-   invoke Z3 independently on the emitted SMT,
-   and hash-bind the SMT, composition manifest, reach model, and relationship
-   candidates into one `CANDIDATE_ONLY` result manifest.
+5. Compose the closed producer relations with the target seed into one
+   structurally complete candidate SMT model.
+6. Solve that candidate model by enumerating its discovered Boolean roots while
+   leaving other scalar roots existential, invoke Z3 independently on the
+   emitted SMT, and hash-bind the SMT, composition manifest, Boolean model, and
+   relationship candidates into one `CANDIDATE_ONLY` result manifest.
 
-The terminal artifact implemented by this workflow is:
+The terminal candidate artifact set implemented by this workflow is:
 
 ```text
-target/three-thread-rpc/bootstrap/candidate_result_manifest.json
+target/three-thread-rpc/candidate/candidate.smt2
+target/three-thread-rpc/candidate/candidate_composition_manifest.json
+target/three-thread-rpc/candidate/candidate_boolean_model.json
+target/three-thread-rpc/candidate/candidate_result_manifest.json
 ```
 
 It binds the generated root-input catalog, complete candidate truth table,
 canonical condition, relationship candidates, and SMT by path, byte size, and
-SHA-256. A discovered root may legitimately be non-influential after
-existential projection of other scalar inputs, so the workflow reports exact
-rows rather than requiring every Boolean bit to change the result. The
+SHA-256. A discovered root may legitimately be non-influential when other
+scalar inputs remain existential, so the workflow reports exact rows rather
+than requiring every Boolean bit to change the result. The
 manifest explicitly records `naturalReplayPromotionImplemented=false`.
 
 ## Inspecting or resuming stages
@@ -141,7 +143,7 @@ experiments/generic/three-thread-rpc/run.sh import A
 experiments/generic/three-thread-rpc/run.sh explore-producer A
 ```
 
-The later stage commands are `bootstrap-compose` and `bootstrap-project`.
+The later stage commands are `candidate-compose` and `candidate-solve`.
 `candidate` (and its alias `all`) always requires an empty work root so stale
 artifacts cannot be mistaken for this run's result.
 
@@ -156,7 +158,14 @@ CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/
 
 `containers/` runs the same end-to-end workflow with live-ins at
 `array[1].state.guard.enabled`, a deliberately misleading `array[0]`, and a
-map-entry value's nested Boolean leaf.
+map-entry value's nested Boolean leaf. Its `MapProducer` also has two
+existential `int` roots, `input1` and `input2`: values below 10 are clamped to
+10, and the selected result uses exact Java `int` wrap semantics. The projected
+cross-method `producer#field:inputN` ports are canonicalized to the declared
+primitive fields only after exact static-chain and runtime owner-identity
+checks, with the base read preceding the leaf read and no intervening write to
+that exact leaf. The array relation closes with 2 cases and the map relation
+with 10.
 `dependent-scalar/` exercises a non-Boolean free scalar that affects a
 producer relation. `cross-method-fields/` crosses several helper calls and
 reads genuine instance/static field live-ins. `multitype/` combines Boolean,
@@ -205,9 +214,11 @@ experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
 The matrix recompiles each selected workload, runs the complete concolic
 workflow, invokes Z3 on the emitted SMT, and validates the expected root-input
 catalog and truth-table profile. `containers` additionally checks exact
-`array[1].state.guard.enabled` and map-key-7 rebinding, two-path guarded merges,
-schema-3 witness/context separation, input-only unforced replay, and its exact
-four-row reach profile. `unreachable-parity` additionally requires two closed
+`array[1].state.guard.enabled` and map-key-7 rebinding, a 2-case array relation,
+a 10-case map relation, Java `int` wrap, schema-3 witness/context separation,
+and input-only unforced producer-path replay. Its two Boolean roots produce four
+`sat` rows because `input1` and `input2` remain existential in each row.
+`unreachable-parity` additionally requires two closed
 two-case producer relations, the exact odd/even output images, zero satisfying
 rows, four unsatisfying rows, and direct Z3 `unsat`. Run all six maintained
 profiles with `run_robustness_matrix.sh all`. Unit tests are not run by this

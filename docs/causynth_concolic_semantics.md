@@ -7,9 +7,14 @@ expression IR and GraphChecker's two SMT encoders:
 
 - `ConcolicConstraintSolver` builds a branch-flip candidate. A model from this
   stage is admitted only after an unforced concrete replay.
-- `ConcolicSmtComposer` builds the cross-region bootstrap query. An item
+- `ConcolicSmtComposer` builds the cross-region candidate composition. An item
   added to its `unsupported` set makes the composition manifest structurally
   incomplete.
+
+The completed composition and its independent Z3 result are still
+`CANDIDATE_ONLY`. Promoting them to a trusted result requires a future natural
+replay of the full workload with no downstream injection or branch override;
+that promotion is intentionally a TODO.
 
 ## Supported execution envelope
 
@@ -33,17 +38,17 @@ The classifications below have deliberately narrow meanings:
   a subsequent concrete replay; it must not be presented as full Java
   semantics.
 - **Fail-closed** means the IR is retained as a diagnostic gap and cannot make
-  a bootstrap composition structurally complete.
+  a candidate composition structurally complete.
 - **Silent abstraction** means a free term or uninterpreted function is
   admitted without an `unsupported` marker. These are the highest-priority
   soundness risks.
 
 ## Scalar and control-flow matrix
 
-| VM IR / Java feature | Branch-flip solver | Bootstrap composer | Classification and limits |
+| VM IR / Java feature | Branch-flip solver | Candidate composer | Classification and limits |
 | --- | --- | --- | --- |
 | `SymbolExpression`, integral primitives | SMT `Int`; exact byte/char/short/int/long root bounds and width metadata | SMT `Int`; typed port binding and the same bounds | Exact scalar values for admitted, explicitly typed roots. `int` and `long` share the transport sort but retain `JAVA_INT`/`JAVA_LONG` width metadata. Ambiguous widths fail closed. |
-| Java `boolean` | SMT `Bool` in branch-flip solver | SMT `Int`, tested as zero/nonzero; Boolean report later restricts roots to 0/1 | Bounded abstraction at raw-composer level. The Boolean projection is exact only after its explicit 0/1 domain assertions are included. |
+| Java `boolean` | SMT `Bool` in branch-flip solver | SMT `Int`, tested as zero/nonzero; candidate solving restricts enumerated roots to 0/1 | Bounded abstraction at raw-composer level. Boolean-root enumeration is exact only after its explicit 0/1 domain assertions are included. |
 | `float`, `double` literals and roots | SMT `(_ FloatingPoint 8 24)` / `(_ FloatingPoint 11 53)`; literals are built from Java-parsed raw IEEE bits | Same FP sorts; typed `VFloat`/`VDouble` port carriers | Exact encoder semantics for binary32/binary64, including subnormals, signed zero, infinities, and NaN. Solver replay reads IEEE bits plus a separate `fp.isNaN` discriminator because `fp.to_ieee_bv` is unspecified for NaN. Ordinary `-Xint` capture is covered; exhaustive special-value materialization/replay remains pending. |
 | String literal/root | SMT `String` content plus an explicit reference-nullness `Bool` | SMT `String` content plus an explicit reference-nullness `Bool` | Exact null/content separation for the serialized SMT Unicode-scalar domain. A null model is materialized as Java `null`; content operations require the non-null side condition. Java uses UTF-16 code units, so operations involving unpaired surrogates or code-unit inspection require an explicit restriction. |
 | integral `+`, `-`, `*` | SMT `Int` operation followed by `java_int_wrap` or `java_long_wrap` | Same shared lowering | Exact Java two's-complement wrap for `int`/`long`, including overflow. Java binary numeric promotion is applied only when both operand widths are known. |
@@ -92,10 +97,10 @@ semantics exists.
 | Symbolic finite array load in composer | Requires an activation-local array/input bridge, finite length, bounds, and typed element equality | Exact for the captured finite array snapshot. Missing bridge is fail-closed. |
 | Array store expression | Explicit unsupported marker | Fail-closed. |
 | Recognized Map operations / finite map observations | Typed `MapState` operations plus required observation evidence | Exact only for the selected finite snapshot/effect sequence. Missing selectors/evidence are fail-closed. |
-| Arbitrary `MethodExpression` | Both encoders may declare a sort-qualified diagnostic uninterpreted function and always add `MODEL_SEMANTICS_MISSING` | Fail-closed. The diagnostic UF keeps the SMT inspectable, but can no longer make branch-flip or bootstrap composition claim exact completeness. |
+| Arbitrary `MethodExpression` | Both encoders may declare a sort-qualified diagnostic uninterpreted function and always add `MODEL_SEMANTICS_MISSING` | Fail-closed. The diagnostic UF keeps the SMT inspectable, but can no longer make branch-flip or candidate composition claim exact completeness. |
 | Unknown expression `_type` | Composer creates a fresh term and adds `unsupported`; solver adds `unsupported` and returns no model | Fail-closed. |
 | Unknown binary/String operator, invalid numeric literal, unbound placeholder | Composer may create a fresh well-sorted term, but also adds `unsupported`; solver does likewise or stops before Z3 | Fail-closed. The fresh term is diagnostic scaffolding, not admitted semantics. |
-| Missing upstream region summary | Uninterpreted region relation plus `incompleteSummaries` | Fail-closed for bootstrap structural completeness. |
+| Missing upstream region summary | Uninterpreted region relation plus `incompleteSummaries` | Fail-closed for candidate structural completeness. |
 | Unknown/malformed Java scalar type | Usually falls back to reference sort | Correct for actual references, but a malformed primitive descriptor can be silently misclassified. Static port schema checks reduce this risk; the encoders should nevertheless reject unknown non-reference descriptors explicitly. |
 
 ### Answer to the free-variable audit
@@ -117,6 +122,13 @@ conjunction `selector != caseKey` to one exact switch event.  That proves the
 observed default arm; it does **not** prove that the present binary-flip
 worklist can enumerate every switch successor.
 
+The maintained container regression combines an exact
+`array[1].state.guard.enabled` selector with a key-7 Map entry field and two
+existential `int` roots on `MapProducer`. Each integer is clamped to 10 when
+smaller, and the selected sum uses `java_int_wrap`. The array producer closes
+with 2 cases and the map producer with 10; all four Boolean-root rows are `sat`
+because the two integer roots remain existential in each candidate query.
+
 ## Prioritized minimum repairs and regression workloads
 
 ### Closed at the GraphChecker encoder boundary (2026-07-21)
@@ -129,7 +141,7 @@ worklist can enumerate every switch successor.
 3. `String.contains` and its false branch lower exactly to `str.contains` and
    `not str.contains`; unsupported String operations remain explicit gaps.
 4. Unknown methods, casts, sorts, and operators cannot silently make a
-   bootstrap composition structurally complete.
+   candidate composition structurally complete.
 5. Selected/default switch events can be checked as exact observations;
    malformed event ownership fails closed.
 6. Java reference-null guards use exact `nullRef` predicates. Null prefix and
@@ -208,7 +220,7 @@ A robust scalar campaign should retain, at minimum:
 7. one deliberately unsupported String operation and one arbitrary method
    call, verifying that neither can yield a `complete=true` exact report.
 
-Every workload should inspect both the branch-flip record and bootstrap composition
+Every workload should inspect both the branch-flip record and candidate composition
 manifest. A Z3 `sat` result alone is not semantic admission.
 
 ## Source audit anchors
@@ -221,11 +233,11 @@ macro is the stable anchor.
 | Shared Java numeric semantics | Opcode expression construction in `bytecodeInterpreter.cpp` | `JavaPrimitiveSmtSemantics`; both encoders' `binary`/`typeCast` methods | Retain width metadata, wrap functions, SMT FP formats, RNE operations, and fail-closed unsupported operators in one shared semantic authority. |
 | Cast capture and category-2 slots | `bytecodeInterpreter.cpp`, `CONCOLIC_CONVERT_TYPE`, value-width shadow helpers, and conversion opcode stack offsets | `JavaPrimitiveSmtSemantics` and both encoders' `TypeCastExpression` lowering | Preserve typed source/target metadata for all 15 opcodes and whole-value one/two-word replacement. Keep VM lifecycle smoke coverage alongside encoder tests. |
 | Generic method UF | VM `MethodExpression::serialize_internal`; call sites include `symbolicPrimitive.cpp` (`parseInt`/`parseLong`) | Solver `Encoder.methodTerm` near line 582; composer `Emitter.methodTerm` near line 4308 and `methodConstraint` near line 3639 | Exact whitelist/adapters first; otherwise mark `MODEL_SEMANTICS_MISSING`. Track UF count/identities in the manifest and exclude them from exact completeness. |
-| Bootstrap completeness gate | N/A | `ConcolicSmtComposer.compose`, `structurallyComplete` near line 505 | Include any semantic-abstraction registry in the completeness predicate, not merely syntax/type gaps. |
+| Candidate composition completeness gate | N/A | `ConcolicSmtComposer.compose`, `structurallyComplete` near line 505 | Include any semantic-abstraction registry in the completeness predicate, not merely syntax/type gaps. |
 | Divide/remainder spelling and semantics | `SymbolicOpStr` maps divide to `@`; `bytecodeInterpreter.cpp` binary arithmetic macros | Both encoders' `binary` methods | Floating `/` is SMT FP; keep integral `/` and all `%` fail-closed until exact Java lowering exists. |
 | Exact switch observation vs exploration | `bytecodeInterpreter.cpp`, `_tableswitch`/`_lookupswitch`; `threadContext.cpp`, `record_branch_conditions` | `ConcolicRegionRuntime` exact switch-event validation; `RegionPathWorklist` | Preserve complete ordered arm predicates. Implement successor-aware forcing separately; never coerce a multiway event into one Boolean flip. |
 | Compare trichotomy | `bytecodeInterpreter.cpp`, `CONCOLIC_OPC_TRICHOTOMY`; branch recording in `threadContext.cpp` | `JavaPrimitiveSmtSemantics.integralCompareResult` / `floatingCompareResult` and both `binary` methods | Preserve the symbolic result (`--`, `--l`, `--g`) on the shadow stack until its consuming `if*`; never reintroduce a concrete compare witness. |
-| FP model materialization | N/A | `ConcolicConstraintSolver` FP bit/NaN queries; `SmtModelValueCodec`; `ConcolicPrimitiveBootstrapProjector` | Retain the separate NaN discriminator and exact bit decoding. Extend the replay matrix for special values without weakening the already-tested category-2 lifecycle. |
+| FP model materialization | N/A | `ConcolicConstraintSolver` FP bit/NaN queries; `SmtModelValueCodec` | Retain the separate NaN discriminator and exact bit decoding. Extend the producer-path replay matrix for special values without weakening the already-tested category-2 lifecycle. |
 | String capture surface | `symbolicString.cpp`, `init_handle_method_names` near line 18 and `finish_method_helper` near line 178 | Solver `stringOperation` near line 458; composer `stringOperation` near line 3231 | Keep the explicit exact-operation whitelist. Add overload/signature and character-domain metadata before extending it. |
 | Diagnostic fresh terms | N/A | Composer `unknownConstraint` near line 9088 and the unknown branches of `term`, `binary`, `codecGap` | Preserve fresh terms only for rendering, always paired with `unsupported`; add a regression asserting manifest `structurallyComplete=false`. |
 | Signed `iinc` | `bytecodeInterpreter.cpp`, `_iinc` near line 1572 | Ordinary `+` lowering | Retain the explicit `(jint)(jbyte)pc[2]` constructor selection; smoke-test both positive and negative increments. |

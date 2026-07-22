@@ -62,7 +62,7 @@ public class BooleanReachConditionExtractorTest {
             assertTrue(report.get("complete").getAsBoolean());
             assertEquals("BOOLEAN_REACH_CONDITION_REPORT",
                     report.get("kind").getAsString());
-            assertEquals("COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL",
+            assertEquals("COMPLETE_CANDIDATE_MODEL",
                     report.get("status").getAsString());
             assertEquals(2, report.getAsJsonArray(
                     "rootBooleanInputs").size());
@@ -102,9 +102,12 @@ public class BooleanReachConditionExtractorTest {
 
         JsonObject report = extraction.report;
         assertTrue(report.toString(), report.get("complete").getAsBoolean());
-        assertEquals("COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL",
+        assertEquals("COMPLETE_CANDIDATE_MODEL",
                 report.get("status").getAsString());
-        assertTrue(report.get("replayBootstrapOnly").getAsBoolean());
+        assertEquals("CANDIDATE_MODEL",
+                report.get("extractionMode").getAsString());
+        assertTrue(report.get("candidateOnly").getAsBoolean());
+        assertTrue(report.get("candidateModelAvailable").getAsBoolean());
         assertFalse(report.get("reportableFinalReachCondition")
                 .getAsBoolean());
         assertFalse(report.get("callerProvidedConditionUsed").getAsBoolean());
@@ -282,37 +285,37 @@ public class BooleanReachConditionExtractorTest {
                 "solverInvocationCount").getAsInt());
         assertTrue(extraction.report.getAsJsonArray("discoveryGaps")
                 .toString().contains(
-                        "COMPOSITION_MANIFEST_NOT_BOOTSTRAP_MODEL_ELIGIBLE"));
+                        "COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE"));
     }
 
     @Test
-    public void completeUnsatBootstrapHasExplicitNonReplayTerminalStatus()
+    public void completeUnsatCandidateHasExplicitUnavailableModelStatus()
             throws Exception {
         Fixture fixture = fixture();
-        configureBootstrap(fixture);
+        configureCandidate(fixture);
 
-        BooleanReachConditionExtractor.Extraction bootstrap =
+        BooleanReachConditionExtractor.Extraction candidate =
                 BooleanReachConditionExtractor.extract(fixture.smt,
                         fixture.manifest, fixture.regions,
                         fixture.relationships, alwaysUnsatSolver(),
                         8, 256);
 
-        JsonObject bootstrapReport = bootstrap.report;
-        assertTrue(bootstrapReport.toString(), bootstrapReport.get(
+        JsonObject candidateReport = candidate.report;
+        assertTrue(candidateReport.toString(), candidateReport.get(
                 "complete").getAsBoolean());
-        assertEquals("COMPLETE_BOOTSTRAP_UNREACHABLE",
-                bootstrapReport.get("status").getAsString());
-        assertEquals("UNREACHABLE", bootstrapReport.get(
+        assertEquals("COMPLETE_CANDIDATE_UNREACHABLE",
+                candidateReport.get("status").getAsString());
+        assertEquals("UNREACHABLE", candidateReport.get(
                 "reachabilityStatus").getAsString());
-        assertEquals(0, bootstrapReport.get(
+        assertEquals(0, candidateReport.get(
                 "satisfyingValuationCount").getAsInt());
-        assertEquals(4, bootstrapReport.get(
+        assertEquals(4, candidateReport.get(
                 "unsatisfyingValuationCount").getAsInt());
-        assertFalse(bootstrapReport.get(
-                "bootstrapReplayModelAvailable").getAsBoolean());
-        assertFalse(bootstrapReport.get(
+        assertFalse(candidateReport.get(
+                "candidateModelAvailable").getAsBoolean());
+        assertFalse(candidateReport.get(
                 "reportableFinalReachCondition").getAsBoolean());
-        assertFalse(bootstrapReport.get(
+        assertFalse(candidateReport.get(
                 "fatalReplayValidated").getAsBoolean());
     }
 
@@ -547,10 +550,10 @@ public class BooleanReachConditionExtractorTest {
                         "BOOLEAN_CASE_TERM_MISMATCH:ROOT.A.in.0"));
     }
 
-    private static void configureBootstrap(Fixture fixture) {
-        fixture.manifest.addProperty("compositionStage", "BOOTSTRAP");
+    private static void configureCandidate(Fixture fixture) {
+        fixture.manifest.addProperty("compositionStage", "CANDIDATE");
         fixture.manifest.addProperty("structurallyComplete", true);
-        fixture.manifest.addProperty("eligibleForBootstrapModel", true);
+        fixture.manifest.addProperty("eligibleForCandidateModel", true);
         fixture.manifest.addProperty("fatalReplayValidated", false);
         fixture.manifest.addProperty("complete", false);
         fixture.manifest.addProperty(
@@ -610,11 +613,11 @@ public class BooleanReachConditionExtractorTest {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
-        manifest.addProperty("compositionStage", "BOOTSTRAP");
+        manifest.addProperty("compositionStage", "CANDIDATE");
         manifest.addProperty("structurallyComplete", true);
         manifest.addProperty("complete", false);
         manifest.addProperty("fatalReplayValidated", false);
-        manifest.addProperty("eligibleForBootstrapModel", true);
+        manifest.addProperty("eligibleForCandidateModel", true);
         manifest.addProperty("eligibleToReportAutomaticRelationship", false);
         manifest.addProperty("caseProjectionCatalogComplete", true);
         JsonObject pathCase = caseProjection(first, second, supplied);

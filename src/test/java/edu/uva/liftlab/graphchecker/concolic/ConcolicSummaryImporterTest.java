@@ -942,6 +942,42 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void outputClosureFailsClosedWithoutAnyBinaryBranchMapping()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            JsonObject map = symbol(
+                    "M_L_field_REGION.P.in.0_example/Store", "L");
+            JsonArray path = new JsonArray();
+            path.add(binaryCondition(
+                    "virtual void example.Store.update():18", "!=",
+                    map, constant("Y_L_NULL", "L")));
+            path.add(methodExpression("java/util/HashMap put", 19,
+                    symbolCopy(map), symbol("key", "I"),
+                    symbol("value", "example/Value")));
+
+            MapFixture imported = importMapFixture(
+                    folder.getRoot().toPath(), path);
+
+            assertTrue("the modeled heap effect remains complete",
+                    imported.summary.getAsJsonObject("heapEffectModel")
+                            .get("complete").getAsBoolean());
+            assertFalse("an output relation cannot omit a symbolic branch",
+                    imported.summary.get("relationallyComplete")
+                            .getAsBoolean());
+            JsonObject filtered = imported.summary.getAsJsonObject(
+                    "pathConditionNormalization").getAsJsonArray(
+                    "filteredConditions").get(0).getAsJsonObject();
+            assertEquals(
+                    "BINARY_CONDITION_WITHOUT_INSTRUMENTED_BRANCH_MAPPING",
+                    filtered.get("reason").getAsString());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void importsMapMutationsAsVersionedHeapEffects() throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();

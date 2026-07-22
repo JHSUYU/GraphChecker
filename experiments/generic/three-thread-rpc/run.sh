@@ -83,7 +83,7 @@ activation_plan=$(configured_value runtime_activation_plan)
 target_schedule=$(configured_value schedule_output_dir)
 target_classes="${work_root}/concolic-target-classes"
 producer_campaign_root="${work_root}/producer-campaign"
-bootstrap_root="${work_root}/bootstrap"
+candidate_root="${work_root}/candidate"
 
 usage() {
   cat <<'EOF'
@@ -100,8 +100,8 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   replay CH [b1 b2]       Run one real custom-JDK concolic capture
   import CH               Strictly import that producer capture
   explore-producer CH     Close and merge one producer path worklist
-  bootstrap-compose       Compose producer relations with the target seed
-  bootstrap-project       Prove/project the candidate SMT with Z3
+  candidate-compose       Compose producer relations with the target seed
+  candidate-solve         Check the candidate SMT with Z3
   candidate               Run the clean workflow through candidate SMT + Z3
   smoke                   prepare + analyze + trace + discovery + target
   all                     Alias for candidate
@@ -979,33 +979,23 @@ declared_producer_regions() {
 
 aggregate_producer_artifacts() {
   local channel campaign expected_regions actual_regions
-  local -a channels merged_inputs summary_inputs activation_inputs
-  [[ ! -e "${bootstrap_root}" ]] \
-    || die "bootstrap output already exists: ${bootstrap_root}"
-  mkdir -p "${bootstrap_root}"
+  local -a channels merged_inputs
+  [[ ! -e "${candidate_root}" ]] \
+    || die "candidate output already exists: ${candidate_root}"
+  mkdir -p "${candidate_root}"
   mapfile -t channels < <(discovered_channels)
   [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
   merged_inputs=()
-  summary_inputs=()
-  activation_inputs=()
   for channel in "${channels[@]}"; do
     campaign=$(producer_campaign_directory "${channel}") || return $?
     merged_inputs+=("${campaign}/merged_region_summaries.jsonl")
-    summary_inputs+=("${campaign}/combined_region_summaries.jsonl")
-    activation_inputs+=("${campaign}/combined_activation_plan.jsonl")
   done
   combine_jsonl_unique summaryId \
-    "${bootstrap_root}/producer_merged_summaries.jsonl" \
+    "${candidate_root}/producer_merged_summaries.jsonl" \
     "${merged_inputs[@]}"
-  combine_jsonl_unique summaryId \
-    "${bootstrap_root}/producer_summary_ledger.jsonl" \
-    "${summary_inputs[@]}"
-  combine_jsonl_unique activationId \
-    "${bootstrap_root}/producer_activation_ledger.jsonl" \
-    "${activation_inputs[@]}"
   expected_regions=$(declared_producer_regions | sort -u)
   actual_regions=$(jq -r '.regionId' \
-    "${bootstrap_root}/producer_merged_summaries.jsonl" | sort -u)
+    "${candidate_root}/producer_merged_summaries.jsonl" | sort -u)
   [[ "${expected_regions}" == "${actual_regions}" ]] \
     || die "merged producer regions differ from runtime read-from discovery"
   [[ "$(printf '%s\n' "${expected_regions}" | sed '/^$/d' | wc -l)" \
@@ -1017,17 +1007,17 @@ aggregate_producer_artifacts() {
       .valid == true
       and .relationallyComplete == true
       and .regionRelation.complete == true)
-  ' "${bootstrap_root}/producer_merged_summaries.jsonl" >/dev/null \
+  ' "${candidate_root}/producer_merged_summaries.jsonl" >/dev/null \
     || die "aggregated producer relations are incomplete"
 }
 
-do_bootstrap_compose() {
+do_candidate_compose() {
   local target_region target_activation binding channel producer_binding_row
   local producer_region
   local -a channels bounded_args
   require_file "target seed summary" \
     "${target_schedule}/concolic_region_summaries.jsonl"
-  require_file "target bootstrap branch query" \
+  require_file "target candidate branch query" \
     "${target_schedule}/branch_queries.jsonl"
   aggregate_producer_artifacts
   binding=$(target_binding) || return $?
@@ -1041,26 +1031,26 @@ do_bootstrap_compose() {
   done
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_FATAL_QUERIES="${target_schedule}/branch_queries.jsonl" \
-    CAUSYNTH_COMPOSE_SUMMARIES="${bootstrap_root}/producer_merged_summaries.jsonl:${target_schedule}/concolic_region_summaries.jsonl" \
-    CAUSYNTH_COMPOSED_SMT="${bootstrap_root}/composed_fatal.smt2" \
-    CAUSYNTH_COMPOSITION_MANIFEST="${bootstrap_root}/composed_smt_manifest.json" \
-    CAUSYNTH_RELATIONSHIP_CANDIDATES="${bootstrap_root}/symbolic_relationship_candidates.json" \
+    CAUSYNTH_COMPOSE_SUMMARIES="${candidate_root}/producer_merged_summaries.jsonl:${target_schedule}/concolic_region_summaries.jsonl" \
+    CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
+    CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
+    CAUSYNTH_RELATIONSHIP_CANDIDATES="${candidate_root}/symbolic_relationship_candidates.json" \
     CAUSYNTH_FATAL_REGION="${target_region}" \
     CAUSYNTH_FATAL_ACTIVATION_ID="${target_activation}" \
     "${runner}" --config "${config}" compose "${bounded_args[@]}")
   jq -e --argjson expected "${#channels[@]}" '
     .kind == "CONCOLIC_COMPOSED_SMT"
-    and .compositionStage == "BOOTSTRAP"
+    and .compositionStage == "CANDIDATE"
     and .boundedComposition == true
     and ((.boundedUpstreamRegions // []) | length) == $expected
     and .structurallyComplete == true
-    and .eligibleForBootstrapModel == true
+    and .eligibleForCandidateModel == true
     and .fatalReplayValidated == false
     and .complete == false
     and .eligibleToReportAutomaticRelationship == false
     and .caseProjectionCatalogComplete == true
-  ' "${bootstrap_root}/composed_smt_manifest.json" >/dev/null \
-    || die "composition is not a structurally complete bootstrap model"
+  ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
+    || die "composition is not a structurally complete candidate model"
   jq -e '
     .schemaVersion == 1
     and .kind == "SYMBOLIC_RELATIONSHIP_CANDIDATES"
@@ -1068,119 +1058,52 @@ do_bootstrap_compose() {
     and (.relationships | type == "array")
     and (keys | sort) == (["eligibleForAutomaticVerification", "kind",
       "relationships", "schemaVersion"] | sort)
-  ' "${bootstrap_root}/symbolic_relationship_candidates.json" >/dev/null \
-    || die "bootstrap relationship catalog claims final eligibility"
+  ' "${candidate_root}/symbolic_relationship_candidates.json" >/dev/null \
+    || die "candidate relationship catalog claims final eligibility"
 }
 
-do_bootstrap_project() {
-  local z3 solver_timeout
-  require_file "bootstrap SMT" "${bootstrap_root}/composed_fatal.smt2"
-  require_file "bootstrap composition manifest" \
-    "${bootstrap_root}/composed_smt_manifest.json"
-  require_file "bootstrap relationship candidates" \
-    "${bootstrap_root}/symbolic_relationship_candidates.json"
-  z3=$(configured_value z3_bin) || return $?
-  solver_timeout=$(configured_value solver_timeout_ms) || return $?
+do_candidate_solve() {
+  require_file "candidate SMT" "${candidate_root}/candidate.smt2"
+  require_file "candidate composition manifest" \
+    "${candidate_root}/candidate_composition_manifest.json"
+  require_file "candidate relationship candidates" \
+    "${candidate_root}/symbolic_relationship_candidates.json"
   (cd "${graphchecker_dir}" && \
-    CAUSYNTH_COMPOSED_SMT="${bootstrap_root}/composed_fatal.smt2" \
-    CAUSYNTH_COMPOSITION_MANIFEST="${bootstrap_root}/composed_smt_manifest.json" \
-    CAUSYNTH_RELATIONSHIP_CANDIDATES="${bootstrap_root}/symbolic_relationship_candidates.json" \
-    CAUSYNTH_REACH_REPORT="${bootstrap_root}/bootstrap_boolean_model.json" \
+    CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
+    CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
+    CAUSYNTH_RELATIONSHIP_CANDIDATES="${candidate_root}/symbolic_relationship_candidates.json" \
+    CAUSYNTH_REACH_REPORT="${candidate_root}/candidate_boolean_model.json" \
     "${runner}" --config "${config}" reach)
   if jq -e '
     .complete == true
-    and .status == "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
-    and .extractionMode == "BOOTSTRAP_REPLAY_MODEL"
-    and .replayBootstrapOnly == true
+    and .status == "COMPLETE_CANDIDATE_MODEL"
+    and .extractionMode == "CANDIDATE_MODEL"
+    and .candidateOnly == true
+    and .candidateModelAvailable == true
     and .reportableFinalReachCondition == false
     and .truthTableComplete == true
+    and .reachabilityStatus == "REACHABLE"
     and .satisfyingValuationCount > 0
-  ' "${bootstrap_root}/bootstrap_boolean_model.json" >/dev/null; then
+  ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     :
   elif jq -e '
     .complete == true
-    and .status == "COMPLETE_BOOTSTRAP_UNREACHABLE"
-    and .extractionMode == "BOOTSTRAP_REPLAY_MODEL"
-    and .replayBootstrapOnly == true
+    and .status == "COMPLETE_CANDIDATE_UNREACHABLE"
+    and .extractionMode == "CANDIDATE_MODEL"
+    and .candidateOnly == true
     and .reportableFinalReachCondition == false
     and .truthTableComplete == true
     and .exactFiniteProjection == true
-    and .bootstrapReplayModelAvailable == false
+    and .candidateModelAvailable == false
     and .reachabilityStatus == "UNREACHABLE"
     and .satisfyingValuationCount == 0
     and .unsatisfyingValuationCount == .valuationCount
     and .reachConditionSmtLib == "false"
-  ' "${bootstrap_root}/bootstrap_boolean_model.json" >/dev/null; then
-    echo "[three-thread-rpc] bootstrap composition is UNSAT; no replay model exists"
-    return 0
+  ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
+    echo "[three-thread-rpc] candidate SMT is UNSAT"
   else
-    die "bootstrap Boolean projection is neither a complete SAT replay model nor a complete UNSAT result"
+    die "candidate model is neither a complete SAT nor a complete UNSAT result"
   fi
-  run_graphchecker_main \
-    edu.uva.liftlab.graphchecker.concolic.ConcolicPrimitiveBootstrapProjector \
-    --smt "${bootstrap_root}/composed_fatal.smt2" \
-    --composition-manifest "${bootstrap_root}/composed_smt_manifest.json" \
-    --reach-report "${bootstrap_root}/bootstrap_boolean_model.json" \
-    --summaries "${bootstrap_root}/producer_summary_ledger.jsonl" \
-    --activations "${bootstrap_root}/producer_activation_ledger.jsonl" \
-    --target-activations "${target_schedule}/scheduled_activation_plan.jsonl" \
-    --fatal-query "${target_schedule}/branch_queries.jsonl" \
-    --output "${bootstrap_root}/activation_plan.jsonl" \
-    --manifest "${bootstrap_root}/primitive_bootstrap_projection_manifest.json" \
-    --z3 "${z3}" \
-    --timeout-ms "${solver_timeout}"
-  jq -e '
-    .complete == true
-    and .projectionComplete == true
-    and .compositionStage == "BOOTSTRAP"
-    and .activationSelection == "ALL"
-    and .producerReplayActivationCount > 0
-    and .producerReplayActivationCount
-      <= .totalProjectedPrimitiveInputCount
-    and .totalProjectedPrimitiveInputCount
-      == .upstreamModelAssignmentCount
-    and .existentialNonBooleanRootAssignmentCount
-      == .existentialNonBooleanRootInputCount
-    and .existentialNonBooleanRootAssignmentCount
-      == ((.existentialNonBooleanRootAssignments // []) | length)
-    and .existentialNonBooleanRootAssignmentCount
-      == (.upstreamModelAssignmentCount - .rootBooleanInputCount)
-    and .upstreamModelAssignmentCount >= .producerReplayActivationCount
-    and .downstreamModelAssignmentCount == 0
-    and .downstreamBranchOverrideCount == 0
-    and .targetUnforcedReplayRequired == true
-  ' "${bootstrap_root}/primitive_bootstrap_projection_manifest.json" >/dev/null \
-    || die "primitive bootstrap projector did not emit a complete ALL model"
-  jq -e -s --slurpfile manifest \
-      "${bootstrap_root}/primitive_bootstrap_projection_manifest.json" '
-    length == $manifest[0].activationBundleSize
-    and all(.[]; .activationSelectionRequired == "ALL")
-    and ([.[] | select(.activationBundleMemberRole == "PRIMARY")] | length) == 1
-    and ([.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT")] | length)
-      == $manifest[0].producerReplayActivationCount
-    and ([.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT")
-      | ((.modelAssignments // []) | length)] | add)
-      == $manifest[0].upstreamModelAssignmentCount
-    and all(.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT");
-      ((.modelAssignments // []) | length) >= 1
-      and ((.forcedBranches // []) | length) == 0
-      and .targetReplayRequired == false)
-    and all(.[] | select(.activationBundleMemberRole == "PRIMARY");
-      .activationId == $manifest[0].targetReplayActivationId
-      and .executionPhase == "REPLAY_DIRECTED_TARGET"
-      and .targetReplayRequired == true
-      and .observationOnlyReplay == true
-      and ((.modelAssignments // []) | length) == 0
-      and ((.forcedBranches // []) | length) == 0
-      and .replayContract.schemaVersion == 1
-      and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
-      and (.replayContract.contractId
-        | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
-      and (has("directedTargetQuery") | not)
-      and (has("targetBranch") | not)
-      and (has("branchCaptureSelector") | not))
-  ' "${bootstrap_root}/activation_plan.jsonl" >/dev/null \
-    || die "primitive bootstrap activation bundle violates replay policy"
 }
 
 do_seed_target() {
@@ -1230,7 +1153,7 @@ do_seed_target() {
       and (.[0] | has("targetBranch") | not)
       and (.[0] | has("directedTargetQuery") | not)
     ' "${target_schedule}/branch_queries.jsonl" >/dev/null; then
-    die "target seed scheduler did not emit one solver-ready bootstrap query"
+    die "target seed scheduler did not emit one solver-ready candidate query"
   fi
   echo "[three-thread-rpc] target seed query: ${target_schedule}/branch_queries.jsonl"
 }
@@ -1262,11 +1185,11 @@ require_clean_work_root() {
 }
 
 write_candidate_manifest() {
-  local smt="${bootstrap_root}/composed_fatal.smt2"
-  local composition="${bootstrap_root}/composed_smt_manifest.json"
-  local reach="${bootstrap_root}/bootstrap_boolean_model.json"
-  local relationships="${bootstrap_root}/symbolic_relationship_candidates.json"
-  local output="${bootstrap_root}/candidate_result_manifest.json"
+  local smt="${candidate_root}/candidate.smt2"
+  local composition="${candidate_root}/candidate_composition_manifest.json"
+  local reach="${candidate_root}/candidate_boolean_model.json"
+  local relationships="${candidate_root}/symbolic_relationship_candidates.json"
+  local output="${candidate_root}/candidate_result_manifest.json"
   local status
   require_file "candidate SMT" "${smt}"
   require_file "candidate composition manifest" "${composition}"
@@ -1338,8 +1261,8 @@ do_candidate() {
     do_import "${channel}"
     do_explore_producer "${channel}"
   done
-  do_bootstrap_compose
-  do_bootstrap_project
+  do_candidate_compose
+  do_candidate_solve
   write_candidate_manifest
   echo "[three-thread-rpc] complete Z3-checked candidate workflow"
 }
@@ -1364,8 +1287,8 @@ case "${command_name}" in
     ;;
   import) [[ $# -eq 1 ]] || die "import needs one discovered channel"; do_import "$1" ;;
   explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
-  bootstrap-compose) [[ $# -eq 0 ]] || die "bootstrap-compose takes no arguments"; do_bootstrap_compose ;;
-  bootstrap-project) [[ $# -eq 0 ]] || die "bootstrap-project takes no arguments"; do_bootstrap_project ;;
+  candidate-compose) [[ $# -eq 0 ]] || die "candidate-compose takes no arguments"; do_candidate_compose ;;
+  candidate-solve) [[ $# -eq 0 ]] || die "candidate-solve takes no arguments"; do_candidate_solve ;;
   candidate) [[ $# -eq 0 ]] || die "candidate takes no arguments"; do_candidate ;;
   smoke)
     do_prepare
