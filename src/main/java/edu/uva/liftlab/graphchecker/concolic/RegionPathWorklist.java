@@ -113,6 +113,8 @@ public final class RegionPathWorklist {
         private final Set<String> gapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
+        private final Set<String> witnessedBranchPositions =
+                new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private int candidateFlipCount;
@@ -121,6 +123,7 @@ public final class RegionPathWorklist {
         private int duplicateTaskCount;
         private int transitionDiscoverySeedCount;
         private int transitionDiscoveryTaskCount;
+        private int coveredConcreteObservationCount;
         private boolean wallClockReached;
 
         private Planner(List<JsonObject> summaries,
@@ -143,6 +146,7 @@ public final class RegionPathWorklist {
         }
 
         private Result run() {
+            indexWitnessedBranchPositions();
             indexObservedFlipCoverage();
             Set<String> seenPaths = new LinkedHashSet<>();
             for (JsonObject summary : summaries) {
@@ -217,6 +221,10 @@ public final class RegionPathWorklist {
                         "occurrence", 1)
                         || discoveryDesired == bool(mapping, "outcome",
                         false))) {
+                    continue;
+                }
+                if (coveredConcreteObservation(mapping)) {
+                    coveredConcreteObservationCount++;
                     continue;
                 }
                 if (policyAware && !validBranchPolicy(mapping)) {
@@ -455,6 +463,91 @@ public final class RegionPathWorklist {
             }
         }
 
+        /**
+         * Indexes only predicates whose immutable witness is an exact member
+         * of an admitted summary path condition.  This is later used to
+         * distinguish a genuine missing symbolic frontier from a VM-attested
+         * concrete occurrence of an already modeled static branch position.
+         */
+        private void indexWitnessedBranchPositions() {
+            for (JsonObject summary : summaries) {
+                if (!bool(summary, "valid", true)
+                        || !bool(summary, "relationallyComplete", false)) {
+                    continue;
+                }
+                JsonArray conditions = array(summary, "pathCondition");
+                for (JsonElement element : array(summary,
+                        "branchMappings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject mapping = element.getAsJsonObject();
+                    int index = integer(mapping, "conditionIndex", -1);
+                    BranchWitness witness = branchWitness(mapping);
+                    if (index < 0 || index >= conditions.size()
+                            || integer(mapping, "summaryPcIndex", -1)
+                            != index || witness == null
+                            || !witness.siteId().equals(string(mapping,
+                            "siteId"))
+                            || witness.occurrence() != integer(mapping,
+                            "occurrence", 1)
+                            || !BranchPredicateAlgebra.equivalent(
+                            witness.sourceSatisfiedPredicate(),
+                            conditions.get(index))) {
+                        continue;
+                    }
+                    witnessedBranchPositions.add(branchPosition(mapping));
+                }
+            }
+        }
+
+        /**
+         * A concrete VM branch has no solver predicate and therefore is not
+         * itself flippable.  It is safe to omit from the worklist only when
+         * the same static branch position and branch shape has an immutable
+         * witnessed predicate on another admitted path.  No predicate is
+         * copied or synthesized; an otherwise unmapped branch remains a gap.
+         */
+        private boolean coveredConcreteObservation(JsonObject mapping) {
+            if (!"VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT".equals(
+                    string(mapping, "conditionAuthority"))
+                    || !"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
+                    .equals(string(mapping, "mappingPolicy"))
+                    || integer(mapping, "conditionIndex", -1) != -1
+                    || integer(mapping, "rawConditionIndex", -1) != -1
+                    || integer(mapping, "engineConditionIndex", -1) != -1
+                    || !bool(mapping, "vmBranchEventExpected", false)
+                    || !bool(mapping, "vmBranchEventValidated", false)
+                    || integer(mapping, "vmBranchEventId", -1) < 1
+                    || bool(mapping, "overrideApplied", false)
+                    || array(mapping, "vmConditionIndices").size() != 0
+                    || mapping.has("condition")
+                    && !mapping.get("condition").isJsonNull()
+                    || mapping.has("rawCondition")
+                    && !mapping.get("rawCondition").isJsonNull()
+                    || mapping.has("witness")
+                    && !mapping.get("witness").isJsonNull()) {
+                return false;
+            }
+            return witnessedBranchPositions.contains(branchPosition(
+                    mapping));
+        }
+
+        private String branchPosition(JsonObject mapping) {
+            return string(mapping, "siteId") + "\n"
+                    + integer(mapping, "occurrence", 1) + "\n"
+                    + branchShape(mapping);
+        }
+
+        private String branchShape(JsonObject mapping) {
+            String declared = string(mapping, "branchKind");
+            if (!declared.isEmpty()) return declared;
+            int opcode = integer(mapping, "vmOpcode", -1);
+            if (opcode >= 153 && opcode <= 166
+                    || opcode == 198 || opcode == 199) return "IF";
+            if (opcode == 170) return "TABLE_SWITCH";
+            if (opcode == 171) return "LOOKUP_SWITCH";
+            return "VM_OPCODE_" + opcode;
+        }
+
         private String branchSite(JsonObject mapping) {
             BranchWitness witness = branchWitness(mapping);
             return witness == null ? string(mapping, "siteId")
@@ -568,6 +661,11 @@ public final class RegionPathWorklist {
                     transitionDiscoverySeedCount);
             result.addProperty("transitionDiscoveryTaskCount",
                     transitionDiscoveryTaskCount);
+            result.addProperty("coveredConcreteObservationCount",
+                    coveredConcreteObservationCount);
+            result.addProperty("coveredConcreteObservationAuthority",
+                    "EXACT_VM_CONCRETE_EVENT_COVERED_BY_IMMUTABLE_"
+                            + "WITNESS_AT_SAME_STATIC_POSITION_V1");
             result.addProperty("wallClockBoundReached", wallClockReached);
             result.add("pathCountByRegion", GSON.toJsonTree(
                     pathCountByRegion));
@@ -671,10 +769,20 @@ public final class RegionPathWorklist {
     private static Set<String> outputSliceSites(JsonObject summary,
                                                 JsonObject activation) {
         Set<String> result = new LinkedHashSet<>();
-        collectStrings(result, array(object(summary, "requestedOutputSlice"),
-                "sites"));
-        collectStrings(result, array(object(activation,
-                "requestedOutputSlice"), "sites"));
+        JsonObject summarySlice = object(summary, "requestedOutputSlice");
+        JsonObject activationSlice = object(activation,
+                "requestedOutputSlice");
+        collectStrings(result, array(summarySlice, "sites"));
+        collectStrings(result, array(activationSlice, "sites"));
+        // Runtime refinement removes alternatives that were not executed on
+        // the seed path from `sites`, but preserves the immutable static
+        // output slice in `staticSites`.  A later natural replay may execute
+        // one of those alternatives.  It is then present as an exact runtime
+        // branch mapping and must become a path-closure frontier.  Including
+        // staticSites here cannot invent paths: planSummary still enumerates
+        // only branch witnesses actually observed in this summary.
+        collectStrings(result, array(summarySlice, "staticSites"));
+        collectStrings(result, array(activationSlice, "staticSites"));
         return result;
     }
 

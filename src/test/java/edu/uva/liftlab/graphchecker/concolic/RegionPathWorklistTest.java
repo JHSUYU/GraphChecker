@@ -65,6 +65,36 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void replayAdmitsNewlyObservedStaticSliceAlternative() {
+        JsonObject summary = summary("ACT.NEW.ALTERNATIVE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject slice = new JsonObject();
+        JsonArray seedPathSites = new JsonArray();
+        seedPathSites.add("SITE.0");
+        slice.add("sites", seedPathSites);
+        JsonArray staticSites = new JsonArray();
+        staticSites.add("SITE.0");
+        staticSites.add("SITE.1");
+        slice.add("staticSites", staticSites);
+        JsonArray excluded = new JsonArray();
+        excluded.add("SITE.1");
+        slice.add("excludedPathAlternativeSites", excluded);
+        summary.add("requestedOutputSlice", slice);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation(
+                        "ACT.NEW.ALTERNATIVE",
+                        RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 2, result.tasks.size());
+        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
+        assertEquals("SITE.0", sourceSite(result.tasks.get(1)));
+    }
+
+    @Test
     public void witnessSummaryEmitsOneAuthoritativeReplayContract() {
         JsonObject summary = summary("ACT.WITNESS",
                 RegionCaptureGoal.outputClosure());
@@ -619,7 +649,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void concreteBranchWithoutWitnessNeverBorrowsAnotherPathPredicate() {
+    public void concreteBranchCoveredAtSamePositionNeedsNoBorrowedPredicate() {
         JsonObject modeled = exactBranchTemplateSummary("ACT.MODELED",
                 false);
         JsonObject concrete = exactBranchTemplateSummary("ACT.CONCRETE",
@@ -634,9 +664,15 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(initial.tasks.toString(), initial.tasks.isEmpty());
-        assertFalse(initial.manifest.get("complete").getAsBoolean());
-        assertTrue(initial.manifest.getAsJsonArray("gaps").toString()
-                .contains("NO_NORMALIZED_CONDITION"));
+        assertTrue(initial.manifest.toString(), initial.manifest.get(
+                "complete").getAsBoolean());
+        assertEquals(1, initial.manifest.get(
+                "coveredConcreteObservationCount").getAsInt());
+        assertEquals("EXACT_VM_CONCRETE_EVENT_COVERED_BY_IMMUTABLE_"
+                        + "WITNESS_AT_SAME_STATIC_POSITION_V1",
+                initial.manifest.get(
+                        "coveredConcreteObservationAuthority").getAsString());
+        assertEquals(0, initial.manifest.get("gapCount").getAsInt());
     }
 
     @Test
