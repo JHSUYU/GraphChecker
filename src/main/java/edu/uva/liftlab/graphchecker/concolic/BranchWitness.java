@@ -10,16 +10,17 @@ import java.util.Set;
 /**
  * Immutable authority for one observed binary branch.
  *
- * <p>A witness owns exactly one satisfied predicate and one evidence variant.
- * VM path-condition indices remain in the VM namespace; an importer that adds
+ * <p>A witness owns exactly one satisfied predicate, its VM path-condition
+ * index, and the one normalization applied at capture.  An importer that adds
  * a summary path-condition index must place it beside, never inside, this
  * object.</p>
  */
 public final class BranchWitness {
     public static final int SCHEMA_VERSION = 1;
     public static final String KIND = "BINARY_BRANCH_WITNESS";
-    public static final String VM_PC = "VM_PC";
-    private static final String ID_PREFIX = "BRANCH.WITNESS.";
+    public static final String IDENTITY_NORMALIZATION = "IDENTITY";
+    public static final String CMP_NORMALIZATION =
+            "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE";
 
     private final String siteId;
     private final String method;
@@ -27,13 +28,13 @@ public final class BranchWitness {
     private final int occurrence;
     private final boolean sourceTakenOutcome;
     private final JsonElement sourceSatisfiedPredicate;
-    private final JsonObject evidence;
-    private final String witnessId;
+    private final int vmPcIndex;
+    private final String predicateNormalization;
 
     private BranchWitness(String siteId, String method, int unitIndex,
                           int occurrence, boolean sourceTakenOutcome,
                           JsonElement sourceSatisfiedPredicate,
-                          JsonObject evidence) {
+                          int vmPcIndex, String predicateNormalization) {
         this.siteId = requireText(siteId, "siteId");
         this.method = requireText(method, "method");
         if (unitIndex < 0) {
@@ -47,37 +48,47 @@ public final class BranchWitness {
             throw new IllegalArgumentException(
                     "sourceSatisfiedPredicate is required");
         }
+        if (vmPcIndex < 0) {
+            throw new IllegalArgumentException("vmPcIndex must be nonnegative");
+        }
+        if (!IDENTITY_NORMALIZATION.equals(predicateNormalization)
+                && !CMP_NORMALIZATION.equals(predicateNormalization)) {
+            throw new IllegalArgumentException(
+                    "unsupported predicateNormalization: "
+                            + predicateNormalization);
+        }
         this.unitIndex = unitIndex;
         this.occurrence = occurrence;
         this.sourceTakenOutcome = sourceTakenOutcome;
         this.sourceSatisfiedPredicate = BranchPredicateAlgebra.canonical(
                 sourceSatisfiedPredicate);
-        this.evidence = validateEvidence(evidence);
-        this.witnessId = ID_PREFIX + CanonicalJson.sha256(coreJson());
+        this.vmPcIndex = vmPcIndex;
+        this.predicateNormalization = predicateNormalization;
     }
 
     public static BranchWitness vmPc(
             String siteId, String method, int unitIndex, int occurrence,
             boolean sourceTakenOutcome, JsonElement sourceSatisfiedPredicate,
-            int vmPcIndex, JsonObject vmEvent) {
+            int vmPcIndex, JsonObject predicateMetadata) {
         if (vmPcIndex < 0) {
             throw new IllegalArgumentException("vmPcIndex must be nonnegative");
         }
-        if (vmEvent == null || vmEvent.size() == 0) {
-            throw new IllegalArgumentException("vmEvent is required");
+        if (predicateMetadata == null) {
+            throw new IllegalArgumentException(
+                    "predicateMetadata is required");
         }
-        JsonObject evidence = new JsonObject();
-        evidence.addProperty("kind", VM_PC);
-        evidence.addProperty("vmPcIndex", vmPcIndex);
-        evidence.add("vmEvent", CanonicalJson.copy(vmEvent));
+        String normalization = string(predicateMetadata,
+                "predicateNormalization");
+        if (normalization.isEmpty()) normalization = IDENTITY_NORMALIZATION;
         return new BranchWitness(siteId, method, unitIndex, occurrence,
-                sourceTakenOutcome, sourceSatisfiedPredicate, evidence);
+                sourceTakenOutcome, sourceSatisfiedPredicate, vmPcIndex,
+                normalization);
     }
 
     public static BranchWitness fromJson(JsonObject json) {
         requireExactKeys(json, "branch witness", "schemaVersion", "kind",
-                "witnessId", "site", "sourceTakenOutcome",
-                "sourceSatisfiedPredicate", "evidence");
+                "site", "sourceTakenOutcome", "sourceSatisfiedPredicate",
+                "vmPcIndex", "predicateNormalization");
         if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(json, "kind"))) {
             throw new IllegalArgumentException(
@@ -93,16 +104,11 @@ public final class BranchWitness {
                     "sourceTakenOutcome must be Boolean");
         }
         JsonElement predicate = json.get("sourceSatisfiedPredicate");
-        JsonObject evidence = object(json, "evidence");
-        BranchWitness result = new BranchWitness(string(site, "siteId"),
+        return new BranchWitness(string(site, "siteId"),
                 string(site, "method"), integer(site, "unitIndex", -1),
                 integer(site, "occurrence", -1), outcome.getAsBoolean(),
-                predicate, evidence);
-        if (!result.witnessId.equals(string(json, "witnessId"))) {
-            throw new IllegalArgumentException(
-                    "branch witness content hash does not match witnessId");
-        }
-        return result;
+                predicate, integer(json, "vmPcIndex", -1),
+                string(json, "predicateNormalization"));
     }
 
     public static BranchWitness fromMapping(JsonObject mapping) {
@@ -110,13 +116,7 @@ public final class BranchWitness {
     }
 
     public JsonObject toJson() {
-        JsonObject result = coreJson();
-        result.addProperty("witnessId", witnessId);
-        return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    public String witnessId() {
-        return witnessId;
+        return coreJson();
     }
 
     public String siteId() {
@@ -143,22 +143,32 @@ public final class BranchWitness {
         return CanonicalJson.copy(sourceSatisfiedPredicate);
     }
 
-    public String evidenceKind() {
-        return string(evidence, "kind");
-    }
-
     public int vmPcIndex() {
-        return VM_PC.equals(evidenceKind())
-                ? integer(evidence, "vmPcIndex", -1) : -1;
+        return vmPcIndex;
     }
 
-    public JsonObject evidence() {
-        return (JsonObject) CanonicalJson.copy(evidence);
+    public String predicateNormalization() {
+        return predicateNormalization;
     }
 
     public boolean sameBranchEvent(BranchWitness other) {
         return other != null && siteId.equals(other.siteId)
                 && occurrence == other.occurrence;
+    }
+
+    public boolean sameContent(BranchWitness other) {
+        return other != null
+                && siteId.equals(other.siteId)
+                && method.equals(other.method)
+                && unitIndex == other.unitIndex
+                && occurrence == other.occurrence
+                && sourceTakenOutcome == other.sourceTakenOutcome
+                && vmPcIndex == other.vmPcIndex
+                && predicateNormalization.equals(
+                other.predicateNormalization)
+                && BranchPredicateAlgebra.equivalent(
+                sourceSatisfiedPredicate,
+                other.sourceSatisfiedPredicate);
     }
 
     private JsonObject coreJson() {
@@ -174,28 +184,10 @@ public final class BranchWitness {
         result.addProperty("sourceTakenOutcome", sourceTakenOutcome);
         result.add("sourceSatisfiedPredicate",
                 CanonicalJson.copy(sourceSatisfiedPredicate));
-        result.add("evidence", CanonicalJson.copy(evidence));
+        result.addProperty("vmPcIndex", vmPcIndex);
+        result.addProperty("predicateNormalization",
+                predicateNormalization);
         return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    private static JsonObject validateEvidence(JsonObject source) {
-        if (source == null) {
-            throw new IllegalArgumentException("branch evidence is required");
-        }
-        String kind = string(source, "kind");
-        if (VM_PC.equals(kind)) {
-            requireExactKeys(source, "VM_PC evidence", "kind", "vmPcIndex",
-                    "vmEvent");
-            if (integer(source, "vmPcIndex", -1) < 0
-                    || object(source, "vmEvent").size() == 0) {
-                throw new IllegalArgumentException(
-                        "VM_PC evidence requires an index and event");
-            }
-        } else {
-            throw new IllegalArgumentException(
-                    "unknown branch evidence kind: " + kind);
-        }
-        return (JsonObject) CanonicalJson.copy(source);
     }
 
     private static void requireExactKeys(JsonObject object, String label,

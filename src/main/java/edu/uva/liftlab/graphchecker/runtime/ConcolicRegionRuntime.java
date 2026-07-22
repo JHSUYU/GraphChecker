@@ -3501,8 +3501,8 @@ public final class ConcolicRegionRuntime {
                 BranchWitness witness = BranchWitness.vmPc(siteId,
                         safe(method), unitIndex, occurrence,
                         observedOutcome, semanticCondition, conditionIndex,
-                        branchVmEventEvidence(vmAttestation, vmEventId,
-                                rawOperator, semanticOperator));
+                        branchPredicateMetadata(rawOperator,
+                                semanticOperator));
                 mapping.add("witness", witness.toJson());
                 active.branchWitnesses.add(witness);
             }
@@ -3528,29 +3528,14 @@ public final class ConcolicRegionRuntime {
         active.branchMappings.add(mapping);
     }
 
-    private static JsonObject branchVmEventEvidence(
-            VmBranchEventAttestation attestation, long eventId,
+    private static JsonObject branchPredicateMetadata(
             String rawOperator, String semanticOperator) {
-        JsonObject event = new JsonObject();
-        event.addProperty("eventId", eventId);
-        event.addProperty("authority", attestation.authority);
-        if (attestation.event != null) {
-            event.addProperty("contextId", longInteger(attestation.event,
-                    "contextId", 0L));
-            event.addProperty("ownerJavaThreadId", longInteger(
-                    attestation.event, "ownerJavaThreadId", 0L));
-            event.addProperty("ownerOsThreadId", longInteger(
-                    attestation.event, "ownerOsThreadId", 0L));
-            event.addProperty("opcode", integer(attestation.event,
-                    "opcode", -1));
-            event.addProperty("codePosition", string(attestation.event,
-                    "codePosition"));
-        }
-        event.addProperty("predicateNormalization",
+        JsonObject metadata = new JsonObject();
+        metadata.addProperty("predicateNormalization",
                 safe(rawOperator).equals(safe(semanticOperator))
-                        ? "IDENTITY"
-                        : "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
-        return event;
+                        ? BranchWitness.IDENTITY_NORMALIZATION
+                        : BranchWitness.CMP_NORMALIZATION);
+        return metadata;
     }
 
     private static void recordSwitchBranchPaused(

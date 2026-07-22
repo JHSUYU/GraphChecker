@@ -82,6 +82,7 @@ public final class ContainerThreeThreadRpcWorkload {
         Map<Integer, StateNode> values;
         int input1;
         int input2;
+        int input3;
 
         MapProducer(Boolean enabled) {
             values = new LinkedHashMap<>();
@@ -100,8 +101,12 @@ public final class ContainerThreeThreadRpcWorkload {
             if(input2<10){
                 input2=10;
             }
-            if (enabled || (input1>10)) {
-                return 0+input1+input2;
+
+            if(input3>0){
+                input3 =- input3;
+            }
+            if (enabled || ((input1-input3)>10)) {
+                return 0+input1+input2-input3;
             }
             return 10;
         }

@@ -2404,9 +2404,7 @@ public final class ConcolicSummaryImporter {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
             BranchWitness witness = branchWitness(mapping);
-            int index = witness != null
-                    && BranchWitness.VM_PC.equals(witness.evidenceKind())
-                    ? witness.vmPcIndex()
+            int index = witness != null ? witness.vmPcIndex()
                     : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
@@ -2465,12 +2463,10 @@ public final class ConcolicSummaryImporter {
 
     private static boolean validWitnessSemanticCondition(
             BranchWitness witness, JsonElement raw, JsonElement semantic) {
-        if (witness == null
-                || !BranchWitness.VM_PC.equals(witness.evidenceKind())) {
+        if (witness == null) {
             return false;
         }
-        JsonObject event = object(witness.evidence(), "vmEvent");
-        String normalization = string(event, "predicateNormalization");
+        String normalization = witness.predicateNormalization();
         if ("IDENTITY".equals(normalization)) {
             return BranchPredicateAlgebra.equivalent(raw, semantic);
         }
@@ -2940,9 +2936,7 @@ public final class ConcolicSummaryImporter {
             }
             JsonObject mapping = element.getAsJsonObject();
             BranchWitness witness = branchWitness(mapping);
-            int index = witness != null
-                    && BranchWitness.VM_PC.equals(witness.evidenceKind())
-                    ? witness.vmPcIndex()
+            int index = witness != null ? witness.vmPcIndex()
                     : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
@@ -2955,7 +2949,7 @@ public final class ConcolicSummaryImporter {
 
     private static List<String> branchWitnessIssues(JsonArray mappings) {
         List<String> issues = new ArrayList<>();
-        Set<String> identities = new LinkedHashSet<>();
+        Set<String> events = new LinkedHashSet<>();
         int ordinal = 0;
         for (JsonElement element : mappings) {
             if (!element.isJsonObject()) {
@@ -2977,9 +2971,12 @@ public final class ConcolicSummaryImporter {
             try {
                 BranchWitness witness = BranchWitness.fromJson(
                         encoded.getAsJsonObject());
-                if (!identities.add(witness.witnessId())) {
-                    issues.add(witness.witnessId()
-                            + ":DUPLICATE_WITNESS_ID");
+                String event = witness.siteId() + "\u0000"
+                        + witness.occurrence();
+                if (!events.add(event)) {
+                    issues.add(witness.siteId() + "#"
+                            + witness.occurrence()
+                            + ":DUPLICATE_BRANCH_EVENT");
                 }
             } catch (IllegalArgumentException malformed) {
                 issues.add("mapping@" + ordinal + ":"
@@ -3006,9 +3003,7 @@ public final class ConcolicSummaryImporter {
             }
             JsonObject mapping = element.getAsJsonObject().deepCopy();
             BranchWitness witness = branchWitness(mapping);
-            int rawIndex = witness != null
-                    && BranchWitness.VM_PC.equals(witness.evidenceKind())
-                    ? witness.vmPcIndex()
+            int rawIndex = witness != null ? witness.vmPcIndex()
                     : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
@@ -7041,8 +7036,7 @@ public final class ConcolicSummaryImporter {
             BranchWitness witness, JsonArray rawPathCondition,
             PathNormalization normalization, JsonObject activation,
             JsonObject action) {
-        if (witness == null
-                || !BranchWitness.VM_PC.equals(witness.evidenceKind())) {
+        if (witness == null) {
             return false;
         }
         int rawIndex = witness.vmPcIndex();

@@ -7,11 +7,11 @@ import org.junit.Test;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 
 public class SolverPathContextTest {
     @Test
-    public void positionedArrayRelationRoundTripsByContentHash() {
+    public void positionedArrayRelationRoundTripsByContent() {
         JsonObject relation = arrayLoad(1);
         JsonArray path = new JsonArray();
         path.add(relation);
@@ -24,15 +24,7 @@ public class SolverPathContextTest {
 
         assertEquals(1, decoded.size());
         assertEquals(relation, decoded.expressions().get(0));
-        assertTrue(decoded.contextId().startsWith(
-                "SOLVER.PATH.CONTEXT."));
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void tamperedContextIdIsRejected() {
-        JsonObject encoded = SolverPathContext.empty().toJson();
-        encoded.addProperty("contextId", "SOLVER.PATH.CONTEXT.bad");
-        SolverPathContext.fromJson(encoded);
+        assertFalse(decoded.toJson().has("contextId"));
     }
 
     @Test(expected = IllegalArgumentException.class)

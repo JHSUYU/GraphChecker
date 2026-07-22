@@ -384,18 +384,19 @@ validate_container_producer_artifacts() {
       and .dynamicIdsExcludedFromQueryKey == true
       and .replayContract.schemaVersion == 1
       and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
-      and (.replayContract.contractId
-        | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
       and .replayContract.source.schemaVersion == 1
       and .replayContract.source.kind == "BINARY_BRANCH_WITNESS"
-      and (.replayContract.source.witnessId
-        | test("^BRANCH\\.WITNESS\\.[0-9a-f]{64}$"))
+      and (.replayContract.source.sourceTakenOutcome | type) == "boolean"
+      and (.replayContract.source.sourceSatisfiedPredicate | type) == "object"
+      and (.replayContract.source.vmPcIndex | type) == "number"
+      and (.replayContract | has("contractId") | not)
+      and (.replayContract | has("required") | not)
+      and (.replayContract.source | has("witnessId") | not)
       and .solverPathContext.schemaVersion == 1
       and .solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
       and .solverPathContext.authority
         == "SOURCE_SUMMARY_POSITIONED_NON_BRANCH_CONSTRAINTS_V1"
-      and (.solverPathContext.contextId
-        | test("^SOLVER\\.PATH\\.CONTEXT\\.[0-9a-f]{64}$"))
+      and (.solverPathContext | has("contextId") | not)
       and (.solverPathContext.constraints | type) == "array"
       and all(.solverPathContext.constraints[]?;
         (.summaryPcIndex | type) == "number"
@@ -550,8 +551,7 @@ validate_container_producer_artifacts() {
       and .branchReplayObservation.kind == "BRANCH_REPLAY_OBSERVATION"
       and .branchReplayObservation.requested == true
       and .branchReplayObservation.valid == true
-      and (.branchReplayObservation.contractId
-        | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
+      and (.branchReplayObservation | has("contractId") | not)
       and .replayValidation.valid == true
       and .replayValidation.status == "VALIDATED_UNFORCED_REPLAY"
       and .replayValidation.inputModelOnly == true

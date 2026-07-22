@@ -266,10 +266,6 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("fatalDesiredOutcome", fatalDesiredOutcome);
         manifest.addProperty("fatalSite", fatalSite);
         manifest.addProperty("fatalConditionCount", fatalConstraints.size());
-        manifest.addProperty("fatalReplayContractId",
-                fatalReplayContract.contractId());
-        manifest.addProperty("fatalSolverPathContextId",
-                fatalSolverPathContext.contextId());
         manifest.addProperty("fatalReplayValidated", false);
         manifest.addProperty("fatalReplayGap",
                 "NATURAL_TARGET_REPLAY_PROMOTION_TODO");

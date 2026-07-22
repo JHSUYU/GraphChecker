@@ -50,9 +50,10 @@ or inferred globally.
 
 ## Binary branch replay protocol
 
-An observed, replayable binary decision is represented once by a
-content-hashed `BranchWitness`. It owns the exact site/occurrence, source
-outcome, canonical satisfied predicate, and `VM_PC` evidence.
+An observed, replayable binary decision is represented once by a typed
+`BranchWitness`. It owns the exact site/occurrence, source outcome, canonical
+satisfied predicate, VM path-condition index, and predicate normalization.
+The witness JSON is the value itself; it does not carry a redundant self-hash.
 `BranchReplayContract.flip()` is the sole polarity operation and produces the
 ordered-prefix-plus-flipped-target request consumed unchanged by the worklist,
 solver, instrumentation, runtime, importer, and verifier. A zero-PC VM branch

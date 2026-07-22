@@ -79,8 +79,8 @@ public final class BranchReplayObservationValidator {
                         + ":TARGET_PREDICATE_MISMATCH");
             }
         }
-        return new Result(true, failures.isEmpty(), contract.contractId(),
-                prefixPositions, targetPosition, failures);
+        return new Result(true, failures.isEmpty(), prefixPositions,
+                targetPosition, failures);
     }
 
     private static List<Integer> positions(List<BranchWitness> stream,
@@ -100,17 +100,15 @@ public final class BranchReplayObservationValidator {
     public static final class Result {
         private final boolean requested;
         private final boolean valid;
-        private final String contractId;
         private final JsonArray prefixPositions;
         private final int targetPosition;
         private final List<String> failures;
 
-        private Result(boolean requested, boolean valid, String contractId,
+        private Result(boolean requested, boolean valid,
                        JsonArray prefixPositions, int targetPosition,
                        List<String> failures) {
             this.requested = requested;
             this.valid = valid;
-            this.contractId = contractId;
             this.prefixPositions = prefixPositions.deepCopy();
             this.targetPosition = targetPosition;
             this.failures = Collections.unmodifiableList(
@@ -118,7 +116,7 @@ public final class BranchReplayObservationValidator {
         }
 
         private static Result notRequested() {
-            return new Result(false, true, "", new JsonArray(), -1,
+            return new Result(false, true, new JsonArray(), -1,
                     Collections.<String>emptyList());
         }
 
@@ -140,7 +138,6 @@ public final class BranchReplayObservationValidator {
             result.addProperty("kind", "BRANCH_REPLAY_OBSERVATION");
             result.addProperty("requested", requested);
             if (requested) {
-                result.addProperty("contractId", contractId);
                 result.add("prefixPositions", prefixPositions.deepCopy());
                 result.addProperty("targetPosition", targetPosition);
             }

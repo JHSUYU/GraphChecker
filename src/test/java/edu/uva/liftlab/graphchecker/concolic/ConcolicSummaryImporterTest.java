@@ -434,10 +434,12 @@ public class ConcolicSummaryImporterTest {
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                     .getAsJsonObject();
             assertFalse(acceptedSummary.has("targetReplayValidated"));
-            assertEquals(targetContract.contractId(), acceptedSummary
+            JsonObject replayObservation = acceptedSummary
                     .getAsJsonObject("executionAdmission")
-                    .getAsJsonObject("branchReplayObservation")
-                    .get("contractId").getAsString());
+                    .getAsJsonObject("branchReplayObservation");
+            assertTrue(replayObservation.get("requested").getAsBoolean());
+            assertTrue(replayObservation.get("valid").getAsBoolean());
+            assertFalse(replayObservation.has("contractId"));
             assertFalse(acceptedSummary.has("directedTargetQuery"));
             assertEquals("SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION",
                     acceptedSummary.getAsJsonObject("executionAdmission")

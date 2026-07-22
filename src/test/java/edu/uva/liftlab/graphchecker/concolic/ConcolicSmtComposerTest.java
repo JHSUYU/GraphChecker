@@ -51,8 +51,8 @@ public class ConcolicSmtComposerTest {
             assertTrue(manifest.has("fatalRegionInstanceId"));
             assertTrue(manifest.has("fatalOccurrence"));
             assertTrue(manifest.has("fatalDesiredOutcome"));
-            assertTrue(manifest.has("fatalReplayContractId"));
-            assertTrue(manifest.has("fatalSolverPathContextId"));
+            assertFalse(manifest.has("fatalReplayContractId"));
+            assertFalse(manifest.has("fatalSolverPathContextId"));
             assertEquals(1, manifest.getAsJsonArray(
                     "summaryInputArtifacts").size());
             assertEquals(4, relationships.size());
@@ -1445,16 +1445,12 @@ public class ConcolicSmtComposerTest {
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
             BranchReplayContract contract = BranchReplayContract.fromJson(
                     fatal.getAsJsonObject("replayContract"));
-            SolverPathContext context = SolverPathContext.fromJson(
-                    fatal.getAsJsonObject("solverPathContext"));
-
             ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments(fixture));
 
-            assertEquals(contract.contractId(), result.manifest.get(
-                    "fatalReplayContractId").getAsString());
-            assertEquals(context.contextId(), result.manifest.get(
-                    "fatalSolverPathContextId").getAsString());
+            assertTrue(contract.sameContent(BranchReplayContract.fromJson(
+                    fatal.getAsJsonObject("replayContract"))));
+            assertFalse(result.manifest.has("fatalSolverPathContextId"));
             assertEquals("F#u2", result.manifest.get(
                     "fatalSite").getAsString());
             assertEquals(1, result.manifest.get(

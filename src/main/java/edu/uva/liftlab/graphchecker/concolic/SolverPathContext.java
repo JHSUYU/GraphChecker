@@ -25,10 +25,7 @@ public final class SolverPathContext {
     public static final String KIND = "NON_BRANCH_SOLVER_PATH_CONTEXT";
     public static final String AUTHORITY =
             "SOURCE_SUMMARY_POSITIONED_NON_BRANCH_CONSTRAINTS_V1";
-    private static final String ID_PREFIX = "SOLVER.PATH.CONTEXT.";
-
     private final List<PositionedConstraint> constraints;
-    private final String contextId;
 
     private SolverPathContext(List<PositionedConstraint> constraints) {
         List<PositionedConstraint> copy = new ArrayList<>();
@@ -49,7 +46,6 @@ public final class SolverPathContext {
             }
         }
         this.constraints = Collections.unmodifiableList(copy);
-        this.contextId = ID_PREFIX + CanonicalJson.sha256(coreJson());
     }
 
     public static SolverPathContext empty() {
@@ -91,7 +87,7 @@ public final class SolverPathContext {
 
     public static SolverPathContext fromJson(JsonObject json) {
         requireExactKeys(json, "solver path context", "schemaVersion",
-                "kind", "contextId", "constraints", "authority");
+                "kind", "constraints", "authority");
         if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(json, "kind"))
                 || !AUTHORITY.equals(string(json, "authority"))) {
@@ -117,22 +113,11 @@ public final class SolverPathContext {
             constraints.add(new PositionedConstraint(position,
                     expression));
         }
-        SolverPathContext result = new SolverPathContext(constraints);
-        if (!result.contextId.equals(string(json, "contextId"))) {
-            throw new IllegalArgumentException(
-                    "solver path content hash does not match contextId");
-        }
-        return result;
+        return new SolverPathContext(constraints);
     }
 
     public JsonObject toJson() {
-        JsonObject result = coreJson();
-        result.addProperty("contextId", contextId);
-        return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    public String contextId() {
-        return contextId;
+        return coreJson();
     }
 
     public int size() {

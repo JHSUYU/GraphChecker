@@ -969,8 +969,8 @@ public class CausynthPipelineTest {
 
             JsonObject stringBoolean = readySolverOutputPathFlip();
             stringBoolean.getAsJsonObject("replayContract")
-                    .getAsJsonObject("required")
-                    .addProperty("takenOutcome", "false");
+                    .getAsJsonObject("source")
+                    .addProperty("sourceTakenOutcome", "false");
             writePlanRow(plan, stringBoolean);
             assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,

@@ -16,13 +16,11 @@ public final class BranchReplayContract {
     public static final int SCHEMA_VERSION = 1;
     public static final String KIND = "BINARY_BRANCH_REPLAY_CONTRACT";
     public static final String DROP_SOURCE_SUFFIX = "DROP_SOURCE_SUFFIX";
-    private static final String ID_PREFIX = "BRANCH.REPLAY.";
 
     private final List<BranchWitness> orderedPrefix;
     private final BranchWitness source;
     private final boolean requiredTakenOutcome;
     private final JsonElement requiredSatisfiedPredicate;
-    private final String contractId;
 
     private BranchReplayContract(List<BranchWitness> orderedPrefix,
                                  BranchWitness source) {
@@ -30,14 +28,12 @@ public final class BranchReplayContract {
             throw new IllegalArgumentException("source witness is required");
         }
         List<BranchWitness> prefixCopy = new ArrayList<>();
-        Set<String> identities = new LinkedHashSet<>();
         Set<String> events = new LinkedHashSet<>();
         if (orderedPrefix != null) {
             for (BranchWitness witness : orderedPrefix) {
-                if (witness == null
-                        || !identities.add(witness.witnessId())) {
+                if (witness == null) {
                     throw new IllegalArgumentException(
-                            "ordered prefix contains a missing or duplicate witness");
+                            "ordered prefix contains a missing witness");
                 }
                 if (!events.add(eventIdentity(witness))) {
                     throw new IllegalArgumentException(
@@ -45,10 +41,6 @@ public final class BranchReplayContract {
                 }
                 prefixCopy.add(witness);
             }
-        }
-        if (!identities.add(source.witnessId())) {
-            throw new IllegalArgumentException(
-                    "source witness must not appear in ordered prefix");
         }
         if (!events.add(eventIdentity(source))) {
             throw new IllegalArgumentException(
@@ -59,7 +51,6 @@ public final class BranchReplayContract {
         this.requiredTakenOutcome = !source.sourceTakenOutcome();
         this.requiredSatisfiedPredicate = BranchPredicateAlgebra.complement(
                 source.sourceSatisfiedPredicate());
-        this.contractId = ID_PREFIX + CanonicalJson.sha256(coreJson());
     }
 
     /** The only operation in the protocol that derives opposite polarity. */
@@ -70,8 +61,7 @@ public final class BranchReplayContract {
 
     public static BranchReplayContract fromJson(JsonObject json) {
         requireExactKeys(json, "branch replay contract", "schemaVersion",
-                "kind", "contractId", "orderedPrefix", "source",
-                "required", "suffixPolicy");
+                "kind", "orderedPrefix", "source", "suffixPolicy");
         if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(json, "kind"))
                 || !DROP_SOURCE_SUFFIX.equals(string(json,
@@ -94,35 +84,11 @@ public final class BranchReplayContract {
         }
         BranchWitness source = BranchWitness.fromJson(object(json,
                 "source"));
-        BranchReplayContract result = flip(prefix, source);
-        JsonObject required = object(json, "required");
-        requireExactKeys(required, "required replay branch", "takenOutcome",
-                "satisfiedPredicate");
-        JsonElement outcome = required.get("takenOutcome");
-        if (outcome == null || !outcome.isJsonPrimitive()
-                || !outcome.getAsJsonPrimitive().isBoolean()
-                || outcome.getAsBoolean() != result.requiredTakenOutcome
-                || !BranchPredicateAlgebra.equivalent(
-                required.get("satisfiedPredicate"),
-                result.requiredSatisfiedPredicate)) {
-            throw new IllegalArgumentException(
-                    "required branch is not the exact source-witness flip");
-        }
-        if (!result.contractId.equals(string(json, "contractId"))) {
-            throw new IllegalArgumentException(
-                    "branch replay content hash does not match contractId");
-        }
-        return result;
+        return flip(prefix, source);
     }
 
     public JsonObject toJson() {
-        JsonObject result = coreJson();
-        result.addProperty("contractId", contractId);
-        return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    public String contractId() {
-        return contractId;
+        return coreJson();
     }
 
     public List<BranchWitness> orderedPrefix() {
@@ -150,6 +116,21 @@ public final class BranchReplayContract {
         return result;
     }
 
+    public boolean sameContent(BranchReplayContract other) {
+        if (other == null
+                || orderedPrefix.size() != other.orderedPrefix.size()
+                || !source.sameContent(other.source)) {
+            return false;
+        }
+        for (int index = 0; index < orderedPrefix.size(); index++) {
+            if (!orderedPrefix.get(index).sameContent(
+                    other.orderedPrefix.get(index))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private JsonObject coreJson() {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -160,11 +141,6 @@ public final class BranchReplayContract {
         }
         result.add("orderedPrefix", prefix);
         result.add("source", source.toJson());
-        JsonObject required = new JsonObject();
-        required.addProperty("takenOutcome", requiredTakenOutcome);
-        required.add("satisfiedPredicate",
-                CanonicalJson.copy(requiredSatisfiedPredicate));
-        result.add("required", required);
         result.addProperty("suffixPolicy", DROP_SOURCE_SUFFIX);
         return (JsonObject) CanonicalJson.copy(result);
     }

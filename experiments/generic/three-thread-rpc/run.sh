@@ -892,13 +892,13 @@ do_explore_producer() {
         and .replayMode == "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
         and .replayContract.schemaVersion == 1
         and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
-        and (.replayContract.contractId
-          | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
         and .replayContract.suffixPolicy == "DROP_SOURCE_SUFFIX"
-        and (.replayContract.source.witnessId
-          | test("^BRANCH\\.WITNESS\\.[0-9a-f]{64}$"))
-        and (.replayContract.required.takenOutcome | type) == "boolean"
-        and (.replayContract.required.satisfiedPredicate | type) == "object"
+        and (.replayContract.source.sourceTakenOutcome | type) == "boolean"
+        and (.replayContract.source.sourceSatisfiedPredicate | type) == "object"
+        and (.replayContract.source.vmPcIndex | type) == "number"
+        and (.replayContract | has("contractId") | not)
+        and (.replayContract | has("required") | not)
+        and (.replayContract.source | has("witnessId") | not)
         and (has("targetBranch") | not)
         and (has("expectedBranchPrefix") | not)
         and (has("pathReplayConstraints") | not)

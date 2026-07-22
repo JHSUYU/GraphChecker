@@ -68,12 +68,8 @@ public final class ConcolicConstraintSolver {
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
-        record.addProperty("branchReplayContractId",
-                replayContract.contractId());
         record.addProperty("branchConstraintAuthority",
                 "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
-        record.addProperty("solverPathContextId",
-                solverPathContext.contextId());
         record.addProperty("nonBranchPathConstraintCount",
                 solverPathContext.size());
         record.addProperty("nonBranchPathConstraintAuthority",
@@ -2398,12 +2394,6 @@ public final class ConcolicConstraintSolver {
         result.addProperty("sourceSummaryId", string(task,
                 "sourceSummaryId"));
         result.addProperty("sourcePathKey", string(task, "sourcePathKey"));
-        try {
-            result.addProperty("branchReplayContractId",
-                    replayContract(task).contractId());
-        } catch (IOException malformed) {
-            result.addProperty("branchReplayContractMalformed", true);
-        }
         return result;
     }
 

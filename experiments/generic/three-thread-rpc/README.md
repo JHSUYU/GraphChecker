@@ -226,16 +226,17 @@ command.
 
 ## Completed: one binary-branch replay authority
 
-Every observed binary decision now owns one immutable, content-hashed
-`BranchWitness`: stable site/occurrence identity, the source execution's taken
-outcome, its one canonical satisfied predicate, and exact `VM_PC` evidence.
+Every observed binary decision now owns one immutable typed `BranchWitness`:
+stable site/occurrence identity, the source execution's taken outcome, its one
+canonical satisfied predicate, VM path-condition index, and predicate
+normalization. The wire value carries no self-hash or nested duplicate VM event.
 `BranchPredicateAlgebra` is the only predicate-complement implementation, and
 only `BranchReplayContract.flip()` may derive the required opposite
 outcome/predicate. A zero-PC branch event stays observation-only; it cannot be
 turned into a synthetic witness by a parallel proof protocol.
 
 The worklist emits a schema-3 task containing that contract. A separate
-immutable, content-hashed `SolverPathContext` retains positioned non-branch
+immutable typed `SolverPathContext` retains positioned non-branch
 `_array_expr`/`MethodExpression` nodes needed by the solver; it rejects an
 unwitnessed Boolean predicate and is never consumed as runtime branch evidence.
 The solver, activation builder, static instrumentation gate, runtime, importer,
@@ -243,8 +244,10 @@ scheduler, and replay verifier consume the same replay contract; they no longer
 reconstruct or cross-compare `targetBranch`, `expectedBranchPrefix`, replay
 constraints, or a scheduled-target envelope. Runtime observations carry new
 witnesses, and one validator checks the ordered prefix followed by the exact
-required target. Duplicate branch-event identities and content-hash tampering
-fail closed. Multiway `switch` remains a separate successor-aware observation.
+required target. The required target is derived from the source witness rather
+than serialized a second time. Malformed witnesses and duplicate branch-event
+identities fail closed. Multiway `switch` remains a separate successor-aware
+observation.
 
 All six matrix profiles pass this protocol through candidate SMT generation,
 independent Z3 checking, and their exact expected reach profiles; one profile
