@@ -98,6 +98,30 @@ public class BranchReplayContractTest {
         expectContractRejected(malformed, "exact source-witness flip");
     }
 
+    @Test
+    public void oneValidatorChecksOrderedPrefixAndRequiredPredicate() {
+        BranchWitness prefix = witness("ROOT#u1", 1, 1, true, "<");
+        BranchWitness source = witness("ROOT#u7", 7, 1, true, ">=");
+        BranchReplayContract contract = BranchReplayContract.flip(
+                Collections.singletonList(prefix), source);
+        BranchWitness replayedPrefix = witness("ROOT#u1", 1, 1, true,
+                "<");
+        BranchWitness replayedTarget = witness("ROOT#u7", 7, 1, false,
+                "<");
+
+        BranchReplayObservationValidator.Result valid =
+                BranchReplayObservationValidator.validate(contract,
+                        Arrays.asList(replayedPrefix, replayedTarget));
+        assertTrue(valid.toJson().toString(), valid.valid());
+
+        BranchReplayObservationValidator.Result wrong =
+                BranchReplayObservationValidator.validate(contract,
+                        Arrays.asList(replayedTarget, replayedPrefix));
+        assertFalse(wrong.valid());
+        assertTrue(wrong.failures().toString(), wrong.failures().toString()
+                .contains("TARGET_BEFORE_PREFIX"));
+    }
+
     private static BranchWitness witness(String site, int unit,
                                          int occurrence, boolean outcome,
                                          String operator) {

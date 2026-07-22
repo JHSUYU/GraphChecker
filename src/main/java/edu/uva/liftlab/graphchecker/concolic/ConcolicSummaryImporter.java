@@ -205,6 +205,15 @@ public final class ConcolicSummaryImporter {
                     activation);
             boolean outputClosure = captureGoal.isOutputClosure();
             JsonArray rawBranchMappings = array(raw, "branchMappings");
+            List<String> branchWitnessIssues = branchWitnessIssues(
+                    rawBranchMappings);
+            if (!branchWitnessIssues.isEmpty()) {
+                for (String issue : branchWitnessIssues) {
+                    diagnostics.add(diagnostic(raw,
+                            "REJECTED_BINARY_BRANCH_WITNESS", issue));
+                }
+                continue;
+            }
             CertifiedConcreteGuardCatalog certifiedConcreteGuards =
                     certifiedConcreteGuards(raw, activation,
                             enginePathCondition, rawBranchMappings,
@@ -4345,9 +4354,32 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : mappings) {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
-            int index = integer(mapping, "rawConditionIndex",
+            BranchWitness witness = branchWitness(mapping);
+            int index = witness != null
+                    && BranchWitness.VM_PC.equals(witness.evidenceKind())
+                    ? witness.vmPcIndex()
+                    : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
+            if (witness != null && index >= 0
+                    && index < rawConditions.size()) {
+                JsonElement engineRaw = rawConditions.get(index);
+                JsonElement semantic = witness.sourceSatisfiedPredicate();
+                if (!validWitnessSemanticCondition(witness, engineRaw,
+                        semantic)) {
+                    continue;
+                }
+                exact.put(index, semantic.deepCopy());
+                String rawSignature = GSON.toJson(engineRaw);
+                JsonElement previous = byRawSignature.get(rawSignature);
+                if (previous != null && !GSON.toJson(previous).equals(
+                        GSON.toJson(semantic))) {
+                    ambiguousRawSignatures.add(rawSignature);
+                } else if (previous == null) {
+                    byRawSignature.put(rawSignature, semantic.deepCopy());
+                }
+                continue;
+            }
             if (index < 0 || index >= rawConditions.size()
                     || !mapping.has("rawCondition")
                     || !mapping.has("condition")) {
@@ -4380,6 +4412,36 @@ public final class ConcolicSummaryImporter {
             }
         }
         return exact;
+    }
+
+    private static boolean validWitnessSemanticCondition(
+            BranchWitness witness, JsonElement raw, JsonElement semantic) {
+        if (witness == null
+                || !BranchWitness.VM_PC.equals(witness.evidenceKind())) {
+            return false;
+        }
+        JsonObject event = object(witness.evidence(), "vmEvent");
+        String normalization = string(event, "predicateNormalization");
+        if ("IDENTITY".equals(normalization)) {
+            return BranchPredicateAlgebra.equivalent(raw, semantic);
+        }
+        if (!"JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE".equals(
+                normalization)) {
+            return false;
+        }
+        JsonObject provenance = new JsonObject();
+        provenance.addProperty("conditionNormalization", normalization);
+        return validSemanticBranchCondition(provenance, raw, semantic);
+    }
+
+    private static BranchWitness branchWitness(JsonObject mapping) {
+        JsonElement encoded = mapping == null ? null : mapping.get("witness");
+        if (encoded == null || !encoded.isJsonObject()) return null;
+        try {
+            return BranchWitness.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            return null;
+        }
     }
 
     private static boolean validSemanticBranchCondition(JsonObject mapping,
@@ -4828,7 +4890,11 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             JsonObject mapping = element.getAsJsonObject();
-            int index = integer(mapping, "rawConditionIndex",
+            BranchWitness witness = branchWitness(mapping);
+            int index = witness != null
+                    && BranchWitness.VM_PC.equals(witness.evidenceKind())
+                    ? witness.vmPcIndex()
+                    : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
             if (index >= 0) {
@@ -4836,6 +4902,43 @@ public final class ConcolicSummaryImporter {
             }
         }
         return result;
+    }
+
+    private static List<String> branchWitnessIssues(JsonArray mappings) {
+        List<String> issues = new ArrayList<>();
+        Set<String> identities = new LinkedHashSet<>();
+        int ordinal = 0;
+        for (JsonElement element : mappings) {
+            if (!element.isJsonObject()) {
+                ordinal++;
+                continue;
+            }
+            JsonObject mapping = element.getAsJsonObject();
+            JsonElement encoded = mapping.get("witness");
+            if (encoded == null) {
+                ordinal++;
+                continue;
+            }
+            if (!encoded.isJsonObject()) {
+                issues.add("mapping@" + ordinal
+                        + ":WITNESS_MUST_BE_AN_OBJECT");
+                ordinal++;
+                continue;
+            }
+            try {
+                BranchWitness witness = BranchWitness.fromJson(
+                        encoded.getAsJsonObject());
+                if (!identities.add(witness.witnessId())) {
+                    issues.add(witness.witnessId()
+                            + ":DUPLICATE_WITNESS_ID");
+                }
+            } catch (IllegalArgumentException malformed) {
+                issues.add("mapping@" + ordinal + ":"
+                        + malformed.getMessage());
+            }
+            ordinal++;
+        }
+        return issues;
     }
 
     private static boolean isBinaryCondition(JsonElement condition) {
@@ -4853,7 +4956,11 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             JsonObject mapping = element.getAsJsonObject().deepCopy();
-            int rawIndex = integer(mapping, "rawConditionIndex",
+            BranchWitness witness = branchWitness(mapping);
+            int rawIndex = witness != null
+                    && BranchWitness.VM_PC.equals(witness.evidenceKind())
+                    ? witness.vmPcIndex()
+                    : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
             String syntheticIdentity = certifiedConcreteGuardIdentity(
@@ -4863,6 +4970,12 @@ public final class ConcolicSummaryImporter {
             int normalizedIndex = certifiedSynthetic
                     ? normalization.syntheticIndex(syntheticIdentity)
                     : normalization.index(rawIndex);
+            if (witness != null) {
+                // The witness remains byte-for-byte immutable.  This is the
+                // sole bridge from the VM-PC namespace owned by its evidence
+                // to the normalized summary-PC namespace owned here.
+                mapping.addProperty("summaryPcIndex", normalizedIndex);
+            }
             if (mapping.has("conditionIndex")
                     || mapping.has("rawConditionIndex")
                     || mapping.has("engineConditionIndex")) {

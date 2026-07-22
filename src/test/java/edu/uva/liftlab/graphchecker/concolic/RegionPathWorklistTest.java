@@ -63,6 +63,46 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void witnessSummaryEmitsOneAuthoritativeReplayContract() {
+        JsonObject summary = summary("ACT.WITNESS",
+                RegionCaptureGoal.outputClosure());
+        JsonArray conditions = summary.getAsJsonArray("pathCondition");
+        JsonArray mappings = summary.getAsJsonArray("branchMappings");
+        for (int index = 0; index < mappings.size(); index++) {
+            JsonObject mapping = mappings.get(index).getAsJsonObject();
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", index + 1L);
+            event.addProperty("contextId", 7L);
+            event.addProperty("predicateNormalization", "IDENTITY");
+            BranchWitness witness = BranchWitness.vmPc(
+                    mapping.get("siteId").getAsString(), "ROOT", index,
+                    1, true, conditions.get(index), index, event);
+            mapping.add("witness", witness.toJson());
+            mapping.addProperty("summaryPcIndex", index);
+        }
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation("ACT.WITNESS",
+                        RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        JsonObject latest = result.tasks.get(0);
+        assertEquals(2, latest.get("schemaVersion").getAsInt());
+        BranchReplayContract contract = BranchReplayContract.fromJson(
+                latest.getAsJsonObject("replayContract"));
+        assertEquals("SITE.1", contract.source().siteId());
+        assertEquals(1, contract.orderedPrefix().size());
+        assertEquals(">=", contract.requiredSatisfiedPredicate()
+                .getAsJsonObject().get("_op").getAsString());
+        assertFalse(latest.has("constraints"));
+        assertFalse(latest.has("flipSite"));
+        assertFalse(latest.has("desiredOutcome"));
+        assertFalse(latest.has("negatedCondition"));
+    }
+
+    @Test
     public void legacySummaryWithoutPolicyStillEnumeratesEveryMapping() {
         JsonObject summary = summary("ACT.LEGACY",
                 RegionCaptureGoal.outputClosure());

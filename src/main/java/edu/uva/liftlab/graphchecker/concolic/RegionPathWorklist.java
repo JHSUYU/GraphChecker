@@ -789,10 +789,26 @@ public final class RegionPathWorklist {
             JsonElement negated = BranchPredicateAlgebra.complement(original);
             JsonArray query = prefix.deepCopy();
             query.add(negated.deepCopy());
-            boolean desired = !bool(mapping, "outcome", false);
+            BranchReplayContract replayContract = replayContract(summary,
+                    mapping, conditions, conditionIndex);
+            if (mapping.has("witness") && replayContract == null) {
+                gap("INVALID_BRANCH_WITNESS_PREFIX",
+                        "WITNESS_OR_ORDERED_PREFIX_DOES_NOT_MATCH_SUMMARY_PC",
+                        string(summary, "regionId"), pathKey,
+                        branchSite(mapping), branchOccurrence(mapping));
+                return;
+            }
+            boolean observed = replayContract == null
+                    ? bool(mapping, "outcome", false)
+                    : replayContract.source().sourceTakenOutcome();
+            boolean desired = replayContract == null
+                    ? !observed : replayContract.requiredTakenOutcome();
             String region = string(summary, "regionId");
-            String site = string(mapping, "siteId");
-            int occurrence = integer(mapping, "occurrence", 1);
+            String site = replayContract == null ? string(mapping, "siteId")
+                    : replayContract.source().siteId();
+            int occurrence = replayContract == null
+                    ? integer(mapping, "occurrence", 1)
+                    : replayContract.source().occurrence();
             JsonElement output = summary.get("requestedOutput");
             RegionCaptureGoal goal = RegionCaptureGoal.from(
                     activation == null ? summary : activation);
@@ -832,7 +848,8 @@ public final class RegionPathWorklist {
             }
 
             JsonObject task = new JsonObject();
-            task.addProperty("schemaVersion", 1);
+            task.addProperty("schemaVersion",
+                    replayContract == null ? 1 : 2);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
             task.addProperty("regionId", region);
@@ -856,8 +873,7 @@ public final class RegionPathWorklist {
             task.addProperty("flipSite", site);
             task.addProperty("flipOccurrence", occurrence);
             task.addProperty("conditionIndex", conditionIndex);
-            task.addProperty("observedOutcome", bool(mapping, "outcome",
-                    false));
+            task.addProperty("observedOutcome", observed);
             task.addProperty("desiredOutcome", desired);
             task.addProperty("concreteGuardReplayProofRequired",
                     exactCertifiedConcreteGuard(mapping, conditions));
@@ -870,6 +886,9 @@ public final class RegionPathWorklist {
             task.add("originalCondition", original.deepCopy());
             task.add("negatedCondition", negated);
             task.add("constraints", query);
+            if (replayContract != null) {
+                task.add("replayContract", replayContract.toJson());
+            }
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
             task.add("engineArrayInputBindings", array(summary,
@@ -883,7 +902,102 @@ public final class RegionPathWorklist {
                         "conditionTemplateSourceSummaryIds").deepCopy());
                 task.addProperty("exactConcreteBranchRecovery", true);
             }
+            if (replayContract != null) {
+                // All binary replay semantics live in replayContract.  Keep
+                // task metadata and materialization inputs, but remove the
+                // former independently mutable polarity aliases.
+                task.remove("flipSite");
+                task.remove("flipOccurrence");
+                task.remove("conditionIndex");
+                task.remove("observedOutcome");
+                task.remove("desiredOutcome");
+                task.remove("concreteGuardReplayProofRequired");
+                task.remove("prefixPolicy");
+                task.remove("targetPolicy");
+                task.remove("suffixPolicy");
+                task.remove("prefix");
+                task.remove("expectedBranchPrefix");
+                task.remove("originalCondition");
+                task.remove("negatedCondition");
+                task.remove("constraints");
+            }
             tasks.add(task);
+        }
+
+        private BranchReplayContract replayContract(
+                JsonObject summary, JsonObject selected,
+                JsonArray conditions, int selectedSummaryIndex) {
+            BranchWitness source = branchWitness(selected);
+            if (source == null || selectedSummaryIndex < 0
+                    || selectedSummaryIndex >= conditions.size()
+                    || integer(selected, "summaryPcIndex", -1)
+                    != selectedSummaryIndex
+                    || !BranchPredicateAlgebra.equivalent(
+                    source.sourceSatisfiedPredicate(),
+                    conditions.get(selectedSummaryIndex))) {
+                return null;
+            }
+            List<JsonObject> prefixMappings = new ArrayList<>();
+            for (JsonElement element : array(summary, "branchMappings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject mapping = element.getAsJsonObject();
+                int index = integer(mapping, "summaryPcIndex", -1);
+                if (index >= 0 && index < selectedSummaryIndex) {
+                    prefixMappings.add(mapping);
+                }
+            }
+            Collections.sort(prefixMappings, Comparator.comparingInt(
+                    value -> integer(value, "summaryPcIndex", -1)));
+            List<BranchWitness> prefix = new ArrayList<>();
+            int expectedIndex = 0;
+            for (JsonObject mapping : prefixMappings) {
+                int index = integer(mapping, "summaryPcIndex", -1);
+                BranchWitness witness = branchWitness(mapping);
+                if (index != expectedIndex || witness == null
+                        || !BranchPredicateAlgebra.equivalent(
+                        witness.sourceSatisfiedPredicate(),
+                        conditions.get(index))) {
+                    return null;
+                }
+                prefix.add(witness);
+                expectedIndex++;
+            }
+            // Solver and replay use the same complete retained prefix.  A
+            // semantic PC element without one exact branch witness is not
+            // silently copied into a second authority channel.
+            if (expectedIndex != selectedSummaryIndex) return null;
+            BranchReplayContract contract = BranchReplayContract.flip(
+                    prefix, source);
+            JsonArray required = contract.requiredPathPredicates();
+            if (required.size() != selectedSummaryIndex + 1) return null;
+            for (int index = 0; index < selectedSummaryIndex; index++) {
+                if (!BranchPredicateAlgebra.equivalent(required.get(index),
+                        conditions.get(index))) return null;
+            }
+            return contract;
+        }
+
+        private BranchWitness branchWitness(JsonObject mapping) {
+            JsonElement value = mapping == null ? null
+                    : mapping.get("witness");
+            if (value == null || !value.isJsonObject()) return null;
+            try {
+                return BranchWitness.fromJson(value.getAsJsonObject());
+            } catch (IllegalArgumentException malformed) {
+                return null;
+            }
+        }
+
+        private String branchSite(JsonObject mapping) {
+            BranchWitness witness = branchWitness(mapping);
+            return witness == null ? string(mapping, "siteId")
+                    : witness.siteId();
+        }
+
+        private int branchOccurrence(JsonObject mapping) {
+            BranchWitness witness = branchWitness(mapping);
+            return witness == null ? integer(mapping, "occurrence", -1)
+                    : witness.occurrence();
         }
 
         /**

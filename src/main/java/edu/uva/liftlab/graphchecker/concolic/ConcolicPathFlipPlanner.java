@@ -113,11 +113,16 @@ public final class ConcolicPathFlipPlanner {
         manifest.addProperty("sourceSummaryId", string(task,
                 "sourceSummaryId"));
         manifest.addProperty("regionId", string(task, "regionId"));
-        manifest.addProperty("flipSite", string(task, "flipSite"));
-        manifest.addProperty("flipOccurrence", integer(task,
-                "flipOccurrence", -1));
-        manifest.addProperty("desiredOutcome", bool(task,
-                "desiredOutcome", false));
+        BranchReplayContract replayContract = replayContract(task);
+        manifest.addProperty("flipSite", replayContract == null
+                ? string(task, "flipSite")
+                : replayContract.source().siteId());
+        manifest.addProperty("flipOccurrence", replayContract == null
+                ? integer(task, "flipOccurrence", -1)
+                : replayContract.source().occurrence());
+        manifest.addProperty("desiredOutcome", replayContract == null
+                ? bool(task, "desiredOutcome", false)
+                : replayContract.requiredTakenOutcome());
         if (!"SAT_MODEL_READY".equals(string(solve.record, "status"))) {
             manifest.addProperty("status", "PATH_FLIP_NOT_REPLAYABLE");
             manifest.addProperty("complete", false);
@@ -263,13 +268,26 @@ public final class ConcolicPathFlipPlanner {
 
     private static boolean matchesTask(JsonObject task,
                                        Arguments arguments) {
+        BranchReplayContract contract = replayContract(task);
+        String site = contract == null ? string(task, "flipSite")
+                : contract.source().siteId();
+        int occurrence = contract == null
+                ? integer(task, "flipOccurrence", -1)
+                : contract.source().occurrence();
         return (arguments.queryKey.isEmpty()
                 || arguments.queryKey.equals(string(task, "queryKey")))
                 && (arguments.flipSite.isEmpty()
-                || arguments.flipSite.equals(string(task, "flipSite")))
+                || arguments.flipSite.equals(site))
                 && (arguments.flipOccurrence < 1
-                || arguments.flipOccurrence == integer(task,
-                "flipOccurrence", -1));
+                || arguments.flipOccurrence == occurrence);
+    }
+
+    private static BranchReplayContract replayContract(JsonObject task) {
+        JsonElement encoded = task == null ? null
+                : task.get("replayContract");
+        return encoded != null && encoded.isJsonObject()
+                ? BranchReplayContract.fromJson(encoded.getAsJsonObject())
+                : null;
     }
 
     private static Map<String, JsonObject> uniqueIndex(

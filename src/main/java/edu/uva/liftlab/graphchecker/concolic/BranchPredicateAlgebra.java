@@ -59,6 +59,15 @@ public final class BranchPredicateAlgebra {
         return COMPLEMENTS.containsKey(operator);
     }
 
+    public static String complementOperator(String operator) {
+        String result = COMPLEMENTS.get(operator);
+        if (result == null) {
+            throw new IllegalArgumentException(
+                    "unsupported binary comparison operator: " + operator);
+        }
+        return result;
+    }
+
     public static String fingerprint(JsonElement predicate) {
         return CanonicalJson.sha256(canonical(predicate));
     }
