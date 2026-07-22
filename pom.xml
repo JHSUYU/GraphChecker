@@ -76,11 +76,6 @@
                         <manifest>
                             <mainClass>edu.uva.liftlab.graphchecker.GraphCheckerMain</mainClass>
                         </manifest>
-                        <manifestEntries>
-                            <Premain-Class>edu.uva.liftlab.graphchecker.runtime.MethodCoverageAgent</Premain-Class>
-                            <Can-Redefine-Classes>false</Can-Redefine-Classes>
-                            <Can-Retransform-Classes>false</Can-Retransform-Classes>
-                        </manifestEntries>
                     </archive>
                     <descriptorRefs>
                         <descriptorRef>jar-with-dependencies</descriptorRef>

@@ -1,8 +1,8 @@
 # Concolic Region Integration Contract
 
-Status: implemented core; the hand-written one-DN runtime-bounded N=4
-diagnostic is verified, while production automatic-composition gaps remain
-tracked in the top-level `readme.md` (2026-07-17).
+Status: the maintained generic workflow produces hash-bound, independently
+Z3-checked candidate models for the three reference workloads. Natural replay
+promotion remains the explicit final TODO.
 
 This document defines the project-independent contract between GraphChecker's
 static/runtime analysis, Soot instrumentation, the custom OpenJDK concolic
@@ -11,20 +11,11 @@ top-level `readme.md` is the authoritative handoff and experiment-status file.
 
 ## 1. Research scope
 
-This is academic software engineering and program analysis. The fixed
-validation workload is the HDFS-owned local `MiniDFSCluster` test:
-
-```text
-repository: /Users/lizhenyu/Desktop/study/hadoop
-commit:     ece33208b89a6a06c1b362d10fab31343fe5df13
-test:       org.apache.hadoop.hdfs.server.balancer.
-            TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
-boundary:   local test/custom OpenJDK only; no third-party systems
-```
-
-HDFS names such as SASL, token, key, or encrypted transfer describe ordinary
-upstream source and test behavior. They do not broaden the work into attacks,
-intrusion, exploitation, or access to external systems.
+This is academic software engineering and program analysis. The maintained
+validation scope is the local three-thread RPC fixture matrix, executed with
+the repository's custom OpenJDK and Z3. Application topology, target sites,
+and semantics must come from program evidence and workflow configuration;
+there is no domain-specific composition adapter.
 
 ## 2. Core invariants
 
@@ -275,9 +266,9 @@ persist all state and manifest
 ```
 
 The execution backend receives file locations and environment variables only.
-The fixed HDFS script performs activation-specific Soot instrumentation, runs
-the single local unit test on the custom JDK, and lets the campaign importer
-normalize the result.
+The selected generic workflow performs activation-specific Soot
+instrumentation, runs its configured local workload on the custom JDK, and
+lets the importer normalize the result.
 
 Persisted resume files are:
 
@@ -300,8 +291,9 @@ target-instance-selected equality/read-from bindings
 common region/port schemas
 ```
 
-It does not read the HDFS explicit-contract registry. Legacy summaries carrying
-`protocolModel` or embedded `explicitContracts` are rejected as incomplete.
+It does not read an external semantic-contract registry. Legacy summaries
+carrying `protocolModel` or embedded `explicitContracts` are rejected as
+incomplete.
 
 The manifest is complete only if there are no missing summaries, incomplete
 relations, unsupported expressions, unbound ports, or target replay gaps.
@@ -319,38 +311,13 @@ base constraints AND NOT(relationship) == UNSAT
 This prevents vacuous proofs from an inconsistent base and blocks proof labels
 when composition is incomplete.
 
-## 12. HDFS-specific boundary
-
-`HdfsRegionPortMapper` can locate HDFS-named ports and attach evidence paths. It
-emits no semantic assertion and is ineligible as a summary or SMT input.
-
-`HdfsExplicitContracts` separately records hypotheses such as codec round-trip,
-cache policy, or expiry/membership. Every row is marked:
-
-```text
-kind = EXPLICIT_CONTRACT
-eligibleForAutomaticDerivation = false
-includedInSmt = false
-mayBeReportedAsSymbolicExecutionResult = false
-```
-
-The proposed NameNode → Balancer → DataNode `keyId` path and NameNode → DataNode
-`allKeys` path are navigation hints. Each actual equality, read-from, temporal,
-or membership relation still requires runtime/concolic evidence.
-
-No HDFS loop has currently been modified. A loop rewrite is permissible only
-as a documented, minimal experiment in the fixed local source copy after a real
-loop-specific blocker is demonstrated; it cannot silently change the modeled
-semantics.
-
-## 13. Verification
+## 12. Verification
 
 ```bash
 mvn -q test
 mvn -q package -DskipTests
-bash -n experiments/hdfs/run_hdfs.sh
+experiments/generic/test_workflow.sh
 ```
 
-The fixed HDFS commands and current artifact paths are documented in the
-top-level `readme.md`. A nonzero campaign/proof exit caused by explicit gaps is
-an expected fail-closed state; the JSON manifest is authoritative.
+A nonzero workflow/proof exit caused by explicit gaps is an expected
+fail-closed state; the JSON manifest is authoritative.

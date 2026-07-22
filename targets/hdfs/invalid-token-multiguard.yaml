@@ -1,4 +1,0 @@
-# Regression target for intraprocedural exception path-condition discovery.
-# The marked InvalidToken construction in retrievePassword must include both
-# the non-expired-token precondition and the missing-key guard.
-exception_target_id: hdfs-invalid-token-multiguard

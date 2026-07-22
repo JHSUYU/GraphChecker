@@ -57,12 +57,8 @@ import soot.jimple.SwitchStmt;
 import soot.tagkit.Tag;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -95,40 +91,14 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
     private static final String CONCOLIC_REGION_RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
-    private static final String STATIC_REUSE_MANIFEST_PROPERTY =
-            "causynth.concolic.static.reuse.manifest";
-    private static final String STATIC_REUSE_MANIFEST_ENV =
-            "CAUSYNTH_CONCOLIC_STATIC_REUSE_MANIFEST";
-    private static final String STATIC_REUSE_REPORT_FILE =
-            "concolic_instrumentation_report.json";
-
     private final GraphCheckerOptions options;
-    private final int sootClassCount;
-    private final int sootConcreteMethodCount;
 
-    public CausynthPipeline(GraphCheckerOptions options, int sootClassCount,
-                            int sootConcreteMethodCount) {
+    public CausynthPipeline(GraphCheckerOptions options) {
         this.options = options;
-        this.sootClassCount = sootClassCount;
-        this.sootConcreteMethodCount = sootConcreteMethodCount;
     }
 
     public void run() throws IOException {
         CausynthTargetContext target = CausynthTargetResolver.resolve(options);
-        String reuseManifest = stringValue(firstNonBlank(
-                System.getProperty(STATIC_REUSE_MANIFEST_PROPERTY),
-                System.getenv(STATIC_REUSE_MANIFEST_ENV)));
-        if (!reuseManifest.isEmpty()) {
-            String fallback = frozenConcolicReuseFallbackReason();
-            if (fallback.isEmpty()) {
-                runWithFrozenConcolicCatalog(target,
-                        Paths.get(reuseManifest));
-                return;
-            }
-            LOG.info("Frozen concolic static catalog not used ({}); "
-                    + "running the complete static pipeline", fallback);
-        }
-
         ExceptionTargetSite exceptionTarget =
                 ExceptionTargetAnnotationScanner.select(
                         options.getInputList(), target.exceptionTargetId);
@@ -159,114 +129,6 @@ public final class CausynthPipeline {
                 result.edges.size(), target.outputDir);
     }
 
-    private void runWithFrozenConcolicCatalog(CausynthTargetContext target,
-                                               Path manifest)
-            throws IOException {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        ConcolicStaticCatalogReuse.LoadedCatalog loaded =
-                ConcolicStaticCatalogReuse.load(manifest,
-                        Paths.get(planValue), selected);
-        loaded.validateCurrentInputs(target.specPath, options.getInputList(),
-                firstNonBlank(System.getProperty("causynth.process.dirs"),
-                        System.getenv("CAUSYNTH_PROCESS_DIRS"), ""));
-        Path output = target.outputDir.toAbsolutePath().normalize();
-        Path catalog = loaded.regionsPath.getParent();
-        if (catalog != null && output.equals(catalog.toAbsolutePath()
-                .normalize())) {
-            throw new IOException("Frozen catalog and instrumentation report "
-                    + "directories must differ: " + output);
-        }
-
-        CausynthAnalysisResult result = new CausynthAnalysisResult();
-        result.symbolicRegions.addAll(loaded.regions);
-        result.symbolicCoverage.putAll(loaded.coverage);
-        result.slices.put("staticCatalogReuse",
-                new LinkedHashMap<>(loaded.reportMetadata));
-        result.slices.put("staticCatalogReuseAuthority",
-                ConcolicStaticCatalogReuse.AUTHORITY);
-        result.slices.put("staticCatalogReuseSelectedRegionCount",
-                loaded.regions.size());
-        result.slices.put("staticAnalysisSkipped", true);
-        instrumentConcolicRegions(result);
-        verifyFrozenCatalogInstrumentation(result, loaded);
-        boolean boundedOutputClosureCoverageReady =
-                recordSymbolicCoverageAuthority(result);
-        enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
-        writeStaticReuseReport(target, result, loaded);
-        LOG.info("Reused one hash-bound static region for activation {} and "
-                        + "wrote instrumentation report to {}",
-                selected, output.resolve(STATIC_REUSE_REPORT_FILE));
-    }
-
-    private void verifyFrozenCatalogInstrumentation(
-            CausynthAnalysisResult result,
-            ConcolicStaticCatalogReuse.LoadedCatalog loaded)
-            throws IOException {
-        int roots = intValue(result.slices.get("concolicRegionRootCount"), -1);
-        int instrumented = intValue(result.slices.get(
-                "concolicRegionInstrumentedRootCount"), -1);
-        int skipped = intValue(result.slices.get(
-                "concolicRegionSkippedRootCount"), -1);
-        int expectedBranches = intValue(loaded.reportMetadata.get(
-                "loadedBranchPolicyCount"), -1);
-        int instrumentedBranches = intValue(result.slices.get(
-                "concolicMappedBranchCount"), -1);
-        Set<String> selectedRoots = new LinkedHashSet<>();
-        Object selectedRootValue = result.slices.get(
-                "concolicSelectedRootMethods");
-        if (selectedRootValue instanceof Collection<?>) {
-            for (Object value : (Collection<?>) selectedRootValue) {
-                String root = stringValue(value);
-                if (!root.isEmpty()) {
-                    selectedRoots.add(root);
-                }
-            }
-        }
-        if (roots != 1 || instrumented != roots || skipped != 0) {
-            throw new IOException("Frozen static reuse did not instrument its "
-                    + "one exact root: roots=" + roots + ", instrumented="
-                    + instrumented + ", skipped=" + skipped);
-        }
-        if (expectedBranches < 0
-                || instrumentedBranches != expectedBranches) {
-            throw new IOException("Frozen static reuse branch hook mismatch: "
-                    + instrumentedBranches + " != " + expectedBranches);
-        }
-        if (!selectedRoots.equals(Collections.singleton(
-                loaded.instrumentationRoot))) {
-            throw new IOException("Frozen static reuse instrumented an "
-                    + "unexpected runtime root: " + selectedRoots + " != "
-                    + loaded.instrumentationRoot);
-        }
-    }
-
-    private String frozenConcolicReuseFallbackReason() {
-        boolean concolic = Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.concolic"),
-                System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"), "false"));
-        boolean trace = Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.trace"),
-                System.getenv("CAUSYNTH_INSTRUMENT_TRACE"), "false"));
-        String plan = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        if (!concolic) return "CONCOLIC_INSTRUMENTATION_DISABLED";
-        if (trace) return "TRACE_INSTRUMENTATION_REQUIRES_FULL_STATIC_GRAPH";
-        if (plan.isEmpty()) return "ACTIVATION_PLAN_MISSING";
-        if (selected.isEmpty() || "ALL".equals(selected)) {
-            return "EXACT_ACTIVATION_SELECTION_MISSING";
-        }
-        return "";
-    }
-
     private boolean recordSymbolicCoverageAuthority(
             CausynthAnalysisResult result) {
         boolean ready = selectedBoundedOutputClosureCoverageReady(result);
@@ -295,43 +157,6 @@ public final class CausynthPipeline {
                             + "exact runtime-selected bounded output closure is "
                             + "ready; preserving strict coverage outside that "
                             + "selected activation");
-        }
-    }
-
-    private void writeStaticReuseReport(CausynthTargetContext target,
-                                        CausynthAnalysisResult result,
-                                        ConcolicStaticCatalogReuse.LoadedCatalog loaded)
-            throws IOException {
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.putAll(loaded.reportMetadata);
-        report.put("sootClassCount", sootClassCount);
-        report.put("sootConcreteMethodCount", sootConcreteMethodCount);
-        report.put("instrumentation", new LinkedHashMap<>(result.slices));
-        report.put("globalSymbolicCoverageComplete",
-                Boolean.TRUE.equals(result.symbolicCoverage.get("complete")));
-        report.put("staticCatalogMutated", false);
-        report.put("complete", true);
-        Files.createDirectories(target.outputDir);
-        Path output = target.outputDir.resolve(STATIC_REUSE_REPORT_FILE);
-        Path temporary = Files.createTempFile(target.outputDir,
-                ".concolic-instrumentation-", ".json.tmp");
-        try {
-            Files.write(temporary,
-                    (CausynthJson.write(report) + System.lineSeparator())
-                            .getBytes(
-                            StandardCharsets.UTF_8),
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
-            try {
-                Files.move(temporary, output,
-                        StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-                Files.move(temporary, output,
-                        StandardCopyOption.REPLACE_EXISTING);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
         }
     }
 

@@ -228,24 +228,3 @@ materialize only the selected producer inputs in the full workload, prohibit
 all downstream injection and branch override, observe the annotated exception
 target naturally, and bind that observation to the candidate artifact hashes
 before introducing any trusted/final result state.
-
-## HDFS validation checkpoint
-
-The frozen HDFS trace was re-aggregated without rerunning Soot, instrumentation,
-or the workload. `target/hdfs-runtime-demand-reslice-v5` completed in 2:20.25
-with 19,043,412 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
-All 430 instances used the runtime-guided re-slice; 63,673 candidate inputs
-were pruned, 385 confirmed external inputs were restored, and warnings are 0.
-
-The HDFS RPC/SASL mapping remains enabled for true transport boundaries.
-`REGION_EDGE.0` retains 10 SASL equality bindings, while edges 802 and 2076
-retain 50 and 10 exact read-from bindings. The v5 selector is complete and
-selects the same five runtime calls (NN, DN, KeyUpdater, Dispatcher, target)
-with all causal bounds verified.
-
-The historical v5 HDFS checkpoint cannot be recomposed from this checkout
-because its five configured replay-summary files are absent and have no
-recoverable in-repository source. Regenerating those external experiment
-artifacts is outside the three-workload reference gate. The intentionally loose
-HDFS loop/read-from policies remain documented limitations; v5 measures only
-the frozen-graph runtime re-slice, not a fresh full-HDFS catalog run.
