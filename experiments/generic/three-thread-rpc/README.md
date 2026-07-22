@@ -65,6 +65,14 @@ schedule paths from that properties file. Standard workflow paths follow
 `causynth_output_dir`. Keep `workload_command` consistent with the same
 fixture metadata when supplying a custom configuration.
 
+Producer exploration remains explicitly bounded.  A workload with a larger
+finite path product can raise any of
+`producer_max_paths_per_region`, `producer_max_flips_per_path`,
+`producer_max_path_tasks`, or `producer_max_path_wall_clock_ms` in its
+properties file.  The runner passes those values to every planning round and
+still fails closed if the resulting worklist reports a bound gap; it never
+treats exhaustion of a configured budget as closure.
+
 `clean` is guarded to remove only the configured fixture work root below the
 project's `target` directory (`target/three-thread-rpc` by default). It does
 not clean Maven output, the repository, or the custom JDK. `all` refuses to
@@ -93,35 +101,22 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    a structurally complete `BOOTSTRAP` SMT model, but it is explicitly
    ineligible as a final report.
 6. Exhaustively project the bootstrap SMT over its discovered Boolean roots in
-   `BOOTSTRAP_REPLAY_MODEL` mode. The primitive projector chooses a SAT model
-   and exact guarded cases, then emits one `ALL` bundle containing producer
-   input assignments followed by an engine-backed, observation-only target.
-   Instrumentation and replay omit the activation-id selector for this bundle.
-7. Run that bundle on the three real threads. A nonzero JVM exit is accepted
-   only when the raw result contains the unique PRIMARY target row. The
-   importer must prove a naturally observed bug branch with no branch override
-   and no downstream injection, after which the scheduler emits a
-   replay-validated target query.
-8. Run `ConcolicCampaignRunner` in `FIXED_VALIDATED_GRAPH` mode. Campaign
-   executions use unique attempt directories, and bounded incomplete runs
-   retain an atomic resume checkpoint.
-9. Verify every SHA-256 and row count in the campaign's immutable state
-   generation. Re-schedule its exact validated target, compose the
-   `VALIDATED_FINAL` SMT, prove generated relationships with Z3, and derive the
-   final Boolean reach report in `FINAL_REPORT` mode.
+   `BOOTSTRAP_REPLAY_MODEL` mode, invoke Z3 independently on the emitted SMT,
+   and hash-bind the SMT, composition manifest, reach model, and relationship
+   candidates into one `CANDIDATE_ONLY` result manifest.
 
-The final user-facing result is:
+The terminal artifact implemented by this workflow is:
 
 ```text
-target/three-thread-rpc/final/boolean_reach_condition.json
+target/three-thread-rpc/bootstrap/candidate_result_manifest.json
 ```
 
-The report contains the generated root-input catalog, complete truth table,
-canonical condition, and proof metadata. A discovered root may legitimately
-be non-influential after existential projection of other scalar inputs, so the
-workflow reports the exact rows rather than requiring every Boolean bit to
-change the result. The bootstrap report is replay-only and can never be
-substituted for this final artifact.
+It binds the generated root-input catalog, complete candidate truth table,
+canonical condition, relationship candidates, and SMT by path, byte size, and
+SHA-256. A discovered root may legitimately be non-influential after
+existential projection of other scalar inputs, so the workflow reports exact
+rows rather than requiring every Boolean bit to change the result. The
+manifest explicitly records `naturalReplayPromotionImplemented=false`.
 
 ## Inspecting or resuming stages
 
@@ -141,11 +136,9 @@ experiments/generic/three-thread-rpc/run.sh import A
 experiments/generic/three-thread-rpc/run.sh explore-producer A
 ```
 
-The later stage commands are `bootstrap-compose`, `bootstrap-project`,
-`bootstrap-replay`, `campaign`, and `final`. If a bounded campaign exits
-incomplete, rerun `campaign`; its atomic `campaign_state_manifest.json` is the
-only resume authority. Partial campaign directories without that pointer are
-rejected rather than overwritten.
+The later stage commands are `bootstrap-compose` and `bootstrap-project`.
+`candidate` (and its alias `all`) always requires an empty work root so stale
+artifacts cannot be mistaken for this run's result.
 
 Five additional no-`while` branch fixtures live under `cases/`. Each keeps the
 same two-Boolean, three-thread RPC shape and uses this runner with a separate
@@ -157,7 +150,8 @@ CAUSYNTH_WORKFLOW_CONFIG=experiments/generic/three-thread-rpc/cases/additive-or/
 ```
 
 `containers/` runs the same end-to-end workflow with live-ins at
-`array[0].state.guard.enabled` and a map-entry value's nested Boolean leaf.
+`array[1].state.guard.enabled`, a deliberately misleading `array[0]`, and a
+map-entry value's nested Boolean leaf.
 `dependent-scalar/` exercises a non-Boolean free scalar that affects a
 producer relation. `cross-method-fields/` crosses several helper calls and
 reads genuine instance/static field live-ins. `multitype/` combines Boolean,
@@ -200,38 +194,34 @@ The matrix recompiles each selected workload, runs the complete concolic
 workflow, invokes Z3 on the emitted SMT, and validates the expected root-input
 catalog and truth-table profile.  Unit tests are not run by this command.
 
-## TODO: unify branch and replay semantics
+## Completed: one binary-branch replay authority
 
-The current JSON protocol still carries overlapping representations such as
-`outcome`/`observedOutcome`/`effectiveOutcome`, raw/engine/normalized condition
-indices, and original/negated/replay conditions.  This is compatible with
-existing artifacts, but it makes polarity and proof handling unnecessarily
-fragile.  Migrate it incrementally to one typed binary-branch replay contract:
+Every observed binary decision now owns one immutable, content-hashed
+`BranchWitness`: stable site/occurrence identity, the source execution's taken
+outcome, its one canonical satisfied predicate, and exactly one evidence
+variant (`VM_PC` or `CERTIFIED_NO_PC`). `BranchPredicateAlgebra` is the only
+predicate-complement implementation, and only `BranchReplayContract.flip()`
+may derive the required opposite outcome/predicate.
 
-- introduce one `BranchPredicateAlgebra` as the only implementation of a
-  canonical predicate complement; remove the independent worklist and
-  scheduler negation implementations;
-- represent an observed branch by its stable site/occurrence identity,
-  `sourceTakenOutcome`, and one canonical `sourceSatisfiedPredicate` that is
-  true on the concrete path;
-- let only `BranchReplayContract.flip()` derive
-  `requiredTakenOutcome = !sourceTakenOutcome` and
-  `requiredSatisfiedPredicate = negate(sourceSatisfiedPredicate)`; runtime,
-  importer, scheduler, solver, and replay validation must not infer polarity
-  independently;
-- keep VM-PC and summary-PC indices in separate namespaces, and represent
-  replay evidence as the exclusive union `VM_PC` or `CERTIFIED_NO_PC` instead
-  of a Boolean marker plus duplicated certificate fields;
-- make replay preserve the ordered prefix, drop the old suffix, prohibit
-  branch override, and validate that the newly observed satisfied predicate is
-  exactly the required predicate;
-- retain a strict legacy adapter while existing artifacts are migrated, then
-  remove the duplicated aliases and validators.  Multiway `switch` must use a
-  separate successor-aware contract rather than being encoded as a binary
-  Boolean outcome.
+The worklist emits a schema-2 task containing that contract. The solver,
+activation builder, static instrumentation gate, runtime, importer, scheduler,
+and replay verifier consume the same contract; they no longer reconstruct or
+cross-compare `targetBranch`, `expectedBranchPrefix`, replay constraints, or a
+scheduled-target envelope. Runtime observations carry new witnesses, and one
+validator checks the ordered prefix followed by the exact required target.
+Duplicate branch-event identities and content-hash tampering fail closed.
+Multiway `switch` remains a separate successor-aware observation.
 
-The migration is complete only when all three workloads in the core gate
-produce replay-validated final SMT and their expected exact reach profiles.
+The three core workloads pass this protocol through candidate SMT generation,
+independent Z3 checking, and their exact expected reach profiles.
+
+## TODO: promote a candidate with natural replay
+
+Natural replay promotion is intentionally not implemented. A future stage must
+materialize only the selected producer inputs in the full workload, prohibit
+all downstream injection and branch override, observe the annotated exception
+target naturally, and bind that observation to the candidate artifact hashes
+before introducing any trusted/final result state.
 
 ## HDFS validation checkpoint
 
@@ -247,11 +237,9 @@ retain 50 and 10 exact read-from bindings. The v5 selector is complete and
 selects the same five runtime calls (NN, DN, KeyUpdater, Dispatcher, target)
 with all causal bounds verified.
 
-TODO: final HDFS SMT composition still needs the five configured replay summary
-files, which are absent from this checkout and have no recoverable in-repository
-source. Obtain or regenerate those summaries, then compose against the v5
-activation/edge catalogs. Preserve the intentionally loose HDFS loop and
-read-from policies; unresolved gaps remain concrete and must not restore the
-old wide frontier. Fresh full-HDFS static-catalog timing and indexing the exact
-direct-field-path proof scans also remain TODO; v5 measures only the frozen-graph
-runtime re-slice.
+The historical v5 HDFS checkpoint cannot be recomposed from this checkout
+because its five configured replay-summary files are absent and have no
+recoverable in-repository source. Regenerating those external experiment
+artifacts is outside the three-workload reference gate. The intentionally loose
+HDFS loop/read-from policies remain documented limitations; v5 measures only
+the frozen-graph runtime re-slice, not a fresh full-HDFS catalog run.

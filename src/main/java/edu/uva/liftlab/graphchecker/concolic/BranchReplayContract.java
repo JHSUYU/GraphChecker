@@ -31,6 +31,7 @@ public final class BranchReplayContract {
         }
         List<BranchWitness> prefixCopy = new ArrayList<>();
         Set<String> identities = new LinkedHashSet<>();
+        Set<String> events = new LinkedHashSet<>();
         if (orderedPrefix != null) {
             for (BranchWitness witness : orderedPrefix) {
                 if (witness == null
@@ -38,12 +39,20 @@ public final class BranchReplayContract {
                     throw new IllegalArgumentException(
                             "ordered prefix contains a missing or duplicate witness");
                 }
+                if (!events.add(eventIdentity(witness))) {
+                    throw new IllegalArgumentException(
+                            "ordered prefix contains a duplicate branch event");
+                }
                 prefixCopy.add(witness);
             }
         }
         if (!identities.add(source.witnessId())) {
             throw new IllegalArgumentException(
                     "source witness must not appear in ordered prefix");
+        }
+        if (!events.add(eventIdentity(source))) {
+            throw new IllegalArgumentException(
+                    "source branch event must not appear in ordered prefix");
         }
         this.orderedPrefix = Collections.unmodifiableList(prefixCopy);
         this.source = source;
@@ -158,6 +167,10 @@ public final class BranchReplayContract {
         result.add("required", required);
         result.addProperty("suffixPolicy", DROP_SOURCE_SUFFIX);
         return (JsonObject) CanonicalJson.copy(result);
+    }
+
+    private static String eventIdentity(BranchWitness witness) {
+        return witness.siteId() + "\u0000" + witness.occurrence();
     }
 
     private static void requireExactKeys(JsonObject object, String label,

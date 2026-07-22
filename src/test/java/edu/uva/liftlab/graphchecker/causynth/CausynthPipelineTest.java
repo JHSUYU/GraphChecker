@@ -1,8 +1,11 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -875,8 +878,9 @@ public class CausynthPipelineTest {
             String activation = "ACT.PATH.3a35b5ac15765178";
 
             JsonObject stringBoolean = readySolverOutputPathFlip();
-            stringBoolean.getAsJsonObject("targetBranch")
-                    .addProperty("validationOnly", "true");
+            stringBoolean.getAsJsonObject("replayContract")
+                    .getAsJsonObject("required")
+                    .addProperty("takenOutcome", "false");
             writePlanRow(plan, stringBoolean);
             assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
@@ -894,8 +898,10 @@ public class CausynthPipelineTest {
                             activation));
 
             JsonObject targetOverride = readySolverOutputPathFlip();
-            targetOverride.getAsJsonObject("targetBranch")
-                    .addProperty("branchOverrideAllowed", true);
+            JsonObject retiredTarget = new JsonObject();
+            retiredTarget.addProperty("siteId",
+                    "<example.Manager: void add()>#u14");
+            targetOverride.add("targetBranch", retiredTarget);
             writePlanRow(plan, targetOverride);
             assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
@@ -943,9 +949,18 @@ public class CausynthPipelineTest {
                             activation));
 
             JsonObject malformedPrefix = readySolverOutputPathFlip();
-            malformedPrefix.getAsJsonArray("expectedBranchPrefix")
-                    .get(0).getAsJsonObject().addProperty("outcome", "true");
+            malformedPrefix.getAsJsonObject("replayContract")
+                    .getAsJsonArray("orderedPrefix").get(0)
+                    .getAsJsonObject().addProperty(
+                            "sourceTakenOutcome", "true");
             writePlanRow(plan, malformedPrefix);
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            activation));
+
+            JsonObject missingContract = readySolverOutputPathFlip();
+            missingContract.remove("replayContract");
+            writePlanRow(plan, missingContract);
             assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
@@ -1116,6 +1131,7 @@ public class CausynthPipelineTest {
         row.addProperty("activationBundleScheduleId",
                 "SCHEDULE.PATH.3a35b5ac15765178");
         row.addProperty("executionPhase", "REPLAY_OUTPUT_PATH_FLIP");
+        row.remove("branchOverrideProhibited");
         row.addProperty("pathQueryKey",
                 "c3577f7f5002a09920e54b51105590f1093a902d0fcf8bdee74ce4516109f7b3");
 
@@ -1124,23 +1140,44 @@ public class CausynthPipelineTest {
                 "sym__input", "REGION.15.in.32"));
         row.add("modelAssignments", assignments);
 
-        JsonObject targetBranch = new JsonObject();
-        targetBranch.addProperty("siteId",
-                "<example.Manager: void add()>#u14");
-        targetBranch.addProperty("occurrence", 2);
-        targetBranch.addProperty("desiredOutcome", false);
-        targetBranch.addProperty("validationOnly", true);
-        targetBranch.addProperty("branchOverrideAllowed", false);
-        row.add("targetBranch", targetBranch);
-
-        JsonObject prefix = new JsonObject();
-        prefix.addProperty("siteId",
-                "<example.Manager: void add()>#u14");
-        prefix.addProperty("occurrence", 1);
-        prefix.addProperty("outcome", true);
-        prefix.addProperty("conditionIndex", 0);
-        row.add("expectedBranchPrefix", singletonJsonArray(prefix));
+        BranchWitness prefix = branchWitness(1, true,
+                branchPredicate("REGION.15.in.32", ">"), 0);
+        BranchWitness source = branchWitness(2, true,
+                branchPredicate("REGION.15.in.32", ">"), 1);
+        row.add("replayContract", BranchReplayContract.flip(
+                Collections.singletonList(prefix), source).toJson());
         return row;
+    }
+
+    private static BranchWitness branchWitness(int occurrence,
+                                               boolean outcome,
+                                               JsonElement predicate,
+                                               int pcIndex) {
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", pcIndex + 1L);
+        event.addProperty("contextId", 1L);
+        return BranchWitness.vmPc(
+                "<example.Manager: void add()>#u14",
+                "<example.Manager: void add()>", 14, occurrence,
+                outcome, predicate, pcIndex, event);
+    }
+
+    private static JsonObject branchPredicate(String input,
+                                              String operator) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "BinaryExpression");
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_java_type", "Z");
+        left.addProperty("_exp", input);
+        JsonObject zero = new JsonObject();
+        zero.addProperty("_type", "ConstExpr");
+        zero.addProperty("_java_type", "I");
+        zero.addProperty("_exp", "Y_I_0");
+        expression.add("_left", left);
+        expression.addProperty("_op", operator);
+        expression.add("_right", zero);
+        return expression;
     }
 
     private static JsonObject solverPathFlipAssignment(

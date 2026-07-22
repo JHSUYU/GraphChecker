@@ -58,13 +58,16 @@ public final class ConcolicReplayValidator {
         BranchReplayContract replayContract = null;
         JsonElement encodedReplayContract = task == null ? null
                 : task.get("replayContract");
-        if (encodedReplayContract != null) {
+        if (encodedReplayContract != null
+                && encodedReplayContract.isJsonObject()) {
             try {
                 replayContract = BranchReplayContract.fromJson(
                         encodedReplayContract.getAsJsonObject());
             } catch (RuntimeException malformed) {
                 failures.add("INVALID_BRANCH_REPLAY_CONTRACT");
             }
+        } else {
+            failures.add("MISSING_BRANCH_REPLAY_CONTRACT");
         }
         boolean outputClosure = RegionCaptureGoal.from(task)
                 .isOutputClosure();
@@ -73,12 +76,10 @@ public final class ConcolicReplayValidator {
                 "CONCOLIC_REGION_RESULT".equals(string(rawResult, "event")));
         require(failures, "REGION_ID_MISMATCH", string(task, "regionId")
                 .equals(string(rawResult, "regionId")));
-        if (replayContract == null) {
-            require(failures, "BRANCH_OVERRIDE_USED",
-                    !bool(rawResult, "branchOverrideUsed", false)
-                            && !hasOverride(array(rawResult,
-                            "branchMappings")));
-        }
+        require(failures, "BRANCH_OVERRIDE_USED",
+                !bool(rawResult, "branchOverrideUsed", false)
+                        && !hasOverride(array(rawResult,
+                        "branchMappings")));
         require(failures, "NON_INPUT_REPLAY_MATERIALIZATION_USED",
                 array(rawResult, "replayMaterializationsApplied").size()
                         == 0);
@@ -211,24 +212,6 @@ public final class ConcolicReplayValidator {
                     branchObservation.valid());
             result.add("branchReplayObservation",
                     branchObservation.toJson());
-        } else {
-            JsonArray observed = array(rawResult, "branchMappings");
-            for (JsonElement element : array(task,
-                    "expectedBranchPrefix")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject expected = element.getAsJsonObject();
-                require(failures, "PREFIX_MISMATCH:" + identity(expected),
-                        observed(observed, expected, bool(expected, "outcome",
-                                false)));
-            }
-            JsonObject flip = new JsonObject();
-            flip.addProperty("siteId", string(task, "flipSite"));
-            flip.addProperty("occurrence", integer(task,
-                    "flipOccurrence", 1));
-            boolean desired = bool(task, "desiredOutcome", false);
-            require(failures,
-                    "FLIPPED_BRANCH_NOT_OBSERVED:" + identity(flip),
-                    observed(observed, flip, desired));
         }
 
         boolean rawNormalExit = !outputClosure || "NORMAL".equals(
@@ -297,12 +280,9 @@ public final class ConcolicReplayValidator {
         result.add("failures", failures);
         result.addProperty("failureCount", failures.size());
         result.addProperty("prefixValidated", branchObservation != null
-                ? branchObservation.valid()
-                : !containsPrefixFailure(failures));
+                && branchObservation.valid());
         result.addProperty("flippedBranchValidated",
-                branchObservation != null ? branchObservation.valid()
-                        : !contains(failures,
-                        "FLIPPED_BRANCH_NOT_OBSERVED"));
+                branchObservation != null && branchObservation.valid());
         result.addProperty("inputModelOnly", !contains(failures,
                 "BRANCH_OVERRIDE_USED") && !contains(failures,
                 "NON_INPUT_REPLAY_MATERIALIZATION_USED"));
@@ -358,9 +338,7 @@ public final class ConcolicReplayValidator {
         result.addProperty("status", failures.size() == 0
                 ? "VALIDATED_UNFORCED_REPLAY" : "REPLAY_REJECTED");
         result.addProperty("admissionAuthority", failures.size() == 0
-                ? replayContract == null
-                ? "SOLVER_MODEL_PLUS_CONCRETE_BRANCH_OBSERVATION"
-                : "SOLVER_MODEL_PLUS_IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1"
+                ? "SOLVER_MODEL_PLUS_IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1"
                 : "NONE");
         return result;
     }
@@ -1466,22 +1444,6 @@ public final class ConcolicReplayValidator {
         return result.append('}').toString();
     }
 
-    private static boolean observed(JsonArray mappings, JsonObject expected,
-                                    boolean outcome) {
-        String site = string(expected, "siteId");
-        int occurrence = integer(expected, "occurrence", 1);
-        for (JsonElement element : mappings) {
-            if (!element.isJsonObject()) continue;
-            JsonObject mapping = element.getAsJsonObject();
-            if (site.equals(string(mapping, "siteId"))
-                    && occurrence == integer(mapping, "occurrence", 1)
-                    && outcome == bool(mapping, "observedOutcome",
-                    bool(mapping, "outcome", false))
-                    && !bool(mapping, "overrideApplied", false)) return true;
-        }
-        return false;
-    }
-
     private static boolean hasOverride(JsonArray mappings) {
         for (JsonElement element : mappings) {
             if (element.isJsonObject() && bool(element.getAsJsonObject(),
@@ -1493,15 +1455,6 @@ public final class ConcolicReplayValidator {
     private static void require(JsonArray failures, String code,
                                 boolean condition) {
         if (!condition) failures.add(code);
-    }
-
-    private static String identity(JsonObject branch) {
-        return string(branch, "siteId") + "#"
-                + integer(branch, "occurrence", 1);
-    }
-
-    private static boolean containsPrefixFailure(JsonArray failures) {
-        return contains(failures, "PREFIX_MISMATCH");
     }
 
     private static boolean contains(JsonArray failures, String prefix) {

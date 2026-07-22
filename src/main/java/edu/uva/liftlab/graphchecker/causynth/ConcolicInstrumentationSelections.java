@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import soot.SootClass;
 import soot.SootFieldRef;
 
@@ -245,8 +246,6 @@ final class ConcolicInstrumentationSelections {
                 || !strictJsonBooleanEquals(row,
                 "requestedOutputCaptureComplete", true)
                 || !strictJsonBooleanEquals(row,
-                "branchOverrideProhibited", true)
-                || !strictJsonBooleanEquals(row,
                 "targetReplayRequired", false)
                 || !strictJsonBooleanEquals(row,
                 "pathSignatureTruncated", false)
@@ -265,6 +264,8 @@ final class ConcolicInstrumentationSelections {
                 .equals(jsonString(row, "replayMode"))
                 && "CAPTURE_OUTPUT_PATH".equals(jsonString(row,
                 "executionPhase"))
+                && strictJsonBooleanEquals(row,
+                "branchOverrideProhibited", true)
                 && absentOrEmptyJsonArray(row, "modelAssignments");
         boolean solverFlipReplay = solverOutputPathFlipReady(row, selected);
         if (!seedReplay && !solverFlipReplay) {
@@ -383,9 +384,20 @@ final class ConcolicInstrumentationSelections {
                 || !"RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY".equals(
                 strictJsonString(row, "replayMode"))
                 || !"REPLAY_OUTPUT_PATH_FLIP".equals(
-                strictJsonString(row, "executionPhase"))
-                || !absentOrStrictJsonBooleanEquals(row,
-                "branchOverrideAllowed", false)) {
+                strictJsonString(row, "executionPhase"))) {
+            return false;
+        }
+
+        // The immutable contract is the only binary-branch replay plan.
+        // Reject old aliases instead of comparing another representation of
+        // the same prefix and target.
+        if (row.has("targetBranch")
+                || row.has("expectedBranchPrefix")
+                || row.has("pathReplayConstraints")
+                || row.has("pathReplayNegatedCondition")
+                || row.has("pathReplayTargetConditionIndex")
+                || row.has("branchOverrideAllowed")
+                || row.has("branchOverrideProhibited")) {
             return false;
         }
 
@@ -413,46 +425,15 @@ final class ConcolicInstrumentationSelections {
             }
         }
 
-        JsonElement targetElement = row.get("targetBranch");
-        if (targetElement == null || !targetElement.isJsonObject()) {
+        JsonElement contractElement = row.get("replayContract");
+        if (contractElement == null || !contractElement.isJsonObject()) {
             return false;
         }
-        JsonObject target = targetElement.getAsJsonObject();
-        String targetSite = strictJsonString(target, "siteId");
-        int targetOccurrence = strictJsonInt(target, "occurrence", -1);
-        if (targetSite.isEmpty() || targetOccurrence <= 0
-                || !strictJsonBooleanPresent(target, "desiredOutcome")
-                || !strictJsonBooleanEquals(target, "validationOnly", true)
-                || !strictJsonBooleanEquals(target,
-                "branchOverrideAllowed", false)) {
+        try {
+            BranchReplayContract.fromJson(
+                    contractElement.getAsJsonObject());
+        } catch (RuntimeException malformed) {
             return false;
-        }
-
-        JsonElement prefixElement = row.get("expectedBranchPrefix");
-        if (prefixElement == null || !prefixElement.isJsonArray()) {
-            return false;
-        }
-        int previousConditionIndex = -1;
-        Set<String> branchIdentities = new LinkedHashSet<>();
-        for (JsonElement element : prefixElement.getAsJsonArray()) {
-            if (!element.isJsonObject()) {
-                return false;
-            }
-            JsonObject expected = element.getAsJsonObject();
-            String site = strictJsonString(expected, "siteId");
-            int occurrence = strictJsonInt(expected, "occurrence", -1);
-            int conditionIndex = strictJsonInt(expected,
-                    "conditionIndex", -1);
-            String identity = site + "\u0000" + occurrence;
-            if (site.isEmpty() || occurrence <= 0 || conditionIndex < 0
-                    || conditionIndex <= previousConditionIndex
-                    || !strictJsonBooleanPresent(expected, "outcome")
-                    || !branchIdentities.add(identity)
-                    || targetSite.equals(site)
-                    && targetOccurrence == occurrence) {
-                return false;
-            }
-            previousConditionIndex = conditionIndex;
         }
         return true;
     }
@@ -591,12 +572,6 @@ final class ConcolicInstrumentationSelections {
         JsonElement value = object.get(field);
         return value != null && value.isJsonPrimitive()
                 && value.getAsJsonPrimitive().isBoolean();
-    }
-
-    private static boolean absentOrStrictJsonBooleanEquals(
-            JsonObject object, String field, boolean expected) {
-        return !object.has(field)
-                || strictJsonBooleanEquals(object, field, expected);
     }
 
     private static String strictJsonString(JsonObject object, String field) {

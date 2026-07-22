@@ -114,15 +114,12 @@ public final class ConcolicPathFlipPlanner {
                 "sourceSummaryId"));
         manifest.addProperty("regionId", string(task, "regionId"));
         BranchReplayContract replayContract = replayContract(task);
-        manifest.addProperty("flipSite", replayContract == null
-                ? string(task, "flipSite")
-                : replayContract.source().siteId());
-        manifest.addProperty("flipOccurrence", replayContract == null
-                ? integer(task, "flipOccurrence", -1)
-                : replayContract.source().occurrence());
-        manifest.addProperty("desiredOutcome", replayContract == null
-                ? bool(task, "desiredOutcome", false)
-                : replayContract.requiredTakenOutcome());
+        manifest.addProperty("flipSite",
+                replayContract.source().siteId());
+        manifest.addProperty("flipOccurrence",
+                replayContract.source().occurrence());
+        manifest.addProperty("desiredOutcome",
+                replayContract.requiredTakenOutcome());
         if (!"SAT_MODEL_READY".equals(string(solve.record, "status"))) {
             manifest.addProperty("status", "PATH_FLIP_NOT_REPLAYABLE");
             manifest.addProperty("complete", false);
@@ -269,11 +266,8 @@ public final class ConcolicPathFlipPlanner {
     private static boolean matchesTask(JsonObject task,
                                        Arguments arguments) {
         BranchReplayContract contract = replayContract(task);
-        String site = contract == null ? string(task, "flipSite")
-                : contract.source().siteId();
-        int occurrence = contract == null
-                ? integer(task, "flipOccurrence", -1)
-                : contract.source().occurrence();
+        String site = contract.source().siteId();
+        int occurrence = contract.source().occurrence();
         return (arguments.queryKey.isEmpty()
                 || arguments.queryKey.equals(string(task, "queryKey")))
                 && (arguments.flipSite.isEmpty()
@@ -285,9 +279,11 @@ public final class ConcolicPathFlipPlanner {
     private static BranchReplayContract replayContract(JsonObject task) {
         JsonElement encoded = task == null ? null
                 : task.get("replayContract");
-        return encoded != null && encoded.isJsonObject()
-                ? BranchReplayContract.fromJson(encoded.getAsJsonObject())
-                : null;
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw new IllegalArgumentException(
+                    "canonical path task requires replayContract");
+        }
+        return BranchReplayContract.fromJson(encoded.getAsJsonObject());
     }
 
     private static Map<String, JsonObject> uniqueIndex(

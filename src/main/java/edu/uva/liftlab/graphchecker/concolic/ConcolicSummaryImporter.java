@@ -3584,21 +3584,8 @@ public final class ConcolicSummaryImporter {
                 && "PASS".equals(strictString(mapping,
                 "replayValidation"));
         if (!common) return false;
-        if ("TARGET".equals(strictString(proof, "proofRole"))) {
-            return Boolean.TRUE.equals(strictBoolean(mapping,
-                    "scheduledTarget"))
-                    && strictBoolean(mapping, "scheduledDesiredOutcome")
-                    != null
-                    && strictBoolean(mapping, "scheduledDesiredOutcome")
-                    .equals(strictBoolean(mapping, "observedOutcome"))
-                    && Boolean.TRUE.equals(strictBoolean(mapping,
-                    "scheduledOutcomeMatched"));
-        }
-        return "PREFIX".equals(strictString(proof, "proofRole"))
-                && Boolean.FALSE.equals(strictBoolean(mapping,
-                "scheduledTarget"))
-                && !mapping.has("scheduledDesiredOutcome")
-                && !mapping.has("scheduledOutcomeMatched");
+        String role = strictString(proof, "proofRole");
+        return "TARGET".equals(role) || "PREFIX".equals(role);
     }
 
     private static boolean exactVmConcreteGuardEnvelope(JsonObject mapping) {
@@ -3698,108 +3685,12 @@ public final class ConcolicSummaryImporter {
     private static List<JsonObject> expectedConcreteGuardProofs(
             JsonObject activation, List<String> issues) {
         JsonElement contractElement = activation.get("replayContract");
-        if (contractElement != null) {
-            return expectedConcreteGuardProofsFromContract(activation,
-                    contractElement, issues);
+        if (contractElement == null || !contractElement.isJsonObject()) {
+            issues.add("BRANCH_REPLAY_CONTRACT_MISSING_OR_MALFORMED");
+            return Collections.emptyList();
         }
-        List<JsonObject> result = new ArrayList<>();
-        JsonElement constraintsElement = activation.get(
-                "pathReplayConstraints");
-        JsonElement prefixElement = activation.get("expectedBranchPrefix");
-        JsonElement negated = activation.get("pathReplayNegatedCondition");
-        Integer targetIndex = strictInteger(activation,
-                "pathReplayTargetConditionIndex");
-        JsonObject target = object(activation, "targetBranch");
-        if (constraintsElement == null || !constraintsElement.isJsonArray()
-                || prefixElement == null || !prefixElement.isJsonArray()
-                || negated == null || !negated.isJsonObject()
-                || targetIndex == null || targetIndex < 0) {
-            issues.add("PATH_REPLAY_PROOF_SOURCE_MISSING_OR_MALFORMED");
-            return result;
-        }
-        JsonArray constraints = constraintsElement.getAsJsonArray();
-        JsonArray prefix = prefixElement.getAsJsonArray();
-        if (constraints.size() != targetIndex + 1
-                || targetIndex >= constraints.size()
-                || !negated.equals(constraints.get(targetIndex))) {
-            issues.add("PATH_REPLAY_CONSTRAINT_CARDINALITY_OR_TARGET_MISMATCH");
-            return result;
-        }
-        Set<String> events = new LinkedHashSet<>();
-        Set<Integer> prefixEventIndices = new LinkedHashSet<>();
-        int previousSourceIndex = -1;
-        for (int prefixOrdinal = 0; prefixOrdinal < prefix.size();
-             prefixOrdinal++) {
-            JsonElement rowElement = prefix.get(prefixOrdinal);
-            if (!rowElement.isJsonObject()) {
-                issues.add("PREFIX@" + prefixOrdinal + ":NOT_OBJECT");
-                continue;
-            }
-            JsonObject row = rowElement.getAsJsonObject();
-            Integer sourceIndex = strictInteger(row, "conditionIndex");
-            String site = strictString(row, "siteId");
-            Integer occurrence = strictInteger(row, "occurrence");
-            Boolean outcome = strictBoolean(row, "outcome");
-            Boolean proofRequired = strictBoolean(row,
-                    "concreteGuardReplayProofRequired");
-            if (sourceIndex == null || sourceIndex <= previousSourceIndex
-                    || sourceIndex < 0 || sourceIndex >= targetIndex) {
-                issues.add("PREFIX@" + prefixOrdinal
-                        + ":CONDITION_INDEX_MALFORMED_OR_UNORDERED");
-                continue;
-            }
-            previousSourceIndex = sourceIndex;
-            prefixEventIndices.add(sourceIndex);
-            if (site.isEmpty() || occurrence == null || occurrence <= 0
-                    || outcome == null
-                    || !events.add(site + "\u0000" + occurrence)) {
-                issues.add("PREFIX@" + prefixOrdinal
-                        + ":EVENT_IDENTITY_MALFORMED_OR_DUPLICATE");
-                continue;
-            }
-            if (row.has("concreteGuardReplayProofRequired")
-                    && proofRequired == null) {
-                issues.add("PREFIX@" + prefixOrdinal
-                        + ":CONCRETE_GUARD_PROOF_MARKER_MALFORMED");
-                continue;
-            }
-            // Absence retains the legacy fail-closed meaning.  New worklist
-            // rows always carry this exact boolean; false means the guard is
-            // represented by its real VM path-condition member and therefore
-            // must not also acquire a synthetic concrete-guard proof.
-            if (!Boolean.FALSE.equals(proofRequired)) {
-                addExpectedConcreteGuardProof(result, activation,
-                        constraints, "PREFIX", site, occurrence, outcome,
-                        sourceIndex, prefixOrdinal, issues);
-            }
-        }
-        for (int sourceIndex = 0; sourceIndex < targetIndex; sourceIndex++) {
-            String engineSymbol = exactReferenceNullConditionSymbol(
-                    constraints.get(sourceIndex));
-            if (!engineSymbol.isEmpty()
-                    && !prefixEventIndices.contains(sourceIndex)) {
-                issues.add("CONSTRAINT@" + sourceIndex
-                        + ":NULL_GUARD_EVENT_ROW_MISSING");
-            }
-        }
-        String targetSite = strictString(target, "siteId");
-        Integer targetOccurrence = strictInteger(target, "occurrence");
-        Boolean targetOutcome = strictBoolean(target, "desiredOutcome");
-        Boolean targetProofRequired = strictBoolean(target,
-                "concreteGuardReplayProofRequired");
-        if (targetSite.isEmpty() || targetOccurrence == null
-                || targetOccurrence <= 0 || targetOutcome == null
-                || !events.add(targetSite + "\u0000" + targetOccurrence)) {
-            issues.add("TARGET:EVENT_IDENTITY_MALFORMED_OR_DUPLICATE");
-        } else if (target.has("concreteGuardReplayProofRequired")
-                && targetProofRequired == null) {
-            issues.add("TARGET:CONCRETE_GUARD_PROOF_MARKER_MALFORMED");
-        } else if (!Boolean.FALSE.equals(targetProofRequired)) {
-            addExpectedConcreteGuardProof(result, activation, constraints,
-                    "TARGET", targetSite, targetOccurrence, targetOutcome,
-                    targetIndex, -1, issues);
-        }
-        return result;
+        return expectedConcreteGuardProofsFromContract(activation,
+                contractElement, issues);
     }
 
     private static List<JsonObject> expectedConcreteGuardProofsFromContract(
@@ -11581,9 +11472,13 @@ public final class ConcolicSummaryImporter {
         }
 
         JsonElement replayContract = activation.get("replayContract");
-        if (replayContract != null) {
-            validateReplayContractObservation(raw, replayContract,
-                    failures);
+        if (outputPathFlip) {
+            if (replayContract == null) {
+                failures.add("OUTPUT_PATH_REPLAY_CONTRACT_MISSING");
+            } else {
+                validateReplayContractObservation(raw, replayContract,
+                        failures);
+            }
             String activationQueryKey = strictString(activation,
                     "pathQueryKey");
             if (activationQueryKey.isEmpty()
@@ -11592,18 +11487,12 @@ public final class ConcolicSummaryImporter {
                 failures.add("PATH_QUERY_KEY_MISMATCH");
             }
         } else {
-            // Kept temporarily for non-canonical unit fixtures.  Production
-            // path-flip activations carry exactly one replayContract; this
-            // legacy branch is removed with those fixtures below.
             JsonObject target = object(activation, "targetBranch");
             if (target.size() == 0 || !observedTargetBranch(
                     array(raw, "branchMappings"), target)) {
                 failures.add("DIRECTED_TARGET_BRANCH_NOT_OBSERVED");
             }
-            boolean validProvenance = outputPathFlip
-                    ? validOutputPathFlipProvenance(raw, activation, target)
-                    : validDirectedTargetQuery(activation, target);
-            if (!validProvenance) {
+            if (!validDirectedTargetQuery(activation, target)) {
                 failures.add("DIRECTED_TARGET_QUERY_PROVENANCE_MISSING");
             }
         }
@@ -11717,31 +11606,6 @@ public final class ConcolicSummaryImporter {
                 && query.has("originalTargetCondition")
                 && query.has("negatedTargetCondition")
                 && array(query, "constraints").size() > 0;
-    }
-
-    private static boolean validOutputPathFlipProvenance(
-            JsonObject raw, JsonObject activation, JsonObject target) {
-        String activationId = strictString(activation, "activationId");
-        String pathQueryKey = strictString(activation, "pathQueryKey");
-        JsonElement prefix = activation.get("expectedBranchPrefix");
-        Integer occurrence = strictInteger(target, "occurrence");
-        Boolean desired = strictBoolean(target, "desiredOutcome");
-        return !activationId.isEmpty() && !pathQueryKey.isEmpty()
-                && pathQueryKey.equals(strictString(raw, "pathQueryKey"))
-                && "REPLAY_OUTPUT_PATH_FLIP".equals(strictString(
-                activation, "executionPhase"))
-                && prefix != null && prefix.isJsonArray()
-                && !strictString(target, "siteId").isEmpty()
-                && occurrence != null && occurrence > 0
-                && desired != null
-                && Boolean.TRUE.equals(strictBoolean(target,
-                "validationOnly"))
-                && Boolean.FALSE.equals(strictBoolean(target,
-                "branchOverrideAllowed"))
-                && Boolean.TRUE.equals(strictBoolean(activation,
-                "branchOverrideProhibited"))
-                && array(activation, "forcedBranches").size() == 0
-                && array(activation, "replayMaterializations").size() == 0;
     }
 
     private static InputAdmission inputAdmission(JsonObject raw,

@@ -68,10 +68,12 @@ public class ConcolicPathFlipPlannerTest {
         // input assignments.  A path flip injects only its solver model and
         // then validates the branch without overriding it.
         assertFalse(replay.has("observationOnlyReplay"));
-        assertTrue(replay.getAsJsonObject("targetBranch").get(
-                "validationOnly").getAsBoolean());
-        assertFalse(replay.getAsJsonObject("targetBranch").get(
-                "branchOverrideAllowed").getAsBoolean());
+        BranchReplayContract contract = BranchReplayContract.fromJson(
+                replay.getAsJsonObject("replayContract"));
+        assertEquals("u14", contract.source().siteId());
+        assertFalse(contract.requiredTakenOutcome());
+        assertFalse(replay.has("targetBranch"));
+        assertFalse(replay.has("expectedBranchPrefix"));
         assertFalse(replay.has("forcedBranches"));
         assertFalse(replay.has("replayMaterializations"));
         assertTrue(Files.size(output.resolve("path_flip_query.smt2")) > 0L);
@@ -158,25 +160,38 @@ public class ConcolicPathFlipPlannerTest {
         summary.add("requestedOutputSlice", outputSlice);
 
         JsonArray conditions = new JsonArray();
-        conditions.add(binary(">", 0));
-        if (secondExploreBranch) conditions.add(binary("<", 10));
+        JsonObject first = binary(">", 0);
+        conditions.add(first);
+        JsonObject second = binary("<", 10);
+        if (secondExploreBranch) conditions.add(second);
         summary.add("pathCondition", conditions);
         JsonArray mappings = new JsonArray();
-        mappings.add(mapping("u14", 0));
-        if (secondExploreBranch) mappings.add(mapping("u15", 1));
+        mappings.add(mapping("u14", 14, 0, first));
+        if (secondExploreBranch) {
+            mappings.add(mapping("u15", 15, 1, second));
+        }
         summary.add("branchMappings", mappings);
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapEffects", new JsonArray());
         return summary;
     }
 
-    private static JsonObject mapping(String site, int conditionIndex) {
+    private static JsonObject mapping(String site, int unitIndex,
+                                      int conditionIndex,
+                                      JsonObject condition) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", site);
         mapping.addProperty("occurrence", 1);
         mapping.addProperty("conditionIndex", conditionIndex);
+        mapping.addProperty("summaryPcIndex", conditionIndex);
         mapping.addProperty("outcome", true);
         mapping.addProperty("policy", "EXPLORE");
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", conditionIndex + 1L);
+        event.addProperty("contextId", 1L);
+        mapping.add("witness", BranchWitness.vmPc(site,
+                "<example.Region: void run(int)>", unitIndex, 1,
+                true, condition, conditionIndex, event).toJson());
         return mapping;
     }
 

@@ -52,14 +52,46 @@ public class RegionPathWorklistTest {
 
         assertEquals(2, result.tasks.size());
         JsonObject latest = result.tasks.get(0);
-        assertEquals("SITE.1", latest.get("flipSite").getAsString());
-        assertEquals(1, latest.getAsJsonArray("prefix").size());
-        assertEquals(2, latest.getAsJsonArray("constraints").size());
-        assertEquals(">=", latest.getAsJsonObject("negatedCondition")
-                .get("_op").getAsString());
-        assertEquals("DROP_OLD_SUFFIX",
-                latest.get("suffixPolicy").getAsString());
+        BranchReplayContract replay = replayContract(latest);
+        assertEquals("SITE.1", replay.source().siteId());
+        assertEquals(1, replay.orderedPrefix().size());
+        assertEquals(2, replay.requiredPathPredicates().size());
+        assertEquals(">=", replay.requiredSatisfiedPredicate()
+                .getAsJsonObject().get("_op").getAsString());
+        assertEquals(BranchReplayContract.DROP_SOURCE_SUFFIX,
+                latest.getAsJsonObject("replayContract")
+                        .get("suffixPolicy").getAsString());
         assertFalse(result.manifest.get("complete").getAsBoolean());
+    }
+
+    @Test
+    public void replayAdmitsNewlyObservedStaticSliceAlternative() {
+        JsonObject summary = summary("ACT.NEW.ALTERNATIVE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject slice = new JsonObject();
+        JsonArray seedPathSites = new JsonArray();
+        seedPathSites.add("SITE.0");
+        slice.add("sites", seedPathSites);
+        JsonArray staticSites = new JsonArray();
+        staticSites.add("SITE.0");
+        staticSites.add("SITE.1");
+        slice.add("staticSites", staticSites);
+        JsonArray excluded = new JsonArray();
+        excluded.add("SITE.1");
+        slice.add("excludedPathAlternativeSites", excluded);
+        summary.add("requestedOutputSlice", slice);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation(
+                        "ACT.NEW.ALTERNATIVE",
+                        RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 2, result.tasks.size());
+        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
+        assertEquals("SITE.0", sourceSite(result.tasks.get(1)));
     }
 
     @Test
@@ -103,7 +135,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void legacySummaryWithoutPolicyStillEnumeratesEveryMapping() {
+    public void summaryWithoutBranchPolicyEnumeratesEveryWitness() {
         JsonObject summary = summary("ACT.LEGACY",
                 RegionCaptureGoal.outputClosure());
 
@@ -115,10 +147,8 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertEquals(2, result.tasks.size());
-        assertEquals("SITE.1", result.tasks.get(0).get("flipSite")
-                .getAsString());
-        assertEquals("SITE.0", result.tasks.get(1).get("flipSite")
-                .getAsString());
+        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
+        assertEquals("SITE.0", sourceSite(result.tasks.get(1)));
     }
 
     @Test
@@ -138,8 +168,7 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertEquals(1, result.tasks.size());
-        assertEquals("SITE.1", result.tasks.get(0).get("flipSite")
-                .getAsString());
+        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
     }
 
     @Test
@@ -240,6 +269,7 @@ public class RegionPathWorklistTest {
                 : second.getAsJsonArray("branchMappings")) {
             element.getAsJsonObject().addProperty("outcome", false);
         }
+        authorizeVmPcMappings(second);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Arrays.asList(first, second), Arrays.asList(
@@ -252,7 +282,7 @@ public class RegionPathWorklistTest {
 
         assertEquals(result.manifest.toString(), 2, result.tasks.size());
         assertTrue(result.tasks.stream().allMatch(task -> "SITE.1".equals(
-                task.get("flipSite").getAsString())));
+                sourceSite(task))));
         assertEquals(2, result.manifest.get(
                 "observedCoveredFlipCount").getAsInt());
         assertFalse(result.manifest.get("complete").getAsBoolean());
@@ -347,7 +377,7 @@ public class RegionPathWorklistTest {
 
         assertEquals(result.manifest.toString(), 1, result.tasks.size());
         JsonObject task = result.tasks.get(0);
-        assertEquals("SITE.1", task.get("flipSite").getAsString());
+        assertEquals("SITE.1", sourceSite(task));
         assertTrue(task.get("discoveryOnly").getAsBoolean());
         assertTrue(RegionCaptureGoal.from(task).isTransitionDiscovery());
         assertEquals("QUARANTINED", task.get(
@@ -530,14 +560,16 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertEquals(accepted.manifest.toString(), 1, accepted.tasks.size());
-        assertEquals("SITE.NULL", accepted.tasks.get(0).get("flipSite")
-                .getAsString());
-        assertTrue(accepted.tasks.get(0).get(
-                "concreteGuardReplayProofRequired").getAsBoolean());
+        assertEquals("SITE.NULL", sourceSite(accepted.tasks.get(0)));
+        assertEquals(BranchWitness.CERTIFIED_NO_PC,
+                replayContract(accepted.tasks.get(0)).source()
+                        .evidenceKind());
 
         JsonObject tampered = summary.deepCopy();
         tampered.getAsJsonArray("branchMappings").get(0).getAsJsonObject()
-                .addProperty("certificateTargetActionSha256", "not-a-sha");
+                .getAsJsonObject("witness").getAsJsonObject("evidence")
+                .getAsJsonObject("certificate").addProperty(
+                        "targetActionSha256", "not-a-sha");
         RegionPathWorklist.Result rejected = RegionPathWorklist.plan(
                 Collections.singletonList(tampered),
                 Collections.singletonList(activation),
@@ -545,7 +577,7 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(rejected.tasks.isEmpty());
-        assertEquals("INVALID_CERTIFIED_CONCRETE_GUARD",
+        assertEquals("MISSING_BRANCH_WITNESS",
                 rejected.manifest.getAsJsonArray("gaps").get(0)
                         .getAsJsonObject().get("kind").getAsString());
     }
@@ -568,6 +600,7 @@ public class RegionPathWorklistTest {
         mappings.add(mapping("NUMERIC.LOOP.GUARD", 3, 2));
         mappings.add(mapping("NUMERIC.LOOP.GUARD", 4, 3));
         summary.add("branchMappings", mappings);
+        authorizeVmPcMappings(summary);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -577,16 +610,20 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertEquals(result.manifest.toString(), 5, result.tasks.size());
-        assertEquals("NUMERIC.LOOP.GUARD", result.tasks.get(0)
-                .get("flipSite").getAsString());
-        assertEquals(3, result.tasks.get(0).get("flipOccurrence").getAsInt());
-        assertEquals(2, result.tasks.get(1).get("flipOccurrence").getAsInt());
-        assertEquals(1, result.tasks.get(2).get("flipOccurrence").getAsInt());
-        assertEquals("D", result.tasks.get(3).getAsJsonObject(
-                "negatedCondition").getAsJsonObject("_left")
+        assertEquals("NUMERIC.LOOP.GUARD", sourceSite(result.tasks.get(0)));
+        assertEquals(3, replayContract(result.tasks.get(0)).source()
+                .occurrence());
+        assertEquals(2, replayContract(result.tasks.get(1)).source()
+                .occurrence());
+        assertEquals(1, replayContract(result.tasks.get(2)).source()
+                .occurrence());
+        assertEquals("D", replayContract(result.tasks.get(3))
+                .requiredSatisfiedPredicate().getAsJsonObject()
+                .getAsJsonObject("_left")
                 .get("_java_type").getAsString());
-        assertEquals("J", result.tasks.get(4).getAsJsonObject(
-                "negatedCondition").getAsJsonObject("_left")
+        assertEquals("J", replayContract(result.tasks.get(4))
+                .requiredSatisfiedPredicate().getAsJsonObject()
+                .getAsJsonObject("_left")
                 .get("_java_type").getAsString());
         assertEquals(5, result.tasks.stream().map(task -> task.get(
                 "queryKey").getAsString()).distinct().count());
@@ -612,7 +649,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void exactConcreteIfBorrowsOneExactSameSitePredicateAndOnlyUnsatClosesIt() {
+    public void concreteBranchCoveredAtSamePositionNeedsNoBorrowedPredicate() {
         JsonObject modeled = exactBranchTemplateSummary("ACT.MODELED",
                 false);
         JsonObject concrete = exactBranchTemplateSummary("ACT.CONCRETE",
@@ -626,37 +663,16 @@ public class RegionPathWorklistTest {
                 summaries, activations, Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(initial.manifest.toString(), 1, initial.tasks.size());
-        JsonObject task = initial.tasks.get(0);
-        assertTrue(task.get("exactConcreteBranchRecovery").getAsBoolean());
-        assertEquals("EXACT_SAME_BINARY_IF_SITE_PREDICATE_PLUS_"
-                        + "CURRENT_VM_ATTESTED_CONCRETE_PREFIX_V1",
-                task.get("conditionTemplateAuthority").getAsString());
-        assertEquals("SUMMARY.ACT.MODELED", task.getAsJsonArray(
-                "conditionTemplateSourceSummaryIds").get(0).getAsString());
-        assertEquals(1, task.getAsJsonArray("prefix").size());
-        assertEquals("<", task.getAsJsonArray("prefix").get(0)
-                .getAsJsonObject().get("_op").getAsString());
-        assertEquals(2, task.getAsJsonArray("constraints").size());
-        assertEquals(">", task.getAsJsonObject("negatedCondition")
-                .get("_op").getAsString());
-        assertEquals(1, initial.manifest.get(
-                "exactConcreteTemplateFlipCount").getAsInt());
-        assertFalse(initial.manifest.get("complete").getAsBoolean());
-
-        JsonObject unsat = new JsonObject();
-        unsat.addProperty("queryKey", task.get("queryKey").getAsString());
-        unsat.addProperty("status", "UNSAT");
-        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
-                summaries, activations, Collections.singletonList(unsat),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(closed.tasks.toString(), closed.tasks.isEmpty());
-        assertEquals(closed.manifest.toString(), 0,
-                closed.manifest.get("gapCount").getAsInt());
-        assertEquals(1, closed.manifest.get("terminalFlipCount").getAsInt());
-        assertTrue(closed.manifest.toString(), closed.manifest.get(
+        assertTrue(initial.tasks.toString(), initial.tasks.isEmpty());
+        assertTrue(initial.manifest.toString(), initial.manifest.get(
                 "complete").getAsBoolean());
+        assertEquals(1, initial.manifest.get(
+                "coveredConcreteObservationCount").getAsInt());
+        assertEquals("EXACT_VM_CONCRETE_EVENT_COVERED_BY_IMMUTABLE_"
+                        + "WITNESS_AT_SAME_STATIC_POSITION_V1",
+                initial.manifest.get(
+                        "coveredConcreteObservationAuthority").getAsString());
+        assertEquals(0, initial.manifest.get("gapCount").getAsInt());
     }
 
     @Test
@@ -684,8 +700,6 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
-        assertEquals(0, result.manifest.get(
-                "exactConcreteTemplateFlipCount").getAsInt());
         assertFalse(result.manifest.get("complete").getAsBoolean());
         assertTrue(result.manifest.getAsJsonArray("gaps").toString()
                 .contains("NO_NORMALIZED_CONDITION"));
@@ -716,6 +730,7 @@ public class RegionPathWorklistTest {
         }
         mappings.add(upper);
         result.add("branchMappings", mappings);
+        authorizeVmPcMappings(result);
         return result;
     }
 
@@ -809,6 +824,17 @@ public class RegionPathWorklistTest {
         mapping.addProperty("scheduledDesiredOutcome", outcome);
         mapping.addProperty("scheduledOutcomeMatched", true);
         mapping.add("condition", condition.deepCopy());
+        JsonObject certificate = new JsonObject();
+        certificate.addProperty("authority",
+                "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1");
+        certificate.addProperty("pathQueryKey", queryKey);
+        certificate.addProperty("targetActionSha256",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        BranchWitness witness = BranchWitness.certifiedNoPc(site,
+                "<example.Root: void run(java.lang.Object)>", 7,
+                occurrence, outcome, condition, certificate);
+        mapping.add("witness", witness.toJson());
+        mapping.addProperty("summaryPcIndex", 0);
         JsonArray mappings = new JsonArray();
         mappings.add(mapping);
         result.add("branchMappings", mappings);
@@ -1025,6 +1051,7 @@ public class RegionPathWorklistTest {
         summary.add("branchMappings", mappings);
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapEffects", new JsonArray());
+        authorizeVmPcMappings(summary);
         return summary;
     }
 
@@ -1042,6 +1069,7 @@ public class RegionPathWorklistTest {
         mapping.addProperty("outcome", outcome);
         mappings.add(mapping);
         result.add("branchMappings", mappings);
+        authorizeVmPcMappings(result);
         JsonObject outputs = new JsonObject();
         JsonObject value = new JsonObject();
         value.addProperty("_type", "ConstExpr");
@@ -1050,6 +1078,41 @@ public class RegionPathWorklistTest {
         outputs.add("REGION.3.out.0", value);
         result.add("outputExpressions", outputs);
         return result;
+    }
+
+    private static void authorizeVmPcMappings(JsonObject summary) {
+        JsonArray conditions = summary.getAsJsonArray("pathCondition");
+        for (com.google.gson.JsonElement element
+                : summary.getAsJsonArray("branchMappings")) {
+            JsonObject mapping = element.getAsJsonObject();
+            int conditionIndex = mapping.get("conditionIndex").getAsInt();
+            if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
+                mapping.remove("witness");
+                mapping.remove("summaryPcIndex");
+                continue;
+            }
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", conditionIndex + 1L);
+            event.addProperty("contextId", 7L);
+            event.addProperty("predicateNormalization", "IDENTITY");
+            BranchWitness witness = BranchWitness.vmPc(
+                    mapping.get("siteId").getAsString(),
+                    "<test.Region: void run()>", conditionIndex,
+                    mapping.get("occurrence").getAsInt(),
+                    mapping.get("outcome").getAsBoolean(),
+                    conditions.get(conditionIndex), conditionIndex, event);
+            mapping.add("witness", witness.toJson());
+            mapping.addProperty("summaryPcIndex", conditionIndex);
+        }
+    }
+
+    private static BranchReplayContract replayContract(JsonObject task) {
+        return BranchReplayContract.fromJson(task.getAsJsonObject(
+                "replayContract"));
+    }
+
+    private static String sourceSite(JsonObject task) {
+        return replayContract(task).source().siteId();
     }
 
     private static JsonObject mapping(String site, int condition) {

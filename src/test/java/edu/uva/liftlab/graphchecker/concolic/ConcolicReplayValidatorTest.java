@@ -621,16 +621,13 @@ public class ConcolicReplayValidatorTest {
         JsonObject task = new JsonObject();
         task.addProperty("queryKey", "Q");
         task.addProperty("regionId", "REGION.3");
-        task.addProperty("flipSite", "SITE.1");
-        task.addProperty("flipOccurrence", 1);
-        task.addProperty("desiredOutcome", false);
-        JsonArray prefix = new JsonArray();
-        JsonObject branch = new JsonObject();
-        branch.addProperty("siteId", "SITE.0");
-        branch.addProperty("occurrence", 1);
-        branch.addProperty("outcome", true);
-        prefix.add(branch);
-        task.add("expectedBranchPrefix", prefix);
+        BranchWitness prefix = branchWitness("SITE.0", true,
+                branchPredicate("REGION.3.in.0", ">"), 0);
+        BranchWitness source = branchWitness("SITE.1", true,
+                branchPredicate("REGION.3.in.1", ">"), 1);
+        task.add("replayContract", BranchReplayContract.flip(
+                java.util.Collections.singletonList(prefix), source)
+                .toJson());
         return task;
     }
 
@@ -682,21 +679,54 @@ public class ConcolicReplayValidatorTest {
         raw.addProperty("branchOverrideUsed", override);
         raw.add("replayMaterializationsApplied", new JsonArray());
         JsonArray mappings = new JsonArray();
-        mappings.add(mapping("SITE.0", true, false));
-        mappings.add(mapping("SITE.1", flippedOutcome ? false : true,
-                override));
+        mappings.add(mapping(branchWitness("SITE.0", true,
+                branchPredicate("REGION.3.in.0", ">"), 0), false));
+        boolean targetOutcome = flippedOutcome ? false : true;
+        mappings.add(mapping(branchWitness("SITE.1", targetOutcome,
+                branchPredicate("REGION.3.in.1",
+                        targetOutcome ? ">" : "<="), 1), override));
         raw.add("branchMappings", mappings);
         return raw;
     }
 
-    private static JsonObject mapping(String site, boolean outcome,
+    private static JsonObject mapping(BranchWitness witness,
                                       boolean override) {
         JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", site);
-        mapping.addProperty("occurrence", 1);
-        mapping.addProperty("observedOutcome", outcome);
+        mapping.addProperty("siteId", witness.siteId());
+        mapping.addProperty("occurrence", witness.occurrence());
+        mapping.addProperty("observedOutcome",
+                witness.sourceTakenOutcome());
         mapping.addProperty("overrideApplied", override);
+        mapping.add("witness", witness.toJson());
         return mapping;
+    }
+
+    private static BranchWitness branchWitness(String site, boolean outcome,
+                                               JsonObject predicate,
+                                               int pcIndex) {
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", pcIndex + 1L);
+        event.addProperty("contextId", 1L);
+        return BranchWitness.vmPc(site, "<test.Replay: void run()>",
+                pcIndex, 1, outcome, predicate, pcIndex, event);
+    }
+
+    private static JsonObject branchPredicate(String input,
+                                              String operator) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "BinaryExpression");
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_java_type", "I");
+        left.addProperty("_exp", input);
+        JsonObject zero = new JsonObject();
+        zero.addProperty("_type", "ConstExpr");
+        zero.addProperty("_java_type", "I");
+        zero.addProperty("_exp", "Y_I_0");
+        expression.add("_left", left);
+        expression.addProperty("_op", operator);
+        expression.add("_right", zero);
+        return expression;
     }
 
     private static JsonArray dynamicAssignments() {

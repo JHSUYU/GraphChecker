@@ -27,7 +27,7 @@ public class ConcolicPathReplayVerifierTest {
     public final TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
-    public void writesManifestForUniqueScheduledOutputPathFlip()
+    public void writesManifestForUniqueContractReplay()
             throws Exception {
         Fixture fixture = fixture();
 
@@ -41,22 +41,20 @@ public class ConcolicPathReplayVerifierTest {
                 .getAsInt());
         assertEquals(64, report.get("observedPathKey").getAsString()
                 .length());
-        assertTrue(report.getAsJsonObject("scheduledTargetValidation")
+        assertTrue(report.getAsJsonObject("branchReplayObservation")
                 .get("valid").getAsBoolean());
         assertTrue(report.getAsJsonObject("replayValidation")
                 .get("valid").getAsBoolean());
     }
 
     @Test
-    public void rejectsOutcomeMatchWithoutScheduledTargetEvidence()
+    public void rejectsTargetMappingWithoutImmutableWitness()
             throws Exception {
         Fixture fixture = fixture();
         JsonObject raw = fixture.raw.deepCopy();
         JsonObject target = raw.getAsJsonArray("branchMappings")
                 .get(1).getAsJsonObject();
-        target.addProperty("scheduledTarget", false);
-        target.remove("scheduledDesiredOutcome");
-        target.remove("scheduledOutcomeMatched");
+        target.remove("witness");
         writeJsonl(fixture.results, raw);
 
         int status = ConcolicPathReplayVerifier.run(fixture.arguments());
@@ -64,13 +62,12 @@ public class ConcolicPathReplayVerifierTest {
         assertEquals(2, status);
         JsonObject report = read(fixture.output);
         assertFalse(report.get("valid").getAsBoolean());
-        assertFalse(report.getAsJsonObject("scheduledTargetValidation")
+        assertFalse(report.getAsJsonObject("branchReplayObservation")
                 .get("valid").getAsBoolean());
-        assertTrue("base validator alone observes the outcome",
-                report.getAsJsonObject("replayValidation")
-                        .get("valid").getAsBoolean());
+        assertFalse(report.getAsJsonObject("replayValidation")
+                .get("valid").getAsBoolean());
         assertTrue(report.getAsJsonArray("failures").toString().contains(
-                "SCHEDULED_FLIP_TARGET_NOT_EXACT"));
+                "BRANCH_REPLAY_CONTRACT_NOT_SATISFIED"));
     }
 
     @Test
@@ -109,15 +106,15 @@ public class ConcolicPathReplayVerifierTest {
         assertEquals(2, status);
         JsonObject report = read(fixture.output);
         assertFalse(report.get("valid").getAsBoolean());
-        assertTrue(report.getAsJsonObject("scheduledTargetValidation")
-                .get("valid").getAsBoolean());
-        assertTrue("membership-only base validator accepts this order",
-                report.getAsJsonObject("replayValidation")
-                        .get("prefixValidated").getAsBoolean());
-        assertFalse(report.getAsJsonObject("orderedPrefixValidation")
-                .get("allPrefixMappingsBeforeTarget").getAsBoolean());
+        JsonObject observation = report.getAsJsonObject(
+                "branchReplayObservation");
+        assertFalse(observation.get("valid").getAsBoolean());
+        assertTrue(observation.getAsJsonArray("failures").toString()
+                .contains("TARGET_BEFORE_PREFIX"));
+        assertFalse(report.getAsJsonObject("replayValidation")
+                .get("prefixValidated").getAsBoolean());
         assertTrue(report.getAsJsonArray("failures").toString().contains(
-                "REPLAY_BRANCH_PREFIX_NOT_EXACT"));
+                "BRANCH_REPLAY_CONTRACT_NOT_SATISFIED"));
     }
 
     private Fixture fixture() throws Exception {
@@ -141,20 +138,19 @@ public class ConcolicPathReplayVerifierTest {
 
     private static JsonObject task() {
         JsonObject task = new JsonObject();
-        task.addProperty("schemaVersion", 1);
+        task.addProperty("schemaVersion", 2);
         task.addProperty("kind", "REGION_PATH_FLIP");
         task.addProperty("queryKey", QUERY_KEY);
         task.addProperty("regionId", "REGION.15");
         task.addProperty("sourceActivationId", "ACT.UPSTREAM.9");
         task.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        task.addProperty("flipSite", "SITE.1");
-        task.addProperty("flipOccurrence", 4);
-        task.addProperty("desiredOutcome", false);
-        JsonObject prefix = branch("SITE.0", 3, true);
-        prefix.addProperty("conditionIndex", 0);
-        JsonArray prefixes = new JsonArray();
-        prefixes.add(prefix);
-        task.add("expectedBranchPrefix", prefixes);
+        BranchWitness prefix = witness("SITE.0", 0, 3, true,
+                branchPredicate("REGION.15.in.32", ">"), 0);
+        BranchWitness source = witness("SITE.1", 1, 4, true,
+                branchPredicate("REGION.15.in.146", ">"), 1);
+        task.add("replayContract", BranchReplayContract.flip(
+                java.util.Collections.singletonList(prefix), source)
+                .toJson());
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", "REGION.15.out.122");
         requested.addProperty("cell", "<example.Manager: java.util.Map "
@@ -186,16 +182,8 @@ public class ConcolicPathReplayVerifierTest {
         activation.addProperty("pathQueryKey", QUERY_KEY);
         activation.add("modelAssignments", task.getAsJsonArray(
                 "modelAssignments").deepCopy());
-        activation.add("expectedBranchPrefix", task.getAsJsonArray(
-                "expectedBranchPrefix").deepCopy());
-        JsonObject target = new JsonObject();
-        target.addProperty("siteId", "SITE.1");
-        target.addProperty("occurrence", 4);
-        target.addProperty("desiredOutcome", false);
-        target.addProperty("validationOnly", true);
-        target.addProperty("branchOverrideAllowed", false);
-        activation.add("targetBranch", target);
-        activation.addProperty("branchOverrideProhibited", true);
+        activation.add("replayContract", task.getAsJsonObject(
+                "replayContract").deepCopy());
         return activation;
     }
 
@@ -219,13 +207,15 @@ public class ConcolicPathReplayVerifierTest {
         raw.add("modelAssignmentsApplied", appliedRows);
         raw.add("replayMaterializationsApplied", new JsonArray());
         raw.add("dynamicFieldBindings", new JsonArray());
+        BranchReplayContract contract = BranchReplayContract.fromJson(
+                task.getAsJsonObject("replayContract"));
         JsonArray mappings = new JsonArray();
-        mappings.add(branch("SITE.0", 3, true));
-        JsonObject target = branch("SITE.1", 4, false);
-        target.addProperty("scheduledTarget", true);
-        target.addProperty("scheduledDesiredOutcome", false);
-        target.addProperty("scheduledOutcomeMatched", true);
-        mappings.add(target);
+        mappings.add(mapping(contract.orderedPrefix().get(0)));
+        mappings.add(mapping(witness(contract.source().siteId(),
+                contract.source().unitIndex(),
+                contract.source().occurrence(),
+                contract.requiredTakenOutcome(),
+                contract.requiredSatisfiedPredicate(), 1)));
         raw.add("branchMappings", mappings);
         return raw;
     }
@@ -271,16 +261,45 @@ public class ConcolicPathReplayVerifierTest {
         return assignment;
     }
 
-    private static JsonObject branch(String site, int occurrence,
-                                     boolean outcome) {
+    private static JsonObject mapping(BranchWitness witness) {
         JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", site);
-        mapping.addProperty("occurrence", occurrence);
-        mapping.addProperty("outcome", outcome);
-        mapping.addProperty("observedOutcome", outcome);
-        mapping.addProperty("effectiveOutcome", outcome);
+        mapping.addProperty("siteId", witness.siteId());
+        mapping.addProperty("occurrence", witness.occurrence());
+        mapping.addProperty("observedOutcome",
+                witness.sourceTakenOutcome());
         mapping.addProperty("overrideApplied", false);
+        mapping.add("witness", witness.toJson());
         return mapping;
+    }
+
+    private static BranchWitness witness(String site, int unitIndex,
+                                         int occurrence, boolean outcome,
+                                         com.google.gson.JsonElement predicate,
+                                         int pcIndex) {
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", pcIndex + 1L);
+        event.addProperty("contextId", 1L);
+        return BranchWitness.vmPc(site,
+                "<test.Replay: void run()>", unitIndex, occurrence,
+                outcome, predicate, pcIndex, event);
+    }
+
+    private static JsonObject branchPredicate(String input,
+                                              String operator) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "BinaryExpression");
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_java_type", "I");
+        left.addProperty("_exp", input);
+        JsonObject zero = new JsonObject();
+        zero.addProperty("_type", "ConstExpr");
+        zero.addProperty("_java_type", "I");
+        zero.addProperty("_exp", "Y_I_0");
+        expression.add("_left", left);
+        expression.addProperty("_op", operator);
+        expression.add("_right", zero);
+        return expression;
     }
 
     private static JsonObject read(Path path) throws Exception {

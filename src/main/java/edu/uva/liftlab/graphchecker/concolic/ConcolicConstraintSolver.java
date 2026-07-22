@@ -53,20 +53,17 @@ public final class ConcolicConstraintSolver {
             throws IOException, InterruptedException {
         Encoder encoder = new Encoder();
         BranchReplayContract replayContract = replayContract(task);
-        JsonArray constraints = replayContract == null
-                ? array(task, "constraints")
-                : replayContract.requiredPathPredicates();
+        rejectRetiredReplayAliases(task);
+        JsonArray constraints = replayContract.requiredPathPredicates();
         for (int index = 0; index < constraints.size(); index++) {
             encoder.addConstraint(constraints.get(index), "q" + index);
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
-        if (replayContract != null) {
-            record.addProperty("branchReplayContractId",
-                    replayContract.contractId());
-            record.addProperty("branchConstraintAuthority",
-                    "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
-        }
+        record.addProperty("branchReplayContractId",
+                replayContract.contractId());
+        record.addProperty("branchConstraintAuthority",
+                "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
         record.addProperty("solver", "Z3_SMT2");
         record.addProperty("solverInputHash", sha256(smt));
         record.addProperty("uninterpretedFunctionCount",
@@ -1514,36 +1511,42 @@ public final class ConcolicConstraintSolver {
     }
 
     private static JsonElement targetConstraint(JsonObject task) {
-        BranchReplayContract replayContract;
         try {
-            replayContract = replayContract(task);
+            return replayContract(task).requiredSatisfiedPredicate();
         } catch (IOException malformed) {
             return null;
         }
-        if (replayContract != null) {
-            return replayContract.requiredSatisfiedPredicate();
-        }
-        JsonElement explicit = task == null ? null : task.get(
-                "negatedCondition");
-        if (explicit != null && explicit.isJsonObject()) return explicit;
-        JsonArray constraints = array(task, "constraints");
-        return constraints.size() == 0 ? null
-                : constraints.get(constraints.size() - 1);
     }
 
     private static BranchReplayContract replayContract(JsonObject task)
             throws IOException {
         JsonElement encoded = task == null ? null
                 : task.get("replayContract");
-        if (encoded == null) return null;
-        if (!encoded.isJsonObject()) {
-            throw new IOException("replayContract must be an object");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw new IOException(
+                    "canonical path task requires replayContract");
         }
         try {
             return BranchReplayContract.fromJson(encoded.getAsJsonObject());
         } catch (IllegalArgumentException malformed) {
             throw new IOException("invalid branch replay contract: "
                     + malformed.getMessage(), malformed);
+        }
+    }
+
+    private static void rejectRetiredReplayAliases(JsonObject task)
+            throws IOException {
+        String[] retired = new String[]{"constraints", "prefix",
+                "negatedCondition", "flipSite", "flipOccurrence",
+                "conditionIndex", "desiredOutcome",
+                "expectedBranchPrefix", "pathReplayConstraints",
+                "pathReplayNegatedCondition",
+                "pathReplayTargetConditionIndex"};
+        for (String field : retired) {
+            if (task != null && task.has(field)) {
+                throw new IOException("canonical path task rejects retired "
+                        + "branch field: " + field);
+            }
         }
     }
 
@@ -2348,15 +2351,8 @@ public final class ConcolicConstraintSolver {
                 "sourceSummaryId"));
         result.addProperty("sourcePathKey", string(task, "sourcePathKey"));
         try {
-            BranchReplayContract contract = replayContract(task);
-            if (contract != null) {
-                result.addProperty("branchReplayContractId",
-                        contract.contractId());
-            } else {
-                result.addProperty("flipSite", string(task, "flipSite"));
-                result.addProperty("flipOccurrence", integer(task,
-                        "flipOccurrence", 1));
-            }
+            result.addProperty("branchReplayContractId",
+                    replayContract(task).contractId());
         } catch (IOException malformed) {
             result.addProperty("branchReplayContractMalformed", true);
         }

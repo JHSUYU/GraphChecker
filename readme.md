@@ -162,8 +162,8 @@ GraphChecker pass 稳定在 30.9–31.2 秒，包含 runtime dependency 发布�
 region planner 热路径预编译。`trace+concolic` campaign 和 `ALL` bundle 暂不使用 partial
 catalog，会明确回退完整分析。
 
-本次优化后完整回归为 700 项 JUnit 零失败；generic workflow、三线程 RPC JUnit fixture 和
-parallel HDFS concolic batch fixture 也全部通过。
+静态复用优化由完整 Maven 回归、generic shell workflow 和 parallel HDFS concolic batch
+fixture 覆盖；具体测试数量不作为协议或 artifact 的一部分。
 
 ```bash
 mvn -q -DskipTests package
@@ -186,37 +186,16 @@ catalog，并与 pipeline 安装的唯一 root 精确相等；supplemental proce
 classpath 顺序并拒绝重复。可删除的 class output 只允许 checked-in exact path、专用
 replay root 的严格子目录，或 batch/campaign 已校验后显式授权的 exact job path。
 
-#### 三线程自然 replay milestone（2026-07-18）
+#### 三线程候选模型 milestone（2026-07-21）
 
-README 的三线程 RPC 工作流现已完整跑通，不再停在 bootstrap 候选模型。scheduler 在
-`CALL_RETURN` 或 `REGION_LIVE_IN` 由权威静态 DefinitionIndex 唯一解析到 primitive local
-定义点后，会解除早期 `deferredResolution` 状态并保留 discharge authority；零个或多个
-定义点仍保持 unresolved。projector 接受这两种来源的唯一
-`STATIC_DATAFLOW_DEF_SITE`，仍拒绝 deferred action、缺失 source binding 或不一致的
-method/local/site identity。
+generic 三线程流程当前自动完成 annotation 定位、静态切片、runtime discovery、逐 producer
+路径闭合、递归 SMT composition、Z3 求解和有限 root-input 投影。终态 manifest 明确写为
+`COMPLETE_Z3_CHECKED_CANDIDATE / CANDIDATE_ONLY`；它绑定 SMT、composition manifest、
+reach model 和 relationship candidates 的路径、大小及 SHA-256，但不会声称已经得到可信最终
+结果。`run.sh all` 是 `candidate` 的别名。
 
-Z3 选择 `b1=true, b2=true` 后，projector 生成 2 个 producer replay 和 1 个
-observation-only target replay 的三行 `ALL` bundle。custom JDK 自然产生 `a=1, b=0`，经
-RPC/shared field 传播后由 consumer 自然触发 `BugReachedException`；没有 forced branch、
-target model assignment 或 reference-result injection。最终 composition、relationship proof
-和 exhaustive Boolean projection 均通过，得到：
-
-```text
-(and (= sym__port__REGION_1_in_0__int 1)
-     (= sym__port__REGION_2_in_0__int 1))
-```
-
-bootstrap activation plan 也已改为严格 compact JSONL（一行一个 activation），避免 pretty
-JSON 被逐行 consumer 误读为截断输入。当前完整回归为 700 项 JUnit 零失败；从 clean
-work root 执行 `experiments/generic/three-thread-rpc/run.sh all` 会一直完成到
-`target/three-thread-rpc/final/boolean_reach_condition.json`。
-
-generic runner 现在还会把配置中的 `runtime_region_instances` 传给 scheduler；若 runtime
-planner 已给 output capture 绑定 exact call/event occurrence，后续静态 refinement 会保留这份
-更强的 identity。bootstrap projector 精确接受 importer 的旧、新两种 admission authority，
-但所选 root 必须确实 symbolized，且不能属于 observation-only、concrete fallback、VM
-placeholder 或 unforced environment requirement。2026-07-18 从空 work root 的 fresh run
-在 82.97 秒内完成两次 producer path flip、自然异常 replay、final compose 和 Z3 proof。
+旧的半成品 trusted/natural-replay 发布路径已经删除。将候选输入在完整 workload 中自然
+replay、绑定实际 exception observation，并据此升级 trust state，是本文唯一保留的 TODO。
 
 ## 当前参考工作负载
 
@@ -280,7 +259,7 @@ static graph；runtime 确认具体 root/class/thread call closure 后，在 fro
 小范围 demand re-slice。跨线程 producer/consumer 关系由 shared-field receiver identity、
 write-before-read、region instance 和最终 replay 自动验证。
 
-当前自动化检查点已经得到：
+工作负载的具体路径语义由自动生成的 guarded summaries 和 Z3 truth table 给出。例如：
 
 ```text
 Producer A: b1 = false -> a = -1
@@ -289,8 +268,8 @@ Producer A: b1 = false -> a = -1
 Producer B: b2 = false -> b = 10
             b2 = true  -> b = 0
 
-Z3 truth table: 00 unsat, 01 unsat, 10 unsat, 11 sat
-reach condition: b1 && b2
+候选 truth table / reach condition:
+  从生成的 root-input catalog 自动枚举，不由 fixture 提供公式
 ```
 
 对应的 bootstrap SMT 和布尔报告由代码自动写入：
@@ -301,8 +280,9 @@ target/three-thread-rpc/bootstrap/bootstrap_boolean_model.json
 ```
 
 这里的 `BOOTSTRAP` 只表示 SMT 组合和候选输入已得到，不能冒充经过最终自然回放验证的
-用户报告。`run.sh all` 会继续执行无下游注入的自然回放，只有验证真实目标异常后才生成
-`target/three-thread-rpc/final` 下的最终报告。
+用户报告。`run.sh all` 最终生成
+`target/three-thread-rpc/bootstrap/candidate_result_manifest.json`，其中
+`naturalReplayPromotionImplemented=false`。
 
 HDFS 冻结 trace 的同一聚合已由 demand re-slice 从 10:26.98 降到 2:16.54，
 关键 SASL/READ_FROM 边和五个 selector activation 均保留。最终 HDFS SMT 仍需补齐
@@ -379,10 +359,10 @@ Recursive composer
   -> 上游 out 绑定下游 in，递归接入 target condition
 Z3
   -> composed SMT、truth table、候选 reach condition
-自然传播验证
-  -> SAT producer 输入绑定回真实定义；target 无注入执行并验证异常
-Final composer + Z3 proof
-  -> VALIDATED_FINAL SMT、关系证明、最终 reach condition
+Candidate manifest
+  -> hash-bind SMT、composition、reach model 和 relationship candidates
+TODO: 自然传播可信升级
+  -> SAT 输入自然 replay；绑定实际 target exception 后才能发布可信结果
 ```
 
 ### 两种 capture goal
@@ -390,7 +370,7 @@ Final composer + Z3 proof
 | Goal | 用途 | 闭合条件 |
 | --- | --- | --- |
 | `OUTPUT_CLOSURE` | 学习 producer 的输入到输出关系 | 所有 output-relevant 可行路径已执行，worklist 无 pending |
-| `TARGET_BRANCH` | 记录 bug region 的目标 branch | 获得精确 target condition；最终必须由无注入自然回放验证 |
+| `TARGET_BRANCH` | 记录 bug region 的目标 branch | 获得候选 target condition；可信升级留待自然 replay TODO |
 
 Producer campaign 不需要一次让 custom JDK 同时符号执行三个线程。系统一次选择一个
 region activation，多跑若干次 workload，分别学出每个 `R_region`；跨 region 关系在
@@ -420,9 +400,16 @@ Scheduler 为每次 capture 选择一个 region activation。GraphChecker runtim
 engine-backed owner，避免其他应用线程或 GraphChecker 自身 bookkeeping 污染当前 path
 condition。
 
-Branch 身份由 VM 观察到的 `site + occurrence + outcome` 绑定，而不是靠不稳定的全局
-branch 序号猜测。这里的 invocation ordinal 只表示同一 receiver-class/thread context 中的
-第几次调用，用于定位动态 activation，不代表程序语义，也不进入稳定 worklist key。
+每个二元 branch 只产生一个不可变、内容哈希的 `BranchWitness`。它包含稳定的
+`site + occurrence`、源 execution 实际满足的 outcome/predicate，以及互斥的 `VM_PC` 或
+`CERTIFIED_NO_PC` evidence。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的
+位置：它保留有序 prefix、翻转一个 source witness，并丢弃旧 suffix。worklist、solver、
+activation、静态插桩、runtime、importer 和 verifier 都传递或解析同一个 contract，不再各自
+重建 `targetBranch`、`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。
+`switch` 仍作为独立的 successor-aware observation，不伪装成二元 branch。
+
+invocation ordinal 只表示同一 receiver-class/thread context 中的第几次调用，用于定位动态
+activation，不代表程序语义，也不进入稳定 worklist key。
 
 跨 RPC/codec/SASL 的值传播使用独立的 runtime-confirmed `EQUALITY` binding：它要求两端
 canonical port、exact region instance、完整 value fingerprint 和 writer-before-reader 顺序，
@@ -430,8 +417,8 @@ canonical port、exact region instance、完整 value fingerprint 和 writer-bef
 composer 按 edge、kind、instance 和 runtime witness 精确选择，二者不能互相替代。
 
 Producer 的模型只能 materialize 到静态分析找到并由 instrumentation 确认的真实定义位置。
-`forcedBranches` 不能作为关系证据。最终 target replay 必须是 observation-only：不得给
-consumer 注入 model、返回值或 branch outcome。
+`forcedBranches` 不能作为关系证据。当前输出到候选模型为止；未来的可信升级必须让 target
+保持 observation-only，不得给 consumer 注入 model、返回值或 branch outcome。
 
 ## 递归 SMT composition
 
@@ -453,8 +440,8 @@ runtime-confirmed RPC edge 和 target branch condition。最终 SMT 由
 root 做有限真值表投影并生成 canonical DNF。
 
 Composer 采用 fail-closed 规则：缺 summary、未闭合 relation、未绑定端口、unsupported
-expression、来源不唯一或 target 未验证时，只能产生 bootstrap/incomplete manifest，
-不能发布 final relationship。
+expression 或来源不唯一时，只能产生 incomplete manifest。结构完整且经 Z3 检查的输出仍是
+candidate；当前流程没有 final/trusted 发布状态。
 
 ## 证据与来源检查
 
@@ -513,10 +500,9 @@ experiments/generic/three-thread-rpc/run.sh clean
 experiments/generic/three-thread-rpc/run.sh all
 ```
 
-`all` 串联 build、static analysis、trace、discovery、target seed、producer campaigns、
-bootstrap composition、projection、natural replay、bounded campaign、final composition、
-relationship proof 和 reach-condition extraction。成功时会生成
-`final/boolean_reach_condition.json`。
+`all` 串联 build、annotation-directed static analysis、trace、discovery、target seed、
+producer campaigns、bootstrap composition、Z3 projection 和 candidate manifest。成功时会
+生成 `bootstrap/candidate_result_manifest.json`；它不是 trusted result。
 
 ## 关键实现
 
@@ -526,13 +512,13 @@ relationship proof 和 reach-condition extraction。成功时会生成
 | `RuntimeRegionPlanner` / `ConcolicRegionRuntime` | 动态 activation、thread context、精确事件与运行时绑定 |
 | `ConcolicScheduler` | 为 target 或 producer 选择 activation 并生成 capture/materialization plan |
 | `ConcolicPathFlipPlanner` / `RegionPathWorklist` | pending flip、稳定去重、Z3 输入和 closure |
-| `ConcolicPathReplayVerifier` | 验证 replay prefix、目标 outcome 和无 branch override |
+| `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
+| `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
 | `ConcolicSummaryImporter` | 将 raw custom-JDK 结果严格导入 `R(in,out)` path summary |
 | `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
-| `ConcolicNaturalReplayValidator` | 检查最终自然传播、异常和无 branch override |
 | `ConcolicStaticCatalogReuse` | 校验冻结 catalog/class-tree/schedule 哈希并加载一个 replay region |
 | `ConcolicStaticCatalogManifest` | 发布可复用静态 catalog 的 immutable manifest |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
@@ -540,22 +526,9 @@ relationship proof 和 reach-condition extraction。成功时会生成
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、
 配置和阶段脚本位于 `experiments/generic/three-thread-rpc`。
 
-## 三线程最终自然回放验证
+## TODO：用自然 replay 将候选升级为可信结果
 
-主流程通过以下闭环把 bootstrap 候选变成最终的自然传播证据：
-
-1. 将 Z3 选中的 `b1=true`、`b2=true` 精确绑定到 producer activation 的真实定义动作；
-   instrumentation 已找到 definition site 时，必须把 deferred plan 解析并持久化为可 replay
-   的权威 action。
-2. 生成一个 `ALL` replay bundle：两个 producer 只接收各自的 input assignment；consumer
-   保持 engine-backed、observation-only，且 model assignment、return materialization 和
-   forced branch 数量都为零。
-3. 在 custom JDK 上运行三个真实线程，验证 producer 自然产生 `a=1`、`b=0`，RPC 自然
-   传播这两个值，consumer 自然观察到 `a > b` 和 `BugReachedException`。
-4. strict importer 与 natural replay validator 绑定同一 activation、region instance、branch
-   site/occurrence 和异常证据。
-5. 上述验证通过后，重新生成 `VALIDATED_FINAL` SMT、relationship proof 和最终
-   `target/three-thread-rpc/final/boolean_reach_condition.json`。
-
-这五步现已由 `experiments/generic/three-thread-rpc/run.sh all` 自动完成；最终 reach
-condition 已由同一组 producer/target activation 的自然传播与异常证据验证。
+当前停止点是准确、结构完整且由 Z3 检查过的候选 SMT。后续工作应把选中的 producer 输入
+绑定回真实定义，在完整多线程 workload 中禁止 downstream injection/branch override 地自然
+执行，并将唯一 exception annotation target 的实际 observation 与候选 artifact 哈希绑定。
+只有该步骤通过后，才可以引入新的 trusted/final trust state；本次改进不实现这一步。

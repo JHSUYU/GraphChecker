@@ -4,6 +4,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicReplayValidator;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -762,12 +765,12 @@ public class ConcolicRegionRuntimeTest {
         assertEquals(2, mappings.size());
         assertEquals("PREFIX", mappings.get(0).getAsJsonObject()
                 .get("certificateProofRole").getAsString());
-        assertFalse(mappings.get(0).getAsJsonObject()
-                .get("scheduledTarget").getAsBoolean());
+        assertFalse(mappings.get(0).getAsJsonObject().has(
+                "scheduledTarget"));
         assertEquals("TARGET", mappings.get(1).getAsJsonObject()
                 .get("certificateProofRole").getAsString());
-        assertTrue(mappings.get(1).getAsJsonObject()
-                .get("scheduledTarget").getAsBoolean());
+        assertFalse(mappings.get(1).getAsJsonObject().has(
+                "scheduledTarget"));
         assertEquals(2, row.getAsJsonArray(
                 "concreteGuardReplayProofs").size());
         assertEquals(1, row.getAsJsonArray(
@@ -815,7 +818,7 @@ public class ConcolicRegionRuntimeTest {
     @Test
     public void distinctNullAssignmentsCertifyRepeatedSiteOccurrences()
             throws Exception {
-        JsonObject row = runRepeatedSiteNullGuards(false);
+        JsonObject row = runRepeatedSiteNullGuards();
 
         assertEquals(row.toString(), 0,
                 row.getAsJsonArray("unresolvedInputs").size());
@@ -835,22 +838,6 @@ public class ConcolicRegionRuntimeTest {
                 first.get("certificateModelAssignmentKey").getAsString());
         assertEquals("M_L_REGION.NULL.in.1_java/lang/String",
                 second.get("certificateModelAssignmentKey").getAsString());
-    }
-
-    @Test
-    public void duplicateRepeatedSiteOccurrenceProofFailsClosed()
-            throws Exception {
-        JsonObject row = runRepeatedSiteNullGuards(true);
-
-        assertTrue(row.getAsJsonArray("unresolvedInputs").toString(),
-                row.getAsJsonArray("unresolvedInputs").toString()
-                        .contains("proof catalog"));
-        JsonArray mappings = row.getAsJsonArray("branchMappings");
-        assertEquals(2, mappings.size());
-        assertFalse(mappings.get(0).getAsJsonObject()
-                .get("certifiedConcreteGuard").getAsBoolean());
-        assertFalse(mappings.get(1).getAsJsonObject().has(
-                "certifiedConcreteGuard"));
     }
 
     private static JsonObject runCertifiedNullGuard(boolean tamper)
@@ -892,6 +879,7 @@ public class ConcolicRegionRuntimeTest {
         activation.addProperty("test", "nullable-guard-test");
         activation.addProperty("concreteReplayOnly", false);
         activation.addProperty("pathQueryKey", "QUERY.NULL.GUARD");
+        activation.addProperty("executionPhase", "REPLAY_OUTPUT_PATH_FLIP");
 
         JsonObject action = new JsonObject();
         action.addProperty("symbol", symbol);
@@ -931,39 +919,32 @@ public class ConcolicRegionRuntimeTest {
         branch.addProperty("policy", "EXPLORE");
         branches.add(branch);
         activation.add("branches", branches);
-        JsonObject target = new JsonObject();
-        target.addProperty("siteId", siteId);
-        target.addProperty("occurrence", 1);
-        target.addProperty("desiredOutcome", true);
-        target.addProperty("validationOnly", true);
-        target.addProperty("branchOverrideAllowed", false);
-        target.addProperty("concreteGuardReplayProofRequired",
-                !vmSymbolicTarget);
-        activation.add("targetBranch", target);
-
-        JsonObject condition = exactNullCondition(engineSymbol);
-        JsonArray expectedPrefix = new JsonArray();
-        JsonArray replayConstraints = new JsonArray();
+        JsonObject condition = BranchPredicateAlgebra.canonical(
+                exactNullCondition(engineSymbol)).getAsJsonObject();
+        List<BranchWitness> prefixWitnesses = new ArrayList<>();
         if (includePrefix) {
-            JsonObject expected = new JsonObject();
-            expected.addProperty("siteId", root + "#u6");
-            expected.addProperty("occurrence", 1);
-            expected.addProperty("outcome", true);
-            expected.addProperty("conditionIndex", 0);
-            expected.addProperty("concreteGuardReplayProofRequired", true);
-            expectedPrefix.add(expected);
-            replayConstraints.add(condition.deepCopy());
+            prefixWitnesses.add(certifiedTestWitness(root + "#u6", root,
+                    6, 1, true, condition));
         }
-        if (!omitReplayConstraints) {
-            replayConstraints.add(condition.deepCopy());
-        }
-        activation.add("expectedBranchPrefix", expectedPrefix);
-        activation.add("pathReplayConstraints", replayConstraints);
-        activation.add("pathReplayNegatedCondition",
-                condition.deepCopy());
         int targetConditionIndex = includePrefix ? 1 : 0;
-        activation.addProperty("pathReplayTargetConditionIndex",
-                targetConditionIndex);
+        JsonObject requiredTarget = omitReplayConstraints
+                ? testIntegerPredicate("==") : condition;
+        JsonElement sourcePredicate = BranchPredicateAlgebra.complement(
+                requiredTarget);
+        BranchWitness sourceWitness;
+        if (vmSymbolicTarget) {
+            JsonObject sourceEvent = new JsonObject();
+            sourceEvent.addProperty("eventId", 1L);
+            sourceEvent.addProperty("contextId", 77L);
+            sourceWitness = BranchWitness.vmPc(siteId, root, 7, 1,
+                    false, sourcePredicate, targetConditionIndex,
+                    sourceEvent);
+        } else {
+            sourceWitness = certifiedTestWitness(siteId, root, 7, 1,
+                    false, sourcePredicate);
+        }
+        activation.add("replayContract", BranchReplayContract.flip(
+                prefixWitnesses, sourceWitness).toJson());
         JsonArray proofs = new JsonArray();
         if (includePrefix && !omitPrefixProof) {
             proofs.add(nullGuardProof("PREFIX", root + "#u6", 0, 0,
@@ -1018,8 +999,7 @@ public class ConcolicRegionRuntimeTest {
         }
     }
 
-    private static JsonObject runRepeatedSiteNullGuards(
-            boolean duplicateOccurrence) throws Exception {
+    private static JsonObject runRepeatedSiteNullGuards() throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
@@ -1039,6 +1019,7 @@ public class ConcolicRegionRuntimeTest {
         activation.addProperty("test", "nullable-repeated-site-test");
         activation.addProperty("concreteReplayOnly", false);
         activation.addProperty("pathQueryKey", queryKey);
+        activation.addProperty("executionPhase", "REPLAY_OUTPUT_PATH_FLIP");
 
         JsonObject actionA = nullArgumentAction(root, inputA, 0);
         JsonObject actionB = nullArgumentAction(root, inputB, 1);
@@ -1061,28 +1042,18 @@ public class ConcolicRegionRuntimeTest {
         branch.addProperty("siteId", siteId);
         branch.addProperty("policy", "EXPLORE");
         activation.add("branches", singleton(branch));
-        JsonObject target = new JsonObject();
-        target.addProperty("siteId", siteId);
-        target.addProperty("occurrence", duplicateOccurrence ? 1 : 2);
-        target.addProperty("desiredOutcome", true);
-        target.addProperty("validationOnly", true);
-        target.addProperty("branchOverrideAllowed", false);
-        activation.add("targetBranch", target);
-
-        JsonObject conditionA = exactNullCondition(engineA);
-        JsonObject conditionB = exactNullCondition(engineB);
-        JsonObject expected = new JsonObject();
-        expected.addProperty("siteId", siteId);
-        expected.addProperty("occurrence", 1);
-        expected.addProperty("outcome", true);
-        expected.addProperty("conditionIndex", 0);
-        activation.add("expectedBranchPrefix", singleton(expected));
-        JsonArray replayConstraints = new JsonArray();
-        replayConstraints.add(conditionA.deepCopy());
-        replayConstraints.add(conditionB.deepCopy());
-        activation.add("pathReplayConstraints", replayConstraints);
-        activation.add("pathReplayNegatedCondition", conditionB.deepCopy());
-        activation.addProperty("pathReplayTargetConditionIndex", 1);
+        JsonObject conditionA = BranchPredicateAlgebra.canonical(
+                exactNullCondition(engineA)).getAsJsonObject();
+        JsonObject conditionB = BranchPredicateAlgebra.canonical(
+                exactNullCondition(engineB)).getAsJsonObject();
+        BranchWitness prefixWitness = certifiedTestWitness(siteId, root,
+                6, 1, true, conditionA);
+        BranchWitness sourceWitness = certifiedTestWitness(siteId, root,
+                6, 2, false,
+                BranchPredicateAlgebra.complement(conditionB));
+        activation.add("replayContract", BranchReplayContract.flip(
+                Collections.singletonList(prefixWitness), sourceWitness)
+                .toJson());
 
         JsonObject prefixProof = nullGuardProof("PREFIX", siteId,
                 0, 0, 0, conditionA, engineA, inputA, actionA, false);
@@ -1092,8 +1063,7 @@ public class ConcolicRegionRuntimeTest {
                 1, 1, -1, conditionB, engineB, inputB, actionB, false);
         targetProof.addProperty("activationId", activationId);
         targetProof.addProperty("pathQueryKey", queryKey);
-        targetProof.addProperty("occurrence",
-                duplicateOccurrence ? 1 : 2);
+        targetProof.addProperty("occurrence", 2);
         JsonArray proofs = new JsonArray();
         proofs.add(prefixProof);
         proofs.add(targetProof);
@@ -1221,6 +1191,34 @@ public class ConcolicRegionRuntimeTest {
         condition.add("_left", symbol);
         condition.addProperty("_op", "==");
         condition.add("_right", nil);
+        return condition;
+    }
+
+    private static BranchWitness certifiedTestWitness(
+            String site, String method, int unitIndex, int occurrence,
+            boolean outcome, JsonElement predicate) {
+        JsonObject certificate = new JsonObject();
+        certificate.addProperty("authority",
+                "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1");
+        certificate.addProperty("event", site + "#" + occurrence);
+        return BranchWitness.certifiedNoPc(site, method, unitIndex,
+                occurrence, outcome, predicate, certificate);
+    }
+
+    private static JsonObject testIntegerPredicate(String operator) {
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_java_type", "I");
+        left.addProperty("_exp", "REGION.TEST.in.0");
+        JsonObject zero = new JsonObject();
+        zero.addProperty("_type", "ConstExpr");
+        zero.addProperty("_java_type", "I");
+        zero.addProperty("_exp", "Y_I_0");
+        JsonObject condition = new JsonObject();
+        condition.addProperty("_type", "BinaryExpression");
+        condition.add("_left", left);
+        condition.addProperty("_op", operator);
+        condition.add("_right", zero);
         return condition;
     }
 
@@ -2450,10 +2448,18 @@ public class ConcolicRegionRuntimeTest {
             JsonObject validationTask = new JsonObject();
             validationTask.addProperty("queryKey", "Q.DYNAMIC.RUNTIME");
             validationTask.addProperty("regionId", "REGION.TEST");
-            validationTask.addProperty("flipSite", "SITE.FLIP");
-            validationTask.addProperty("flipOccurrence", 1);
-            validationTask.addProperty("desiredOutcome", true);
-            validationTask.add("expectedBranchPrefix", new JsonArray());
+            JsonObject desiredPredicate = testIntegerPredicate("==");
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", 1L);
+            event.addProperty("contextId", 1L);
+            BranchWitness sourceWitness = BranchWitness.vmPc("SITE.FLIP",
+                    "<test.Runtime: void run()>", 1, 1, false,
+                    BranchPredicateAlgebra.complement(desiredPredicate), 0,
+                    event);
+            validationTask.add("replayContract",
+                    BranchReplayContract.flip(
+                            Collections.<BranchWitness>emptyList(),
+                            sourceWitness).toJson());
             validationTask.add("modelAssignments",
                     singleton(assignment.deepCopy()));
             JsonObject validationRaw = row.deepCopy();
@@ -2462,6 +2468,9 @@ public class ConcolicRegionRuntimeTest {
             mapping.addProperty("occurrence", 1);
             mapping.addProperty("observedOutcome", true);
             mapping.addProperty("overrideApplied", false);
+            mapping.add("witness", BranchWitness.vmPc("SITE.FLIP",
+                    "<test.Runtime: void run()>", 1, 1, true,
+                    desiredPredicate, 0, event).toJson());
             validationRaw.add("branchMappings", singleton(mapping));
             JsonObject validation = ConcolicReplayValidator.validate(
                     validationTask, validationRaw);

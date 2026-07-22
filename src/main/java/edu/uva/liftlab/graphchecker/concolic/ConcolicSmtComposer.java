@@ -3132,13 +3132,18 @@ public final class ConcolicSmtComposer {
 
         private Term canonicalPortTerm(String port, Sort sort,
                                        String expressionJavaType) {
-            String bindingKey = port + "\u0000" + sort.name();
-            String name = "sym__port__" + smtName(port) + "__"
-                    + sort.name().toLowerCase(Locale.ROOT);
             Port schema = ports.get(port);
             String schemaJavaType = schema == null ? "" : schema.javaType;
             String javaType = firstNonBlank(schemaJavaType,
                     expressionJavaType);
+            if (sort == Sort.REF
+                    && sortOfJava(schemaJavaType) == Sort.STRING) {
+                return canonicalNullableStringReferenceTerm(port,
+                        schemaJavaType);
+            }
+            String bindingKey = port + "\u0000" + sort.name();
+            String name = "sym__port__" + smtName(port) + "__"
+                    + sort.name().toLowerCase(Locale.ROOT);
             IntegralWidth schemaWidth = integralWidthOfJava(schemaJavaType);
             IntegralWidth expressionWidth = integralWidthOfJava(
                     expressionJavaType);
@@ -3198,6 +3203,35 @@ public final class ConcolicSmtComposer {
                 }
             }
             return term;
+        }
+
+        /**
+         * Models an erased JVM reference view of a statically-known String
+         * input without inventing a second Value binding for the same port.
+         * The reference token is used only for identity/null comparisons;
+         * its nullness is exactly the canonical nullable-String companion.
+         */
+        private Term canonicalNullableStringReferenceTerm(
+                String port, String schemaJavaType) {
+            Term stringTerm = canonicalPortTerm(port, Sort.STRING,
+                    schemaJavaType);
+            String name = "sym__port__" + smtName(port) + "__ref";
+            declare(name, Sort.REF);
+            String bindingKey = port
+                    + "\u0000NULLABLE_STRING_REFERENCE_VIEW";
+            if (canonicalPortTermBindings.add(bindingKey)) {
+                String formula = "(= (= " + name + " nullRef) "
+                        + stringTerm.stringNullness + ")";
+                String previousGuard = currentGuard;
+                currentGuard = "";
+                try {
+                    assertNamed("nullable_string_reference_view_" + port,
+                            formula);
+                } finally {
+                    currentGuard = previousGuard;
+                }
+            }
+            return new Term(name, Sort.REF);
         }
 
         /**
@@ -3308,6 +3342,16 @@ public final class ConcolicSmtComposer {
 
         private void recordCaseSymbol(String raw, Term term, String kind,
                                       String canonicalPort) {
+            // Literals participate in the emitted formula, but they are not
+            // projection roots.  In particular, one VM boolean literal such
+            // as Y_Z_0 can be lowered to Int 0 for a Java boolean-as-int port
+            // and to Bool false for a predicate result.  Requiring one
+            // context-independent solver term for that literal creates a
+            // false catalog conflict without adding any input evidence.
+            if ("ENGINE_LITERAL".equals(kind)
+                    || "SPECIAL_CONSTANT".equals(kind)) {
+                return;
+            }
             if (currentCaseProjection != null && raw != null
                     && !raw.isEmpty() && term != null) {
                 currentCaseProjection.record(raw, term, kind, canonicalPort);
@@ -10298,6 +10342,8 @@ public final class ConcolicSmtComposer {
                     mappings.size());
             result.addProperty("rawEngineSymbolMappingAuthority",
                     "EMITTER_ACTUAL_TERM_CAPTURE_IN_CASE_SCOPE");
+            result.addProperty("contextualLiteralPolicy",
+                    "OMIT_NON_ROOT_ENGINE_LITERALS_FROM_PROJECTION_CATALOG");
             result.add("dynamicFieldBindings", dynamicBindings.deepCopy());
             result.addProperty("dynamicFieldBindingCount",
                     dynamicBindings.size());

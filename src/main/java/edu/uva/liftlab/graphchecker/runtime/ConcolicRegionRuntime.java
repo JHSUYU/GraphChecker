@@ -4168,8 +4168,11 @@ public final class ConcolicRegionRuntime {
         addBranchPolicyResolution(active, mapping, siteId);
         ScheduledTarget scheduledTarget = active.activation.target(
                 siteId, occurrence);
-        mapping.addProperty("scheduledTarget", scheduledTarget != null);
-        if (scheduledTarget != null) {
+        if (active.activation.emitsScheduledTargetEvidence()) {
+            mapping.addProperty("scheduledTarget", scheduledTarget != null);
+        }
+        if (scheduledTarget != null
+                && active.activation.emitsScheduledTargetEvidence()) {
             boolean matched = scheduledTarget.desiredOutcome
                     == observedOutcome;
             mapping.addProperty("scheduledDesiredOutcome",
@@ -4395,8 +4398,11 @@ public final class ConcolicRegionRuntime {
         addBranchPolicyResolution(active, mapping, siteId);
         ScheduledTarget scheduledTarget = active.activation.target(
                 siteId, occurrence);
-        mapping.addProperty("scheduledTarget", scheduledTarget != null);
-        if (scheduledTarget != null) {
+        if (active.activation.emitsScheduledTargetEvidence()) {
+            mapping.addProperty("scheduledTarget", scheduledTarget != null);
+        }
+        if (scheduledTarget != null
+                && active.activation.emitsScheduledTargetEvidence()) {
             mapping.addProperty("scheduledDesiredOutcome",
                     scheduledTarget.desiredOutcome);
             mapping.addProperty("scheduledOutcomeMatched",
@@ -9508,6 +9514,9 @@ public final class ConcolicRegionRuntime {
             }
             Set<String> requiredEvents = new LinkedHashSet<>();
             Set<String> replayEvents = new LinkedHashSet<>();
+            JsonArray replayConstraints = activation.replayContract == null
+                    ? new JsonArray()
+                    : activation.replayContract.requiredPathPredicates();
             for (ModelAssignment assignment
                     : activation.modelAssignments) {
                 if (exactAppliedNullRows(assignment) == 0) continue;
@@ -9523,9 +9532,8 @@ public final class ConcolicRegionRuntime {
                 }
                 int matchingNullConstraints = 0;
                 for (int index = 0; index
-                        < activation.pathReplayConstraints.size(); index++) {
-                    JsonElement rawCondition = activation
-                            .pathReplayConstraints.get(index);
+                        < replayConstraints.size(); index++) {
+                    JsonElement rawCondition = replayConstraints.get(index);
                     if (!rawCondition.isJsonObject()
                             || !exactSatisfiedNullEquality(
                             rawCondition.getAsJsonObject(),
@@ -9664,22 +9672,6 @@ public final class ConcolicRegionRuntime {
                         || mapping.get("condition") == null
                         || !mapping.get("condition").toString().equals(
                         replayCondition.toString())) {
-                    continue;
-                }
-                Boolean scheduled = strictBoolean(mapping,
-                        "scheduledTarget");
-                if ("TARGET".equals(expected.role)) {
-                    if (!Boolean.TRUE.equals(scheduled)
-                            || !Boolean.valueOf(expected.outcome).equals(
-                            strictBoolean(mapping,
-                                    "scheduledDesiredOutcome"))
-                            || !Boolean.TRUE.equals(strictBoolean(mapping,
-                            "scheduledOutcomeMatched"))) {
-                        continue;
-                    }
-                } else if (!Boolean.FALSE.equals(scheduled)
-                        || mapping.has("scheduledDesiredOutcome")
-                        || mapping.has("scheduledOutcomeMatched")) {
                     continue;
                 }
                 matches++;
@@ -12969,10 +12961,6 @@ public final class ConcolicRegionRuntime {
         private final List<OutputCaptureRequest> outputCaptures;
         private final BranchReplayContract replayContract;
         private final ScheduledTarget targetBranch;
-        private final JsonArray expectedBranchPrefix;
-        private final JsonArray pathReplayConstraints;
-        private final JsonObject pathReplayNegatedCondition;
-        private final int pathReplayTargetConditionIndex;
         private final List<ConcreteGuardReplayProof>
                 concreteGuardReplayProofs;
         private boolean concreteGuardProofCatalogValid = true;
@@ -13029,7 +13017,23 @@ public final class ConcolicRegionRuntime {
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
+            boolean outputPathReplay = "REPLAY_OUTPUT_PATH_FLIP".equals(
+                    string(json, "executionPhase"));
             JsonElement encodedReplayContract = json.get("replayContract");
+            if (outputPathReplay && encodedReplayContract == null) {
+                throw new IllegalArgumentException(
+                        "REPLAY_OUTPUT_PATH_FLIP requires replayContract");
+            }
+            if (outputPathReplay && (json.has("targetBranch")
+                    || json.has("expectedBranchPrefix")
+                    || json.has("pathReplayConstraints")
+                    || json.has("pathReplayNegatedCondition")
+                    || json.has("pathReplayTargetConditionIndex")
+                    || json.has("branchOverrideProhibited"))) {
+                throw new IllegalArgumentException(
+                        "REPLAY_OUTPUT_PATH_FLIP rejects retired branch "
+                                + "replay aliases");
+            }
             this.replayContract = encodedReplayContract == null ? null
                     : BranchReplayContract.fromJson(
                     requireObject(encodedReplayContract,
@@ -13043,30 +13047,6 @@ public final class ConcolicRegionRuntime {
                     && !targetBranch.concreteGuardReplayProofMarkerValid) {
                 concreteGuardProofCatalogValid = false;
             }
-            this.expectedBranchPrefix = replayContract == null
-                    ? copyJsonTree(array(json, "expectedBranchPrefix"))
-                    : replayPrefix(replayContract);
-            for (JsonElement expected : expectedBranchPrefix) {
-                if (expected.isJsonObject()
-                        && expected.getAsJsonObject().has(
-                        "concreteGuardReplayProofRequired")
-                        && strictBoolean(expected.getAsJsonObject(),
-                        "concreteGuardReplayProofRequired") == null) {
-                    concreteGuardProofCatalogValid = false;
-                }
-            }
-            this.pathReplayConstraints = replayContract == null
-                    ? copyJsonTree(array(json, "pathReplayConstraints"))
-                    : replayContract.requiredPathPredicates();
-            this.pathReplayNegatedCondition = replayContract == null
-                    ? copyJsonTree(jsonObject(json,
-                    "pathReplayNegatedCondition"))
-                    : requireObject(
-                    replayContract.requiredSatisfiedPredicate(),
-                    "requiredSatisfiedPredicate");
-            this.pathReplayTargetConditionIndex = replayContract == null
-                    ? integer(json, "pathReplayTargetConditionIndex", -1)
-                    : replayContract.orderedPrefix().size();
             this.concreteGuardReplayProofs = new ArrayList<>();
             for (JsonElement proof : array(json,
                     "concreteGuardReplayProofs")) {
@@ -13179,6 +13159,12 @@ public final class ConcolicRegionRuntime {
             }
         }
 
+        /** Legacy directed-target discovery still reports schedule metadata.
+         * Contract-driven path replay reports only its immutable witness. */
+        private boolean emitsScheduledTargetEvidence() {
+            return replayContract == null && targetBranch != null;
+        }
+
         private static JsonObject requireObject(JsonElement value,
                                                 String label) {
             if (value == null || !value.isJsonObject()) {
@@ -13186,26 +13172,6 @@ public final class ConcolicRegionRuntime {
                         + " must be a JSON object");
             }
             return copyJsonTree(value.getAsJsonObject());
-        }
-
-        private static JsonArray replayPrefix(
-                BranchReplayContract contract) {
-            JsonArray result = new JsonArray();
-            int ordinal = 0;
-            for (BranchWitness witness : contract.orderedPrefix()) {
-                JsonObject row = new JsonObject();
-                row.addProperty("siteId", witness.siteId());
-                row.addProperty("occurrence", witness.occurrence());
-                row.addProperty("outcome",
-                        witness.sourceTakenOutcome());
-                row.addProperty("conditionIndex", ordinal);
-                row.addProperty("concreteGuardReplayProofRequired",
-                        BranchWitness.CERTIFIED_NO_PC.equals(
-                                witness.evidenceKind()));
-                result.add(row);
-                ordinal++;
-            }
-            return result;
         }
 
         private List<ContainerElementFieldBindingSpec>
@@ -13346,90 +13312,72 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean expectsPathReplayProofCatalog() {
-            return !pathQueryKey.isEmpty() && targetBranch != null
-                    && pathReplayTargetConditionIndex >= 0;
+            return !pathQueryKey.isEmpty() && replayContract != null;
         }
 
         private ExpectedConcreteGuardEvent replayEventForConstraint(
                 int conditionIndex) {
-            if (conditionIndex == pathReplayTargetConditionIndex
-                    && targetBranch != null) {
+            if (replayContract == null || conditionIndex < 0) return null;
+            int targetIndex = replayContract.orderedPrefix().size();
+            if (conditionIndex == targetIndex) {
+                BranchWitness source = replayContract.source();
                 return new ExpectedConcreteGuardEvent("TARGET", -1,
-                        targetBranch.siteId, targetBranch.occurrence,
-                        targetBranch.desiredOutcome, conditionIndex,
-                        targetBranch.concreteGuardReplayProofRequired);
+                        source.siteId(), source.occurrence(),
+                        replayContract.requiredTakenOutcome(),
+                        conditionIndex, BranchWitness.CERTIFIED_NO_PC.equals(
+                        source.evidenceKind()));
             }
-            ExpectedConcreteGuardEvent match = null;
-            for (int ordinal = 0; ordinal
-                    < expectedBranchPrefix.size(); ordinal++) {
-                JsonElement raw = expectedBranchPrefix.get(ordinal);
-                if (!raw.isJsonObject()) return null;
-                JsonObject row = raw.getAsJsonObject();
-                Integer sourceIndex = strictInteger(row,
-                        "conditionIndex", 0);
-                if (sourceIndex == null
-                        || sourceIndex != conditionIndex) continue;
-                Integer occurrence = strictInteger(row,
-                        "occurrence", 1);
-                Boolean outcome = strictBoolean(row, "outcome");
-                Boolean proofRequired = strictBoolean(row,
-                        "concreteGuardReplayProofRequired");
-                String siteId = strictString(row, "siteId");
-                if (occurrence == null || outcome == null
-                        || row.has("concreteGuardReplayProofRequired")
-                        && proofRequired == null
-                        || siteId.isEmpty() || match != null) {
-                    return null;
-                }
-                match = new ExpectedConcreteGuardEvent("PREFIX", ordinal,
-                        siteId, occurrence, outcome, conditionIndex,
-                        proofRequired == null || proofRequired);
-            }
-            return match;
+            if (conditionIndex >= targetIndex) return null;
+            BranchWitness witness = replayContract.orderedPrefix().get(
+                    conditionIndex);
+            return new ExpectedConcreteGuardEvent("PREFIX", conditionIndex,
+                    witness.siteId(), witness.occurrence(),
+                    witness.sourceTakenOutcome(), conditionIndex,
+                    BranchWitness.CERTIFIED_NO_PC.equals(
+                            witness.evidenceKind()));
         }
 
         private boolean proofMatchesReplayConstraint(
                 ConcreteGuardReplayProof proof) {
+            if (replayContract == null) return false;
+            JsonArray constraints = replayContract.requiredPathPredicates();
             if (proof == null || proof.constraintIndex < 0
                     || proof.constraintIndex
-                    >= pathReplayConstraints.size()
+                    >= constraints.size()
                     || !proof.condition.toString().equals(
-                    pathReplayConstraints.get(proof.constraintIndex)
+                    constraints.get(proof.constraintIndex)
                             .toString())) {
                 return false;
             }
             if ("TARGET".equals(proof.proofRole)) {
+                BranchWitness source = replayContract.source();
+                int targetIndex = replayContract.orderedPrefix().size();
                 return proof.expectedBranchPrefixOrdinal == -1
-                        && proof.sourceConditionIndex
-                        == pathReplayTargetConditionIndex
-                        && proof.constraintIndex
-                        == pathReplayTargetConditionIndex
+                        && proof.sourceConditionIndex == targetIndex
+                        && proof.constraintIndex == targetIndex
+                        && proof.siteId.equals(source.siteId())
+                        && proof.occurrence == source.occurrence()
+                        && proof.outcome
+                        == replayContract.requiredTakenOutcome()
                         && proof.condition.toString().equals(
-                        pathReplayNegatedCondition.toString());
+                        replayContract.requiredSatisfiedPredicate()
+                                .toString());
             }
             if (!"PREFIX".equals(proof.proofRole)
                     || proof.expectedBranchPrefixOrdinal < 0
                     || proof.expectedBranchPrefixOrdinal
-                    >= expectedBranchPrefix.size()) {
+                    >= replayContract.orderedPrefix().size()) {
                 return false;
             }
-            JsonElement rawExpected = expectedBranchPrefix.get(
+            BranchWitness expected = replayContract.orderedPrefix().get(
                     proof.expectedBranchPrefixOrdinal);
-            if (!rawExpected.isJsonObject()) return false;
-            JsonObject expected = rawExpected.getAsJsonObject();
-            Integer sourceIndex = strictInteger(expected,
-                    "conditionIndex", 0);
-            Integer occurrence = strictInteger(expected,
-                    "occurrence", 1);
-            Boolean outcome = strictBoolean(expected, "outcome");
-            return sourceIndex != null && occurrence != null
-                    && outcome != null
-                    && proof.sourceConditionIndex == sourceIndex
-                    && proof.constraintIndex == sourceIndex
-                    && proof.siteId.equals(strictString(expected,
-                    "siteId"))
-                    && proof.occurrence == occurrence
-                    && proof.outcome == outcome;
+            return proof.sourceConditionIndex
+                    == proof.expectedBranchPrefixOrdinal
+                    && proof.constraintIndex
+                    == proof.expectedBranchPrefixOrdinal
+                    && proof.siteId.equals(expected.siteId())
+                    && proof.occurrence == expected.occurrence()
+                    && proof.outcome == expected.sourceTakenOutcome();
         }
 
         private JsonArray concreteGuardReplayProofsJson() {

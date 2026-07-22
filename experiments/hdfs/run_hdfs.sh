@@ -273,8 +273,6 @@ usage() {
     echo "  derive-producer-groups [test] Derive schema-2 producer roles and witnesses"
     echo "  verify-relationships [test]   Prove symbolic relationships by negated SMT checks"
     echo "  project-composed-model [test] Project bounded Z3 model to upstream inputs"
-    echo "  validate-natural-replay [test] Validate an existing upstream-only replay"
-    echo "  run-natural-replay [test]     Project, instrument, replay, and validate"
     echo "  restore                       Recompile HDFS to restore original classes"
     echo ""
     echo "Fresh compose/project/replay environment:"
@@ -4249,20 +4247,18 @@ do_derive_producer_groups() {
     derive_producer_groups_resolved
 }
 
-resolve_natural_replay_paths() {
-    natural_dir=$(realpath -m \
-        "${CAUSYNTH_NATURAL_REPLAY_OUTPUT_DIR:-${target_schedule_dir}/natural-propagation-bounded-producer-groups}")
-    require_workspace_output_path "natural replay output directory" \
-        "${natural_dir}"
-    if [[ "${natural_dir}" == "${target_schedule_dir}" \
-            || "${natural_dir}" == "${composition_dir}" ]]; then
-        echo "[ERROR] Natural replay output must own a distinct fresh directory" >&2
+resolve_model_projection_paths() {
+    projection_dir=$(realpath -m \
+        "${CAUSYNTH_MODEL_PROJECTION_OUTPUT_DIR:-${target_schedule_dir}/model-projection-candidate}")
+    require_workspace_output_path "model projection output directory" \
+        "${projection_dir}"
+    if [[ "${projection_dir}" == "${target_schedule_dir}" \
+            || "${projection_dir}" == "${composition_dir}" ]]; then
+        echo "[ERROR] Model projection must own a distinct fresh directory" >&2
         return 1
     fi
-    natural_plan="${natural_dir}/activation_plan.jsonl"
-    projection_manifest="${natural_dir}/model_projection_manifest.json"
-    natural_results="${natural_dir}/concolic_region_results.jsonl"
-    natural_validation="${natural_dir}/natural_replay_validation.json"
+    projection_plan="${projection_dir}/activation_plan.jsonl"
+    projection_manifest="${projection_dir}/model_projection_manifest.json"
 }
 
 # A schema-2 producer catalog is derived from the final composition, so it
@@ -4473,7 +4469,7 @@ do_project_composed_model() {
     local -a producer_args=()
     resolve_target_context "${test_name}"
     resolve_composition_paths
-    resolve_natural_replay_paths
+    resolve_model_projection_paths
 
     producer_groups_catalog=""
     resolve_producer_group_paths
@@ -4520,8 +4516,8 @@ do_project_composed_model() {
             --upstream-region "${single_upstream_region}"
         )
     fi
-    prepare_fresh_output_directory "natural replay output directory" \
-        "${natural_dir}"
+    prepare_fresh_output_directory "model projection output directory" \
+        "${projection_dir}"
 
     "${graphchecker_java_bin}" -cp "${gc_jar}" \
         edu.uva.liftlab.graphchecker.concolic.ConcolicComposedModelProjector \
@@ -4534,9 +4530,10 @@ do_project_composed_model() {
         --fatal-query "${target_branch_queries}" \
         --target-activation-id "${target_activation_id}" \
         --z3 "${z3_binary}" \
-        --output "${natural_plan}" \
+        --output "${projection_plan}" \
         --manifest "${projection_manifest}"
-    require_nonempty_input "projected natural replay plan" "${natural_plan}"
+    require_nonempty_input "projected candidate model plan" \
+        "${projection_plan}"
     require_nonempty_input "model projection manifest" \
         "${projection_manifest}"
     if ! jq -e --arg activation "${target_activation_id}" '
@@ -4548,79 +4545,8 @@ do_project_composed_model() {
         return 1
     fi
     echo "[Concolic] producer mode: ${producer_mode}"
-    echo "[Concolic] upstream-only model plan: ${natural_plan}"
-}
-
-do_validate_natural_replay() {
-    local test_name="${1:-${causynth_workload_test}}"
-    resolve_target_context "${test_name}"
-    resolve_composition_paths
-    resolve_natural_replay_paths
-    require_nonempty_input "natural replay activation plan" "${natural_plan}"
-    require_nonempty_input "natural replay results" "${natural_results}"
-    require_nonempty_input "model projection manifest" \
-        "${projection_manifest}"
-    require_nonempty_input "GraphChecker jar" "${gc_jar}"
-    require_absent_output "natural replay validation" "${natural_validation}"
-    "${graphchecker_java_bin}" -cp "${gc_jar}" \
-        edu.uva.liftlab.graphchecker.concolic.ConcolicNaturalReplayValidator \
-        --plan "${natural_plan}" \
-        --results "${natural_results}" \
-        --projection-manifest "${projection_manifest}" \
-        --output "${natural_validation}" \
-        --expected-exception javax.security.sasl.SaslException \
-        --expected-exception org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException
-    echo "[Concolic] natural replay validation: ${natural_validation}"
-}
-
-do_run_natural_replay() {
-    local test_name="${1:-${causynth_workload_test}}"
-    local replay_classes replay_static replay_status=0
-    do_project_composed_model "${test_name}"
-    # do_project_composed_model resolved and created this turn's fresh natural
-    # directory.  Replay classes and replay-static output must be new children
-    # of that directory, so do_process_concolic's rm -rf cannot reach any
-    # historical v3/v4/v5 class snapshot or a campaign execution directory.
-    replay_classes=$(realpath -m \
-        "${CAUSYNTH_NATURAL_REPLAY_CLASSES_PATH:-${natural_dir}/concolic_classes}")
-    replay_static=$(realpath -m \
-        "${CAUSYNTH_NATURAL_REPLAY_STATIC_OUTPUT_DIR:-${natural_dir}/concolic-replay-static}")
-    case "${replay_classes}" in
-        "${natural_dir}"/*) ;;
-        *)
-            echo "[ERROR] Natural replay classes must be below ${natural_dir}: ${replay_classes}" >&2
-            return 1
-            ;;
-    esac
-    case "${replay_static}" in
-        "${natural_dir}"/*) ;;
-        *)
-            echo "[ERROR] Natural replay static output must be below ${natural_dir}: ${replay_static}" >&2
-            return 1
-            ;;
-    esac
-    if [[ "${replay_classes}" == "${replay_static}" ]] \
-            || [[ "${replay_classes}" == "${replay_static}"/* ]] \
-            || [[ "${replay_static}" == "${replay_classes}"/* ]]; then
-        echo "[ERROR] Natural replay classes and static output must be disjoint directories" >&2
-        return 1
-    fi
-    require_absent_output "natural replay classes" "${replay_classes}"
-    require_absent_output "natural replay static output" "${replay_static}"
-    require_absent_output "natural replay results" "${natural_results}"
-    concolic_classes_path="${replay_classes}"
-    CAUSYNTH_CONCOLIC_CLASSES_ALLOWED_EXACT="${replay_classes}" \
-    CAUSYNTH_CONCOLIC_STATIC_OUTPUT_DIR="${replay_static}" \
-        do_process_concolic "${natural_plan}" ALL
-    # A target exception can make Surefire exit non-zero.  Validation, not the
-    # process status, decides success and requires every bounded producer,
-    # the exact target observation, and zero downstream shortcuts.
-    do_replay_concolic "${natural_plan}" ALL "${test_name}" \
-        || replay_status=$?
-    if [[ "${replay_status}" -ne 0 ]]; then
-        echo "[Concolic] replay test exited ${replay_status}; validating the captured target failure"
-    fi
-    do_validate_natural_replay "${test_name}"
+    echo "[Concolic] candidate model plan: ${projection_plan}"
+    echo "[Concolic] TODO: natural replay promotion is intentionally not implemented"
 }
 
 validate_native_runtime_region_catalog() {
@@ -5857,12 +5783,6 @@ case "${cmd}" in
         ;;
     project-composed-model)
         timing "project-composed-model" do_project_composed_model "${1:-}"
-        ;;
-    validate-natural-replay)
-        timing "validate-natural-replay" do_validate_natural_replay "${1:-}"
-        ;;
-    run-natural-replay)
-        timing "run-natural-replay" do_run_natural_replay "${1:-}"
         ;;
     restore)
         timing "restore" do_restore

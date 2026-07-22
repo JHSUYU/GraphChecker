@@ -503,7 +503,7 @@ public class BooleanReachConditionExtractorTest {
     }
 
     @Test
-    public void booleanRootMustHaveExactlyOneMappingInEveryRegionCase()
+    public void shortCircuitCaseMayOmitAnUnusedBooleanRootMapping()
             throws Exception {
         Fixture fixture = fixture();
         JsonObject firstCase = fixture.manifest.getAsJsonArray(
@@ -531,15 +531,22 @@ public class BooleanReachConditionExtractorTest {
                         fixture.relationships, smt -> {
                             invocations[0]++;
                             return new BooleanReachConditionExtractor
-                                    .SolverResult("sat", "sat");
+                                    .SolverResult(smt.contains(
+                                    "(assert (not true))")
+                                    ? "unsat" : "sat", smt.contains(
+                                    "(assert (not true))")
+                                    ? "unsat" : "sat");
                         }, 8, 256);
 
-        assertFalse(extraction.report.get("complete").getAsBoolean());
-        assertEquals(0, invocations[0]);
-        assertTrue(extraction.report.getAsJsonArray("discoveryGaps")
-                .toString().contains(
-                        "BOOLEAN_CASE_MAPPING_COVERAGE_MISMATCH:"
-                                + "ROOT.A.in.0:2"));
+        assertTrue(extraction.report.toString(), extraction.report.get(
+                "complete").getAsBoolean());
+        assertTrue(invocations[0] > 0);
+        assertFalse(extraction.report.getAsJsonArray("discoveryGaps")
+                .toString().contains("CASE_MAPPING"));
+        JsonArray evidence = extraction.report.getAsJsonArray(
+                "rootBooleanInputs").get(0).getAsJsonObject()
+                .getAsJsonArray("caseProjectionEvidence");
+        assertEquals(1, evidence.size());
     }
 
     @Test
@@ -869,6 +876,9 @@ public class BooleanReachConditionExtractorTest {
         mapping.addProperty("termKind", "CANONICAL_PORT_TERM");
         if ("STRING".equals(sort)) {
             mapping.addProperty("nullnessSolverTerm",
+                    "sym__port__" + smtName(port)
+                            + "__string_is_null");
+            mapping.addProperty("canonicalNullnessSolverTerm",
                     "sym__port__" + smtName(port)
                             + "__string_is_null");
             mapping.addProperty("nullableStringEncodingAuthority",
