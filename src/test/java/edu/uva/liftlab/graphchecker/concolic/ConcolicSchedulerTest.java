@@ -17,6 +17,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ConcolicSchedulerTest {
     private static final String ROOT = "<example.Server: void receive()>";
@@ -107,6 +108,55 @@ public class ConcolicSchedulerTest {
                     "scheduled_activation_plan.jsonl")));
             assertTrue(Files.isRegularFile(fixture.output.resolve(
                     "symbolic_merge_plan.json")));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void runtimeDefinitionMethodsMustBeExplicitStringArray()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), false);
+            JsonObject activation = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.activations),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            activation.remove("runtimeDefinitionMethods");
+            JsonArray observed = new JsonArray();
+            observed.add(CALLBACK);
+            activation.add("observedMethods", observed);
+            Files.write(fixture.activations, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            ConcolicScheduler.Arguments arguments =
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan", fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--output-dir", fixture.output.toString(),
+                            "--region-id", "REGION.0"});
+            try {
+                ConcolicScheduler.schedule(arguments);
+                fail("observedMethods must not replace canonical runtime definitions");
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage().contains(
+                        "runtimeDefinitionMethods array"));
+            }
+
+            JsonArray malformed = new JsonArray();
+            malformed.add(7);
+            activation.add("runtimeDefinitionMethods", malformed);
+            Files.write(fixture.activations, (activation + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            try {
+                ConcolicScheduler.schedule(arguments);
+                fail("numeric runtime method must fail closed");
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage().contains(
+                        "non-string value"));
+            }
         } finally {
             folder.delete();
         }
@@ -472,6 +522,8 @@ public class ConcolicSchedulerTest {
                     + "\"regionId\":\"REGION.11\","
                     + "\"test\":\"testMiniDfs\","
                     + "\"rootMethod\":\"<example.Updater: void run()>\","
+                    + "\"runtimeDefinitionMethods\":["
+                    + "\"<example.Updater: void run()>\"],"
                     + "\"invocationOrdinal\":1,\"replayable\":true,"
                     + "\"symbolicReady\":true,"
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
@@ -731,6 +783,8 @@ public class ConcolicSchedulerTest {
                     + "\"regionId\":\"REGION.1\","
                     + "\"test\":\"testMiniDfs\","
                     + "\"rootMethod\":\"<example.Client: void send()>\","
+                    + "\"runtimeDefinitionMethods\":["
+                    + "\"<example.Client: void send()>\"],"
                     + "\"invocationOrdinal\":1,\"replayable\":true,"
                     + "\"symbolicReady\":true,"
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
@@ -882,6 +936,7 @@ public class ConcolicSchedulerTest {
                     + "\"regionId\":\"REGION.11\","
                     + "\"test\":\"testMiniDfs\","
                     + "\"rootMethod\":\"" + root + "\","
+                    + "\"runtimeDefinitionMethods\":[\"" + root + "\"],"
                     + "\"invocationOrdinal\":1,\"replayable\":true,"
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
                     + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
@@ -963,6 +1018,7 @@ public class ConcolicSchedulerTest {
                     + "\"regionId\":\"REGION.11\","
                     + "\"test\":\"testMiniDfs\","
                     + "\"rootMethod\":\"" + root + "\","
+                    + "\"runtimeDefinitionMethods\":[\"" + root + "\"],"
                     + "\"invocationOrdinal\":1,\"replayable\":true,"
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
                     + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
@@ -1027,6 +1083,7 @@ public class ConcolicSchedulerTest {
                     + "\"regionId\":\"REGION.11\","
                     + "\"test\":\"testMiniDfs\","
                     + "\"rootMethod\":\"" + root + "\","
+                    + "\"runtimeDefinitionMethods\":[\"" + root + "\"],"
                     + "\"invocationOrdinal\":1,\"replayable\":true,"
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
                     + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
@@ -1555,7 +1612,8 @@ public class ConcolicSchedulerTest {
             if (row.trim().isEmpty()) continue;
             JsonObject edge = JsonParser.parseString(row).getAsJsonObject();
             if ("E.SASL".equals(edge.get("edgeId").getAsString())) {
-                JsonObject evidence = edge.getAsJsonArray("evidence")
+                JsonObject evidence = edge.getAsJsonArray(
+                        "validatedBindings")
                         .get(0).getAsJsonObject().deepCopy();
                 evidence.addProperty("fromRegionInstance",
                         "REGION.1@test#call1");
@@ -1566,7 +1624,7 @@ public class ConcolicSchedulerTest {
                 evidence.addProperty("orderConfirmed", writer < reader);
                 JsonArray singleton = new JsonArray();
                 singleton.add(evidence);
-                edge.add("evidence", singleton);
+                edge.add("validatedBindings", singleton);
                 found = true;
             }
             rewritten.add(edge);
@@ -1592,7 +1650,8 @@ public class ConcolicSchedulerTest {
             if (row.trim().isEmpty()) continue;
             JsonObject edge = JsonParser.parseString(row).getAsJsonObject();
             if ("E.SASL".equals(edge.get("edgeId").getAsString())) {
-                JsonArray current = edge.getAsJsonArray("evidence");
+                JsonArray current = edge.getAsJsonArray(
+                        "validatedBindings");
                 JsonObject duplicate = current.get(0).getAsJsonObject()
                         .deepCopy();
                 duplicate.addProperty("fromEndpointSeq", writer);
@@ -1603,7 +1662,7 @@ public class ConcolicSchedulerTest {
                 for (JsonElement element : current) {
                     repeated.add(element.deepCopy());
                 }
-                edge.add("evidence", repeated);
+                edge.add("validatedBindings", repeated);
                 found = true;
             }
             content.append(edge).append('\n');
@@ -1715,6 +1774,9 @@ public class ConcolicSchedulerTest {
                 + "\"regionInstanceId\":\"REGION.0@testMiniDfs#call7\","
                 + "\"rootCallId\":7,\"test\":\"testMiniDfs\","
                 + "\"rootMethod\":\"" + ROOT + "\","
+                + "\"runtimeDefinitionMethods\":[\"" + ROOT + "\","
+                + "\"" + CALLBACK + "\","
+                + "\"<example.Manager: byte[] lookup(int)>\"],"
                 + "\"receiverType\":\"example.Server\","
                 + "\"receiverRuntimeClass\":\"example.Server\","
                 + "\"threadName\":\"rpc-handler\","
@@ -1763,11 +1825,18 @@ public class ConcolicSchedulerTest {
                 + "\"discoveredExecutionId\":\"EXEC.fixture\","
                 + "\"eligibleForAutomaticDerivation\":true,"
                 + "\"eligibleForAutomaticSmt\":true,"
-                + "\"composable\":true,\"evidence\":[{"
+                + "\"composable\":true,\"validatedBindings\":[{"
+                + "\"fromRegionInstance\":\"REGION.1@test#call1\","
+                + "\"toRegionInstance\":"
+                + "\"REGION.0@testMiniDfs#call7\","
                 + "\"valueEqualityObserved\":true,"
                 + "\"valueEqualityAuthority\":"
                 + "\"RUNTIME_COMPLETE_VALUE_FINGERPRINT\","
-                + "\"valueFingerprint\":\"sha256:fixture\"}]}\n"
+                + "\"valueFingerprint\":\"sha256:fixture\","
+                + "\"endpointOrderAuthority\":"
+                + "\"GLOBAL_TRACE_ENDPOINT_SEQUENCE\","
+                + "\"fromEndpointSeq\":10,\"toEndpointSeq\":20,"
+                + "\"orderConfirmed\":true}]}\n"
                 + "{\"edgeId\":\"E.STATE\","
                 + "\"fromRegion\":\"REGION.11\","
                 + "\"toRegion\":\"REGION.0\","

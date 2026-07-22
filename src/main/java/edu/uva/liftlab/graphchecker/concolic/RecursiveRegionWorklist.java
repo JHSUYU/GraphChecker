@@ -676,13 +676,13 @@ public final class RecursiveRegionWorklist {
                         "ACTIVATION_OUTPUT_SLICE_INCOMPLETE", "NONE");
             }
             Set<String> inputs = new TreeSet<>();
-            if (hasArray(slice, "inputPorts")) {
-                inputs.addAll(primitiveStringSet(array(slice, "inputPorts")));
-            } else {
-                addActionSymbols(inputs, array(activation, "symbolize"));
-                addActionSymbols(inputs, array(activation,
-                        "materializations"));
+            if (!hasArray(slice, "inputPorts")) {
+                return DependencyClosure.gap(
+                        "INCOMPLETE_OUTPUT_DEPENDENCY_CLOSURE",
+                        "ACTIVATION_OUTPUT_SLICE_HAS_NO_INPUT_PORT_SET",
+                        "NONE");
             }
+            inputs.addAll(primitiveStringSet(array(slice, "inputPorts")));
             return DependencyClosure.complete(inputs,
                     "COMPLETE_OUTPUT_ACTIVATION_SLICE");
         }
@@ -697,17 +697,6 @@ public final class RecursiveRegionWorklist {
             JsonObject output = outputs.get(0).getAsJsonObject();
             return expected.matches(string(output, "portId"))
                     || expected.matches(string(output, "cell"));
-        }
-
-        private void addActionSymbols(Set<String> inputs,
-                                      JsonArray actions) {
-            for (JsonElement element : actions) {
-                if (!element.isJsonObject()) continue;
-                String input = firstNonBlank(string(
-                        element.getAsJsonObject(), "symbol"), string(
-                        element.getAsJsonObject(), "inputPort"));
-                if (!input.isEmpty()) inputs.add(canonicalPort(input));
-            }
         }
 
         private DependencyClosure summaryDependencies(JsonObject summary,
@@ -1272,9 +1261,7 @@ public final class RecursiveRegionWorklist {
 
         private JsonArray runtimeBindings(JsonObject edge,
                                           String downstreamInstance) {
-            JsonArray validated = array(edge, "validatedBindings");
-            JsonArray source = validated.size() > 0
-                    ? validated : array(edge, "evidence");
+            JsonArray source = array(edge, "validatedBindings");
             if (downstreamInstance == null
                     || downstreamInstance.isEmpty()) return source;
             JsonArray exact = new JsonArray();

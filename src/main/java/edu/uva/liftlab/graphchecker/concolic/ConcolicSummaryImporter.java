@@ -348,8 +348,8 @@ public final class ConcolicSummaryImporter {
                     requestedOutputSliceOperationallyAdmitted);
             summary.addProperty("requestedOutputSlicePolicy", string(
                     activation, "requestedOutputSlicePolicy"));
-            summary.add("edgeBindings", copy(firstElement(activation,
-                    "edgeBindings", "producerBindings"), new JsonArray()));
+            summary.add("edgeBindings", copy(activation.get("edgeBindings"),
+                    new JsonArray()));
             summary.add("pathCondition", pathCondition.deepCopy());
             summary.add("branchMappings", normalizeBranchMappings(
                     rawBranchMappings, normalization));

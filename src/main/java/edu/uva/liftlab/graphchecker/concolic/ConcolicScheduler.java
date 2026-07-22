@@ -275,8 +275,8 @@ public final class ConcolicScheduler {
                 upstreamCaptureJobCount++;
                 JsonElement requestedOutput = candidate.activation.get(
                         "requestedOutput");
-                JsonElement edgeBindings = firstElement(scheduledActivation,
-                        "edgeBindings", "producerBindings");
+                JsonElement edgeBindings = scheduledActivation.get(
+                        "edgeBindings");
                 job.add("requestedOutput", requestedOutput == null
                         ? new JsonObject() : requestedOutput.deepCopy());
                 job.add("edgeBindings", edgeBindings == null
@@ -616,7 +616,7 @@ public final class ConcolicScheduler {
             }
             RegionCaptureGoal captureGoal = RegionCaptureGoal.from(activation);
             Set<String> definitionMethods = runtimeDefinitionMethods(
-                    activation, region.methods);
+                    activation);
             if (captureGoal.isOutputClosure()) {
                 MaterializationPlan upstreamPlan = materializationPlan(
                         activation, definitions, definitionMethods);
@@ -678,17 +678,30 @@ public final class ConcolicScheduler {
     /** Restricts static definition lookup to the concrete runtime call
      * closure selected before the frozen-graph demand re-slice. */
     private static Set<String> runtimeDefinitionMethods(
-            JsonObject activation, Set<String> staticRegionMethods) {
-        if (activation.has("runtimeDefinitionMethods")) {
-            return stringSet(activation, "runtimeDefinitionMethods");
+            JsonObject activation) {
+        JsonElement encoded = activation.get("runtimeDefinitionMethods");
+        if (encoded == null || !encoded.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "activation requires runtimeDefinitionMethods array: "
+                            + string(activation, "activationId"));
         }
-        if (activation.has("observedMethods")) {
-            return stringSet(activation, "observedMethods");
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonPrimitive()
+                    || !element.getAsJsonPrimitive().isString()) {
+                throw new IllegalArgumentException(
+                        "runtimeDefinitionMethods contains non-string value: "
+                                + string(activation, "activationId"));
+            }
+            String method = safe(element.getAsString()).trim();
+            if (method.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "runtimeDefinitionMethods contains empty method: "
+                                + string(activation, "activationId"));
+            }
+            result.add(method);
         }
-        // Compatibility for activation catalogs created before runtime call
-        // closure selection was persisted.  New catalogs never take this
-        // broad method path.
-        return new LinkedHashSet<>(staticRegionMethods);
+        return result;
     }
 
     /**
@@ -2843,32 +2856,6 @@ public final class ConcolicScheduler {
         }
     }
 
-    private static JsonObject branchMapping(JsonObject summary, String siteId,
-                                            int occurrence) {
-        int seen = 0;
-        JsonObject legacyMatch = new JsonObject();
-        for (JsonElement element : array(summary, "branchMappings")) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject mapping = element.getAsJsonObject();
-            if (siteId.equals(string(mapping, "siteId"))) {
-                int declaredOccurrence = integer(mapping, "occurrence", -1);
-                if (declaredOccurrence == occurrence) {
-                    return mapping;
-                }
-                if (declaredOccurrence >= 0) {
-                    continue;
-                }
-                seen++;
-                if (seen == occurrence) {
-                    legacyMatch = mapping;
-                }
-            }
-        }
-        return legacyMatch;
-    }
-
     private static String workloadKind(Candidate candidate,
                                        List<JsonObject> edges) {
         for (JsonObject edge : edges) {
@@ -2889,8 +2876,7 @@ public final class ConcolicScheduler {
     }
 
     private static JsonArray runtimeBindings(JsonObject edge) {
-        JsonArray validated = array(edge, "validatedBindings");
-        return validated.size() > 0 ? validated : array(edge, "evidence");
+        return array(edge, "validatedBindings");
     }
 
     /**
@@ -3603,8 +3589,7 @@ public final class ConcolicScheduler {
             if (region.isEmpty() || instance.isEmpty()) return;
 
             JsonArray bindings = new JsonArray();
-            JsonElement existing = firstElement(activation, "edgeBindings",
-                    "producerBindings");
+            JsonElement existing = activation.get("edgeBindings");
             if (existing != null && existing.isJsonArray()) {
                 for (JsonElement element : existing.getAsJsonArray()) {
                     bindings.add(element.deepCopy());

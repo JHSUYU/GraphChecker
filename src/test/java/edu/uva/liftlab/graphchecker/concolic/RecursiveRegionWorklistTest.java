@@ -1049,6 +1049,23 @@ public class RecursiveRegionWorklistTest {
             value.addProperty("confirmedValueEqualityPairCount", 1);
             value.addProperty("valueEqualityAuthority",
                     "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
+            JsonObject binding = new JsonObject();
+            binding.addProperty("fromRegionInstance",
+                    fromRegion + "@test#runtime");
+            binding.addProperty("toRegionInstance",
+                    toRegion + "@test#runtime");
+            binding.addProperty("valueEqualityObserved", true);
+            binding.addProperty("valueEqualityAuthority",
+                    "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
+            binding.addProperty("valueFingerprint", "sha256:" + id);
+            binding.addProperty("endpointOrderAuthority",
+                    "GLOBAL_TRACE_ENDPOINT_SEQUENCE");
+            binding.addProperty("fromEndpointSeq", 1);
+            binding.addProperty("toEndpointSeq", 2);
+            binding.addProperty("orderConfirmed", true);
+            JsonArray bindings = new JsonArray();
+            bindings.add(binding);
+            value.add("validatedBindings", bindings);
         }
         value.add("evidence", new JsonArray());
         return value;

@@ -9724,11 +9724,8 @@ public final class ConcolicSmtComposer {
                 ? element.getAsJsonArray() : new JsonArray();
     }
 
-    /** Reads the neutral schema first and accepts the old name only here. */
     private static JsonArray edgeBindings(JsonObject object) {
-        JsonArray current = array(object, "edgeBindings");
-        if (object != null && object.has("edgeBindings")) return current;
-        return array(object, "producerBindings");
+        return array(object, "edgeBindings");
     }
 
     private static JsonObject object(JsonObject object, String field) {

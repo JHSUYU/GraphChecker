@@ -32,6 +32,21 @@ public class AutomaticRegionEdgeTest {
                 "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
         edge.addProperty("eligibleForAutomaticDerivation", true);
         edge.addProperty("eligibleForAutomaticSmt", true);
+        JsonArray diagnostic = new JsonArray();
+        diagnostic.add(new JsonObject());
+        edge.add("evidence", diagnostic);
+
+        assertFalse("diagnostic evidence is not a composable binding",
+                AutomaticRegionEdge.composable(edge));
+
+        JsonArray bindings = new JsonArray();
+        bindings.add(new JsonObject());
+        edge.add("validatedBindings", bindings);
+
+        assertFalse("an empty canonical binding must fail closed",
+                AutomaticRegionEdge.composable(edge));
+
+        bindings.set(0, runtimeEqualityEvidence());
 
         assertTrue(AutomaticRegionEdge.composable(edge));
         assertTrue(AutomaticRegionEdge.discoverable(edge));
@@ -42,6 +57,45 @@ public class AutomaticRegionEdgeTest {
         edge.addProperty("eligibleForAutomaticSmt", true);
         edge.addProperty("valueEqualityAuthority", "RUNTIME_UNTRUSTED_ALIAS");
         assertFalse(AutomaticRegionEdge.composable(edge));
+    }
+
+    @Test
+    public void runtimeEqualityWitnessTamperingFailsClosed() {
+        JsonObject complete = runtimeEqualityEvidence();
+        assertTrue(AutomaticRegionEdge
+                .trustedRuntimeValueEqualityEvidence(complete));
+
+        for (String field : new String[]{"fromRegionInstance",
+                "toRegionInstance", "valueEqualityAuthority",
+                "valueFingerprint", "endpointOrderAuthority",
+                "fromEndpointSeq", "toEndpointSeq"}) {
+            JsonObject tampered = complete.deepCopy();
+            tampered.remove(field);
+            assertFalse(field, AutomaticRegionEdge
+                    .trustedRuntimeValueEqualityEvidence(tampered));
+        }
+        JsonObject unobserved = complete.deepCopy();
+        unobserved.addProperty("valueEqualityObserved", false);
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeValueEqualityEvidence(unobserved));
+
+        JsonObject unordered = complete.deepCopy();
+        unordered.addProperty("orderConfirmed", false);
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeValueEqualityEvidence(unordered));
+
+        JsonObject reversed = complete.deepCopy();
+        reversed.addProperty("toEndpointSeq", 9);
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeValueEqualityEvidence(reversed));
+
+        JsonObject aliases = complete.deepCopy();
+        aliases.remove("fromEndpointSeq");
+        aliases.remove("toEndpointSeq");
+        aliases.addProperty("writerEventSeq", 10);
+        aliases.addProperty("readerEventSeq", 20);
+        assertTrue(AutomaticRegionEdge
+                .trustedRuntimeValueEqualityEvidence(aliases));
     }
 
     @Test
@@ -171,6 +225,22 @@ public class AutomaticRegionEdgeTest {
         edge.addProperty("validatedRelation", "EQUALITY");
         edge.addProperty("composable", true);
         return edge;
+    }
+
+    private static JsonObject runtimeEqualityEvidence() {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("fromRegionInstance", "REGION.UP@call1");
+        binding.addProperty("toRegionInstance", "REGION.DOWN@call2");
+        binding.addProperty("valueEqualityObserved", true);
+        binding.addProperty("valueEqualityAuthority",
+                "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
+        binding.addProperty("valueFingerprint", "sha256:complete");
+        binding.addProperty("endpointOrderAuthority",
+                AutomaticRegionEdge.VALUE_EQUALITY_ORDER_AUTHORITY);
+        binding.addProperty("orderConfirmed", true);
+        binding.addProperty("fromEndpointSeq", 10);
+        binding.addProperty("toEndpointSeq", 20);
+        return binding;
     }
 
     private static JsonObject containerMutationBinding() {
