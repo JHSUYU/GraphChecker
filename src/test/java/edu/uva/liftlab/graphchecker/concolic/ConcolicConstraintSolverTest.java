@@ -22,7 +22,7 @@ public class ConcolicConstraintSolverTest {
     public void z3ModelIsMappedToARealInputMaterialization() throws Exception {
         Assume.assumeTrue(z3Available());
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(binary(">", 3)),
+                solveForTest(task(binary(">", 3)),
                         activation(), Paths.get("z3"), 10_000L);
 
         assertEquals("SAT_MODEL_READY",
@@ -45,7 +45,7 @@ public class ConcolicConstraintSolverTest {
         task.getAsJsonArray("constraints").add(binary("<", 0));
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("UNSAT", result.record.get("status").getAsString());
@@ -58,7 +58,7 @@ public class ConcolicConstraintSolverTest {
         unsupported.addProperty("_type", "UNSUPPORTED_TEST_NODE");
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(unsupported), activation(),
+                solveForTest(task(unsupported), activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("UNSUPPORTED",
@@ -82,7 +82,7 @@ public class ConcolicConstraintSolverTest {
         task.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -117,7 +117,7 @@ public class ConcolicConstraintSolverTest {
         positiveTask.add("constraints", positiveConstraints);
 
         ConcolicConstraintSolver.Result positive =
-                ConcolicConstraintSolver.solve(positiveTask, activation(),
+                solveForTest(positiveTask, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(positive.record.toString(), "SAT_MODEL_READY",
@@ -152,7 +152,7 @@ public class ConcolicConstraintSolverTest {
         nullConstraints.add(symmetricNull);
         nullTask.add("constraints", nullConstraints);
         ConcolicConstraintSolver.Result nullable =
-                ConcolicConstraintSolver.solve(nullTask, activation(),
+                solveForTest(nullTask, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(nullable.record.toString(), "SAT_MODEL_READY",
@@ -178,7 +178,7 @@ public class ConcolicConstraintSolverTest {
         query.add("negatedCondition", isNull.deepCopy());
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -211,7 +211,7 @@ public class ConcolicConstraintSolverTest {
         query.add("negatedCondition", isNull.deepCopy());
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -240,7 +240,7 @@ public class ConcolicConstraintSolverTest {
         query.add("negatedCondition", nonNull.deepCopy());
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
@@ -276,7 +276,7 @@ public class ConcolicConstraintSolverTest {
         replay.add("materializations", materializations);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, replay,
+                solveForTest(query, replay,
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -316,7 +316,7 @@ public class ConcolicConstraintSolverTest {
         replay.add("materializations", materializations);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, replay,
+                solveForTest(query, replay,
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -361,7 +361,7 @@ public class ConcolicConstraintSolverTest {
         task.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "UNSAT",
@@ -384,7 +384,7 @@ public class ConcolicConstraintSolverTest {
                 reference);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(equality), activation(),
+                solveForTest(task(equality), activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "UNSUPPORTED",
@@ -398,7 +398,7 @@ public class ConcolicConstraintSolverTest {
         String secondRaw =
                 "M_L'String'_field_REGION.3.in.1_example/Input";
         ConcolicConstraintSolver.Result distinctStrings =
-                ConcolicConstraintSolver.solve(task(binaryExpression(
+                solveForTest(task(binaryExpression(
                                 stringSymbol(firstRaw), "==",
                                 stringSymbol(secondRaw))), activation(),
                         Paths.get("z3"), 10_000L);
@@ -414,7 +414,7 @@ public class ConcolicConstraintSolverTest {
         JsonObject self = binaryExpression(stringSymbol(firstRaw), "==",
                 stringSymbol(firstRaw));
         ConcolicConstraintSolver.Result selfComparison =
-                ConcolicConstraintSolver.solve(task(self), activation(),
+                solveForTest(task(self), activation(),
                         Paths.get("z3"), 10_000L);
         assertEquals(selfComparison.record.toString(), "SAT_MODEL_READY",
                 selfComparison.record.get("status").getAsString());
@@ -454,7 +454,7 @@ public class ConcolicConstraintSolverTest {
         task.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -502,7 +502,7 @@ public class ConcolicConstraintSolverTest {
         task.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
         String unsupported = result.record.getAsJsonArray("unsupported")
                 .toString();
@@ -552,7 +552,7 @@ public class ConcolicConstraintSolverTest {
         activation.add("materializations", materializations);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation,
+                solveForTest(task, activation,
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -612,7 +612,7 @@ public class ConcolicConstraintSolverTest {
         activation.add("materializations", materializations);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation,
+                solveForTest(task, activation,
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "UNSAT",
@@ -632,7 +632,7 @@ public class ConcolicConstraintSolverTest {
         JsonObject wrappedInt = binaryExpression(
                 intConstant(10), "+", intInput.deepCopy());
         ConcolicConstraintSolver.Result intResult =
-                ConcolicConstraintSolver.solve(task(binaryExpression(
+                solveForTest(task(binaryExpression(
                                 wrappedInt, "<", intConstant(0))),
                         activation(), Paths.get("z3"), 10_000L);
 
@@ -660,7 +660,7 @@ public class ConcolicConstraintSolverTest {
         longTask.add("constraints", longConstraints);
 
         ConcolicConstraintSolver.Result longResult =
-                ConcolicConstraintSolver.solve(longTask, activation(),
+                solveForTest(longTask, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(longResult.record.toString(), "SAT_MODEL_READY",
@@ -680,7 +680,7 @@ public class ConcolicConstraintSolverTest {
                     "M_D_field_REGION.3.in.0_example/Input", "D", ">",
                     "D", value);
             ConcolicConstraintSolver.Result result =
-                    ConcolicConstraintSolver.solve(task(condition),
+                    solveForTest(task(condition),
                             activation(), Paths.get("z3"), 10_000L);
 
             assertEquals(result.record.toString(), "UNSAT",
@@ -694,7 +694,7 @@ public class ConcolicConstraintSolverTest {
                 "M_D_field_REGION.3.in.0_example/Input", "D", ">",
                 "D", "-inf");
         ConcolicConstraintSolver.Result satisfiable =
-                ConcolicConstraintSolver.solve(
+                solveForTest(
                         task(greaterThanNegativeInfinity), activation(),
                         Paths.get("z3"), 10_000L);
         assertEquals(satisfiable.record.toString(), "SAT_MODEL_READY",
@@ -713,7 +713,7 @@ public class ConcolicConstraintSolverTest {
                 input.deepCopy());
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(isNaN), activation(),
+                solveForTest(task(isNaN), activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -759,7 +759,7 @@ public class ConcolicConstraintSolverTest {
         query.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -798,7 +798,7 @@ public class ConcolicConstraintSolverTest {
         query.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -864,7 +864,7 @@ public class ConcolicConstraintSolverTest {
         query.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "sat",
@@ -905,7 +905,7 @@ public class ConcolicConstraintSolverTest {
         query.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
         String unsupported = result.record.getAsJsonArray("unsupported")
                 .toString();
@@ -951,7 +951,7 @@ public class ConcolicConstraintSolverTest {
         query.add("constraints", constraints);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(query, activation(),
+                solveForTest(query, activation(),
                         Paths.get("z3"), 10_000L);
         String unsupported = result.record.getAsJsonArray("unsupported")
                 .toString();
@@ -976,7 +976,7 @@ public class ConcolicConstraintSolverTest {
         condition.add("_right", currentTimePlaceholder(1));
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(condition), activation(),
+                solveForTest(task(condition), activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -1021,7 +1021,7 @@ public class ConcolicConstraintSolverTest {
         activation.add("materializations", materializations);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation,
+                solveForTest(task, activation,
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -1067,7 +1067,7 @@ public class ConcolicConstraintSolverTest {
         activation.add("materializations", materializations);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(binarySymbol(raw,
+                solveForTest(task(binarySymbol(raw,
                                 ">=", 10)), activation,
                         Paths.get("z3"), 10_000L);
 
@@ -1087,7 +1087,7 @@ public class ConcolicConstraintSolverTest {
         condition.add("_right", placeholder);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(condition), activation(),
+                solveForTest(task(condition), activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("UNSUPPORTED",
@@ -1106,7 +1106,7 @@ public class ConcolicConstraintSolverTest {
                 "A[_2.length");
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task(condition), activation(),
+                solveForTest(task(condition), activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("MATERIALIZATION_GAP",
@@ -1135,7 +1135,7 @@ public class ConcolicConstraintSolverTest {
         task.add("dynamicFieldBindings", bindings);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("SAT_MODEL_READY",
@@ -1173,7 +1173,7 @@ public class ConcolicConstraintSolverTest {
         task.add("dynamicFieldBindings", bindings);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, containerActivation(),
+                solveForTest(task, containerActivation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -1266,7 +1266,7 @@ public class ConcolicConstraintSolverTest {
         activation.add("symbolize", declared);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation,
+                solveForTest(task, activation,
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -1301,7 +1301,7 @@ public class ConcolicConstraintSolverTest {
             bindings.add(binding);
             task.add("dynamicFieldBindings", bindings);
             ConcolicConstraintSolver.Result result =
-                    ConcolicConstraintSolver.solve(task,
+                    solveForTest(task,
                             containerActivation(), Paths.get("z3"),
                             10_000L);
             assertEquals("MATERIALIZATION_GAP",
@@ -1330,7 +1330,7 @@ public class ConcolicConstraintSolverTest {
         task.add("dynamicFieldBindings", bindings);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
@@ -1362,7 +1362,7 @@ public class ConcolicConstraintSolverTest {
             JsonObject task = task(binarySymbol(engine, ">", 3));
             task.add("dynamicFieldBindings", bindings.deepCopy());
             ConcolicConstraintSolver.Result result =
-                    ConcolicConstraintSolver.solve(task, activation(),
+                    solveForTest(task, activation(),
                             Paths.get("z3"), 10_000L);
             assertEquals(engine + ": " + result.record,
                     "MATERIALIZATION_GAP",
@@ -1384,7 +1384,7 @@ public class ConcolicConstraintSolverTest {
         task.add("dynamicFieldBindings", bindings);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("MATERIALIZATION_GAP",
@@ -1406,7 +1406,7 @@ public class ConcolicConstraintSolverTest {
         task.add("dynamicFieldBindings", bindings);
 
         ConcolicConstraintSolver.Result result =
-                ConcolicConstraintSolver.solve(task, activation(),
+                solveForTest(task, activation(),
                         Paths.get("z3"), 10_000L);
 
         assertEquals("MATERIALIZATION_GAP",
@@ -1443,6 +1443,46 @@ public class ConcolicConstraintSolverTest {
         container.addProperty("bindingMode", "FIELD_ACCESS");
         activation.getAsJsonArray("materializations").add(container);
         return activation;
+    }
+
+    /** Adapts expression-focused unit fixtures to the production protocol. */
+    private static ConcolicConstraintSolver.Result solveForTest(
+            JsonObject legacyExpressionFixture, JsonObject activation,
+            java.nio.file.Path z3, long timeoutMillis) throws Exception {
+        JsonObject task = legacyExpressionFixture.deepCopy();
+        JsonArray constraints = task.getAsJsonArray("constraints");
+        if (constraints == null || constraints.size() == 0) {
+            throw new IllegalArgumentException(
+                    "solver fixture requires at least one predicate");
+        }
+        java.util.List<BranchWitness> prefix = new java.util.ArrayList<>();
+        for (int index = 0; index + 1 < constraints.size(); index++) {
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", index + 1L);
+            event.addProperty("contextId", 1L);
+            prefix.add(BranchWitness.vmPc("TEST#u" + index,
+                    "<test.Solver: void run()>", index, 1, true,
+                    constraints.get(index), index, event));
+        }
+        int targetIndex = constraints.size() - 1;
+        JsonObject sourceEvent = new JsonObject();
+        sourceEvent.addProperty("eventId", targetIndex + 1L);
+        sourceEvent.addProperty("contextId", 1L);
+        BranchWitness source = BranchWitness.vmPc(
+                "TEST#u" + targetIndex, "<test.Solver: void run()>",
+                targetIndex, 1, false, BranchPredicateAlgebra.complement(
+                constraints.get(targetIndex)), targetIndex, sourceEvent);
+        task.add("replayContract", BranchReplayContract.flip(prefix,
+                source).toJson());
+        String[] retired = new String[]{"constraints", "prefix",
+                "negatedCondition", "flipSite", "flipOccurrence",
+                "conditionIndex", "desiredOutcome",
+                "expectedBranchPrefix", "pathReplayConstraints",
+                "pathReplayNegatedCondition",
+                "pathReplayTargetConditionIndex"};
+        for (String field : retired) task.remove(field);
+        return ConcolicConstraintSolver.solve(task, activation, z3,
+                timeoutMillis);
     }
 
     private static JsonObject task(JsonObject condition) {

@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -1002,40 +1004,20 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void acceptsSparseExpectedPrefixIndexedByReplayCondition()
+    public void canonicalReplayContractUsesDenseWitnessOrderOnly()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
             CertifiedGuardFixture fixture = certifiedGuardFixture();
-            JsonArray original = fixture.activation.getAsJsonArray(
-                    "pathReplayConstraints");
-            JsonObject nonBranchConstraint = original.get(1)
-                    .getAsJsonObject().deepCopy();
-            nonBranchConstraint.addProperty("_code_position",
-                    "virtual jint example.Handler.compute(jobject):39");
-            JsonArray sparseConstraints = new JsonArray();
-            sparseConstraints.add(nonBranchConstraint);
-            sparseConstraints.add(original.get(0).deepCopy());
-            sparseConstraints.add(original.get(1).deepCopy());
-            fixture.activation.add("pathReplayConstraints",
-                    sparseConstraints);
-            fixture.activation.addProperty(
-                    "pathReplayTargetConditionIndex", 2);
-            fixture.activation.getAsJsonArray("expectedBranchPrefix")
-                    .get(0).getAsJsonObject().addProperty(
-                            "conditionIndex", 1);
-            JsonObject proof = fixture.activation.getAsJsonArray(
-                    "concreteGuardReplayProofs").get(0).getAsJsonObject();
-            proof.addProperty("sourceConditionIndex", 1);
-            proof.addProperty("constraintIndex", 1);
-            JsonObject mapping = fixture.raw.getAsJsonArray(
-                    "branchMappings").get(0).getAsJsonObject();
-            mapping.addProperty("certificateSourceConditionIndex", 1);
-            mapping.addProperty("certificateConstraintIndex", 1);
-            fixture.raw.add("concreteGuardReplayProofs",
-                    fixture.activation.getAsJsonArray(
-                            "concreteGuardReplayProofs").deepCopy());
+            assertFalse(fixture.activation.has("expectedBranchPrefix"));
+            assertFalse(fixture.activation.has("pathReplayConstraints"));
+            assertFalse(fixture.activation.has(
+                    "pathReplayNegatedCondition"));
+            BranchReplayContract contract = BranchReplayContract.fromJson(
+                    fixture.activation.getAsJsonObject("replayContract"));
+            assertEquals(1, contract.orderedPrefix().size());
+            assertEquals(2, contract.requiredPathPredicates().size());
 
             JsonObject summary = importCertifiedGuardFixture(
                     folder.getRoot().toPath(), fixture);
@@ -1055,47 +1037,43 @@ public class ConcolicSummaryImporterTest {
         folder.create();
         try {
             CertifiedGuardFixture fixture = certifiedGuardFixture();
-            JsonArray originalConstraints = fixture.activation
-                    .getAsJsonArray("pathReplayConstraints");
-            JsonObject nullCondition = originalConstraints.get(0)
-                    .getAsJsonObject().deepCopy();
-            JsonObject lastCondition = originalConstraints.get(1)
-                    .getAsJsonObject().deepCopy();
+            BranchReplayContract originalContract =
+                    BranchReplayContract.fromJson(fixture.activation
+                            .getAsJsonObject("replayContract"));
+            JsonObject nullCondition = originalContract.orderedPrefix()
+                    .get(0).sourceSatisfiedPredicate().getAsJsonObject();
+            JsonObject lastCondition = originalContract
+                    .requiredSatisfiedPredicate().getAsJsonObject();
             JsonObject firstCondition = lastCondition.deepCopy();
             firstCondition.addProperty("_op", "<");
             firstCondition.addProperty("_code_position",
                     "virtual jint example.Handler.compute(jobject):38");
-
-            JsonArray replayConstraints = new JsonArray();
-            replayConstraints.add(firstCondition.deepCopy());
-            replayConstraints.add(nullCondition.deepCopy());
-            replayConstraints.add(nullCondition.deepCopy());
-            replayConstraints.add(lastCondition.deepCopy());
-            fixture.activation.add("pathReplayConstraints",
-                    replayConstraints);
-            fixture.activation.addProperty(
-                    "pathReplayTargetConditionIndex", 3);
-
-            JsonArray prefix = new JsonArray();
-            JsonObject firstPrefix = new JsonObject();
-            firstPrefix.addProperty("siteId", fixture.method + "#u2");
-            firstPrefix.addProperty("occurrence", 1);
-            firstPrefix.addProperty("outcome", true);
-            firstPrefix.addProperty("conditionIndex", 0);
-            prefix.add(firstPrefix);
-            JsonObject firstGuardPrefix = new JsonObject();
-            firstGuardPrefix.addProperty("siteId", fixture.method + "#u4");
-            firstGuardPrefix.addProperty("occurrence", 1);
-            firstGuardPrefix.addProperty("outcome", true);
-            firstGuardPrefix.addProperty("conditionIndex", 1);
-            prefix.add(firstGuardPrefix);
-            JsonObject secondGuardPrefix = new JsonObject();
-            secondGuardPrefix.addProperty("siteId", fixture.method + "#u5");
-            secondGuardPrefix.addProperty("occurrence", 1);
-            secondGuardPrefix.addProperty("outcome", true);
-            secondGuardPrefix.addProperty("conditionIndex", 2);
-            prefix.add(secondGuardPrefix);
-            fixture.activation.add("expectedBranchPrefix", prefix);
+            JsonObject firstEvent = new JsonObject();
+            firstEvent.addProperty("eventId", 2L);
+            firstEvent.addProperty("contextId", 71L);
+            BranchWitness firstWitness = BranchWitness.vmPc(
+                    fixture.method + "#u2", fixture.method, 2, 1, true,
+                    firstCondition, 0, firstEvent);
+            JsonObject guardEvidence = new JsonObject();
+            guardEvidence.addProperty("authority",
+                    "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1");
+            BranchWitness guardOneWitness = BranchWitness.certifiedNoPc(
+                    fixture.method + "#u4", fixture.method, 4, 1, true,
+                    nullCondition, guardEvidence);
+            BranchWitness guardTwoWitness = BranchWitness.certifiedNoPc(
+                    fixture.method + "#u5", fixture.method, 5, 1, true,
+                    nullCondition, guardEvidence);
+            JsonObject sourceEvent = new JsonObject();
+            sourceEvent.addProperty("eventId", 8L);
+            sourceEvent.addProperty("contextId", 71L);
+            BranchWitness sourceWitness = BranchWitness.vmPc(
+                    fixture.method + "#u8", fixture.method, 8, 1, false,
+                    BranchPredicateAlgebra.complement(lastCondition), 1,
+                    sourceEvent);
+            fixture.activation.add("replayContract",
+                    BranchReplayContract.flip(Arrays.asList(firstWitness,
+                            guardOneWitness, guardTwoWitness), sourceWitness)
+                            .toJson());
 
             JsonObject proofOne = fixture.activation.getAsJsonArray(
                     "concreteGuardReplayProofs").get(0)
@@ -1137,6 +1115,7 @@ public class ConcolicSummaryImporterTest {
             guardTwo.addProperty(
                     "certificateExpectedBranchPrefixOrdinal", 2);
             guardTwo.addProperty("vmBranchEventId", 8);
+            guardTwo.add("witness", guardTwoWitness.toJson());
 
             JsonObject first = new JsonObject();
             first.addProperty("siteId", fixture.method + "#u2");
@@ -1151,6 +1130,7 @@ public class ConcolicSummaryImporterTest {
             first.addProperty("rawPathConditionSize", 1);
             first.add("rawCondition", firstCondition.deepCopy());
             first.add("condition", firstCondition.deepCopy());
+            first.add("witness", firstWitness.toJson());
 
             JsonObject last = originalMappings.get(1)
                     .getAsJsonObject().deepCopy();
@@ -1161,6 +1141,12 @@ public class ConcolicSummaryImporterTest {
             last.addProperty("rawPathConditionSize", 2);
             last.add("rawCondition", lastCondition.deepCopy());
             last.add("condition", lastCondition.deepCopy());
+            JsonObject lastEvent = new JsonObject();
+            lastEvent.addProperty("eventId", 9L);
+            lastEvent.addProperty("contextId", 71L);
+            last.add("witness", BranchWitness.vmPc(fixture.method + "#u8",
+                    fixture.method, 8, 1, true, lastCondition, 1,
+                    lastEvent).toJson());
             JsonArray mappings = new JsonArray();
             mappings.add(first);
             mappings.add(guardOne);
@@ -1175,7 +1161,8 @@ public class ConcolicSummaryImporterTest {
 
             JsonObject summary = importCertifiedGuardFixture(
                     folder.getRoot().toPath(), fixture);
-            assertEquals(4, summary.getAsJsonArray("pathCondition").size());
+            assertEquals(summary.toString(), 4,
+                    summary.getAsJsonArray("pathCondition").size());
             JsonArray normalizedMappings = summary.getAsJsonArray(
                     "branchMappings");
             int[][] expected = new int[][]{
@@ -1254,7 +1241,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void rejectsTamperedOrUncertifiedNoPcGuardWithoutSyntheticIndex()
+    public void rejectsTamperedImmutableCertifiedBranchWitness()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1262,18 +1249,8 @@ public class ConcolicSummaryImporterTest {
             CertifiedGuardFixture fixture = certifiedGuardFixture();
             JsonObject certified = fixture.raw.getAsJsonArray(
                     "branchMappings").get(0).getAsJsonObject();
-            certified.addProperty("certificateConditionSha256",
-                    testSha256("tampered"));
-
-            JsonObject ordinary = certified.deepCopy();
-            ordinary.remove("certifiedConcreteGuard");
-            ordinary.remove("concreteGuardCertificateAuthority");
-            ordinary.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT");
-            ordinary.addProperty("siteId", fixture.method + "#u9");
-            ordinary.addProperty("certificateSiteId",
-                    fixture.method + "#u9");
-            fixture.raw.getAsJsonArray("branchMappings").add(ordinary);
+            certified.getAsJsonObject("witness").getAsJsonObject(
+                    "sourceSatisfiedPredicate").addProperty("_op", "!=");
 
             Path root = folder.getRoot().toPath();
             Path activations = root.resolve("activation.jsonl");
@@ -1295,7 +1272,7 @@ public class ConcolicSummaryImporterTest {
                     diagnosticsPath),
                     StandardCharsets.UTF_8);
             assertTrue(diagnostics, diagnostics.contains(
-                    "REJECTED_CERTIFIED_CONCRETE_GUARD"));
+                    "REJECTED_BINARY_BRANCH_WITNESS"));
         } finally {
             folder.delete();
         }
@@ -8078,18 +8055,10 @@ public class ConcolicSummaryImporterTest {
                 "REGION.0@test#call1");
         activation.addProperty("pathQueryKey", "QUERY.0");
         activation.addProperty("rootMethod", method);
-        activation.addProperty("targetReplayRequired", true);
+        activation.addProperty("targetReplayRequired", false);
         activation.addProperty("executionPhase", "REPLAY_OUTPUT_PATH_FLIP");
-        activation.addProperty("branchOverrideProhibited", true);
         activation.add("captureGoal",
-                RegionCaptureGoal.targetBranch().toJson());
-        JsonObject targetBranch = new JsonObject();
-        targetBranch.addProperty("siteId", method + "#u8");
-        targetBranch.addProperty("occurrence", 1);
-        targetBranch.addProperty("desiredOutcome", true);
-        targetBranch.addProperty("validationOnly", true);
-        targetBranch.addProperty("branchOverrideAllowed", false);
-        activation.add("targetBranch", targetBranch);
+                RegionCaptureGoal.outputClosure().toJson());
         JsonArray actions = new JsonArray();
         actions.add(action.deepCopy());
         activation.add("symbolize", actions);
@@ -8119,6 +8088,8 @@ public class ConcolicSummaryImporterTest {
         nullCondition.add("_right", nullValue);
         nullCondition.addProperty("_code_position",
                 "virtual jint example.Handler.compute(jobject):40");
+        nullCondition = BranchPredicateAlgebra.canonical(nullCondition)
+                .getAsJsonObject();
         String conditionHash = testSha256(nullCondition.toString());
 
         JsonObject originalCondition = nullCondition.deepCopy();
@@ -8177,7 +8148,6 @@ public class ConcolicSummaryImporterTest {
         certified.addProperty("vmBranchEventAuthority",
                 "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
         certified.add("vmConditionIndices", new JsonArray());
-        certified.addProperty("scheduledTarget", false);
         certified.addProperty("replayValidation", "PASS");
         certified.addProperty("policy", "EXPLORE");
         certified.addProperty("certifiedConcreteGuard", true);
@@ -8214,21 +8184,22 @@ public class ConcolicSummaryImporterTest {
         laterCondition.addProperty("_code_position",
                 "virtual jint example.Handler.compute(jobject):41");
         activation.remove("directedTargetQuery");
-        JsonArray replayConstraints = new JsonArray();
-        replayConstraints.add(nullCondition.deepCopy());
-        replayConstraints.add(laterCondition.deepCopy());
-        activation.add("pathReplayConstraints", replayConstraints);
-        activation.add("pathReplayNegatedCondition",
-                laterCondition.deepCopy());
-        activation.addProperty("pathReplayTargetConditionIndex", 1);
-        JsonObject expectedPrefixEvent = new JsonObject();
-        expectedPrefixEvent.addProperty("siteId", site);
-        expectedPrefixEvent.addProperty("occurrence", 1);
-        expectedPrefixEvent.addProperty("outcome", true);
-        expectedPrefixEvent.addProperty("conditionIndex", 0);
-        JsonArray expectedPrefix = new JsonArray();
-        expectedPrefix.add(expectedPrefixEvent);
-        activation.add("expectedBranchPrefix", expectedPrefix);
+        JsonObject certifiedEvidence = new JsonObject();
+        certifiedEvidence.addProperty("authority",
+                "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1");
+        certifiedEvidence.addProperty("pathQueryKey", "QUERY.0");
+        BranchWitness prefixWitness = BranchWitness.certifiedNoPc(site,
+                method, 4, 1, true, nullCondition, certifiedEvidence);
+        JsonObject sourceEvent = new JsonObject();
+        sourceEvent.addProperty("eventId", 8L);
+        sourceEvent.addProperty("contextId", 71L);
+        BranchWitness sourceWitness = BranchWitness.vmPc(method + "#u8",
+                method, 8, 1, false,
+                BranchPredicateAlgebra.complement(laterCondition), 0,
+                sourceEvent);
+        activation.add("replayContract", BranchReplayContract.flip(
+                Collections.singletonList(prefixWitness), sourceWitness)
+                .toJson());
 
         JsonObject guardProof = new JsonObject();
         guardProof.addProperty("schemaVersion", 1);
@@ -8259,6 +8230,7 @@ public class ConcolicSummaryImporterTest {
         JsonArray guardProofs = new JsonArray();
         guardProofs.add(guardProof);
         activation.add("concreteGuardReplayProofs", guardProofs);
+        certified.add("witness", prefixWitness.toJson());
 
         JsonObject later = new JsonObject();
         later.addProperty("siteId", method + "#u8");
@@ -8269,9 +8241,6 @@ public class ConcolicSummaryImporterTest {
         later.addProperty("observedOutcome", true);
         later.addProperty("effectiveOutcome", true);
         later.addProperty("overrideApplied", false);
-        later.addProperty("scheduledTarget", true);
-        later.addProperty("scheduledDesiredOutcome", true);
-        later.addProperty("scheduledOutcomeMatched", true);
         later.addProperty("rawConditionIndex", 0);
         later.addProperty("engineConditionIndex", 0);
         later.addProperty("conditionIndex", 0);
@@ -8279,6 +8248,11 @@ public class ConcolicSummaryImporterTest {
         later.addProperty("rawPathConditionSize", 1);
         later.add("rawCondition", laterCondition.deepCopy());
         later.add("condition", laterCondition.deepCopy());
+        JsonObject observedEvent = new JsonObject();
+        observedEvent.addProperty("eventId", 9L);
+        observedEvent.addProperty("contextId", 71L);
+        later.add("witness", BranchWitness.vmPc(method + "#u8", method,
+                8, 1, true, laterCondition, 0, observedEvent).toJson());
 
         JsonObject applied = assignment.deepCopy();
         applied.addProperty("appliedAt", "ARGUMENT");

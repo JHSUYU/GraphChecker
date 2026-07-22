@@ -119,7 +119,6 @@ public final class RegionPathWorklist {
         private int terminalFlipCount;
         private int observedCoveredFlipCount;
         private int duplicateTaskCount;
-        private int exactConcreteTemplateFlipCount;
         private int transitionDiscoverySeedCount;
         private int transitionDiscoveryTaskCount;
         private boolean wallClockReached;
@@ -232,28 +231,17 @@ public final class RegionPathWorklist {
                 if (policyAware && !isExplorePolicy(mapping)) {
                     continue;
                 }
-                if (certifiedConcreteGuardCandidate(mapping)
-                        && !exactCertifiedConcreteGuard(mapping,
-                        conditions)) {
-                    gap("INVALID_CERTIFIED_CONCRETE_GUARD",
-                            "CERTIFICATE_OR_SYNTHETIC_INDEX_MISMATCH",
-                            string(summary, "regionId"), pathKey, site,
+                int conditionIndex = integer(mapping, "conditionIndex", -1);
+                if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
+                    gap("UNMAPPED_BRANCH", "NO_NORMALIZED_CONDITION", string(
+                                    summary, "regionId"), pathKey, site,
                             integer(mapping, "occurrence", -1));
                     continue;
                 }
-                int conditionIndex = integer(mapping, "conditionIndex", -1);
-                if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
-                    ConcreteBranchTemplate template =
-                            recoverExactConcreteIfTemplate(summary,
-                                    activation, mapping, conditions);
-                    if (template.complete) {
-                        exactConcreteTemplateFlipCount++;
-                        emitTemplateTask(summary, activation, pathKey,
-                                conditions, mapping, template);
-                        continue;
-                    }
-                    gap("UNMAPPED_BRANCH", "NO_NORMALIZED_CONDITION", string(
-                                    summary, "regionId"), pathKey, site,
+                if (branchWitness(mapping) == null) {
+                    gap("MISSING_BRANCH_WITNESS",
+                            "BINARY_PATH_CONDITION_HAS_NO_IMMUTABLE_WITNESS",
+                            string(summary, "regionId"), pathKey, site,
                             integer(mapping, "occurrence", -1));
                     continue;
                 }
@@ -289,471 +277,6 @@ public final class RegionPathWorklist {
             }
         }
 
-        /**
-         * Recovers a solver query for an exact VM-attested concrete IF only
-         * from one unambiguous predicate observed at the same static branch
-         * site on another path.  The current prefix remains authoritative;
-         * the borrowed predicate merely asks Z3 whether the opposite edge is
-         * feasible under that prefix.  Switch events are deliberately
-         * excluded because a case/default Boolean envelope does not identify
-         * one unique multiway successor.
-         */
-        private ConcreteBranchTemplate recoverExactConcreteIfTemplate(
-                JsonObject summary, JsonObject activation,
-                JsonObject concrete, JsonArray conditions) {
-            if (!exactConcreteIf(concrete)) {
-                return ConcreteBranchTemplate.missing();
-            }
-            int baseline = integer(concrete, "pathConditionBaseline", -1);
-            if (baseline < 0 || baseline > conditions.size()
-                    || !completeMappedPrefix(summary, concrete, baseline)) {
-                return ConcreteBranchTemplate.missing();
-            }
-            Set<String> currentInputs = inputPorts(summary, activation);
-            if (currentInputs.isEmpty()) {
-                return ConcreteBranchTemplate.missing();
-            }
-
-            Map<String, JsonElement> predicates = new LinkedHashMap<>();
-            Map<String, Set<String>> sources = new LinkedHashMap<>();
-            for (JsonObject candidateSummary : summaries) {
-                if (!string(summary, "regionId").equals(string(
-                        candidateSummary, "regionId"))
-                        || !canonical(summary.get("requestedOutput")).equals(
-                        canonical(candidateSummary.get("requestedOutput")))) {
-                    continue;
-                }
-                JsonArray candidateConditions = array(candidateSummary,
-                        "pathCondition");
-                for (JsonElement element : array(candidateSummary,
-                        "branchMappings")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject candidate = element.getAsJsonObject();
-                    if (!sameBinaryIfSite(concrete, candidate)
-                            || !exactModeledIf(candidate,
-                            candidateConditions)) {
-                        continue;
-                    }
-                    JsonElement observed = candidateConditions.get(integer(
-                            candidate, "conditionIndex", -1));
-                    JsonElement truePredicate = bool(candidate, "outcome",
-                            false) ? observed.deepCopy()
-                            : BranchPredicateAlgebra.complement(observed);
-                    if (!solverPredicateShape(truePredicate)
-                            || !closedOverInputs(truePredicate,
-                            currentInputs)) {
-                        continue;
-                    }
-                    String identity = canonical(truePredicate);
-                    predicates.put(identity, truePredicate);
-                    Set<String> predicateSources = sources.get(identity);
-                    if (predicateSources == null) {
-                        predicateSources = new LinkedHashSet<>();
-                        sources.put(identity, predicateSources);
-                    }
-                    predicateSources.add(string(candidateSummary,
-                            "summaryId"));
-                }
-            }
-            if (predicates.size() != 1) {
-                return ConcreteBranchTemplate.missing();
-            }
-            String identity = predicates.keySet().iterator().next();
-            return ConcreteBranchTemplate.complete(predicates.get(identity),
-                    baseline, sources.get(identity));
-        }
-
-        private void emitTemplateTask(JsonObject summary,
-                                      JsonObject activation,
-                                      String pathKey, JsonArray conditions,
-                                      JsonObject concrete,
-                                      ConcreteBranchTemplate template) {
-            JsonArray recovered = new JsonArray();
-            for (int index = 0; index < template.prefixSize; index++) {
-                recovered.add(conditions.get(index).deepCopy());
-            }
-            JsonElement observed = bool(concrete, "outcome", false)
-                    ? template.truePredicate.deepCopy()
-                    : BranchPredicateAlgebra.complement(
-                    template.truePredicate);
-            recovered.add(observed);
-            JsonObject synthetic = concrete.deepCopy();
-            synthetic.addProperty("conditionIndex", template.prefixSize);
-            synthetic.addProperty("conditionTemplateAuthority",
-                    "EXACT_SAME_BINARY_IF_SITE_PREDICATE_PLUS_"
-                            + "CURRENT_VM_ATTESTED_CONCRETE_PREFIX_V1");
-            synthetic.add("conditionTemplateSourceSummaryIds",
-                    GSON.toJsonTree(template.sourceSummaryIds));
-            emitTask(summary, activation, pathKey, recovered, synthetic);
-        }
-
-        private boolean completeMappedPrefix(JsonObject summary,
-                                             JsonObject concrete,
-                                             int baseline) {
-            Set<Integer> indices = new LinkedHashSet<>();
-            boolean reachedConcrete = false;
-            for (JsonElement element : array(summary, "branchMappings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                if (mapping == concrete) {
-                    reachedConcrete = true;
-                    break;
-                }
-                int index = integer(mapping, "conditionIndex", -1);
-                if (index >= 0 && index < baseline) indices.add(index);
-            }
-            if (!reachedConcrete || indices.size() != baseline) return false;
-            for (int index = 0; index < baseline; index++) {
-                if (!indices.contains(index)) return false;
-            }
-            return true;
-        }
-
-        private boolean exactConcreteIf(JsonObject mapping) {
-            return binaryIf(mapping)
-                    && integer(mapping, "conditionIndex", -1) < 0
-                    && "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT"
-                    .equals(string(mapping, "conditionAuthority"))
-                    && exactVmIfEnvelope(mapping, 0);
-        }
-
-        private boolean certifiedConcreteGuardCandidate(
-                JsonObject mapping) {
-            return mapping.has("certifiedConcreteGuard")
-                    || mapping.has("syntheticCondition")
-                    || CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(string(
-                    mapping, "conditionAuthority"))
-                    || mapping.has("concreteGuardCertificateAuthority");
-        }
-
-        private boolean exactCertifiedConcreteGuard(
-                JsonObject mapping, JsonArray conditions) {
-            int index = integer(mapping, "conditionIndex", -1);
-            String conditionHash = strictString(mapping,
-                    "certificateConditionSha256");
-            String expectedIdentity = strictString(mapping,
-                    "certificateActivationId") + "\n"
-                    + strictString(mapping,
-                    "certificatePathQueryKey") + "\n"
-                    + strictString(mapping, "certificateProofRole") + "\n"
-                    + integer(mapping,
-                    "certificateSourceConditionIndex", -1) + "\n"
-                    + integer(mapping,
-                    "certificateConstraintIndex", -1) + "\n"
-                    + integer(mapping,
-                    "certificateExpectedBranchPrefixOrdinal", -2) + "\n"
-                    + strictString(mapping, "certificateSiteId") + "\n"
-                    + integer(mapping, "certificateOccurrence", -1) + "\n"
-                    + strictBoolean(mapping, "certificateOutcome") + "\n"
-                    + strictString(mapping,
-                    "certificateModelAssignmentKey") + "\n"
-                    + conditionHash;
-            String role = strictString(mapping, "certificateProofRole");
-            int sourceIndex = integer(mapping,
-                    "certificateSourceConditionIndex", -1);
-            int constraintIndex = integer(mapping,
-                    "certificateConstraintIndex", -1);
-            int prefixOrdinal = integer(mapping,
-                    "certificateExpectedBranchPrefixOrdinal", -2);
-            return index >= 0 && index < conditions.size()
-                    && Boolean.TRUE.equals(strictBoolean(mapping,
-                    "certifiedConcreteGuard"))
-                    && Boolean.TRUE.equals(strictBoolean(mapping,
-                    "syntheticCondition"))
-                    && CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(
-                    strictString(mapping, "conditionAuthority"))
-                    && CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(
-                    strictString(mapping,
-                            "syntheticConditionAuthority"))
-                    && CONCRETE_GUARD_CERTIFICATE_AUTHORITY.equals(
-                    strictString(mapping,
-                            "concreteGuardCertificateAuthority"))
-                    && !strictString(mapping,
-                    "certificateModelAssignmentKey").isEmpty()
-                    && !strictString(mapping,
-                    "certificatePathQueryKey").isEmpty()
-                    && !strictString(mapping,
-                    "certificateEngineSymbol").isEmpty()
-                    && !strictString(mapping,
-                    "certificateInputSymbol").isEmpty()
-                    && strictString(mapping,
-                    "certificateTargetActionSha256").matches(
-                    "[0-9a-f]{64}")
-                    && CONCRETE_GUARD_PROOF_AUTHORITY.equals(strictString(
-                    mapping, "certificateProofAuthority"))
-                    && sourceIndex == index
-                    && constraintIndex == index
-                    && ("PREFIX".equals(role) && prefixOrdinal == index
-                    || "TARGET".equals(role) && prefixOrdinal == -1)
-                    && expectedIdentity.equals(strictString(mapping,
-                    "syntheticConditionKey"))
-                    && strictString(mapping, "siteId").equals(strictString(
-                    mapping, "certificateSiteId"))
-                    && integer(mapping, "occurrence", -1) == integer(
-                    mapping, "certificateOccurrence", -2)
-                    && bool(mapping, "outcome", false) == bool(mapping,
-                    "certificateOutcome", !bool(mapping, "outcome", false))
-                    && integer(mapping, "rawConditionIndex", -2) == -1
-                    && integer(mapping, "engineConditionIndex", -2) == -1
-                    && !mapping.has("rawCondition")
-                    && integer(mapping, "normalizedConditionIndex", -1)
-                    == index
-                    && integer(mapping,
-                    "normalizedPathConditionBaseline", -1) == index
-                    && integer(mapping,
-                    "normalizedPathConditionSize", -1) == index + 1
-                    && integer(mapping, "pathConditionBaseline", -1)
-                    == index
-                    && integer(mapping, "pathConditionSize", -1)
-                    == index + 1
-                    && integer(mapping, "rawPathConditionBaseline", -1)
-                    == integer(mapping, "rawPathConditionSize", -2)
-                    && integer(mapping, "rawPathConditionsAdded", -1) == 0
-                    && exactCertifiedVmEnvelope(mapping, role)
-                    && mapping.has("condition")
-                    && canonical(mapping.get("condition")).equals(canonical(
-                    conditions.get(index)))
-                    && conditionHash.equals(sha256(GSON.toJson(
-                    mapping.get("condition"))))
-                    && exactReferenceNullCondition(
-                    mapping.get("condition"));
-        }
-
-        private boolean exactCertifiedVmEnvelope(JsonObject mapping,
-                                                 String role) {
-            JsonElement conditionIndices = mapping.get(
-                    "vmConditionIndices");
-            boolean common = Boolean.TRUE.equals(strictBoolean(mapping,
-                    "vmBranchEventExpected"))
-                    && Boolean.TRUE.equals(strictBoolean(mapping,
-                    "vmBranchEventValidated"))
-                    && integer(mapping, "vmBranchEventId", 0) > 0
-                    && integer(mapping, "vmOccurrence", -1)
-                    == integer(mapping, "occurrence", -2)
-                    && longInteger(mapping, "vmThreadContextId", 0L) > 0L
-                    && longInteger(mapping,
-                    "vmOwnerJavaThreadId", 0L) > 0L
-                    && longInteger(mapping,
-                    "vmOwnerOsThreadId", 0L) > 0L
-                    && conditionIndices != null
-                    && conditionIndices.isJsonArray()
-                    && conditionIndices.getAsJsonArray().size() == 0
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
-                    string(mapping, "vmBranchEventAuthority"))
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
-                    .equals(string(mapping, "mappingPolicy"))
-                    && Boolean.FALSE.equals(strictBoolean(mapping,
-                    "overrideApplied"))
-                    && "NONE".equals(string(mapping, "overrideMode"))
-                    && bool(mapping, "outcome", false) == bool(mapping,
-                    "observedOutcome", !bool(mapping, "outcome", false))
-                    && bool(mapping, "outcome", false) == bool(mapping,
-                    "effectiveOutcome", !bool(mapping, "outcome", false))
-                    && "PASS".equals(strictString(mapping,
-                    "replayValidation"));
-            if (!common) return false;
-            if ("TARGET".equals(role)) {
-                return Boolean.TRUE.equals(strictBoolean(mapping,
-                        "scheduledTarget"))
-                        && strictBoolean(mapping,
-                        "scheduledDesiredOutcome") != null
-                        && strictBoolean(mapping,
-                        "scheduledDesiredOutcome").equals(strictBoolean(
-                        mapping, "observedOutcome"))
-                        && Boolean.TRUE.equals(strictBoolean(mapping,
-                        "scheduledOutcomeMatched"));
-            }
-            return "PREFIX".equals(role)
-                    && Boolean.FALSE.equals(strictBoolean(mapping,
-                    "scheduledTarget"))
-                    && !mapping.has("scheduledDesiredOutcome")
-                    && !mapping.has("scheduledOutcomeMatched");
-        }
-
-        private boolean exactReferenceNullCondition(JsonElement value) {
-            if (value == null || !value.isJsonObject()) return false;
-            JsonObject expression = value.getAsJsonObject();
-            if (!"BinaryExpression".equals(strictString(expression,
-                    "_type")) || !"==".equals(strictString(expression,
-                    "_op"))) return false;
-            JsonObject left = object(expression, "_left");
-            JsonObject right = object(expression, "_right");
-            return exactReferenceSymbol(left) && exactNull(right)
-                    || exactNull(left) && exactReferenceSymbol(right);
-        }
-
-        private boolean exactReferenceSymbol(JsonObject expression) {
-            String type = strictString(expression, "_type");
-            String javaType = strictString(expression, "_java_type");
-            String symbol = strictString(expression, "_exp");
-            return ("SymbolExpression".equals(type)
-                    || "ConSymbolExp".equals(type))
-                    && !symbol.isEmpty()
-                    && (javaType.startsWith("L")
-                    || javaType.startsWith("[")
-                    || symbol.startsWith("M_L")
-                    || symbol.startsWith("M_["));
-        }
-
-        private boolean exactNull(JsonObject expression) {
-            return "SymbolExpression".equals(strictString(expression,
-                    "_type"))
-                    && "N".equals(strictString(expression, "_exp"));
-        }
-
-        private boolean exactModeledIf(JsonObject mapping,
-                                       JsonArray conditions) {
-            int index = integer(mapping, "conditionIndex", -1);
-            return binaryIf(mapping) && index >= 0
-                    && index < conditions.size()
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
-                    .equals(string(mapping, "conditionAuthority"))
-                    && exactVmIfEnvelope(mapping, 1)
-                    && mapping.has("condition")
-                    && canonical(mapping.get("condition")).equals(canonical(
-                    conditions.get(index)));
-        }
-
-        private boolean exactVmIfEnvelope(JsonObject mapping,
-                                          int conditionCount) {
-            return bool(mapping, "vmBranchEventExpected", false)
-                    && bool(mapping, "vmBranchEventValidated", false)
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
-                    string(mapping, "vmBranchEventAuthority"))
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
-                    .equals(string(mapping, "mappingPolicy"))
-                    && integer(mapping, "vmBranchEventId", 0) > 0
-                    && integer(mapping, "vmOccurrence", -1)
-                    == integer(mapping, "occurrence", -2)
-                    && longInteger(mapping, "vmThreadContextId", 0L) > 0L
-                    && longInteger(mapping, "vmOwnerJavaThreadId", 0L) > 0L
-                    && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
-                    && array(mapping, "vmConditionIndices").size()
-                    == conditionCount
-                    && !bool(mapping, "overrideApplied", true)
-                    && "NONE".equals(string(mapping, "overrideMode"))
-                    && bool(mapping, "outcome", false)
-                    == bool(mapping, "observedOutcome", !bool(mapping,
-                    "outcome", false))
-                    && bool(mapping, "outcome", false)
-                    == bool(mapping, "effectiveOutcome", !bool(mapping,
-                    "outcome", false));
-        }
-
-        private boolean binaryIf(JsonObject mapping) {
-            String kind = string(mapping, "branchKind");
-            return (kind.isEmpty() || "IF".equals(kind))
-                    && !mapping.has("observedSuccessorIndex")
-                    && array(mapping, "switchCaseKeys").size() == 0;
-        }
-
-        private boolean sameBinaryIfSite(JsonObject left,
-                                         JsonObject right) {
-            return binaryIf(left) && binaryIf(right)
-                    && string(left, "siteId").equals(string(right,
-                    "siteId"))
-                    && string(left, "method").equals(string(right,
-                    "method"))
-                    && integer(left, "unitIndex", -1) == integer(right,
-                    "unitIndex", -2)
-                    && integer(left, "occurrence", -1) == integer(right,
-                    "occurrence", -2)
-                    && string(left, "expression").equals(string(right,
-                    "expression"));
-        }
-
-        private Set<String> inputPorts(JsonObject summary,
-                                       JsonObject activation) {
-            Set<String> ports = new LinkedHashSet<>();
-            collectStrings(ports, array(summary, "symbolicInputs"));
-            collectStrings(ports, array(object(summary,
-                    "requestedOutputSlice"), "inputPorts"));
-            collectStrings(ports, array(object(activation,
-                    "requestedOutputSlice"), "inputPorts"));
-            for (JsonElement action : array(activation, "symbolize")) {
-                if (action.isJsonObject()) {
-                    String symbol = string(action.getAsJsonObject(),
-                            "symbol");
-                    if (!symbol.isEmpty()) ports.add(symbol);
-                }
-            }
-            return ports;
-        }
-
-        private boolean closedOverInputs(JsonElement expression,
-                                         Set<String> inputs) {
-            Set<String> symbols = new LinkedHashSet<>();
-            collectSymbols(expression, symbols);
-            if (symbols.isEmpty()) return false;
-            for (String symbol : symbols) {
-                int matches = 0;
-                for (String input : inputs) {
-                    if (containsPort(symbol, input)) matches++;
-                }
-                if (matches != 1) return false;
-            }
-            return true;
-        }
-
-        private void collectSymbols(JsonElement value, Set<String> output) {
-            if (value == null || value.isJsonNull()) return;
-            if (value.isJsonArray()) {
-                for (JsonElement element : value.getAsJsonArray()) {
-                    collectSymbols(element, output);
-                }
-                return;
-            }
-            if (!value.isJsonObject()) return;
-            JsonObject object = value.getAsJsonObject();
-            String type = string(object, "_type");
-            if (("SymbolExpression".equals(type)
-                    || "ConSymbolExp".equals(type))
-                    && object.has("_exp")) {
-                output.add(string(object, "_exp"));
-            }
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                if (!"_exp".equals(entry.getKey())
-                        && !"_code_position".equals(entry.getKey())) {
-                    collectSymbols(entry.getValue(), output);
-                }
-            }
-        }
-
-        private boolean containsPort(String symbol, String port) {
-            int start = symbol.indexOf(port);
-            while (start >= 0) {
-                int end = start + port.length();
-                boolean left = start == 0 || symbol.charAt(start - 1) == '_';
-                boolean right = end == symbol.length()
-                        || symbol.charAt(end) == '_';
-                if (left && right) return true;
-                start = symbol.indexOf(port, start + 1);
-            }
-            return false;
-        }
-
-        private boolean solverPredicateShape(JsonElement value) {
-            if (value == null || !value.isJsonObject()) return false;
-            JsonObject expression = value.getAsJsonObject();
-            String type = string(expression, "_type");
-            if ("BinaryExpression".equals(type)) {
-                return BranchPredicateAlgebra.isComparisonOperator(
-                        string(expression, "_op"));
-            }
-            if ("NotExpression".equals(type)) {
-                return solverPredicateShape(expression.get("_operand"));
-            }
-            if (!"OpStrExpression".equals(type)) return false;
-            String operation = string(expression, "_name");
-            int arity = "isEmpty".equals(operation) ? 1
-                    : "contains".equals(operation)
-                    || "equals".equals(operation)
-                    || "startsWith".equals(operation)
-                    || "endsWith".equals(operation) ? 2 : -1;
-            return arity > 0
-                    && array(expression, "_param_list").size() == arity;
-        }
-
         private boolean hasBranchPolicy(JsonArray mappings) {
             for (JsonElement element : mappings) {
                 if (element.isJsonObject()
@@ -781,34 +304,23 @@ public final class RegionPathWorklist {
                               String pathKey, JsonArray conditions,
                               JsonObject mapping) {
             int conditionIndex = integer(mapping, "conditionIndex", -1);
-            JsonArray prefix = new JsonArray();
-            for (int index = 0; index < conditionIndex; index++) {
-                prefix.add(conditions.get(index).deepCopy());
-            }
-            JsonElement original = conditions.get(conditionIndex);
-            JsonElement negated = BranchPredicateAlgebra.complement(original);
-            JsonArray query = prefix.deepCopy();
-            query.add(negated.deepCopy());
             BranchReplayContract replayContract = replayContract(summary,
                     mapping, conditions, conditionIndex);
-            if (mapping.has("witness") && replayContract == null) {
+            if (replayContract == null) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
                         "WITNESS_OR_ORDERED_PREFIX_DOES_NOT_MATCH_SUMMARY_PC",
                         string(summary, "regionId"), pathKey,
                         branchSite(mapping), branchOccurrence(mapping));
                 return;
             }
-            boolean observed = replayContract == null
-                    ? bool(mapping, "outcome", false)
-                    : replayContract.source().sourceTakenOutcome();
-            boolean desired = replayContract == null
-                    ? !observed : replayContract.requiredTakenOutcome();
+            JsonArray prefix = new JsonArray();
+            for (BranchWitness witness : replayContract.orderedPrefix()) {
+                prefix.add(witness.sourceSatisfiedPredicate());
+            }
+            boolean desired = replayContract.requiredTakenOutcome();
             String region = string(summary, "regionId");
-            String site = replayContract == null ? string(mapping, "siteId")
-                    : replayContract.source().siteId();
-            int occurrence = replayContract == null
-                    ? integer(mapping, "occurrence", 1)
-                    : replayContract.source().occurrence();
+            String site = replayContract.source().siteId();
+            int occurrence = replayContract.source().occurrence();
             JsonElement output = summary.get("requestedOutput");
             RegionCaptureGoal goal = RegionCaptureGoal.from(
                     activation == null ? summary : activation);
@@ -848,8 +360,7 @@ public final class RegionPathWorklist {
             }
 
             JsonObject task = new JsonObject();
-            task.addProperty("schemaVersion",
-                    replayContract == null ? 1 : 2);
+            task.addProperty("schemaVersion", 2);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
             task.addProperty("regionId", region);
@@ -870,57 +381,13 @@ public final class RegionPathWorklist {
             task.addProperty("rootMethod", firstNonBlank(string(summary,
                     "rootMethod"), string(activation, "rootMethod")));
             task.add("requestedOutput", copy(output, new JsonObject()));
-            task.addProperty("flipSite", site);
-            task.addProperty("flipOccurrence", occurrence);
-            task.addProperty("conditionIndex", conditionIndex);
-            task.addProperty("observedOutcome", observed);
-            task.addProperty("desiredOutcome", desired);
-            task.addProperty("concreteGuardReplayProofRequired",
-                    exactCertifiedConcreteGuard(mapping, conditions));
-            task.addProperty("prefixPolicy", "KEEP_BEFORE_FLIP");
-            task.addProperty("targetPolicy", "NEGATE_SELECTED_CONDITION");
-            task.addProperty("suffixPolicy", "DROP_OLD_SUFFIX");
-            task.add("prefix", prefix);
-            task.add("expectedBranchPrefix", expectedBranchPrefix(
-                    mappingsFor(summary), conditions, conditionIndex));
-            task.add("originalCondition", original.deepCopy());
-            task.add("negatedCondition", negated);
-            task.add("constraints", query);
-            if (replayContract != null) {
-                task.add("replayContract", replayContract.toJson());
-            }
+            task.add("replayContract", replayContract.toJson());
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
             task.add("engineArrayInputBindings", array(summary,
                     "engineArrayInputBindings").deepCopy());
             task.addProperty("status", "PENDING_SOLVE");
             task.addProperty("dynamicIdsExcludedFromQueryKey", true);
-            if (mapping.has("conditionTemplateAuthority")) {
-                task.addProperty("conditionTemplateAuthority", string(
-                        mapping, "conditionTemplateAuthority"));
-                task.add("conditionTemplateSourceSummaryIds", array(mapping,
-                        "conditionTemplateSourceSummaryIds").deepCopy());
-                task.addProperty("exactConcreteBranchRecovery", true);
-            }
-            if (replayContract != null) {
-                // All binary replay semantics live in replayContract.  Keep
-                // task metadata and materialization inputs, but remove the
-                // former independently mutable polarity aliases.
-                task.remove("flipSite");
-                task.remove("flipOccurrence");
-                task.remove("conditionIndex");
-                task.remove("observedOutcome");
-                task.remove("desiredOutcome");
-                task.remove("concreteGuardReplayProofRequired");
-                task.remove("prefixPolicy");
-                task.remove("targetPolicy");
-                task.remove("suffixPolicy");
-                task.remove("prefix");
-                task.remove("expectedBranchPrefix");
-                task.remove("originalCondition");
-                task.remove("negatedCondition");
-                task.remove("constraints");
-            }
             tasks.add(task);
         }
 
@@ -1078,41 +545,6 @@ public final class RegionPathWorklist {
             return canonical(stable);
         }
 
-        private JsonArray mappingsFor(JsonObject summary) {
-            return array(summary, "branchMappings");
-        }
-
-        private JsonArray expectedBranchPrefix(JsonArray mappings,
-                                               JsonArray conditions,
-                                               int flipConditionIndex) {
-            List<JsonObject> ordered = new ArrayList<>();
-            for (JsonElement element : mappings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                int index = integer(mapping, "conditionIndex", -1);
-                if (index >= 0 && index < flipConditionIndex) {
-                    ordered.add(mapping);
-                }
-            }
-            Collections.sort(ordered, Comparator.comparingInt(value ->
-                    integer(value, "conditionIndex", -1)));
-            JsonArray result = new JsonArray();
-            for (JsonObject mapping : ordered) {
-                JsonObject expected = new JsonObject();
-                expected.addProperty("siteId", string(mapping, "siteId"));
-                expected.addProperty("occurrence", integer(mapping,
-                        "occurrence", 1));
-                expected.addProperty("outcome", bool(mapping, "outcome",
-                        false));
-                expected.addProperty("conditionIndex", integer(mapping,
-                        "conditionIndex", -1));
-                expected.addProperty("concreteGuardReplayProofRequired",
-                        exactCertifiedConcreteGuard(mapping, conditions));
-                result.add(expected);
-            }
-            return result;
-        }
-
         private JsonObject manifest(int observedPathCount) {
             JsonObject result = new JsonObject();
             result.addProperty("schemaVersion", 1);
@@ -1132,8 +564,6 @@ public final class RegionPathWorklist {
                     observedCoveredFlipCount);
             result.addProperty("pendingTaskCount", tasks.size());
             result.addProperty("duplicateTaskCount", duplicateTaskCount);
-            result.addProperty("exactConcreteTemplateFlipCount",
-                    exactConcreteTemplateFlipCount);
             result.addProperty("transitionDiscoverySeedCount",
                     transitionDiscoverySeedCount);
             result.addProperty("transitionDiscoveryTaskCount",
@@ -1235,39 +665,6 @@ public final class RegionPathWorklist {
         private Result(List<JsonObject> tasks, JsonObject manifest) {
             this.tasks = tasks;
             this.manifest = manifest;
-        }
-    }
-
-    private static final class ConcreteBranchTemplate {
-        private final boolean complete;
-        private final JsonElement truePredicate;
-        private final int prefixSize;
-        private final Set<String> sourceSummaryIds;
-
-        private ConcreteBranchTemplate(boolean complete,
-                                       JsonElement truePredicate,
-                                       int prefixSize,
-                                       Set<String> sourceSummaryIds) {
-            this.complete = complete;
-            this.truePredicate = truePredicate;
-            this.prefixSize = prefixSize;
-            this.sourceSummaryIds = sourceSummaryIds;
-        }
-
-        private static ConcreteBranchTemplate missing() {
-            return new ConcreteBranchTemplate(false, JsonNull.INSTANCE, -1,
-                    Collections.<String>emptySet());
-        }
-
-        private static ConcreteBranchTemplate complete(
-                JsonElement truePredicate, int prefixSize,
-                Set<String> sourceSummaryIds) {
-            return new ConcreteBranchTemplate(true,
-                    truePredicate.deepCopy(), prefixSize,
-                    Collections.unmodifiableSet(new LinkedHashSet<>(
-                            sourceSummaryIds == null
-                                    ? Collections.<String>emptySet()
-                                    : sourceSummaryIds)));
         }
     }
 

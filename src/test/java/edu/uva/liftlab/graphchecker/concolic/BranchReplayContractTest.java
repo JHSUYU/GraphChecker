@@ -99,6 +99,22 @@ public class BranchReplayContractTest {
     }
 
     @Test
+    public void replayContractRejectsDuplicateBranchEventIdentities() {
+        BranchWitness prefix = witness("ROOT#u7", 7, 1, true, ">");
+        BranchWitness sameEventDifferentEvidence = witness("ROOT#u7", 7,
+                1, false, "<=");
+        try {
+            BranchReplayContract.flip(
+                    Collections.singletonList(prefix),
+                    sameEventDifferentEvidence);
+            fail("expected duplicate event identity to be rejected");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage()
+                    .contains("source branch event"));
+        }
+    }
+
+    @Test
     public void oneValidatorChecksOrderedPrefixAndRequiredPredicate() {
         BranchWitness prefix = witness("ROOT#u1", 1, 1, true, "<");
         BranchWitness source = witness("ROOT#u7", 7, 1, true, ">=");

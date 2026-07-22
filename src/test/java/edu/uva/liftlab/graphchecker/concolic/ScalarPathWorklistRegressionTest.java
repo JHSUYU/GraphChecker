@@ -137,6 +137,7 @@ public class ScalarPathWorklistRegressionTest {
             mapping.addProperty("siteId", "SITE.LOOP.HEADER");
             mapping.addProperty("occurrence", index + 1);
         }
+        authorizeVmPcMappings(summary);
         JsonObject activation = activation("ACT.LOOP", 1);
 
         RegionPathWorklist.Result full = RegionPathWorklist.plan(
@@ -147,7 +148,7 @@ public class ScalarPathWorklistRegressionTest {
         assertEquals(4, full.tasks.size());
         Set<Integer> occurrences = new LinkedHashSet<>();
         for (JsonObject task : full.tasks) {
-            occurrences.add(task.get("flipOccurrence").getAsInt());
+            occurrences.add(replayContract(task).source().occurrence());
         }
         assertEquals(new LinkedHashSet<>(Arrays.asList(1, 2, 3, 4)),
                 occurrences);
@@ -198,7 +199,8 @@ public class ScalarPathWorklistRegressionTest {
     private static JsonObject taskAt(List<JsonObject> tasks,
                                      int conditionIndex) {
         for (JsonObject task : tasks) {
-            if (task.get("conditionIndex").getAsInt() == conditionIndex) {
+            if (replayContract(task).orderedPrefix().size()
+                    == conditionIndex) {
                 return task;
             }
         }
@@ -235,7 +237,33 @@ public class ScalarPathWorklistRegressionTest {
         summary.add("branchMappings", mappings);
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapEffects", new JsonArray());
+        authorizeVmPcMappings(summary);
         return summary;
+    }
+
+    private static void authorizeVmPcMappings(JsonObject summary) {
+        JsonArray conditions = summary.getAsJsonArray("pathCondition");
+        JsonArray mappings = summary.getAsJsonArray("branchMappings");
+        for (JsonElement element : mappings) {
+            JsonObject mapping = element.getAsJsonObject();
+            int conditionIndex = mapping.get("conditionIndex").getAsInt();
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", conditionIndex + 1L);
+            event.addProperty("contextId", 1L);
+            BranchWitness witness = BranchWitness.vmPc(
+                    mapping.get("siteId").getAsString(),
+                    "<test.Scalar: void run()>", conditionIndex,
+                    mapping.get("occurrence").getAsInt(),
+                    mapping.get("outcome").getAsBoolean(),
+                    conditions.get(conditionIndex), conditionIndex, event);
+            mapping.add("witness", witness.toJson());
+            mapping.addProperty("summaryPcIndex", conditionIndex);
+        }
+    }
+
+    private static BranchReplayContract replayContract(JsonObject task) {
+        return BranchReplayContract.fromJson(task.getAsJsonObject(
+                "replayContract"));
     }
 
     private static JsonObject activation(String id, int inputCount) {
