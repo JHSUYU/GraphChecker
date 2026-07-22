@@ -113,8 +113,21 @@ final class PathRelationInputClosure {
     }
 
     private static JsonArray runtimeActions(JsonObject activation) {
-        JsonArray refined = array(activation, "materializations");
-        return refined.size() > 0 ? refined : array(activation, "symbolize");
+        JsonElement encoded = activation == null
+                ? null : activation.get("materializations");
+        if (encoded == null || encoded.isJsonNull()
+                || !encoded.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "executable activation requires materializations array");
+        }
+        JsonArray actions = encoded.getAsJsonArray();
+        for (int index = 0; index < actions.size(); index++) {
+            if (!actions.get(index).isJsonObject()) {
+                throw new IllegalArgumentException("materializations["
+                        + index + "] must be a JSON object");
+            }
+        }
+        return actions;
     }
 
     private static boolean containsPortReference(String expression,
@@ -131,12 +144,6 @@ final class PathRelationInputClosure {
             start = expression.indexOf(port, start + 1);
         }
         return false;
-    }
-
-    private static JsonArray array(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
     }
 
     private static String string(JsonObject object, String name) {

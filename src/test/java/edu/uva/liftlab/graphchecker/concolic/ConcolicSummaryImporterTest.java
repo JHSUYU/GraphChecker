@@ -22,6 +22,135 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
     @Test
+    public void executableActivationRequiresCanonicalMaterializationObjects()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            Path regions = root.resolve("regions.jsonl");
+            JsonObject region = new JsonObject();
+            region.addProperty("regionId", "REGION.ACTIVATION.SCHEMA");
+            write(regions, region + "\n");
+
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.ACTIVATION.SCHEMA");
+            raw.addProperty("regionId", "REGION.ACTIVATION.SCHEMA");
+            raw.addProperty("exitKind", "NORMAL");
+            raw = canonicalRuntimeResultForTest(raw);
+
+            JsonObject base = new JsonObject();
+            base.addProperty("activationId", "ACT.ACTIVATION.SCHEMA");
+            base.addProperty("regionId", "REGION.ACTIVATION.SCHEMA");
+            RegionCaptureGoal.outputClosure().writeTo(base);
+            JsonObject[] invalid = new JsonObject[]{
+                    base.deepCopy(), base.deepCopy(), base.deepCopy()};
+            invalid[1].add("materializations", new JsonObject());
+            JsonArray nonObject = new JsonArray();
+            nonObject.add("declaration-is-not-an-action");
+            invalid[2].add("materializations", nonObject);
+            String[] expected = new String[]{
+                    "materializations must be present as a JSON object array",
+                    "materializations must be a JSON array",
+                    "materializations[0] must be a JSON object"};
+
+            for (int index = 0; index < invalid.length; index++) {
+                Path caseRoot = root.resolve("activation-case-" + index);
+                Files.createDirectories(caseRoot);
+                Path activations = caseRoot.resolve("activations.jsonl");
+                Path results = caseRoot.resolve("results.jsonl");
+                Path output = caseRoot.resolve("summaries.jsonl");
+                Path diagnostics = caseRoot.resolve("diagnostics.jsonl");
+                // Bypass the canonical fixture writer: malformed scheduler
+                // output is the subject of this test.
+                writeVerbatim(activations, invalid[index] + "\n");
+                writeVerbatim(results, raw + "\n");
+
+                ConcolicSummaryImporter.ImportResult imported =
+                        ConcolicSummaryImporter.importSummaries(
+                                results, activations, regions, output,
+                                diagnostics, caseRoot.resolve("cache"));
+
+                assertEquals(0, imported.validSummaryCount);
+                JsonObject diagnostic = JsonParser.parseString(new String(
+                        Files.readAllBytes(diagnostics),
+                        StandardCharsets.UTF_8).trim()).getAsJsonObject();
+                assertEquals("INVALID_EXECUTABLE_ACTIVATION_SCHEMA",
+                        diagnostic.get("code").getAsString());
+                assertTrue(diagnostic.get("detail").getAsString(),
+                        diagnostic.get("detail").getAsString().contains(
+                                expected[index]));
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void pathRelationClosureUsesOnlyExecutableMaterializations() {
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("symbol", "REGION.CLOSURE.in.0");
+        declaration.addProperty("lazy", true);
+        declaration.addProperty("bindingMode", "ROOT_ENTRY");
+        JsonObject activation = new JsonObject();
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration);
+        activation.add("symbolize", declarations);
+
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_java_type", "I");
+        constant.addProperty("_exp", "Y_I_7");
+        JsonArray pathCondition = new JsonArray();
+        pathCondition.add(constant.deepCopy());
+        JsonObject outputs = new JsonObject();
+        outputs.add("REGION.CLOSURE.out.0", constant.deepCopy());
+
+        activation.add("materializations", new JsonArray());
+        assertEquals(null,
+                PathRelationInputClosure.proveGuardedConstantUnusedInput(
+                        activation, "REGION.CLOSURE.in.0", pathCondition,
+                        outputs, true,
+                        "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                                + "PATH_GUARD",
+                        true));
+
+        JsonArray executable = new JsonArray();
+        executable.add(declaration.deepCopy());
+        activation.add("materializations", executable);
+        assertTrue(PathRelationInputClosure
+                .proveGuardedConstantUnusedInput(activation,
+                        "REGION.CLOSURE.in.0", pathCondition, outputs, true,
+                        "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                                + "PATH_GUARD",
+                        true) != null);
+
+        JsonObject[] malformed = new JsonObject[]{activation.deepCopy(),
+                activation.deepCopy(), activation.deepCopy()};
+        malformed[0].remove("materializations");
+        malformed[1].addProperty("materializations", "not-an-array");
+        JsonArray nonObject = new JsonArray();
+        nonObject.add(1);
+        malformed[2].add("materializations", nonObject);
+        for (JsonObject value : malformed) {
+            try {
+                PathRelationInputClosure.proveGuardedConstantUnusedInput(
+                        value, "REGION.CLOSURE.in.0", pathCondition,
+                        outputs, true,
+                        "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_"
+                                + "PATH_GUARD",
+                        true);
+                throw new AssertionError(
+                        "malformed executable activation must fail closed");
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage().contains(
+                        "materializations"));
+            }
+        }
+    }
+
+    @Test
     public void canonicalRuntimeEnvelopeRejectsMissingOrMismatchedAuthority()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -54,7 +183,7 @@ public class ConcolicSummaryImporterTest {
                     "engineSummary.activationId must exactly match the result",
                     "activationId must be a nonempty JSON string",
                     "regionId must be a nonempty JSON string",
-                    "runtimeHeapEffects must be a JSON array",
+                    "runtimeHeapEffects is retired and must be absent",
                     "runtimeHeapObservations must be a JSON array",
                     "dynamicFieldBindings must be a JSON array",
                     "pathConditionRecordingPaused must be true",
@@ -75,7 +204,7 @@ public class ConcolicSummaryImporterTest {
                     "activationId", "ACT.OTHER");
             invalid[4].remove("activationId");
             invalid[5].addProperty("regionId", 7);
-            invalid[6].remove("runtimeHeapEffects");
+            invalid[6].add("runtimeHeapEffects", new JsonArray());
             invalid[7].remove("runtimeHeapObservations");
             invalid[8].remove("dynamicFieldBindings");
             invalid[9].getAsJsonObject("engineSummary").addProperty(
@@ -143,172 +272,6 @@ public class ConcolicSummaryImporterTest {
         assertFalse(ConcolicSummaryImporter.validMapRefWitnessForTests(
                 witness, "ACT.Q"));
     }
-
-    @Test
-    public void synthesizesOneEntryIteratorRemoveFromExactStaticPorts()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path root = folder.getRoot().toPath();
-            Path summaries = root.resolve("summaries.jsonl");
-            Path activations = root.resolve("activations.jsonl");
-            Path regions = root.resolve("regions.jsonl");
-            Path graph = root.resolve("graph.jsonl");
-            Path output = root.resolve("bounded.jsonl");
-            String regionId = "REGION.B";
-            String activationId = "ACT.B";
-            String instance = "REGION.B@test#call9";
-            String method = "<example.Store: void sweep()>";
-            String mapCell = "<example.Store: java.util.Map entries>";
-            String keyCell = "<example.Entry: int key>";
-            String expiryCell = "<example.Entry: long expiry>";
-            String timeCell = "<example.Clock: long now()>";
-            String mutationSite = method + "#u5";
-
-            JsonObject requested = new JsonObject();
-            requested.addProperty("portId", regionId + ".out.0");
-            requested.addProperty("cell", mapCell);
-            requested.addProperty("kind", "HEAP_STATE");
-
-            JsonArray inputPorts = new JsonArray();
-            inputPorts.add(regionId + ".in.0");
-            inputPorts.add(regionId + ".in.1");
-            inputPorts.add(regionId + ".in.2");
-            inputPorts.add(regionId + ".in.3");
-            JsonArray causalEdges = new JsonArray();
-            for (String id : new String[]{"E.MUTATE", "E.GUARD",
-                    "E.CMP.L", "E.CMP.R", "E.EXPIRY", "E.TIME"}) {
-                JsonObject edge = new JsonObject();
-                edge.addProperty("edgeId", id);
-                causalEdges.add(edge);
-            }
-            JsonObject obligation = new JsonObject();
-            obligation.addProperty("siteId", mutationSite);
-            obligation.addProperty("targetCell", mapCell);
-            obligation.addProperty("transferKind", "HEAP_WRITE");
-            obligation.addProperty("authority", "EXACT_STATIC_TEST_PROOF");
-            JsonArray obligationEdges = new JsonArray();
-            obligationEdges.add("E.MUTATE");
-            obligation.add("causalEdgeIds", obligationEdges);
-            JsonArray obligations = new JsonArray();
-            obligations.add(obligation);
-            JsonObject slice = new JsonObject();
-            slice.addProperty("structuralComplete", true);
-            slice.addProperty("truncated", false);
-            slice.addProperty(
-                    "requestedStateTransformerContractApplicable", true);
-            slice.addProperty(
-                    "requestedStateTransformerContractComplete", true);
-            slice.add("inputPorts", inputPorts.deepCopy());
-            slice.add("causalEdges", causalEdges);
-            slice.add("requestedStateTransformerObligations", obligations);
-
-            JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", activationId);
-            activation.addProperty("regionId", regionId);
-            activation.addProperty("regionInstanceId", instance);
-            activation.addProperty("boundedPartialOutputSliceAdmitted", true);
-            activation.add("requestedOutput", requested.deepCopy());
-            activation.add("requestedOutputSlice", slice);
-            write(activations, activation + "\n");
-
-            JsonObject region = new JsonObject();
-            region.addProperty("regionId", regionId);
-            JsonArray regionInputs = new JsonArray();
-            regionInputs.add(boundedInput(regionId + ".in.0", mapCell,
-                    "SHARED_HEAP", "java.util.Map"));
-            regionInputs.add(boundedInput(regionId + ".in.1", keyCell,
-                    "SHARED_HEAP", "int"));
-            regionInputs.add(boundedInput(regionId + ".in.2", expiryCell,
-                    "SHARED_HEAP", "long"));
-            regionInputs.add(boundedInput(regionId + ".in.3", timeCell,
-                    "ENVIRONMENT", "long"));
-            region.add("symbolicInputs", regionInputs);
-            write(regions, region + "\n");
-
-            JsonObject summary = new JsonObject();
-            summary.addProperty("activationId", activationId);
-            summary.addProperty("regionId", regionId);
-            summary.addProperty("regionInstanceId", instance);
-            summary.addProperty("rootCallId", 9);
-            summary.addProperty("rootMethod", "<example.Worker: void run()>");
-            summary.addProperty("valid", true);
-            summary.add("captureGoal",
-                    RegionCaptureGoal.outputClosure().toJson());
-            summary.add("requestedOutput", requested.deepCopy());
-            summary.add("edgeBindings", new JsonArray());
-            summary.add("heapEffects", new JsonArray());
-            JsonObject snapshot = new JsonObject();
-            snapshot.addProperty("snapshotId", "SNAP.EMPTY");
-            snapshot.addProperty("statePort", regionId + ".in.0");
-            snapshot.addProperty("cardinality", 0);
-            snapshot.addProperty("complete", true);
-            snapshot.addProperty("mapKeysFullyCaptured", true);
-            JsonArray snapshots = new JsonArray();
-            snapshots.add(snapshot);
-            summary.add("finiteMapSnapshots", snapshots);
-            write(summaries, summary + "\n");
-
-            JsonArray staticEdges = new JsonArray();
-            staticEdges.add(boundedEdge("E.MUTATE", method, mutationSite,
-                    "field_mutation", "", mapCell,
-                    "interfaceinvoke $it.<java.util.Iterator: void remove()>()"));
-            JsonObject mutation = staticEdges.get(0).getAsJsonObject();
-            mutation.addProperty("invoke",
-                    "<java.util.Iterator: void remove()>");
-            JsonObject guard = boundedEdge("E.GUARD", method,
-                    method + "#u4", "heap_mutation_path_guard", "$i0",
-                    "$i0", "if $i0 >= 0 goto label0");
-            guard.addProperty("guardedMutationSiteId", mutationSite);
-            guard.addProperty("requiredOutcome", false);
-            staticEdges.add(guard);
-            staticEdges.add(boundedEdge("E.CMP.L", method, method + "#u3",
-                    "local", "$l0", "$i0", "$i0 = $l0 cmp $l1"));
-            staticEdges.add(boundedEdge("E.CMP.R", method, method + "#u3",
-                    "local", "$l1", "$i0", "$i0 = $l0 cmp $l1"));
-            staticEdges.add(boundedEdge("E.EXPIRY", method,
-                    method + "#u2", "field_read", expiryCell, "$l0",
-                    "$l0 = $entry.<example.Entry: long expiry>"));
-            staticEdges.add(boundedEdge("E.TIME", method, method + "#u1",
-                    "environment", timeCell, "$l1",
-                    "$l1 = staticinvoke <example.Clock: long now()>()"));
-            StringBuilder graphLines = new StringBuilder();
-            for (JsonElement edge : staticEdges) {
-                graphLines.append(edge).append('\n');
-            }
-            write(graph, graphLines.toString());
-
-            ConcolicSummaryImporter.BoundedIteratorResult result =
-                    ConcolicSummaryImporter
-                            .synthesizeBoundedOneEntryMapIteratorSummaries(
-                                    summaries, activations, regions, graph,
-                                    output);
-            assertEquals(1, result.candidateCount);
-            assertEquals(1, result.generatedSummaryCount);
-            assertEquals(0, result.diagnostics.size());
-            JsonObject bounded = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8)
-                    .trim()).getAsJsonObject();
-            assertFalse(bounded.get("relationallyComplete").getAsBoolean());
-            assertTrue(bounded.get("boundedRelationallyComplete")
-                    .getAsBoolean());
-            assertEquals("<", bounded.getAsJsonArray("pathCondition").get(0)
-                    .getAsJsonObject().get("_op").getAsString());
-            assertEquals("MAP_REMOVE", bounded.getAsJsonArray("heapEffects")
-                    .get(0).getAsJsonObject().get("kind").getAsString());
-            assertEquals(4, bounded.getAsJsonObject("requestedOutputSlice")
-                    .getAsJsonArray("inputPorts").size());
-            assertEquals(0, bounded.getAsJsonObject("requestedOutputSlice")
-                    .getAsJsonArray("containerElementFieldBindings").size());
-            assertFalse(bounded.has("inputMaterializationAdmission"));
-            assertFalse(bounded.has(
-                    "vmIntrinsicPlaceholderBindingAdmission"));
-        } finally {
-            folder.delete();
-        }
-    }
-
     private static JsonObject valueRefWitnessRecord(boolean certified) {
         JsonObject record = new JsonObject();
         record.addProperty("valueExpressionAuthority",
@@ -411,17 +374,6 @@ public class ConcolicSummaryImporterTest {
             BranchReplayContract targetContract = BranchReplayContract.flip(
                     Collections.<BranchWitness>emptyList(), sourceWitness);
             activation.add("replayContract", targetContract.toJson());
-            JsonObject expectedMaterialization = new JsonObject();
-            expectedMaterialization.addProperty("kind", "REFERENCE_RESULT");
-            expectedMaterialization.addProperty("method",
-                    "<example.Target: void run()>");
-            expectedMaterialization.addProperty("unitIndex", 6);
-            expectedMaterialization.addProperty("occurrence", 1);
-            expectedMaterialization.addProperty("desiredResult", "NULL");
-            JsonArray expectedMaterializations = new JsonArray();
-            expectedMaterializations.add(expectedMaterialization);
-            activation.add("replayMaterializations",
-                    expectedMaterializations);
             write(activations, activation + "\n");
 
             JsonObject region = new JsonObject();
@@ -460,12 +412,6 @@ public class ConcolicSummaryImporterTest {
             JsonArray branches = new JsonArray();
             branches.add(branch);
             raw.add("branchMappings", branches);
-            JsonObject applied = expectedMaterialization.deepCopy();
-            applied.addProperty("solverDerived", true);
-            JsonArray appliedMaterializations = new JsonArray();
-            appliedMaterializations.add(applied);
-            raw.add("replayMaterializationsApplied",
-                    appliedMaterializations);
             JsonObject cause = new JsonObject();
             cause.addProperty("type", "example.Fatal");
             JsonArray exceptionChain = new JsonArray();
@@ -519,7 +465,6 @@ public class ConcolicSummaryImporterTest {
             seedActivation.addProperty("executionPhase",
                     "CAPTURE_THEN_NEGATE");
             seedActivation.remove("replayContract");
-            seedActivation.remove("replayMaterializations");
             branch.addProperty("observedOutcome", false);
             branch.addProperty("overrideApplied", false);
             raw.addProperty("branchOverrideUsed", false);
@@ -588,6 +533,7 @@ public class ConcolicSummaryImporterTest {
                     + RegionCaptureGoal.outputClosure().toJson() + ","
                     + "\"receiverType\":\"Handler\","
                     + "\"symbolize\":[{\"symbol\":\"REGION.0.in.0\"}],"
+                    + "\"materializations\":[],"
                     + "\"outputs\":[{\"symbol\":\"REGION.0.out.0\","
                     + "\"location\":\"THROW_OR_BRANCH\"}]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
@@ -619,7 +565,10 @@ public class ConcolicSummaryImporterTest {
                     StandardCharsets.UTF_8);
             assertTrue(summary.contains("RUNTIME_CONCOLIC"));
             assertTrue(summary.contains("InvalidToken"));
-            assertTrue(summary.contains("REGION.0.in.0"));
+            JsonObject importedSummary = JsonParser.parseString(
+                    summary.trim()).getAsJsonObject();
+            assertEquals(0, importedSummary.getAsJsonArray(
+                    "symbolicInputs").size());
             assertEquals(1, Files.list(cache).count());
         } finally {
             folder.delete();
@@ -1023,8 +972,10 @@ public class ConcolicSummaryImporterTest {
                     "requestedOutput").get("portId").getAsString());
             assertEquals("REGION.P@fixture#call10", imported.summary.get(
                     "regionInstanceId").getAsString());
-            assertTrue(imported.summary.get(
-                    "requestedOutputSliceComplete").getAsBoolean());
+            assertFalse(imported.summary.has(
+                    "requestedOutputSliceComplete"));
+            assertTrue(imported.summary.getAsJsonObject(
+                    "requestedOutputSlice").get("complete").getAsBoolean());
             assertEquals("REGION.P.out.0", imported.summary.getAsJsonObject(
                     "requestedOutputSlice").get("outputPort").getAsString());
             assertEquals(1, imported.summary.getAsJsonArray(
@@ -1089,14 +1040,13 @@ public class ConcolicSummaryImporterTest {
             assertEquals(putAll.get("postState").getAsString(),
                     output.get("stateId").getAsString());
 
-            JsonObject boundedActivation = JsonParser.parseString(new String(
+            JsonObject incompleteActivation = JsonParser.parseString(new String(
                     Files.readAllBytes(root.resolve("activation.jsonl")),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            boundedActivation.addProperty("requestedOutputSliceComplete",
-                    false);
-            boundedActivation.addProperty(
-                    "boundedPartialOutputSliceAdmitted", true);
-            boundedActivation.getAsJsonObject("requestedOutputSlice")
+            // A stale outer claim cannot override an incomplete inner slice.
+            incompleteActivation.addProperty("requestedOutputSliceComplete",
+                    true);
+            incompleteActivation.getAsJsonObject("requestedOutputSlice")
                     .addProperty("complete", false);
             JsonObject fallback = new JsonObject();
             fallback.addProperty("symbol", "REGION.P.in.0");
@@ -1104,73 +1054,78 @@ public class ConcolicSummaryImporterTest {
             fallback.addProperty("concreteFallback", true);
             JsonArray fallbacks = new JsonArray();
             fallbacks.add(fallback);
-            boundedActivation.add("concreteFallbacks", fallbacks);
-            write(root.resolve("activation.jsonl"), boundedActivation
+            incompleteActivation.add("concreteFallbacks", fallbacks);
+            write(root.resolve("activation.jsonl"), incompleteActivation
                     + "\n");
 
-            JsonObject boundedRaw = JsonParser.parseString(new String(
+            JsonObject incompleteRaw = JsonParser.parseString(new String(
                     Files.readAllBytes(root.resolve("results.jsonl")),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            boundedRaw.add("symbolizedInputs", new JsonArray());
+            incompleteRaw.add("symbolizedInputs", new JsonArray());
             JsonArray unresolved = new JsonArray();
             unresolved.add("REGION.P.in.0:concrete passthrough");
-            boundedRaw.add("unresolvedInputs", unresolved);
-            write(root.resolve("results.jsonl"), boundedRaw + "\n");
+            incompleteRaw.add("unresolvedInputs", unresolved);
+            write(root.resolve("results.jsonl"), incompleteRaw + "\n");
 
-            Path boundedOutput = root.resolve("bounded-summaries.jsonl");
-            Path boundedDiagnostics = root.resolve(
-                    "bounded-diagnostics.jsonl");
+            Path incompleteOutput = root.resolve("incomplete-summaries.jsonl");
+            Path incompleteDiagnostics = root.resolve(
+                    "incomplete-diagnostics.jsonl");
             ConcolicSummaryImporter.importSummaries(
                     root.resolve("results.jsonl"),
-                    root.resolve("activation.jsonl"),
-                    root.resolve("regions.jsonl"), boundedOutput,
-                    boundedDiagnostics, root.resolve("bounded-cache"));
-            JsonObject boundedSummary = JsonParser.parseString(new String(
-                    Files.readAllBytes(boundedOutput),
+                    root.resolve("activation.jsonl"), root.resolve(
+                            "regions.jsonl"), incompleteOutput,
+                    incompleteDiagnostics, root.resolve("incomplete-cache"));
+            JsonObject incompleteSummary = JsonParser.parseString(new String(
+                    Files.readAllBytes(incompleteOutput),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            assertFalse(boundedSummary.get("requestedOutputSliceComplete")
+            assertFalse(incompleteSummary.has(
+                    "requestedOutputSliceComplete"));
+            assertFalse(incompleteSummary.getAsJsonObject(
+                    "requestedOutputSlice").get("complete").getAsBoolean());
+            assertFalse(incompleteSummary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(boundedSummary.get(
-                    "boundedPartialOutputSliceAdmitted").getAsBoolean());
-            assertTrue(boundedSummary.get(
-                    "requestedOutputSliceOperationallyAdmitted")
+
+            incompleteActivation.remove("requestedOutputSlice");
+            write(root.resolve("activation.jsonl"), incompleteActivation
+                    + "\n");
+            Path missingSliceOutput = root.resolve(
+                    "missing-slice-summaries.jsonl");
+            ConcolicSummaryImporter.importSummaries(
+                    root.resolve("results.jsonl"),
+                    root.resolve("activation.jsonl"), root.resolve(
+                            "regions.jsonl"), missingSliceOutput,
+                    root.resolve("missing-slice-diagnostics.jsonl"),
+                    root.resolve("missing-slice-cache"));
+            JsonObject missingSliceSummary = JsonParser.parseString(
+                    new String(Files.readAllBytes(missingSliceOutput),
+                            StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            assertFalse(missingSliceSummary.has(
+                    "requestedOutputSliceComplete"));
+            assertTrue(missingSliceSummary.getAsJsonObject(
+                    "requestedOutputSlice").entrySet().isEmpty());
+            assertFalse(missingSliceSummary.get("relationallyComplete")
                     .getAsBoolean());
-            assertTrue(boundedSummary.get("relationallyComplete")
-                    .getAsBoolean());
-            JsonObject boundedInputAdmission = boundedSummary
-                    .getAsJsonObject("inputMaterializationAdmission");
-            assertTrue(boundedInputAdmission.get("complete")
-                    .getAsBoolean());
-            assertEquals("[\"REGION.P.in.0\"]", boundedInputAdmission
-                    .getAsJsonArray("admittedConcreteFallbackInputs")
-                    .toString());
-            assertEquals(0, boundedInputAdmission.getAsJsonArray(
-                    "requiredSliceInputs").size());
-            assertFalse(new String(Files.readAllBytes(boundedDiagnostics),
-                    StandardCharsets.UTF_8).contains(
-                    "INCOMPLETE_OUTPUT_INPUT_MATERIALIZATION"));
         } finally {
             folder.delete();
         }
     }
 
     @Test
-    public void normalizesPathOnlyHashMapRemoveButFailsClosedWithoutEvidence()
+    public void iteratorRemoveCannotUseUniqueLibraryEffectFallback()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonArray path = new JsonArray();
-            path.add(methodExpressionAt("java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 14,
-                    symbolCopy(map), constant("Y_I_7", "I"),
+            JsonObject map = symbol("M_L'java/util/HashMap'_25",
+                    "java/util/HashMap");
+            JsonObject nativeRemove = methodExpression(
+                    "java/util/HashMap remove", 42,
+                    map, constant("Y_I_7", "I"),
                     symbol("key", "java/lang/Integer"),
-                    constant("Y_Z_0", "Z"), constant("Y_Z_0", "Z")));
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path);
+                    constant("Y_Z_0", "Z"), constant("Y_Z_0", "Z"));
+            MapFixture imported = importObservedMapMutationFixture(
+                    folder.getRoot().toPath(), nativeRemove,
+                    "<java.util.Iterator: void remove()>", false);
 
             JsonArray effects = imported.summary.getAsJsonArray("heapEffects");
             assertEquals(1, effects.size());
@@ -1180,19 +1135,7 @@ public class ConcolicSummaryImporterTest {
                     .get("_exp").getAsString());
             assertEquals("JDK_HASHMAP_REMOVENODE_MATCH_VALUE_FALSE",
                     remove.get("parameterNormalization").getAsString());
-            assertEquals("REQUESTED_HEAP_RECEIVER_EXACT_PORT_BINDING",
-                    remove.get("semanticAdmissionAuthority").getAsString());
             assertFalse(remove.has("valueExpression"));
-            assertEquals(1, imported.summary.getAsJsonArray(
-                    "pathCondition").size());
-            JsonObject normalization = imported.summary.getAsJsonObject(
-                    "pathConditionNormalization");
-            assertEquals(0, normalization.get("filteredConditionCount")
-                    .getAsInt());
-            assertEquals("REQUESTED_HEAP_RECEIVER_EXACT_PORT_BINDING",
-                    normalization.getAsJsonArray("conditionIndexMap").get(0)
-                            .getAsJsonObject().get("admissionAuthority")
-                            .getAsString());
             JsonObject model = imported.summary.getAsJsonObject(
                     "heapEffectModel");
             assertEquals(1, model.get("candidateMutationCount").getAsInt());
@@ -1201,7 +1144,7 @@ public class ConcolicSummaryImporterTest {
             assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
-                    "MISSING_RUNTIME_HEAP_EFFECT_PROVENANCE"));
+                    "INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE"));
         } finally {
             folder.delete();
         }
@@ -1240,146 +1183,65 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void rejectsRuntimeMapRemoveExpressionMismatch()
+    public void directMapRemoveRetainsExactLibraryTransformerCoverage()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
+            JsonObject map = symbol("M_L'java/util/HashMap'_25",
+                    "java/util/HashMap");
             JsonObject key = symbol("expiredKey", "java/lang/Integer");
-            JsonObject nativeRemove = methodExpressionAt(
-                    "java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbolCopy(key), constant("Y_Z_0", "Z"),
-                    constant("Y_Z_0", "Z"));
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-            JsonObject runtime = runtimeMapRemove(nativeRemove, 0, map, key,
-                    "<example.Store: void prune()>", 5);
-            runtime.add("keyExpression", symbol(
-                    "differentExpiredKey", "java/lang/Integer"));
-            JsonArray runtimeEffects = new JsonArray();
-            runtimeEffects.add(runtime);
+            JsonObject directRemove = methodExpression(
+                    "java/util/HashMap remove", 42, map, key);
+            MapFixture imported = importObservedMapMutationFixture(
+                    folder.getRoot().toPath(), directRemove,
+                    "<java.util.Map: java.lang.Object remove("
+                            + "java.lang.Object)>", false);
 
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    new JsonArray(), new JsonArray(), runtimeEffects);
-
-            JsonObject runtimeJoin = imported.summary.getAsJsonObject(
+            assertTrue(imported.diagnostics, imported.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals(0, imported.diagnostics.trim().length());
+            assertEquals("MAP_REMOVE", imported.summary.getAsJsonArray(
+                    "heapEffects").get(0).getAsJsonObject().get("kind")
+                    .getAsString());
+            JsonObject coverage = imported.summary.getAsJsonObject(
                     "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapEffectJoin");
-            assertEquals(1, runtimeJoin.get("recordCount").getAsInt());
-            assertEquals(0, runtimeJoin.get("joinedCount").getAsInt());
-            assertFalse(runtimeJoin.get("complete").getAsBoolean());
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "RUNTIME_HEAP_EFFECT_EXPRESSION_MISMATCH"));
-            assertTrue(imported.diagnostics.contains(
-                    "MISSING_RUNTIME_HEAP_EFFECT_PROVENANCE"));
+                    "staticTransformerCoverage");
+            assertEquals(1, coverage.get(
+                    "statePortMatchedTransformerCount").getAsInt());
+            assertTrue(coverage.get("complete").getAsBoolean());
         } finally {
             folder.delete();
         }
     }
 
     @Test
-    public void joinsOpaqueNativeBoxedKeyToExactRuntimeEntryKey()
+    public void exactLibraryFallbackRequiresUniqueNonemptyInvoke()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonObject nativeKey = symbol(
-                    "P_L'java/lang/Integer'_", "java/lang/Integer");
-            JsonObject runtimeKey = constant("Y_I_42",
-                    "java/lang/Integer");
-            JsonObject nativeRemove = methodExpressionAt(
-                    "java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_42", "I"),
-                    symbolCopy(nativeKey), constant("Y_Z_0", "Z"),
-                    constant("Y_Z_0", "Z"));
-            nativeRemove.add("_res_exp",
-                    symbol("expiredValue", "example/Value"));
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-            String prune = "<example.Store: void prune()>";
-            JsonObject read = runtimeMapEntryRead(map, runtimeKey, prune,
-                    3, 0, 1, 1);
-            read.addProperty("keyExpressionAuthority",
-                    "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT");
-            JsonArray observations = new JsonArray();
-            observations.add(read);
-            JsonObject runtime = runtimeMapRemoveLinked(nativeRemove, map,
-                    runtimeKey, prune, 5, read, 2);
-            runtime.addProperty("vmKeyJoinAuthority",
-                    "UNIQUE_HASHMAP_REMOVENODE_RECEIVER_RESULT_HASH_PLUS_"
-                            + "RUNTIME_ENTRY_KEY_V1");
-            runtime.add("nativeKeyExpression", nativeKey.deepCopy());
-            runtime.addProperty("keyExpressionAuthority",
-                    "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT");
-            runtime.addProperty("rawPathConditionStart", 0);
-            runtime.addProperty("rawPathConditionEnd", 1);
-            JsonArray runtimeEffects = new JsonArray();
-            runtimeEffects.add(runtime);
+            JsonObject directRemove = methodExpression(
+                    "java/util/HashMap remove", 42,
+                    symbol("M_L'java/util/HashMap'_25",
+                            "java/util/HashMap"),
+                    symbol("expiredKey", "java/lang/Integer"));
+            MapFixture missing = importObservedMapMutationFixture(
+                    folder.getRoot().toPath().resolve("missing"),
+                    directRemove, null, false);
+            MapFixture duplicate = importObservedMapMutationFixture(
+                    folder.getRoot().toPath().resolve("duplicate"),
+                    directRemove,
+                    "<java.util.Map: java.lang.Object remove("
+                            + "java.lang.Object)>", true);
 
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    singletonString(prune), guardedWriteEdges(prune),
-                    runtimeEffects, observations, defaultReadSymbolize(),
-                    readGuardMappings(prune),
-                    tokenFieldObservations(103));
-
-            JsonObject join = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapEffectJoin");
-            assertEquals(imported.diagnostics, 1,
-                    join.get("joinedCount").getAsInt());
-            assertTrue(imported.diagnostics,
-                    join.get("complete").getAsBoolean());
-            JsonObject effect = imported.summary.getAsJsonArray(
-                    "heapEffects").get(0).getAsJsonObject();
-            assertEquals(runtimeKey, effect.get("keyExpression"));
-            assertEquals(nativeKey, effect.get("nativeKeyExpression"));
-            assertEquals("EXACT_INDEX_RECEIVER_VM_RESULT_INTEGER_HASH_"
-                            + "AND_RUNTIME_ENTRY_KEY_V1",
-                    effect.get("runtimeHeapEffectJoinAuthority")
-                            .getAsString());
-
-            MapFixture missingRead = importMapFixture(
-                    folder.getRoot().toPath().resolve("missing-read"),
-                    path, true, new JsonArray(), singletonString(prune),
-                    guardedWriteEdges(prune), runtimeEffects,
-                    new JsonArray(), defaultReadSymbolize(),
-                    readGuardMappings(prune), tokenFieldObservations(103));
-            assertFalse(missingRead.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(missingRead.diagnostics.contains(
-                    "MISSING_RUNTIME_MAP_ENTRY_READ_ASSOCIATION"));
-
-            JsonObject wrongHashRemove = nativeRemove.deepCopy();
-            wrongHashRemove.getAsJsonArray("_param_list").set(1,
-                    constant("Y_I_7", "I"));
-            JsonArray wrongHashPath = new JsonArray();
-            wrongHashPath.add(wrongHashRemove);
-            JsonObject wrongHashRuntime = runtime.deepCopy();
-            wrongHashRuntime.add("vmExpression",
-                    wrongHashRemove.deepCopy());
-            JsonArray wrongHashEffects = new JsonArray();
-            wrongHashEffects.add(wrongHashRuntime);
-            MapFixture wrongHash = importMapFixture(
-                    folder.getRoot().toPath().resolve("wrong-hash"),
-                    wrongHashPath, true, new JsonArray(),
-                    singletonString(prune), guardedWriteEdges(prune),
-                    wrongHashEffects, observations, defaultReadSymbolize(),
-                    readGuardMappings(prune), tokenFieldObservations(103));
-            assertFalse(wrongHash.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(wrongHash.diagnostics.contains(
-                    "RUNTIME_HEAP_EFFECT_EXPRESSION_MISMATCH"));
+            for (MapFixture imported : new MapFixture[]{missing, duplicate}) {
+                assertFalse(imported.summary.get("relationallyComplete")
+                        .getAsBoolean());
+                assertTrue(imported.diagnostics,
+                        imported.diagnostics.contains(
+                                "UNRESOLVED_REQUESTED_HEAP_EFFECT_PROVENANCE"));
+            }
         } finally {
             folder.delete();
         }
@@ -1409,7 +1271,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), fixture.path, true,
                     new JsonArray(), fixture.methods, fixture.causalEdges,
-                    null, null, new JsonArray(), fixture.branchMappings,
+                    null, new JsonArray(), fixture.branchMappings,
                     null, null, fixture.sliceMetadata, new JsonArray());
 
             JsonObject coverage = imported.summary.getAsJsonObject(
@@ -1470,9 +1332,6 @@ public class ConcolicSummaryImporterTest {
                     .getAsInt());
             assertEquals(4, coverage.get(
                     "statePortMatchedTransformerCount").getAsInt());
-            assertEquals(0, coverage.get(
-                    "applicationProvenanceMatchedTransformerCount")
-                    .getAsInt());
             int orderedMatches = 0;
             for (JsonElement element : coverage.getAsJsonArray("matches")) {
                 if ("RUNTIME_ORDERED_MAP_PUT_TO_EXACT_STATIC_WRITE_AND_"
@@ -1502,9 +1361,6 @@ public class ConcolicSummaryImporterTest {
                                 "staticTransformerCoverage");
                 assertEquals(failure, 0, rejectedCoverage.get(
                         "statePortMatchedTransformerCount").getAsInt());
-                assertEquals(failure, 0, rejectedCoverage.get(
-                        "applicationProvenanceMatchedTransformerCount")
-                        .getAsInt());
                 assertEquals(failure, 4, rejectedCoverage.get(
                         "uncoveredWriteSiteCount").getAsInt());
             }
@@ -1535,7 +1391,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), fixture.path, true,
                     new JsonArray(), fixture.methods, fixture.causalEdges,
-                    null, null, new JsonArray(), fixture.branchMappings,
+                    null, new JsonArray(), fixture.branchMappings,
                     null, null, fixture.sliceMetadata, new JsonArray());
 
             assertFalse(imported.summary.get("relationallyComplete")
@@ -1581,7 +1437,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), fixture.path, true,
                     new JsonArray(), fixture.methods, fixture.causalEdges,
-                    null, null, new JsonArray(), fixture.branchMappings,
+                    null, new JsonArray(), fixture.branchMappings,
                     null, null, fixture.sliceMetadata, new JsonArray());
 
             assertFalse(imported.summary.get("relationallyComplete")
@@ -1623,7 +1479,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), fixture.path, true,
                     new JsonArray(), fixture.methods, fixture.causalEdges,
-                    null, null, new JsonArray(), fixture.branchMappings,
+                    null, new JsonArray(), fixture.branchMappings,
                     null, null, fixture.sliceMetadata, new JsonArray());
 
             JsonObject model = imported.summary.getAsJsonObject(
@@ -1661,7 +1517,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture missingGuard = importMapFixture(
                     folder.getRoot().toPath().resolve("missing"),
                     missing.path, true, new JsonArray(), missing.methods,
-                    missing.causalEdges, null, null, new JsonArray(),
+                    missing.causalEdges, null, new JsonArray(),
                     new JsonArray(), null, null, missing.sliceMetadata,
                     new JsonArray());
             JsonObject missingCoverage = missingGuard.summary
@@ -1690,7 +1546,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture forced = importMapFixture(
                     folder.getRoot().toPath().resolve("overridden"),
                     overridden.path, true, new JsonArray(),
-                    overridden.methods, overridden.causalEdges, null, null,
+                    overridden.methods, overridden.causalEdges, null,
                     new JsonArray(), overridden.branchMappings, null, null,
                     overridden.sliceMetadata, new JsonArray());
             assertEquals(0, forced.summary.size());
@@ -1733,7 +1589,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture inactiveExpiry = importMapFixture(
                     folder.getRoot().toPath().resolve("expiry-inactive"),
                     fixture.path, true, new JsonArray(), fixture.methods,
-                    fixture.causalEdges, null, null, additional,
+                    fixture.causalEdges, null, additional,
                     fixture.branchMappings, null, null,
                     fixture.sliceMetadata, strings(expiryPort));
 
@@ -1762,7 +1618,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture missingKey = importMapFixture(
                     folder.getRoot().toPath().resolve("key-required"),
                     fixture.path, true, new JsonArray(), fixture.methods,
-                    fixture.causalEdges, null, null, additional,
+                    fixture.causalEdges, null, additional,
                     fixture.branchMappings, null, null,
                     fixture.sliceMetadata, strings(keyPort, expiryPort));
             JsonObject keyAdmission = missingKey.summary.getAsJsonObject(
@@ -1813,7 +1669,7 @@ public class ConcolicSummaryImporterTest {
 
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges, new JsonArray(), new JsonArray(),
+                    methods, causalEdges, new JsonArray(),
                     branchMappings, null);
 
             JsonObject coverage = imported.summary.getAsJsonObject(
@@ -1871,7 +1727,7 @@ public class ConcolicSummaryImporterTest {
 
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges, new JsonArray(), new JsonArray(),
+                    methods, causalEdges, new JsonArray(),
                     branchMappings, null);
 
             JsonObject coverage = imported.summary.getAsJsonObject(
@@ -1917,7 +1773,7 @@ public class ConcolicSummaryImporterTest {
 
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges, new JsonArray(), new JsonArray(),
+                    methods, causalEdges, new JsonArray(),
                     new JsonArray(), null);
 
             JsonObject coverage = imported.summary.getAsJsonObject(
@@ -1936,85 +1792,33 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void rejectsAmbiguousRuntimeMapRemoveJoin()
+    public void validHashMapRemoveNodeRetainsExactLibraryCoverage()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
+            JsonObject map = symbol("M_L'java/util/HashMap'_25",
+                    "java/util/HashMap");
             JsonObject key = symbol("expiredKey", "java/lang/Integer");
-            JsonObject nativeRemove = methodExpressionAt(
+            JsonObject nativeRemove = methodExpression(
                     "java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbolCopy(key), constant("Y_Z_0", "Z"),
+                    42, map, constant("Y_I_7", "I"), key,
+                    constant("Y_Z_0", "Z"),
                     constant("Y_Z_0", "Z"));
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-            JsonObject runtime = runtimeMapRemove(nativeRemove, 0, map, key,
-                    "<example.Store: void prune()>", 5);
-            JsonArray runtimeEffects = new JsonArray();
-            runtimeEffects.add(runtime);
-            runtimeEffects.add(runtime.deepCopy());
+            MapFixture imported = importObservedMapMutationFixture(
+                    folder.getRoot().toPath(), nativeRemove,
+                    "<java.util.HashMap: java.lang.Object removeNode(int,"
+                            + "java.lang.Object,java.lang.Object,boolean,"
+                            + "boolean)>", false);
 
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    new JsonArray(), new JsonArray(), runtimeEffects);
-
-            JsonObject runtimeJoin = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapEffectJoin");
-            assertEquals(2, runtimeJoin.get("recordCount").getAsInt());
-            assertEquals(0, runtimeJoin.get("joinedCount").getAsInt());
-            assertFalse(runtimeJoin.get("complete").getAsBoolean());
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "AMBIGUOUS_RUNTIME_HEAP_EFFECT_JOIN"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rejectsIncompleteRuntimeMapRemoveProvenance()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonObject key = symbol("expiredKey", "java/lang/Integer");
-            JsonObject nativeRemove = methodExpressionAt(
-                    "java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbolCopy(key), constant("Y_Z_0", "Z"),
-                    constant("Y_Z_0", "Z"));
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-            JsonObject runtime = runtimeMapRemove(nativeRemove, 0, map, key,
-                    "<example.Store: void prune()>", 5);
-            runtime.addProperty("complete", false);
-            runtime.addProperty("unresolvedReason",
-                    "guard/value provenance incomplete");
-            JsonArray runtimeEffects = new JsonArray();
-            runtimeEffects.add(runtime);
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    new JsonArray(), new JsonArray(), runtimeEffects);
-
-            JsonObject runtimeJoin = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapEffectJoin");
-            assertEquals(0, runtimeJoin.get("joinedCount").getAsInt());
-            assertFalse(runtimeJoin.get("complete").getAsBoolean());
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "INCOMPLETE_RUNTIME_HEAP_EFFECT"));
+            assertTrue(imported.diagnostics, imported.summary.get(
+                    "relationallyComplete").getAsBoolean());
+            assertEquals(0, imported.diagnostics.trim().length());
+            JsonObject effect = imported.summary.getAsJsonArray(
+                    "heapEffects").get(0).getAsJsonObject();
+            assertEquals("MAP_REMOVE", effect.get("kind").getAsString());
+            assertEquals("JDK_HASHMAP_REMOVENODE_MATCH_VALUE_FALSE",
+                    effect.get("parameterNormalization").getAsString());
         } finally {
             folder.delete();
         }
@@ -2584,7 +2388,7 @@ public class ConcolicSummaryImporterTest {
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), new JsonArray(), true,
                     new JsonArray(), singletonString(prune),
-                    guardedWriteEdges(prune), new JsonArray(), observations,
+                    guardedWriteEdges(prune), observations,
                     defaultReadSymbolize(), mappings, fieldObservations,
                     dynamicBindings);
 
@@ -2850,105 +2654,6 @@ public class ConcolicSummaryImporterTest {
                                 ? "DUPLICATE_DYNAMIC_FIELD_BINDING"
                                 : "INCOMPLETE_DYNAMIC_FIELD_BINDING"));
             }
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void associatesRemoveWithExactEntryReadAndTokenFieldBinding()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = mapInputExpression();
-            JsonObject key = symbol("entryKey", "I");
-            JsonObject nativeRemove = nativeIteratorRemove(map, key);
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-            String prune = "<example.Store: void prune()>";
-            JsonArray methods = new JsonArray();
-            methods.add(prune);
-            JsonArray edges = guardedWriteEdges(prune);
-            JsonArray observations = new JsonArray();
-            JsonObject read = runtimeMapEntryRead(map, key, prune,
-                    3, 0, 1, 1);
-            observations.add(read);
-            JsonArray effects = new JsonArray();
-            effects.add(runtimeMapRemoveLinked(nativeRemove, map, key,
-                    prune, 5, read, 2));
-            String materializationSite = prune + "#u3";
-            String dynamic = dynamicFieldSymbol("REGION.P.in.1",
-                    materializationSite, 1);
-            JsonArray mappings = new JsonArray();
-            mappings.add(branchMapping(prune, 4, 1, true,
-                    symbol("M_J_field_" + dynamic
-                            + "_example/Value", "J")));
-            JsonArray fields = new JsonArray();
-            fields.add(dynamicFieldObservation(dynamic,
-                    materializationSite, 1, 103L, read));
-            JsonArray bindings = new JsonArray();
-            bindings.add(dynamicFieldBinding(dynamic,
-                    materializationSite, 1, 103L, read, key));
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, edges, effects, observations,
-                    defaultReadSymbolize(), mappings, fields, bindings);
-
-            assertTrue(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertEquals(0, imported.diagnostics.trim().length());
-            JsonObject remove = imported.summary.getAsJsonArray(
-                    "heapEffects").get(0).getAsJsonObject();
-            String observationId = read.get("observationId").getAsString();
-            assertEquals(observationId,
-                    remove.get("entryReadObservationId").getAsString());
-            assertEquals(observationId,
-                    remove.get("heapObservationId").getAsString());
-            assertEquals("REGION.P.in.0",
-                    remove.get("entryReadStatePort").getAsString());
-            assertEquals(103L,
-                    remove.get("entryValueObjectToken").getAsLong());
-            assertTrue(remove.get("entryValueFieldBindingComplete")
-                    .getAsBoolean());
-            assertEquals("REGION.P.in.1", remove.getAsJsonArray(
-                    "entryFieldBindings").get(0).getAsJsonObject()
-                    .get("baseInputSymbol").getAsString());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rejectsRemoveWhoseDeclaredEntryReadIsMissing()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = mapInputExpression();
-            JsonObject key = symbol("entryKey", "I");
-            JsonObject nativeRemove = nativeIteratorRemove(map, key);
-            JsonObject read = runtimeMapEntryRead(map, key,
-                    "<example.Store: void prune()>", 3, 0, 1, 1);
-            JsonArray effects = new JsonArray();
-            effects.add(runtimeMapRemoveLinked(nativeRemove, map, key,
-                    "<example.Store: void prune()>", 5, read, 2));
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    singletonString("<example.Store: void prune()>"),
-                    guardedWriteEdges("<example.Store: void prune()>"),
-                    effects, new JsonArray(), defaultReadSymbolize(),
-                    readGuardMappings("<example.Store: void prune()>"),
-                    tokenFieldObservations(103));
-
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "MISSING_RUNTIME_MAP_ENTRY_READ_ASSOCIATION"));
         } finally {
             folder.delete();
         }
@@ -3921,7 +3626,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", "REGION.TIME.out.0");
@@ -4079,7 +3783,7 @@ public class ConcolicSummaryImporterTest {
         }
         return importMapFixture(root, new JsonArray(), true,
                 new JsonArray(), singletonString(prune),
-                guardedWriteEdges(prune), new JsonArray(), observations,
+                guardedWriteEdges(prune), observations,
                 symbolize, mappings, canonicalFields, dynamicBindings);
     }
 
@@ -4344,7 +4048,7 @@ public class ConcolicSummaryImporterTest {
                 materializationSite, "HEAP_READ", "field_read"));
 
         return importMapFixture(root, path, true, new JsonArray(),
-                singletonString(method), causalEdges, new JsonArray(),
+                singletonString(method), causalEdges,
                 observations, actions, mappings, fieldObservations,
                 dynamicBindings, slice, new JsonArray());
     }
@@ -4431,7 +4135,7 @@ public class ConcolicSummaryImporterTest {
 
         return importMapFixture(root, path, true, new JsonArray(),
                 singletonString(prune), guardedWriteEdges(prune),
-                new JsonArray(), reads, defaultReadSymbolize(), mappings,
+                reads, defaultReadSymbolize(), mappings,
                 fields, bindings);
     }
 
@@ -4656,7 +4360,7 @@ public class ConcolicSummaryImporterTest {
 
         return importMapFixture(root, semanticPath, true,
                 new JsonArray(), new JsonArray(), new JsonArray(), null,
-                null, actions, mappings, observations, bindings, null,
+                actions, mappings, observations, bindings, null,
                 new JsonArray(), declarations);
     }
 
@@ -4852,52 +4556,13 @@ public class ConcolicSummaryImporterTest {
         snapshot.addProperty("firstIteratorEntryMatched", true);
         snapshot.addProperty("sizeStable", true);
         snapshot.addProperty("entrySetStable", true);
-        snapshot.addProperty("preRemove", true);
         snapshot.addProperty("authority",
                 "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT_EXACT_HASHMAP_OR_"
-                        + "LINKEDHASHMAP_SAME_EXECUTION_PRE_REMOVE_STABLE_SIZE_"
+                        + "LINKEDHASHMAP_SAME_EXECUTION_AT_ITERATOR_NEXT_"
+                        + "STABLE_SIZE_"
                         + "AND_ENTRY_SET_DISTINCT_IMMUTABLE_KEYS_V1");
         snapshot.addProperty("complete", true);
         return snapshot;
-    }
-
-    private static JsonObject nativeIteratorRemove(
-            JsonElement mapExpression, JsonElement keyExpression) {
-        return methodExpressionAt("java/util/HashMap remove",
-                "java.util.HashMap$HashIterator.remove()", 20,
-                mapExpression.deepCopy(), constant("Y_I_7", "I"),
-                keyExpression.deepCopy(), constant("Y_Z_0", "Z"),
-                constant("Y_Z_0", "Z"));
-    }
-
-    private static JsonObject runtimeMapRemoveLinked(
-            JsonObject vmExpression, JsonElement mapExpression,
-            JsonElement keyExpression, String originMethod,
-            int originUnitIndex, JsonObject read, long eventSequence) {
-        JsonObject effect = runtimeMapRemove(vmExpression, 0,
-                mapExpression, keyExpression, originMethod,
-                originUnitIndex);
-        effect.addProperty("eventSequence", eventSequence);
-        effect.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        effect.addProperty("objectTokenScope", "ACT.P");
-        effect.addProperty("backingMapObjectToken", 101L);
-        effect.addProperty("backingMapObjectTokenKnown", true);
-        effect.addProperty("entryObjectToken", 104L);
-        effect.addProperty("entryObjectTokenKnown", true);
-        effect.addProperty("entryWasNull", false);
-        effect.addProperty("keyObjectToken", 102L);
-        effect.addProperty("keyObjectTokenKnown", true);
-        effect.addProperty("keyWasNull", false);
-        effect.addProperty("valueObjectToken", 103L);
-        effect.addProperty("valueObjectTokenKnown", true);
-        effect.addProperty("valueWasNull", false);
-        effect.addProperty("entryReadObservationId",
-                read.get("observationId").getAsString());
-        effect.addProperty("entryReadObservationSequence",
-                read.get("eventSequence").getAsLong());
-        effect.addProperty("entryReadObservationComplete", true);
-        return effect;
     }
 
     private static MapFixture importMapFixture(Path root, JsonArray path)
@@ -4920,19 +4585,9 @@ public class ConcolicSummaryImporterTest {
                                                JsonArray causalEdges)
             throws Exception {
         return importMapFixture(root, path, existingMapInput,
-                heapInitializers, sliceMethods, causalEdges, null);
-    }
-
-    private static MapFixture importMapFixture(Path root, JsonArray path,
-                                               boolean existingMapInput,
-                                               JsonArray heapInitializers,
-                                               JsonArray sliceMethods,
-                                               JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects)
-            throws Exception {
-        return importMapFixture(root, path, existingMapInput,
                 heapInitializers, sliceMethods, causalEdges,
-                runtimeHeapEffects, new JsonArray(), null, null);
+                null, new JsonArray(), null, null, null,
+                null, new JsonArray(), null, null);
     }
 
     private static MapFixture importMapFixture(Path root, JsonArray path,
@@ -4940,15 +4595,14 @@ public class ConcolicSummaryImporterTest {
                                                JsonArray heapInitializers,
                                                JsonArray sliceMethods,
                                                JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects,
                                                JsonArray additionalSymbolize,
                                                JsonElement branchMappings,
                                                JsonElement fieldObservations)
             throws Exception {
         return importMapFixture(root, path, existingMapInput,
                 heapInitializers, sliceMethods, causalEdges,
-                runtimeHeapEffects, null,
-                additionalSymbolize, branchMappings, fieldObservations,
+                null, additionalSymbolize, branchMappings,
+                fieldObservations, null, null, new JsonArray(), null,
                 null);
     }
 
@@ -4957,25 +4611,6 @@ public class ConcolicSummaryImporterTest {
                                                JsonArray heapInitializers,
                                                JsonArray sliceMethods,
                                                JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects,
-                                               JsonElement runtimeHeapObservations,
-                                               JsonArray additionalSymbolize,
-                                               JsonElement branchMappings,
-                                               JsonElement fieldObservations)
-            throws Exception {
-        return importMapFixture(root, path, existingMapInput,
-                heapInitializers, sliceMethods, causalEdges,
-                runtimeHeapEffects, runtimeHeapObservations,
-                additionalSymbolize, branchMappings, fieldObservations,
-                null);
-    }
-
-    private static MapFixture importMapFixture(Path root, JsonArray path,
-                                               boolean existingMapInput,
-                                               JsonArray heapInitializers,
-                                               JsonArray sliceMethods,
-                                               JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects,
                                                JsonElement runtimeHeapObservations,
                                                JsonArray additionalSymbolize,
                                                JsonElement branchMappings,
@@ -4984,7 +4619,7 @@ public class ConcolicSummaryImporterTest {
             throws Exception {
         return importMapFixture(root, path, existingMapInput,
                 heapInitializers, sliceMethods, causalEdges,
-                runtimeHeapEffects, runtimeHeapObservations,
+                runtimeHeapObservations,
                 additionalSymbolize, branchMappings, fieldObservations,
                 dynamicFieldBindings, null, new JsonArray());
     }
@@ -4994,7 +4629,6 @@ public class ConcolicSummaryImporterTest {
                                                JsonArray heapInitializers,
                                                JsonArray sliceMethods,
                                                JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects,
                                                JsonElement runtimeHeapObservations,
                                                JsonArray additionalSymbolize,
                                                JsonElement branchMappings,
@@ -5005,7 +4639,7 @@ public class ConcolicSummaryImporterTest {
             throws Exception {
         return importMapFixture(root, path, existingMapInput,
                 heapInitializers, sliceMethods, causalEdges,
-                runtimeHeapEffects, runtimeHeapObservations,
+                runtimeHeapObservations,
                 additionalSymbolize, branchMappings, fieldObservations,
                 dynamicFieldBindings, sliceMetadata,
                 omittedSymbolizedInputs, null);
@@ -5016,7 +4650,6 @@ public class ConcolicSummaryImporterTest {
                                                JsonArray heapInitializers,
                                                JsonArray sliceMethods,
                                                JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects,
                                                JsonElement runtimeHeapObservations,
                                                JsonArray additionalSymbolize,
                                                JsonElement branchMappings,
@@ -5028,7 +4661,7 @@ public class ConcolicSummaryImporterTest {
             throws Exception {
         return importMapFixture(root, path, existingMapInput,
                 heapInitializers, sliceMethods, causalEdges,
-                runtimeHeapEffects, runtimeHeapObservations,
+                runtimeHeapObservations,
                 additionalSymbolize, branchMappings, fieldObservations,
                 dynamicFieldBindings, sliceMetadata,
                 omittedSymbolizedInputs, containerBindings, null);
@@ -5039,7 +4672,6 @@ public class ConcolicSummaryImporterTest {
                                                JsonArray heapInitializers,
                                                JsonArray sliceMethods,
                                                JsonArray causalEdges,
-                                               JsonElement runtimeHeapEffects,
                                                JsonElement runtimeHeapObservations,
                                                JsonArray additionalSymbolize,
                                                JsonElement branchMappings,
@@ -5153,9 +4785,6 @@ public class ConcolicSummaryImporterTest {
             heapBindings.add(heapBinding);
             activation.add("heapStateBindings", heapBindings);
         }
-        activation.addProperty("requestedOutputSliceComplete", true);
-        activation.addProperty("requestedOutputSlicePolicy",
-                "REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE");
         JsonObject requestedOutputSlice = new JsonObject();
         requestedOutputSlice.addProperty("outputPort", "REGION.P.out.0");
         requestedOutputSlice.addProperty("outputCell", cell);
@@ -5233,9 +4862,6 @@ public class ConcolicSummaryImporterTest {
         engine.addProperty("activationId", "ACT.P");
         engine.add("pathCondition", path);
         raw.add("engineSummary", engine);
-        if (runtimeHeapEffects != null) {
-            raw.add("runtimeHeapEffects", runtimeHeapEffects.deepCopy());
-        }
         if (runtimeHeapObservations != null) {
             raw.add("runtimeHeapObservations",
                     runtimeHeapObservations.deepCopy());
@@ -5280,52 +4906,6 @@ public class ConcolicSummaryImporterTest {
         return false;
     }
 
-    private static JsonObject runtimeMapRemove(
-            JsonObject vmExpression, int vmConditionIndex,
-            JsonElement mapExpression, JsonElement keyExpression,
-            String originMethod, int originUnitIndex) {
-        JsonObject effect = new JsonObject();
-        effect.addProperty("schemaVersion", 1);
-        effect.addProperty("kind", "MAP_REMOVE");
-        effect.addProperty("operation", "java.util.Iterator.remove");
-        effect.addProperty("originMethod", originMethod);
-        effect.addProperty("originUnitIndex", originUnitIndex);
-        effect.addProperty("siteId", originMethod + "#u" + originUnitIndex);
-        effect.addProperty("occurrence", 1);
-        effect.addProperty("applied", true);
-        effect.addProperty("viewKind", "ENTRY_SET");
-        effect.addProperty("provenanceAuthority",
-                "ACTIVATION_LOCAL_BACKED_VIEW_IDENTITY_AND_NORMAL_RETURN");
-        effect.addProperty("entryIdentity", 7);
-        effect.addProperty("backingMapIdentity", 41);
-        effect.addProperty("backingMapIdentityKnown", true);
-        effect.addProperty("keyIdentity", 43);
-        effect.addProperty("keyIdentityKnown", true);
-        effect.addProperty("keyWasNull", false);
-        effect.addProperty("valueIdentity", 42);
-        effect.addProperty("valueIdentityKnown", true);
-        effect.addProperty("valueWasNull", false);
-        effect.addProperty("entryBindingAuthority",
-                "JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT");
-        effect.addProperty("keyBindingAuthority",
-                "SAME_MAP_ENTRY_GET_KEY_AT_NEXT");
-        effect.addProperty("valueBindingAuthority",
-                "SAME_MAP_ENTRY_GET_VALUE_AT_NEXT");
-        effect.add("mapExpression", mapExpression.deepCopy());
-        effect.add("keyExpression", keyExpression.deepCopy());
-        effect.add("valueExpression", symbol(
-                "expiredValue", "example/Value"));
-        effect.addProperty("vmJoinStatus", "UNIQUE_MATCH");
-        effect.addProperty("vmConditionIndex", vmConditionIndex);
-        effect.add("vmExpression", vmExpression.deepCopy());
-        effect.addProperty("transformerComplete", true);
-        effect.addProperty("guardValueBindingComplete", true);
-        effect.addProperty("valueCaptureComplete", true);
-        effect.addProperty("runtimeProvenanceComplete", true);
-        effect.addProperty("complete", true);
-        return effect;
-    }
-
     private static MapFixture importObservedMapStateFixture(
             Path root, boolean identityComplete, boolean snapshotComplete)
             throws Exception {
@@ -5353,6 +4933,9 @@ public class ConcolicSummaryImporterTest {
 
         JsonObject edge = causalEdge("DF.MAP.WRITE", method, site,
                 "HEAP_WRITE", "field_mutation");
+        edge.addProperty("invoke",
+                "<java.util.Map: java.lang.Object put(java.lang.Object,"
+                        + "java.lang.Object)>");
         edge.addProperty("fromCell", method + "::$r1");
         edge.addProperty("toCell", mapCell);
         JsonObject obligation = exactTransformerObligation(
@@ -5370,6 +4953,7 @@ public class ConcolicSummaryImporterTest {
         slice.add("causalEdges", singletonObject(edge));
         slice.add("causalEdgeIds", singletonString("DF.MAP.WRITE"));
         slice.add("methods", singletonString(method));
+        slice.add("staticSites", singletonString(site));
         slice.addProperty("structuralComplete", true);
         slice.addProperty("truncated", false);
         slice.addProperty("complete", true);
@@ -5380,7 +4964,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         activation.add("requestedOutputMethods", singletonString(method));
         activation.add("materializations", actions);
         activation.add("symbolize", actions.deepCopy());
@@ -5427,7 +5010,6 @@ public class ConcolicSummaryImporterTest {
         raw.add("symbolizedInputs", new JsonArray());
         raw.add("unresolvedInputs", new JsonArray());
         raw.add("runtimeApproximations", approximations);
-        raw.add("runtimeHeapEffects", new JsonArray());
         raw.add("runtimeHeapObservations",
                 singletonObject(mapObservation));
         raw.add("finalFieldObservations", singletonObject(
@@ -5446,6 +5028,48 @@ public class ConcolicSummaryImporterTest {
 
         ConcolicSummaryImporter.importSummaries(results, activations,
                 regions, output, diagnostics, root.resolve("cache"));
+        JsonObject summary = JsonParser.parseString(new String(
+                Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
+                .getAsJsonObject();
+        return new MapFixture(summary, new String(
+                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+    }
+
+    private static MapFixture importObservedMapMutationFixture(
+            Path root, JsonObject mutation, String invoke,
+            boolean duplicateCausalEdge) throws Exception {
+        importObservedMapStateFixture(root, true, true);
+
+        Path activations = root.resolve("activation.jsonl");
+        JsonObject activation = JsonParser.parseString(new String(
+                Files.readAllBytes(activations), StandardCharsets.UTF_8)
+                .trim()).getAsJsonObject();
+        JsonArray causalEdges = activation.getAsJsonObject(
+                "requestedOutputSlice").getAsJsonArray("causalEdges");
+        JsonObject edge = causalEdges.get(0).getAsJsonObject();
+        if (invoke == null) {
+            edge.remove("invoke");
+        } else {
+            edge.addProperty("invoke", invoke);
+        }
+        if (duplicateCausalEdge) {
+            causalEdges.add(edge.deepCopy());
+        }
+        write(activations, activation + "\n");
+
+        Path results = root.resolve("results.jsonl");
+        JsonObject raw = JsonParser.parseString(new String(
+                Files.readAllBytes(results), StandardCharsets.UTF_8)
+                .trim()).getAsJsonObject();
+        raw.getAsJsonObject("engineSummary").add("pathCondition",
+                singletonObject(mutation));
+        write(results, raw + "\n");
+
+        Path output = root.resolve("mutation-summaries.jsonl");
+        Path diagnostics = root.resolve("mutation-diagnostics.jsonl");
+        ConcolicSummaryImporter.importSummaries(results, activations,
+                root.resolve("regions.jsonl"), output, diagnostics,
+                root.resolve("mutation-cache"));
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
@@ -5986,7 +5610,7 @@ public class ConcolicSummaryImporterTest {
         engineArray.addProperty("complete", true);
 
         return importMapFixture(root, path, true, new JsonArray(),
-                singletonString(method), causalEdges, null, null, actions,
+                singletonString(method), causalEdges, null, actions,
                 new JsonArray(), fieldObservations, dynamicBindings,
                 sliceMetadata, new JsonArray(), declarations,
                 singletonObject(engineArray));
@@ -6213,7 +5837,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", rootMethod);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         activation.addProperty("requestedOutputCaptureRequired", true);
         activation.addProperty("requestedOutputCaptureComplete", true);
         JsonObject requested = new JsonObject();
@@ -6439,7 +6062,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         activation.addProperty("requestedOutputCaptureRequired", true);
         activation.addProperty("requestedOutputCaptureComplete", true);
         JsonObject requested = new JsonObject();
@@ -6561,7 +6183,6 @@ public class ConcolicSummaryImporterTest {
         raw.add("rootOutputExpression", constant("Y_L_NULL", "L"));
         raw.add("outputCaptures", singletonObject(observed));
         if (exactVmGuard || projectedDischarge) {
-            raw.add("runtimeHeapEffects", new JsonArray());
             JsonArray runtimeHeapObservations = new JsonArray();
             if (projectedDischarge) {
                 runtimeHeapObservations.add(incompleteMapEntryObservation(
@@ -6680,7 +6301,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", "REGION.ARRAY.out.0");
@@ -6847,7 +6467,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", outputPort);
@@ -7340,32 +6959,6 @@ public class ConcolicSummaryImporterTest {
         }
     }
 
-    private static JsonObject boundedInput(String port, String cell,
-                                           String sourceKind,
-                                           String javaType) {
-        JsonObject result = new JsonObject();
-        result.addProperty("portId", port);
-        result.addProperty("cell", cell);
-        result.addProperty("sourceKind", sourceKind);
-        result.addProperty("javaType", javaType);
-        return result;
-    }
-
-    private static JsonObject boundedEdge(String id, String method,
-                                          String siteId, String kind,
-                                          String fromCell, String toCell,
-                                          String unit) {
-        JsonObject result = new JsonObject();
-        result.addProperty("id", id);
-        result.addProperty("method", method);
-        result.addProperty("siteId", siteId);
-        result.addProperty("kind", kind);
-        result.addProperty("fromCell", fromCell);
-        result.addProperty("toCell", toCell);
-        result.addProperty("unit", unit);
-        return result;
-    }
-
     private static void write(Path path, String value) throws Exception {
         String[] lines = value.split("\\n", -1);
         StringBuilder canonical = new StringBuilder();
@@ -7380,6 +6973,19 @@ public class ConcolicSummaryImporterTest {
                                 .getAsString() : "")) {
                     line = canonicalRuntimeResultForTest(
                             parsed.getAsJsonObject()).toString();
+                } else if (parsed.isJsonObject()
+                        && parsed.getAsJsonObject().has("activationId")) {
+                    JsonObject activation = parsed.getAsJsonObject();
+                    if (!activation.has("materializations")) {
+                        JsonElement declarations = activation.get(
+                                "symbolize");
+                        activation.add("materializations",
+                                declarations != null
+                                        && declarations.isJsonArray()
+                                        ? declarations.deepCopy()
+                                        : new JsonArray());
+                    }
+                    line = activation.toString();
                 }
             }
             canonical.append(line);
@@ -7400,8 +7006,8 @@ public class ConcolicSummaryImporterTest {
             result.addProperty("pathConditionIsolationPolicy",
                     ConcolicSummaryImporter.PATH_CONDITION_ISOLATION_POLICY);
         }
-        for (String field : new String[]{"runtimeHeapEffects",
-                "runtimeHeapObservations", "dynamicFieldBindings"}) {
+        for (String field : new String[]{"runtimeHeapObservations",
+                "dynamicFieldBindings"}) {
             if (!result.has(field)) result.add(field, new JsonArray());
         }
 

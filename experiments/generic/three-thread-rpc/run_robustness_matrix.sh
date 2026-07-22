@@ -193,6 +193,145 @@ validate_multitype_producer_artifacts() {
     || die "multitype guarded merge lost double/long/string/loop semantics"
 }
 
+validate_dependent_scalar_artifacts() {
+  local work_root=$1
+  local target_resolution="${work_root}/analysis/target_resolved.json"
+  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local campaign_root="${work_root}/producer-campaign"
+  local fixture_class="edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload"
+  local target_method="<${fixture_class}\$ConsumerThread: void executeWorker()>"
+  local target_exception="${fixture_class}\$DependentScalarBugReachedException"
+  local arithmetic_cell="<${fixture_class}\$RpcBus: int arithmeticValue>"
+  local text_cell="<${fixture_class}\$RpcBus: int textValue>"
+  local -a path_manifests merged_summaries
+
+  require_file "dependent-scalar annotation target" "${target_resolution}"
+  require_file "dependent-scalar runtime activation plan" "${activation_plan}"
+  [[ -d "${campaign_root}" ]] \
+    || die "dependent-scalar producer campaign not found: ${campaign_root}"
+
+  # The target is the one class-file annotation, not a rediscovered exception
+  # type or a fixture-provided branch formula.  Bytecode offsets and source
+  # lines are deliberately excluded because they are not semantic identity.
+  jq -e --arg method "${target_method}" \
+    --arg exception "${target_exception}" '
+    .seedMode == "EXCEPTION_ANNOTATION"
+    and .seedException == $exception
+    and .exceptionTarget.id == "dependent-scalar"
+    and .exceptionTarget.method == $method
+    and .exceptionTarget.exception == $exception
+    and .exceptionTarget.authority
+      == "CLASSFILE_CAUSYNTH_EXCEPTION_TARGET_TYPE_USE_V1"
+    and .discoveredSeedCount == 1
+    and .discoveredSeedMethods == [$method]
+  ' "${target_resolution}" >/dev/null \
+    || die "dependent-scalar lost its exact annotated target root"
+
+  # Runtime discovery must expose both scalar publishers as distinct producer
+  # roots converging on one TARGET_BRANCH instance.  Region numbers and event
+  # sequence values are intentionally not pinned.
+  jq -e -s --arg arithmetic "${arithmetic_cell}" \
+    --arg text "${text_cell}" '
+    [.[] | select(
+      .captureGoal.kind == "OUTPUT_CLOSURE"
+      and .captureGoal.scope == "BOUNDED_OUTPUT_RELEVANT_PATHS"
+      and .replayable == true
+      and .symbolicReady == true
+      and (.requestedOutput.cell == $arithmetic
+        or .requestedOutput.cell == $text))] as $producers
+    | ([$producers[].edgeBindings[]?
+        | select(.relation == "READ_FROM"
+          and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+          and .fromOutputCell == .toInputCell)] as $edges
+      | ($producers | length) == 2
+      and ([$producers[].requestedOutput.cell] | sort)
+        == ([$arithmetic, $text] | sort)
+      and ([$producers[].regionId] | unique | length) == 2
+      and ($edges | length) == 2
+      and ([$edges[].fromOutputCell] | sort)
+        == ([$arithmetic, $text] | sort)
+      and ([$edges[].toRegionInstance] | unique | length) == 1
+      and all($edges[];
+        .fromRegion != .toRegion
+        and .objectIdentityConfirmed == true
+        and .orderConfirmed == true
+        and .canonicalOutputAliasUsed == false
+        and .canonicalInputResolutionUsed == true)
+      and ([.[] | select(
+          .captureGoal.kind == "TARGET_BRANCH"
+          and .replayable == true
+          and .regionId == $edges[0].toRegion
+          and .regionInstanceId == $edges[0].toRegionInstance)]
+        | length) == 1)
+  ' "${activation_plan}" >/dev/null \
+    || die "dependent-scalar runtime roots are not two exact producers and one target"
+
+  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_manifest.json | sort)
+  mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
+  [[ ${#path_manifests[@]} -eq 2 ]] \
+    || die "dependent-scalar expected two producer path manifests"
+  [[ ${#merged_summaries[@]} -eq 2 ]] \
+    || die "dependent-scalar expected two producer guarded merges"
+
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .schemaVersion == 1
+      and .kind == "REGION_PATH_WORKLIST"
+      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .complete == true
+      and .wallClockBoundReached == false
+      and .gapCount == 0
+      and ((.gaps // []) | length) == 0
+      and .pendingTaskCount == 0
+      and .observedPathCount > 1
+      and .candidateFlipCount > 0
+      and ([.pathCountByRegion[]] | add) == .observedPathCount)
+    and ([.[].observedPathCount] | sort) == [2, 6]
+  ' "${path_manifests[@]}" >/dev/null \
+    || die "dependent-scalar producer path closure is incomplete"
+
+  # The string producer has exactly the two semantic outputs 5 and 9.  The
+  # arithmetic producer has six feasible clamp/add path partitions.  These
+  # are source-level domains, unlike region IDs, unit indexes, or symbols.
+  jq -e -s --arg arithmetic "${arithmetic_cell}" \
+    --arg text "${text_cell}" '
+    length == 2
+    and ([.[].requestedOutputSlice.outputCell] | sort)
+      == ([$arithmetic, $text] | sort)
+    and all(.[];
+      .valid == true
+      and .relationallyComplete == true
+      and .regionRelation.kind == "GUARDED_PATH_MERGE"
+      and .regionRelation.complete == true
+      and .regionRelation.pathClosureStatus
+        == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .regionRelation.guardSemantics
+        == "EXACT_NORMALIZED_PATH_CONDITION"
+      and .regionRelation.caseCount == (.regionRelation.cases | length)
+      and .regionRelation.caseCount > 1
+      and all(.regionRelation.cases[];
+        .relationallyComplete == true
+        and (.guard.conditions | length) > 0
+        and (.outputExpressions | length) == 1))
+    and any(.[];
+      .requestedOutputSlice.outputCell == $arithmetic
+      and .regionRelation.caseCount == 6)
+    and any(.[];
+      .requestedOutputSlice.outputCell == $text
+      and .regionRelation.caseCount == 2
+      and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
+        == ["Y_I_5", "Y_I_9"]
+      and ([.regionRelation.cases[].guard.conditions[]
+        | .. | objects
+        | select(._type? == "OpStrExpression"
+          and ._name? == "contains")] | length) > 0)
+  ' "${merged_summaries[@]}" >/dev/null \
+    || die "dependent-scalar lost its arithmetic/text producer domains"
+}
+
 validate_container_producer_artifacts() {
   local work_root=$1
   local campaign_root="${work_root}/producer-campaign"
@@ -549,8 +688,75 @@ validate_semantic_profile() {
       validate_multitype_producer_artifacts "${work_root}"
       ;;
     dependent-scalar)
-      # This optional case retains the common artifact/replay checks.  Its
-      # cross-producer scalar dependency has dedicated Java regression tests.
+      jq -e '
+        .status == "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
+        and .reachabilityStatus == "REACHABLE"
+        and .bootstrapReplayModelAvailable == true
+        and .rootBooleanInputCount == 1
+        and .existentialNonBooleanRootInputCount == 2
+        and .valuationCount == 2
+        and .satisfyingValuationCount == 1
+        and .unsatisfyingValuationCount == 1
+        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+          == ["1"])
+        and ([.truthTable[]
+          | select((.valuationKey == "1" and .solverStatus == "sat")
+            or (.valuationKey == "0" and .solverStatus == "unsat"))]
+          | length) == 2
+        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
+          | sort) == ["I", "Ljava/lang/String;"]
+        and .nullableJavaStringModeled == true
+        and .nullableJavaStringInputCount == 1
+        and ([.rootBooleanInputs[].cell] | tostring
+          | contains("<java.lang.Boolean: boolean booleanValue()>.return"))
+        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+          | contains("DependentScalarThreeThreadWorkload$ArithmeticThread: int input"))
+        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+          | contains("DependentScalarThreeThreadWorkload$TextThread: java.lang.String text"))
+        and ([.rootBooleanInputs[],
+          .existentialNonBooleanRootInputs[]] | map(.regionId)
+          | unique | length) == 2
+        and .rootBooleanInputs[0].regionId
+          == ([.existentialNonBooleanRootInputs[]
+            | select(.javaTypeDescriptor == "I")][0].regionId)
+      ' "${reach_report}" >/dev/null \
+        || die "dependent-scalar lost its exact existential reach profile"
+      jq -e '
+        .fatalSite
+          | startswith("<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$ConsumerThread: void executeWorker()>#")
+      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+        || die "dependent-scalar composition moved away from the annotated target"
+      jq -e '
+        . as $root
+        | .resolvedProducerCount == 2
+        and .resolvedDemandedOutputCount == 2
+        and .includedBoundedRelationCount == 2
+        and .guardedRegionRelationCount == 2
+        and .guardedPathCaseCount == 8
+        and .caseProjectionCatalogComplete == true
+        and .caseProjectionCatalogCount == 8
+        and ([.resolvedEdgeBindings[].binding.fromOutputCell] | sort)
+          == [
+            "<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$RpcBus: int arithmeticValue>",
+            "<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$RpcBus: int textValue>"
+          ]
+        and all(.resolvedEdgeBindings[];
+          .targetRegion == .binding.toRegion
+          and .targetRegion == $root.fatalRegion
+          and .targetRegionInstance == $root.fatalRegionInstanceId
+          and .binding.fromOutputCell == .binding.toInputCell
+          and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+          and .binding.objectIdentityConfirmed == true
+          and .binding.orderConfirmed == true)
+      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+        || die "dependent-scalar lost either producer relation"
+      grep -Fq 'str.contains' "${smt}" \
+        || die "dependent-scalar SMT omitted String.contains"
+      grep -Fq '"ready"' "${smt}" \
+        || die "dependent-scalar SMT omitted the ready needle"
+      grep -Fq '(define-fun java_int_wrap' "${smt}" \
+        || die "dependent-scalar SMT omitted Java int arithmetic semantics"
+      validate_dependent_scalar_artifacts "${work_root}"
       ;;
     containers)
       jq -e '

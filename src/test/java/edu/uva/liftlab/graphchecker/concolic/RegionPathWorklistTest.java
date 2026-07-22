@@ -394,7 +394,6 @@ public class RegionPathWorklistTest {
                 RegionCaptureGoal.transitionDiscovery());
         summary.addProperty("relationallyComplete", false);
         summary.addProperty("normalExit", true);
-        summary.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         JsonArray sites = new JsonArray();
@@ -438,6 +437,25 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
         assertEquals(task.get("queryKey").getAsString(), replanned.tasks
                 .get(0).get("queryKey").getAsString());
+
+        JsonObject legacyTopLevel = summary.deepCopy();
+        legacyTopLevel.addProperty("requestedOutputSliceComplete", true);
+        legacyTopLevel.getAsJsonObject("requestedOutputSlice")
+                .addProperty("complete", false);
+        RegionPathWorklist.Result nestedFalse = RegionPathWorklist.plan(
+                Collections.singletonList(legacyTopLevel),
+                Collections.singletonList(activation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertTrue(nestedFalse.tasks.isEmpty());
+
+        legacyTopLevel.remove("requestedOutputSlice");
+        RegionPathWorklist.Result nestedMissing = RegionPathWorklist.plan(
+                Collections.singletonList(legacyTopLevel),
+                Collections.singletonList(activation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertTrue(nestedMissing.tasks.isEmpty());
     }
 
     @Test

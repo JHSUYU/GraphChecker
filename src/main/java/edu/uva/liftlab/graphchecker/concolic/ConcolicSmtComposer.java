@@ -172,12 +172,6 @@ public final class ConcolicSmtComposer {
         boolean instanceScopedContext = resolutionContext.size() > 0
                 && !string(resolutionContext, "regionInstanceId").isEmpty();
 
-        // An explicit source-scope boundary also permits a certified bounded
-        // approximation for the same region. There is no second, independent
-        // relational composition scope.
-        Set<String> boundedRelationalRegions = new LinkedHashSet<>(
-                arguments.boundedUpstreamRegions);
-
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
                 resolutionContext,
                 summaries, arguments.boundedUpstreamRegions);
@@ -191,11 +185,8 @@ public final class ConcolicSmtComposer {
         ContextScope resolvedScoped = boundedContext(resolutionContext,
                 relevantRegions);
         JsonObject context = resolvedScoped.context;
-        Emitter emitter = new Emitter(ports,
-                boundedRelationalRegions);
+        Emitter emitter = new Emitter(ports);
         emitter.begin(fatal);
-        emitter.registerDemandedSummaryOutputs(
-                resolved.selectedRegionSummaries.values());
         emitter.registerExactEqualityBoundExpressions(
                 resolved.selectedEdges);
         if (!instanceScopedContext) {
@@ -219,7 +210,6 @@ public final class ConcolicSmtComposer {
             emitter.registerEngineArrayInputBindings(fatal, "fatal query");
             emitter.registerVmIntrinsicPlaceholderBindings(fatal,
                     "fatal query");
-            emitter.registerFatalMapMisses(fatalConstraints);
             for (JsonElement constraint : fatalConstraints) {
                 fatalTerms.add(emitter.constraint(constraint,
                         "fatal query"));
@@ -290,15 +280,13 @@ public final class ConcolicSmtComposer {
                         ? "SCHEDULER_SELECTED_RUNTIME_BINDINGS_FOR_FATAL_INSTANCE"
                         : "MISSING_INSTANCE_SCOPED_SYMBOLIC_CONTEXT");
         manifest.addProperty("boundedComposition",
-                !boundedRelationalRegions.isEmpty());
+                !arguments.boundedUpstreamRegions.isEmpty());
         manifest.addProperty("compositionScope",
                 arguments.boundedUpstreamRegions.isEmpty()
                         ? "FULL_INSTANCE_SCOPED_CONTEXT"
                         : "EXPLICIT_BOUNDED_UPSTREAM_REGIONS");
         manifest.add("boundedUpstreamRegions", GSON.toJsonTree(
                 arguments.boundedUpstreamRegions));
-        manifest.add("boundedRelationalRegions", GSON.toJsonTree(
-                boundedRelationalRegions));
         manifest.addProperty("excludedContextRelationCount",
                 scoped.excludedRelations
                         + resolvedScoped.excludedRelations);
@@ -329,12 +317,6 @@ public final class ConcolicSmtComposer {
         manifest.add("resolvedEdgeBindings",
                 resolved.resolvedEdgeCatalog());
         manifest.add("includedSummaries", GSON.toJsonTree(includedSummaries));
-        manifest.addProperty("boundedRelationalApproximationUsed",
-                !emitter.boundedRelationalAdmissions.isEmpty());
-        manifest.add("boundedRelationalSummaryRegions", GSON.toJsonTree(
-                emitter.boundedRelationalAdmissions));
-        manifest.add("requestedOutputOnlySummaryAdmissions",
-                GSON.toJsonTree(emitter.requestedOutputOnlyAdmissions));
         manifest.add("missingSummaryRegions",
                 GSON.toJsonTree(missingSummaries));
         manifest.add("incompleteSummaryRegions",
@@ -377,12 +359,6 @@ public final class ConcolicSmtComposer {
                 emitter.opaqueComputedMapKeys.size());
         manifest.add("opaqueComputedMapKeys",
                 emitter.opaqueComputedMapKeys.deepCopy());
-        manifest.addProperty("causalMapRemoveMissBindingCount",
-                emitter.causalMapRemoveMissBindings.size());
-        manifest.addProperty("causalMapRemoveMissConstraintCount",
-                emitter.causalMapRemoveMissConstraintCount);
-        manifest.add("causalMapRemoveMissBindings",
-                emitter.causalMapRemoveMissBindings.deepCopy());
         manifest.add("caseProjectionCatalog",
                 emitter.caseProjectionCatalog.deepCopy());
         manifest.addProperty("caseProjectionCatalogCount",
@@ -1521,7 +1497,6 @@ public final class ConcolicSmtComposer {
 
     private static final class Emitter {
         private final PortIndex ports;
-        private final Set<String> boundedRelationalRegions;
         private final List<String> preamble = new ArrayList<>();
         private final List<String> declarations = new ArrayList<>();
         private final List<String> assertions = new ArrayList<>();
@@ -1547,8 +1522,6 @@ public final class ConcolicSmtComposer {
         private final Set<String> mentionedPorts = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> incompleteSummaries = new LinkedHashSet<>();
-        private final Set<String> boundedRelationalAdmissions =
-                new LinkedHashSet<>();
         private final Set<String> unboundPorts = new LinkedHashSet<>();
         private final Set<String> canonicalPortTermBindings =
                 new LinkedHashSet<>();
@@ -1558,10 +1531,6 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private final Map<String, EqualityBoundExpression>
                 exactEqualityBoundExpressions = new LinkedHashMap<>();
-        private final Map<String, Set<String>> demandedSummaryOutputs =
-                new LinkedHashMap<>();
-        private final Set<String> requestedOutputOnlyAdmissions =
-                new LinkedHashSet<>();
         private final Set<String> ambiguousEqualityBoundExpressionPorts =
                 new LinkedHashSet<>();
         private final Set<String> validatedIncomingEdgeInputs =
@@ -1570,9 +1539,6 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         private final Set<String> emittedExactCausalInputAliasKeys =
                 new LinkedHashSet<>();
-        private final List<FatalMapMiss> fatalMapMisses = new ArrayList<>();
-        private final Map<String, List<RenderedMapRemoveEffect>>
-                renderedMapRemovesBySummary = new LinkedHashMap<>();
         private final Map<String, EngineArrayInputBridge>
                 engineArrayInputBridges = new LinkedHashMap<>();
         private final Map<String, String> canonicalFieldAccessors =
@@ -1598,21 +1564,12 @@ public final class ConcolicSmtComposer {
         private final JsonArray runtimeBoundedMapSnapshots = new JsonArray();
         private final JsonArray exactCausalInputAliases = new JsonArray();
         private final JsonArray opaqueComputedMapKeys = new JsonArray();
-        private final JsonArray causalMapRemoveMissBindings =
-                new JsonArray();
-        private int causalMapRemoveMissConstraintCount;
         private String currentGuard = "";
         private String currentSymbolScope = "global";
-        private String currentSummaryIdentity = "";
         private CaseProjectionCapture currentCaseProjection;
 
-        private Emitter(PortIndex ports,
-                        Set<String> boundedRelationalRegions) {
+        private Emitter(PortIndex ports) {
             this.ports = ports;
-            this.boundedRelationalRegions = new LinkedHashSet<>(
-                    boundedRelationalRegions == null
-                            ? Collections.<String>emptySet()
-                            : boundedRelationalRegions);
         }
 
         private String enterSymbolScope(String scope) {
@@ -1766,99 +1723,6 @@ public final class ConcolicSmtComposer {
                             "AmbiguousExactEqualityBoundExpression:" + input);
                 }
             }
-        }
-
-        private void registerDemandedSummaryOutputs(
-                Iterable<RegionSummarySelection> selections) {
-            for (RegionSummarySelection selection : selections) {
-                demandedSummaryOutputs.put(summarySelectionIdentity(
-                        selection.summary), new LinkedHashSet<>(
-                        selection.demandedOutputs));
-            }
-        }
-
-        private String summarySelectionIdentity(JsonObject summary) {
-            return firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "cacheKey"), sha256(GSON.toJson(summary)
-                            .getBytes(StandardCharsets.UTF_8)));
-        }
-
-        /**
-         * Finds only an explicit {@code Map.get(k)} result constrained equal
-         * to null in the selected fatal prefix.  Translation is deliberately
-         * limited to a canonical map input; locals and ambiguous aliases do
-         * not acquire causal semantics here.
-         */
-        private void registerFatalMapMisses(JsonArray constraints) {
-            for (JsonElement element : constraints) {
-                if (!element.isJsonObject()) continue;
-                JsonObject lookup = element.getAsJsonObject();
-                if (!"MethodExpression".equals(string(lookup, "_type"))
-                        || !isMapGet(string(lookup, "_name"))) {
-                    continue;
-                }
-                JsonObject result = object(lookup, "_res_exp");
-                if (result.size() == 0
-                        || !hasExactNullEquality(constraints, result)) {
-                    continue;
-                }
-                JsonArray parameters = array(lookup, "_param_list");
-                if (parameters.size() < 2
-                        || !parameters.get(0).isJsonObject()) {
-                    continue;
-                }
-                JsonObject receiverExpression = parameters.get(0)
-                        .getAsJsonObject();
-                if (!"SymbolExpression".equals(string(receiverExpression,
-                        "_type"))) {
-                    continue;
-                }
-                String input = findPort(string(receiverExpression, "_exp"));
-                Port inputSchema = ports.get(input);
-                if (input.isEmpty() || inputSchema == null
-                        || !inputSchema.input || inputSchema.sort != Sort.MAP) {
-                    continue;
-                }
-                Term receiver = mapState(parameters.get(0));
-                Term key = mapKeyTerm(parameters.get(1),
-                        "fatal_map_miss_key");
-                if (key == null || key.sort != Sort.VALUE
-                        || receiver.sort != Sort.MAP
-                        || !portName(input).equals(receiver.text)) {
-                    continue;
-                }
-                fatalMapMisses.add(new FatalMapMiss(input, key,
-                        string(result, "_exp"), string(result,
-                        "_java_type")));
-            }
-        }
-
-        private boolean hasExactNullEquality(JsonArray constraints,
-                                             JsonObject result) {
-            for (JsonElement element : constraints) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binary = element.getAsJsonObject();
-                if (!"BinaryExpression".equals(string(binary, "_type"))
-                        || !"==".equals(string(binary, "_op"))) {
-                    continue;
-                }
-                JsonElement left = binary.get("_left");
-                JsonElement right = binary.get("_right");
-                if (left != null && right != null
-                        && (left.equals(result) && isNullExpression(right)
-                        || right.equals(result) && isNullExpression(left))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean isNullExpression(JsonElement expression) {
-            return expression != null && expression.isJsonObject()
-                    && "SymbolExpression".equals(string(
-                    expression.getAsJsonObject(), "_type"))
-                    && "N".equals(string(expression.getAsJsonObject(),
-                    "_exp"));
         }
 
         private String constraint(JsonElement expression, String origin) {
@@ -3472,14 +3336,6 @@ public final class ConcolicSmtComposer {
 
             JsonArray rows = declared.getAsJsonArray();
             JsonObject admission = admissionElement.getAsJsonObject();
-            // A certified requested-output-only relation need not validate
-            // VM materializations that occur elsewhere in the activation.
-            // This exemption is syntax checked: no demanded output or kept
-            // path condition may contain a PlaceholderExpression.
-            if (admitRequestedOutputOnlyRelation(container)
-                    && !requestedOutputOnlyUsesVmPlaceholder(container)) {
-                return;
-            }
             if (integer(admission, "schemaVersion", -1) != 1
                     || !"VM_INTRINSIC_PLACEHOLDER_BINDING_ADMISSION".equals(
                     string(admission, "kind"))
@@ -3613,98 +3469,6 @@ public final class ConcolicSmtComposer {
                     || (base + "_AND_EXPLICIT_CONCRETE_FALLBACKS").equals(
                     authority);
         }
-
-        private boolean admitRequestedOutputOnlyRelation(
-                JsonObject summary) {
-            String identity = summarySelectionIdentity(summary);
-            Set<String> demanded = demandedSummaryOutputs.get(identity);
-            JsonObject slice = object(summary, "requestedOutputSlice");
-            JsonObject requested = object(summary, "requestedOutput");
-            JsonObject outputAdmission = object(summary,
-                    "outputExpressionAdmission");
-            JsonObject heapModel = object(summary, "heapEffectModel");
-            String output = string(slice, "outputPort");
-            JsonElement expression = object(summary,
-                    "outputExpressions").get(output);
-            if (demanded == null || demanded.size() != 1
-                    || !demanded.contains(output) || output.isEmpty()
-                    || !ports.contains(output)
-                    || !output.equals(string(requested, "portId"))
-                    || expression == null || !expression.isJsonObject()
-                    || !bool(summary, "requestedOutputCaptureComplete", false)
-                    || !bool(summary,
-                    "boundedPartialOutputSliceAdmitted", false)
-                    || !bool(summary,
-                    "requestedOutputSliceOperationallyAdmitted", false)
-                    || !bool(slice, "structuralComplete", false)
-                    || bool(slice, "complete", true)
-                    || !bool(outputAdmission, "complete", false)
-                    || array(outputAdmission, "issues").size() != 0
-                    || string(outputAdmission, "authority").isEmpty()
-                    || array(summary, "heapEffects").size() != 0
-                    || array(summary, "heapStateInitializers").size() != 0
-                    || !bool(heapModel, "complete", false)) {
-                return false;
-            }
-            boolean captureMatched = false;
-            for (JsonElement element : array(summary,
-                    "requestedOutputCapture")) {
-                if (element.isJsonObject() && output.equals(string(
-                        element.getAsJsonObject(), "outputPort"))) {
-                    captureMatched = true;
-                }
-            }
-            if (!captureMatched) return false;
-
-            Set<String> declaredInputs = strictStringSet(array(slice,
-                    "inputPorts"));
-            if (declaredInputs == null) return false;
-            Set<String> referenced = new LinkedHashSet<>();
-            collectExpressionInputPorts(expression, regionOf(output),
-                    referenced);
-            collectExpressionInputPorts(array(summary, "pathCondition"),
-                    regionOf(output), referenced);
-            if (!declaredInputs.containsAll(referenced)) return false;
-
-            requestedOutputOnlyAdmissions.add(identity);
-            return true;
-        }
-
-        private boolean requestedOutputOnlyUsesVmPlaceholder(
-                JsonObject summary) {
-            String identity = summarySelectionIdentity(summary);
-            Set<String> demanded = demandedSummaryOutputs.get(identity);
-            if (demanded == null || demanded.size() != 1) return true;
-            String output = demanded.iterator().next();
-            return containsExpressionType(object(summary,
-                    "outputExpressions").get(output),
-                    "PlaceholderExpression")
-                    || containsExpressionType(array(summary,
-                    "pathCondition"), "PlaceholderExpression");
-        }
-
-        private boolean containsExpressionType(JsonElement value,
-                                               String expectedType) {
-            if (value == null || value.isJsonNull()) return false;
-            if (value.isJsonArray()) {
-                for (JsonElement element : value.getAsJsonArray()) {
-                    if (containsExpressionType(element, expectedType)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-            if (!value.isJsonObject()) return false;
-            JsonObject object = value.getAsJsonObject();
-            if (expectedType.equals(string(object, "_type"))) return true;
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                if (containsExpressionType(entry.getValue(), expectedType)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
         private boolean inputAdmissionOwnsVmPlaceholder(
                 JsonObject admission, JsonArray requirements, String port,
                 String identity, String function, String cell) {
@@ -3889,8 +3653,6 @@ public final class ConcolicSmtComposer {
 
         private void regionSummary(JsonObject summary) {
             String region = string(summary, "regionId");
-            String previousSummaryIdentity = currentSummaryIdentity;
-            currentSummaryIdentity = summarySelectionIdentity(summary);
             String previousScope = enterSymbolScope("summary:"
                     + firstNonBlank(string(summary, "summaryId"),
                     string(summary, "cacheKey"),
@@ -3937,7 +3699,6 @@ public final class ConcolicSmtComposer {
                 rejectNonRegionSemantics(region, summary);
             } finally {
                 restoreSymbolScope(previousScope);
-                currentSummaryIdentity = previousSummaryIdentity;
             }
         }
 
@@ -4775,14 +4536,7 @@ public final class ConcolicSmtComposer {
                                                JsonArray effects) {
             if (summary.has("relationallyComplete")
                     && !bool(summary, "relationallyComplete", false)) {
-                if (admitBoundedRelationalSummary(region, summary)) {
-                    boundedRelationalAdmissions.add(region);
-                } else if (admitRequestedOutputOnlyRelation(summary)) {
-                    // Only the exact demanded output closure is composed;
-                    // unrelated activation semantics remain outside scope.
-                } else {
-                    heapGap(region, "IncompleteRelationalSummary@" + region);
-                }
+                heapGap(region, "IncompleteRelationalSummary@" + region);
             }
             boolean modelDeclared = summary.has("heapEffectModel")
                     && summary.get("heapEffectModel").isJsonObject();
@@ -4916,26 +4670,6 @@ public final class ConcolicSmtComposer {
                             + ":" + declaredFamilies + "!=" + cursors.size());
                 }
             }
-        }
-
-        /**
-         * Admits an explicitly bounded relation only when the caller selected
-         * that region as a composition boundary and the summary carries its
-         * own complete approximation certificate.  This authorizes emitting
-         * the bounded transition; it deliberately does not promote the
-         * summary's global {@code relationallyComplete} bit.
-         */
-        private boolean admitBoundedRelationalSummary(
-                String region, JsonObject summary) {
-            JsonObject approximation = object(summary,
-                    "boundedApproximation");
-            JsonObject execution = object(summary, "executionAdmission");
-            return boundedRelationalRegions.contains(region)
-                    && bool(summary, "boundedRelationallyComplete", false)
-                    && bool(approximation, "complete", false)
-                    && bool(approximation, "approximation", false)
-                    && !string(approximation, "scope").isEmpty()
-                    && bool(execution, "valid", false);
         }
 
         private Map<String, JsonObject> validateHeapInitializers(
@@ -5278,11 +5012,6 @@ public final class ConcolicSmtComposer {
                     string(binding, "observationStateBindingAuthority"))
                     && integer(proof, "candidateMutationCount", -1) == 0
                     && integer(proof, "heapEffectCount", -1) == 0
-                    && integer(proof, "associatedHeapEffectCount", -1) == 0
-                    && integer(proof,
-                    "runtimeHeapEffectRecordCount", -1) == 0
-                    && integer(proof,
-                    "runtimeHeapEffectJoinedCount", -1) == 0
                     && integer(proof,
                     "ignoredRuntimeHeapEvidenceCount", -1) == 0
                     && emptyOrMissingArray(summary, "heapEffects")
@@ -6823,7 +6552,6 @@ public final class ConcolicSmtComposer {
             // separate engine-symbol binding is required for that free input.
             boundPorts.add(input);
             String rhs;
-            Term mutationKey = null;
             if ("MAP_PUT".equals(kind)) {
                 if (!hasExpression(effect, "keyExpression")
                         || !hasExpression(effect, "valueExpression")
@@ -6841,7 +6569,6 @@ public final class ConcolicSmtComposer {
                             + "@" + region);
                     return;
                 }
-                mutationKey = key;
                 Term value = asValue(term(effect.get("valueExpression"), null));
                 rhs = "(map_put " + portName(input) + " " + key.text
                         + " " + value.text + ")";
@@ -6857,33 +6584,6 @@ public final class ConcolicSmtComposer {
                     heapGap(region, "HeapEffectKeyTypeUnsupported:" + kind
                             + "@" + region);
                     return;
-                }
-                mutationKey = key;
-                if (bool(effect, "requiresKeyPresent", false)
-                        && hasExpression(effect, "removedValueExpression")
-                        && !string(effect, "entryBindingAuthority").isEmpty()
-                        && !string(effect, "valueBindingAuthority").isEmpty()) {
-                    if (!authenticatedValueRefWitness(effect,
-                            "removedValueExpression",
-                            "removedValueExpressionAuthority",
-                            "entryValueObjectToken")) {
-                        heapGap(region,
-                                "UnauthenticatedRemovedValueRefWitness@"
-                                        + region + ":" + firstNonBlank(
-                                        string(effect, "effectId"), kind));
-                    } else {
-                        Term removedValue = asValue(term(
-                                effect.get("removedValueExpression"), null));
-                        String suffix = firstNonBlank(string(effect,
-                                "effectId"), region + "_" + assertionCount);
-                        assertNamed("heap_remove_key_present_" + suffix,
-                                "(map_has " + portName(input) + " "
-                                        + key.text + ")");
-                        assertNamed("heap_remove_value_binding_" + suffix,
-                                "(= (map_select " + portName(input) + " "
-                                        + key.text + ") "
-                                        + removedValue.text + ")");
-                    }
                 }
                 rhs = "(map_remove " + portName(input) + " "
                         + key.text + ")";
@@ -6907,19 +6607,6 @@ public final class ConcolicSmtComposer {
             assertNamed("heap_effect_" + region + "_" + assertionCount,
                     "(= " + portName(output) + " " + rhs + ")");
             boundPorts.add(output);
-            if ("MAP_REMOVE".equals(kind) && mutationKey != null
-                    && currentGuard.isEmpty()
-                    && !currentSummaryIdentity.isEmpty()
-                    && bool(effect, "requiresKeyPresent", false)
-                    && !string(effect, "provenanceAuthority").isEmpty()) {
-                renderedMapRemovesBySummary.computeIfAbsent(
-                        currentSummaryIdentity,
-                        ignored -> new ArrayList<>()).add(
-                        new RenderedMapRemoveEffect(rawInput, rawOutput,
-                                input, output, mutationKey,
-                                string(effect, "effectId"),
-                                string(effect, "provenanceAuthority")));
-            }
         }
 
         private boolean hasExpression(JsonObject effect, String field) {
@@ -7261,7 +6948,6 @@ public final class ConcolicSmtComposer {
         private MergeStats mergeEdgeBindings(
                 List<ResolvedEdge> edges, Set<String> relevantRegions) {
             MergeStats stats = new MergeStats();
-            List<ResolvedEdge> validatedEdges = new ArrayList<>();
             int edgeIndex = 0;
             for (ResolvedEdge edge : edges) {
                 String region = edge.source.regionId;
@@ -7368,7 +7054,6 @@ public final class ConcolicSmtComposer {
                     stats.readFrom++;
                 }
                 stats.edgeBindings++;
-                validatedEdges.add(edge);
 
                 String write = "event_write_" + smtName(label);
                 String read = "event_read_" + smtName(label);
@@ -7403,121 +7088,7 @@ public final class ConcolicSmtComposer {
                         + writerReceiver + " " + readerReceiver + ")");
                 stats.identities++;
             }
-            emitCausalMapRemoveMissBindings(validatedEdges);
             return stats;
-        }
-
-        /**
-         * Connects an explicit fatal map miss to one exact upstream
-         * MAP_REMOVE transformer.  The base formula states post-state absence
-         * and pre-state presence for the fatal key; it intentionally never
-         * asserts equality with the removed key.  Equality is therefore a
-         * solver-derived consequence of ordinary {@code map_remove} store
-         * semantics, and is also exported as a non-required relationship
-         * candidate for independent checking.
-         */
-        private void emitCausalMapRemoveMissBindings(
-                List<ResolvedEdge> validatedEdges) {
-            for (FatalMapMiss miss : fatalMapMisses) {
-                List<CausalMapRemoveMiss> candidates = new ArrayList<>();
-                for (ResolvedEdge edge : validatedEdges) {
-                    if (!miss.mapInputPort.equals(edge.targetInput)
-                            || bool(edge.binding, "inputProjectionUsed", false)
-                            || portSort(edge.targetInput) != Sort.MAP) {
-                        continue;
-                    }
-                    List<RenderedMapRemoveEffect> effects =
-                            renderedMapRemovesBySummary.get(
-                                    summarySelectionIdentity(edge.summary));
-                    if (effects == null) continue;
-                    for (RenderedMapRemoveEffect effect : effects) {
-                        if (edge.source.outputPort.equals(effect.rawOutputPort)
-                                && effect.key.sort == Sort.VALUE) {
-                            candidates.add(new CausalMapRemoveMiss(edge,
-                                    effect, miss));
-                        }
-                    }
-                }
-                if (candidates.size() != 1) continue;
-                CausalMapRemoveMiss causal = candidates.get(0);
-                String suffix = smtName(firstNonBlank(
-                        string(causal.edge.binding, "edgeId"),
-                        causal.effect.effectId,
-                        "map_remove_miss_" + causalMapRemoveMissBindings
-                                .size()));
-                String postAbsentName = "causal_map_miss_post_absent_"
-                        + suffix;
-                String prePresentName = "causal_map_miss_pre_present_"
-                        + suffix;
-                assertNamed(postAbsentName, "(not (map_has "
-                        + portName(causal.miss.mapInputPort) + " "
-                        + causal.miss.key.text + "))");
-                assertNamed(prePresentName, "(map_has "
-                        + portName(causal.effect.effectiveInputPort) + " "
-                        + causal.miss.key.text + ")");
-                causalMapRemoveMissConstraintCount += 2;
-
-                String derivedEquality = "(= " + causal.effect.key.text
-                        + " " + causal.miss.key.text + ")";
-                JsonObject roles = new JsonObject();
-                roles.addProperty("removedKey", causal.effect.key.text);
-                roles.addProperty("fatalLookupKey", causal.miss.key.text);
-                roles.addProperty("preState",
-                        causal.effect.effectiveInputPort);
-                roles.addProperty("postState",
-                        causal.miss.mapInputPort);
-                roles.addProperty("directEqualityAsserted", false);
-                addRelationshipCandidate("derived_map_remove_miss_key_"
-                                + suffix,
-                        "DERIVED_MAP_REMOVE_FATAL_MISS_KEY_EQUALITY",
-                        derivedEquality, false, roles,
-                        "EXACT_SELECTED_POST_STATE_EDGE",
-                        "FATAL_MAP_GET_RESULT_EXACT_NULL_GUARD",
-                        "PRE_PRESENT_AND_POST_ABSENT",
-                        "MAP_REMOVE_STORE_SEMANTICS",
-                        "EQUALITY_NOT_ASSERTED_IN_BASE_SMT");
-
-                JsonObject audit = new JsonObject();
-                audit.addProperty("authority",
-                        "EXACT_POST_STATE_EDGE_FATAL_MISS_MAP_REMOVE_V1");
-                audit.addProperty("sourceSummaryId", string(
-                        causal.edge.summary, "summaryId"));
-                audit.addProperty("sourceRegion",
-                        causal.edge.source.regionId);
-                audit.addProperty("sourceRegionInstance",
-                        causal.edge.source.instanceId);
-                audit.addProperty("sourceOutputPort",
-                        causal.edge.source.outputPort);
-                audit.addProperty("targetRegion",
-                        causal.edge.targetRegion);
-                audit.addProperty("targetRegionInstance",
-                        causal.edge.targetInstance);
-                audit.addProperty("targetMapInputPort",
-                        causal.miss.mapInputPort);
-                audit.addProperty("preStatePort",
-                        causal.effect.effectiveInputPort);
-                audit.addProperty("effectId", causal.effect.effectId);
-                audit.addProperty("effectProvenanceAuthority",
-                        causal.effect.provenanceAuthority);
-                audit.addProperty("fatalResultEngineSymbol",
-                        causal.miss.resultEngineSymbol);
-                audit.addProperty("fatalResultJavaType",
-                        causal.miss.resultJavaType);
-                audit.addProperty("fatalNullInterpretation",
-                        "MAP_GET_NULL_AS_ABSENT_IN_CAUSAL_REMOVE_SCOPE");
-                audit.addProperty("preStateFatalKeyPresentAsserted", true);
-                audit.addProperty("postStateFatalKeyAbsentAsserted", true);
-                audit.addProperty("directKeyEqualityAsserted", false);
-                audit.addProperty("derivedKeyEqualityFormula",
-                        derivedEquality);
-                audit.addProperty("derivedRelationshipKind",
-                        "DERIVED_MAP_REMOVE_FATAL_MISS_KEY_EQUALITY");
-                audit.addProperty("postAbsentAssertion", postAbsentName);
-                audit.addProperty("prePresentAssertion", prePresentName);
-                audit.addProperty("edgeId", string(causal.edge.binding,
-                        "edgeId"));
-                causalMapRemoveMissBindings.add(audit);
-            }
         }
 
         /**
@@ -8503,61 +8074,6 @@ public final class ConcolicSmtComposer {
                                         List<String> lines) {
             for (String line : lines) builder.append(line)
                     .append(System.lineSeparator());
-        }
-    }
-
-    private static final class FatalMapMiss {
-        private final String mapInputPort;
-        private final Term key;
-        private final String resultEngineSymbol;
-        private final String resultJavaType;
-
-        private FatalMapMiss(String mapInputPort, Term key,
-                             String resultEngineSymbol,
-                             String resultJavaType) {
-            this.mapInputPort = mapInputPort;
-            this.key = key;
-            this.resultEngineSymbol = resultEngineSymbol;
-            this.resultJavaType = resultJavaType;
-        }
-    }
-
-    private static final class RenderedMapRemoveEffect {
-        private final String rawInputPort;
-        private final String rawOutputPort;
-        private final String effectiveInputPort;
-        private final String effectiveOutputPort;
-        private final Term key;
-        private final String effectId;
-        private final String provenanceAuthority;
-
-        private RenderedMapRemoveEffect(String rawInputPort,
-                                        String rawOutputPort,
-                                        String effectiveInputPort,
-                                        String effectiveOutputPort,
-                                        Term key, String effectId,
-                                        String provenanceAuthority) {
-            this.rawInputPort = rawInputPort;
-            this.rawOutputPort = rawOutputPort;
-            this.effectiveInputPort = effectiveInputPort;
-            this.effectiveOutputPort = effectiveOutputPort;
-            this.key = key;
-            this.effectId = effectId;
-            this.provenanceAuthority = provenanceAuthority;
-        }
-    }
-
-    private static final class CausalMapRemoveMiss {
-        private final ResolvedEdge edge;
-        private final RenderedMapRemoveEffect effect;
-        private final FatalMapMiss miss;
-
-        private CausalMapRemoveMiss(ResolvedEdge edge,
-                                    RenderedMapRemoveEffect effect,
-                                    FatalMapMiss miss) {
-            this.edge = edge;
-            this.effect = effect;
-            this.miss = miss;
         }
     }
 
@@ -9724,11 +9240,8 @@ public final class ConcolicSmtComposer {
                 ? element.getAsJsonArray() : new JsonArray();
     }
 
-    /** Reads the neutral schema first and accepts the old name only here. */
     private static JsonArray edgeBindings(JsonObject object) {
-        JsonArray current = array(object, "edgeBindings");
-        if (object != null && object.has("edgeBindings")) return current;
-        return array(object, "producerBindings");
+        return array(object, "edgeBindings");
     }
 
     private static JsonObject object(JsonObject object, String field) {

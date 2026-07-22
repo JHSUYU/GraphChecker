@@ -52,7 +52,6 @@ final class ReplayActivationFactory {
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);
         result.remove("forcedBranches");
-        result.remove("replayMaterializations");
         result.remove("summaryMode");
         result.remove("targetBranch");
         result.remove("expectedBranchPrefix");

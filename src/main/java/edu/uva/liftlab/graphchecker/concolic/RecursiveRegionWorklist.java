@@ -486,7 +486,7 @@ public final class RecursiveRegionWorklist {
                     bool(activation, "anchorObserved", false),
                     bool(activation, "replayable", false),
                     activationOutputMatches(activation, output),
-                    requestedOutputSliceOperationallyAdmitted(activation),
+                    nestedOutputSliceComplete(activation),
                     bool(activation, "symbolicReady", false),
                     bool(activation, "staticInputSelectionComplete", false),
                     methodCount == 0 ? Integer.MAX_VALUE : methodCount);
@@ -646,7 +646,7 @@ public final class RecursiveRegionWorklist {
 
         private DependencyClosure activationDependencies(
                 JsonObject activation, String region, OutputRef output) {
-            if (!requestedOutputSliceOperationallyAdmitted(activation)) {
+            if (!nestedOutputSliceComplete(activation)) {
                 return DependencyClosure.gap(
                         "INCOMPLETE_OUTPUT_DEPENDENCY_CLOSURE",
                         "ACTIVATION_OUTPUT_SLICE_INCOMPLETE", "NONE");
@@ -668,21 +668,14 @@ public final class RecursiveRegionWorklist {
                         "ACTIVATION_OUTPUT_IS_NOT_UNAMBIGUOUS", "NONE");
             }
             JsonObject slice = object(activation, "requestedOutputSlice");
-            if (!bool(slice, "complete", true)
-                    && !bool(activation,
-                    "boundedPartialOutputSliceAdmitted", false)) {
+            Set<String> inputs = new TreeSet<>();
+            if (!hasArray(slice, "inputPorts")) {
                 return DependencyClosure.gap(
                         "INCOMPLETE_OUTPUT_DEPENDENCY_CLOSURE",
-                        "ACTIVATION_OUTPUT_SLICE_INCOMPLETE", "NONE");
+                        "ACTIVATION_OUTPUT_SLICE_HAS_NO_INPUT_PORT_SET",
+                        "NONE");
             }
-            Set<String> inputs = new TreeSet<>();
-            if (hasArray(slice, "inputPorts")) {
-                inputs.addAll(primitiveStringSet(array(slice, "inputPorts")));
-            } else {
-                addActionSymbols(inputs, array(activation, "symbolize"));
-                addActionSymbols(inputs, array(activation,
-                        "materializations"));
-            }
+            inputs.addAll(primitiveStringSet(array(slice, "inputPorts")));
             return DependencyClosure.complete(inputs,
                     "COMPLETE_OUTPUT_ACTIVATION_SLICE");
         }
@@ -699,17 +692,6 @@ public final class RecursiveRegionWorklist {
                     || expected.matches(string(output, "cell"));
         }
 
-        private void addActionSymbols(Set<String> inputs,
-                                      JsonArray actions) {
-            for (JsonElement element : actions) {
-                if (!element.isJsonObject()) continue;
-                String input = firstNonBlank(string(
-                        element.getAsJsonObject(), "symbol"), string(
-                        element.getAsJsonObject(), "inputPort"));
-                if (!input.isEmpty()) inputs.add(canonicalPort(input));
-            }
-        }
-
         private DependencyClosure summaryDependencies(JsonObject summary,
                                                       OutputRef output) {
             JsonObject slice = object(summary, "requestedOutputSlice");
@@ -718,11 +700,7 @@ public final class RecursiveRegionWorklist {
                     "outputPort")) || output.matches(string(slice,
                     "outputCell")) || output.matches(string(requested,
                     "portId")) || output.matches(string(requested, "cell"));
-            boolean sliceComplete =
-                    requestedOutputSliceOperationallyAdmitted(summary)
-                            || !summary.has(
-                            "requestedOutputSliceComplete")
-                            && bool(slice, "complete", false);
+            boolean sliceComplete = nestedOutputSliceComplete(summary);
             if (sliceMatches && sliceComplete
                     && hasArray(slice, "inputPorts")) {
                 return DependencyClosure.complete(primitiveStringSet(
@@ -1022,7 +1000,7 @@ public final class RecursiveRegionWorklist {
             if (RegionCaptureGoal.from(activation).isOutputClosure()) {
                 score += 1_000;
             }
-            if (requestedOutputSliceOperationallyAdmitted(activation)) {
+            if (nestedOutputSliceComplete(activation)) {
                 score += 100;
             }
             if (bool(activation, "anchorObserved", false)) score += 40;
@@ -1107,11 +1085,7 @@ public final class RecursiveRegionWorklist {
                     return result;
                 }
                 JsonObject slice = object(summary, "requestedOutputSlice");
-                boolean sliceComplete =
-                        requestedOutputSliceOperationallyAdmitted(summary)
-                                || !summary.has(
-                                "requestedOutputSliceComplete")
-                                && bool(slice, "complete", false);
+                boolean sliceComplete = nestedOutputSliceComplete(summary);
                 observedPath |= RegionCaptureGoal.from(summary)
                         .isOutputClosure() && sliceComplete
                         && hasArray(slice, "inputPorts");
@@ -1272,9 +1246,7 @@ public final class RecursiveRegionWorklist {
 
         private JsonArray runtimeBindings(JsonObject edge,
                                           String downstreamInstance) {
-            JsonArray validated = array(edge, "validatedBindings");
-            JsonArray source = validated.size() > 0
-                    ? validated : array(edge, "evidence");
+            JsonArray source = array(edge, "validatedBindings");
             if (downstreamInstance == null
                     || downstreamInstance.isEmpty()) return source;
             JsonArray exact = new JsonArray();
@@ -1872,15 +1844,12 @@ public final class RecursiveRegionWorklist {
         }
     }
 
-    /**
-     * Keeps discovery completeness as provenance while allowing a scheduler
-     * to explicitly admit one bounded partial output transformer for
-     * operational composition.  The admission bit is never inferred here.
-     */
-    private static boolean requestedOutputSliceOperationallyAdmitted(
-            JsonObject value) {
-        return bool(value, "requestedOutputSliceComplete", false)
-                || bool(value, "boundedPartialOutputSliceAdmitted", false);
+    private static boolean nestedOutputSliceComplete(JsonObject value) {
+        JsonElement complete = object(value, "requestedOutputSlice")
+                .get("complete");
+        return complete != null && complete.isJsonPrimitive()
+                && complete.getAsJsonPrimitive().isBoolean()
+                && complete.getAsBoolean();
     }
 
     private static int integer(JsonObject object, String field, int fallback) {

@@ -45,9 +45,10 @@ if (a > b) {
 ```
 
 `@CausynthExceptionTarget` 使用 `RetentionPolicy.CLASS`，不产生运行时行为。GraphChecker
-直接读取 classfile 的 `NEW` type annotation，得到 declaring class、JVM method descriptor、
-exception type、source line、bytecode instruction index 和同类型 construction ordinal，再将
-该唯一位置解析到对应的 Soot method/Jimple throw。静态 backward slice 因而从这一点开始，
+直接读取 classfile 的 `NEW` type annotation。目标的稳定语义身份由 declaring class、方法名与
+JVM descriptor、exception type，以及同一方法中同类型 construction ordinal 共同组成；source
+line 和 bytecode instruction index 只用于诊断与 classfile/Jimple 对齐，不属于语义身份。该身份
+被唯一解析到对应的 Soot method/Jimple throw，静态 backward slice 因而直接从这一点开始，
 不再扫描源码寻找同名 exception，也不再把同类型的其他 throw 当成候选。
 
 当一个输入 class tree 有多个 marker 时，`target.yaml` 只用稳定 id 选择一个：
@@ -73,6 +74,9 @@ else a = -1;
 // Thread 2
 int b = 10;
 if (b2) b = 0;
+int var = externalIntInput;
+if (var < 10) var = 10;
+b = b + var; // Java int wrap semantics
 
 // Thread 3
 int a = getRPCFromA();
@@ -87,7 +91,7 @@ if (a > b) throw new BugReachedException(a, b);
 这个 fixture 不再 hard-code RPC mapping。Soot 首遍只生成 candidate、插桩点和 frozen
 static graph；runtime 确认具体 root/class/thread call closure 后，在 frozen graph 上做一次
 小范围 demand re-slice。跨线程 producer/consumer 关系由 shared-field receiver identity、
-write-before-read、region instance 和最终 replay 自动验证。
+write-before-read、region instance、runtime evidence 和 producer path replay 自动验证。
 
 工作负载的具体路径语义由自动生成的 guarded summaries 和 Z3 truth table 给出。例如：
 
@@ -95,8 +99,9 @@ write-before-read、region instance 和最终 replay 自动验证。
 Producer A: b1 = false -> a = -1
             b1 = true  -> a = 1
 
-Producer B: b2 = false -> b = 10
-            b2 = true  -> b = 0
+Producer B: base = ite(b2, 0, 10)
+            boundedVar = ite(var < 10, 10, var)
+            b = java_int_wrap(base + boundedVar)
 
 候选 truth table / reach condition:
   从生成的 root-input catalog 自动枚举，不由 fixture 提供公式
@@ -254,6 +259,15 @@ Producer 的模型只能 materialize 到静态分析找到并由 instrumentation
 `forcedBranches` 不能作为关系证据。当前输出到候选模型为止；未来的可信升级必须让 target
 保持 observation-only，不得给 consumer 注入 model、返回值或 branch outcome。
 
+Map 变异只通过 VM `MethodExpression` 导入通用的 `MAP_PUT` / `MAP_REMOVE` /
+`MAP_CLEAR` / `MAP_PUT_ALL` heap transformer。直接 `Map.remove(key)` 受支持；maintained
+contract 刻意不支持 `Iterator.remove()` 变异：精确 static causal-edge `invoke` 可以识别该
+调用，但 VM `HashMap.removeNode` 证据无法证明对应的 application call 与 current entry。
+importer 因此报告 `INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE`，并令
+`heapEffectModel.complete=false`、`relationallyComplete=false`，而不是通过 side channel
+猜测 backing map/key 或生成不可信 SMT。iterator `next()`、entry/key/value 读取、有限 Map
+snapshot 和深层字段绑定不受影响。
+
 ## 递归 SMT composition
 
 Composer 从 fatal query 反向遍历 region graph。若下游端口 `D.in.j` 由上游端口
@@ -264,12 +278,13 @@ Composer 从 fatal query 反向遍历 region graph。若下游端口 `D.in.j` �
 
 ```text
 a = ite(b1, 1, -1)
-b = ite(b2, 0, 10)
+b = java_int_wrap(ite(b2, 0, 10) + ite(var < 10, 10, var))
 bug = (a > b)
 ```
 
-但这些文本没有 hard-code 在 workflow 中；它们来自四条 producer path summary、两条
-runtime-confirmed RPC edge 和 target branch condition。最终 SMT 由
+但这些文本没有 hard-code 在 workflow 中；它们来自 Producer A 的两条和 Producer B 的
+四条 path summary、两条 runtime-confirmed RPC edge 和 target branch condition。外部
+`int var` 保留为 root input，Boolean 投影对它作存在量化。最终 SMT 由
 `ConcolicSmtComposer` 生成，`BooleanReachConditionExtractor` 再对自动发现的 Java Boolean
 root 做有限真值表投影并生成 canonical DNF。
 

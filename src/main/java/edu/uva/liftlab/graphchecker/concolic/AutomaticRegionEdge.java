@@ -54,6 +54,18 @@ public final class AutomaticRegionEdge {
         }
         if ("EQUALITY".equals(relation)) {
             String authority = string(edge, "valueEqualityAuthority");
+            JsonElement bindings = edge.get("validatedBindings");
+            if (bindings == null || !bindings.isJsonArray()
+                    || bindings.getAsJsonArray().size() == 0) {
+                return false;
+            }
+            for (JsonElement element : bindings.getAsJsonArray()) {
+                if (!element.isJsonObject()
+                        || !trustedRuntimeValueEqualityEvidence(
+                        element.getAsJsonObject())) {
+                    return false;
+                }
+            }
             return bool(edge, "valueEqualityObserved", false)
                     && integer(edge, "confirmedValueEqualityPairCount", 0) > 0
                     && "RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(authority);
@@ -106,6 +118,31 @@ public final class AutomaticRegionEdge {
                 "fromEndpointSeq", "fromEventSeq");
         long reader = firstLong(binding, "readerEventSeq", "readSeq",
                 "toEndpointSeq", "toEventSeq");
+        return writer >= 0L && reader > writer;
+    }
+
+    /**
+     * Validates a planner-produced equality witness before the scheduler
+     * enriches it with relation and canonical-port metadata.
+     */
+    public static boolean trustedRuntimeValueEqualityEvidence(
+            JsonObject evidence) {
+        if (evidence == null
+                || string(evidence, "fromRegionInstance").isEmpty()
+                || string(evidence, "toRegionInstance").isEmpty()
+                || !bool(evidence, "valueEqualityObserved", false)
+                || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(string(
+                evidence, "valueEqualityAuthority"))
+                || string(evidence, "valueFingerprint").isEmpty()
+                || !VALUE_EQUALITY_ORDER_AUTHORITY.equals(string(evidence,
+                "endpointOrderAuthority"))
+                || !bool(evidence, "orderConfirmed", false)) {
+            return false;
+        }
+        long writer = firstLong(evidence, "fromEndpointSeq",
+                "writerEventSeq", "writeSeq", "fromEventSeq");
+        long reader = firstLong(evidence, "toEndpointSeq",
+                "readerEventSeq", "readSeq", "toEventSeq");
         return writer >= 0L && reader > writer;
     }
 

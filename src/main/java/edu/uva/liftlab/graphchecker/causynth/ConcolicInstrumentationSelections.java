@@ -55,21 +55,6 @@ final class ConcolicInstrumentationSelections {
         }
     }
 
-    static ConcolicReplaySelection replaySelectionFromEnvironment() {
-        String planValue = activationPlanValue();
-        if (planValue.isEmpty()) {
-            return new ConcolicReplaySelection();
-        }
-        try {
-            return ConcolicReplaySelection.from(
-                    Paths.get(planValue), selectedActivationValue());
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Could not load concolic replay materializations from "
-                            + planValue, exception);
-        }
-    }
-
     static ConcolicOutputCaptureSelection
     outputCaptureSelectionFromEnvironment() {
         String planValue = activationPlanValue();
@@ -240,10 +225,6 @@ final class ConcolicInstrumentationSelections {
                 || !strictJsonBooleanEquals(row,
                 "runtimePathEvidenceComplete", true)
                 || !strictJsonBooleanEquals(row,
-                "requestedOutputSliceComplete", true)
-                || !strictJsonBooleanEquals(row,
-                "requestedOutputSliceRefinementComplete", true)
-                || !strictJsonBooleanEquals(row,
                 "requestedOutputCaptureComplete", true)
                 || !strictJsonBooleanEquals(row,
                 "targetReplayRequired", false)
@@ -255,7 +236,6 @@ final class ConcolicInstrumentationSelections {
                 "deferredMaterializationCount", 0)
                 || !emptyJsonArray(row, "runtimeGaps")
                 || !absentOrEmptyJsonArray(row, "forcedBranches")
-                || !absentOrEmptyJsonArray(row, "replayMaterializations")
                 || row.has("transitionDiscovery")
                 || row.has("transitionOutputRefinement")) {
             return false;
@@ -374,9 +354,8 @@ final class ConcolicInstrumentationSelections {
     /**
      * Admits the one non-seed replay shape that can soundly reuse a bounded
      * requested-output closure: an input-model-only Z3 path flip.  The model
-     * may change concrete program inputs, but the branch remains an
-     * observation target; no forced edge or reference-result injection is
-     * authorized here.
+     * may change concrete program inputs at their real definitions, but the
+     * branch remains an observation target and no edge is forced.
      */
     private static boolean solverOutputPathFlipReady(JsonObject row,
                                                      String selected) {
@@ -780,18 +759,22 @@ final class ConcolicInstrumentationSelections {
                     if (!jsonBoolean(row, "replayable", true)) {
                         continue;
                     }
-                    JsonElement materializations = row.get("materializations");
-                    JsonElement legacy = row.get("symbolize");
-                    JsonElement actions = materializations != null
-                            && materializations.isJsonArray()
-                            ? materializations : legacy;
+                    String activationId = jsonString(row, "activationId");
+                    JsonElement actions = row.get("materializations");
                     if (actions == null || !actions.isJsonArray()) {
-                        continue;
+                        throw new IOException("Replayable activation "
+                                + activationId + " requires materializations "
+                                + "to be a JSON array");
                     }
+                    int actionIndex = 0;
                     for (JsonElement element : actions.getAsJsonArray()) {
-                        if (element.isJsonObject()) {
-                            result.add(element.getAsJsonObject());
+                        if (!element.isJsonObject()) {
+                            throw new IOException("Replayable activation "
+                                    + activationId + " materializations["
+                                    + actionIndex + "] must be a JSON object");
                         }
+                        result.add(element.getAsJsonObject());
+                        actionIndex++;
                     }
                 }
             }
@@ -1303,96 +1286,6 @@ final class ConcolicInstrumentationSelections {
                 }
             }
             return false;
-        }
-    }
-
-    /**
-     * Theory-neutral replay actions consumed by the bytecode transformer.
-     * At present the protocol supports reference-valued assignment results;
-     * additional value kinds can be added without importing project classes
-     * or solver-specific logic into this layer.
-     */
-    static final class ConcolicReplaySelection {
-        private final Map<String, ReplayTarget> targetsBySite =
-                new LinkedHashMap<>();
-
-        static ConcolicReplaySelection from(
-                Path activationPlan, String selectedActivation)
-                throws IOException {
-            if (activationPlan == null || !Files.isRegularFile(activationPlan)) {
-                throw new IOException("Activation plan not found: "
-                        + activationPlan);
-            }
-            ConcolicReplaySelection result = new ConcolicReplaySelection();
-            String selected = stringValue(firstNonBlank(selectedActivation));
-            try (BufferedReader reader = Files.newBufferedReader(activationPlan,
-                    StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.trim().isEmpty()) {
-                        continue;
-                    }
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        continue;
-                    }
-                    JsonObject row = parsed.getAsJsonObject();
-                    if (!selected.isEmpty()
-                            && !selected.equals(jsonString(row,
-                            "activationId"))) {
-                        continue;
-                    }
-                    if (!jsonBoolean(row, "replayable", true)) {
-                        continue;
-                    }
-                    JsonElement actions = row.get("replayMaterializations");
-                    if (actions == null || !actions.isJsonArray()) {
-                        continue;
-                    }
-                    for (JsonElement element : actions.getAsJsonArray()) {
-                        if (!element.isJsonObject()) {
-                            continue;
-                        }
-                        JsonObject action = element.getAsJsonObject();
-                        if (!"REFERENCE_RESULT".equals(
-                                jsonString(action, "kind"))) {
-                            continue;
-                        }
-                        String method = jsonString(action, "method");
-                        int unitIndex = ConcolicMaterializationSelection.intJson(
-                                action, "unitIndex", -1);
-                        if (!method.isEmpty() && unitIndex >= 0) {
-                            ReplayTarget target = new ReplayTarget(method,
-                                    unitIndex);
-                            result.targetsBySite.put(
-                                    method + "#u" + unitIndex, target);
-                        }
-                    }
-                }
-            }
-            return result;
-        }
-
-        Set<String> methods() {
-            Set<String> result = new LinkedHashSet<>();
-            for (ReplayTarget target : targetsBySite.values()) {
-                result.add(target.method);
-            }
-            return result;
-        }
-
-        Collection<ReplayTarget> targets() {
-            return targetsBySite.values();
-        }
-    }
-
-    static final class ReplayTarget {
-        final String method;
-        final int unitIndex;
-
-        ReplayTarget(String method, int unitIndex) {
-            this.method = method;
-            this.unitIndex = unitIndex;
         }
     }
 

@@ -43,7 +43,6 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -117,6 +116,13 @@ final class SeedBackwardStaticAnalyzer {
     private final Set<String> discoveredExceptionVariables = new LinkedHashSet<>();
     private final Map<String, Boolean> receiverProjectionWriteSummary =
             new LinkedHashMap<>();
+    /**
+     * One call signature has at most one closed-world, side-effect-free
+     * structural field accessor.  Negative resolutions are cached as null;
+     * {@link Map#containsKey(Object)} distinguishes them from a cache miss.
+     */
+    private final Map<String, StructuralFieldAccessor>
+            structuralFieldAccessors = new LinkedHashMap<>();
     private final Map<String, Set<String>> projectionAliasCache =
             new LinkedHashMap<>();
     private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
@@ -2776,25 +2782,25 @@ final class SeedBackwardStaticAnalyzer {
     private boolean processAccessorInvoke(String callerMethod, Fact fact,
                                           MethodSig callee, List<String> defs,
                                           Set<String> callerRelevant) {
-        if (callee == null || !callee.params.isEmpty() || defs.isEmpty()) {
+        if (callee == null || defs.isEmpty()) {
+            return false;
+        }
+        StructuralFieldAccessor accessor = structuralFieldAccessor(callee);
+        if (accessor == null) {
             return false;
         }
         String receiver = invokeBaseLocal(fact.unitText);
-        String fieldName = accessorFieldName(callee.name);
-        if (receiver == null || fieldName.isEmpty()) {
+        if (receiver == null) {
             return false;
         }
+        SootField declaredField = accessor.field;
+        String fieldName = declaredField.getName();
         String receiverNode = canonical(callerMethod, receiver);
         String receiverField = fieldProjection(receiverNode, fieldName);
         if (ignoreNode(receiverField)) {
             return false;
         }
-        SootField declaredField = resolveDeclaredField(callee.owner,
-                fieldName);
-        SootMethod declaredAccessor = resolveDeclaredAccessor(callee);
-        String projectedType = declaredField == null
-                ? cellValueType(receiverField)
-                : declaredField.getType().toString();
+        String projectedType = declaredField.getType().toString();
         if (projectedType.isEmpty()
                 || !erasedTypeName(projectedType).equals(
                 erasedTypeName(callee.returnType))) {
@@ -2820,7 +2826,7 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 annotateAccessorDeclaredFieldEdge(declaredFieldNode, def,
                         callerMethod, fact, declaredField,
-                        declaredAccessor);
+                        accessor.implementation);
             }
             if (addEdge("accessor_field_return", receiverField, def,
                     callerMethod, fact,
@@ -2830,7 +2836,7 @@ final class SeedBackwardStaticAnalyzer {
             if (declaredField != null) {
                 annotateAccessorDeclaredFieldEdge(receiverField, def,
                         callerMethod, fact, declaredField,
-                        declaredAccessor);
+                        accessor.implementation);
             }
         }
         if (defExactHit && canOpenFieldFromPlainValues(defs)) {
@@ -2865,6 +2871,9 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("declaredFieldName", field.getName());
         edge.put("declaredFieldAuthority",
                 "SOOT_RESOLVED_DECLARATION_HIERARCHY");
+        edge.put("accessorStructuralAuthority",
+                "SOOT_UNIQUE_APPLICATION_IMPLEMENTATION_PURE_FIELD_"
+                        + "RETURN_BODY_V1");
         if (accessor != null) {
             edge.put("accessorImplementationMethod",
                     accessor.getSignature());
@@ -2906,15 +2915,19 @@ final class SeedBackwardStaticAnalyzer {
                 "SOOT_RESOLVED_DECLARATION_HIERARCHY");
     }
 
-    /** Resolves the concrete declaration inherited by an accessor owner. */
-    private SootMethod resolveDeclaredAccessor(MethodSig accessor) {
-        if (accessor == null || accessor.owner.isEmpty()) {
+    /**
+     * Resolves one method declaration inherited by the invocation owner.
+     * This is declaration lookup only; callers that need virtual-dispatch
+     * uniqueness must additionally inspect application overrides.
+     */
+    private SootMethod resolveDeclaredMethod(MethodSig methodSignature) {
+        if (methodSignature == null || methodSignature.owner.isEmpty()) {
             return null;
         }
-        SootClass root = classesByName.get(accessor.owner);
+        SootClass root = classesByName.get(methodSignature.owner);
         if (root == null) {
             try {
-                root = Scene.v().getSootClassUnsafe(accessor.owner);
+                root = Scene.v().getSootClassUnsafe(methodSignature.owner);
             } catch (RuntimeException ignored) {
                 return null;
             }
@@ -2933,18 +2946,21 @@ final class SeedBackwardStaticAnalyzer {
             }
             try {
                 for (SootMethod method : sootClass.getMethods()) {
-                    if (!accessor.name.equals(method.getName())
-                            || !erasedTypeName(accessor.returnType).equals(
+                    if (!methodSignature.name.equals(method.getName())
+                            || !erasedTypeName(
+                            methodSignature.returnType).equals(
                             erasedTypeName(method.getReturnType()
                                     .toString()))
                             || method.getParameterCount()
-                            != accessor.params.size()) {
+                            != methodSignature.params.size()) {
                         continue;
                     }
                     boolean parametersMatch = true;
-                    for (int index = 0; index < accessor.params.size();
+                    for (int index = 0;
+                         index < methodSignature.params.size();
                          index++) {
-                        if (!erasedTypeName(accessor.params.get(index))
+                        if (!erasedTypeName(
+                                methodSignature.params.get(index))
                                 .equals(erasedTypeName(method
                                         .getParameterType(index)
                                         .toString()))) {
@@ -2967,6 +2983,190 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         return null;
+    }
+
+    /**
+     * Returns the unique application implementation that can receive this
+     * invocation in the closed Soot world.  An inherited declaration counts
+     * as the implementation, while every concrete override below the
+     * invocation owner is an additional candidate.  Ambiguity deliberately
+     * disables the accessor shortcut.
+     */
+    private SootMethod uniqueApplicationImplementation(MethodSig callee) {
+        if (callee == null || callee.owner.isEmpty()) {
+            return null;
+        }
+        SootClass owner = classesByName.get(callee.owner);
+        if (owner == null) {
+            return null;
+        }
+        Set<SootMethod> candidates = Collections.newSetFromMap(
+                new IdentityHashMap<SootMethod, Boolean>());
+        SootMethod declared = resolveDeclaredMethod(callee);
+        if (eligibleApplicationImplementation(declared)) {
+            candidates.add(declared);
+        }
+        List<SootMethod> implementations = concreteMethodsBySubSignature.get(
+                methodSubSignature(callee));
+        if (implementations != null) {
+            for (SootMethod implementation : implementations) {
+                if (eligibleApplicationImplementation(implementation)
+                        && classImplementsOrExtends(
+                        implementation.getDeclaringClass(), callee.owner)) {
+                    candidates.add(implementation);
+                }
+            }
+        }
+        return candidates.size() == 1
+                ? candidates.iterator().next() : null;
+    }
+
+    private boolean eligibleApplicationImplementation(SootMethod method) {
+        return method != null && method.isConcrete() && !method.isStatic()
+                && method.getDeclaringClass().isApplicationClass();
+    }
+
+    /**
+     * Recognizes a field accessor from its complete Jimple body, never from
+     * class or method spelling.  Accepted bodies contain exactly one
+     * {@code @this} identity, transparent local copies/checkcasts, one read
+     * of an instance field rooted at that receiver, and one return of the
+     * read value.  Every other unit or value shape falls back to ordinary
+     * application-method analysis.
+     */
+    private StructuralFieldAccessor structuralFieldAccessor(
+            MethodSig callee) {
+        if (callee == null) {
+            return null;
+        }
+        if (structuralFieldAccessors.containsKey(callee.raw)) {
+            return structuralFieldAccessors.get(callee.raw);
+        }
+        StructuralFieldAccessor resolved = inspectStructuralFieldAccessor(
+                callee, uniqueApplicationImplementation(callee));
+        structuralFieldAccessors.put(callee.raw, resolved);
+        return resolved;
+    }
+
+    private StructuralFieldAccessor inspectStructuralFieldAccessor(
+            MethodSig callee, SootMethod method) {
+        if (method == null || method.isStatic() || method.isNative()
+                || method.isSynchronized() || !method.isConcrete()
+                || !callee.params.isEmpty() || method.getParameterCount() != 0
+                || "void".equals(erasedTypeName(callee.returnType))) {
+            return null;
+        }
+        Body body;
+        try {
+            body = method.retrieveActiveBody();
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+        if (!body.getTraps().isEmpty()) {
+            return null;
+        }
+
+        Set<Local> receiverAliases = new LinkedHashSet<>();
+        Set<Local> valueAliases = new LinkedHashSet<>();
+        SootField field = null;
+        boolean receiverIdentitySeen = false;
+        boolean returnSeen = false;
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof IdentityStmt) {
+                IdentityStmt identity = (IdentityStmt) unit;
+                if (receiverIdentitySeen
+                        || !(identity.getLeftOp() instanceof Local)
+                        || !(identity.getRightOp() instanceof ThisRef)) {
+                    return null;
+                }
+                receiverAliases.add((Local) identity.getLeftOp());
+                receiverIdentitySeen = true;
+                continue;
+            }
+            if (unit instanceof AssignStmt) {
+                AssignStmt assignment = (AssignStmt) unit;
+                if (!(assignment.getLeftOp() instanceof Local)) {
+                    return null;
+                }
+                Local target = (Local) assignment.getLeftOp();
+                Value source = assignment.getRightOp();
+                boolean sourceIsReceiverAlias = source instanceof Local
+                        && receiverAliases.contains((Local) source);
+                boolean sourceIsValueAlias = source instanceof Local
+                        && valueAliases.contains((Local) source);
+                boolean castSourceIsReceiverAlias = source instanceof CastExpr
+                        && ((CastExpr) source).getOp() instanceof Local
+                        && receiverAliases.contains(
+                        (Local) ((CastExpr) source).getOp());
+                boolean castSourceIsValueAlias = source instanceof CastExpr
+                        && ((CastExpr) source).getOp() instanceof Local
+                        && valueAliases.contains(
+                        (Local) ((CastExpr) source).getOp());
+                receiverAliases.remove(target);
+                valueAliases.remove(target);
+                if (source instanceof Local) {
+                    if (sourceIsReceiverAlias) {
+                        receiverAliases.add(target);
+                    } else if (sourceIsValueAlias) {
+                        valueAliases.add(target);
+                    } else {
+                        return null;
+                    }
+                    continue;
+                }
+                if (source instanceof CastExpr
+                        && ((CastExpr) source).getOp() instanceof Local) {
+                    if (castSourceIsReceiverAlias) {
+                        receiverAliases.add(target);
+                    } else if (castSourceIsValueAlias) {
+                        valueAliases.add(target);
+                    } else {
+                        return null;
+                    }
+                    continue;
+                }
+                if (source instanceof InstanceFieldRef) {
+                    InstanceFieldRef fieldRead = (InstanceFieldRef) source;
+                    if (field != null
+                            || !(fieldRead.getBase() instanceof Local)
+                            || !receiverAliases.contains(
+                            (Local) fieldRead.getBase())) {
+                        return null;
+                    }
+                    try {
+                        field = fieldRead.getField();
+                    } catch (RuntimeException unresolved) {
+                        return null;
+                    }
+                    if (field == null || field.isStatic()
+                            || !field.getDeclaringClass()
+                            .isApplicationClass()) {
+                        return null;
+                    }
+                    valueAliases.add(target);
+                    continue;
+                }
+                return null;
+            }
+            if (unit instanceof ReturnStmt) {
+                Value returned = ((ReturnStmt) unit).getOp();
+                if (returnSeen || !(returned instanceof Local)
+                        || !valueAliases.contains((Local) returned)) {
+                    return null;
+                }
+                returnSeen = true;
+                continue;
+            }
+            return null;
+        }
+        if (!receiverIdentitySeen || !returnSeen || field == null
+                || !erasedTypeName(field.getType().toString()).equals(
+                erasedTypeName(callee.returnType))
+                || !erasedTypeName(method.getReturnType().toString()).equals(
+                erasedTypeName(callee.returnType))) {
+            return null;
+        }
+        return new StructuralFieldAccessor(method, field);
     }
 
     private boolean processRpcInvoke(String callerMethod, Fact fact, MethodSig callee,
@@ -3682,22 +3882,7 @@ final class SeedBackwardStaticAnalyzer {
                 && method.getDeclaringClass().isApplicationClass()
                 && !method.getDeclaringClass().isInterface()
                 && !method.getDeclaringClass().isAbstract()
-                && !isAccessor(sig);
-    }
-
-    private boolean isAccessor(MethodSig sig) {
-        if (sig == null) {
-            return false;
-        }
-        if (!sig.params.isEmpty()) {
-            return "get".equals(sig.name);
-        }
-        boolean identifierOrKeyAccessor = (sig.owner.endsWith("Identifier")
-                || sig.owner.endsWith("BlockKey")) && sig.name.startsWith("get");
-        return identifierOrKeyAccessor
-                || sig.name.startsWith("is")
-                || "toString".equals(sig.name)
-                || "hashCode".equals(sig.name);
+                && structuralFieldAccessor(sig) == null;
     }
 
     private List<Map<String, Object>> collectCells() {
@@ -4046,25 +4231,6 @@ final class SeedBackwardStaticAnalyzer {
     private String fieldProjectionPath(String cell) {
         int index = cell == null ? -1 : cell.indexOf("#field:");
         return index < 0 ? "" : cell.substring(index);
-    }
-
-    private String accessorFieldName(String methodName) {
-        if (methodName == null || methodName.isEmpty()) {
-            return "";
-        }
-        String stem = "";
-        if (methodName.startsWith("get") && methodName.length() > 3) {
-            stem = methodName.substring(3);
-        } else if (methodName.startsWith("is") && methodName.length() > 2) {
-            stem = methodName.substring(2);
-        }
-        if (stem.isEmpty()) {
-            return "";
-        }
-        if (stem.length() == 1) {
-            return stem.toLowerCase(Locale.ROOT);
-        }
-        return Character.toLowerCase(stem.charAt(0)) + stem.substring(1);
     }
 
     private static String fieldNameFromSignature(String fieldSignature) {
@@ -4838,6 +5004,17 @@ final class SeedBackwardStaticAnalyzer {
             this.returnType = returnType;
             this.name = name;
             this.params = params;
+        }
+    }
+
+    private static final class StructuralFieldAccessor {
+        private final SootMethod implementation;
+        private final SootField field;
+
+        private StructuralFieldAccessor(SootMethod implementation,
+                                        SootField field) {
+            this.implementation = implementation;
+            this.field = field;
         }
     }
 

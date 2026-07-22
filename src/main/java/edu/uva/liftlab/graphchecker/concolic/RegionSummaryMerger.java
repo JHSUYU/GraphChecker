@@ -225,8 +225,7 @@ public final class RegionSummaryMerger {
         for (JsonObject summary : values) {
             String instance = string(summary, "regionInstanceId");
             if (!instance.isEmpty()) sourceInstances.add(instance);
-            for (JsonElement element : firstArray(summary,
-                    "edgeBindings", "producerBindings")) {
+            for (JsonElement element : array(summary, "edgeBindings")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
                 String sourceInstance = firstNonBlank(string(binding,
@@ -420,16 +419,6 @@ public final class RegionSummaryMerger {
         JsonElement value = owner == null ? null : owner.get(field);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static JsonArray firstArray(JsonObject owner, String... fields) {
-        for (String field : fields) {
-            JsonElement value = owner == null ? null : owner.get(field);
-            if (value != null && value.isJsonArray()) {
-                return value.getAsJsonArray();
-            }
-        }
-        return new JsonArray();
     }
 
     private static String string(JsonObject owner, String field) {

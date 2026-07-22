@@ -93,8 +93,6 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertFalse(target.get("concreteReplayOnly").getAsBoolean());
         assertEquals(0, target.getAsJsonArray("modelAssignments").size());
         assertFalse(target.has("forcedBranches"));
-        assertEquals(0, target.getAsJsonArray(
-                "replayMaterializations").size());
         assertEquals("fixture.ConsumerThread", target.get(
                 "receiverRuntimeClass").getAsString());
         assertEquals("rpc-consumer", target.get("threadName")
@@ -109,6 +107,46 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertFalse(target.has("directedTargetQuery"));
         assertFalse(target.has("targetBranch"));
         assertFalse(target.has("branchCaptureSelector"));
+    }
+
+    @Test
+    public void scalarRootCatalogIsMandatoryEvenWhenEmpty()
+            throws Exception {
+        Fixture fixture = fixture();
+        fixture.reach.remove("existentialNonBooleanRootInputCount");
+        fixture.reach.remove("existentialNonBooleanRootInputs");
+        refreshBootstrapArtifacts(fixture);
+        expectFailure(fixture.arguments(),
+                "EXISTENTIAL_NON_BOOLEAN_ROOT_CATALOG_MALFORMED");
+
+        fixture = fixture();
+        fixture.reach.addProperty("existentialNonBooleanRootInputCount", 1);
+        refreshBootstrapArtifacts(fixture);
+        expectFailure(fixture.arguments(),
+                "EXISTENTIAL_NON_BOOLEAN_ROOT_CATALOG_MALFORMED");
+    }
+
+    @Test
+    public void symbolizeCannotReplaceExecutableMaterializations()
+            throws Exception {
+        Fixture fixture = fixture();
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        activation.add("symbolize",
+                activation.getAsJsonArray("materializations").deepCopy());
+        activation.remove("materializations");
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+        refreshBootstrapArtifacts(fixture);
+        expectFailure(fixture.arguments(),
+                "SELECTED_SOURCE_ACTIVATION_MATERIALIZATIONS_MALFORMED");
+
+        fixture = fixture();
+        JsonObject target = jsonlRow(fixture.target, "activationId", "ACT.T");
+        target.addProperty("materializations", "not-an-array");
+        replaceJsonlRow(fixture.target, "activationId", "ACT.T", target);
+        expectFailure(fixture.arguments(),
+                "TARGET_ACTIVATION_MATERIALIZATIONS_MALFORMED");
     }
 
     @Test
@@ -145,16 +183,14 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 .getAsString());
         assertEquals(3, result.manifest.get(
                 "totalProjectedPrimitiveInputCount").getAsInt());
-        assertEquals(1, result.manifest.get(
-                "supplementalPrimitiveAssignmentCount").getAsInt());
         assertEquals(3, result.manifest.get(
                 "upstreamModelAssignmentCount").getAsInt());
         assertEquals(2, result.manifest.get(
                 "producerReplayActivationCount").getAsInt());
         JsonArray projected = result.manifest.getAsJsonArray(
-                "supplementalPrimitiveAssignments");
+                "existentialNonBooleanRootAssignments");
         assertEquals(1, projected.size());
-        assertEquals("SUPPLEMENTAL_PRIMITIVE", projected.get(0)
+        assertEquals("EXISTENTIAL_NON_BOOLEAN_ROOT", projected.get(0)
                 .getAsJsonObject().get("projectionRole").getAsString());
     }
 
@@ -183,10 +219,8 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 "\"needle\"");
         assertEquals(6, result.manifest.get(
                 "totalProjectedPrimitiveInputCount").getAsInt());
-        assertEquals(4, result.manifest.get(
-                "supplementalPrimitiveAssignmentCount").getAsInt());
         assertEquals(4, result.manifest.getAsJsonArray(
-                "supplementalPrimitiveAssignments").size());
+                "existentialNonBooleanRootAssignments").size());
         assertTrue(result.manifest.get("projectionComplete").getAsBoolean());
     }
 
@@ -255,7 +289,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertEquals("REGION.B.in.0", roots.get(0).getAsJsonObject()
                 .get("inputPort").getAsString());
         assertFalse(result.manifest.getAsJsonArray(
-                "supplementalPrimitiveAssignments").toString().contains(
+                "existentialNonBooleanRootAssignments").toString().contains(
                 "REGION.A.in.1"));
     }
 
@@ -364,7 +398,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         refreshBootstrapArtifacts(fixture);
 
         expectFailure(fixture.arguments(),
-                "SUPPLEMENTAL_PRIMITIVE_SORT_TYPE_MISMATCH:REGION.A.in.3");
+                "EXISTENTIAL_SCALAR_ROOT_MAPPING_MISMATCH:REGION.A.in.3");
     }
 
     @Test
@@ -373,6 +407,13 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         Assume.assumeTrue(z3Available());
         Fixture fixture = fixture();
         JsonObject binding = installDynamicLeaf(fixture, true);
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        assertEquals("FIELD_ACCESS", activation.getAsJsonArray("symbolize")
+                .get(0).getAsJsonObject().get("bindingMode").getAsString());
+        assertEquals("CONTAINER_INPUT_OBSERVATION", activation
+                .getAsJsonArray("materializations").get(0)
+                .getAsJsonObject().get("bindingMode").getAsString());
 
         ConcolicPrimitiveBootstrapProjector.Result result =
                 ConcolicPrimitiveBootstrapProjector.project(
@@ -413,6 +454,27 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 .get("bindingMode").getAsString());
         assertFalse(assignment.has("expectedEntryKey"));
         assertFalse(assignment.has("dynamicReplayRebindingAuthority"));
+    }
+
+    @Test
+    public void declarationOnlyContainerActionCannotAuthorizeProjection()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installDynamicLeaf(fixture, true);
+
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject retiredDeclarationFallback = activation.getAsJsonArray(
+                "materializations").get(0).getAsJsonObject().deepCopy();
+        activation.getAsJsonArray("symbolize").set(0,
+                retiredDeclarationFallback);
+        activation.add("materializations", new JsonArray());
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        expectFailure(fixture.arguments(),
+                "DYNAMIC_CONTAINER_ACTION_MISSING:REGION.A.in.array");
     }
 
     @Test
@@ -986,6 +1048,10 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
                 activation);
 
+        JsonArray scalarRoots = new JsonArray();
+        scalarRoots.add(scalarRoot("REGION.A", "REGION.A.in.1", "ti",
+                "int", "I", "Int", 0));
+        setScalarRootCatalog(fixture, scalarRoots);
         refreshBootstrapArtifacts(fixture);
     }
 
@@ -1061,6 +1127,16 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                         "s", 10));
         replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
                 activation);
+        JsonArray scalarRoots = new JsonArray();
+        scalarRoots.add(scalarRoot("REGION.A", "REGION.A.in.1", "ti",
+                "int", "I", "Int", 0));
+        scalarRoots.add(scalarRoot("REGION.A", "REGION.A.in.2", "tl",
+                "long", "J", "Int", 1));
+        scalarRoots.add(scalarRoot("REGION.A", "REGION.A.in.3", "td",
+                "double", "D", "(_ FloatingPoint 11 53)", 2));
+        scalarRoots.add(scalarRoot("REGION.A", "REGION.A.in.4", "ts",
+                "java.lang.String", "Ljava/lang/String;", "String", 3));
+        setScalarRootCatalog(fixture, scalarRoots);
         refreshBootstrapArtifacts(fixture);
     }
 
@@ -1195,6 +1271,17 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         return result;
     }
 
+    private static void setScalarRootCatalog(Fixture fixture,
+                                             JsonArray roots) {
+        fixture.reach.addProperty("existentialNonBooleanRootInputCount",
+                roots.size());
+        fixture.reach.add("existentialNonBooleanRootInputs", roots);
+        fixture.reach.addProperty(
+                "existentialNonBooleanRootInputDiscoveryAuthority",
+                "STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_CANONICAL_"
+                        + "TERM_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
+    }
+
     private static JsonObject scalarMapping(String port, String solver,
                                             String sort, String solverSort,
                                             String engine) {
@@ -1304,7 +1391,11 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
             containerAction.addProperty("modelControllable", false);
             actions.add(containerAction);
             JsonArray declared = new JsonArray();
-            declared.add(containerAction.deepCopy());
+            JsonObject containerDeclaration = containerAction.deepCopy();
+            containerDeclaration.addProperty("bindingMode", "FIELD_ACCESS");
+            containerDeclaration.remove("arrayFieldObservationOnly");
+            containerDeclaration.remove("modelControllable");
+            declared.add(containerDeclaration);
             declared.add(fieldAction);
             activation.add("symbolize", declared);
         } else {
@@ -1712,6 +1803,12 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         roots.add(root("REGION.A", "REGION.A.in.0", "xa"));
         roots.add(root("REGION.B", "REGION.B.in.0", "xb"));
         reachJson.add("rootBooleanInputs", roots);
+        reachJson.addProperty("existentialNonBooleanRootInputCount", 0);
+        reachJson.add("existentialNonBooleanRootInputs", new JsonArray());
+        reachJson.addProperty(
+                "existentialNonBooleanRootInputDiscoveryAuthority",
+                "STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_CANONICAL_"
+                        + "TERM_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
         JsonObject valuation = new JsonObject();
         valuation.addProperty("ordinal", 3);
         valuation.addProperty("valuationKey", "11");
@@ -1761,6 +1858,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         targetActivation.addProperty("symbolicReady", true);
         targetActivation.addProperty("schedulerReady", true);
         targetActivation.addProperty("branchOverrideProhibited", true);
+        targetActivation.add("materializations", new JsonArray());
         JsonObject captureGoal = new JsonObject();
         captureGoal.addProperty("kind", "TARGET_BRANCH");
         captureGoal.addProperty("scope", "ONE_DIRECTED_BRANCH");

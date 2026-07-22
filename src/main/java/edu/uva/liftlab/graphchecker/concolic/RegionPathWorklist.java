@@ -633,7 +633,7 @@ public final class RegionPathWorklist {
             String site = string(discovery, "guardSiteId");
             int occurrence = integer(discovery, "guardOccurrence", -1);
             if (!bool(summary, "normalExit", false)
-                    || !bool(summary, "requestedOutputSliceComplete", false)
+                    || !nestedOutputSliceComplete(summary)
                     || site.isEmpty() || occurrence < 1
                     || array(summary, "pathCondition").size() == 0
                     || array(summary, "branchMappings").size() == 0) {
@@ -1158,20 +1158,6 @@ public final class RegionPathWorklist {
         }
     }
 
-    private static String strictString(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString() : "";
-    }
-
-    private static Boolean strictBoolean(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isBoolean()
-                ? value.getAsBoolean() : null;
-    }
-
     private static boolean bool(JsonObject object, String name,
                                 boolean fallback) {
         if (object == null) return fallback;
@@ -1184,24 +1170,20 @@ public final class RegionPathWorklist {
         }
     }
 
+    private static boolean nestedOutputSliceComplete(JsonObject value) {
+        JsonElement complete = object(value, "requestedOutputSlice")
+                .get("complete");
+        return complete != null && complete.isJsonPrimitive()
+                && complete.getAsJsonPrimitive().isBoolean()
+                && complete.getAsBoolean();
+    }
+
     private static int integer(JsonObject object, String name, int fallback) {
         if (object == null) return fallback;
         JsonElement value = object.get(name);
         try {
             return value == null || value.isJsonNull()
                     ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String name,
-                                    long fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
         } catch (RuntimeException ignored) {
             return fallback;
         }

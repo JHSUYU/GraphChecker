@@ -238,8 +238,6 @@ public final class ConcolicPathReplayVerifier {
                         .equals(activationContract.contractId()));
         require(failures, "REPLAY_PLAN_CONTAINS_FORCED_BRANCH",
                 array(activation, "forcedBranches").size() == 0);
-        require(failures, "REPLAY_PLAN_CONTAINS_NON_INPUT_MATERIALIZATION",
-                array(activation, "replayMaterializations").size() == 0);
     }
 
     private static BranchReplayContract replayContract(

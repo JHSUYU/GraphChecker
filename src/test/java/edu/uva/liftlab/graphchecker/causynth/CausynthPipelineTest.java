@@ -140,6 +140,93 @@ public class CausynthPipelineTest {
     }
 
     @Test
+    public void executableInstrumentationRequiresCanonicalMaterializations()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path plan = folder.getRoot().toPath().resolve(
+                    "canonical-materializations.jsonl");
+            String activationId = "ACT.CANONICAL.MATERIALIZATIONS";
+            JsonObject action = new JsonObject();
+            action.addProperty("symbol", "REGION.CANONICAL.in.0");
+            action.addProperty("cell",
+                    "<example.CanonicalInput: int value>");
+            action.addProperty("field",
+                    "<example.CanonicalInput: int value>");
+            action.addProperty("location", "HEAP_OBJECT_FIELD");
+            action.addProperty("bindingMode", "FIELD_ACCESS");
+            action.addProperty("accessOwnerClass",
+                    "example.CanonicalInput");
+            action.addProperty("accessField", "value");
+
+            JsonObject missing = executableActivationRow(activationId,
+                    action);
+            JsonObject wrongType = executableActivationRow(activationId,
+                    action);
+            wrongType.addProperty("materializations", "not-an-array");
+            JsonObject nonObject = executableActivationRow(activationId,
+                    action);
+            JsonArray malformedMembers = new JsonArray();
+            malformedMembers.add("not-an-action");
+            nonObject.add("materializations", malformedMembers);
+            for (JsonObject invalid : Arrays.asList(
+                    missing, wrongType, nonObject)) {
+                writePlanRow(plan, invalid);
+                try {
+                    ConcolicInstrumentationSelections
+                            .ConcolicMaterializationSelection.from(
+                            plan, activationId);
+                    throw new AssertionError("non-canonical executable "
+                            + "materializations must fail closed");
+                } catch (java.io.IOException expected) {
+                    assertTrue(expected.getMessage(), expected.getMessage()
+                            .contains("materializations"));
+                    assertTrue(expected.getMessage(), expected.getMessage()
+                            .contains(activationId));
+                }
+            }
+
+            JsonObject declarationOnly = executableActivationRow(
+                    activationId, action);
+            declarationOnly.add("materializations", new JsonArray());
+            writePlanRow(plan, declarationOnly);
+            ConcolicInstrumentationSelections
+                    .ConcolicMaterializationSelection empty =
+                    ConcolicInstrumentationSelections
+                            .ConcolicMaterializationSelection.from(
+                            plan, activationId);
+            assertTrue("symbolize is a declaration catalog, not an "
+                    + "instrumentation fallback", empty.isEmpty());
+
+            JsonObject executable = executableActivationRow(
+                    activationId, action);
+            executable.add("materializations",
+                    singletonJsonArray(action.deepCopy()));
+            writePlanRow(plan, executable);
+            ConcolicInstrumentationSelections
+                    .ConcolicMaterializationSelection selected =
+                    ConcolicInstrumentationSelections
+                            .ConcolicMaterializationSelection.from(
+                            plan, activationId);
+            assertFalse("canonical direct materialization remains selected",
+                    selected.isEmpty());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static JsonObject executableActivationRow(
+            String activationId, JsonObject declaration) {
+        JsonObject activation = new JsonObject();
+        activation.addProperty("activationId", activationId);
+        activation.addProperty("replayable", true);
+        activation.add("symbolize",
+                singletonJsonArray(declaration.deepCopy()));
+        return activation;
+    }
+
+    @Test
     public void arrayFieldReadUsesOneExactConsumedLocalAtNestedLeaf()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -840,6 +927,9 @@ public class CausynthPipelineTest {
             // Broad static input coverage is intentionally not an authority
             // for a runtime-refined requested-output closure.
             row.addProperty("staticInputSelectionComplete", false);
+            // The retired top-level refinement mirror has no authority; the
+            // nested immutable slice contract below is canonical.
+            row.addProperty("requestedOutputSliceRefinementComplete", false);
             Files.write(plan, (row + "\n").getBytes(StandardCharsets.UTF_8));
 
             assertTrue(ConcolicInstrumentationSelections
@@ -986,10 +1076,57 @@ public class CausynthPipelineTest {
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
 
+            JsonObject legacyTopLevelCannotOverrideNestedFalse =
+                    readyBoundedOutputClosure("ACT.BAD");
+            legacyTopLevelCannotOverrideNestedFalse.addProperty(
+                    "requestedOutputSliceComplete", true);
+            legacyTopLevelCannotOverrideNestedFalse.getAsJsonObject(
+                    "requestedOutputSlice").addProperty("complete", false);
+            Files.write(plan,
+                    (legacyTopLevelCannotOverrideNestedFalse + "\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
+            JsonObject legacyTopLevelCannotReplaceNestedSlice =
+                    readyBoundedOutputClosure("ACT.BAD");
+            legacyTopLevelCannotReplaceNestedSlice.addProperty(
+                    "requestedOutputSliceComplete", true);
+            legacyTopLevelCannotReplaceNestedSlice.remove(
+                    "requestedOutputSlice");
+            Files.write(plan,
+                    (legacyTopLevelCannotReplaceNestedSlice + "\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
             JsonObject incomplete = readyBoundedOutputClosure("ACT.BAD");
             incomplete.getAsJsonObject("requestedOutputSlice")
                     .addProperty("runtimeRefinementComplete", false);
             Files.write(plan, (incomplete + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
+            JsonObject structurallyIncomplete = readyBoundedOutputClosure(
+                    "ACT.BAD");
+            structurallyIncomplete.getAsJsonObject("requestedOutputSlice")
+                    .addProperty("structuralComplete", false);
+            Files.write(plan, (structurallyIncomplete + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
+            JsonObject missingRefinementAuthority =
+                    readyBoundedOutputClosure("ACT.BAD");
+            missingRefinementAuthority.getAsJsonObject(
+                    "requestedOutputSlice").remove(
+                    "runtimeRefinementAuthority");
+            Files.write(plan, (missingRefinementAuthority + "\n").getBytes(
                     StandardCharsets.UTF_8));
             assertFalse(ConcolicInstrumentationSelections
                     .selectedBoundedOutputClosureCoverageReady(plan,
@@ -1033,8 +1170,6 @@ public class CausynthPipelineTest {
         row.addProperty("schedulerReady", true);
         row.addProperty("materializationComplete", true);
         row.addProperty("runtimePathEvidenceComplete", true);
-        row.addProperty("requestedOutputSliceComplete", true);
-        row.addProperty("requestedOutputSliceRefinementComplete", true);
         row.addProperty("requestedOutputCaptureComplete", true);
         row.addProperty("branchOverrideProhibited", true);
         row.addProperty("targetReplayRequired", false);
@@ -4193,7 +4328,7 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void inheritedAccessorUsesCanonicalDeclaredFieldOwner()
+    public void arbitraryNamedInheritedAccessorUsesStructuralFieldOwner()
             throws Exception {
         InheritedAccessorFixture fixture = inheritedAccessorFixture();
         Object analyzer = newStaticAnalyzer();
@@ -4230,26 +4365,91 @@ public class CausynthPipelineTest {
         assertEquals(fixture.base.getName(),
                 declaredRead.get("declaredFieldOwner"));
         assertEquals("long", declaredRead.get("declaredFieldType"));
-        assertEquals("expiryDate", declaredRead.get("declaredFieldName"));
+        assertEquals("stamp", declaredRead.get("declaredFieldName"));
         assertEquals(canonical, declaredRead.get("declaredFieldSignature"));
-        assertEquals("<example.DelegationKey: long getExpiryDate()>",
+        assertEquals("<example.RecordState: long readStamp()>",
                 declaredRead.get("accessorImplementationMethod"));
         assertEquals("SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY",
                 declaredRead.get("accessorImplementationAuthority"));
+        assertEquals("SOOT_UNIQUE_APPLICATION_IMPLEMENTATION_PURE_FIELD_"
+                        + "RETURN_BODY_V1",
+                declaredRead.get("accessorStructuralAuthority"));
         assertFalse("the invocation subclass must not be fabricated as the "
                         + "field declaration owner",
                 edges.stream().anyMatch(edge ->
                         ("<" + fixture.child.getName()
-                                + ": long expiryDate>").equals(
+                                + ": long stamp>").equals(
                                 edge.get("fromCell"))));
         assertTrue("receiver-local provenance remains available in parallel",
                 edges.stream().anyMatch(edge ->
                         "accessor_field_return".equals(edge.get("kind"))
                                 && (fixture.method.getSignature()
-                                + "::key#field:expiryDate").equals(
+                                + "::key#field:stamp").equals(
                                 edge.get("fromCell"))
                                 && "PROJECTION".equals(
                                 edge.get("transferKind"))));
+    }
+
+    @Test
+    public void structuralAccessorRejectsBehaviorAndUsesNormalExpansion()
+            throws Exception {
+        StructuralAccessorShapeFixture fixture =
+                structuralAccessorShapeFixture();
+        Object analyzer = newStaticAnalyzer();
+
+        Method parseMethodSig = analyzer.getClass().getDeclaredMethod(
+                "parseMethodSig", String.class);
+        parseMethodSig.setAccessible(true);
+        Object pureSignature = parseMethodSig.invoke(null,
+                fixture.pure.getSignature());
+        Method structuralAccessor = analyzer.getClass().getDeclaredMethod(
+                "structuralFieldAccessor", pureSignature.getClass());
+        structuralAccessor.setAccessible(true);
+        Method isExpandable = analyzer.getClass().getDeclaredMethod(
+                "isExpandableMethod", String.class);
+        isExpandable.setAccessible(true);
+
+        assertNotNull("an arbitrary method name is accepted from its pure "
+                        + "field-return body",
+                structuralAccessor.invoke(analyzer, pureSignature));
+        assertEquals(Boolean.FALSE, isExpandable.invoke(analyzer,
+                fixture.pure.getSignature()));
+
+        for (SootMethod rejected : fixture.rejected) {
+            Object signature = parseMethodSig.invoke(null,
+                    rejected.getSignature());
+            assertNull(rejected.getName() + " must not be treated as a "
+                            + "structural accessor",
+                    structuralAccessor.invoke(analyzer, signature));
+            assertEquals(rejected.getName() + " must use ordinary method "
+                            + "expansion",
+                    Boolean.TRUE, isExpandable.invoke(analyzer,
+                            rejected.getSignature()));
+        }
+
+        loadFacts(analyzer, fixture.parameterizedCaller);
+        Method relevant = analyzer.getClass().getDeclaredMethod(
+                "relevant", String.class);
+        relevant.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> callerRelevant = (Set<String>) relevant.invoke(analyzer,
+                fixture.parameterizedCaller.getSignature());
+        callerRelevant.add(fixture.parameterizedCaller.getSignature()
+                + "::result");
+        Method processMethod = analyzer.getClass().getDeclaredMethod(
+                "processMethod", String.class);
+        processMethod.setAccessible(true);
+        processMethod.invoke(analyzer,
+                fixture.parameterizedCaller.getSignature());
+
+        Field selectedMethods = analyzer.getClass().getDeclaredField(
+                "selectedMethods");
+        selectedMethods.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Set<String> selected = (Set<String>) selectedMethods.get(analyzer);
+        assertTrue("parameterized get must be analyzed as an ordinary "
+                        + "application method",
+                selected.contains(fixture.parameterizedGet.getSignature()));
     }
 
     @Test
@@ -4361,7 +4561,7 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void instrumentsApplicationOriginForBackedViewIteratorRemoval()
+    public void instrumentsBackedMapEntryObservationsWithoutRemoveHook()
             throws Exception {
         IteratorMutationFixture fixture = iteratorMutationFixture();
         Class<?> refsClass = Class.forName(
@@ -4370,7 +4570,7 @@ public class CausynthPipelineTest {
         create.setAccessible(true);
         Object refs = create.invoke(null);
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                "instrumentConcolicBackedViewMutations", Set.class,
+                "instrumentConcolicMapEntryObservations", Set.class,
                 refsClass);
         instrument.setAccessible(true);
 
@@ -4378,7 +4578,7 @@ public class CausynthPipelineTest {
                 new CausynthPipeline(null),
                 Collections.singleton(fixture.method.getSignature()), refs);
 
-        assertEquals(4, count);
+        assertEquals(3, count);
         Map<String, InvokeExpr> hooks = new LinkedHashMap<>();
         for (Unit unit : fixture.method.getActiveBody().getUnits()) {
             if (!(unit instanceof Stmt)
@@ -4395,17 +4595,9 @@ public class CausynthPipelineTest {
         assertTrue(hooks.containsKey("registerMapView"));
         assertTrue(hooks.containsKey("registerMapViewIterator"));
         assertTrue(hooks.containsKey("recordMapIteratorNext"));
-        assertTrue(hooks.containsKey("recordMapIteratorRemove"));
-        InvokeExpr remove = hooks.get("recordMapIteratorRemove");
-        assertEquals(fixture.method.getSignature(),
-                remove.getArg(0).toString().replace("\"", ""));
-        assertEquals(fixture.removeUnitIndex,
-                ((soot.jimple.IntConstant) remove.getArg(1)).value);
-        List<Unit> ordered = new ArrayList<>();
-        Unit originalRemove = null;
-        Unit removeHook = null;
+        assertFalse(hooks.containsKey("recordMapIteratorRemove"));
+        boolean originalRemovePresent = false;
         for (Unit unit : fixture.method.getActiveBody().getUnits()) {
-            ordered.add(unit);
             if (!(unit instanceof Stmt)
                     || !((Stmt) unit).containsInvokeExpr()) {
                 continue;
@@ -4416,15 +4608,38 @@ public class CausynthPipelineTest {
                     .getMethodRef().declaringClass().getName();
             if ("remove".equals(name)
                     && "java.util.Iterator".equals(owner)) {
-                originalRemove = unit;
-            } else if ("recordMapIteratorRemove".equals(name)) {
-                removeHook = unit;
+                originalRemovePresent = true;
             }
         }
-        assertNotNull(originalRemove);
-        assertNotNull(removeHook);
-        assertTrue("remove provenance must be a normal-return post hook",
-                ordered.indexOf(originalRemove) < ordered.indexOf(removeHook));
+        assertTrue("the application remove call must remain unmodified",
+                originalRemovePresent);
+    }
+
+    @Test
+    public void retainsReadOnlyMapViewAndIteratorObservationFactories()
+            throws Exception {
+        Method viewFactory = CausynthPipeline.class.getDeclaredMethod(
+                "isBackedMapViewFactory", String.class);
+        Method viewKind = CausynthPipeline.class.getDeclaredMethod(
+                "mapViewKind", String.class);
+        Method iteratorFactory = CausynthPipeline.class.getDeclaredMethod(
+                "isIteratorFactory", String.class);
+        viewFactory.setAccessible(true);
+        viewKind.setAccessible(true);
+        iteratorFactory.setAccessible(true);
+
+        assertTrue((Boolean) viewFactory.invoke(null, "entrySet"));
+        assertTrue((Boolean) viewFactory.invoke(null, "keySet"));
+        assertTrue((Boolean) viewFactory.invoke(null, "values"));
+        assertFalse((Boolean) viewFactory.invoke(null, "remove"));
+        assertEquals("ENTRY_SET", viewKind.invoke(null, "entrySet"));
+        assertEquals("KEY_SET", viewKind.invoke(null, "keySet"));
+        assertEquals("VALUES", viewKind.invoke(null, "values"));
+        assertTrue((Boolean) iteratorFactory.invoke(null, "iterator"));
+        assertTrue((Boolean) iteratorFactory.invoke(null, "listIterator"));
+        assertTrue((Boolean) iteratorFactory.invoke(
+                null, "descendingIterator"));
+        assertFalse((Boolean) iteratorFactory.invoke(null, "remove"));
     }
 
     private static boolean hasHeapMutationGuard(
@@ -4740,12 +4955,9 @@ public class CausynthPipelineTest {
                 Modifier.PRIVATE);
         key.addField(keyId);
         key.addField(expiryDate);
-        SootMethod getKeyId = new SootMethod("getKeyId",
-                Collections.emptyList(), IntType.v(), Modifier.PUBLIC);
-        SootMethod getExpiryDate = new SootMethod("getExpiryDate",
-                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
-        key.addMethod(getKeyId);
-        key.addMethod(getExpiryDate);
+        SootMethod getKeyId = addPureFieldMethod(key, keyId, "getKeyId");
+        SootMethod getExpiryDate = addPureFieldMethod(key, expiryDate,
+                "getExpiryDate");
 
         ArrayType keyArray = ArrayType.v(key.getType(), 1);
         SootClass payload = new SootClass("example.ArrayPayload",
@@ -4755,9 +4967,8 @@ public class CausynthPipelineTest {
         SootField payloadArray = new SootField("allKeys", keyArray,
                 Modifier.PRIVATE);
         payload.addField(payloadArray);
-        SootMethod getAllKeys = new SootMethod("getAllKeys",
-                Collections.emptyList(), keyArray, Modifier.PUBLIC);
-        payload.addMethod(getAllKeys);
+        SootMethod getAllKeys = addPureFieldMethod(payload, payloadArray,
+                "getAllKeys");
 
         SootClass store = new SootClass("example.ArrayPayloadStore",
                 Modifier.PUBLIC | Modifier.INTERFACE);
@@ -5154,33 +5365,215 @@ public class CausynthPipelineTest {
         return new LoopIteratorMutationFixture(method, field, 7, 9, 10);
     }
 
-    private static InheritedAccessorFixture inheritedAccessorFixture() {
+    private static StructuralAccessorShapeFixture
+    structuralAccessorShapeFixture() {
         G.reset();
-        SootClass base = new SootClass("example.DelegationKey",
+        SootClass owner = new SootClass("example.StructuralRecord",
                 Modifier.PUBLIC);
-        SootClass child = new SootClass("example.BlockKey", Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootField mark = new SootField("mark", LongType.v(),
+                Modifier.PRIVATE);
+        owner.addField(mark);
+
+        SootMethod pure = addPureFieldMethod(owner, mark,
+                "extractMark");
+        SootMethod constant = addConstantLongMethod(owner,
+                "getConstant", 7L);
+
+        SootMethod computed = new SootMethod("getComputed",
+                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
+        owner.addMethod(computed);
+        Body computedBody = Jimple.v().newBody(computed);
+        computed.setActiveBody(computedBody);
+        Local computedReceiver = Jimple.v().newLocal("r0", owner.getType());
+        Local fieldValue = Jimple.v().newLocal("fieldValue", LongType.v());
+        Local computedValue = Jimple.v().newLocal("computed", LongType.v());
+        computedBody.getLocals().addAll(Arrays.asList(computedReceiver,
+                fieldValue, computedValue));
+        computedBody.getUnits().add(Jimple.v().newIdentityStmt(
+                computedReceiver, Jimple.v().newThisRef(owner.getType())));
+        computedBody.getUnits().add(Jimple.v().newAssignStmt(fieldValue,
+                Jimple.v().newInstanceFieldRef(computedReceiver,
+                        mark.makeRef())));
+        computedBody.getUnits().add(Jimple.v().newAssignStmt(computedValue,
+                Jimple.v().newAddExpr(fieldValue, LongConstant.v(1L))));
+        computedBody.getUnits().add(Jimple.v().newReturnStmt(computedValue));
+
+        SootMethod helper = addConstantLongMethod(owner, "helperValue", 9L);
+        SootMethod called = new SootMethod("getCalled",
+                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
+        owner.addMethod(called);
+        Body calledBody = Jimple.v().newBody(called);
+        called.setActiveBody(calledBody);
+        Local calledReceiver = Jimple.v().newLocal("r0", owner.getType());
+        Local calledValue = Jimple.v().newLocal("called", LongType.v());
+        calledBody.getLocals().addAll(Arrays.asList(calledReceiver,
+                calledValue));
+        calledBody.getUnits().add(Jimple.v().newIdentityStmt(calledReceiver,
+                Jimple.v().newThisRef(owner.getType())));
+        calledBody.getUnits().add(Jimple.v().newAssignStmt(calledValue,
+                Jimple.v().newVirtualInvokeExpr(calledReceiver,
+                        helper.makeRef())));
+        calledBody.getUnits().add(Jimple.v().newReturnStmt(calledValue));
+
+        SootMethod branched = new SootMethod("getBranched",
+                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
+        owner.addMethod(branched);
+        Body branchedBody = Jimple.v().newBody(branched);
+        branched.setActiveBody(branchedBody);
+        Local branchedReceiver = Jimple.v().newLocal("r0", owner.getType());
+        Local branchedValue = Jimple.v().newLocal("value", LongType.v());
+        branchedBody.getLocals().addAll(Arrays.asList(branchedReceiver,
+                branchedValue));
+        branchedBody.getUnits().add(Jimple.v().newIdentityStmt(
+                branchedReceiver, Jimple.v().newThisRef(owner.getType())));
+        branchedBody.getUnits().add(Jimple.v().newAssignStmt(branchedValue,
+                Jimple.v().newInstanceFieldRef(branchedReceiver,
+                        mark.makeRef())));
+        Stmt zeroReturn = Jimple.v().newReturnStmt(LongConstant.v(0L));
+        branchedBody.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(branchedValue, LongConstant.v(0L)),
+                zeroReturn));
+        branchedBody.getUnits().add(Jimple.v().newReturnStmt(branchedValue));
+        branchedBody.getUnits().add(zeroReturn);
+
+        SootMethod writing = new SootMethod("getWriting",
+                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
+        owner.addMethod(writing);
+        Body writingBody = Jimple.v().newBody(writing);
+        writing.setActiveBody(writingBody);
+        Local writingReceiver = Jimple.v().newLocal("r0", owner.getType());
+        Local writtenValue = Jimple.v().newLocal("value", LongType.v());
+        writingBody.getLocals().addAll(Arrays.asList(writingReceiver,
+                writtenValue));
+        writingBody.getUnits().add(Jimple.v().newIdentityStmt(writingReceiver,
+                Jimple.v().newThisRef(owner.getType())));
+        writingBody.getUnits().add(Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(writingReceiver,
+                        mark.makeRef()), LongConstant.v(11L)));
+        writingBody.getUnits().add(Jimple.v().newAssignStmt(writtenValue,
+                Jimple.v().newInstanceFieldRef(writingReceiver,
+                        mark.makeRef())));
+        writingBody.getUnits().add(Jimple.v().newReturnStmt(writtenValue));
+
+        SootMethod parameterizedGet = new SootMethod("get",
+                Collections.singletonList(LongType.v()), LongType.v(),
+                Modifier.PUBLIC);
+        owner.addMethod(parameterizedGet);
+        Body parameterizedBody = Jimple.v().newBody(parameterizedGet);
+        parameterizedGet.setActiveBody(parameterizedBody);
+        Local parameterizedReceiver = Jimple.v().newLocal("r0",
+                owner.getType());
+        Local parameter = Jimple.v().newLocal("parameter", LongType.v());
+        parameterizedBody.getLocals().addAll(Arrays.asList(
+                parameterizedReceiver, parameter));
+        parameterizedBody.getUnits().add(Jimple.v().newIdentityStmt(
+                parameterizedReceiver,
+                Jimple.v().newThisRef(owner.getType())));
+        parameterizedBody.getUnits().add(Jimple.v().newIdentityStmt(parameter,
+                Jimple.v().newParameterRef(LongType.v(), 0)));
+        parameterizedBody.getUnits().add(Jimple.v().newReturnStmt(parameter));
+
+        SootClass caller = new SootClass("example.StructuralCaller",
+                Modifier.PUBLIC);
+        Scene.v().addClass(caller);
+        caller.setApplicationClass();
+        SootMethod parameterizedCaller = new SootMethod("callGet",
+                Arrays.asList(owner.getType(), LongType.v()), LongType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        caller.addMethod(parameterizedCaller);
+        Body callerBody = Jimple.v().newBody(parameterizedCaller);
+        parameterizedCaller.setActiveBody(callerBody);
+        Local callerReceiver = Jimple.v().newLocal("record", owner.getType());
+        Local callerArgument = Jimple.v().newLocal("argument", LongType.v());
+        Local callerResult = Jimple.v().newLocal("result", LongType.v());
+        callerBody.getLocals().addAll(Arrays.asList(callerReceiver,
+                callerArgument, callerResult));
+        callerBody.getUnits().add(Jimple.v().newIdentityStmt(callerReceiver,
+                Jimple.v().newParameterRef(owner.getType(), 0)));
+        callerBody.getUnits().add(Jimple.v().newIdentityStmt(callerArgument,
+                Jimple.v().newParameterRef(LongType.v(), 1)));
+        callerBody.getUnits().add(Jimple.v().newAssignStmt(callerResult,
+                Jimple.v().newVirtualInvokeExpr(callerReceiver,
+                        parameterizedGet.makeRef(), callerArgument)));
+        callerBody.getUnits().add(Jimple.v().newReturnStmt(callerResult));
+
+        SootClass base = new SootClass("example.AmbiguousRecord",
+                Modifier.PUBLIC);
+        SootClass child = new SootClass("example.OverridingRecord",
+                Modifier.PUBLIC);
         child.setSuperclass(base);
         Scene.v().addClass(base);
         Scene.v().addClass(child);
         base.setApplicationClass();
         child.setApplicationClass();
-        SootField expiryDate = new SootField("expiryDate", LongType.v(),
+        SootField baseValue = new SootField("baseValue", LongType.v(),
                 Modifier.PRIVATE);
-        base.addField(expiryDate);
-        SootMethod getter = new SootMethod("getExpiryDate",
-                Collections.emptyList(), LongType.v(), Modifier.PUBLIC);
-        base.addMethod(getter);
-        Body getterBody = Jimple.v().newBody(getter);
-        getter.setActiveBody(getterBody);
-        Local receiver = Jimple.v().newLocal("r0", base.getType());
-        Local value = Jimple.v().newLocal("expiry", LongType.v());
-        getterBody.getLocals().addAll(Arrays.asList(receiver, value));
-        getterBody.getUnits().add(Jimple.v().newIdentityStmt(receiver,
-                Jimple.v().newThisRef(base.getType())));
-        getterBody.getUnits().add(Jimple.v().newAssignStmt(value,
-                Jimple.v().newInstanceFieldRef(receiver,
-                        expiryDate.makeRef())));
-        getterBody.getUnits().add(Jimple.v().newReturnStmt(value));
+        SootField childValue = new SootField("childValue", LongType.v(),
+                Modifier.PRIVATE);
+        base.addField(baseValue);
+        child.addField(childValue);
+        SootMethod ambiguousBase = addPureFieldMethod(base, baseValue,
+                "readValue");
+        addPureFieldMethod(child, childValue, "readValue");
+
+        return new StructuralAccessorShapeFixture(pure,
+                Arrays.asList(constant, computed, called, branched, writing,
+                        parameterizedGet, ambiguousBase),
+                parameterizedGet, parameterizedCaller);
+    }
+
+    private static SootMethod addPureFieldMethod(SootClass owner,
+                                                  SootField field,
+                                                  String name) {
+        SootMethod method = new SootMethod(name, Collections.emptyList(),
+                field.getType(), Modifier.PUBLIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = Jimple.v().newLocal("r0", owner.getType());
+        Local value = Jimple.v().newLocal("value", field.getType());
+        body.getLocals().addAll(Arrays.asList(receiver, value));
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newThisRef(owner.getType())));
+        body.getUnits().add(Jimple.v().newAssignStmt(value,
+                Jimple.v().newInstanceFieldRef(receiver, field.makeRef())));
+        body.getUnits().add(Jimple.v().newReturnStmt(value));
+        return method;
+    }
+
+    private static SootMethod addConstantLongMethod(SootClass owner,
+                                                     String name,
+                                                     long value) {
+        SootMethod method = new SootMethod(name, Collections.emptyList(),
+                LongType.v(), Modifier.PUBLIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local receiver = Jimple.v().newLocal("r0", owner.getType());
+        body.getLocals().add(receiver);
+        body.getUnits().add(Jimple.v().newIdentityStmt(receiver,
+                Jimple.v().newThisRef(owner.getType())));
+        body.getUnits().add(Jimple.v().newReturnStmt(LongConstant.v(value)));
+        return method;
+    }
+
+    private static InheritedAccessorFixture inheritedAccessorFixture() {
+        G.reset();
+        SootClass base = new SootClass("example.RecordState",
+                Modifier.PUBLIC);
+        SootClass child = new SootClass("example.SpecializedRecord",
+                Modifier.PUBLIC);
+        child.setSuperclass(base);
+        Scene.v().addClass(base);
+        Scene.v().addClass(child);
+        base.setApplicationClass();
+        child.setApplicationClass();
+        SootField stamp = new SootField("stamp", LongType.v(),
+                Modifier.PRIVATE);
+        base.addField(stamp);
+        SootMethod getter = addPureFieldMethod(base, stamp, "readStamp");
 
         SootClass reader = new SootClass("example.AccessorReader",
                 Modifier.PUBLIC);
@@ -5198,11 +5591,11 @@ public class CausynthPipelineTest {
         body.getUnits().add(Jimple.v().newIdentityStmt(key,
                 Jimple.v().newParameterRef(child.getType(), 0)));
         soot.SootMethodRef inherited = Scene.v().makeMethodRef(child,
-                "getExpiryDate", Collections.emptyList(), LongType.v(), false);
+                "readStamp", Collections.emptyList(), LongType.v(), false);
         body.getUnits().add(Jimple.v().newAssignStmt(expiry,
                 Jimple.v().newVirtualInvokeExpr(key, inherited)));
         body.getUnits().add(Jimple.v().newReturnVoidStmt());
-        return new InheritedAccessorFixture(method, expiryDate, base, child);
+        return new InheritedAccessorFixture(method, stamp, base, child);
     }
 
     private static final class IteratorMutationFixture {
@@ -5332,6 +5725,23 @@ public class CausynthPipelineTest {
             this.field = field;
             this.base = base;
             this.child = child;
+        }
+    }
+
+    private static final class StructuralAccessorShapeFixture {
+        private final SootMethod pure;
+        private final List<SootMethod> rejected;
+        private final SootMethod parameterizedGet;
+        private final SootMethod parameterizedCaller;
+
+        private StructuralAccessorShapeFixture(SootMethod pure,
+                                               List<SootMethod> rejected,
+                                               SootMethod parameterizedGet,
+                                               SootMethod parameterizedCaller) {
+            this.pure = pure;
+            this.rejected = rejected;
+            this.parameterizedGet = parameterizedGet;
+            this.parameterizedCaller = parameterizedCaller;
         }
     }
 

@@ -377,53 +377,6 @@ final class RuntimeRegionPlanner {
                 }
                 result.instances.add(instance);
 
-                Map<String, Object> validation = object(
-                        "regionInstanceId", instanceId,
-                        "regionId", region.regionId,
-                        "status", validationStatus,
-                        "rootObserved", true,
-                        "staticRootObserved", candidate.staticRootObserved,
-                        "runtimeSelectedRoot", root.method,
-                        "rootAuthority", "RUNTIME_CALL_TREE",
-                        "rootSelection", rootSelection,
-                        "anchorObserved", anchorObserved,
-                        "sameThreadCallTree", true,
-                        "process", root.process,
-                        "threadId", root.tid,
-                        "pathSignatureEventCount", pathSelection.total,
-                        "pathSignatureTruncated", pathSelection.truncated,
-                        "containedCallCount", containedCalls.size(),
-                        "containedCallTreeTruncated", callSelection.truncated,
-                        "runtimePathEvidenceComplete",
-                        runtimePathEvidenceComplete,
-                        "runtimeGaps", runtimeGaps,
-                        "observedMethods", sorted(observedMethods),
-                        "runtimeAdmittedMethods",
-                        sorted(runtimeAdmittedMethods),
-                        "runtimeMethodAdmissionAuthority",
-                        "EXACT_SAME_THREAD_DESCENDANT_CALL_TREE_V1",
-                        "staticAlternativeMethodsNotObserved",
-                        difference(region.methods, observedMethods),
-                        "inputPortCount", inputObjects.size(),
-                        "observedInputCount", observedInputCount,
-                        "deferredInputCount", deferredInputCount,
-                        "staticInputSelectionComplete",
-                        region.inputSelectionComplete,
-                        "staticInputPortCount", region.inputs.size(),
-                        "concreteInputPortCount", concreteInputs.size(),
-                        "runtimePrunedInputPorts",
-                        region.excludedInputPorts(concreteInputs),
-                        "concreteInputSelectionAuthority",
-                        demandSlice.selectionAuthority(),
-                        "concreteDemandSymbolicPotential",
-                        demandHasSymbolicPotential,
-                        "concreteDemandSlice", demandSlice.toMap(),
-                        "staticUnresolvedInputs", region.unresolvedInputs,
-                        "branchPolicyCount", branchPlan.size(),
-                        "observedBranchCount", observedBranchCount,
-                        "symbolizeActionsReady", symbolizeActionsReady,
-                        "symbolicReady", symbolicReady);
-                result.regionValidations.add(validation);
                 InstanceEvidence instanceEvidence = new InstanceEvidence(
                         instanceId, region, root, containedCalls,
                         containedMethodEvents, containedRuntime,
@@ -2888,13 +2841,11 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    /** Rebuilds all three in-memory row views from the same promoted set. */
+    /** Rebuilds both maintained row views from the same promoted set. */
     private static void refreshPromotedConcreteInputRows(
             List<InstanceEvidence> evidence, Result result) {
         Map<String, Map<String, Object>> instances = rowsByInstanceId(
                 result.instances);
-        Map<String, Map<String, Object>> validations = rowsByInstanceId(
-                result.regionValidations);
         Map<String, Map<String, Object>> activations = rowsByInstanceId(
                 result.activations);
         for (InstanceEvidence instance : evidence) {
@@ -2958,24 +2909,6 @@ final class RuntimeRegionPlanner {
                 instanceRow.put("symbolizeActionsReady", symbolizeReady);
                 instanceRow.put("boundaryReady", boundaryReady);
                 instanceRow.put("symbolicReady", symbolicReady);
-            }
-
-            Map<String, Object> validation = validations.get(
-                    instance.instanceId);
-            if (validation != null) {
-                validation.put("inputPortCount", inputObjects.size());
-                validation.put("observedInputCount", observedInputCount);
-                validation.put("deferredInputCount", deferredInputCount);
-                validation.put("concreteInputPortCount",
-                        concreteInputs.size());
-                validation.put("runtimePrunedInputPorts", pruned);
-                validation.put("concreteInputSelectionAuthority",
-                        authority);
-                validation.put("concreteDemandSymbolicPotential",
-                        symbolicPotential);
-                validation.put("concreteDemandSlice", demand);
-                validation.put("symbolizeActionsReady", symbolizeReady);
-                validation.put("symbolicReady", symbolicReady);
             }
 
             if (activation != null) {
@@ -3213,9 +3146,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice outputSlice = staticOutputSlice == null
                     ? null : staticOutputSlice.runtimeRefined(first.upstream);
             if (outputSlice == null) {
-                activation.put("requestedOutputSlicePolicy",
-                        "CONSERVATIVE_STATIC_REGION_FRONTIER");
-                activation.put("requestedOutputSliceComplete", false);
                 activation.put("activationInputSelectionAuthority",
                         "NO_REQUESTED_OUTPUT_SLICE_FULL_MATERIALIZED_POOL");
                 activation.put("activationInputSelectionComplete", false);
@@ -3280,14 +3210,6 @@ final class RuntimeRegionPlanner {
                 activation.put("branches", selectedBranches);
                 activation.put("requestedOutputMethods",
                         new ArrayList<>(outputSlice.methods));
-                activation.put("requestedOutputSlicePolicy",
-                        outputSlice.selection);
-                activation.put("requestedOutputSliceRefinementPolicy",
-                        "OBSERVED_REGION_CALL_TREE");
-                activation.put("requestedOutputSliceRefinementComplete",
-                        outputSlice.runtimeRefinementComplete);
-                activation.put("requestedOutputSliceComplete",
-                        outputSlice.complete);
                 activation.put("requestedOutputSlice", outputSlice.toMap());
                 activation.put("requestedOutputCapture",
                         copyRows(outputSlice.captureBindings));
@@ -3664,8 +3586,7 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         for (Map<String, Object> activation : result.activations) {
             if (!"OUTPUT_CLOSURE".equals(captureGoalKind(activation))
-                    || !Boolean.TRUE.equals(activation.get(
-                    "requestedOutputSliceComplete"))) {
+                    || !nestedOutputSliceComplete(activation)) {
                 continue;
             }
             String instance = string(activation.get("regionInstanceId"));
@@ -4919,7 +4840,6 @@ final class RuntimeRegionPlanner {
     static final class Result {
         final List<Map<String, Object>> instances = new ArrayList<>();
         final List<Map<String, Object>> activations = new ArrayList<>();
-        final List<Map<String, Object>> regionValidations = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
         final Map<String, Object> summary = new LinkedHashMap<>();
         final List<String> warnings = new ArrayList<>();
@@ -4932,10 +4852,6 @@ final class RuntimeRegionPlanner {
 
         String activationsJsonl() {
             return jsonl(activations);
-        }
-
-        String regionValidationsJsonl() {
-            return jsonl(regionValidations);
         }
 
         String edgeValidationsJsonl() {
@@ -7132,18 +7048,6 @@ final class RuntimeRegionPlanner {
             return resolution;
         }
 
-        private long firstMethodSeq(String method) {
-            if (method == null || method.isEmpty()) {
-                return 0L;
-            }
-            for (MethodEvent event : methodEvents) {
-                if (method.equals(event.method)) {
-                    return event.seq;
-                }
-            }
-            return 0L;
-        }
-
         private int runtimeOccurrence(RuntimeEvent target) {
             if (target == null) {
                 return 1;
@@ -8382,7 +8286,8 @@ final class RuntimeRegionPlanner {
                     "fromCell", jsonString(json, "fromCell"),
                     "toCell", jsonString(json, "toCell"),
                     "transferKind", jsonString(json, "transferKind"),
-                    "kind", jsonString(json, "kind"));
+                    "kind", jsonString(json, "kind"),
+                    "invoke", jsonString(json, "invoke"));
             int projectionVersion = jsonInt(json,
                     "containerProjectionContractVersion", -1);
             if (projectionVersion >= 0) {
@@ -9796,6 +9701,13 @@ final class RuntimeRegionPlanner {
     private static Map<String, Object> mapValue(Object value) {
         return value instanceof Map<?, ?>
                 ? (Map<String, Object>) value : null;
+    }
+
+    private static boolean nestedOutputSliceComplete(
+            Map<String, Object> value) {
+        Map<String, Object> slice = value == null ? null : mapValue(
+                value.get("requestedOutputSlice"));
+        return slice != null && Boolean.TRUE.equals(slice.get("complete"));
     }
 
     @SuppressWarnings("unchecked")

@@ -118,6 +118,104 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
+    public void rejectsMalformedExecutableMaterializationCatalogs()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.ProtocolInput: void run(java.lang.Object)>";
+
+        JsonObject missing = concreteActivation(
+                "ACT.MATERIALIZATIONS.MISSING", root, 1);
+        missing.remove("materializations");
+        JsonObject wrongType = concreteActivation(
+                "ACT.MATERIALIZATIONS.WRONG.TYPE", root, 1);
+        wrongType.addProperty("materializations", "not-an-array");
+        JsonObject nonObject = concreteActivation(
+                "ACT.MATERIALIZATIONS.NON.OBJECT", root, 1);
+        JsonArray malformedMembers = new JsonArray();
+        malformedMembers.add("not-an-action");
+        nonObject.add("materializations", malformedMembers);
+
+        String[] old = installPlan(plan, results, "concrete-overlap-test");
+        try {
+            for (JsonObject activation : Arrays.asList(
+                    missing, wrongType, nonObject)) {
+                Files.write(plan, (activation + "\n").getBytes(
+                        StandardCharsets.UTF_8));
+                ConcolicRegionRuntime.resetForTests();
+                try {
+                    ConcolicRegionRuntime.enterRegion(root, new Object());
+                    throw new AssertionError("non-canonical executable "
+                            + "materializations must fail closed");
+                } catch (IllegalStateException expected) {
+                    assertTrue(expected.getMessage(), expected.getMessage()
+                            .contains("materializations"));
+                    assertTrue(expected.getMessage(), expected.getMessage()
+                            .contains(activation.get("activationId")
+                                    .getAsString()));
+                }
+            }
+            assertFalse(Files.exists(results));
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void declarationCatalogIsNotAnExecutableFallback()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
+        Path results = folder.getRoot().toPath().resolve("results.jsonl");
+        String root = "<example.DeclaredInput: void run(java.lang.String)>";
+        JsonObject activation = concreteActivation(
+                "ACT.DECLARATION.ONLY", root, 1);
+        activation.addProperty("test", "mock-symbolic-test");
+        activation.addProperty("concreteReplayOnly", false);
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("symbol", "REGION.DECLARED.in.0");
+        declaration.addProperty("cell", root
+                + ".param0:java.lang.String");
+        declaration.addProperty("location", "ARGUMENT");
+        declaration.addProperty("bindingMode", "ROOT_ENTRY");
+        declaration.addProperty("index", 0);
+        declaration.addProperty("javaType", "java.lang.String");
+        activation.add("symbolize", singleton(declaration));
+        assertEquals(0, activation.getAsJsonArray(
+                "materializations").size());
+        Files.write(plan, (activation + "\n").getBytes(
+                StandardCharsets.UTF_8));
+
+        String[] old = installPlan(plan, results, "mock-symbolic-test");
+        try {
+            DelayedExpressionEngine.reset();
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
+            long token = ConcolicRegionRuntime.enterRegion(root,
+                    new Object());
+            assertTrue(token > 0L);
+            ConcolicRegionRuntime.symbolizeArgument(token, 0, "seed", "");
+            ConcolicRegionRuntime.exitRegion(token, null, "");
+
+            JsonObject result = resultRows(results).get(0);
+            assertEquals(0, result.getAsJsonArray(
+                    "symbolizedInputs").size());
+            assertEquals(0, result.getAsJsonArray(
+                    "unresolvedInputs").size());
+        } finally {
+            restorePlan(old);
+            ConcolicRegionRuntime.resetForTests();
+            DelayedExpressionEngine.reset();
+            folder.delete();
+        }
+    }
+
+    @Test
     public void nonNullNullableStringReplayPreservesFalseNullAttestation()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -136,7 +234,7 @@ public class ConcolicRegionRuntimeTest {
         action.addProperty("bindingMode", "ROOT_ENTRY");
         action.addProperty("index", 0);
         action.addProperty("javaType", "java.lang.String");
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
 
         JsonObject assignment = new JsonObject();
         assignment.addProperty("engineSymbol", "M_L_String_nullable");
@@ -877,15 +975,6 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void referenceReplayProtocolIsTheoryNeutral() {
-        Object concrete = new Object();
-        assertEquals(null, ConcolicRegionRuntime.modeledReferenceResult(
-                "NULL", concrete));
-        assertEquals(concrete, ConcolicRegionRuntime.modeledReferenceResult(
-                "UNCHANGED", concrete));
-    }
-
-    @Test
     public void solverScalarsAreCoercedForTheirRealJavaInputType() {
         assertEquals(7, ConcolicRegionRuntime.coerceModelValue(
                 "INT", "7", int.class));
@@ -1241,93 +1330,7 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void nativeIteratorRemoveJoinRequiresUnconditionalHashMapShape() {
-        JsonElement map = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\",\"_exp\":\"map\"}");
-        JsonElement key = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\",\"_exp\":\"key\"}");
-        JsonArray conditions = JsonParser.parseString("["
-                + nativeRemove(map, key, "Y_Z_0") + ","
-                + nativeRemove(map, key, "Y_Z_1") + ","
-                + nativeRemove(map, key, "M_Z_match") + "]")
-                .getAsJsonArray();
-
-        assertEquals(0, ConcolicRegionRuntime.findNativeRemoveConditionIndex(
-                conditions, 0, map, key));
-        assertEquals(-1, ConcolicRegionRuntime.findNativeRemoveConditionIndex(
-                conditions, 1, map, key));
-        assertEquals(1, ConcolicRegionRuntime.nativeRemoveConditionIndices(
-                conditions, 0, map, key).size());
-        assertEquals(key, ConcolicRegionRuntime.resolvedIteratorRemoveKey(
-                null, conditions.get(0).getAsJsonObject()));
-        assertEquals(0, ConcolicRegionRuntime.findNativeRemoveConditionIndex(
-                conditions, 0, map, null));
-    }
-
-    @Test
-    public void nativeIteratorRemoveJoinUsesUniqueOpaqueBoxedKeyOnlyWithRuntimeEntry() {
-        JsonElement map = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\",\"_exp\":\"map\"}");
-        JsonElement runtimeKey = JsonParser.parseString(
-                "{\"_type\":\"ConstExpr\",\"_java_type\":"
-                        + "\"java/lang/Integer\",\"_exp\":\"Y_I_7\"}");
-        JsonElement runtimeValue = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\","
-                        + "\"_java_type\":\"example/Value\","
-                        + "\"_exp\":\"removedValue\"}");
-        JsonElement opaqueBoxedKey = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\","
-                        + "\"_java_type\":\"java/lang/Integer\","
-                        + "\"_exp\":\"P_L'java/lang/Integer'_\"}");
-        JsonArray opaque = JsonParser.parseString("["
-                + nativeRemove(map, opaqueBoxedKey, "Y_Z_0") + "]")
-                .getAsJsonArray();
-
-        assertEquals(0, ConcolicRegionRuntime.nativeRemoveConditionIndices(
-                opaque, 0, map, runtimeKey).size());
-        assertEquals(1, ConcolicRegionRuntime
-                .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                        opaque, 0, map, runtimeKey, runtimeValue).size());
-
-        JsonElement differentConcreteKey = JsonParser.parseString(
-                "{\"_type\":\"ConstExpr\",\"_java_type\":\"I\","
-                        + "\"_exp\":\"Y_I_42\"}");
-        JsonArray concreteMismatch = JsonParser.parseString("["
-                + nativeRemove(map, differentConcreteKey, "Y_Z_0") + "]")
-                .getAsJsonArray();
-        assertEquals(0, ConcolicRegionRuntime
-                .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                        concreteMismatch, 0, map, runtimeKey,
-                        runtimeValue).size());
-
-        JsonElement wrongRuntimeKey = JsonParser.parseString(
-                "{\"_type\":\"ConstExpr\",\"_java_type\":"
-                        + "\"java/lang/Integer\",\"_exp\":\"Y_I_42\"}");
-        assertEquals("native hash must identify the exact runtime key", 0,
-                ConcolicRegionRuntime
-                        .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                                opaque, 0, map, wrongRuntimeKey,
-                                runtimeValue).size());
-
-        JsonElement wrongValue = JsonParser.parseString(
-                "{\"_type\":\"SymbolExpression\","
-                        + "\"_java_type\":\"example/Value\","
-                        + "\"_exp\":\"otherValue\"}");
-        assertEquals("native result must identify the same entry value", 0,
-                ConcolicRegionRuntime
-                        .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                                opaque, 0, map, runtimeKey,
-                                wrongValue).size());
-
-        opaque.add(opaque.get(0).deepCopy());
-        assertEquals(0, ConcolicRegionRuntime
-                .nativeRemoveConditionIndicesWithRuntimeEntryKey(
-                        opaque, 0, map, runtimeKey,
-                        runtimeValue).size());
-    }
-
-    @Test
-    public void unwrapsEngineExpressionEnvelopeForStructuralVmJoin() {
+    public void unwrapsEngineExpressionEnvelopeForRuntimeObservation() {
         JsonElement canonical = ConcolicRegionRuntime
                 .canonicalEngineExpression("{\"schemaVersion\":1,"
                         + "\"active\":true,\"symbolic\":true,"
@@ -1387,13 +1390,13 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void recordsCanonicalEntrySetRemovalAtApplicationSite()
+    public void recordsCanonicalEntrySetObservationWithoutMutation()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
-        String root = "<example.Pruner: void prune()>";
+        String root = "<example.Pruner: void observe()>";
         JsonObject activation = concreteActivation(
                 "ACT.OBSERVE.BACKED.VIEW", root, 1);
         Files.write(plan, (activation + "\n")
@@ -1416,8 +1419,6 @@ public class ConcolicRegionRuntimeTest {
             Object entry = iterator.next();
             ConcolicRegionRuntime.recordMapIteratorNext(root, 5, iterator,
                     entry);
-            iterator.remove();
-            ConcolicRegionRuntime.recordMapIteratorRemove(root, 8, iterator);
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
             JsonObject row = JsonParser.parseString(new String(
@@ -1428,8 +1429,7 @@ public class ConcolicRegionRuntimeTest {
             assertEquals(2, observations.size());
             JsonObject observation = observations.get(0).getAsJsonObject();
             JsonObject snapshot = observations.get(1).getAsJsonObject();
-            JsonObject effect = row.getAsJsonArray("runtimeHeapEffects")
-                    .get(0).getAsJsonObject();
+            assertFalse(row.has("runtimeHeapEffects"));
             assertEquals("MAP_ENTRY_READ",
                     observation.get("kind").getAsString());
             assertTrue(observation.get("complete").getAsBoolean());
@@ -1437,7 +1437,7 @@ public class ConcolicRegionRuntimeTest {
             assertEquals("FINITE_MAP_ENTRY_SNAPSHOT",
                     snapshot.get("kind").getAsString());
             assertTrue(snapshot.get("complete").getAsBoolean());
-            assertTrue(snapshot.get("preRemove").getAsBoolean());
+            assertFalse(snapshot.has("preRemove"));
             assertEquals(1, snapshot.get("entryCount").getAsInt());
             assertEquals("java.util.HashMap", snapshot.get(
                     "mapImplementationClass").getAsString());
@@ -1461,44 +1461,8 @@ public class ConcolicRegionRuntimeTest {
             assertTrue(snapshot.get("firstIteratorEntryMatched")
                     .getAsBoolean());
             assertTrue(snapshot.get("authority").getAsString().contains(
-                    "FIRST_BOUND_ENTRY_SET_ITERATOR_NEXT"));
-            assertEquals(observation.get("observationId").getAsString(),
-                    effect.get("entryReadObservationId").getAsString());
-            assertTrue(effect.get("entryReadObservationComplete")
-                    .getAsBoolean());
-            assertEquals(2L, effect.get("eventSequence").getAsLong());
-            assertEquals("MAP_REMOVE", effect.get("kind").getAsString());
-            assertEquals(root, effect.get("originMethod").getAsString());
-            assertEquals(root + "#u8", effect.get("siteId").getAsString());
-            assertTrue(effect.get("applied").getAsBoolean());
-            assertTrue(effect.get("transformerComplete").getAsBoolean());
-            assertTrue(effect.get("guardValueBindingComplete")
-                    .getAsBoolean());
-            assertTrue(effect.get("complete").getAsBoolean());
-            assertEquals("JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT",
-                    effect.get("entryBindingAuthority").getAsString());
-            assertEquals("SAME_MAP_ENTRY_GET_VALUE_AT_NEXT",
-                    effect.get("valueBindingAuthority").getAsString());
-            assertFalse(effect.has("backingMapIdentity"));
-            assertFalse(effect.has("backingMapIdentityKnown"));
-            assertFalse(effect.has("keyIdentity"));
-            assertFalse(effect.has("keyIdentityKnown"));
-            assertFalse(effect.get("keyWasNull").getAsBoolean());
-            assertFalse(effect.has("valueIdentity"));
-            assertFalse(effect.has("valueIdentityKnown"));
-            assertFalse(effect.get("valueWasNull").getAsBoolean());
-            assertEquals(observation.get("backingMapObjectToken").getAsLong(),
-                    effect.get("backingMapObjectToken").getAsLong());
-            assertEquals(observation.get("keyObjectToken").getAsLong(),
-                    effect.get("keyObjectToken").getAsLong());
-            assertEquals(observation.get("valueObjectToken").getAsLong(),
-                    effect.get("valueObjectToken").getAsLong());
-            assertEquals(observation.get("entryObjectToken").getAsLong(),
-                    effect.get("entryObjectToken").getAsLong());
-            assertTrue(effect.has("mapExpression"));
-            assertTrue(effect.has("keyExpression"));
-            assertTrue(effect.has("valueExpression"));
-            assertTrue(manager.allKeys.isEmpty());
+                    "AT_ITERATOR_NEXT_STABLE_SIZE"));
+            assertEquals("value", manager.allKeys.get("expired"));
         } finally {
             restorePlan(old);
             ConcolicRegionRuntime.resetForTests();
@@ -1507,7 +1471,7 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void recordsEntryReadAndFieldOwnerWhenRemoveIsSkipped()
+    public void recordsEntryReadAndDeepFieldOwner()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1529,8 +1493,8 @@ public class ConcolicRegionRuntimeTest {
         fieldAction.add("fieldPath",
                 JsonParser.parseString("[\"expiry\"]"));
         JsonObject activation = concreteActivation(
-                "ACT.OBSERVE.BACKED.VIEW.NO.REMOVE", root, 1);
-        activation.add("symbolize", singleton(fieldAction));
+                "ACT.OBSERVE.BACKED.VIEW.READ", root, 1);
+        addExecutableActions(activation, singleton(fieldAction));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
 
@@ -1557,13 +1521,13 @@ public class ConcolicRegionRuntimeTest {
                     expiryField, "expiry");
             assertTrue(ConcolicRegionRuntime.resolveBranch(0L, 0L, root, 7,
                     "expiry >= now", true));
-            // Deliberately retain the entry: Iterator.remove is never called.
+            // Entry observation is read-only; the backing map remains intact.
             ConcolicRegionRuntime.exitRegion(token, null, "");
 
             JsonObject row = JsonParser.parseString(new String(
                     Files.readAllBytes(results), StandardCharsets.UTF_8)
                     .trim()).getAsJsonObject();
-            assertEquals(0, row.getAsJsonArray("runtimeHeapEffects").size());
+            assertFalse(row.has("runtimeHeapEffects"));
             JsonArray observations = row.getAsJsonArray(
                     "runtimeHeapObservations");
             assertEquals(2, observations.size());
@@ -1650,7 +1614,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.SYMBOLIC.DELAYED.VALUE", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(fieldAction));
+        addExecutableActions(activation, singleton(fieldAction));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
 
@@ -1689,7 +1653,7 @@ public class ConcolicRegionRuntimeTest {
             JsonObject row = JsonParser.parseString(new String(
                     Files.readAllBytes(results), StandardCharsets.UTF_8)
                     .trim()).getAsJsonObject();
-            assertEquals(0, row.getAsJsonArray("runtimeHeapEffects").size());
+            assertFalse(row.has("runtimeHeapEffects"));
             assertEquals(0, row.getAsJsonArray("unresolvedInputs").size());
             JsonObject observation = row.getAsJsonArray(
                     "runtimeHeapObservations").get(0).getAsJsonObject();
@@ -1745,7 +1709,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.MAP.REF.WITNESS", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(
+        addExecutableActions(activation, singleton(
                 deepEnabledFieldAction(base)));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -1838,7 +1802,7 @@ public class ConcolicRegionRuntimeTest {
                 "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT");
         JsonObject activation = concreteActivation(
                 "ACT.MODEL.DYNAMIC.ENTRIES", root, 1);
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
         activation.add("modelAssignments", singleton(assignment));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -1976,7 +1940,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.OBSERVE.FOUR.DYNAMIC.ENTRIES", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(
+        addExecutableActions(activation, singleton(
                 deepEnabledFieldAction(base)));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -2086,7 +2050,7 @@ public class ConcolicRegionRuntimeTest {
         String root = "<example.Pruner: void rereadEntry()>";
         JsonObject activation = concreteActivation(
                 "ACT.OBSERVE.DYNAMIC.REREAD", root, 1);
-        activation.add("symbolize", singleton(expiryFieldAction(
+        addExecutableActions(activation, singleton(expiryFieldAction(
                 "REGION.TEST.in.expiry")));
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -2157,7 +2121,7 @@ public class ConcolicRegionRuntimeTest {
         assignments.add(wrongOccurrence);
         JsonObject activation = concreteActivation(
                 "ACT.MODEL.DYNAMIC.REJECT", root, 1);
-        activation.add("symbolize", singleton(expiryFieldAction(base)));
+        addExecutableActions(activation, singleton(expiryFieldAction(base)));
         activation.add("modelAssignments", assignments);
         Files.write(plan, (activation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -2210,9 +2174,9 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.OBSERVE.STABLE.1", root, 1);
         JsonObject secondActivation = concreteActivation(
                 "ACT.OBSERVE.STABLE.2", root, 2);
-        firstActivation.add("symbolize",
+        addExecutableActions(firstActivation,
                 singleton(expiryFieldAction(base)));
-        secondActivation.add("symbolize",
+        addExecutableActions(secondActivation,
                 singleton(expiryFieldAction(base)));
         Files.write(plan, (firstActivation + "\n" + secondActivation + "\n")
                 .getBytes(StandardCharsets.UTF_8));
@@ -2273,10 +2237,10 @@ public class ConcolicRegionRuntimeTest {
 
         JsonObject seed = concreteActivation(
                 "ACT.OBSERVE.FRESH.KEY.SEED", root, 1);
-        seed.add("symbolize", singleton(expiryFieldAction(base)));
+        addExecutableActions(seed, singleton(expiryFieldAction(base)));
         JsonObject replay = concreteActivation(
                 "ACT.OBSERVE.FRESH.KEY.REPLAY", root, 2);
-        replay.add("symbolize", singleton(expiryFieldAction(base)));
+        addExecutableActions(replay, singleton(expiryFieldAction(base)));
         JsonObject assignment = dynamicAssignment(base, dynamic, site, 1,
                 "91");
         assignment.addProperty("dynamicReplayRebindingAuthority",
@@ -2351,7 +2315,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.DISCOVER.ARRAY.FIELD", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", genericArrayActions(base, container,
+        addExecutableActions(activation, genericArrayActions(base, container,
                 root));
         activation.add("containerElementFieldBindings", singleton(
                 genericArrayBinding("BIND.DISCOVER", base, container,
@@ -2557,7 +2521,7 @@ public class ConcolicRegionRuntimeTest {
         String site = root + "#u6";
         JsonObject activation = concreteActivation(
                 "ACT.MODEL.ARRAY.FIELD", root, 1);
-        activation.add("symbolize", genericArrayActions(base, container,
+        addExecutableActions(activation, genericArrayActions(base, container,
                 root));
         JsonArray bindings = new JsonArray();
         for (int index = 0; index < 4; index++) {
@@ -2653,7 +2617,7 @@ public class ConcolicRegionRuntimeTest {
         JsonObject second = concreteActivation(
                 "ACT.REJECT.ARRAY.REPEATED", root, 2);
         for (JsonObject activation : Arrays.asList(first, second)) {
-            activation.add("symbolize", genericArrayActions(base,
+            addExecutableActions(activation, genericArrayActions(base,
                     container, root));
             activation.add("containerElementFieldBindings", singleton(
                     genericArrayBinding("BIND.DISCOVER", base, container,
@@ -2716,7 +2680,7 @@ public class ConcolicRegionRuntimeTest {
         JsonObject mismatch = concreteActivation(
                 "ACT.REJECT.ARRAY.SITE.MISMATCH", root, 2);
         for (JsonObject activation : Arrays.asList(missing, mismatch)) {
-            activation.add("symbolize", genericArrayActions(base,
+            addExecutableActions(activation, genericArrayActions(base,
                     container, root));
         }
         JsonObject missingBinding = genericArrayBinding("BIND.MISSING",
@@ -2783,7 +2747,7 @@ public class ConcolicRegionRuntimeTest {
         int[] units = new int[]{14, 20, 26, 32};
         JsonObject activation = concreteActivation(
                 "ACT.BRIDGE.ARRAY.FIELD", root, 1);
-        activation.add("symbolize", genericArrayActions(base, container,
+        addExecutableActions(activation, genericArrayActions(base, container,
                 root));
         JsonArray declarations = new JsonArray();
         for (int index = 0; index < units.length; index++) {
@@ -2846,7 +2810,7 @@ public class ConcolicRegionRuntimeTest {
         String container = "REGION.TEST.in.elements";
         JsonObject activation = concreteActivation(
                 "ACT.REQUIRE.ARRAY.FIELD", root, 1);
-        activation.add("symbolize", genericArrayActions(base, container,
+        addExecutableActions(activation, genericArrayActions(base, container,
                 root));
         JsonArray declarations = new JsonArray();
         for (int index = 0; index < 4; index++) {
@@ -2935,7 +2899,7 @@ public class ConcolicRegionRuntimeTest {
                 + "\"rootMethod\":\"" + root + "\","
                 + "\"observedRootMethod\":\"" + root + "\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
-                + "\"symbolize\":[{\"symbol\":\"REGION.0.in.0\","
+                + "\"materializations\":[{\"symbol\":\"REGION.0.in.0\","
                 + "\"cell\":\"arg0\",\"location\":\"ARGUMENT\","
                 + "\"index\":0}]}\n";
         Files.write(plan, row.getBytes(StandardCharsets.UTF_8));
@@ -3151,7 +3115,7 @@ public class ConcolicRegionRuntimeTest {
                 + "\"test\":\"ordinal-test\","
                 + "\"rootMethod\":\"" + root + "\","
                 + "\"invocationOrdinal\":2,\"replayable\":true,"
-                + "\"symbolize\":[]}\n";
+                + "\"materializations\":[]}\n";
         Files.write(plan, row.getBytes(StandardCharsets.UTF_8));
 
         String oldPlan = System.getProperty("causynth.concolic.activation.plan");
@@ -3593,7 +3557,7 @@ public class ConcolicRegionRuntimeTest {
         assignment.add("materializationPath",
                 JsonParser.parseString("[\"allKeys\"]"));
         JsonObject activation = concreteActivation("ACT.MODEL.1", root, 1);
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
         activation.add("modelAssignments", singleton(assignment));
         Files.write(plan, (activation + "\n").getBytes(StandardCharsets.UTF_8));
 
@@ -3733,7 +3697,7 @@ public class ConcolicRegionRuntimeTest {
                 "HEAP_OBJECT_FIELD"), root, 8,
                 "ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_LOGICAL_"
                         + "PATH_PREFIX_REFERENCE_EQUALITY"));
-        activation.add("symbolize", actions);
+        addExecutableActions(activation, actions);
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
@@ -3922,7 +3886,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.NESTED", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
@@ -3997,7 +3961,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.NESTED.WRONG.OWNER", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
@@ -4044,7 +4008,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.DIRECT", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(consumedFieldAction(
+        addExecutableActions(activation, singleton(consumedFieldAction(
                 engineArrayFieldAction("REGION.ARRAY.in.direct",
                         engineArrayAccessFieldSignature(),
                         "accessedValues", "HEAP_OBJECT_FIELD"),
@@ -4129,7 +4093,7 @@ public class ConcolicRegionRuntimeTest {
                 root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(consumedFieldAction(action,
+        addExecutableActions(activation, singleton(consumedFieldAction(action,
                 root, 23,
                 "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1")));
         Files.write(plan, (activation + "\n").getBytes(
@@ -4182,7 +4146,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.LOCAL", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
@@ -4231,7 +4195,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.FIELD.MUTATION", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(consumedFieldAction(
+        addExecutableActions(activation, singleton(consumedFieldAction(
                 engineArrayFieldAction(
                 "REGION.ARRAY.in.mutable",
                 engineArrayAccessFieldSignature(), "accessedValues",
@@ -4297,7 +4261,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.FIELD.PRE.READ.MUTATION", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(consumedFieldAction(
+        addExecutableActions(activation, singleton(consumedFieldAction(
                 engineArrayFieldAction(
                 "REGION.ARRAY.in.pre.read.mutable",
                 engineArrayAccessFieldSignature(), "accessedValues",
@@ -4355,7 +4319,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.ARRAY.FAIL." + expressionMode, root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(engineArrayArgumentAction(
+        addExecutableActions(activation, singleton(engineArrayArgumentAction(
                 "REGION.ARRAY.in.0", root, 0)));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
@@ -4401,7 +4365,7 @@ public class ConcolicRegionRuntimeTest {
                 "ACT.ENGINE.PRIMITIVE.ARRAY." + mode, root, 1);
         activation.addProperty("test", "mock-symbolic-test");
         activation.addProperty("concreteReplayOnly", false);
-        activation.add("symbolize", singleton(action));
+        addExecutableActions(activation, singleton(action));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
         String[] old = installPlan(plan, results, "mock-symbolic-test");
@@ -4440,7 +4404,7 @@ public class ConcolicRegionRuntimeTest {
                 root, 0));
         actions.add(engineArrayArgumentAction("REGION.ARRAY.in.1",
                 root, 1));
-        activation.add("symbolize", actions);
+        addExecutableActions(activation, actions);
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
         String[] old = installPlan(plan, results, "mock-symbolic-test");
@@ -4892,7 +4856,7 @@ public class ConcolicRegionRuntimeTest {
             mapAction.addProperty("mapStateRequestedOutputCell",
                     mapProjectionMapFieldSignature());
         }
-        activation.add("symbolize", singleton(mapAction));
+        addExecutableActions(activation, singleton(mapAction));
         JsonObject projectionDeclaration = mapProjectionDeclaration(
                 outputValidationMode);
         if ("KEY_SET_VIEW".equals(mutation)) {
@@ -5272,10 +5236,16 @@ public class ConcolicRegionRuntimeTest {
         activation.addProperty("replayable", true);
         activation.addProperty("concreteReplayOnly", true);
         activation.add("symbolize", new JsonArray());
+        activation.add("materializations", new JsonArray());
         activation.add("modelAssignments", new JsonArray());
-        activation.add("replayMaterializations", new JsonArray());
         activation.add("forcedBranches", new JsonArray());
         return activation;
+    }
+
+    private static void addExecutableActions(JsonObject activation,
+                                             JsonArray actions) {
+        activation.add("symbolize", actions.deepCopy());
+        activation.add("materializations", actions);
     }
 
     private static void addRootArgumentSelector(
@@ -5663,22 +5633,6 @@ public class ConcolicRegionRuntimeTest {
                 + "\"_right\":{\"_type\":\"SymbolExpression\","
                 + "\"_exp\":\"N\"},\"_code_position\":\""
                 + codePosition + "\"}";
-    }
-
-    private static String nativeRemove(JsonElement map, JsonElement key,
-                                       String matchValue) {
-        return "{\"_type\":\"MethodExpression\","
-                + "\"_name\":\"java/util/HashMap remove\","
-                + "\"_param_list\":[" + map + ","
-                + "{\"_type\":\"ConstExpr\",\"_java_type\":\"I\","
-                + "\"_exp\":\"Y_I_7\"}," + key + ","
-                + "{\"_type\":\"ConstExpr\",\"_java_type\":\"Z\","
-                + "\"_exp\":\"" + matchValue + "\"},"
-                + "{\"_type\":\"ConstExpr\",\"_java_type\":\"Z\","
-                + "\"_exp\":\"Y_Z_0\"}],"
-                + "\"_res_exp\":{\"_type\":\"SymbolExpression\","
-                + "\"_java_type\":\"example/Value\","
-                + "\"_exp\":\"removedValue\"}}";
     }
 
     private static final class Envelope {

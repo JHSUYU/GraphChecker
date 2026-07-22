@@ -4,9 +4,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.A
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicOutputCaptureSelection;
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicReplaySelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.OutputCaptureTarget;
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ReplayTarget;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
@@ -251,9 +249,6 @@ public final class CausynthPipeline {
         ConcolicMaterializationSelection materializationSelection =
                 ConcolicInstrumentationSelections
                         .materializationSelectionFromEnvironment();
-        ConcolicReplaySelection replaySelection =
-                ConcolicInstrumentationSelections
-                        .replaySelectionFromEnvironment();
         ConcolicOutputCaptureSelection outputCaptureSelection =
                 ConcolicInstrumentationSelections
                         .outputCaptureSelectionFromEnvironment();
@@ -263,7 +258,6 @@ public final class CausynthPipeline {
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        taggedMethods.addAll(replaySelection.methods());
         taggedMethods.addAll(outputCaptureSelection.methods());
         taggedMethods.addAll(backedViewMethods);
         for (String methodSignature : taggedMethods) {
@@ -432,12 +426,10 @@ public final class CausynthPipeline {
                         materializationSelection, refs);
         int materializationCount = instrumentConcolicMaterializations(
                 materializationSelection, refs);
-        int replayMaterializationCount =
-                instrumentConcolicReplayMaterializations(replaySelection, refs);
         int outputCaptureHookCount = instrumentConcolicOutputCaptures(
                 outputCaptureSelection, refs);
-        int backedViewMutationHookCount =
-                instrumentConcolicBackedViewMutations(backedViewMethods, refs);
+        int mapEntryObservationHookCount =
+                instrumentConcolicMapEntryObservations(backedViewMethods, refs);
         int branchCount = instrumentConcolicBranches(branchSelection, refs);
         result.slices.put("concolicRegionRootCount", roots.size());
         result.slices.put("concolicRegionInstrumentedRootCount", instrumented);
@@ -447,12 +439,10 @@ public final class CausynthPipeline {
                 materializationCount);
         result.slices.put("concolicAccessorCallContextHookCount",
                 accessorCallContextCount);
-        result.slices.put("concolicReplayMaterializationHookCount",
-                replayMaterializationCount);
         result.slices.put("concolicOutputCaptureHookCount",
                 outputCaptureHookCount);
-        result.slices.put("concolicBackedViewMutationHookCount",
-                backedViewMutationHookCount);
+        result.slices.put("concolicMapEntryObservationHookCount",
+                mapEntryObservationHookCount);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
     }
@@ -965,68 +955,6 @@ public final class CausynthPipeline {
         insertBeforeSequence(body, stmt, sequence);
     }
 
-    /**
-     * Exposes solver-derived reference results at exact Jimple sites.  The
-     * transformer deliberately has no knowledge of the semantic theory that
-     * produced the value (Map, protocol, collection, and so on); that
-     * provenance remains in the activation plan.  The original assignment is
-     * executed first so the VM can retain its expression, then the modeled
-     * value is written back for ordinary Java control flow to consume.
-     */
-    private int instrumentConcolicReplayMaterializations(
-            ConcolicReplaySelection selection, ConcolicRegionRefs refs) {
-        int count = 0;
-        for (ReplayTarget target : selection.targets()) {
-            try {
-                SootMethod method = Scene.v().getMethod(target.method);
-                if (method == null || !method.isConcrete()) {
-                    continue;
-                }
-                Body body = method.retrieveActiveBody();
-                Unit unit = originalUnit(body, target.unitIndex);
-                if (!(unit instanceof AssignStmt)) {
-                    continue;
-                }
-                AssignStmt assignment = (AssignStmt) unit;
-                Value result = assignment.getLeftOp();
-                Type resultType = result.getType();
-                if (!(resultType instanceof RefType)
-                        && !(resultType instanceof ArrayType)) {
-                    continue;
-                }
-
-                List<Unit> after = new ArrayList<>();
-                after.add(Jimple.v().newInvokeStmt(
-                        Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
-                Value concreteResult = objectArg(body, result, after);
-                Local modeledResult = newTraceLocal(body,
-                        RefType.v("java.lang.Object"), "$causynthReplayResult");
-                after.add(Jimple.v().newAssignStmt(modeledResult,
-                        Jimple.v().newStaticInvokeExpr(
-                                refs.materializeReplayReferenceResult,
-                                StringConstant.v(method.getSignature()),
-                                IntConstant.v(target.unitIndex),
-                                concreteResult)));
-                after.add(Jimple.v().newInvokeStmt(
-                        Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
-                Value converted = modeledResult;
-                if (!(resultType instanceof RefType)
-                        || !"java.lang.Object".equals(
-                        ((RefType) resultType).getClassName())) {
-                    converted = Jimple.v().newCastExpr(modeledResult,
-                            resultType);
-                }
-                after.add(Jimple.v().newAssignStmt(result, converted));
-                insertAfterSequence(body, assignment, after);
-                count++;
-            } catch (RuntimeException exception) {
-                LOG.debug("Skipping concolic replay materialization for {}#u{}",
-                        target.method, target.unitIndex, exception);
-            }
-        }
-        return count;
-    }
-
     /** Captures the VM expression at an exact activation-authorized endpoint. */
     private int instrumentConcolicOutputCaptures(
             ConcolicOutputCaptureSelection selection,
@@ -1158,13 +1086,12 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Instruments the Java collection-view protocol which implements
-     * {@code Iterator.remove()} as a mutation of the backing map.  Static
-     * analysis deliberately supplies a broad set of same-thread region
-     * methods; the runtime's active activation and identity bindings decide
-     * which concrete views actually belong to the selected heap state.
+     * Instruments non-mutating Map entry observations. Static analysis
+     * deliberately supplies a broad set of same-thread region methods; the
+     * runtime's active activation and identity bindings decide which concrete
+     * views actually belong to the selected heap state.
      */
-    private int instrumentConcolicBackedViewMutations(
+    private int instrumentConcolicMapEntryObservations(
             Set<String> methods, ConcolicRegionRefs refs) {
         int count = 0;
         for (String signature : methods) {
@@ -1232,20 +1159,6 @@ public final class CausynthPipeline {
                                         IntConstant.v(unitIndex),
                                         objectArg(body, instance.getBase(), after),
                                         objectArg(body, element, after))));
-                        recognized = true;
-                    } else if ("remove".equals(name)
-                            && invoke.getMethodRef().returnType()
-                            instanceof VoidType) {
-                        // A post-call hook is reached only when remove()
-                        // returns normally. IllegalStateException and other
-                        // exceptional removals therefore cannot become
-                        // applied heap effects.
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.recordMapIteratorRemove,
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex),
-                                        objectArg(body, instance.getBase(), after))));
                         recognized = true;
                     }
                     if (!recognized) {
@@ -2504,11 +2417,9 @@ public final class CausynthPipeline {
         private final SootMethodRef materializeField;
         private final SootMethodRef prepareFieldMaterialization;
         private final SootMethodRef materializeConsumedField;
-        private final SootMethodRef materializeReplayReferenceResult;
         private final SootMethodRef registerMapView;
         private final SootMethodRef registerMapViewIterator;
         private final SootMethodRef recordMapIteratorNext;
-        private final SootMethodRef recordMapIteratorRemove;
         private final SootMethodRef recordOutputCapture;
         private final SootMethodRef activeToken;
         private final SootMethodRef recordFieldAssignmentOutput;
@@ -2534,11 +2445,9 @@ public final class CausynthPipeline {
                                    SootMethodRef materializeField,
                                    SootMethodRef prepareFieldMaterialization,
                                    SootMethodRef materializeConsumedField,
-                                   SootMethodRef materializeReplayReferenceResult,
                                    SootMethodRef registerMapView,
                                    SootMethodRef registerMapViewIterator,
                                    SootMethodRef recordMapIteratorNext,
-                                   SootMethodRef recordMapIteratorRemove,
                                    SootMethodRef recordOutputCapture,
                                    SootMethodRef activeToken,
                                    SootMethodRef recordFieldAssignmentOutput,
@@ -2564,12 +2473,9 @@ public final class CausynthPipeline {
             this.materializeField = materializeField;
             this.prepareFieldMaterialization = prepareFieldMaterialization;
             this.materializeConsumedField = materializeConsumedField;
-            this.materializeReplayReferenceResult =
-                    materializeReplayReferenceResult;
             this.registerMapView = registerMapView;
             this.registerMapViewIterator = registerMapViewIterator;
             this.recordMapIteratorNext = recordMapIteratorNext;
-            this.recordMapIteratorRemove = recordMapIteratorRemove;
             this.recordOutputCapture = recordOutputCapture;
             this.activeToken = activeToken;
             this.recordFieldAssignmentOutput =
@@ -2644,10 +2550,6 @@ public final class CausynthPipeline {
                             "materializeConsumedField",
                             Arrays.asList(string, IntType.v(), object, string,
                                     string, object), VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "materializeReplayReferenceResult",
-                            Arrays.asList(string, IntType.v(), object),
-                            object, true),
                     Scene.v().makeMethodRef(runtime, "registerMapView",
                             Arrays.asList(string, IntType.v(), object, object,
                                     string), VoidType.v(), true),
@@ -2658,10 +2560,6 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(runtime,
                             "recordMapIteratorNext",
                             Arrays.asList(string, IntType.v(), object, object),
-                            VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "recordMapIteratorRemove",
-                            Arrays.asList(string, IntType.v(), object),
                             VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime,
                             "recordOutputCapture",

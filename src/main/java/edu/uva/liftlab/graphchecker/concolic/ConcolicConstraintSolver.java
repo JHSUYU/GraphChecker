@@ -15,7 +15,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -51,6 +50,7 @@ public final class ConcolicConstraintSolver {
     public static Result solve(JsonObject task, JsonObject activation,
                                Path z3, long timeoutMillis)
             throws IOException, InterruptedException {
+        requireMaterializations(activation);
         Encoder encoder = new Encoder();
         BranchReplayContract replayContract = replayContract(task);
         SolverPathContext solverPathContext = solverPathContext(task);
@@ -1377,7 +1377,8 @@ public final class ConcolicConstraintSolver {
                                               Map<String, String> values,
                                               JsonObject activation,
                                               DynamicBindingRegistry registry,
-                                              Set<String> projectedSymbols) {
+                                              Set<String> projectedSymbols)
+            throws IOException {
         JsonArray result = new JsonArray();
         MaterializationActionCatalog actions =
                 materializationActions(activation);
@@ -1501,15 +1502,10 @@ public final class ConcolicConstraintSolver {
     }
 
     private static MaterializationActionCatalog materializationActions(
-            JsonObject activation) {
+            JsonObject activation) throws IOException {
         List<JsonObject> executable = new ArrayList<>();
-        JsonArray materializations = array(activation, "materializations");
-        JsonArray source = materializations.size() > 0
-                ? materializations : array(activation, "symbolize");
-        for (JsonElement element : source) {
-            if (element.isJsonObject()) {
-                executable.add(element.getAsJsonObject());
-            }
+        for (JsonElement element : requireMaterializations(activation)) {
+            executable.add(element.getAsJsonObject());
         }
         List<JsonObject> declared = new ArrayList<>();
         for (JsonElement element : array(activation, "symbolize")) {
@@ -1522,6 +1518,23 @@ public final class ConcolicConstraintSolver {
         Collections.sort(executable, bySymbol);
         Collections.sort(declared, bySymbol);
         return new MaterializationActionCatalog(executable, declared);
+    }
+
+    private static JsonArray requireMaterializations(JsonObject activation)
+            throws IOException {
+        JsonElement encoded = activation == null ? null
+                : activation.get("materializations");
+        if (encoded == null || !encoded.isJsonArray()) {
+            throw new IOException(
+                    "activation requires materializations array");
+        }
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IOException(
+                        "activation materializations must contain objects");
+            }
+        }
+        return encoded.getAsJsonArray();
     }
 
     private static JsonElement targetConstraint(JsonObject task) {
@@ -2510,29 +2523,6 @@ public final class ConcolicConstraintSolver {
             return parsed.signum() < 0
                     ? "(- " + parsed.negate().toString() + ")"
                     : parsed.toString();
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
-    }
-
-    private static String realLiteral(String value) {
-        String raw = firstNonBlank(value).trim();
-        if (raw.isEmpty() || raw.length() > 1024
-                || "nan".equalsIgnoreCase(raw)
-                || "inf".equalsIgnoreCase(raw)
-                || "+inf".equalsIgnoreCase(raw)
-                || "-inf".equalsIgnoreCase(raw)
-                || "infinity".equalsIgnoreCase(raw)
-                || "+infinity".equalsIgnoreCase(raw)
-                || "-infinity".equalsIgnoreCase(raw)) {
-            return null;
-        }
-        try {
-            BigDecimal parsed = new BigDecimal(raw);
-            if (Math.abs((long) parsed.scale()) > 1024L
-                    || parsed.precision() > 1024) return null;
-            String plain = parsed.abs().toPlainString();
-            return parsed.signum() < 0 ? "(- " + plain + ")" : plain;
         } catch (NumberFormatException ignored) {
             return null;
         }
