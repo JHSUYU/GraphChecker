@@ -41,6 +41,10 @@ provide a reach formula to the composer or extractor.
 Build the custom JDK first and make Z3 available. If the custom JDK cannot run
 on the host because it needs `libffi.so.6`, the script uses the Docker image
 configured by `custom_jdk_docker_image`.
+The maintained configs intentionally leave `custom_jdk_library_path` unset:
+the runner probes the custom Zero image directly and falls back to Docker only
+when that real probe fails. Configure a library path only when the directory
+actually exists; no empty compatibility directory is accepted.
 
 Run the full workflow from an empty fixture output directory:
 
@@ -158,6 +162,13 @@ reads genuine instance/static field live-ins. `multitype/` combines Boolean,
 `int`, `long`, `double`, `String.contains`, and a bounded `for` loop.  Each
 uses the same runner through `CAUSYNTH_WORKFLOW_CONFIG`; none changes the
 workflow or declares fixture-specific SMT.
+`unreachable-parity/` reads the same nested array-index and map-entry field
+shapes as the container workload, but its two guarded producers publish only
+odd and even integers respectively. The annotated target requires those RPC
+values to be equal. None of the four Boolean root valuations can reach it, so
+the generated candidate SMT and independently invoked Z3 must both report
+`UNREACHABLE`/`unsat`; the fixture and scripts contain no handwritten
+reachability formula or expected-SMT shortcut.
 `FourThreadSharedFieldWorkloadTest` is the compact recursive fork/merge
 regression for `1 -> 2 -> 3` and `1 -> 4 -> 3`. Neither workload has a
 `while` loop.
@@ -195,7 +206,11 @@ workflow, invokes Z3 on the emitted SMT, and validates the expected root-input
 catalog and truth-table profile. `containers` additionally checks exact
 `array[1].state.guard.enabled` and map-key-7 rebinding, two-path guarded merges,
 schema-3 witness/context separation, input-only unforced replay, and its exact
-four-row reach profile. Unit tests are not run by this command.
+four-row reach profile. `unreachable-parity` additionally requires two closed
+two-case producer relations, the exact odd/even output images, zero satisfying
+rows, four unsatisfying rows, and direct Z3 `unsat`. Run all six maintained
+profiles with `run_robustness_matrix.sh all`. Unit tests are not run by this
+command.
 
 ## Completed: one binary-branch replay authority
 
@@ -219,8 +234,9 @@ witnesses, and one validator checks the ordered prefix followed by the exact
 required target. Duplicate branch-event identities and content-hash tampering
 fail closed. Multiway `switch` remains a separate successor-aware observation.
 
-All five matrix profiles pass this protocol through candidate SMT generation,
-independent Z3 checking, and their exact expected reach profiles.
+All six matrix profiles pass this protocol through candidate SMT generation,
+independent Z3 checking, and their exact expected reach profiles; one profile
+is intentionally unreachable and therefore expects Z3 `unsat`.
 
 ## TODO: promote a candidate with natural replay
 

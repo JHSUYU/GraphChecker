@@ -3,7 +3,8 @@
 GraphChecker 从静态数据流、运行时跨 region 证据和逐 region concolic execution 中构造
 `region.in -> region.out` 关系，再沿 region graph 递归组合成一个可直接交给 Z3 的 SMT。
 当前维护的验证矩阵是通用三线程 RPC fixture 及其 cross-method、multitype、
-dependent-scalar、container 变体。
+dependent-scalar、container、unreachable-parity 变体。最后一组要求完整流程生成的
+SMT 由 Z3 判定为 `unsat`。
 
 ## 项目定位
 
@@ -13,7 +14,7 @@ symbolic state propagation、guarded symbolic merging 和 SMT composition。核�
 
 旧 HDFS 实验 adapter、冻结静态 catalog checkpoint、领域 port mapper 和显式 contract
 registry 已退出维护并从仓库删除；通用 RPC、container、Java 语义和 fail-closed evidence
-检查继续由三个参考 workload 覆盖。
+检查继续由 maintained workload matrix 覆盖。
 
 ## 三线程候选模型 milestone（2026-07-21）
 

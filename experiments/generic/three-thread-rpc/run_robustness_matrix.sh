@@ -17,8 +17,9 @@ usage() {
 Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [MODE]
 
   core  Run baseline, cross-method-fields, and multitype (default).
-  all   Also run dependent-scalar and containers.
-  baseline | cross-method-fields | multitype | dependent-scalar | containers
+  all   Also run dependent-scalar, containers, and unreachable-parity.
+  baseline | cross-method-fields | multitype | dependent-scalar | containers |
+  unreachable-parity
         Run one named workload. This is useful for an exact post-fix gate.
 
 Each entry runs the fixture runner's clean and candidate commands, invokes Z3
@@ -395,6 +396,76 @@ validate_container_producer_artifacts() {
     || die "container path replay was forced or lost exact rebinding"
 }
 
+validate_unreachable_parity_producer_artifacts() {
+  local work_root=$1
+  local campaign_root="${work_root}/producer-campaign"
+  local -a path_manifests merged_summaries
+
+  [[ -d "${campaign_root}" ]] \
+    || die "unreachable-parity producer campaign not found: ${campaign_root}"
+  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_manifest.json | sort)
+  mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
+  [[ ${#path_manifests[@]} -eq 2 ]] \
+    || die "unreachable-parity expected two producer path manifests"
+  [[ ${#merged_summaries[@]} -eq 2 ]] \
+    || die "unreachable-parity expected two producer guarded merges"
+
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .schemaVersion == 1
+      and .kind == "REGION_PATH_WORKLIST"
+      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .complete == true
+      and .wallClockBoundReached == false
+      and .gapCount == 0
+      and ((.gaps // []) | length) == 0
+      and .pendingTaskCount == 0
+      and .observedPathCount == 2
+      and .candidateFlipCount > 0
+      and ([.pathCountByRegion[]] | add) == 2)
+  ' "${path_manifests[@]}" >/dev/null \
+    || die "unreachable-parity producer path closure is incomplete"
+
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .valid == true
+      and .relationallyComplete == true
+      and .regionRelation.kind == "GUARDED_PATH_MERGE"
+      and .regionRelation.complete == true
+      and .regionRelation.pathClosureStatus
+        == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .regionRelation.guardSemantics
+        == "EXACT_NORMALIZED_PATH_CONDITION"
+      and .regionRelation.caseCount == 2
+      and all(.regionRelation.cases[];
+        .relationallyComplete == true
+        and (.guard.conditions | length) > 0))
+    # The complete producer image is {-1, 3} union {0, 4}.  No target-side
+    # constant says UNSAT; equality becomes impossible only after both
+    # guarded relations are composed.
+    and ([.[] | .regionRelation.cases[].outputExpressions[]?._exp]
+      | sort) == ["Y_I_-1", "Y_I_0", "Y_I_3", "Y_I_4"]
+    and ([.[]
+      | .requestedOutputSlice.containerElementFieldBindings[]?
+      | select(.kind == "ARRAY_ELEMENT_FIELD"
+        and .selectorAuthority == "EXACT_ARRAY_INDEX"
+        and .elementIndex == 1
+        and .fieldPath == ["state", "guard", "enabled"]
+        and .complete == true)] | length) == 1
+    and ([.[] | .regionRelation.cases[].dynamicFieldBindings[]?
+      | select(.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
+        and .keyExpression._java_type == "I"
+        and .keyExpression._exp == "Y_I_7"
+        and .fieldPath == ["state", "guard", "enabled"]
+        and .complete == true)] | length) == 2
+  ' "${merged_summaries[@]}" >/dev/null \
+    || die "unreachable-parity lost its exact odd/even container relations"
+}
+
 validate_semantic_profile() {
   local label=$1
   local smt=$2
@@ -503,6 +574,32 @@ validate_semantic_profile() {
       ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
         || die "containers lost guarded array/map composition evidence"
       validate_container_producer_artifacts "${work_root}"
+      ;;
+    unreachable-parity)
+      jq -e '
+        .status == "COMPLETE_BOOTSTRAP_UNREACHABLE"
+        and .reachabilityStatus == "UNREACHABLE"
+        and .bootstrapReplayModelAvailable == false
+        and .rootBooleanInputCount == 2
+        and .existentialNonBooleanRootInputCount == 0
+        and .valuationCount == 4
+        and .satisfyingValuationCount == 0
+        and .unsatisfyingValuationCount == 4
+        and .reachConditionSmtLib == "false"
+        and all(.truthTable[]; .reachesBug == false)
+      ' "${reach_report}" >/dev/null \
+        || die "unreachable-parity was not proved unreachable for all roots"
+      jq -e '
+        .resolvedProducerCount == 2
+        and .guardedRegionRelationCount == 2
+        and .guardedPathCaseCount == 4
+        and .caseProjectionCatalogComplete == true
+        and .caseProjectionCatalogCount == 4
+        and .heapObservationCount == 2
+        and .heapObservationFieldBindingCount == 2
+      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+        || die "unreachable-parity lost guarded container composition evidence"
+      validate_unreachable_parity_producer_artifacts "${work_root}"
       ;;
     *) die "no semantic profile for matrix label: ${label}" ;;
   esac
@@ -631,7 +728,7 @@ run_case() {
 mode=${1:-core}
 [[ $# -le 1 ]] || die "expected at most one mode argument"
 case "${mode}" in
-  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers) ;;
+  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity) ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; die "unknown matrix mode: ${mode}" ;;
 esac
@@ -655,10 +752,11 @@ case "${mode}" in
       multitype/workflow.properties)
     ;;
   all)
-    labels=(baseline cross-method-fields multitype dependent-scalar containers)
+    labels=(baseline cross-method-fields multitype dependent-scalar containers \
+      unreachable-parity)
     configs=(workflow.properties cross-method-fields/workflow.properties \
       multitype/workflow.properties dependent-scalar/workflow.properties \
-      containers/workflow.properties)
+      containers/workflow.properties unreachable-parity/workflow.properties)
     ;;
   baseline)
     labels=(baseline)
@@ -679,6 +777,10 @@ case "${mode}" in
   containers)
     labels=(containers)
     configs=(containers/workflow.properties)
+    ;;
+  unreachable-parity)
+    labels=(unreachable-parity)
+    configs=(unreachable-parity/workflow.properties)
     ;;
 esac
 
