@@ -601,9 +601,8 @@ public final class ConcolicScheduler {
                     arguments, discoveredActivation, region);
             configuredActivation = refineRequestedOutputCapture(arguments,
                     configuredActivation, evidence);
-            JsonObject activation = boundedOutputCompletion(
-                    operationalActivation(arguments, configuredActivation),
-                    definitions);
+            JsonObject activation = operationalActivation(arguments,
+                    configuredActivation);
             if (!bool(activation, "replayable", false)) {
                 continue;
             }
@@ -690,90 +689,6 @@ public final class ConcolicScheduler {
         // closure selection was persisted.  New catalogs never take this
         // broad method path.
         return new LinkedHashSet<>(staticRegionMethods);
-    }
-
-    /**
-     * Selects the unique outermost requested-state transformer as the end of
-     * one bounded service-loop iteration.  The logical region root is kept
-     * unchanged; replay may only complete after this transformer returns
-     * normally.  Call reachability comes from the same frozen static graph as
-     * the output slice, so an ambiguous transformer set simply keeps the
-     * concrete outer loop behavior.
-     */
-    private static JsonObject boundedOutputCompletion(
-            JsonObject activation, DefinitionIndex definitions) {
-        if (!RegionCaptureGoal.from(activation).isOutputClosure()
-                || !definitions.authoritative
-                || !"HEAP_STATE".equals(string(object(activation,
-                "requestedOutput"), "kind"))) {
-            return activation;
-        }
-        JsonObject slice = object(activation, "requestedOutputSlice");
-        Set<String> transformers = new LinkedHashSet<>();
-        for (JsonElement element : array(slice,
-                "requestedStateTransformerObligations")) {
-            if (element.isJsonObject()) {
-                String method = string(element.getAsJsonObject(), "method");
-                if (!method.isEmpty()) {
-                    transformers.add(method);
-                }
-            }
-        }
-        String outermost = definitions.uniqueOutermost(transformers);
-        if (outermost.isEmpty()) {
-            return activation;
-        }
-        JsonObject result = activation.deepCopy();
-        JsonObject boundedSlice = object(result,
-                "requestedOutputSlice").deepCopy();
-        boundedSlice.addProperty("boundedOutputCompletionMethod",
-                outermost);
-        boundedSlice.addProperty("boundedOutputCompletionNormalReturnOnly",
-                true);
-        boundedSlice.addProperty("boundedOutputCompletionAuthority",
-                "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
-                        + "IN_FROZEN_CALL_GRAPH_V1");
-        if (!outermost.equals(string(result, "rootMethod"))
-                && boundedDeferredStartSafe(result, outermost)) {
-            boundedSlice.addProperty("boundedOutputDeferredEngineStart",
-                    true);
-            boundedSlice.addProperty(
-                    "boundedOutputDeferredEngineStartAuthority",
-                    "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_OUTERMOST_"
-                            + "TRANSFORMER_ENTRY_V1");
-        }
-        result.add("requestedOutputSlice", boundedSlice);
-        result.addProperty("boundedOutputCompletionEnabled", true);
-        return result;
-    }
-
-    private static boolean boundedDeferredStartSafe(JsonObject activation,
-                                                     String startMethod) {
-        JsonArray actions = array(activation, "symbolize");
-        if (actions.size() == 0) {
-            actions = array(activation, "materializations");
-        }
-        for (JsonElement element : actions) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            String location = string(element.getAsJsonObject(), "location");
-            JsonObject action = element.getAsJsonObject();
-            // Delaying engine start is safe only when every input is
-            // materialized by an exact field read inside the completion
-            // transformer itself.  A call return/local/environment value may
-            // be consumed before that method is entered (as in the local RPC
-            // producers), so starting late would silently make the output
-            // concrete.
-            if (!("HEAP_OBJECT_FIELD".equals(location)
-                    || "FIELD_ACCESS".equals(
-                    string(action, "bindingMode")))
-                    || !safe(startMethod).equals(
-                    string(action, "accessMethod"))) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
@@ -1024,10 +939,6 @@ public final class ConcolicScheduler {
         String authority = string(capture, "occurrenceAuthority");
         String kind = firstNonBlank(string(capture, "captureKind"),
                 "CALL_ARGUMENT");
-        if ("METHOD_RETURN_VALUE".equals(kind)) {
-            return "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE".equals(authority)
-                    && integer(capture, "runtimeCallId", 0) > 0;
-        }
         if ("FIELD_ASSIGNMENT_RHS".equals(kind)) {
             return "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_SITE_"
                     .concat("LAST_WRITE_OCCURRENCE").equals(authority)
@@ -3344,51 +3255,6 @@ public final class ConcolicScheduler {
             return result;
         }
 
-        private String uniqueOutermost(Set<String> methods) {
-            if (methods == null || methods.isEmpty()) {
-                return "";
-            }
-            String selected = "";
-            for (String candidate : methods) {
-                boolean reachesAll = true;
-                for (String target : methods) {
-                    if (!candidate.equals(target)
-                            && !reaches(candidate, target,
-                            new LinkedHashSet<String>())) {
-                        reachesAll = false;
-                        break;
-                    }
-                }
-                if (!reachesAll) {
-                    continue;
-                }
-                if (!selected.isEmpty()) {
-                    return "";
-                }
-                selected = candidate;
-            }
-            return selected;
-        }
-
-        private boolean reaches(String source, String target,
-                                Set<String> visited) {
-            if (!visited.add(source)) {
-                return false;
-            }
-            Set<String> callees = callsByMethod.get(source);
-            if (callees == null) {
-                return false;
-            }
-            if (callees.contains(target)) {
-                return true;
-            }
-            for (String callee : callees) {
-                if (reaches(callee, target, visited)) {
-                    return true;
-                }
-            }
-            return false;
-        }
     }
 
     private static final class CaptureEvidence {

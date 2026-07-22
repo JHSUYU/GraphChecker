@@ -12,8 +12,6 @@ import java.util.Set;
 final class PathRelationInputClosure {
     private static final String FIELD_CONSTANT_AUTHORITY =
             "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD";
-    private static final String RETURN_CONSTANT_AUTHORITY =
-            "EXACT_METHOD_RETURN_VALUE_WITH_VM_ATTESTED_PATH_GUARD";
     static final String PROOF_AUTHORITY =
             "EXACT_VM_WITNESS_GUARDED_CONSTANT_OUTPUT_PLUS_"
                     + "UNEXECUTED_LAZY_INPUT_V1";
@@ -27,8 +25,7 @@ final class PathRelationInputClosure {
             boolean outputComplete, String outputAuthority,
             boolean sliceOperationallyAdmitted) {
         if (!outputComplete || !sliceOperationallyAdmitted
-                || !(FIELD_CONSTANT_AUTHORITY.equals(outputAuthority)
-                || RETURN_CONSTANT_AUTHORITY.equals(outputAuthority))
+                || !FIELD_CONSTANT_AUTHORITY.equals(outputAuthority)
                 || pathCondition == null || pathCondition.size() == 0
                 || outputExpressions == null
                 || outputExpressions.size() == 0) {

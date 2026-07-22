@@ -748,10 +748,6 @@ final class ConcolicInstrumentationSelections {
         private final List<FieldTarget> fields = new ArrayList<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
-        private final Set<String> boundedOutputCompletionMethods =
-                new LinkedHashSet<>();
-        private final Set<String> boundedOutputDeferredStartMethods =
-                new LinkedHashSet<>();
         private final List<String> unsupported = new ArrayList<>();
 
         static ConcolicMaterializationSelection from(
@@ -784,29 +780,6 @@ final class ConcolicInstrumentationSelections {
                     if (!jsonBoolean(row, "replayable", true)) {
                         continue;
                     }
-                    JsonObject outputSlice = jsonObject(row,
-                            "requestedOutputSlice");
-                    String completionMethod = jsonString(outputSlice,
-                            "boundedOutputCompletionMethod");
-                    if (!completionMethod.isEmpty()
-                            && jsonBoolean(outputSlice,
-                            "boundedOutputCompletionNormalReturnOnly", false)
-                            && "UNIQUE_OUTERMOST_REQUESTED_STATE_"
-                            .concat("TRANSFORMER_IN_FROZEN_CALL_GRAPH_V1")
-                            .equals(jsonString(outputSlice,
-                                    "boundedOutputCompletionAuthority"))) {
-                        result.boundedOutputCompletionMethods.add(
-                                completionMethod);
-                        if (jsonBoolean(outputSlice,
-                                "boundedOutputDeferredEngineStart", false)
-                                && "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_"
-                                .concat("OUTERMOST_TRANSFORMER_ENTRY_V1")
-                                .equals(jsonString(outputSlice,
-                                        "boundedOutputDeferredEngineStartAuthority"))) {
-                            result.boundedOutputDeferredStartMethods.add(
-                                    completionMethod);
-                        }
-                    }
                     JsonElement materializations = row.get("materializations");
                     JsonElement legacy = row.get("symbolize");
                     JsonElement actions = materializations != null
@@ -827,16 +800,6 @@ final class ConcolicInstrumentationSelections {
                         + result.unsupported);
             }
             return result;
-        }
-
-        Set<String> boundedOutputCompletionMethods() {
-            return Collections.unmodifiableSet(
-                    boundedOutputCompletionMethods);
-        }
-
-        Set<String> boundedOutputDeferredStartMethods() {
-            return Collections.unmodifiableSet(
-                    boundedOutputDeferredStartMethods);
         }
 
         void add(JsonObject action) {
@@ -1490,8 +1453,6 @@ final class ConcolicInstrumentationSelections {
 
     static final class OutputCaptureTarget {
         static final String CALL_ARGUMENT = "CALL_ARGUMENT";
-        static final String METHOD_RETURN_VALUE =
-                "METHOD_RETURN_VALUE";
         static final String FIELD_ASSIGNMENT_RHS =
                 "FIELD_ASSIGNMENT_RHS";
 
@@ -1539,9 +1500,6 @@ final class ConcolicInstrumentationSelections {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 return !method.isEmpty() && !fieldSignature.isEmpty();
             }
-            if (METHOD_RETURN_VALUE.equals(captureKind)) {
-                return !method.isEmpty();
-            }
             return CALL_ARGUMENT.equals(captureKind)
                     && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
                     && argumentIndex >= 0;
@@ -1559,13 +1517,8 @@ final class ConcolicInstrumentationSelections {
             return FIELD_ASSIGNMENT_RHS.equals(captureKind);
         }
 
-        boolean isMethodReturnValue() {
-            return METHOD_RETURN_VALUE.equals(captureKind);
-        }
-
         String instrumentedMethod() {
-            return isFieldAssignmentRhs() || isMethodReturnValue()
-                    ? method : callerMethod;
+            return isFieldAssignmentRhs() ? method : callerMethod;
         }
     }
 

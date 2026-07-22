@@ -263,8 +263,6 @@ public final class CausynthPipeline {
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        taggedMethods.addAll(
-                materializationSelection.boundedOutputCompletionMethods());
         taggedMethods.addAll(replaySelection.methods());
         taggedMethods.addAll(outputCaptureSelection.methods());
         taggedMethods.addAll(backedViewMethods);
@@ -438,9 +436,6 @@ public final class CausynthPipeline {
                 instrumentConcolicReplayMaterializations(replaySelection, refs);
         int outputCaptureHookCount = instrumentConcolicOutputCaptures(
                 outputCaptureSelection, refs);
-        int boundedOutputCompletionHookCount =
-                instrumentConcolicBoundedOutputCompletions(
-                        materializationSelection, refs);
         int backedViewMutationHookCount =
                 instrumentConcolicBackedViewMutations(backedViewMethods, refs);
         int branchCount = instrumentConcolicBranches(branchSelection, refs);
@@ -456,66 +451,10 @@ public final class CausynthPipeline {
                 replayMaterializationCount);
         result.slices.put("concolicOutputCaptureHookCount",
                 outputCaptureHookCount);
-        result.slices.put("concolicBoundedOutputCompletionHookCount",
-                boundedOutputCompletionHookCount);
         result.slices.put("concolicBackedViewMutationHookCount",
                 backedViewMutationHookCount);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
-    }
-
-    private int instrumentConcolicBoundedOutputCompletions(
-            ConcolicMaterializationSelection selection,
-            ConcolicRegionRefs refs) {
-        int count = 0;
-        for (String signature : selection
-                .boundedOutputCompletionMethods()) {
-            try {
-                SootMethod method = Scene.v().getMethod(signature);
-                if (method == null || !method.isConcrete()
-                        || method.isConstructor()) {
-                    continue;
-                }
-                Body body = method.retrieveActiveBody();
-                List<Unit> original = snapshotUnits(body);
-                tagOriginalUnits(original);
-                if (selection.boundedOutputDeferredStartMethods()
-                        .contains(signature)) {
-                    Unit insertionPoint = firstNonIdentity(body);
-                    Unit enter = Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.enterBoundedOutputTransformer,
-                                    StringConstant.v(signature)));
-                    insertBeforeOrAppendNoRedirect(body, insertionPoint,
-                            Collections.singletonList(enter));
-                    count++;
-                }
-                for (Unit unit : original) {
-                    if (!(unit instanceof ReturnStmt)
-                            && !(unit instanceof ReturnVoidStmt)) {
-                        continue;
-                    }
-                    Stmt returned = (Stmt) unit;
-                    List<Unit> completion = new ArrayList<>();
-                    completion.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.pauseObservation)));
-                    completion.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.completeBoundedOutputTransformer,
-                                    StringConstant.v(signature))));
-                    completion.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.resumeObservation)));
-                    insertBeforeSequence(body, returned, completion);
-                    count++;
-                }
-            } catch (RuntimeException exception) {
-                LOG.debug("Skipping bounded output completion hook for {}",
-                        signature, exception);
-            }
-        }
-        return count;
     }
 
     private Set<String> concolicRootMethods(CausynthAnalysisResult result) {
@@ -1102,11 +1041,6 @@ public final class CausynthPipeline {
                 }
                 Body body = method.retrieveActiveBody();
                 Unit unit = originalUnit(body, target.unitIndex);
-                if (target.isMethodReturnValue()) {
-                    count += instrumentMethodReturnOutputCapture(body,
-                            unit, target, refs);
-                    continue;
-                }
                 if (target.isFieldAssignmentRhs()) {
                     count += instrumentFieldAssignmentOutputCapture(body,
                             unit, target, refs);
@@ -1161,48 +1095,6 @@ public final class CausynthPipeline {
             }
         }
         return count;
-    }
-
-    /** Captures an exact helper-method return while its VM shadow is live. */
-    private int instrumentMethodReturnOutputCapture(
-            Body body, Unit unit, OutputCaptureTarget target,
-            ConcolicRegionRefs refs) {
-        if (!(unit instanceof ReturnStmt)) return 0;
-        ReturnStmt returned = (ReturnStmt) unit;
-        Value value = returned.getOp();
-        List<Unit> before = new ArrayList<>();
-        Local activeToken = newTraceLocal(body, LongType.v(),
-                "$causynthActiveToken");
-        before.add(Jimple.v().newAssignStmt(activeToken,
-                Jimple.v().newStaticInvokeExpr(refs.activeToken)));
-        // Soot may infer a narrower local type from the values carried by an
-        // int-returning method (for example byte for a local that is only
-        // ever -1 or 1).  At an actual JVM return boundary the method
-        // descriptor is the semantic type authority.  Box with that declared
-        // type so the concrete wrapper and the custom-VM expression envelope
-        // both describe the canonical method return rather than an incidental
-        // Jimple local type.
-        Value boxed = boxedCaptureValue(body, value,
-                body.getMethod().getReturnType(), before);
-        before.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
-        Value primitiveValue = primitiveValueString(body, value, before);
-        before.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.recordMethodReturnOutput,
-                        activeToken,
-                        StringConstant.v(target.method),
-                        IntConstant.v(target.unitIndex),
-                        StringConstant.v(target.siteId),
-                        StringConstant.v(target.captureBindingId),
-                        StringConstant.v(target.outputPort),
-                        StringConstant.v(target.outputCell),
-                        IntConstant.v(target.occurrence),
-                        boxed, primitiveValue)));
-        before.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
-        insertBeforeSequence(body, returned, before);
-        return 1;
     }
 
     /**
@@ -2619,7 +2511,6 @@ public final class CausynthPipeline {
         private final SootMethodRef recordMapIteratorRemove;
         private final SootMethodRef recordOutputCapture;
         private final SootMethodRef activeToken;
-        private final SootMethodRef recordMethodReturnOutput;
         private final SootMethodRef recordFieldAssignmentOutput;
         private final SootMethodRef pauseObservation;
         private final SootMethodRef resumeObservation;
@@ -2629,8 +2520,6 @@ public final class CausynthPipeline {
         private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
         private final SootMethodRef resolveSwitchBranch;
-        private final SootMethodRef enterBoundedOutputTransformer;
-        private final SootMethodRef completeBoundedOutputTransformer;
         private final SootMethodRef exitRegionFrame;
         private final SootMethodRef throwRegionFrame;
 
@@ -2652,7 +2541,6 @@ public final class CausynthPipeline {
                                    SootMethodRef recordMapIteratorRemove,
                                    SootMethodRef recordOutputCapture,
                                    SootMethodRef activeToken,
-                                   SootMethodRef recordMethodReturnOutput,
                                    SootMethodRef recordFieldAssignmentOutput,
                                    SootMethodRef pauseObservation,
                                    SootMethodRef resumeObservation,
@@ -2662,8 +2550,6 @@ public final class CausynthPipeline {
                                    SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
                                    SootMethodRef resolveSwitchBranch,
-                                   SootMethodRef enterBoundedOutputTransformer,
-                                   SootMethodRef completeBoundedOutputTransformer,
                                    SootMethodRef exitRegionFrame,
                                    SootMethodRef throwRegionFrame) {
             this.enterRegionFrame = enterRegionFrame;
@@ -2686,7 +2572,6 @@ public final class CausynthPipeline {
             this.recordMapIteratorRemove = recordMapIteratorRemove;
             this.recordOutputCapture = recordOutputCapture;
             this.activeToken = activeToken;
-            this.recordMethodReturnOutput = recordMethodReturnOutput;
             this.recordFieldAssignmentOutput =
                     recordFieldAssignmentOutput;
             this.pauseObservation = pauseObservation;
@@ -2697,10 +2582,6 @@ public final class CausynthPipeline {
             this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
             this.resolveSwitchBranch = resolveSwitchBranch;
-            this.enterBoundedOutputTransformer =
-                    enterBoundedOutputTransformer;
-            this.completeBoundedOutputTransformer =
-                    completeBoundedOutputTransformer;
             this.exitRegionFrame = exitRegionFrame;
             this.throwRegionFrame = throwRegionFrame;
         }
@@ -2791,12 +2672,6 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(runtime, "activeToken",
                             Collections.<Type>emptyList(), LongType.v(), true),
                     Scene.v().makeMethodRef(runtime,
-                            "recordMethodReturnOutput",
-                            Arrays.asList(LongType.v(), string, IntType.v(),
-                                    string, string, string, string,
-                                    IntType.v(), object, string),
-                            VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
                             "recordFieldAssignmentOutput",
                             Arrays.asList(LongType.v(), string, IntType.v(),
                                     string, string, string, string, string,
@@ -2826,14 +2701,6 @@ public final class CausynthPipeline {
                             Arrays.asList(LongType.v(), LongType.v(), string,
                                     IntType.v(), string, string, string,
                                     IntType.v()), IntType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "enterBoundedOutputTransformer",
-                            Collections.<Type>singletonList(string),
-                            VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "completeBoundedOutputTransformer",
-                            Collections.<Type>singletonList(string),
-                            VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "exitRegionFrame",
                             Arrays.asList(string, object, string),
                             VoidType.v(), true),

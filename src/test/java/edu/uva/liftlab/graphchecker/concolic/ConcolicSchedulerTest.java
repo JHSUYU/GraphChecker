@@ -275,9 +275,15 @@ public class ConcolicSchedulerTest {
                     + "\"status\":\"CONFIRMED_READ_FROM\","
                     + "\"eligibleForAutomaticDerivation\":true,"
                     + "\"eligibleForAutomaticSmt\":true,"
-                    + "\"composable\":true,\"evidence\":[{"
+                    + "\"composable\":true,\"validatedBindings\":[{"
+                    + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
+                    + "\"writeEvidenceAuthority\":"
+                    + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
+                    + "\"orderAuthority\":"
+                    + "\"GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1\","
                     + "\"writeSeq\":3,\"readSeq\":4,"
                     + "\"receiverObjectId\":8,"
+                    + "\"fieldReceiverIdentityConfirmed\":true,"
                     + "\"orderConfirmed\":true}]}\n";
             Files.write(fixture.edges,
                     keyEdge.getBytes(StandardCharsets.UTF_8),
@@ -803,6 +809,7 @@ public class ConcolicSchedulerTest {
                     + "\"rootMethod\":\"<example.Client: void send()>\","
                     + "\"invocationOrdinal\":1,\"symbolize\":[]}")
                     .getAsJsonObject();
+            RegionCaptureGoal.outputClosure().writeTo(nn);
             JsonObject heartbeat = JsonParser.parseString("{"
                     + "\"activationId\":\"ACT.HEARTBEAT\","
                     + "\"regionId\":\"REGION.11\","
@@ -811,6 +818,7 @@ public class ConcolicSchedulerTest {
                     + "\"rootMethod\":\"<example.Updater: void run()>\","
                     + "\"invocationOrdinal\":1,\"symbolize\":[]}")
                     .getAsJsonObject();
+            RegionCaptureGoal.outputClosure().writeTo(heartbeat);
             JsonArray heartbeatSupport = new JsonArray();
             heartbeatSupport.add(nn);
             heartbeat.add("reachabilitySupportActivations",
@@ -1026,15 +1034,9 @@ public class ConcolicSchedulerTest {
                     + "\"requestedOutputMethods\":[\"" + root + "\"],"
                     + "\"requestedOutputSlice\":{\"sites\":[\""
                     + site + "\"]},"
-                    + "\"requestedOutputCaptureRequired\":true,"
+                    + "\"requestedOutputCaptureRequired\":false,"
                     + "\"requestedOutputCaptureComplete\":true,"
-                    + "\"requestedOutputCapture\":[{"
-                    + "\"captureKind\":\"METHOD_RETURN_VALUE\","
-                    + "\"siteId\":\"" + site + "\","
-                    + "\"occurrence\":1,"
-                    + "\"occurrenceAuthority\":"
-                    + "\"RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE\","
-                    + "\"runtimeCallId\":17,\"runtimeEventSeq\":23}],"
+                    + "\"requestedOutputCapture\":[],"
                     + "\"requestedOutput\":{"
                     + "\"portId\":\"REGION.11.out.0\","
                     + "\"cell\":\"" + ALL_KEYS + "\","
@@ -1099,38 +1101,9 @@ public class ConcolicSchedulerTest {
                             + "SITE_V1",
                     binding.get("deferredResolutionDischargeAuthority")
                             .getAsString());
-            assertEquals("PRESERVED_RUNTIME_EXACT_OUTPUT_CAPTURE_V1",
-                    result.scheduledActivations.get(0).get(
-                            "requestedOutputCaptureSelectionAuthority")
-                            .getAsString());
         } finally {
             folder.delete();
         }
-    }
-
-    @Test
-    public void boundedOutputDoesNotStartAfterAnUpstreamSymbolicInput()
-            throws Exception {
-        java.lang.reflect.Method safe = ConcolicScheduler.class
-                .getDeclaredMethod("boundedDeferredStartSafe",
-                        JsonObject.class, String.class);
-        safe.setAccessible(true);
-        String transformer = "<example.Bus: void publish(int)>";
-
-        JsonObject callReturn = JsonParser.parseString("{\"symbolize\":[{"
-                + "\"location\":\"CALL_RETURN\","
-                + "\"cell\":\"<example.Source: int get()>.return\"}]}")
-                .getAsJsonObject();
-        assertEquals(false, safe.invoke(null, callReturn, transformer));
-
-        JsonObject exactTransformerField = JsonParser.parseString(
-                "{\"symbolize\":[{"
-                        + "\"location\":\"HEAP_OBJECT_FIELD\","
-                        + "\"accessMethod\":\"" + transformer + "\"}]}")
-                .getAsJsonObject();
-        assertEquals(true, safe.invoke(null, exactTransformerField,
-                transformer));
-        assertEquals(true, safe.invoke(null, new JsonObject(), transformer));
     }
 
     @Test
@@ -1146,6 +1119,7 @@ public class ConcolicSchedulerTest {
                 + "\"sourceKind\":\"ENVIRONMENT\","
                 + "\"location\":\"ENVIRONMENT_MODEL\"}]}"
         ).getAsJsonObject();
+        RegionCaptureGoal.outputClosure().writeTo(activation);
 
         JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
                 activation,
@@ -1421,6 +1395,7 @@ public class ConcolicSchedulerTest {
         JsonObject activation = new JsonObject();
         activation.addProperty("activationId", "ACT.ARRAY.FIELD");
         activation.addProperty("regionId", "REGION.ARRAY");
+        RegionCaptureGoal.outputClosure().writeTo(activation);
         activation.addProperty("requestedOutputSliceComplete", true);
         JsonArray symbolize = new JsonArray();
         symbolize.add(action);
@@ -1749,6 +1724,8 @@ public class ConcolicSchedulerTest {
                 + "\"TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
                 + "THREAD_NAME_CONTEXT_ORDINAL_V1\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
+                + "\"captureGoal\":{\"kind\":\"TARGET_BRANCH\","
+                + "\"scope\":\"ONE_DIRECTED_BRANCH\"},"
                 + "\"symbolicReady\":false,\"symbolize\":["
                 + "{\"symbol\":\"REGION.0.in.0\",\"cell\":\""
                 + USERNAME + "\",\"location\":\"REGION_LIVE_IN\"},"
@@ -1804,9 +1781,15 @@ public class ConcolicSchedulerTest {
                 + "\"status\":\"CONFIRMED_READ_FROM\","
                 + "\"eligibleForAutomaticDerivation\":true,"
                 + "\"eligibleForAutomaticSmt\":true,"
-                + "\"composable\":true,\"evidence\":[{"
+                + "\"composable\":true,\"validatedBindings\":[{"
+                + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
+                + "\"writeEvidenceAuthority\":"
+                + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
+                + "\"orderAuthority\":"
+                + "\"GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1\","
                 + "\"writeSeq\":1,\"readSeq\":2,"
                 + "\"receiverObjectId\":7,"
+                + "\"fieldReceiverIdentityConfirmed\":true,"
                 + "\"orderConfirmed\":true}]}\n";
         Files.write(result.edges, edges.getBytes(StandardCharsets.UTF_8));
 

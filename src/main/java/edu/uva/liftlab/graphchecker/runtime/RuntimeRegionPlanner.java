@@ -7199,21 +7199,6 @@ final class RuntimeRegionPlanner {
             return 0;
         }
 
-        private List<RuntimeEvent> matchingMethodReturns(
-                Map<String, Object> binding) {
-            List<RuntimeEvent> result = new ArrayList<>();
-            String method = string(binding.get("method"));
-            if (method.isEmpty()) return result;
-            for (RuntimeEvent event : runtimeEvents) {
-                if ("METHOD_EXIT_NORMAL".equals(event.kind)
-                        && method.equals(event.method)) {
-                    result.add(event);
-                }
-            }
-            result.sort(Comparator.comparingLong(value -> value.seq));
-            return result;
-        }
-
         /**
          * Returns native-run writes that can witness a FIELD_ASSIGNMENT_RHS
          * request.  FieldAccessEvent intentionally carries no inferred site;
@@ -9100,7 +9085,6 @@ final class RuntimeRegionPlanner {
                 refined.captureBindings.clear();
                 int matchedCaptureCount = 0;
                 boolean fieldAssignmentRequested = false;
-                boolean methodReturnRequested = false;
                 for (Map<String, Object> binding : captureBindings) {
                     String captureKind = firstNonBlank(string(binding.get(
                             "captureKind")), "CALL_ARGUMENT");
@@ -9165,41 +9149,6 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
 
-                    if ("METHOD_RETURN_VALUE".equals(captureKind)) {
-                        methodReturnRequested = true;
-                        String method = string(binding.get("method"));
-                        if (!observed.contains(method)) {
-                            continue;
-                        }
-                        List<RuntimeEvent> returns = evidence
-                                .matchingMethodReturns(binding);
-                        // METHOD_EXIT_NORMAL has the exact method/call id but
-                        // intentionally no Jimple return-site id.  Refine only
-                        // a unique invocation; otherwise the static hook's
-                        // requested occurrence would be a guess.
-                        if (returns.size() != 1) {
-                            if (returns.size() > 1) {
-                                refined.captureBindingIssues.add(
-                                        "RUNTIME_METHOD_RETURN_"
-                                                + "OCCURRENCE_AMBIGUOUS:"
-                                                + method + ":"
-                                                + returns.size());
-                            }
-                            continue;
-                        }
-                        RuntimeEvent match = returns.get(0);
-                        Map<String, Object> exact =
-                                new LinkedHashMap<>(binding);
-                        exact.put("occurrence", 1);
-                        exact.put("occurrenceAuthority",
-                                "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE");
-                        exact.put("runtimeCallId", match.callId);
-                        exact.put("runtimeEventSeq", match.seq);
-                        refined.captureBindings.add(exact);
-                        matchedCaptureCount++;
-                        continue;
-                    }
-
                     String caller = string(binding.get("callerMethod"));
                     if (!observed.contains(caller)) {
                         continue;
@@ -9227,14 +9176,10 @@ final class RuntimeRegionPlanner {
                     if (matchedCaptureCount == 0) {
                         failure = fieldAssignmentRequested
                                 ? "NO_RUNTIME_EXACT_FIELD_ASSIGNMENT_MATCH"
-                                : methodReturnRequested
-                                ? "NO_RUNTIME_EXACT_METHOD_RETURN_MATCH"
                                 : "NO_RUNTIME_EXACT_CALL_ARGUMENT_MATCH";
                     } else {
                         failure = (fieldAssignmentRequested
                                 ? "AMBIGUOUS_RUNTIME_FIELD_ASSIGNMENT_MATCH:"
-                                : methodReturnRequested
-                                ? "AMBIGUOUS_RUNTIME_METHOD_RETURN_MATCH:"
                                 : "AMBIGUOUS_RUNTIME_CALL_ARGUMENT_MATCH:")
                                 + matchedCaptureCount;
                     }

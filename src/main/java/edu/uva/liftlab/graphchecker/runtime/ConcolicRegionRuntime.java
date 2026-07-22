@@ -135,15 +135,6 @@ public final class ConcolicRegionRuntime {
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
     /**
-     * A selected logical service-loop activation whose native concolic engine
-     * start is intentionally delayed until the bounded state transformer is
-     * entered.  Selection and ownership still belong to the heartbeat root;
-     * only VM recording is deferred so unrelated loop prelude cannot pollute
-     * (or destabilize) the requested output slice.
-     */
-    private static final ThreadLocal<PendingBoundedActivation>
-            PENDING_BOUNDED_ACTIVATION = new ThreadLocal<>();
-    /**
      * Dynamic root-invocation ownership used only by injected entry/exit
      * hooks.  Every injected root invocation owns a frame once its wrapper
      * begins, including failed or unselected entries whose token stays zero.
@@ -321,7 +312,6 @@ public final class ConcolicRegionRuntime {
         }
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
-        PENDING_BOUNDED_ACTIVATION.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
         synchronized (EXECUTION_MODE_LOCK) {
@@ -399,19 +389,6 @@ public final class ConcolicRegionRuntime {
         if (activation.concreteReplayOnly) {
             return enterConcreteReplay(activation, receiver);
         }
-        if (activation.boundedOutputDeferredEngineStart) {
-            if (PENDING_BOUNDED_ACTIVATION.get() != null) {
-                writeSkipped(activation,
-                        "another deferred bounded activation is pending");
-                return 0L;
-            }
-            RootInvocationFrame ownerFrame =
-                    ROOT_INVOCATION_FRAMES.get().peek();
-            PENDING_BOUNDED_ACTIVATION.set(new PendingBoundedActivation(
-                    activation, receiver, Thread.currentThread(),
-                    ownerFrame));
-            return 0L;
-        }
         return startSymbolicRegion(activation, receiver);
     }
 
@@ -473,36 +450,6 @@ public final class ConcolicRegionRuntime {
             releaseSymbolicEngine();
             writeSkipped(activation, "engine start failed: " + rootCause(throwable));
             return 0L;
-        }
-    }
-
-    /**
-     * Starts a previously selected bounded activation at the exact entry of
-     * its unique outermost requested-state transformer.  The activation id,
-     * logical root and receiver were fixed at the heartbeat entry; this hook
-     * is therefore not a second selector and cannot drift to another loop
-     * iteration or receiver.
-     */
-    public static void enterBoundedOutputTransformer(String method) {
-        try {
-            PendingBoundedActivation pending =
-                    PENDING_BOUNDED_ACTIVATION.get();
-            if (pending == null
-                    || pending.ownerThread != Thread.currentThread()
-                    || !pending.activation.boundedOutputCompletionMethod
-                    .equals(safe(method))) {
-                return;
-            }
-            PENDING_BOUNDED_ACTIVATION.remove();
-            long token = startSymbolicRegion(pending.activation,
-                    pending.receiver);
-            if (token != 0L && pending.ownerFrame != null
-                    && pending.ownerFrame.token == 0L) {
-                pending.ownerFrame.token = token;
-            }
-        } catch (Throwable ignored) {
-            // Instrumentation hooks must not perturb the workload.
-            PENDING_BOUNDED_ACTIVATION.remove();
         }
     }
 
@@ -3602,91 +3549,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Observes one activation-authorized scalar method return while its
-     * custom-VM expression is still live.  Both the current region token and
-     * the complete static capture tuple must match.  A zero-token nested root
-     * frame therefore cannot attach its helper return to an enclosing active
-     * region.  This hook is deliberately no-throw because it executes on the
-     * original method's return path.
-     */
-    public static void recordMethodReturnOutput(
-            long token, String method, int unitIndex, String siteId,
-            String captureBindingId, String outputPort, String outputCell,
-            int requestedOccurrence, Object value, String primitiveValue) {
-        try {
-            Long current = CURRENT_TOKEN.get();
-            if (token == 0L || current == null
-                    || current.longValue() != token) {
-                return;
-            }
-            RootInvocationFrame frame =
-                    ROOT_INVOCATION_FRAMES.get().peek();
-            if (frame != null && frame.token != token) return;
-
-            ActiveRegion active = ownerRegion(token);
-            if (active == null || !active.engineBacked) return;
-            OutputCaptureRequest request =
-                    active.activation.methodReturnCapture(
-                            method, unitIndex, siteId, outputPort, outputCell,
-                            captureBindingId, requestedOccurrence);
-            if (request == null) return;
-            int occurrence = active.nextOutputCaptureOccurrence(
-                    request.captureBindingId);
-            if (request.occurrence != occurrence) return;
-
-            JsonObject row = request.toJson();
-            row.addProperty("occurrence", occurrence);
-            row.addProperty("captureAuthority",
-                    "ACTIVE_TOKEN_EXACT_METHOD_RETURN_VALUE");
-            EngineApi api = engine();
-            boolean paused = false;
-            try {
-                api.pausePathCondition();
-                paused = true;
-                row.addProperty("concreteValueClass", value == null
-                        ? "null" : value.getClass().getName());
-                row.addProperty("concretePrimitiveValue",
-                        safe(primitiveValue));
-                EngineExpressionCapture captured = engineExpressionCapture(
-                        api.expression(value));
-                JsonElement expression = captured.expression;
-                if (expression == null || expression.isJsonNull()) {
-                    throw new IllegalStateException("custom VM returned no "
-                            + "expression for captured method return value "
-                            + row.get("concreteValueClass").getAsString());
-                }
-                row.add("expression", expression);
-                captured.addEvidence(row);
-                row.addProperty("expressionCaptured", true);
-            } catch (Throwable throwable) {
-                try {
-                    row.addProperty("expressionCaptured", false);
-                    row.addProperty("expressionError",
-                            rootCause(throwable));
-                    active.unresolved.add(request.captureBindingId
-                            + ": method-return expression capture failed: "
-                            + rootCause(throwable));
-                } catch (Throwable ignored) {
-                    // Preserve the original method return even if diagnostic
-                    // construction itself fails.
-                }
-            } finally {
-                if (paused) resumePathCondition(active, api);
-                try {
-                    active.outputCaptures.add(row);
-                } catch (Throwable ignored) {
-                    // Runtime observation is fail-closed and best-effort.
-                }
-            }
-        } catch (Throwable ignored) {
-            // Instrumentation bookkeeping must not replace a normal return.
-        }
-    }
-
-    /**
      * Observes one activation-authorized instance-field write after the
      * assignment completed.  The explicit token prevents a hook in another
-     * MiniDFSCluster thread from attaching to the region owner.  A hook whose
+     * thread from attaching to the region owner.  A hook whose
      * complete endpoint tuple is not requested is intentionally a no-op.
      */
     public static void recordFieldAssignmentOutput(
@@ -3828,7 +3693,6 @@ public final class ConcolicRegionRuntime {
                                        String primitiveValue) {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
-            clearPendingBoundedActivation(frame);
             if (frame != null && frame.token != 0L) {
                 exitRegion(frame.token, returnValue, primitiveValue);
             }
@@ -3843,30 +3707,6 @@ public final class ConcolicRegionRuntime {
         Long token = CURRENT_TOKEN.get();
         if (token != null) {
             exitRegion(token, returnValue, primitiveValue);
-        }
-    }
-
-    /**
-     * Completes one explicitly bounded service-loop iteration after the
-     * frozen output slice's unique outermost state transformer returns.
-     * The logical heartbeat/thread root remains the activation selector; this
-     * hook only shortens recording once the requested heap state is final for
-     * that iteration.
-     */
-    public static void completeBoundedOutputTransformer(String method) {
-        try {
-            Long token = CURRENT_TOKEN.get();
-            ActiveRegion active = token == null ? null : ownerRegion(token);
-            if (active == null
-                    || !active.activation.boundedOutputCompletionEnabled
-                    || !active.activation.boundedOutputCompletionMethod
-                    .equals(safe(method))) {
-                return;
-            }
-            active.recordBoundedOutputCompletion(method);
-            finish(token, "NORMAL", "", null, "");
-        } catch (Throwable ignored) {
-            // Completion is observational and must not alter workload logic.
         }
     }
 
@@ -3886,7 +3726,6 @@ public final class ConcolicRegionRuntime {
                                         Throwable throwable) {
         try {
             RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
-            clearPendingBoundedActivation(frame);
             if (frame != null && frame.token != 0L) {
                 throwRegion(frame.token, throwable);
             }
@@ -3926,16 +3765,6 @@ public final class ConcolicRegionRuntime {
         return frame;
     }
 
-    private static void clearPendingBoundedActivation(
-            RootInvocationFrame frame) {
-        if (frame == null) return;
-        PendingBoundedActivation pending =
-                PENDING_BOUNDED_ACTIVATION.get();
-        if (pending != null && pending.ownerFrame == frame) {
-            PENDING_BOUNDED_ACTIVATION.remove();
-        }
-    }
-
     static int regionFrameDepthForTests() {
         return ROOT_INVOCATION_FRAMES.get().size();
     }
@@ -3947,23 +3776,6 @@ public final class ConcolicRegionRuntime {
         private RootInvocationFrame(String rootMethod, long token) {
             this.rootMethod = rootMethod;
             this.token = token;
-        }
-    }
-
-    private static final class PendingBoundedActivation {
-        private final Activation activation;
-        private final Object receiver;
-        private final Thread ownerThread;
-        private final RootInvocationFrame ownerFrame;
-
-        private PendingBoundedActivation(Activation activation,
-                                         Object receiver,
-                                         Thread ownerThread,
-                                         RootInvocationFrame ownerFrame) {
-            this.activation = activation;
-            this.receiver = receiver;
-            this.ownerThread = ownerThread;
-            this.ownerFrame = ownerFrame;
         }
     }
 
@@ -7913,8 +7725,6 @@ public final class ConcolicRegionRuntime {
         private final long startNanos;
         private final boolean engineBacked;
         private final AtomicBoolean finished = new AtomicBoolean();
-        private final AtomicBoolean boundedOutputCompletionRecorded =
-                new AtomicBoolean();
         private final List<String> symbolized = new ArrayList<>();
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
@@ -8589,23 +8399,6 @@ public final class ConcolicRegionRuntime {
             if (ignored != null) {
                 row.addProperty("ignoredObjectToken", objectToken(ignored));
             }
-            row.addProperty("complete", true);
-            runtimeApproximations.add(row);
-        }
-
-        private void recordBoundedOutputCompletion(String method) {
-            if (!boundedOutputCompletionRecorded.compareAndSet(false, true)) {
-                return;
-            }
-            JsonObject row = new JsonObject();
-            row.addProperty("schemaVersion", 1);
-            row.addProperty("kind", "BOUNDED_OUTPUT_COMPLETION");
-            row.addProperty("authority",
-                    "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
-                            + "IN_FROZEN_CALL_GRAPH_V1");
-            row.addProperty("method", safe(method));
-            row.addProperty("logicalRootMethod", activation.rootMethod);
-            row.addProperty("normalReturnOnly", true);
             row.addProperty("complete", true);
             runtimeApproximations.add(row);
         }
@@ -11704,8 +11497,6 @@ public final class ConcolicRegionRuntime {
 
     private static final class OutputCaptureRequest {
         private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
-        private static final String METHOD_RETURN_VALUE =
-                "METHOD_RETURN_VALUE";
         private static final String FIELD_ASSIGNMENT_RHS =
                 "FIELD_ASSIGNMENT_RHS";
 
@@ -11753,9 +11544,6 @@ public final class ConcolicRegionRuntime {
                 return !method.isEmpty() && !fieldSignature.isEmpty()
                         && declaredField(fieldSignature) != null;
             }
-            if (METHOD_RETURN_VALUE.equals(captureKind)) {
-                return !method.isEmpty();
-            }
             return CALL_ARGUMENT.equals(captureKind)
                     && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
                     && argumentIndex >= 0;
@@ -11772,20 +11560,6 @@ public final class ConcolicRegionRuntime {
                     && siteId.equals(safe(actualSite))
                     && calleeMethod.equals(safe(actualCallee))
                     && argumentIndex == actualArgument
-                    && outputPort.equals(safe(actualPort))
-                    && outputCell.equals(safe(actualCell))
-                    && captureBindingId.equals(safe(actualBinding))
-                    && occurrence == actualRequestedOccurrence;
-        }
-
-        private boolean matchesMethodReturn(
-                String actualMethod, int actualUnit, String actualSite,
-                String actualPort, String actualCell, String actualBinding,
-                int actualRequestedOccurrence) {
-            return METHOD_RETURN_VALUE.equals(captureKind)
-                    && method.equals(safe(actualMethod))
-                    && unitIndex == actualUnit
-                    && siteId.equals(safe(actualSite))
                     && outputPort.equals(safe(actualPort))
                     && outputCell.equals(safe(actualCell))
                     && captureBindingId.equals(safe(actualBinding))
@@ -11819,8 +11593,6 @@ public final class ConcolicRegionRuntime {
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 result.addProperty("method", method);
                 result.addProperty("fieldSignature", fieldSignature);
-            } else if (METHOD_RETURN_VALUE.equals(captureKind)) {
-                result.addProperty("method", method);
             } else {
                 result.addProperty("callerMethod", callerMethod);
                 result.addProperty("calleeMethod", calleeMethod);
@@ -12175,9 +11947,6 @@ public final class ConcolicRegionRuntime {
         private final boolean requiresAllSelection;
         private final boolean concreteReplayOnly;
         private final boolean observationOnlyReplay;
-        private final boolean boundedOutputCompletionEnabled;
-        private final String boundedOutputCompletionMethod;
-        private final boolean boundedOutputDeferredEngineStart;
         /** Complete planner-authored action catalog used by exact selector
          * declarations, including observation-only deferred leaf actions. */
         private final List<SymbolizeAction> declaredSymbolize;
@@ -12210,33 +11979,6 @@ public final class ConcolicRegionRuntime {
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
             this.observationOnlyReplay = bool(json,
                     "observationOnlyReplay", false);
-            JsonElement requestedSliceElement = json.get(
-                    "requestedOutputSlice");
-            JsonObject requestedSlice = requestedSliceElement != null
-                    && requestedSliceElement.isJsonObject()
-                    ? requestedSliceElement.getAsJsonObject()
-                    : new JsonObject();
-            String boundedMethod = string(requestedSlice,
-                    "boundedOutputCompletionMethod");
-            boolean boundedAuthority =
-                    "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
-                            .concat("IN_FROZEN_CALL_GRAPH_V1")
-                            .equals(string(requestedSlice,
-                                    "boundedOutputCompletionAuthority"));
-            this.boundedOutputCompletionEnabled = !boundedMethod.isEmpty()
-                    && boundedAuthority
-                    && bool(requestedSlice,
-                    "boundedOutputCompletionNormalReturnOnly", false);
-            this.boundedOutputCompletionMethod =
-                    boundedOutputCompletionEnabled ? boundedMethod : "";
-            this.boundedOutputDeferredEngineStart =
-                    boundedOutputCompletionEnabled
-                            && bool(requestedSlice,
-                            "boundedOutputDeferredEngineStart", false)
-                            && "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_"
-                            .concat("OUTERMOST_TRANSFORMER_ENTRY_V1")
-                            .equals(string(requestedSlice,
-                                    "boundedOutputDeferredEngineStartAuthority"));
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             this.branchPolicies = new LinkedHashMap<>();
@@ -12524,22 +12266,6 @@ public final class ConcolicRegionRuntime {
             return match;
         }
 
-        private OutputCaptureRequest methodReturnCapture(
-                String method, int unitIndex, String siteId,
-                String outputPort, String outputCell,
-                String captureBindingId, int requestedOccurrence) {
-            OutputCaptureRequest match = null;
-            for (OutputCaptureRequest request : outputCaptures) {
-                if (!request.matchesMethodReturn(method, unitIndex, siteId,
-                        outputPort, outputCell, captureBindingId,
-                        requestedOccurrence)) {
-                    continue;
-                }
-                if (match != null) return null;
-                match = request;
-            }
-            return match;
-        }
     }
 
     private static final class Configuration {
