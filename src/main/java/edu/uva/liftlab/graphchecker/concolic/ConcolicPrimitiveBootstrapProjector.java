@@ -113,9 +113,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         LinkedHashSet<String> queried = new LinkedHashSet<>();
         queried.addAll(selectors);
         queried.addAll(rootTerms);
-        queried.addAll(scalarRoots.present
-                ? scalarRoots.solverTerms()
-                : canonicalScalarInputTerms(cases));
+        queried.addAll(scalarRoots.solverTerms());
         String solverInput = solverInput(smt, assignmentByPort.values(),
                 queried);
         SolverIdentity solverIdentity = attestSolver(arguments.z3,
@@ -149,7 +147,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
 
         List<JsonObject> producerRows = new ArrayList<>();
         JsonArray caseManifest = new JsonArray();
-        JsonArray supplementalManifest = new JsonArray();
         JsonArray existentialScalarManifest = new JsonArray();
         Set<String> usedActivationIds = new LinkedHashSet<>();
         Map<String, List<Map.Entry<String, JsonObject>>> rootsByRegion =
@@ -172,7 +169,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
             }
         }
         int projectedPrimitiveInputCount = 0;
-        int supplementalPrimitiveAssignmentCount = 0;
         int existentialNonBooleanRootAssignmentCount = 0;
         int nullableStringAssignmentCount = 0;
         int nullStringAssignmentCount = 0;
@@ -229,11 +225,9 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 projection.addProperty("projectionRole", "ROOT_BOOLEAN");
                 rootProjectionRows.add(projection);
             }
-            List<JsonObject> scalarMappings = scalarRoots.present
-                    ? catalogScalarMappings(selectedCase,
-                    scalarRoots.rootsForRegion(region), rootPorts, smt)
-                    : supplementalScalarMappings(selectedCase, rootPorts,
-                    smt);
+            List<JsonObject> scalarMappings = catalogScalarMappings(
+                    selectedCase, scalarRoots.rootsForRegion(region),
+                    rootPorts, smt);
             for (JsonObject mapping : scalarMappings) {
                 String port = string(mapping, "canonicalPort");
                 String solverTerm = canonicalProjectionTerm(mapping);
@@ -294,7 +288,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 }
                 replayAssignments.add(modelAssignment);
                 projectedPrimitiveInputCount++;
-                supplementalPrimitiveAssignmentCount++;
 
                 JsonObject projection = projectedInputManifest(region, port,
                         selectedCase, mapping, solverTerm, normalizedValue,
@@ -304,19 +297,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
                             nullnessSolverTerm, nullnessModelValue,
                             solverTerm, modelValue);
                 }
-                if (scalarRoots.present) {
-                    projection.addProperty("projectionRole",
-                            "EXISTENTIAL_NON_BOOLEAN_ROOT");
-                    rootProjectionRows.add(projection.deepCopy());
-                    existentialScalarManifest.add(projection.deepCopy());
-                    existentialNonBooleanRootAssignmentCount++;
-                } else {
-                    projection.addProperty("projectionRole",
-                            "SUPPLEMENTAL_PRIMITIVE");
-                }
-                // Retain the legacy aggregate for consumers that treat every
-                // non-Boolean model value as a supplemental primitive.
-                supplementalManifest.add(projection);
+                projection.addProperty("projectionRole",
+                        "EXISTENTIAL_NON_BOOLEAN_ROOT");
+                rootProjectionRows.add(projection.deepCopy());
+                existentialScalarManifest.add(projection.deepCopy());
+                existentialNonBooleanRootAssignmentCount++;
             }
 
             if (rootProjectionRows.size() == 0) {
@@ -348,8 +333,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
             producerRows.add(replay);
             caseManifest.add(selected);
         }
-        if (scalarRoots.present
-                && existentialNonBooleanRootAssignmentCount
+        if (existentialNonBooleanRootAssignmentCount
                 != scalarRoots.size()) {
             throw gap("EXISTENTIAL_NON_BOOLEAN_ROOT_CARDINALITY_MISMATCH");
         }
@@ -408,8 +392,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 existentialScalarManifest);
         manifest.addProperty("totalProjectedPrimitiveInputCount",
                 projectedPrimitiveInputCount);
-        manifest.addProperty("supplementalPrimitiveAssignmentCount",
-                supplementalPrimitiveAssignmentCount);
         manifest.addProperty("nullableJavaStringModeled",
                 nullableStringAssignmentCount > 0);
         manifest.addProperty("nullableStringAssignmentCount",
@@ -420,8 +402,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
             manifest.addProperty("nullableStringEncodingAuthority",
                     NULLABLE_STRING_ENCODING_AUTHORITY);
         }
-        manifest.add("supplementalPrimitiveAssignments",
-                supplementalManifest);
         manifest.addProperty("selectedProducerCaseCount", caseManifest.size());
         manifest.add("selectedProducerCases", caseManifest);
         manifest.addProperty("producerReplayActivationCount",
@@ -545,6 +525,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 sha256(arguments.fatalQueries))) {
             throw gap("COMPOSITION_FATAL_OR_SMT_ARTIFACT_MISMATCH");
         }
+        requireMaterializations(target, "TARGET_ACTIVATION");
         BranchCaptureSelector branch;
         try {
             branch = BranchCaptureSelector.fromJson(object(target,
@@ -681,21 +662,12 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return result;
     }
 
-    /**
-     * Reads the extractor-owned catalog of non-Boolean root inputs.  Presence
-     * of this catalog changes projection from the legacy selected-case scan to
-     * an allow-list: only catalogued roots may be materialized.  A report that
-     * predates the catalog keeps the old supplemental behavior.
-     */
+    /** Reads the extractor-owned allow-list of non-Boolean root inputs. */
     private static ScalarRootCatalog scalarRootCatalog(
             JsonObject reach, Set<String> booleanRootPorts)
             throws IOException {
-        boolean hasInputs = reach.has("existentialNonBooleanRootInputs");
-        boolean hasCount = reach.has("existentialNonBooleanRootInputCount");
-        if (!hasInputs && !hasCount) {
-            return ScalarRootCatalog.legacy();
-        }
-        if (!hasInputs || !hasCount
+        if (!reach.has("existentialNonBooleanRootInputs")
+                || !reach.has("existentialNonBooleanRootInputCount")
                 || !isArray(reach, "existentialNonBooleanRootInputs")) {
             throw gap("EXISTENTIAL_NON_BOOLEAN_ROOT_CATALOG_MALFORMED");
         }
@@ -763,7 +735,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
             regionRoots.add(root.deepCopy());
             ordinal++;
         }
-        return new ScalarRootCatalog(true, byPort, byRegion);
+        return new ScalarRootCatalog(byPort, byRegion);
     }
 
     private static boolean scalarDescriptorMatchesSort(String descriptor,
@@ -842,6 +814,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                                        String activationId,
                                        JsonObject summary, JsonObject source)
             throws IOException {
+        requireMaterializations(source, "SELECTED_SOURCE_ACTIVATION");
         if (summary == null || source == null
                 || !summaryId.equals(string(summary, "summaryId"))
                 || !activationId.equals(string(source, "activationId"))
@@ -900,66 +873,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
             throw gap("CASE_DYNAMIC_CANONICAL_BRIDGE_NOT_EXACT:" + port);
         }
         return selected.deepCopy();
-    }
-
-    /**
-     * Includes canonical scalar terms in the original Z3 query so a model
-     * value is available after the selected case is known. Boolean roots are
-     * already present in this set; additional entries are ordinary primitive
-     * live-ins such as {@code int}, {@code long}, {@code double}, or
-     * {@code String} values consumed at exact materialization sites.
-     */
-    private static Set<String> canonicalScalarInputTerms(
-            List<JsonObject> cases) throws IOException {
-        Set<String> result = new LinkedHashSet<>();
-        for (JsonObject pathCase : cases) {
-            for (JsonElement element : array(pathCase,
-                    "rawEngineSymbolMappings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                if (!scalarCanonicalMapping(mapping)) continue;
-                String term = canonicalProjectionTerm(mapping);
-                if (!safeSmtAtom(term)) {
-                    throw gap("CANONICAL_PRIMITIVE_TERM_IS_NOT_AN_ATOM:"
-                            + string(mapping, "canonicalPort"));
-                }
-                result.add(term);
-                String nullness = canonicalNullnessProjectionTerm(mapping);
-                if ("STRING".equals(string(mapping, "sort"))) {
-                    if (!safeSmtAtom(nullness)) {
-                        throw gap("CANONICAL_STRING_NULLNESS_TERM_IS_NOT_"
-                                + "AN_ATOM:" + string(mapping,
-                                "canonicalPort"));
-                    }
-                    result.add(nullness);
-                }
-            }
-        }
-        return result;
-    }
-
-    private static List<JsonObject> supplementalScalarMappings(
-            JsonObject selectedCase, Set<String> rootPorts, String smt)
-            throws IOException {
-        Map<String, JsonObject> byPort = new LinkedHashMap<>();
-        for (JsonElement element : array(selectedCase,
-                "rawEngineSymbolMappings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject candidate = element.getAsJsonObject();
-            if (!scalarCanonicalMapping(candidate)) continue;
-            String port = string(candidate, "canonicalPort");
-            if (rootPorts.contains(port)) continue;
-            if (byPort.put(port, candidate) != null) {
-                throw gap("AMBIGUOUS_CASE_INPUT_MAPPING:" + port);
-            }
-        }
-        List<JsonObject> result = new ArrayList<>();
-        for (String port : byPort.keySet()) {
-            result.add(exactPortMapping(selectedCase, port, smt));
-        }
-        Collections.sort(result, Comparator.comparing(
-                value -> string(value, "canonicalPort")));
-        return result;
     }
 
     private static List<JsonObject> catalogScalarMappings(
@@ -1312,7 +1225,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 dynamicBinding, "kind"))
                 ? array(activation, "symbolize")
                 : array(activation, "materializations");
-        if (source.size() == 0) source = array(activation, "symbolize");
         JsonObject selected = null;
         for (JsonElement element : source) {
             if (!element.isJsonObject()) continue;
@@ -1454,8 +1366,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
         String port = string(selector, "containerInputPort");
         String cell = string(selector, "containerInputCell");
         JsonObject selected = null;
-        JsonArray source = array(activation, "materializations");
-        if (source.size() == 0) source = array(activation, "symbolize");
+        JsonArray source = array(activation, "symbolize");
         for (JsonElement element : source) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
@@ -2509,6 +2420,21 @@ public final class ConcolicPrimitiveBootstrapProjector {
         return value != null && value.isJsonArray();
     }
 
+    private static JsonArray requireMaterializations(JsonObject activation,
+                                                     String role)
+            throws IOException {
+        if (!isArray(activation, "materializations")) {
+            throw gap(role + "_MATERIALIZATIONS_MALFORMED");
+        }
+        JsonArray actions = activation.getAsJsonArray("materializations");
+        for (JsonElement element : actions) {
+            if (!element.isJsonObject()) {
+                throw gap(role + "_MATERIALIZATIONS_MALFORMED");
+            }
+        }
+        return actions;
+    }
+
     private static JsonObject object(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonObject()
@@ -2592,22 +2518,13 @@ public final class ConcolicPrimitiveBootstrapProjector {
     }
 
     private static final class ScalarRootCatalog {
-        private final boolean present;
         private final Map<String, JsonObject> byPort;
         private final Map<String, List<JsonObject>> byRegion;
 
-        private ScalarRootCatalog(boolean present,
-                                  Map<String, JsonObject> byPort,
+        private ScalarRootCatalog(Map<String, JsonObject> byPort,
                                   Map<String, List<JsonObject>> byRegion) {
-            this.present = present;
             this.byPort = byPort;
             this.byRegion = byRegion;
-        }
-
-        private static ScalarRootCatalog legacy() {
-            return new ScalarRootCatalog(false,
-                    Collections.<String, JsonObject>emptyMap(),
-                    Collections.<String, List<JsonObject>>emptyMap());
         }
 
         private int size() {

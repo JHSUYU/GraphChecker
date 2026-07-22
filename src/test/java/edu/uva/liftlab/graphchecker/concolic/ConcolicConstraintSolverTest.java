@@ -16,8 +16,44 @@ import java.security.MessageDigest;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ConcolicConstraintSolverTest {
+    @Test
+    public void executableMaterializationsMustBeExplicitArray()
+            throws Exception {
+        JsonObject declarationOnly = new JsonObject();
+        JsonArray declarations = new JsonArray();
+        declarations.add(materialization("REGION.3.in.0", 0));
+        declarationOnly.add("symbolize", declarations);
+        try {
+            solveForTest(task(binary(">", 3)), declarationOnly,
+                    Paths.get("z3"), 10_000L);
+            fail("symbolize must not replace executable materializations");
+        } catch (java.io.IOException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "requires materializations array"));
+        }
+
+        JsonObject malformed = new JsonObject();
+        malformed.addProperty("materializations", "not-an-array");
+        try {
+            solveForTest(task(binary(">", 3)), malformed,
+                    Paths.get("z3"), 10_000L);
+            fail("malformed materializations must fail closed");
+        } catch (java.io.IOException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "requires materializations array"));
+        }
+
+        JsonObject empty = new JsonObject();
+        empty.add("materializations", new JsonArray());
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(binary(">", 3)), empty, Paths.get("z3"), 10_000L);
+        assertEquals("MATERIALIZATION_GAP",
+                result.record.get("status").getAsString());
+    }
+
     @Test
     public void z3ModelIsMappedToARealInputMaterialization() throws Exception {
         Assume.assumeTrue(z3Available());
