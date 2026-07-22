@@ -76,9 +76,36 @@ public class ConcolicPathFlipPlannerTest {
         assertFalse(replay.has("expectedBranchPrefix"));
         assertFalse(replay.has("forcedBranches"));
         assertFalse(replay.has("replayMaterializations"));
+        assertEquals(0, replay.getAsJsonArray(
+                "concreteGuardReplayProofs").size());
         assertTrue(Files.size(output.resolve("path_flip_query.smt2")) > 0L);
         assertTrue(Files.size(output.resolve(
                 "path_flip_solver_result.json")) > 0L);
+    }
+
+    @Test
+    public void rejectsConditionlessCertifiedBranchReplay() {
+        JsonObject certificate = new JsonObject();
+        certificate.addProperty("authority", "TEST_CERTIFICATE");
+        BranchWitness source = BranchWitness.certifiedNoPc(
+                "u14", "<example.Region: void run(java.lang.Object)>",
+                14, 1, true, binary("==", 0), certificate);
+        JsonObject task = new JsonObject();
+        task.addProperty("queryKey", "certified-no-pc");
+        task.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        task.add("replayContract", BranchReplayContract.flip(
+                java.util.Collections.<BranchWitness>emptyList(), source)
+                .toJson());
+
+        try {
+            ReplayActivationFactory.create(task, activation(),
+                    new JsonArray());
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().startsWith(
+                    "CERTIFIED_NO_PC_REPLAY_UNSUPPORTED:"));
+            return;
+        }
+        throw new AssertionError("CERTIFIED_NO_PC replay was accepted");
     }
 
     @Test

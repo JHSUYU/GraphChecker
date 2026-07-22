@@ -130,7 +130,7 @@ public final class ConcolicPathFlipPlanner {
                     task, solve, null, manifest);
         }
 
-        JsonObject replay = ConcolicCampaignRunner.replayActivation(task,
+        JsonObject replay = ReplayActivationFactory.create(task,
                 source, solve.modelAssignments);
         manifest.addProperty("status", "PATH_FLIP_REPLAY_READY");
         manifest.addProperty("complete", true);
@@ -166,7 +166,7 @@ public final class ConcolicPathFlipPlanner {
             writeJsonl(directory.resolve("activation_plan.jsonl"),
                     Collections.singletonList(result.replayActivation));
             writeJson(directory.resolve("replay_validation_plan.json"),
-                    ConcolicCampaignRunner.replayValidationPlan(
+                    ReplayActivationFactory.validationPlan(
                             result.selectedTask,
                             result.solve.modelAssignments));
         } else {
