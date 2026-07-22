@@ -1642,7 +1642,7 @@ public class RuntimeRegionPlannerTest {
             assertEquals(false, upstream.get("anchorRequired"));
             assertEquals(true, upstream.get("replayable"));
             assertEquals(true, upstream.get("symbolicReady"));
-            assertEquals(true, upstream.get("requestedOutputSliceComplete"));
+            assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
             assertEquals(11L, upstream.get("rootCallId"));
             assertEquals(1, upstream.get("edgeBindingCount"));
             assertEquals(1, ((java.util.List<?>) upstream.get("outputs")).size());
@@ -1677,6 +1677,7 @@ public class RuntimeRegionPlannerTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> retainedSlice = (Map<String, Object>) upstream
                     .get("requestedOutputSlice");
+            assertEquals(true, retainedSlice.get("complete"));
             assertTrue(String.valueOf(retainedSlice.get("inputBindings"))
                     .contains("UNIQUE_ROOT_ARGUMENT_CARRIER"));
             assertTrue(String.valueOf(retainedSlice.get("heapInitializers"))
@@ -2032,7 +2033,7 @@ public class RuntimeRegionPlannerTest {
             assertEquals(3, result.activations.size());
             @SuppressWarnings("unchecked")
             Map<String, Object> output = result.activations.get(2);
-            assertEquals(true, output.get("requestedOutputSliceComplete"));
+            assertFalse(output.containsKey("requestedOutputSliceComplete"));
             assertEquals(false, output.get(
                     "requestedOutputCaptureRequired"));
             assertEquals(true, output.get(
@@ -2237,8 +2238,11 @@ public class RuntimeRegionPlannerTest {
             assertEquals("EXACT_SAME_THREAD_DESCENDANT_CALL_TREE_V1",
                     writerInstance.get("runtimeMethodAdmissionAuthority"));
             Map<String, Object> upstream = result.activations.get(2);
-            assertEquals(Boolean.TRUE,
-                    upstream.get("requestedOutputSliceComplete"));
+            assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> slice = (Map<String, Object>) upstream.get(
+                    "requestedOutputSlice");
+            assertEquals(Boolean.TRUE, slice.get("complete"));
             assertTrue(String.valueOf(upstream.get("requestedOutputMethods"))
                     .contains(helper));
             assertTrue(String.valueOf(upstream.get("branches"))
@@ -3920,8 +3924,7 @@ public class RuntimeRegionPlannerTest {
         assertEquals(3, result.activations.size());
         @SuppressWarnings("unchecked")
         Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.TRUE,
-                upstream.get("requestedOutputSliceComplete"));
+        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
         assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> declarations =
@@ -3956,6 +3959,7 @@ public class RuntimeRegionPlannerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> slice = (Map<String, Object>) upstream.get(
                 "requestedOutputSlice");
+        assertEquals(Boolean.TRUE, slice.get("complete"));
         assertEquals(1, ((List<?>) slice.get(
                 "containerElementFieldBindings")).size());
     }
@@ -3967,13 +3971,13 @@ public class RuntimeRegionPlannerTest {
                 true);
         @SuppressWarnings("unchecked")
         Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.FALSE,
-                upstream.get("requestedOutputSliceComplete"));
+        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
         assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
         assertFalse(upstream.containsKey("containerElementFieldBindings"));
         @SuppressWarnings("unchecked")
         Map<String, Object> slice = (Map<String, Object>) upstream.get(
                 "requestedOutputSlice");
+        assertEquals(Boolean.FALSE, slice.get("complete"));
         assertEquals(Boolean.FALSE, slice.get("runtimeRefinementComplete"));
         assertTrue(((List<?>) slice.get("containerElementFieldBindings"))
                 .isEmpty());
@@ -3987,8 +3991,7 @@ public class RuntimeRegionPlannerTest {
         assertEquals(3, result.activations.size());
         @SuppressWarnings("unchecked")
         Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.TRUE,
-                upstream.get("requestedOutputSliceComplete"));
+        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
         assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
 
         @SuppressWarnings("unchecked")
@@ -4007,6 +4010,7 @@ public class RuntimeRegionPlannerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> slice = (Map<String, Object>) upstream.get(
                 "requestedOutputSlice");
+        assertEquals(Boolean.TRUE, slice.get("complete"));
         assertEquals(Arrays.asList("REGION.W.in.exact", "REGION.W.in.key"),
                 slice.get("inputPorts"));
         @SuppressWarnings("unchecked")
@@ -4068,12 +4072,12 @@ public class RuntimeRegionPlannerTest {
         assertEquals(3, result.activations.size());
         @SuppressWarnings("unchecked")
         Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.FALSE,
-                upstream.get("requestedOutputSliceComplete"));
+        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
         assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
         @SuppressWarnings("unchecked")
         Map<String, Object> slice = (Map<String, Object>) upstream.get(
                 "requestedOutputSlice");
+        assertEquals(Boolean.FALSE, slice.get("complete"));
         assertEquals(Boolean.FALSE,
                 slice.get("inputAliasCanonicalizationComplete"));
         assertTrue(String.valueOf(slice.get(
@@ -4700,6 +4704,7 @@ public class RuntimeRegionPlannerTest {
         Map<String, Object> producerSlice = row(
                 "outputPort", "REGION.P.out.keys",
                 "outputCell", outputField,
+                "complete", true,
                 "inputBindings", Collections.singletonList(row(
                         "dependencyCell", mapField,
                         "inputPort", "REGION.P.in.map")),
@@ -4709,7 +4714,6 @@ public class RuntimeRegionPlannerTest {
                 "regionId", "REGION.P",
                 "regionInstanceId", "REGION.P@test#call1",
                 "captureGoal", row("kind", "OUTPUT_CLOSURE"),
-                "requestedOutputSliceComplete", true,
                 "requestedOutputCaptureRequired", false,
                 "requestedOutput", row("portId", "REGION.P.out.keys",
                         "cell", outputField),
@@ -4738,8 +4742,8 @@ public class RuntimeRegionPlannerTest {
                 "regionId", "REGION.D",
                 "regionInstanceId", "REGION.D@test#call2",
                 "captureGoal", row("kind", "OUTPUT_CLOSURE"),
-                "requestedOutputSliceComplete", true,
                 "requestedOutputSlice", row(
+                        "complete", true,
                         "containerElementFieldBindings",
                         Collections.singletonList(downstreamBinding)));
         RuntimeRegionPlanner.Result result =

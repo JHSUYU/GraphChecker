@@ -299,10 +299,8 @@ public final class ConcolicSummaryImporter {
                     activation, "requestedOutputCaptureRequired", false));
             summary.addProperty("requestedOutputCaptureComplete", bool(
                     activation, "requestedOutputCaptureComplete", false));
-            boolean requestedOutputSliceComplete = !outputClosure
-                    || requestedOutputSliceContractComplete(activation);
-            summary.addProperty("requestedOutputSliceComplete",
-                    requestedOutputSliceComplete);
+            boolean outputSliceComplete = !outputClosure
+                    || nestedOutputSliceContractComplete(activation);
             summary.add("edgeBindings", copy(activation.get("edgeBindings"),
                     new JsonArray()));
             summary.add("pathCondition", pathCondition.deepCopy());
@@ -356,7 +354,7 @@ public final class ConcolicSummaryImporter {
             summary.add("heapEffectModel", heapEffects.model());
             summary.addProperty("relationallyComplete",
                     heapEffects.complete()
-                            && requestedOutputSliceComplete
+                            && outputSliceComplete
                             && inputAdmission.complete
                             && placeholderBindings.complete
                             && engineArrayBindings.complete
@@ -1155,7 +1153,7 @@ public final class ConcolicSummaryImporter {
         }
 
         JsonObject slice = object(activation, "requestedOutputSlice");
-        if (!requestedOutputSliceContractComplete(activation)
+        if (!nestedOutputSliceContractComplete(activation)
                 || !bool(slice,
                 "requestedStateTransformerContractApplicable", false)
                 || !bool(slice,
@@ -2889,7 +2887,7 @@ public final class ConcolicSummaryImporter {
             JsonElement condition, JsonObject activation) {
         if (condition == null || !condition.isJsonObject()
                 || !RegionCaptureGoal.from(activation).isOutputClosure()
-                || !requestedOutputSliceContractComplete(
+                || !nestedOutputSliceContractComplete(
                 activation)) {
             return false;
         }
@@ -3464,7 +3462,7 @@ public final class ConcolicSummaryImporter {
             JsonObject activation, HeapMutation mutation,
             String requestedPort, String requestedCell) {
         JsonObject slice = object(activation, "requestedOutputSlice");
-        if (!requestedOutputSliceContractComplete(activation)
+        if (!nestedOutputSliceContractComplete(activation)
                 || integer(slice,
                 "requestedStateTransformerContractVersion", -1) != 1
                 || !bool(slice,
@@ -3908,7 +3906,7 @@ public final class ConcolicSummaryImporter {
         String requestedCell = string(requested, "cell");
         JsonObject slice = object(activation, "requestedOutputSlice");
         if (requestedCell.isEmpty()
-                || !requestedOutputSliceContractComplete(
+                || !nestedOutputSliceContractComplete(
                 activation)
                 || !bool(slice, "structuralComplete", false)
                 || bool(slice, "truncated", true)
@@ -6950,8 +6948,7 @@ public final class ConcolicSummaryImporter {
         String baseField = declaredFieldName(projectedBase);
         if (!baseField.isEmpty()) projectedPath.add(baseField);
         projectedPath.addAll(projectedFieldPath(cell));
-        if (!bool(activation, "requestedOutputSliceComplete", false)
-                || !bool(slice, "complete", false)
+        if (!nestedOutputSliceContractComplete(activation)
                 || !bool(slice, "structuralComplete", false)
                 || bool(slice, "truncated", true)
                 || countString(slice.get("inputPorts"), base) != 1
@@ -7278,7 +7275,7 @@ public final class ConcolicSummaryImporter {
         JsonObject slice = object(activation, "requestedOutputSlice");
         if (!goal.isOutputClosure()
                 || !"HEAP_STATE".equals(string(requestedOutput, "kind"))
-                || !requestedOutputSliceContractComplete(
+                || !nestedOutputSliceContractComplete(
                 activation)) {
             return StaticHeapTransformerCoverage.notApplicable();
         }
@@ -8896,9 +8893,8 @@ public final class ConcolicSummaryImporter {
                                 outputExtraction.expressions,
                                 outputExtraction.complete,
                                 outputExtraction.authority,
-                                bool(activation,
-                                        "requestedOutputSliceComplete",
-                                        false));
+                                nestedOutputSliceContractComplete(
+                                        activation));
             }
             if (inactiveProof != null) {
                 required.remove(requiredInput);
@@ -8928,7 +8924,7 @@ public final class ConcolicSummaryImporter {
             }
         }
         JsonArray failures = new JsonArray();
-        if (!bool(activation, "requestedOutputSliceComplete", false)) {
+        if (!nestedOutputSliceContractComplete(activation)) {
             failures.add("REQUESTED_OUTPUT_SLICE_INCOMPLETE");
         }
         for (JsonElement placeholderFailure : placeholderFailures) {
@@ -9974,11 +9970,10 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    private static boolean requestedOutputSliceContractComplete(
+    private static boolean nestedOutputSliceContractComplete(
             JsonObject value) {
-        return bool(value, "requestedOutputSliceComplete", false)
-                && bool(object(value, "requestedOutputSlice"), "complete",
-                false);
+        return Boolean.TRUE.equals(strictBoolean(object(value,
+                "requestedOutputSlice"), "complete"));
     }
 
     private static int integer(JsonObject parent, String field, int fallback) {
@@ -11351,7 +11346,7 @@ public final class ConcolicSummaryImporter {
 
         private FreshMapInitializerResolution freshMapInitializer(
                 HeapMutation mutation) {
-            if (!requestedOutputSliceContractComplete(
+            if (!nestedOutputSliceContractComplete(
                     activation)) {
                 return FreshMapInitializerResolution.none();
             }

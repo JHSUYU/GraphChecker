@@ -588,7 +588,7 @@ public final class ConcolicScheduler {
             if (captureGoal.isOutputClosure()) {
                 MaterializationPlan upstreamPlan = materializationPlan(
                         activation, definitions, definitionMethods);
-                if (!bool(activation, "requestedOutputSliceComplete", false)
+                if (!nestedOutputSliceComplete(activation)
                         || !upstreamPlan.complete
                         || !outputCaptureReady(activation)) {
                     upstreamPlan = upstreamPlan.notReady();
@@ -701,8 +701,6 @@ public final class ConcolicScheduler {
                 "CONFIGURED_EXACT_REGION_OUTPUT_CELL_V1");
         activation.add("requestedOutput", requested);
         activation.add("requestedOutputSlice", slice.deepCopy());
-        activation.addProperty("requestedOutputSliceComplete",
-                bool(slice, "complete", false));
         activation.addProperty("requestedOutputCaptureRequired",
                 bool(slice, "captureBindingsRequired", false));
         activation.addProperty("requestedOutputCaptureComplete",
@@ -2467,6 +2465,14 @@ public final class ConcolicScheduler {
         } catch (RuntimeException ignored) {
             return fallback;
         }
+    }
+
+    private static boolean nestedOutputSliceComplete(JsonObject value) {
+        JsonElement complete = object(value, "requestedOutputSlice")
+                .get("complete");
+        return complete != null && complete.isJsonPrimitive()
+                && complete.getAsJsonPrimitive().isBoolean()
+                && complete.getAsBoolean();
     }
 
     private static int integer(JsonObject object, String field, int fallback) {

@@ -972,8 +972,10 @@ public class ConcolicSummaryImporterTest {
                     "requestedOutput").get("portId").getAsString());
             assertEquals("REGION.P@fixture#call10", imported.summary.get(
                     "regionInstanceId").getAsString());
-            assertTrue(imported.summary.get(
-                    "requestedOutputSliceComplete").getAsBoolean());
+            assertFalse(imported.summary.has(
+                    "requestedOutputSliceComplete"));
+            assertTrue(imported.summary.getAsJsonObject(
+                    "requestedOutputSlice").get("complete").getAsBoolean());
             assertEquals("REGION.P.out.0", imported.summary.getAsJsonObject(
                     "requestedOutputSlice").get("outputPort").getAsString());
             assertEquals(1, imported.summary.getAsJsonArray(
@@ -1076,9 +1078,32 @@ public class ConcolicSummaryImporterTest {
             JsonObject incompleteSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(incompleteOutput),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            assertFalse(incompleteSummary.get("requestedOutputSliceComplete")
-                    .getAsBoolean());
+            assertFalse(incompleteSummary.has(
+                    "requestedOutputSliceComplete"));
+            assertFalse(incompleteSummary.getAsJsonObject(
+                    "requestedOutputSlice").get("complete").getAsBoolean());
             assertFalse(incompleteSummary.get("relationallyComplete")
+                    .getAsBoolean());
+
+            incompleteActivation.remove("requestedOutputSlice");
+            write(root.resolve("activation.jsonl"), incompleteActivation
+                    + "\n");
+            Path missingSliceOutput = root.resolve(
+                    "missing-slice-summaries.jsonl");
+            ConcolicSummaryImporter.importSummaries(
+                    root.resolve("results.jsonl"),
+                    root.resolve("activation.jsonl"), root.resolve(
+                            "regions.jsonl"), missingSliceOutput,
+                    root.resolve("missing-slice-diagnostics.jsonl"),
+                    root.resolve("missing-slice-cache"));
+            JsonObject missingSliceSummary = JsonParser.parseString(
+                    new String(Files.readAllBytes(missingSliceOutput),
+                            StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            assertFalse(missingSliceSummary.has(
+                    "requestedOutputSliceComplete"));
+            assertTrue(missingSliceSummary.getAsJsonObject(
+                    "requestedOutputSlice").entrySet().isEmpty());
+            assertFalse(missingSliceSummary.get("relationallyComplete")
                     .getAsBoolean());
         } finally {
             folder.delete();
@@ -3601,7 +3626,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", "REGION.TIME.out.0");
@@ -4761,7 +4785,6 @@ public class ConcolicSummaryImporterTest {
             heapBindings.add(heapBinding);
             activation.add("heapStateBindings", heapBindings);
         }
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject requestedOutputSlice = new JsonObject();
         requestedOutputSlice.addProperty("outputPort", "REGION.P.out.0");
         requestedOutputSlice.addProperty("outputCell", cell);
@@ -4941,7 +4964,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         activation.add("requestedOutputMethods", singletonString(method));
         activation.add("materializations", actions);
         activation.add("symbolize", actions.deepCopy());
@@ -5815,7 +5837,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", rootMethod);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         activation.addProperty("requestedOutputCaptureRequired", true);
         activation.addProperty("requestedOutputCaptureComplete", true);
         JsonObject requested = new JsonObject();
@@ -6041,7 +6062,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         activation.addProperty("requestedOutputCaptureRequired", true);
         activation.addProperty("requestedOutputCaptureComplete", true);
         JsonObject requested = new JsonObject();
@@ -6281,7 +6301,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", "REGION.ARRAY.out.0");
@@ -6448,7 +6467,6 @@ public class ConcolicSummaryImporterTest {
         activation.addProperty("rootMethod", method);
         activation.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        activation.addProperty("requestedOutputSliceComplete", true);
         JsonObject slice = new JsonObject();
         slice.addProperty("complete", true);
         slice.addProperty("outputPort", outputPort);

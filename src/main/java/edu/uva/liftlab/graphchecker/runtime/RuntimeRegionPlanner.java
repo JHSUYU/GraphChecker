@@ -3146,7 +3146,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice outputSlice = staticOutputSlice == null
                     ? null : staticOutputSlice.runtimeRefined(first.upstream);
             if (outputSlice == null) {
-                activation.put("requestedOutputSliceComplete", false);
                 activation.put("activationInputSelectionAuthority",
                         "NO_REQUESTED_OUTPUT_SLICE_FULL_MATERIALIZED_POOL");
                 activation.put("activationInputSelectionComplete", false);
@@ -3211,8 +3210,6 @@ final class RuntimeRegionPlanner {
                 activation.put("branches", selectedBranches);
                 activation.put("requestedOutputMethods",
                         new ArrayList<>(outputSlice.methods));
-                activation.put("requestedOutputSliceComplete",
-                        outputSlice.complete);
                 activation.put("requestedOutputSlice", outputSlice.toMap());
                 activation.put("requestedOutputCapture",
                         copyRows(outputSlice.captureBindings));
@@ -3589,8 +3586,7 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         for (Map<String, Object> activation : result.activations) {
             if (!"OUTPUT_CLOSURE".equals(captureGoalKind(activation))
-                    || !Boolean.TRUE.equals(activation.get(
-                    "requestedOutputSliceComplete"))) {
+                    || !nestedOutputSliceComplete(activation)) {
                 continue;
             }
             String instance = string(activation.get("regionInstanceId"));
@@ -9705,6 +9701,13 @@ final class RuntimeRegionPlanner {
     private static Map<String, Object> mapValue(Object value) {
         return value instanceof Map<?, ?>
                 ? (Map<String, Object>) value : null;
+    }
+
+    private static boolean nestedOutputSliceComplete(
+            Map<String, Object> value) {
+        Map<String, Object> slice = value == null ? null : mapValue(
+                value.get("requestedOutputSlice"));
+        return slice != null && Boolean.TRUE.equals(slice.get("complete"));
     }
 
     @SuppressWarnings("unchecked")

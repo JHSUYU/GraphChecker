@@ -633,7 +633,7 @@ public final class RegionPathWorklist {
             String site = string(discovery, "guardSiteId");
             int occurrence = integer(discovery, "guardOccurrence", -1);
             if (!bool(summary, "normalExit", false)
-                    || !bool(summary, "requestedOutputSliceComplete", false)
+                    || !nestedOutputSliceComplete(summary)
                     || site.isEmpty() || occurrence < 1
                     || array(summary, "pathCondition").size() == 0
                     || array(summary, "branchMappings").size() == 0) {
@@ -1168,6 +1168,14 @@ public final class RegionPathWorklist {
         } catch (RuntimeException ignored) {
             return fallback;
         }
+    }
+
+    private static boolean nestedOutputSliceComplete(JsonObject value) {
+        JsonElement complete = object(value, "requestedOutputSlice")
+                .get("complete");
+        return complete != null && complete.isJsonPrimitive()
+                && complete.getAsJsonPrimitive().isBoolean()
+                && complete.getAsBoolean();
     }
 
     private static int integer(JsonObject object, String name, int fallback) {

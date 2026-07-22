@@ -1076,6 +1076,32 @@ public class CausynthPipelineTest {
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
 
+            JsonObject legacyTopLevelCannotOverrideNestedFalse =
+                    readyBoundedOutputClosure("ACT.BAD");
+            legacyTopLevelCannotOverrideNestedFalse.addProperty(
+                    "requestedOutputSliceComplete", true);
+            legacyTopLevelCannotOverrideNestedFalse.getAsJsonObject(
+                    "requestedOutputSlice").addProperty("complete", false);
+            Files.write(plan,
+                    (legacyTopLevelCannotOverrideNestedFalse + "\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
+            JsonObject legacyTopLevelCannotReplaceNestedSlice =
+                    readyBoundedOutputClosure("ACT.BAD");
+            legacyTopLevelCannotReplaceNestedSlice.addProperty(
+                    "requestedOutputSliceComplete", true);
+            legacyTopLevelCannotReplaceNestedSlice.remove(
+                    "requestedOutputSlice");
+            Files.write(plan,
+                    (legacyTopLevelCannotReplaceNestedSlice + "\n")
+                            .getBytes(StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
             JsonObject incomplete = readyBoundedOutputClosure("ACT.BAD");
             incomplete.getAsJsonObject("requestedOutputSlice")
                     .addProperty("runtimeRefinementComplete", false);
@@ -1144,7 +1170,6 @@ public class CausynthPipelineTest {
         row.addProperty("schedulerReady", true);
         row.addProperty("materializationComplete", true);
         row.addProperty("runtimePathEvidenceComplete", true);
-        row.addProperty("requestedOutputSliceComplete", true);
         row.addProperty("requestedOutputCaptureComplete", true);
         row.addProperty("branchOverrideProhibited", true);
         row.addProperty("targetReplayRequired", false);

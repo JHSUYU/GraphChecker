@@ -43,7 +43,6 @@ public class RecursiveRegionWorklistTest {
         cachedSource.add("requestedOutput", cachedOutput);
         JsonObject cachedSlice = outputSlice("source.out", true);
         cachedSource.add("requestedOutputSlice", cachedSlice);
-        cachedSource.addProperty("requestedOutputSliceComplete", true);
         JsonObject cachedRelation = new JsonObject();
         cachedRelation.addProperty("kind", "GUARDED_PATH_MERGE");
         cachedRelation.addProperty("complete", true);
@@ -446,7 +445,8 @@ public class RecursiveRegionWorklistTest {
         requested.addProperty("portId", "REGION.UPSTREAM.out.4");
         requested.addProperty("cell", outputCell);
         exact.add("requestedOutput", requested);
-        exact.addProperty("requestedOutputSliceComplete", true);
+        exact.add("requestedOutputSlice", outputSlice(
+                "REGION.UPSTREAM.out.4", true));
 
         JsonObject edge = edge("EDGE.TARGET", "REGION.UPSTREAM",
                 outputCell, "REGION.TARGET", "REGION.TARGET.in.25",
@@ -782,7 +782,7 @@ public class RecursiveRegionWorklistTest {
         JsonObject partialSlice = outputSlice("upstream.out", false,
                 "upstream.in");
         incomplete.add("requestedOutputSlice", partialSlice);
-        incomplete.addProperty("requestedOutputSliceComplete", false);
+        incomplete.addProperty("requestedOutputSliceComplete", true);
 
         RecursiveRegionWorklist.Result rejected =
                 RecursiveRegionWorklist.explore(regions,
@@ -801,6 +801,21 @@ public class RecursiveRegionWorklistTest {
                 .contains("MISSING_OUTPUT_DEPENDENCY_CLOSURE"));
         assertFalse(rejected.upstreamRequests.toString()
                 .contains("source.out"));
+
+        incomplete.remove("requestedOutputSlice");
+        RecursiveRegionWorklist.Result missingNested =
+                RecursiveRegionWorklist.explore(regions,
+                        Arrays.asList(activations.get(0), incomplete,
+                                activations.get(2)), edges,
+                        Collections.<JsonObject>emptyList(),
+                        Collections.singletonList(activations.get(0)),
+                        RecursiveRegionWorklist.Bounds.defaults());
+        JsonObject missingNestedRequest = requestForOutput(missingNested,
+                "upstream.out");
+        assertFalse(missingNestedRequest.get("recursiveExpansionAllowed")
+                .getAsBoolean());
+        assertFalse(missingNestedRequest.get(
+                "outputDependencyClosureComplete").getAsBoolean());
     }
 
     @Test
@@ -940,7 +955,7 @@ public class RecursiveRegionWorklistTest {
         activation.addProperty("regionInstanceId", region + "#call100");
         activation.addProperty("anchorObserved", anchorObserved);
         activation.addProperty("replayable", true);
-        activation.addProperty("requestedOutputSliceComplete", true);
+        activation.add("requestedOutputSlice", outputSlice(outputPort, true));
         activation.add("captureGoal", RegionCaptureGoal.outputClosure()
                 .toJson());
         JsonObject output = new JsonObject();
@@ -988,7 +1003,6 @@ public class RecursiveRegionWorklistTest {
         summary.add("requestedOutput", requested);
         summary.add("requestedOutputSlice", outputSlice(outputPort, true,
                 inputPorts));
-        summary.addProperty("requestedOutputSliceComplete", true);
         JsonObject relation = new JsonObject();
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
         relation.addProperty("complete", true);
