@@ -1296,7 +1296,7 @@ public class CausynthPipelineTest {
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null, 0, 0), selection, refs));
+                    new CausynthPipeline(null), selection, refs));
 
             InvokeExpr hook = null;
             for (Unit unit : body.getUnits()) {
@@ -1401,7 +1401,7 @@ public class CausynthPipelineTest {
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null, 0, 0), selection, refs));
+                    new CausynthPipeline(null), selection, refs));
 
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
@@ -1511,7 +1511,7 @@ public class CausynthPipelineTest {
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null, 0, 0), selection, refs));
+                    new CausynthPipeline(null), selection, refs));
 
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
@@ -1783,7 +1783,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         Local entryToken = null;
         Unit entryCall = null;
@@ -1956,7 +1956,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
         body.validate();
 
         ByteArrayOutputStream classFile = new ByteArrayOutputStream();
@@ -2119,7 +2119,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         List<Unit> units = new ArrayList<>();
         Unit wrapperCall = null;
@@ -2272,7 +2272,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         Local argumentArray = null;
         InvokeExpr entry = null;
@@ -2384,7 +2384,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentRuntimeTrace", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         int isolationDepth = 0;
         int traceCalls = 0;
@@ -2501,7 +2501,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentRuntimeTrace", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         Value recordedReceiver = null;
         int beginCallCount = 0;
@@ -2665,7 +2665,7 @@ public class CausynthPipelineTest {
         addAnalysisRow(result, "edges", guardEdge);
         addBranchPolicy(result, method.getSignature(), 1);
 
-        CausynthPipeline pipeline = new CausynthPipeline(null, 0, 0);
+        CausynthPipeline pipeline = new CausynthPipeline(null);
         Method tracePass = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentRuntimeTrace", result.getClass());
         tracePass.setAccessible(true);
@@ -4732,7 +4732,7 @@ public class CausynthPipelineTest {
         instrument.setAccessible(true);
 
         int count = (Integer) instrument.invoke(
-                new CausynthPipeline(null, 0, 0),
+                new CausynthPipeline(null),
                 Collections.singleton(fixture.method.getSignature()), refs);
 
         assertEquals(4, count);
@@ -5887,7 +5887,7 @@ public class CausynthPipelineTest {
                 "instrumentConcolicMaterializations", selection.getClass(),
                 refs.getClass());
         instrument.setAccessible(true);
-        return (Integer) instrument.invoke(new CausynthPipeline(null, 0, 0),
+        return (Integer) instrument.invoke(new CausynthPipeline(null),
                 selection, refs);
     }
 
@@ -5898,7 +5898,7 @@ public class CausynthPipelineTest {
                 selection.getClass(), refs.getClass());
         instrument.setAccessible(true);
         return (Integer) instrument.invoke(
-                new CausynthPipeline(null, 0, 0), selection, refs);
+                new CausynthPipeline(null), selection, refs);
     }
 
     private static InvokeExpr invokeExpression(Unit unit) {
