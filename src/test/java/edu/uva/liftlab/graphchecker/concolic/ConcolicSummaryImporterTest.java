@@ -4762,8 +4762,6 @@ public class ConcolicSummaryImporterTest {
             activation.add("heapStateBindings", heapBindings);
         }
         activation.addProperty("requestedOutputSliceComplete", true);
-        activation.addProperty("requestedOutputSlicePolicy",
-                "REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE");
         JsonObject requestedOutputSlice = new JsonObject();
         requestedOutputSlice.addProperty("outputPort", "REGION.P.out.0");
         requestedOutputSlice.addProperty("outputCell", cell);

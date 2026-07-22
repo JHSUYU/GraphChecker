@@ -3146,8 +3146,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice outputSlice = staticOutputSlice == null
                     ? null : staticOutputSlice.runtimeRefined(first.upstream);
             if (outputSlice == null) {
-                activation.put("requestedOutputSlicePolicy",
-                        "CONSERVATIVE_STATIC_REGION_FRONTIER");
                 activation.put("requestedOutputSliceComplete", false);
                 activation.put("activationInputSelectionAuthority",
                         "NO_REQUESTED_OUTPUT_SLICE_FULL_MATERIALIZED_POOL");
@@ -3213,12 +3211,6 @@ final class RuntimeRegionPlanner {
                 activation.put("branches", selectedBranches);
                 activation.put("requestedOutputMethods",
                         new ArrayList<>(outputSlice.methods));
-                activation.put("requestedOutputSlicePolicy",
-                        outputSlice.selection);
-                activation.put("requestedOutputSliceRefinementPolicy",
-                        "OBSERVED_REGION_CALL_TREE");
-                activation.put("requestedOutputSliceRefinementComplete",
-                        outputSlice.runtimeRefinementComplete);
                 activation.put("requestedOutputSliceComplete",
                         outputSlice.complete);
                 activation.put("requestedOutputSlice", outputSlice.toMap());

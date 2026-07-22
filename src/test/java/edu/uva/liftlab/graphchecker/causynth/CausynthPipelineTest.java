@@ -927,6 +927,9 @@ public class CausynthPipelineTest {
             // Broad static input coverage is intentionally not an authority
             // for a runtime-refined requested-output closure.
             row.addProperty("staticInputSelectionComplete", false);
+            // The retired top-level refinement mirror has no authority; the
+            // nested immutable slice contract below is canonical.
+            row.addProperty("requestedOutputSliceRefinementComplete", false);
             Files.write(plan, (row + "\n").getBytes(StandardCharsets.UTF_8));
 
             assertTrue(ConcolicInstrumentationSelections
@@ -1082,6 +1085,27 @@ public class CausynthPipelineTest {
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             "ACT.BAD"));
 
+            JsonObject structurallyIncomplete = readyBoundedOutputClosure(
+                    "ACT.BAD");
+            structurallyIncomplete.getAsJsonObject("requestedOutputSlice")
+                    .addProperty("structuralComplete", false);
+            Files.write(plan, (structurallyIncomplete + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
+            JsonObject missingRefinementAuthority =
+                    readyBoundedOutputClosure("ACT.BAD");
+            missingRefinementAuthority.getAsJsonObject(
+                    "requestedOutputSlice").remove(
+                    "runtimeRefinementAuthority");
+            Files.write(plan, (missingRefinementAuthority + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertFalse(ConcolicInstrumentationSelections
+                    .selectedBoundedOutputClosureCoverageReady(plan,
+                            "ACT.BAD"));
+
             JsonObject stringBoolean = readyBoundedOutputClosure("ACT.BAD");
             stringBoolean.addProperty("schedulerReady", "true");
             Files.write(plan, (stringBoolean + "\n").getBytes(
@@ -1121,7 +1145,6 @@ public class CausynthPipelineTest {
         row.addProperty("materializationComplete", true);
         row.addProperty("runtimePathEvidenceComplete", true);
         row.addProperty("requestedOutputSliceComplete", true);
-        row.addProperty("requestedOutputSliceRefinementComplete", true);
         row.addProperty("requestedOutputCaptureComplete", true);
         row.addProperty("branchOverrideProhibited", true);
         row.addProperty("targetReplayRequired", false);

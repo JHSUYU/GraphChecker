@@ -298,28 +298,11 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("requestedOutputCaptureRequired", bool(
                     activation, "requestedOutputCaptureRequired", false));
             summary.addProperty("requestedOutputCaptureComplete", bool(
-                    activation, "requestedOutputCaptureComplete",
-                    !bool(activation, "requestedOutputCaptureRequired",
-                            false)));
-            summary.addProperty("requestedOutputCaptureRefinementRequired",
-                    bool(activation,
-                            "requestedOutputCaptureRefinementRequired",
-                            false));
-            summary.addProperty("requestedOutputCaptureTemplateReady", bool(
-                    activation, "requestedOutputCaptureTemplateReady",
-                    false));
-            summary.addProperty("requestedOutputCaptureTemplateAuthority",
-                    string(activation,
-                            "requestedOutputCaptureTemplateAuthority"));
-            summary.addProperty("requestedOutputCaptureRefinementPolicy",
-                    string(activation,
-                            "requestedOutputCaptureRefinementPolicy"));
+                    activation, "requestedOutputCaptureComplete", false));
             boolean requestedOutputSliceComplete = !outputClosure
                     || requestedOutputSliceContractComplete(activation);
             summary.addProperty("requestedOutputSliceComplete",
                     requestedOutputSliceComplete);
-            summary.addProperty("requestedOutputSlicePolicy", string(
-                    activation, "requestedOutputSlicePolicy"));
             summary.add("edgeBindings", copy(activation.get("edgeBindings"),
                     new JsonArray()));
             summary.add("pathCondition", pathCondition.deepCopy());

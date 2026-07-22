@@ -524,20 +524,13 @@ public final class ConcolicScheduler {
         result.remove("forcedBranches");
         result.remove("modelAssignments");
         boolean outputCaptureReady = outputCaptureReady(result);
-        boolean transitionTemplateReady =
-                transitionDiscoveryCaptureTemplateReady(result);
         boolean schedulerReady = materialization.ready
-                && (outputCaptureReady || transitionTemplateReady);
-        result.addProperty("executionPhase", transitionTemplateReady
-                && !outputCaptureReady
-                ? "CAPTURE_TRANSITION_GUARD_PATH"
-                : "CAPTURE_OUTPUT_PATH");
+                && outputCaptureReady;
+        result.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
         result.addProperty("schedulerReady", schedulerReady);
         result.addProperty("materializationComplete",
                 materialization.complete);
         result.addProperty("outputCaptureReady", outputCaptureReady);
-        result.addProperty("transitionDiscoveryCaptureTemplateReady",
-                transitionTemplateReady);
         result.addProperty("executableMaterializationCount",
                 materialization.executableCount);
         result.addProperty("deferredMaterializationCount",
@@ -597,9 +590,7 @@ public final class ConcolicScheduler {
                         activation, definitions, definitionMethods);
                 if (!bool(activation, "requestedOutputSliceComplete", false)
                         || !upstreamPlan.complete
-                        || !outputCaptureReady(activation)
-                        && !transitionDiscoveryCaptureTemplateReady(
-                        activation)) {
+                        || !outputCaptureReady(activation)) {
                     upstreamPlan = upstreamPlan.notReady();
                 }
                 result.add(new Candidate(activation, activationId, region,
@@ -712,10 +703,6 @@ public final class ConcolicScheduler {
         activation.add("requestedOutputSlice", slice.deepCopy());
         activation.addProperty("requestedOutputSliceComplete",
                 bool(slice, "complete", false));
-        activation.addProperty("requestedOutputSlicePolicy",
-                "CONFIGURED_REGION_CATALOG_EXACT_OUTPUT_SLICE");
-        activation.addProperty("requestedOutputSliceRefinementComplete",
-                true);
         activation.addProperty("requestedOutputCaptureRequired",
                 bool(slice, "captureBindingsRequired", false));
         activation.addProperty("requestedOutputCaptureComplete",
@@ -775,8 +762,7 @@ public final class ConcolicScheduler {
         }
         JsonArray templates = array(source, "requestedOutputCapture");
         if (templates.size() == 0) {
-            return incompleteCaptureSelection(source,
-                    "NO_STATIC_CAPTURE_TEMPLATE", 0, 0);
+            return incompleteCaptureSelection(source);
         }
 
         String configuredSite = arguments.requestedOutputCaptureSite;
@@ -788,23 +774,7 @@ public final class ConcolicScheduler {
                 && runtimeExactOutputCapture(
                 templates.get(0).getAsJsonObject())) {
             JsonObject preserved = source.deepCopy();
-            JsonObject capture = templates.get(0).getAsJsonObject();
             preserved.addProperty("requestedOutputCaptureComplete", true);
-            preserved.addProperty("requestedOutputCaptureRefinementRequired",
-                    false);
-            preserved.addProperty("requestedOutputCaptureSelectionStatus",
-                    "EXACT_RUNTIME_REQUEST_READY");
-            preserved.addProperty("requestedOutputCaptureSelectionAuthority",
-                    "PRESERVED_RUNTIME_EXACT_OUTPUT_CAPTURE_V1");
-            preserved.addProperty("requestedOutputCaptureSelectedSite",
-                    string(capture, "siteId"));
-            preserved.addProperty("requestedOutputCaptureSelectedOccurrence",
-                    integer(capture, "occurrence", 0));
-            preserved.addProperty("requestedOutputCaptureTemplateCount", 1);
-            preserved.addProperty(
-                    "requestedOutputCaptureObservedCandidateCount", 1);
-            preserved.addProperty(
-                    "requestedOutputCaptureOccurrenceApproximate", false);
             return preserved;
         }
         List<JsonObject> candidates = new ArrayList<>();
@@ -819,10 +789,7 @@ public final class ConcolicScheduler {
                 }
             }
             if (configuredOccurrence <= 0) {
-                return incompleteCaptureSelection(source,
-                        "CONFIGURED_CAPTURE_SITE_REQUIRES_POSITIVE_"
-                                + "OCCURRENCE",
-                        templates.size(), candidates.size());
+                return incompleteCaptureSelection(source);
             }
             authority = "CONFIGURED_EXACT_CAPTURE_SITE_AND_OCCURRENCE_V1";
         } else {
@@ -848,11 +815,7 @@ public final class ConcolicScheduler {
             }
         }
         if (candidates.size() != 1) {
-            return incompleteCaptureSelection(source,
-                    candidates.isEmpty()
-                            ? "NO_UNIQUE_OBSERVED_CAPTURE_SITE"
-                            : "AMBIGUOUS_OBSERVED_CAPTURE_SITE",
-                    templates.size(), candidates.size());
+            return incompleteCaptureSelection(source);
         }
 
         JsonObject selected = candidates.get(0).deepCopy();
@@ -876,41 +839,12 @@ public final class ConcolicScheduler {
         exact.add(selected);
         result.add("requestedOutputCapture", exact);
         result.addProperty("requestedOutputCaptureComplete", true);
-        result.addProperty("requestedOutputCaptureRefinementRequired", false);
-        result.addProperty("requestedOutputCaptureSelectionStatus",
-                "EXACT_RUNTIME_REQUEST_READY");
-        result.addProperty("requestedOutputCaptureSelectionAuthority",
-                authority);
-        result.addProperty("requestedOutputCaptureSelectedSite",
-                string(selected, "siteId"));
-        result.addProperty("requestedOutputCaptureSelectedOccurrence",
-                occurrence);
-        result.addProperty("requestedOutputCaptureTemplateCount",
-                templates.size());
-        result.addProperty("requestedOutputCaptureObservedCandidateCount",
-                candidates.size());
-        result.addProperty("requestedOutputCaptureOccurrenceApproximate",
-                firstOccurrenceApproximation);
-        if (!observedMethods.isEmpty()) {
-            result.add("requestedOutputCaptureObservedMethods",
-                    JSONL_GSON.toJsonTree(observedMethods));
-        }
         return result;
     }
 
-    private static JsonObject incompleteCaptureSelection(JsonObject source,
-                                                         String reason,
-                                                         int templateCount,
-                                                         int candidateCount) {
+    private static JsonObject incompleteCaptureSelection(JsonObject source) {
         JsonObject result = source.deepCopy();
         result.addProperty("requestedOutputCaptureComplete", false);
-        result.addProperty("requestedOutputCaptureSelectionStatus",
-                "RUNTIME_REFINEMENT_REQUIRED");
-        result.addProperty("requestedOutputCaptureSelectionReason", reason);
-        result.addProperty("requestedOutputCaptureTemplateCount",
-                templateCount);
-        result.addProperty("requestedOutputCaptureObservedCandidateCount",
-                candidateCount);
         return result;
     }
 
@@ -958,56 +892,9 @@ public final class ConcolicScheduler {
         return configured;
     }
 
-    /**
-     * An ordinary output closure may execute only with an exact runtime
-     * capture request.  A transition-discovery seed is the sole exception:
-     * it captures only the guard path and is quarantined until a fresh
-     * flipped execution discovers the concrete occurrence.
-     */
+    /** Every output closure executes only with a complete capture contract. */
     private static boolean outputCaptureReady(JsonObject activation) {
-        return !bool(activation, "requestedOutputCaptureRequired", false)
-                || bool(activation, "requestedOutputCaptureComplete",
-                false);
-    }
-
-    private static boolean transitionDiscoveryCaptureTemplateReady(
-            JsonObject activation) {
-        if (!RegionCaptureGoal.from(activation).isTransitionDiscovery()
-                || !bool(activation, "requestedOutputSliceComplete", false)
-                || !bool(activation,
-                "requestedOutputCaptureRefinementRequired", false)
-                || !"STATIC_EXACT_OUTPUT_ENDPOINT_RUNTIME_OCCURRENCE_PENDING"
-                .equals(string(activation,
-                        "requestedOutputCaptureTemplateAuthority"))) {
-            return false;
-        }
-        JsonArray captures = array(activation, "requestedOutputCapture");
-        if (captures.size() != 1 || !captures.get(0).isJsonObject()) {
-            return false;
-        }
-        JsonObject capture = captures.get(0).getAsJsonObject();
-        if (integer(capture, "occurrence", -1) != 0
-                || string(capture, "captureBindingId").isEmpty()
-                || string(capture, "outputPort").isEmpty()
-                || string(capture, "outputCell").isEmpty()
-                || string(capture, "siteId").isEmpty()
-                || integer(capture, "unitIndex", -1) < 0
-                || !"RUNTIME_INSTANCE_REFINEMENT_REQUIRED".equals(
-                string(capture, "occurrenceAuthority"))) {
-            return false;
-        }
-        String kind = firstNonBlank(string(capture, "captureKind"),
-                "CALL_ARGUMENT");
-        if ("FIELD_ASSIGNMENT_RHS".equals(kind)) {
-            return !string(capture, "method").isEmpty()
-                    && !string(capture, "fieldSignature").isEmpty()
-                    && "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS".equals(
-                    string(capture, "bindingAuthority"));
-        }
-        return "CALL_ARGUMENT".equals(kind)
-                && !string(capture, "callerMethod").isEmpty()
-                && !string(capture, "calleeMethod").isEmpty()
-                && integer(capture, "argumentIndex", -1) >= 0;
+        return bool(activation, "requestedOutputCaptureComplete", false);
     }
 
     private static boolean hasOutcome(JsonObject branch, boolean outcome) {

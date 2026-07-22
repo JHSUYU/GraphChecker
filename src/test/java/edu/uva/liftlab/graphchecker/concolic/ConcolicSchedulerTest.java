@@ -515,6 +515,9 @@ public class ConcolicSchedulerTest {
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
                     + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
                     + "\"requestedOutputSliceComplete\":true,"
+                    + "\"requestedOutputCaptureRequired\":false,"
+                    + "\"requestedOutputCaptureComplete\":true,"
+                    + "\"requestedOutputCapture\":[],"
                     + "\"requestedOutput\":{"
                     + "\"portId\":\"REGION.11.out.0\","
                     + "\"cell\":\"" + ALL_KEYS + "\","
@@ -643,9 +646,10 @@ public class ConcolicSchedulerTest {
             assertEquals("<example.Client: void encrypted()>#u7",
                     automaticCapture.get("siteId").getAsString());
             assertEquals(1, automaticCapture.get("occurrence").getAsInt());
-            assertTrue(automaticallyRefined.get(
-                    "requestedOutputCaptureOccurrenceApproximate")
-                    .getAsBoolean());
+            assertEquals("UNIQUE_OBSERVED_CAPTURE_METHOD_FIRST_"
+                            + "OCCURRENCE_APPROXIMATION_V1",
+                    automaticCapture.get("occurrenceAuthority")
+                            .getAsString());
             assertTrue(automaticallyRefined.get(
                     "requestedOutputCaptureComplete").getAsBoolean());
 
@@ -670,8 +674,7 @@ public class ConcolicSchedulerTest {
                     explicitCapture.get("siteId").getAsString());
             assertEquals(3, explicitCapture.get("occurrence").getAsInt());
             assertEquals("CONFIGURED_EXACT_CAPTURE_SITE_AND_OCCURRENCE_V1",
-                    explicitlyRefined.get(
-                            "requestedOutputCaptureSelectionAuthority")
+                    explicitCapture.get("selectionAuthority")
                             .getAsString());
 
             String deferred = activation.replace("\"symbolize\":[]",
@@ -713,6 +716,9 @@ public class ConcolicSchedulerTest {
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
                     + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
                     + "\"requestedOutputSliceComplete\":true,"
+                    + "\"requestedOutputCaptureRequired\":false,"
+                    + "\"requestedOutputCaptureComplete\":true,"
+                    + "\"requestedOutputCapture\":[],"
                     + "\"requestedOutput\":{"
                     + "\"portId\":\"REGION.1.out.0\","
                     + "\"cell\":\"client.userName\","
@@ -864,6 +870,9 @@ public class ConcolicSchedulerTest {
                     + "\"captureGoal\":{\"kind\":\"OUTPUT_CLOSURE\","
                     + "\"scope\":\"BOUNDED_OUTPUT_RELEVANT_PATHS\"},"
                     + "\"requestedOutputSliceComplete\":true,"
+                    + "\"requestedOutputCaptureRequired\":false,"
+                    + "\"requestedOutputCaptureComplete\":true,"
+                    + "\"requestedOutputCapture\":[],"
                     + "\"requestedOutput\":{"
                     + "\"portId\":\"REGION.11.out.0\","
                     + "\"cell\":\"" + ALL_KEYS + "\","
@@ -1092,6 +1101,9 @@ public class ConcolicSchedulerTest {
                 + "\"activationId\":\"ACT.ENV.0\","
                 + "\"regionId\":\"REGION.7\","
                 + "\"requestedOutputSliceComplete\":true,"
+                + "\"requestedOutputCaptureRequired\":false,"
+                + "\"requestedOutputCaptureComplete\":true,"
+                + "\"requestedOutputCapture\":[],"
                 + "\"symbolize\":[{"
                 + "\"symbol\":\"REGION.7.in.0\","
                 + "\"cell\":\"<java.lang.System: long "
@@ -1135,6 +1147,9 @@ public class ConcolicSchedulerTest {
         activation.addProperty("regionId", "REGION.CANONICAL");
         RegionCaptureGoal.outputClosure().writeTo(activation);
         activation.addProperty("requestedOutputSliceComplete", true);
+        activation.addProperty("requestedOutputCaptureRequired", false);
+        activation.addProperty("requestedOutputCaptureComplete", true);
+        activation.add("requestedOutputCapture", new JsonArray());
 
         JsonArray retiredExecutablePlan = new JsonArray();
         retiredExecutablePlan.add(declaration.deepCopy());
@@ -1162,6 +1177,50 @@ public class ConcolicSchedulerTest {
         assertEquals(1, executable.size());
         assertEquals("ROOT_ENTRY", executable.get(0).getAsJsonObject()
                 .get("bindingMode").getAsString());
+    }
+
+    @Test
+    public void legacyTransitionTemplateCannotBypassIncompleteCapture() {
+        JsonObject activation = new JsonObject();
+        activation.addProperty("activationId", "ACT.RETIRED.TRANSITION");
+        activation.addProperty("regionId", "REGION.RETIRED");
+        RegionCaptureGoal.transitionDiscovery().writeTo(activation);
+        activation.addProperty("requestedOutputSliceComplete", true);
+        activation.addProperty("requestedOutputCaptureRequired", true);
+        activation.addProperty("requestedOutputCaptureComplete", false);
+        activation.addProperty("requestedOutputCaptureRefinementRequired",
+                true);
+        activation.addProperty("requestedOutputCaptureTemplateAuthority",
+                "STATIC_EXACT_OUTPUT_ENDPOINT_RUNTIME_OCCURRENCE_PENDING");
+        JsonObject template = new JsonObject();
+        template.addProperty("captureBindingId", "CAP.RETIRED.0");
+        template.addProperty("outputPort", "REGION.RETIRED.out.0");
+        template.addProperty("outputCell", "example.State.value");
+        template.addProperty("siteId", "<example.State: void set(int)>#u4");
+        template.addProperty("unitIndex", 4);
+        template.addProperty("callerMethod",
+                "<example.State: void set(int)>");
+        template.addProperty("calleeMethod",
+                "<example.Sink: void accept(int)>");
+        template.addProperty("argumentIndex", 0);
+        template.addProperty("occurrence", 0);
+        template.addProperty("occurrenceAuthority",
+                "RUNTIME_INSTANCE_REFINEMENT_REQUIRED");
+        JsonArray captures = new JsonArray();
+        captures.add(template);
+        activation.add("requestedOutputCapture", captures);
+        activation.add("symbolize", new JsonArray());
+
+        JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
+                activation, Collections.<JsonObject>emptyList());
+
+        assertFalse(prepared.get("outputCaptureReady").getAsBoolean());
+        assertFalse(prepared.get("schedulerReady").getAsBoolean());
+        assertFalse(prepared.get("symbolicReady").getAsBoolean());
+        assertEquals("CAPTURE_OUTPUT_PATH",
+                prepared.get("executionPhase").getAsString());
+        assertFalse(prepared.has(
+                "transitionDiscoveryCaptureTemplateReady"));
     }
 
     @Test
@@ -1417,6 +1476,9 @@ public class ConcolicSchedulerTest {
         activation.addProperty("regionId", "REGION.ARRAY");
         RegionCaptureGoal.outputClosure().writeTo(activation);
         activation.addProperty("requestedOutputSliceComplete", true);
+        activation.addProperty("requestedOutputCaptureRequired", false);
+        activation.addProperty("requestedOutputCaptureComplete", true);
+        activation.add("requestedOutputCapture", new JsonArray());
         JsonArray symbolize = new JsonArray();
         symbolize.add(action);
         activation.add("symbolize", symbolize);

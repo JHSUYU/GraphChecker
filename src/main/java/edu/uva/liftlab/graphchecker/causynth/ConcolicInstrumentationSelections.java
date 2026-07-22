@@ -227,8 +227,6 @@ final class ConcolicInstrumentationSelections {
                 || !strictJsonBooleanEquals(row,
                 "requestedOutputSliceComplete", true)
                 || !strictJsonBooleanEquals(row,
-                "requestedOutputSliceRefinementComplete", true)
-                || !strictJsonBooleanEquals(row,
                 "requestedOutputCaptureComplete", true)
                 || !strictJsonBooleanEquals(row,
                 "targetReplayRequired", false)

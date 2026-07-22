@@ -1643,8 +1643,6 @@ public class RuntimeRegionPlannerTest {
             assertEquals(true, upstream.get("replayable"));
             assertEquals(true, upstream.get("symbolicReady"));
             assertEquals(true, upstream.get("requestedOutputSliceComplete"));
-            assertEquals("REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE",
-                    upstream.get("requestedOutputSlicePolicy"));
             assertEquals(11L, upstream.get("rootCallId"));
             assertEquals(1, upstream.get("edgeBindingCount"));
             assertEquals(1, ((java.util.List<?>) upstream.get("outputs")).size());
@@ -2035,8 +2033,6 @@ public class RuntimeRegionPlannerTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> output = result.activations.get(2);
             assertEquals(true, output.get("requestedOutputSliceComplete"));
-            assertEquals(true, output.get(
-                    "requestedOutputSliceRefinementComplete"));
             assertEquals(false, output.get(
                     "requestedOutputCaptureRequired"));
             assertEquals(true, output.get(
@@ -2050,6 +2046,12 @@ public class RuntimeRegionPlannerTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> slice = (Map<String, Object>) output.get(
                     "requestedOutputSlice");
+            assertEquals(true, slice.get("complete"));
+            assertEquals(true, slice.get("structuralComplete"));
+            assertEquals(true, slice.get("runtimeRefinementComplete"));
+            assertEquals("OBSERVED_REGION_CALL_TREE_AND_STATIC_DEPENDENCY_"
+                            + "METHOD_PROVENANCE",
+                    slice.get("runtimeRefinementAuthority"));
             assertEquals(Arrays.asList("REGION.W.in.0", "REGION.W.in.1"),
                     slice.get("inputPorts"));
             assertTrue(String.valueOf(slice.get("sites")).contains(
