@@ -470,12 +470,6 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("confidence", "RUNTIME_CONCOLIC");
             summary.addProperty("valid", true);
             summary.add("executionAdmission", replayAdmission.toJson());
-            summary.addProperty("targetReplayValidated",
-                    replayAdmission.required && replayAdmission.valid);
-            if (replayAdmission.required && replayAdmission.valid) {
-                summary.add("directedTargetQuery", object(activation,
-                        "directedTargetQuery").deepCopy());
-            }
             summary.addProperty("branchOverrideUsed",
                     bool(raw, "branchOverrideUsed", false));
             summary.add("replayMaterializationsApplied", copy(raw.get(
@@ -983,7 +977,6 @@ public final class ConcolicSummaryImporter {
         executionAdmission.addProperty("authority",
                 "EXACT_STATIC_TRANSFORMER_AND_RUNTIME_EMPTY_PRESTATE_V1");
         bounded.add("executionAdmission", executionAdmission);
-        bounded.addProperty("targetReplayValidated", false);
         bounded.addProperty("branchOverrideUsed", false);
         bounded.add("replayMaterializationsApplied", new JsonArray());
         bounded.add("modelAssignmentsApplied", new JsonArray());
@@ -11409,17 +11402,17 @@ public final class ConcolicSummaryImporter {
         JsonArray appliedAssignments = array(raw,
                 "modelAssignmentsApplied");
         boolean outputPathFlip = "REPLAY_OUTPUT_PATH_FLIP".equals(phase);
-        boolean replayPhase = outputPathFlip
-                || "REPLAY_DIRECTED_TARGET".equals(phase)
-                || "REPLAY_REBASED_TARGET".equals(phase);
+        boolean targetBranchReplay = "REPLAY_DIRECTED_TARGET".equals(phase);
+        boolean branchReplay = outputPathFlip || targetBranchReplay;
         boolean required = Boolean.TRUE.equals(strictBoolean(activation,
                 "targetReplayRequired"))
-                || replayPhase
+                || branchReplay
                 || expectedMaterializations.size() > 0
                 || appliedMaterializations.size() > 0
                 || expectedAssignments.size() > 0
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
+        JsonObject branchReplayObservation = new JsonObject();
         // A target seed is solver provenance, not merely a diagnostic trace.
         // Its observed path condition is therefore subject to the same
         // no-override rule as the later directed replay.  In particular, a
@@ -11435,39 +11428,34 @@ public final class ConcolicSummaryImporter {
             failures.add("FORCED_BRANCH_PLAN_OR_RESULT_PRESENT");
         }
         if (failures.size() > 0) {
-            return new ReplayAdmission(required, false, failures, "NONE");
+            return new ReplayAdmission(required, false, failures, "NONE",
+                    branchReplayObservation);
         }
         if (!required) return new ReplayAdmission(false, true, failures,
-                "OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY");
+                "OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY",
+                branchReplayObservation);
 
         if (!Boolean.FALSE.equals(strictBoolean(raw,
                 "branchOverrideUsed"))) {
             failures.add("BRANCH_OVERRIDE_ATTESTATION_MISSING_OR_MALFORMED");
         }
 
-        JsonElement replayContract = activation.get("replayContract");
-        if (outputPathFlip) {
+        if (branchReplay) {
+            JsonElement replayContract = activation.get("replayContract");
             if (replayContract == null) {
-                failures.add("OUTPUT_PATH_REPLAY_CONTRACT_MISSING");
+                failures.add("BRANCH_REPLAY_CONTRACT_MISSING");
             } else {
-                validateReplayContractObservation(raw, replayContract,
-                        failures);
+                branchReplayObservation = validateReplayContractObservation(
+                        raw, replayContract, failures);
             }
+        }
+        if (outputPathFlip) {
             String activationQueryKey = strictString(activation,
                     "pathQueryKey");
             if (activationQueryKey.isEmpty()
                     || !activationQueryKey.equals(strictString(raw,
                     "pathQueryKey"))) {
                 failures.add("PATH_QUERY_KEY_MISMATCH");
-            }
-        } else {
-            JsonObject target = object(activation, "targetBranch");
-            if (target.size() == 0 || !observedTargetBranch(
-                    array(raw, "branchMappings"), target)) {
-                failures.add("DIRECTED_TARGET_BRANCH_NOT_OBSERVED");
-            }
-            if (!validDirectedTargetQuery(activation, target)) {
-                failures.add("DIRECTED_TARGET_QUERY_PROVENANCE_MISSING");
             }
         }
 
@@ -11519,7 +11507,7 @@ public final class ConcolicSummaryImporter {
                 + "OUTPUT_REPLAY_VALIDATION"
                 : "SOLVER_MODEL_PLUS_UNFORCED_BRANCH_OBSERVATION";
         return new ReplayAdmission(true, valid, failures, valid
-                ? successAuthority : "NONE");
+                ? successAuthority : "NONE", branchReplayObservation);
     }
 
     /**
@@ -11528,12 +11516,12 @@ public final class ConcolicSummaryImporter {
      * no targetBranch/expectedPrefix/negatedCondition aliases participate in
      * admission.
      */
-    private static void validateReplayContractObservation(
+    private static JsonObject validateReplayContractObservation(
             JsonObject raw, JsonElement encodedContract,
             JsonArray failures) {
         if (!encodedContract.isJsonObject()) {
             failures.add("REPLAY_CONTRACT_MALFORMED");
-            return;
+            return malformedBranchReplayObservation();
         }
         final BranchReplayContract contract;
         try {
@@ -11542,7 +11530,7 @@ public final class ConcolicSummaryImporter {
         } catch (IllegalArgumentException malformed) {
             failures.add("REPLAY_CONTRACT_MALFORMED:"
                     + malformed.getMessage());
-            return;
+            return malformedBranchReplayObservation();
         }
         List<BranchWitness> observed = new ArrayList<>();
         for (JsonElement element : array(raw, "branchMappings")) {
@@ -11558,28 +11546,17 @@ public final class ConcolicSummaryImporter {
                 failures.add("BRANCH_REPLAY_CONTRACT:" + failure);
             }
         }
+        return validation.toJson();
     }
 
-    private static boolean validDirectedTargetQuery(JsonObject activation,
-                                                    JsonObject target) {
-        String instance = string(activation, "regionInstanceId");
-        JsonObject query = object(activation, "directedTargetQuery");
-        JsonObject context = object(query, "symbolicContext");
-        return !instance.isEmpty()
-                && instance.equals(string(context, "regionInstanceId"))
-                && string(activation, "activationId").equals(string(query,
-                "activationId"))
-                && string(activation, "regionId").equals(string(query,
-                "regionId"))
-                && string(target, "siteId").equals(string(query, "siteId"))
-                && integer(target, "occurrence", -1) == integer(query,
-                "occurrence", -2)
-                && bool(target, "desiredOutcome", false) == bool(query,
-                "desiredOutcome", true)
-                && bool(query, "readyForSolver", false)
-                && query.has("originalTargetCondition")
-                && query.has("negatedTargetCondition")
-                && array(query, "constraints").size() > 0;
+    private static JsonObject malformedBranchReplayObservation() {
+        JsonObject result = new JsonObject();
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("kind", "BRANCH_REPLAY_OBSERVATION");
+        result.addProperty("requested", true);
+        result.addProperty("valid", false);
+        result.add("failures", new JsonArray());
+        return result;
     }
 
     private static InputAdmission inputAdmission(JsonObject raw,
@@ -12356,39 +12333,6 @@ public final class ConcolicSummaryImporter {
         return false;
     }
 
-    private static boolean observedTargetBranch(JsonArray mappings,
-                                                JsonObject target) {
-        String site = strictString(target, "siteId");
-        Integer occurrence = strictInteger(target, "occurrence");
-        Boolean desired = strictBoolean(target, "desiredOutcome");
-        if (site.isEmpty() || occurrence == null || occurrence <= 0
-                || desired == null) return false;
-        int matches = 0;
-        for (JsonElement element : mappings) {
-            if (!element.isJsonObject()) continue;
-            JsonObject mapping = element.getAsJsonObject();
-            if (!site.equals(strictString(mapping, "siteId"))
-                    || !occurrence.equals(strictInteger(mapping,
-                    "occurrence"))) continue;
-            if (!desired.equals(strictBoolean(mapping,
-                    "observedOutcome"))
-                    || !desired.equals(strictBoolean(mapping,
-                    "effectiveOutcome"))
-                    || !Boolean.FALSE.equals(strictBoolean(mapping,
-                    "overrideApplied"))
-                    || !Boolean.TRUE.equals(strictBoolean(mapping,
-                    "scheduledTarget"))
-                    || !desired.equals(strictBoolean(mapping,
-                    "scheduledDesiredOutcome"))
-                    || !Boolean.TRUE.equals(strictBoolean(mapping,
-                    "scheduledOutcomeMatched"))) {
-                return false;
-            }
-            matches++;
-        }
-        return matches == 1;
-    }
-
     private static boolean exactAppliedModelAssignments(
             JsonArray expected, JsonArray applied) {
         if (expected.size() != applied.size()) return false;
@@ -13007,13 +12951,17 @@ public final class ConcolicSummaryImporter {
         private final boolean valid;
         private final JsonArray failures;
         private final String authority;
+        private final JsonObject branchReplayObservation;
 
         private ReplayAdmission(boolean required, boolean valid,
-                                JsonArray failures, String authority) {
+                                JsonArray failures, String authority,
+                                JsonObject branchReplayObservation) {
             this.required = required;
             this.valid = valid;
             this.failures = failures;
             this.authority = authority;
+            this.branchReplayObservation = branchReplayObservation == null
+                    ? new JsonObject() : branchReplayObservation.deepCopy();
         }
 
         private JsonObject toJson() {
@@ -13027,6 +12975,10 @@ public final class ConcolicSummaryImporter {
             result.add("failures", failures.deepCopy());
             result.addProperty("failureCount", failures.size());
             result.addProperty("authority", authority);
+            if (branchReplayObservation.size() > 0) {
+                result.add("branchReplayObservation",
+                        branchReplayObservation.deepCopy());
+            }
             return result;
         }
     }

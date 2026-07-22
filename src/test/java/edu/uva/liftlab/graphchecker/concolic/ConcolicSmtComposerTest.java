@@ -54,7 +54,8 @@ public class ConcolicSmtComposerTest {
             assertTrue(manifest.has("fatalRegionInstanceId"));
             assertTrue(manifest.has("fatalOccurrence"));
             assertTrue(manifest.has("fatalDesiredOutcome"));
-            assertTrue(manifest.has("validatedSummaryId"));
+            assertTrue(manifest.has("fatalReplayContractId"));
+            assertTrue(manifest.has("fatalSolverPathContextId"));
             assertEquals(1, manifest.getAsJsonArray(
                     "summaryInputArtifacts").size());
             BooleanReachConditionExtractor.validateArtifactBindings(
@@ -220,10 +221,12 @@ public class ConcolicSmtComposerTest {
             JsonObject fatal = JsonParser.parseString(new String(
                     Files.readAllBytes(fixture.fatal),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            JsonObject lookup = fatal.getAsJsonArray("constraints").get(0)
+            JsonArray constraints = fatalConstraints(fatal);
+            JsonObject lookup = constraints.get(0)
                     .getAsJsonObject();
             lookup.getAsJsonArray("_param_list").set(1,
                     placeholderExpression("java/lang/String.split", 3));
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -255,9 +258,11 @@ public class ConcolicSmtComposerTest {
             JsonObject fatal = JsonParser.parseString(new String(
                     Files.readAllBytes(fixture.fatal),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            fatal.getAsJsonArray("constraints").add(binaryCondition(
+            JsonArray constraints = fatalConstraints(fatal);
+            constraints.add(binaryCondition(
                     placeholderExpression("currentTimeMills", 3), ">",
                     constant("J", "Y_J_0")));
+            setFatalConstraints(fatal, constraints);
             addVmPlaceholderCertificate(fatal, "REGION.F.in.8", 3);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
@@ -285,15 +290,15 @@ public class ConcolicSmtComposerTest {
         folder.create();
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), false);
-            String hadoopTimeNow = hadoopTimeNowCell();
+            String vmClock = currentTimeMillisCell();
             addRegionPort(fixture, "REGION.P", "symbolicInputs",
-                    port("REGION.P.in.6", hadoopTimeNow));
+                    port("REGION.P.in.6", vmClock));
             JsonObject summary = producerSummary(singlePutEffect(), true);
             summary.getAsJsonArray("pathCondition").add(binaryCondition(
                     placeholderExpression("currentTimeMills", 3), ">",
                     constant("J", "Y_J_0")));
             addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3,
-                    hadoopTimeNow);
+                    vmClock);
             writeSummary(fixture, summary);
 
             ConcolicSmtComposer.Result result =
@@ -460,7 +465,7 @@ public class ConcolicSmtComposerTest {
                     poolManager.deepCopy(),
                     symbol("java/util/HashMap", "M_L_pool_managers"),
                     computedPoolKey);
-            JsonArray oldConstraints = fatal.getAsJsonArray("constraints");
+            JsonArray oldConstraints = fatalConstraints(fatal);
             JsonObject lookup = oldConstraints.get(0).getAsJsonObject();
             lookup.getAsJsonArray("_param_list").set(1,
                     serverKey.deepCopy());
@@ -472,7 +477,7 @@ public class ConcolicSmtComposerTest {
             for (JsonElement constraint : oldConstraints) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             JsonObject context = fatal.getAsJsonObject("symbolicContext");
             JsonObject equalityRelation = new JsonObject();
             equalityRelation.addProperty("edgeId",
@@ -554,10 +559,10 @@ public class ConcolicSmtComposerTest {
             JsonArray constraints = new JsonArray();
             constraints.add(positive);
             constraints.add(negative);
-            for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -609,11 +614,10 @@ public class ConcolicSmtComposerTest {
                     opString("contains", receiver.deepCopy(),
                             conString("enabled")),
                     "==", constant("Z", "Y_Z_1")));
-            for (JsonElement constraint : fatal.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -671,11 +675,10 @@ public class ConcolicSmtComposerTest {
                     opString("concat", conString("prefix"),
                             conString("_tail")),
                     conString("prefix_tail")));
-            for (JsonElement constraint : fatal.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -734,11 +737,10 @@ public class ConcolicSmtComposerTest {
                     symbol("", "N")));
             constraints.add(opString("contains", receiver.deepCopy(),
                     conString("ready")));
-            for (JsonElement constraint : fatal.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -800,12 +802,11 @@ public class ConcolicSmtComposerTest {
             shortCircuitConstraints.add(binaryCondition(isNull, "||",
                     opString("contains", receiver.deepCopy(),
                             conString("ready"))));
-            for (JsonElement constraint : original.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(original)) {
                 shortCircuitConstraints.add(constraint.deepCopy());
             }
             JsonObject shortCircuit = original.deepCopy();
-            shortCircuit.add("constraints", shortCircuitConstraints);
+            setFatalConstraints(shortCircuit, shortCircuitConstraints);
             Files.write(fixture.fatal, (shortCircuit + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -826,12 +827,11 @@ public class ConcolicSmtComposerTest {
                     receiver.deepCopy(), "==", symbol("", "N")));
             invalidDereferenceConstraints.add(opString("contains",
                     receiver.deepCopy(), conString("ready")));
-            for (JsonElement constraint : original.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(original)) {
                 invalidDereferenceConstraints.add(constraint.deepCopy());
             }
             JsonObject invalidDereference = original.deepCopy();
-            invalidDereference.add("constraints",
+            setFatalConstraints(invalidDereference,
                     invalidDereferenceConstraints);
             Files.write(fixture.fatal, (invalidDereference + "\n").getBytes(
                     StandardCharsets.UTF_8));
@@ -859,10 +859,11 @@ public class ConcolicSmtComposerTest {
             JsonArray sameConstraints = new JsonArray();
             sameConstraints.add(binaryCondition(receiver.deepCopy(), "==",
                     receiver.deepCopy()));
-            for (JsonElement constraint : original.getAsJsonArray(
-                    "constraints")) sameConstraints.add(constraint.deepCopy());
+            for (JsonElement constraint : fatalConstraints(original)) {
+                sameConstraints.add(constraint.deepCopy());
+            }
             JsonObject same = original.deepCopy();
-            same.add("constraints", sameConstraints);
+            setFatalConstraints(same, sameConstraints);
             Files.write(fixture.fatal, (same + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -876,12 +877,11 @@ public class ConcolicSmtComposerTest {
             distinctConstraints.add(binaryCondition(receiver.deepCopy(),
                     "==", symbol("java/lang/String",
                             "M_L'String'_distinct_reference")));
-            for (JsonElement constraint : original.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(original)) {
                 distinctConstraints.add(constraint.deepCopy());
             }
             JsonObject distinct = original.deepCopy();
-            distinct.add("constraints", distinctConstraints);
+            setFatalConstraints(distinct, distinctConstraints);
             Files.write(fixture.fatal, (distinct + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -921,11 +921,10 @@ public class ConcolicSmtComposerTest {
                     conString("prefix.*")));
             constraints.add(opString("equals", symbol("I",
                     "M_I_non_string_parameter"), conString("1")));
-            for (JsonElement constraint : fatal.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -971,10 +970,10 @@ public class ConcolicSmtComposerTest {
             constraints.add(binaryCondition(
                     constant("F", "Y_F_1.250000000e-03"), "<",
                     constant("D", "Y_D_1.25000000000000000e+02")));
-            for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -1018,10 +1017,10 @@ public class ConcolicSmtComposerTest {
                     "==", constant("F", "Y_F_0.0")));
             constraints.add(binaryCondition(constant("D", "Y_D_-0.0"),
                     "==", constant("D", "Y_D_0.0")));
-            for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -1399,11 +1398,10 @@ public class ConcolicSmtComposerTest {
                     10, symbol("I", "M_I_bad_limit")));
             constraints.add(codecParse(source.deepCopy(), "-", null, 0,
                     10, symbol("I", "M_I_bad_negative_boundary")));
-            for (JsonElement constraint : fatal.getAsJsonArray(
-                    "constraints")) {
+            for (JsonElement constraint : fatalConstraints(fatal)) {
                 constraints.add(constraint);
             }
-            fatal.add("constraints", constraints);
+            setFatalConstraints(fatal, constraints);
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -1438,7 +1436,7 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
-    public void requiresValidatedUnforcedReplayWhenFatalQueryIsReplayReady()
+    public void canonicalFatalContractIsTheOnlyBranchAuthority()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1447,287 +1445,108 @@ public class ConcolicSmtComposerTest {
             JsonObject fatal = JsonParser.parseString(new String(
                     Files.readAllBytes(fixture.fatal),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            fatal.addProperty("readyForReplay", true);
-            Files.write(fixture.fatal, (fatal + "\n").getBytes(
-                    StandardCharsets.UTF_8));
+            BranchReplayContract contract = BranchReplayContract.fromJson(
+                    fatal.getAsJsonObject("replayContract"));
+            SolverPathContext context = SolverPathContext.fromJson(
+                    fatal.getAsJsonObject("solverPathContext"));
 
-            ConcolicSmtComposer.Result missingReplay =
+            ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments(fixture));
-            assertFalse(missingReplay.manifest.get("complete").getAsBoolean());
-            assertFalse(missingReplay.manifest.get("fatalReplayValidated")
-                    .getAsBoolean());
-            assertFalse(missingReplay.manifest.get(
-                    "eligibleToReportAutomaticRelationship").getAsBoolean());
 
-            JsonObject replay = new JsonObject();
-            replay.addProperty("summaryId", "SUMMARY.F.REPLAY");
-            replay.addProperty("activationId", "ACT.F");
-            replay.addProperty("regionId", "REGION.F");
-            replay.addProperty("regionInstanceId",
-                    "REGION.F@fixture#call2");
-            replay.addProperty("valid", true);
-            replay.addProperty("targetReplayValidated", true);
-            replay.addProperty("branchOverrideUsed", false);
-            replay.add("captureGoal",
-                    RegionCaptureGoal.targetBranch().toJson());
-            JsonObject admission = new JsonObject();
-            admission.addProperty("required", true);
-            admission.addProperty("valid", true);
-            admission.addProperty("branchOverrideAccepted", false);
-            admission.addProperty("authority",
-                    "SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION");
-            replay.add("executionAdmission", admission);
-            Files.write(fixture.summaries, (replay + "\n").getBytes(
-                    StandardCharsets.UTF_8),
-                    java.nio.file.StandardOpenOption.APPEND);
-
-            ConcolicSmtComposer.Result admitted =
-                    ConcolicSmtComposer.compose(arguments(fixture));
-            assertTrue(admitted.manifest.get("complete").getAsBoolean());
-            assertTrue(admitted.manifest.get("fatalReplayValidated")
-                    .getAsBoolean());
-            assertEquals("VALIDATED_FINAL", admitted.manifest.get(
-                    "compositionStage").getAsString());
-            assertFalse(admitted.manifest.get("eligibleForBootstrapModel")
-                    .getAsBoolean());
-            assertEquals("SUMMARY.F.REPLAY", admitted.manifest.get(
-                    "validatedFatalReplaySummary").getAsString());
+            assertEquals(contract.contractId(), result.manifest.get(
+                    "fatalReplayContractId").getAsString());
+            assertEquals(context.contextId(), result.manifest.get(
+                    "fatalSolverPathContextId").getAsString());
+            assertEquals("F#u2", result.manifest.get(
+                    "fatalSite").getAsString());
+            assertEquals(1, result.manifest.get(
+                    "fatalOccurrence").getAsInt());
+            assertTrue(result.manifest.get(
+                    "fatalDesiredOutcome").getAsBoolean());
+            assertEquals(fatalConstraints(fatal).size(), result.manifest.get(
+                    "fatalConditionCount").getAsInt());
+            assertEquals("NATURAL_TARGET_REPLAY_PROMOTION_TODO",
+                    result.manifest.get("fatalReplayGap").getAsString());
+            assertFalse(result.manifest.get(
+                    "fatalReplayValidated").getAsBoolean());
+            assertFalse(result.manifest.has("validatedSummaryId"));
+            assertFalse(result.manifest.has(
+                    "validatedFatalReplaySummary"));
         } finally {
             folder.delete();
         }
     }
 
     @Test
-    public void freshValidatedFatalRequiresExactSummaryFormulaAndContext()
-            throws Exception {
+    public void rejectsRetiredFatalReplayAliases() throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            Fixture positive = fixture(folder.newFolder("positive").toPath(),
-                    false);
-            FreshReplayPair admittedPair = installFreshReplay(positive);
-            ConcolicSmtComposer.Result admitted =
-                    ConcolicSmtComposer.compose(arguments(positive));
-            ConcolicSmtComposer.FreshFatalArtifactValidation shared =
-                    ConcolicSmtComposer.validateFreshFatalArtifact(
-                            admittedPair.fatal,
-                            java.util.Collections.singletonList(
-                                    admittedPair.summary));
-            assertTrue(shared.reason, shared.valid);
-            assertEquals("SUMMARY.F.FRESH", shared.toJson().get(
-                    "summaryId").getAsString());
-            assertTrue(admitted.manifest.toString(), admitted.manifest.get(
-                    "fatalReplayValidated").getAsBoolean());
-            assertEquals("SUMMARY.F.FRESH", admitted.manifest.get(
-                    "validatedFatalReplaySummary").getAsString());
-            assertEquals(1, admitted.manifest.get(
-                    "fatalReplayExactCandidateCount").getAsInt());
-
-            Fixture missing = fixture(folder.newFolder("missing").toPath(),
-                    false);
-            installFreshReplay(missing);
-            Files.write(missing.summaries, new byte[0]);
-            assertFatalReplayGap(missing,
-                    "EXACT_FATAL_REPLAY_SUMMARY_MISSING");
-
-            Fixture stale = fixture(folder.newFolder("stale").toPath(),
-                    false);
-            FreshReplayPair stalePair = installFreshReplay(stale);
-            stalePair.summary.addProperty("regionInstanceId", "F.OLD");
-            writeSummary(stale, stalePair.summary);
-            assertFatalReplayGap(stale,
-                    "EXACT_FATAL_REPLAY_SUMMARY_MISSING");
-
-            Fixture wrongId = fixture(folder.newFolder("wrong-id").toPath(),
-                    false);
-            FreshReplayPair wrongIdPair = installFreshReplay(wrongId);
-            wrongIdPair.fatal.addProperty("validatedSummaryId",
-                    "SUMMARY.F.OTHER");
-            Files.write(wrongId.fatal,
-                    (wrongIdPair.fatal + "\n").getBytes(StandardCharsets.UTF_8));
-            assertFatalReplayGap(wrongId,
-                    "EXACT_FATAL_REPLAY_SUMMARY_MISSING");
-
-            Fixture tampered = fixture(folder.newFolder("tampered").toPath(),
-                    false);
-            FreshReplayPair tamperedPair = installFreshReplay(tampered);
-            tamperedPair.fatal.getAsJsonArray("constraints").get(1)
-                    .getAsJsonObject().addProperty("_op", "!=");
-            tamperedPair.summary.getAsJsonObject("freshObservedTargetQuery")
-                    .getAsJsonArray("constraints").get(1).getAsJsonObject()
-                    .addProperty("_op", "!=");
-            Files.write(tampered.fatal,
-                    (tamperedPair.fatal + "\n").getBytes(StandardCharsets.UTF_8));
-            writeSummary(tampered, tamperedPair.summary);
-            assertFatalReplayGap(tampered,
-                    "FRESH_FATAL_PREFIX_CONSTRAINT_MISMATCH");
-
-            Fixture staleContext = fixture(folder.newFolder(
-                    "stale-context").toPath(), false);
-            FreshReplayPair contextPair = installFreshReplay(staleContext);
-            contextPair.fatal.getAsJsonObject("symbolicContext")
-                    .getAsJsonArray("versionedStateMerges").get(0)
-                    .getAsJsonObject().getAsJsonArray("selectedBindings")
-                    .get(0).getAsJsonObject().addProperty(
-                            "toRegionInstance", "F.OLD");
-            contextPair.summary.getAsJsonObject("freshObservedTargetQuery")
-                    .getAsJsonObject("symbolicContext")
-                    .getAsJsonArray("versionedStateMerges").get(0)
-                    .getAsJsonObject().getAsJsonArray("selectedBindings")
-                    .get(0).getAsJsonObject().addProperty(
-                            "toRegionInstance", "F.OLD");
-            Files.write(staleContext.fatal,
-                    (contextPair.fatal + "\n").getBytes(StandardCharsets.UTF_8));
-            writeSummary(staleContext, contextPair.summary);
-            assertFatalReplayGap(staleContext,
-                    "FRESH_FATAL_CONTEXT_ENDPOINT_MISMATCH");
-
-            Fixture duplicate = fixture(folder.newFolder("duplicate")
-                    .toPath(), false);
-            FreshReplayPair duplicatePair = installFreshReplay(duplicate);
-            Files.write(duplicate.summaries,
-                    (duplicatePair.summary + "\n" + duplicatePair.summary
-                            + "\n").getBytes(StandardCharsets.UTF_8));
-            assertFatalReplayGap(duplicate,
-                    "EXACT_FATAL_REPLAY_SUMMARY_NOT_UNIQUE");
+            for (String alias : new String[]{"targetReplayValidated",
+                    "replayAlreadyValidated", "validatedTargetSummary"}) {
+                Fixture fixture = fixture(folder.newFolder(alias).toPath(),
+                        true);
+                JsonObject fatal = JsonParser.parseString(new String(
+                        Files.readAllBytes(fixture.fatal),
+                        StandardCharsets.UTF_8).trim()).getAsJsonObject();
+                if ("validatedTargetSummary".equals(alias)) {
+                    fatal.add(alias, new JsonObject());
+                } else {
+                    fatal.addProperty(alias, true);
+                }
+                Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                        StandardCharsets.UTF_8));
+                assertFatalQueryRejected(fixture,
+                        "rejects retired branch alias: " + alias);
+            }
         } finally {
             folder.delete();
         }
     }
 
-    private static void assertFatalReplayGap(Fixture fixture, String reason)
+    @Test
+    public void requiresCanonicalFatalContractAndSolverContext()
             throws Exception {
-        ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
-                arguments(fixture));
-        assertFalse(result.manifest.get("fatalReplayValidated")
-                .getAsBoolean());
-        assertEquals(reason, result.manifest.get("fatalReplayGap")
-                .getAsString());
-        assertFalse(result.manifest.get(
-                "eligibleToReportAutomaticRelationship").getAsBoolean());
-    }
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture missingContract = fixture(folder.newFolder(
+                    "missing-contract").toPath(), true);
+            JsonObject fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(missingContract.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            fatal.remove("replayContract");
+            Files.write(missingContract.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertFatalQueryRejected(missingContract,
+                    "requires replayContract");
 
-    private static FreshReplayPair installFreshReplay(Fixture fixture)
-            throws Exception {
-        JsonObject fatal = JsonParser.parseString(new String(
-                Files.readAllBytes(fixture.fatal), StandardCharsets.UTF_8)
-                .trim()).getAsJsonObject();
-        String instance = "REGION.F@fixture#call2";
-        fatal.addProperty("regionInstanceId", instance);
-        fatal.addProperty("occurrence", 1);
-        fatal.addProperty("desiredOutcome", false);
-        fatal.addProperty("conditionIndex", 1);
-        fatal.addProperty("readyForReplay", false);
-        fatal.addProperty("replayAlreadyValidated", true);
-        fatal.addProperty("targetReplayValidated", true);
-        fatal.addProperty("validatedSummaryId", "SUMMARY.F.FRESH");
-        fatal.addProperty("replayValidationAuthority",
-                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
-                        + "TARGET_REPLAY");
-        fatal.addProperty("formulaAuthority",
-                "FRESH_INSTANCE_IMPORTED_UNFORCED_TARGET_PREFIX_PLUS_"
-                        + "OBSERVED_TARGET");
-        fatal.addProperty("targetPolicy",
-                "KEEP_FRESH_OBSERVED_DESIRED_TARGET_CONDITION");
-        JsonElement targetCondition = fatal.getAsJsonArray("constraints")
-                .get(1).deepCopy();
-        fatal.add("freshObservedTargetCondition",
-                targetCondition.deepCopy());
-        fatal.add("negatedTargetCondition", targetCondition.deepCopy());
-        fatal.add("engineArrayInputBindings", new JsonArray());
-
-        JsonObject admission = new JsonObject();
-        admission.addProperty("required", true);
-        admission.addProperty("valid", true);
-        admission.addProperty("branchOverrideAccepted", false);
-        admission.addProperty("authority",
-                "SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION");
-        JsonObject validated = new JsonObject();
-        validated.addProperty("summaryId", "SUMMARY.F.FRESH");
-        validated.addProperty("activationId", "ACT.F");
-        validated.addProperty("regionId", "REGION.F");
-        validated.addProperty("regionInstanceId", instance);
-        validated.addProperty("targetReplayValidated", true);
-        validated.addProperty("branchOverrideUsed", false);
-        validated.add("executionAdmission", admission.deepCopy());
-        fatal.add("validatedTargetSummary", validated);
-        JsonObject rebase = new JsonObject();
-        rebase.addProperty("activationId", "ACT.F");
-        rebase.addProperty("regionInstanceId", instance);
-        rebase.addProperty("downstreamInjectionUsed", false);
-        rebase.addProperty("branchOverrideUsed", false);
-        rebase.addProperty("authority",
-                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
-                        + "TARGET_REPLAY");
-        fatal.add("targetRebaseProvenance", rebase);
-        JsonObject rebuild = new JsonObject();
-        rebuild.addProperty("freshSummaryId", "SUMMARY.F.FRESH");
-        rebuild.addProperty("transitionExecutionId", "EXEC.FRESH");
-        rebuild.addProperty("activationId", "ACT.F");
-        rebuild.addProperty("regionInstanceId", instance);
-        rebuild.addProperty("authority",
-                "FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER");
-        fatal.add("freshQueryRebuildProvenance", rebuild);
-        JsonObject context = fatal.getAsJsonObject("symbolicContext");
-        context.addProperty("regionId", "REGION.F");
-        context.addProperty("regionInstanceId", instance);
-        context.addProperty("transitionExecutionId", "EXEC.FRESH");
-        context.addProperty("selectionAuthority",
-                "CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE");
-        JsonObject binding = context.getAsJsonArray("versionedStateMerges")
-                .get(0).getAsJsonObject().getAsJsonArray("selectedBindings")
-                .get(0).getAsJsonObject();
-        context.getAsJsonArray("versionedStateMerges").get(0)
-                .getAsJsonObject().addProperty("toEndpoint",
-                        "REGION.F::REGION.F.in.0");
-        binding.addProperty("fromRegionInstance", "P.FRESH");
-        binding.addProperty("toRegionInstance", instance);
-
-        JsonObject summary = new JsonObject();
-        summary.addProperty("summaryId", "SUMMARY.F.FRESH");
-        summary.addProperty("activationId", "ACT.F");
-        summary.addProperty("regionId", "REGION.F");
-        summary.addProperty("regionInstanceId", instance);
-        summary.addProperty("valid", true);
-        summary.addProperty("targetReplayValidated", true);
-        summary.addProperty("branchOverrideUsed", false);
-        summary.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
-        summary.add("executionAdmission", admission.deepCopy());
-        summary.add("pathCondition", fatal.getAsJsonArray("constraints")
-                .deepCopy());
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", "F#u2");
-        mapping.addProperty("occurrence", 1);
-        mapping.addProperty("conditionIndex", 1);
-        mapping.addProperty("observedOutcome", false);
-        mapping.addProperty("overrideApplied", false);
-        mapping.add("condition", targetCondition.deepCopy());
-        JsonArray mappings = new JsonArray();
-        mappings.add(mapping);
-        summary.add("branchMappings", mappings);
-        summary.add("engineArrayInputBindings", new JsonArray());
-        JsonObject provisional = new JsonObject();
-        provisional.addProperty("siteId", "F#u2");
-        provisional.addProperty("authority", "PROVISIONAL_TARGET_ORACLE");
-        summary.add("directedTargetQuery", provisional);
-        summary.add("freshObservedTargetQuery", fatal.deepCopy());
-
-        Files.write(fixture.fatal,
-                (fatal + "\n").getBytes(StandardCharsets.UTF_8));
-        writeSummary(fixture, summary);
-        return new FreshReplayPair(fatal, summary);
-    }
-
-    private static final class FreshReplayPair {
-        private final JsonObject fatal;
-        private final JsonObject summary;
-
-        private FreshReplayPair(JsonObject fatal, JsonObject summary) {
-            this.fatal = fatal;
-            this.summary = summary;
+            Fixture missingContext = fixture(folder.newFolder(
+                    "missing-context").toPath(), true);
+            fatal = JsonParser.parseString(new String(
+                    Files.readAllBytes(missingContext.fatal),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            fatal.remove("solverPathContext");
+            Files.write(missingContext.fatal, (fatal + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+            assertFatalQueryRejected(missingContext,
+                    "requires solverPathContext");
+        } finally {
+            folder.delete();
         }
     }
 
+    private static void assertFatalQueryRejected(Fixture fixture,
+                                                 String message)
+            throws Exception {
+        try {
+            ConcolicSmtComposer.compose(arguments(fixture));
+            throw new AssertionError("expected fatal query rejection");
+        } catch (java.io.IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage()
+                    .contains(message));
+        }
+    }
     @Test
     public void composesVersionedJavaMapMutationChain() throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -2121,8 +1940,9 @@ public class ConcolicSmtComposerTest {
             JsonObject fatal = JsonParser.parseString(new String(
                     Files.readAllBytes(fixture.fatal),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            fatal.getAsJsonArray("constraints").add(
-                    arrayLoad("VM_FATAL_ARRAY", "VM_FATAL_VALUE"));
+            JsonArray constraints = fatalConstraints(fatal);
+            constraints.add(arrayLoad("VM_FATAL_ARRAY", "VM_FATAL_VALUE"));
+            setFatalConstraints(fatal, constraints);
             fatal.add("engineArrayInputBindings", singleton(
                     engineArrayInputBinding("ACT.F", "REGION.F.in.8",
                             cell, "[I", "VM_FATAL_ARRAY", 81,
@@ -2159,8 +1979,10 @@ public class ConcolicSmtComposerTest {
             JsonObject fatal = JsonParser.parseString(new String(
                     Files.readAllBytes(fixture.fatal),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            fatal.getAsJsonArray("constraints").add(
-                    arrayLoad("VM_FATAL_LENGTH_ONE", "VM_FATAL_VALUE"));
+            JsonArray constraints = fatalConstraints(fatal);
+            constraints.add(arrayLoad("VM_FATAL_LENGTH_ONE",
+                    "VM_FATAL_VALUE"));
+            setFatalConstraints(fatal, constraints);
             fatal.add("engineArrayInputBindings", singleton(
                     engineArrayInputBinding("ACT.F", "REGION.F.in.8",
                             consumerCell, "[I", "VM_FATAL_LENGTH_ONE", 82,
@@ -2837,10 +2659,12 @@ public class ConcolicSmtComposerTest {
                     JsonObject fatal = JsonParser.parseString(new String(
                             Files.readAllBytes(fixture.fatal),
                             StandardCharsets.UTF_8).trim()).getAsJsonObject();
-                    fatal.getAsJsonArray("constraints").get(0)
+                    JsonArray constraints = fatalConstraints(fatal);
+                    constraints.get(0)
                             .getAsJsonObject().getAsJsonArray("_param_list")
                             .set(1, constant("example/CustomKey",
                                     "Y_L_custom"));
+                    setFatalConstraints(fatal, constraints);
                     Files.write(fixture.fatal, (fatal + "\n").getBytes(
                             StandardCharsets.UTF_8));
                     summary = producerSummary(singlePutEffect(), true);
@@ -5671,6 +5495,71 @@ public class ConcolicSmtComposerTest {
         return binaryCondition(JsonNull.INSTANCE, "-", operand);
     }
 
+    private static JsonArray fatalConstraints(JsonObject fatal) {
+        BranchReplayContract contract = BranchReplayContract.fromJson(
+                fatal.getAsJsonObject("replayContract"));
+        SolverPathContext context = SolverPathContext.fromJson(
+                fatal.getAsJsonObject("solverPathContext"));
+        JsonArray result = context.expressions();
+        for (JsonElement predicate : contract.requiredPathPredicates()) {
+            result.add(predicate);
+        }
+        return result;
+    }
+
+    /** Rebuilds the immutable test protocol after changing a path formula. */
+    private static void setFatalConstraints(JsonObject fatal,
+                                            JsonArray constraints) {
+        if (constraints == null || constraints.size() == 0) {
+            throw new IllegalArgumentException(
+                    "fatal test path requires a target predicate");
+        }
+        int targetPosition = constraints.size() - 1;
+        java.util.List<BranchWitness> prefix = new java.util.ArrayList<>();
+        java.util.Set<Integer> branchPositions =
+                new java.util.LinkedHashSet<>();
+        for (int index = 0; index < targetPosition; index++) {
+            JsonElement expression = constraints.get(index);
+            String type = expression.isJsonObject()
+                    && expression.getAsJsonObject().has("_type")
+                    ? expression.getAsJsonObject().get("_type").getAsString()
+                    : "";
+            if ("MethodExpression".equals(type)
+                    || "_array_expr".equals(type)) {
+                continue;
+            }
+            branchPositions.add(index);
+            prefix.add(testBranchWitness("TEST#u" + (100 + index),
+                    100 + index, expression, index));
+        }
+        JsonElement requiredTarget = constraints.get(targetPosition);
+        BranchWitness source = BranchWitness.vmPc("F#u2",
+                "<test.Fatal: void run()>", 2, 1, false,
+                BranchPredicateAlgebra.complement(requiredTarget),
+                targetPosition, testVmEvent(targetPosition));
+        BranchReplayContract contract = BranchReplayContract.flip(prefix,
+                source);
+        SolverPathContext context = SolverPathContext.fromPath(constraints,
+                branchPositions, targetPosition);
+        fatal.add("replayContract", contract.toJson());
+        fatal.add("solverPathContext", context.toJson());
+    }
+
+    private static BranchWitness testBranchWitness(String siteId,
+                                                   int unitIndex,
+                                                   JsonElement predicate,
+                                                   int pcIndex) {
+        return BranchWitness.vmPc(siteId, "<test.Fatal: void run()>",
+                unitIndex, 1, true, predicate, pcIndex,
+                testVmEvent(pcIndex));
+    }
+
+    private static JsonObject testVmEvent(int pcIndex) {
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", pcIndex + 1);
+        return event;
+    }
+
     private static void prependFatalConstraints(Fixture fixture,
                                                 JsonElement... added)
             throws Exception {
@@ -5679,10 +5568,10 @@ public class ConcolicSmtComposerTest {
                 StandardCharsets.UTF_8).trim()).getAsJsonObject();
         JsonArray constraints = new JsonArray();
         for (JsonElement constraint : added) constraints.add(constraint);
-        for (JsonElement constraint : fatal.getAsJsonArray("constraints")) {
+        for (JsonElement constraint : fatalConstraints(fatal)) {
             constraints.add(constraint);
         }
-        fatal.add("constraints", constraints);
+        setFatalConstraints(fatal, constraints);
         Files.write(fixture.fatal, (fatal + "\n").getBytes(
                 StandardCharsets.UTF_8));
     }
@@ -5755,8 +5644,8 @@ public class ConcolicSmtComposerTest {
         return "<java.lang.System: long currentTimeMillis()>.return";
     }
 
-    private static String hadoopTimeNowCell() {
-        return "<org.apache.hadoop.util.Time: long now()>.return";
+    private static String currentTimeMillisCell() {
+        return "<java.lang.System: long currentTimeMillis()>.return";
     }
 
     private static void addVmPlaceholderCertificate(
@@ -6758,9 +6647,14 @@ public class ConcolicSmtComposerTest {
                 + "\"toEndpoint\":\"REGION.F.in.0\","
                 + "\"selectedBindings\":[{\"orderConfirmed\":true,"
                 + "\"writeSeq\":10,\"readSeq\":20}]}]}";
-        String fatal = "{\"activationId\":\"ACT.F\","
-                + "\"regionId\":\"REGION.F\",\"siteId\":\"F#u2\","
-                + "\"readyForSolver\":true,\"constraints\":[{"
+        JsonObject fatal = new JsonObject();
+        fatal.addProperty("schemaVersion", 1);
+        fatal.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
+        fatal.addProperty("activationId", "ACT.F");
+        fatal.addProperty("regionId", "REGION.F");
+        fatal.addProperty("regionInstanceId", "REGION.F@fixture#call2");
+        fatal.addProperty("readyForSolver", true);
+        JsonArray fatalPath = JsonParser.parseString("[{"
                 + "\"_type\":\"MethodExpression\","
                 + "\"_name\":\"java/util/HashMap get\","
                 + "\"_param_list\":[{\"_type\":\"SymbolExpression\","
@@ -6777,9 +6671,12 @@ public class ConcolicSmtComposerTest {
                 + "\"_java_type\":\"example/Value\","
                 + "\"_exp\":\"map_result\"},\"_op\":\"==\","
                 + "\"_right\":{\"_type\":\"SymbolExpression\","
-                + "\"_java_type\":\"\",\"_exp\":\"N\"}}],"
-                + "\"symbolicContext\":" + context + "}\n";
-        Files.write(fixture.fatal, fatal.getBytes(StandardCharsets.UTF_8));
+                + "\"_java_type\":\"\",\"_exp\":\"N\"}}]")
+                .getAsJsonArray();
+        setFatalConstraints(fatal, fatalPath);
+        fatal.add("symbolicContext", JsonParser.parseString(context));
+        Files.write(fixture.fatal, (fatal + "\n").getBytes(
+                StandardCharsets.UTF_8));
 
         Files.write(fixture.merge, context.getBytes(StandardCharsets.UTF_8));
         if (includeProducerSummary) {

@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -91,7 +92,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertTrue(target.get("observationOnlyReplay").getAsBoolean());
         assertFalse(target.get("concreteReplayOnly").getAsBoolean());
         assertEquals(0, target.getAsJsonArray("modelAssignments").size());
-        assertEquals(0, target.getAsJsonArray("forcedBranches").size());
+        assertFalse(target.has("forcedBranches"));
         assertEquals(0, target.getAsJsonArray(
                 "replayMaterializations").size());
         assertEquals("fixture.ConsumerThread", target.get(
@@ -104,8 +105,10 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertEquals("TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
                         + "THREAD_NAME_CONTEXT_ORDINAL_V1",
                 target.get("rootContextSelectionAuthority").getAsString());
-        assertEquals("ACT.T", target.getAsJsonObject(
-                "directedTargetQuery").get("activationId").getAsString());
+        assertTrue(target.has("replayContract"));
+        assertFalse(target.has("directedTargetQuery"));
+        assertFalse(target.has("targetBranch"));
+        assertFalse(target.has("branchCaptureSelector"));
     }
 
     @Test
@@ -810,7 +813,8 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         Assume.assumeTrue(z3Available());
         Fixture fixture = fixture();
         JsonObject target = jsonlRow(fixture.target, "activationId", "ACT.T");
-        target.getAsJsonObject("targetBranch").addProperty("occurrence", 2);
+        target.add("branchCaptureSelector", BranchCaptureSelector.of(
+                "<fixture.T: void run()>#u4", 2, true).toJson());
         replaceJsonlRow(fixture.target, "activationId", "ACT.T", target);
 
         expectFailure(fixture.arguments(),
@@ -1657,6 +1661,9 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         compositionJson.addProperty("fatalOccurrence", 1);
         compositionJson.addProperty("fatalDesiredOutcome", true);
         compositionJson.addProperty("fatalConditionCount", 1);
+        compositionJson.addProperty("fatalReplayContractId",
+                BranchReplayContract.fromJson(fatalQuery.getAsJsonObject(
+                        "replayContract")).contractId());
         compositionJson.addProperty("validatedSummaryId", "");
         compositionJson.addProperty("validatedFatalReplaySummary", "");
         compositionJson.add("composedSmtArtifact", artifact(smt));
@@ -1758,11 +1765,9 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         captureGoal.addProperty("kind", "TARGET_BRANCH");
         captureGoal.addProperty("scope", "ONE_DIRECTED_BRANCH");
         targetActivation.add("captureGoal", captureGoal);
-        JsonObject targetBranch = new JsonObject();
-        targetBranch.addProperty("siteId", "<fixture.T: void run()>#u4");
-        targetBranch.addProperty("occurrence", 1);
-        targetBranch.addProperty("desiredOutcome", true);
-        targetActivation.add("targetBranch", targetBranch);
+        targetActivation.add("branchCaptureSelector",
+                BranchCaptureSelector.of("<fixture.T: void run()>#u4", 1,
+                        true).toJson());
         Files.write(target, (targetActivation + "\n").getBytes(
                 StandardCharsets.UTF_8));
         return new Fixture(smt, composition, reach, summaries, activations,
@@ -1899,22 +1904,26 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
 
     private static JsonObject fatal() {
         JsonObject result = new JsonObject();
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
         result.addProperty("activationId", "ACT.T");
         result.addProperty("regionId", "REGION.T");
         result.addProperty("regionInstanceId", "INSTANCE.T");
-        result.addProperty("siteId", "<fixture.T: void run()>#u4");
-        result.addProperty("occurrence", 1);
-        result.addProperty("desiredOutcome", true);
         result.addProperty("readyForSolver", true);
         JsonObject condition = new JsonObject();
         condition.addProperty("_type", "SymbolExpression");
         condition.addProperty("_java_type", "Z");
         condition.addProperty("_exp", "fatal");
-        result.add("originalTargetCondition", condition.deepCopy());
-        result.add("negatedTargetCondition", condition.deepCopy());
-        JsonArray constraints = new JsonArray();
-        constraints.add(condition);
-        result.add("constraints", constraints);
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", 1);
+        event.addProperty("contextId", 1);
+        BranchWitness source = BranchWitness.vmPc(
+                "<fixture.T: void run()>#u4",
+                "<fixture.T: void run()>", 4, 1, false,
+                BranchPredicateAlgebra.complement(condition), 0, event);
+        result.add("replayContract", BranchReplayContract.flip(
+                Collections.<BranchWitness>emptyList(), source).toJson());
+        result.add("solverPathContext", SolverPathContext.empty().toJson());
         JsonObject context = new JsonObject();
         context.addProperty("regionInstanceId", "INSTANCE.T");
         result.add("symbolicContext", context);

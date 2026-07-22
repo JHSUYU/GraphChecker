@@ -67,9 +67,9 @@ public final class CausynthTraceRecorder {
             new ConcurrentHashMap<>();
     /**
      * A plain concolic replay uses the rich-trace call stacks only as exact
-     * accessor-site context.  It does not publish a runtime trace, so hashing
-     * every HDFS packet/argument is both semantically unused and prohibitively
-     * expensive on the interpreted custom JVM.  Campaign discovery supplies
+     * accessor-site context. It does not publish a runtime trace, so hashing
+     * every packet/argument is both semantically unused and prohibitively
+     * expensive on the interpreted custom JVM. Campaign discovery supplies
      * an explicit trace output directory and therefore keeps fingerprints.
      * The system property is an auditable override for either mode.
      */
@@ -85,7 +85,7 @@ public final class CausynthTraceRecorder {
     /**
      * Rich campaign replays may emit hundreds of thousands of events.  When
      * aggregation is performed by a fresh host JVM, retaining the same rows
-     * in the MiniDFSCluster JVM only doubles memory and can make shutdown
+     * in the instrumented JVM only doubles memory and can make shutdown
      * aggregation fail.  Streaming-only mode keeps the call-stack TLS needed
      * by instrumentation, but writes event rows directly to disk without
      * building the offline graph inputs in this JVM.
@@ -1235,7 +1235,7 @@ public final class CausynthTraceRecorder {
                 "maxEvents", maxEvents,
                 "maxGraphEdges", maxGraphEdges,
                 "maxContextPairsPerEdge", maxContextPairsPerEdge);
-        // HDFS traces can legitimately instantiate graphs beyond Java's
+        // Large traces can legitimately instantiate graphs beyond Java's
         // maximum String/byte[] size.  Stream the already bounded collections
         // instead of constructing one multi-gigabyte intermediate String.
         writeGraphFile(new File(outputDir, "unit_test_instantiated_graph.json"),
@@ -1492,7 +1492,7 @@ public final class CausynthTraceRecorder {
         // Only a small, diagnostic subset of targets can become a guidance
         // merge point.  First discover that subset, then count its incoming
         // edges.  Retaining a List<EdgeAccumulator> for every target used to
-        // duplicate up to maxGraphEdges references on large HDFS traces.
+        // duplicate up to maxGraphEdges references on large traces.
         Set<String> interestingTargets = new LinkedHashSet<>();
         for (EdgeAccumulator edge : roleEdges.values()) {
             if (shouldEmitGuidanceEdge(edge)
@@ -1535,16 +1535,6 @@ public final class CausynthTraceRecorder {
 
     private static boolean interestingMergeTarget(String target,
                                                   EdgeAccumulator edge) {
-        String text = lower(target);
-        if (text.contains("keyid") || text.contains("currentkey")
-                || text.contains("allkeys") || text.contains("exportedblockkeys")
-                || text.contains("dataencryptionkey")
-                || text.contains("getblockkeys")
-                || text.contains("retrievepassword")
-                || text.contains("retrievedataencryptionkey")
-                || text.contains("sasl")) {
-            return true;
-        }
         String model = guidanceModel(edge);
         return "port_mapping_candidate".equals(model)
                 || "heap_latest_write".equals(model)
@@ -1553,11 +1543,8 @@ public final class CausynthTraceRecorder {
 
     private static String suggestedMergeModel(String target) {
         String text = lower(target);
-        if (text.contains("allkeys") || text.contains("<java.util.map:")) {
+        if (text.contains("<java.util.map:")) {
             return "SymbolicMapState/MergeMapUpdates";
-        }
-        if (text.contains("currentkey") || text.contains("encryptionkey")) {
-            return "merge_latest(fieldWrites)";
         }
         if (text.contains(".return")) {
             return "Merge(MethodSummary alternatives)";
@@ -1969,10 +1956,6 @@ public final class CausynthTraceRecorder {
     }
 
     private static String inferProcessName(String method, String threadName) {
-        String methodProcess = processForMethod(method);
-        if (!methodProcess.isEmpty()) {
-            return methodProcess;
-        }
         StringBuilder evidence = new StringBuilder();
         evidence.append(method == null ? "" : method).append(' ')
                 .append(threadName == null ? "" : threadName);
@@ -1990,67 +1973,12 @@ public final class CausynthTraceRecorder {
         if (!configuredProcess.isEmpty()) {
             return configuredProcess;
         }
-        String lower = evidenceText.toLowerCase(Locale.ROOT);
-        if (lower.contains("balancer") || lower.contains("keymanager")
-                || lower.contains("namenodeconnector")) {
-            return "balancer";
-        }
-        if (lower.contains("datanode") || lower.contains("dataxceiver")
-                || lower.contains("bpserviceactor")
-                || lower.contains("sasldatatransferserver")) {
-            return "datanode";
-        }
-        if (lower.contains("namenode") || lower.contains("fsnamesystem")
-                || lower.contains("blockmanager")
-                || lower.contains("namesystem")) {
-            return "namenode";
-        }
-        if (lower.contains("sasldatatransferclient") || lower.contains("dfsclient")
-                || lower.contains("client")) {
-            return "client";
-        }
         return "unknown";
     }
 
     private static String normalizeRecordedProcess(String recorded, String method,
                                                    String threadName) {
-        String methodProcess = processForMethod(method);
-        if (!methodProcess.isEmpty()) {
-            return methodProcess;
-        }
         return firstNonBlank(recorded, inferProcessName(method, threadName), "unknown");
-    }
-
-    /**
-     * Returns a role only when the method itself is unambiguous.  This must run
-     * before stack/thread heuristics: an in-process MiniDFSCluster RPC handler
-     * can have DataNode-originated frames while executing NameNode code.
-     */
-    private static String processForMethod(String method) {
-        String lower = lower(method);
-        if (lower.isEmpty()) {
-            return "";
-        }
-        if (lower.contains("server.balancer")
-                || lower.contains("keymanager")) {
-            return "balancer";
-        }
-        if (lower.contains("server.namenode")
-                || lower.contains("server.blockmanagement")
-                || lower.contains("namenodeprotocolserversidetranslatorpb")
-                || lower.contains("namenoderpcserver")) {
-            return "namenode";
-        }
-        if (lower.contains("server.datanode")
-                || lower.contains("sasldatatransferserver")) {
-            return "datanode";
-        }
-        if (lower.contains("blocktokensecretmanager: boolean updatekeys(")
-                || lower.contains("blocktokensecretmanager: void generatekeys(")
-                || lower.contains("blocktokensecretmanager: org.apache.hadoop.hdfs.security.token.block.exportedblockkeys exportkeys(")) {
-            return "namenode";
-        }
-        return "";
     }
 
     private static String threadRole(String threadName) {
@@ -2066,27 +1994,6 @@ public final class CausynthTraceRecorder {
             return configuredRole;
         }
         String lower = value.toLowerCase(Locale.ROOT);
-        if (lower.contains("keymanager$blockkeyupdater")) {
-            return "KeyManager$BlockKeyUpdater";
-        }
-        if (lower.contains("heartbeatmanager$monitor")) {
-            return "HeartbeatManager$Monitor";
-        }
-        if (lower.contains("dataxceiver")) {
-            return "DataXceiver";
-        }
-        if (lower.contains("heartbeating to")) {
-            return "BPServiceActor heartbeating";
-        }
-        if (lower.contains("datastreamer")) {
-            return "DataStreamer";
-        }
-        if (lower.contains("ipc server handler")) {
-            return "IPC Server handler";
-        }
-        if (lower.contains("sasldatatransfer")) {
-            return "SaslDataTransfer";
-        }
         if ("main".equals(lower)) {
             return "main";
         }
@@ -2574,7 +2481,7 @@ public final class CausynthTraceRecorder {
         }
         String kind = edge.kind.toLowerCase(Locale.ROOT);
         return kind.contains("rpc") || kind.contains("protocol")
-                || kind.contains("sasl") || kind.contains("transfer");
+                || kind.contains("transfer");
     }
 
     private static String crossBoundaryRelation(String kind) {
@@ -2585,8 +2492,7 @@ public final class CausynthTraceRecorder {
         if (lower.contains("rpc")) {
             return "rpc_field_mapping";
         }
-        if (lower.contains("protocol") || lower.contains("sasl")
-                || lower.contains("transfer")) {
+        if (lower.contains("protocol") || lower.contains("transfer")) {
             return "protocol_field_mapping";
         }
         return "cross_boundary_mapping";
@@ -3362,8 +3268,8 @@ public final class CausynthTraceRecorder {
     private static final class ValueFingerprint {
         /*
          * These are deliberately small, hard ceilings rather than hints.
-         * Fingerprinting runs in the instrumented VM (and, for HDFS, often
-         * in the interpreted custom VM), so walking a service/manager object
+         * Fingerprinting runs in the instrumented VM (often the interpreted
+         * custom VM), so walking a service/manager object
          * graph here can otherwise dominate the workload.  The useful
          * evidence is the bounded value-shaped prefix: container shape and
          * entries, array elements, and scalar fields such as keyId/expiry.
@@ -3403,7 +3309,7 @@ public final class CausynthTraceRecorder {
                 // shared Map/Collection may change while it is fingerprinted;
                 // a ConcurrentModificationException (or any reflective
                 // access failure) must never escape into the instrumented
-                // HDFS execution.  Incomplete fingerprints are already
+                // execution. Incomplete fingerprints are already
                 // ineligible for automatic endpoint equality.
                 String type = failure.getClass().getName();
                 return new ValueFingerprint("", false, 0,

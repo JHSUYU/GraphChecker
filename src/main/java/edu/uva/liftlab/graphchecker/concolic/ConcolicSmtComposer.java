@@ -163,34 +163,24 @@ public final class ConcolicSmtComposer {
                     + arguments.fatalRegion + " activation="
                     + arguments.activationId);
         }
-        boolean fatalReplayClaimed = bool(fatal,
-                "targetReplayValidated", false)
-                || bool(fatal, "replayAlreadyValidated", false)
-                || !string(fatal, "validatedSummaryId").isEmpty()
-                || object(fatal, "validatedTargetSummary").size() > 0;
-        boolean fatalReplayRequired = bool(fatal, "readyForReplay", false)
-                || array(fatal, "replayMaterializations").size() > 0
-                || fatalReplayClaimed;
-        FatalReplaySelection fatalReplaySelection;
-        if (fatalReplayClaimed
-                && "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
-                .concat("TARGET_REPLAY").equals(string(fatal,
-                        "replayValidationAuthority"))) {
-            FreshFatalArtifactValidation validation =
-                    validateFreshFatalArtifact(fatal, summaries);
-            fatalReplaySelection = new FatalReplaySelection(
-                    validation.valid, validation.reason,
-                    validation.summary, validation.exactCandidateCount);
-        } else {
-            fatalReplaySelection = selectValidatedFatalReplay(summaries,
-                    fatal, fatalReplayClaimed);
-        }
-        JsonObject fatalReplay = fatalReplaySelection.summary;
-        // A seed query is useful for producing the next replay model, but it
-        // is not itself evidence that the target branch was reached without
-        // an override.  Do not make replay validation vacuously true merely
-        // because the selected query has not claimed a replay yet.
-        boolean fatalReplayValidated = fatalReplaySelection.valid;
+        rejectRetiredFatalReplayAliases(fatal);
+        BranchReplayContract fatalReplayContract = replayContract(fatal);
+        SolverPathContext fatalSolverPathContext = solverPathContext(fatal);
+        JsonArray fatalConstraints = fatalConstraints(fatalReplayContract,
+                fatalSolverPathContext);
+        BranchWitness fatalSource = fatalReplayContract.source();
+        String fatalSite = fatalSource.siteId();
+        int fatalOccurrence = fatalSource.occurrence();
+        boolean fatalDesiredOutcome = fatalReplayContract
+                .requiredTakenOutcome();
+
+        // This composer consumes a seed query.  A solver-ready branch replay
+        // contract is sufficient to build the candidate SMT, but it is not an
+        // observation that the complete workload naturally reached the target.
+        // Natural target replay promotion remains the explicit next-stage TODO.
+        boolean fatalReplayRequired = true;
+        boolean fatalReplayValidated = false;
+        String fatalReplayGap = "NATURAL_TARGET_REPLAY_PROMOTION_TODO";
 
         PortIndex ports = PortIndex.from(regions);
         JsonObject configuredTransportInput =
@@ -253,11 +243,10 @@ public final class ConcolicSmtComposer {
         emitter.unsupported.addAll(resolved.gaps);
         emitter.unsupported.addAll(configuredTransport.gaps);
 
-        JsonArray fatalConstraints = array(fatal, "constraints");
         List<String> fatalTerms = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
                 + firstNonBlank(string(fatal, "activationId"),
-                string(fatal, "queryId"), string(fatal, "siteId"),
+                string(fatal, "queryId"), fatalSite,
                 string(fatal, "regionId"), "selected"));
         try {
             emitter.registerEngineArrayInputBindings(fatal, "fatal query");
@@ -334,12 +323,13 @@ public final class ConcolicSmtComposer {
                 string(fatal, "activationId"));
         bindingMaterial.addProperty("fatalRegionInstanceId",
                 fatalRegionInstanceId);
-        bindingMaterial.add("fatalOccurrence", copyOrNull(fatal,
-                "occurrence"));
-        bindingMaterial.add("fatalDesiredOutcome", copyOrNull(fatal,
-                "desiredOutcome"));
-        bindingMaterial.addProperty("validatedSummaryId",
-                string(fatal, "validatedSummaryId"));
+        bindingMaterial.addProperty("fatalOccurrence", fatalOccurrence);
+        bindingMaterial.addProperty("fatalDesiredOutcome",
+                fatalDesiredOutcome);
+        bindingMaterial.addProperty("fatalReplayContractId",
+                fatalReplayContract.contractId());
+        bindingMaterial.addProperty("fatalSolverPathContextId",
+                fatalSolverPathContext.contextId());
         bindingMaterial.add("composedSmtArtifact",
                 composedSmtArtifact.deepCopy());
         bindingMaterial.add("staticRegionsArtifact",
@@ -365,22 +355,20 @@ public final class ConcolicSmtComposer {
                 string(fatal, "activationId"));
         manifest.addProperty("fatalRegionInstanceId",
                 fatalRegionInstanceId);
-        manifest.add("fatalOccurrence", copyOrNull(fatal, "occurrence"));
-        manifest.add("fatalDesiredOutcome", copyOrNull(fatal,
-                "desiredOutcome"));
-        manifest.addProperty("validatedSummaryId",
-                string(fatal, "validatedSummaryId"));
-        manifest.addProperty("fatalSite", string(fatal, "siteId"));
+        manifest.addProperty("fatalOccurrence", fatalOccurrence);
+        manifest.addProperty("fatalDesiredOutcome", fatalDesiredOutcome);
+        manifest.addProperty("fatalSite", fatalSite);
         manifest.addProperty("fatalConditionCount", fatalConstraints.size());
+        manifest.addProperty("fatalReplayContractId",
+                fatalReplayContract.contractId());
+        manifest.addProperty("fatalSolverPathContextId",
+                fatalSolverPathContext.contextId());
         manifest.addProperty("fatalReplayRequired", fatalReplayRequired);
         manifest.addProperty("fatalReplayRequiredForFinalReport", true);
-        manifest.addProperty("fatalReplayClaimed", fatalReplayClaimed);
+        manifest.addProperty("fatalReplayClaimed", false);
         manifest.addProperty("fatalReplayValidated", fatalReplayValidated);
-        manifest.addProperty("fatalReplayGap",
-                !fatalReplayValidated
-                        ? fatalReplaySelection.reason : "");
-        manifest.addProperty("fatalReplayExactCandidateCount",
-                fatalReplaySelection.exactCandidateCount);
+        manifest.addProperty("fatalReplayGap", fatalReplayGap);
+        manifest.addProperty("fatalReplayExactCandidateCount", 0);
         manifest.addProperty("instanceScopedSymbolicContext",
                 instanceScopedContext);
         manifest.addProperty("symbolicContextAuthority",
@@ -409,10 +397,6 @@ public final class ConcolicSmtComposer {
                 resolvedScoped.includedRelations);
         manifest.addProperty("resolvedContextSelectionAuthority",
                 "EXACT_PRODUCER_SUMMARY_OR_CONCRETE_WORKLOAD_V1");
-        manifest.addProperty("validatedFatalReplaySummary",
-                string(fatalReplay, "summaryId"));
-        manifest.add("fatalReplayAdmission", object(fatalReplay,
-                "executionAdmission").deepCopy());
         manifest.add("relevantRegions", GSON.toJsonTree(relevantRegions));
         manifest.add("resolvedProducerKeys",
                 GSON.toJsonTree(resolved.producerKeyStrings()));
@@ -525,9 +509,8 @@ public final class ConcolicSmtComposer {
                 && emitter.unboundPorts.isEmpty()
                 && emitter.caseProjectionCatalogComplete
                 && bool(fatal, "readyForSolver", false);
-        boolean complete = structurallyComplete && fatalReplayValidated;
-        String compositionStage = fatalReplayValidated
-                ? "VALIDATED_FINAL" : "BOOTSTRAP";
+        boolean complete = false;
+        String compositionStage = "BOOTSTRAP";
         manifest.addProperty("compositionStage", compositionStage);
         manifest.addProperty("structurallyComplete", structurallyComplete);
         manifest.addProperty("eligibleForBootstrapModel",
@@ -585,12 +568,13 @@ public final class ConcolicSmtComposer {
                 string(fatal, "activationId"));
         relationships.addProperty("fatalRegionInstanceId",
                 fatalRegionInstanceId);
-        relationships.add("fatalOccurrence", copyOrNull(fatal,
-                "occurrence"));
-        relationships.add("fatalDesiredOutcome", copyOrNull(fatal,
-                "desiredOutcome"));
-        relationships.addProperty("validatedSummaryId",
-                string(fatal, "validatedSummaryId"));
+        relationships.addProperty("fatalOccurrence", fatalOccurrence);
+        relationships.addProperty("fatalDesiredOutcome",
+                fatalDesiredOutcome);
+        relationships.addProperty("fatalReplayContractId",
+                fatalReplayContract.contractId());
+        relationships.addProperty("fatalSolverPathContextId",
+                fatalSolverPathContext.contextId());
         relationships.addProperty("candidateCount",
                 emitter.relationshipCandidates.size());
         relationships.add("relationships",
@@ -803,307 +787,71 @@ public final class ConcolicSmtComposer {
         return result;
     }
 
-    private static FatalReplaySelection selectValidatedFatalReplay(
-            List<JsonObject> summaries, JsonObject fatal,
-            boolean validatedClaim) {
-        String activationId = string(fatal, "activationId");
-        String regionId = string(fatal, "regionId");
-        String regionInstanceId = firstNonBlank(string(fatal,
-                "regionInstanceId"), string(object(fatal,
-                "symbolicContext"), "regionInstanceId"));
-        if (activationId.isEmpty() || regionId.isEmpty()
-                || regionInstanceId.isEmpty()) {
-            return FatalReplaySelection.failure(
-                    "FATAL_REPLAY_IDENTITY_INCOMPLETE", 0);
-        }
-        String expectedSummaryId = string(fatal, "validatedSummaryId");
-        JsonObject embedded = object(fatal, "validatedTargetSummary");
-        if (validatedClaim && (!bool(fatal,
-                "targetReplayValidated", false)
-                || !bool(fatal, "replayAlreadyValidated", false)
-                || expectedSummaryId.isEmpty() || embedded.size() == 0)) {
-            return FatalReplaySelection.failure(
-                    "FATAL_VALIDATED_REPLAY_CLAIM_INCOMPLETE", 0);
-        }
-
-        List<JsonObject> exact = new ArrayList<>();
-        for (JsonObject summary : summaries) {
-            if (!regionId.equals(string(summary, "regionId"))
-                    || !activationId.equals(string(summary, "activationId"))
-                    || !regionInstanceId.equals(string(summary,
-                    "regionInstanceId"))
-                    || validatedClaim && !expectedSummaryId.equals(
-                    string(summary, "summaryId"))) continue;
-            exact.add(summary);
-        }
-        if (exact.size() != 1) {
-            return FatalReplaySelection.failure(exact.isEmpty()
-                    ? "EXACT_FATAL_REPLAY_SUMMARY_MISSING"
-                    : "EXACT_FATAL_REPLAY_SUMMARY_NOT_UNIQUE", exact.size());
-        }
-        JsonObject selected = exact.get(0);
-        JsonObject admission = object(selected, "executionAdmission");
-        if (string(selected, "summaryId").isEmpty()
-                || !bool(selected, "valid", false)
-                || !bool(selected, "targetReplayValidated", false)
-                || bool(selected, "branchOverrideUsed", true)
-                || !RegionCaptureGoal.from(selected).isTargetBranch()
-                || !bool(admission, "required", false)
-                || !bool(admission, "valid", false)
-                || bool(admission, "branchOverrideAccepted", true)
-                || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_"
-                .concat("OBSERVATION").equals(string(admission,
-                        "authority"))) {
-            return FatalReplaySelection.failure(
-                    "EXACT_FATAL_REPLAY_ADMISSION_INVALID", 1);
-        }
-        if (!validatedClaim) {
-            return FatalReplaySelection.success(selected, 1);
-        }
-
-        String replayAuthority = string(fatal,
-                "replayValidationAuthority");
-        boolean fresh = "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_"
-                .concat("UNFORCED_TARGET_REPLAY").equals(replayAuthority);
-        boolean same = "SAME_INSTANCE_IMPORTED_UNFORCED_TARGET_REPLAY"
-                .equals(replayAuthority);
-        JsonObject embeddedAdmission = object(embedded,
-                "executionAdmission");
-        if (!fresh && !same
-                || !expectedSummaryId.equals(string(embedded, "summaryId"))
-                || !activationId.equals(string(embedded, "activationId"))
-                || !regionId.equals(string(embedded, "regionId"))
-                || !regionInstanceId.equals(string(embedded,
-                "regionInstanceId"))
-                || !bool(embedded, "targetReplayValidated", false)
-                || bool(embedded, "branchOverrideUsed", true)
-                || !admission.equals(embeddedAdmission)) {
-            return FatalReplaySelection.failure(
-                    "FATAL_ROOT_VALIDATED_METADATA_MISMATCH", 1);
-        }
-        if (fresh) {
-            JsonObject provenance = object(fatal,
-                    "targetRebaseProvenance");
-            if (!activationId.equals(string(provenance, "activationId"))
-                    || !regionInstanceId.equals(string(provenance,
-                    "regionInstanceId"))
-                    || bool(provenance, "downstreamInjectionUsed", true)
-                    || bool(provenance, "branchOverrideUsed", true)
-                    || !replayAuthority.equals(string(provenance,
-                    "authority"))) {
-                return FatalReplaySelection.failure(
-                        "FRESH_FATAL_REBASE_PROVENANCE_MISMATCH", 1);
-            }
-            String formulaIssue = freshFatalFormulaIssue(fatal, selected);
-            if (!formulaIssue.isEmpty()) {
-                return FatalReplaySelection.failure(formulaIssue, 1);
+    private static void rejectRetiredFatalReplayAliases(JsonObject fatal)
+            throws IOException {
+        for (String retired : new String[]{
+                "targetBranch", "directedTargetQuery",
+                "targetReplayValidated", "replayAlreadyValidated",
+                "validatedSummaryId", "validatedTargetSummary",
+                "replayValidationAuthority", "formulaAuthority",
+                "freshObservedTargetQuery", "targetRebaseProvenance",
+                "freshQueryRebuildProvenance", "branchMappings",
+                "pathCondition", "executionAdmission",
+                "branchOverrideUsed", "siteId", "occurrence",
+                "observedOutcome", "desiredOutcome", "conditionIndex",
+                "constraints", "originalTargetCondition",
+                "negatedTargetCondition", "freshObservedTargetCondition",
+                "prefixPolicy", "targetPolicy", "suffixPolicy"}) {
+            if (fatal.has(retired)) {
+                throw new IOException("Canonical fatal query rejects retired "
+                        + "branch alias: " + retired);
             }
         }
-        return FatalReplaySelection.success(selected, 1);
+        if (integer(fatal, "schemaVersion", -1) != 1
+                || !"TARGET_BRANCH_SOLVER_QUERY".equals(string(fatal, "kind"))) {
+            throw new IOException("Unsupported canonical fatal query schema");
+        }
     }
 
-    /**
-     * Shared campaign/composer admission for a completed fresh fatal root.
-     * Callers must pass the exact summary ledger they intend to persist or
-     * compose; the validation neither searches a different cache nor trusts
-     * metadata embedded in the root by itself.
-     */
-    static FreshFatalArtifactValidation validateFreshFatalArtifact(
-            JsonObject fatal, List<JsonObject> summaries) {
-        if (fatal == null || !"FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_"
-                .concat("UNFORCED_TARGET_REPLAY").equals(string(fatal,
-                        "replayValidationAuthority"))) {
-            return FreshFatalArtifactValidation.failure(
-                    "FRESH_FATAL_REPLAY_AUTHORITY_MISSING", 0);
+    private static BranchReplayContract replayContract(JsonObject fatal)
+            throws IOException {
+        JsonElement encoded = fatal.get("replayContract");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw new IOException(
+                    "Canonical fatal query requires replayContract");
         }
-        FatalReplaySelection selected = selectValidatedFatalReplay(
-                summaries == null ? Collections.<JsonObject>emptyList()
-                        : summaries, fatal, true);
-        return selected.valid
-                ? FreshFatalArtifactValidation.success(selected.summary,
-                selected.exactCandidateCount)
-                : FreshFatalArtifactValidation.failure(selected.reason,
-                selected.exactCandidateCount);
+        try {
+            return BranchReplayContract.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed fatal replayContract: "
+                    + malformed.getMessage(), malformed);
+        }
     }
 
-    /** Re-derives every fresh-fatal formula component from its exact summary. */
-    private static String freshFatalFormulaIssue(JsonObject fatal,
-                                                 JsonObject summary) {
-        JsonObject storedFresh = object(summary,
-                "freshObservedTargetQuery");
-        if (storedFresh.size() == 0) {
-            return "FRESH_FATAL_SUMMARY_QUERY_MISSING";
+    private static SolverPathContext solverPathContext(JsonObject fatal)
+            throws IOException {
+        JsonElement encoded = fatal.get("solverPathContext");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw new IOException(
+                    "Canonical fatal query requires solverPathContext");
         }
-        for (String field : new String[]{"activationId", "regionId",
-                "regionInstanceId", "siteId", "occurrence",
-                "desiredOutcome", "conditionIndex", "constraints",
-                "freshObservedTargetCondition", "negatedTargetCondition",
-                "engineArrayInputBindings", "symbolicContext",
-                "formulaAuthority", "targetPolicy",
-                "freshQueryRebuildProvenance"}) {
-            JsonElement expected = fatal.get(field);
-            JsonElement stored = storedFresh.get(field);
-            if (expected == null || stored == null
-                    || !expected.equals(stored)) {
-                return "FRESH_FATAL_SUMMARY_QUERY_MISMATCH:" + field;
-            }
+        try {
+            return SolverPathContext.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed fatal solverPathContext: "
+                    + malformed.getMessage(), malformed);
         }
-        if (!"FRESH_INSTANCE_IMPORTED_UNFORCED_TARGET_PREFIX_PLUS_"
-                .concat("OBSERVED_TARGET").equals(string(fatal,
-                        "formulaAuthority"))) {
-            return "FRESH_FATAL_FORMULA_AUTHORITY_INVALID";
-        }
-        JsonObject rebuild = object(fatal,
-                "freshQueryRebuildProvenance");
-        if (!string(summary, "summaryId").equals(string(rebuild,
-                "freshSummaryId"))
-                || !string(fatal, "activationId").equals(string(rebuild,
-                "activationId"))
-                || !string(fatal, "regionInstanceId").equals(string(rebuild,
-                "regionInstanceId"))
-                || string(rebuild, "transitionExecutionId").isEmpty()
-                || !"FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER"
-                .equals(string(rebuild, "authority"))) {
-            return "FRESH_FATAL_FORMULA_PROVENANCE_MISMATCH";
-        }
-        String site = string(fatal, "siteId");
-        int occurrence = integer(fatal, "occurrence", -1);
-        boolean desired = bool(fatal, "desiredOutcome", false);
-        JsonObject mapping = null;
-        int mappingCount = 0;
-        for (JsonElement element : array(summary, "branchMappings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject candidate = element.getAsJsonObject();
-            if (site.equals(string(candidate, "siteId"))
-                    && occurrence == integer(candidate, "occurrence", -1)) {
-                mapping = candidate;
-                mappingCount++;
-            }
-        }
-        if (site.isEmpty() || occurrence < 1 || mappingCount != 1
-                || mapping == null
-                || bool(mapping, "overrideApplied", false)
-                || desired != bool(mapping, "observedOutcome",
-                bool(mapping, "outcome", !desired))) {
-            return "FRESH_FATAL_BRANCH_MAPPING_INVALID";
-        }
-        JsonArray path = array(summary, "pathCondition");
-        int conditionIndex = integer(mapping, "conditionIndex", -1);
-        if (conditionIndex < 0 || conditionIndex >= path.size()
-                || integer(fatal, "conditionIndex", -2) != conditionIndex
-                || mapping.has("condition") && !mapping.get("condition")
-                .equals(path.get(conditionIndex))) {
-            return "FRESH_FATAL_CONDITION_MAPPING_INVALID";
-        }
-        JsonArray constraints = array(fatal, "constraints");
-        if (constraints.size() != conditionIndex + 1) {
-            return "FRESH_FATAL_PREFIX_LENGTH_MISMATCH";
-        }
-        for (int index = 0; index <= conditionIndex; index++) {
-            if (!constraints.get(index).equals(path.get(index))) {
-                return "FRESH_FATAL_PREFIX_CONSTRAINT_MISMATCH";
-            }
-        }
-        JsonElement observed = path.get(conditionIndex);
-        if (!observed.equals(fatal.get("freshObservedTargetCondition"))
-                || !observed.equals(fatal.get("negatedTargetCondition"))
-                || !"KEEP_FRESH_OBSERVED_DESIRED_TARGET_CONDITION".equals(
-                string(fatal, "targetPolicy"))) {
-            return "FRESH_FATAL_TARGET_CONDITION_MISMATCH";
-        }
-        if (!array(fatal, "engineArrayInputBindings").equals(array(summary,
-                "engineArrayInputBindings"))) {
-            return "FRESH_FATAL_ENGINE_ARRAY_BINDINGS_MISMATCH";
-        }
-        return freshFatalContextIssue(fatal, string(rebuild,
-                "transitionExecutionId"));
     }
 
-    private static String freshFatalContextIssue(JsonObject fatal,
-                                                 String executionId) {
-        String region = string(fatal, "regionId");
-        String instance = string(fatal, "regionInstanceId");
-        JsonObject context = object(fatal, "symbolicContext");
-        if (!region.equals(string(context, "regionId"))
-                || !instance.equals(string(context, "regionInstanceId"))
-                || !executionId.equals(string(context,
-                "transitionExecutionId"))
-                || !"CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE"
-                .equals(string(context, "selectionAuthority"))) {
-            return "FRESH_FATAL_CONTEXT_SCOPE_MISMATCH";
+    private static JsonArray fatalConstraints(
+            BranchReplayContract replayContract,
+            SolverPathContext solverPathContext) {
+        JsonArray result = solverPathContext.expressions();
+        for (JsonElement predicate
+                : replayContract.requiredPathPredicates()) {
+            result.add(predicate);
         }
-        int selected = 0;
-        for (String collection : new String[]{"equalityRelations",
-                "versionedStateMerges"}) {
-            for (JsonElement element : array(context, collection)) {
-                if (!element.isJsonObject()) {
-                    return "FRESH_FATAL_CONTEXT_RELATION_MALFORMED";
-                }
-                int count = exactTargetBindingCount(
-                        element.getAsJsonObject(), region, instance);
-                if (count < 0) return "FRESH_FATAL_CONTEXT_ENDPOINT_MISMATCH";
-                selected += count;
-            }
-        }
-        for (JsonElement groupElement : array(context,
-                "alternativeWriterGroups")) {
-            if (!groupElement.isJsonObject()) {
-                return "FRESH_FATAL_CONTEXT_ALTERNATIVE_GROUP_MALFORMED";
-            }
-            JsonObject group = groupElement.getAsJsonObject();
-            if (array(group, "alternatives").size() < 2) {
-                return "FRESH_FATAL_CONTEXT_ALTERNATIVE_GROUP_INCOMPLETE";
-            }
-            for (JsonElement alternative : array(group, "alternatives")) {
-                if (!alternative.isJsonObject()) {
-                    return "FRESH_FATAL_CONTEXT_ALTERNATIVE_MALFORMED";
-                }
-                int count = exactTargetBindingCount(
-                        alternative.getAsJsonObject(), region, instance);
-                if (count < 0) return "FRESH_FATAL_CONTEXT_ENDPOINT_MISMATCH";
-                selected += count;
-            }
-        }
-        return selected > 0 ? "" : "FRESH_FATAL_CONTEXT_HAS_NO_BINDING";
-    }
-
-    /** Returns -1 for an invalid relation, otherwise its exact binding count. */
-    private static int exactTargetBindingCount(JsonObject relation,
-                                               String targetRegion,
-                                               String targetInstance) {
-        String fromRegion = contextEndpointRegion(string(relation,
-                "fromEndpoint"));
-        String toRegion = contextEndpointRegion(string(relation,
-                "toEndpoint"));
-        boolean targetFrom = targetRegion.equals(fromRegion);
-        boolean targetTo = targetRegion.equals(toRegion);
-        if (targetFrom == targetTo) return -1;
-        JsonArray bindings = array(relation, "selectedBindings");
-        if (bindings.size() == 0) return -1;
-        for (JsonElement element : bindings) {
-            if (!element.isJsonObject()) return -1;
-            JsonObject binding = element.getAsJsonObject();
-            if (targetFrom && !targetInstance.equals(string(binding,
-                    "fromRegionInstance"))
-                    || targetTo && !targetInstance.equals(string(binding,
-                    "toRegionInstance"))) return -1;
-        }
-        return bindings.size();
-    }
-
-    private static String contextEndpointRegion(String endpoint) {
-        String value = endpoint == null ? "" : endpoint;
-        // A fallback scheduler endpoint is REGION.X::REGION.X.out.N.  Use
-        // the earliest schema delimiter; fixed precedence would invent the
-        // non-existent region "REGION.X::REGION.X" for that shape.
-        int marker = -1;
-        for (String delimiter : new String[]{".in.", ".out.", "::"}) {
-            int candidate = value.indexOf(delimiter);
-            if (candidate > 0 && (marker < 0 || candidate < marker)) {
-                marker = candidate;
-            }
-        }
-        return marker <= 0 ? "" : value.substring(0, marker);
+        return result;
     }
 
     private static JsonObject selectFatalQuery(List<JsonObject> rows,
@@ -1728,35 +1476,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class FatalReplaySelection {
-        private final boolean valid;
-        private final String reason;
-        private final JsonObject summary;
-        private final int exactCandidateCount;
-
-        private FatalReplaySelection(boolean valid, String reason,
-                                     JsonObject summary,
-                                     int exactCandidateCount) {
-            this.valid = valid;
-            this.reason = reason == null ? "" : reason;
-            this.summary = summary == null
-                    ? new JsonObject() : summary;
-            this.exactCandidateCount = exactCandidateCount;
-        }
-
-        private static FatalReplaySelection success(JsonObject summary,
-                                                    int candidateCount) {
-            return new FatalReplaySelection(true, "", summary,
-                    candidateCount);
-        }
-
-        private static FatalReplaySelection failure(String reason,
-                                                    int candidateCount) {
-            return new FatalReplaySelection(false, reason,
-                    new JsonObject(), candidateCount);
-        }
-    }
-
     /** A validated, role-resolved connector catalog emitted by a project
      * selector.  The generic composer never interprets role names or RPC
      * methods; by this point every endpoint is an ordinary typed region port
@@ -1936,48 +1655,6 @@ public final class ConcolicSmtComposer {
 
         private ConfiguredTransportSource(JsonObject summary) {
             this.summary = summary;
-        }
-    }
-
-    static final class FreshFatalArtifactValidation {
-        final boolean valid;
-        final String reason;
-        final JsonObject summary;
-        final int exactCandidateCount;
-
-        private FreshFatalArtifactValidation(boolean valid, String reason,
-                                             JsonObject summary,
-                                             int exactCandidateCount) {
-            this.valid = valid;
-            this.reason = reason == null ? "" : reason;
-            this.summary = summary == null
-                    ? new JsonObject() : summary.deepCopy();
-            this.exactCandidateCount = exactCandidateCount;
-        }
-
-        static FreshFatalArtifactValidation success(JsonObject summary,
-                                                     int candidateCount) {
-            return new FreshFatalArtifactValidation(true, "", summary,
-                    candidateCount);
-        }
-
-        static FreshFatalArtifactValidation failure(String reason,
-                                                     int candidateCount) {
-            return new FreshFatalArtifactValidation(false, reason,
-                    new JsonObject(), candidateCount);
-        }
-
-        JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("required", true);
-            result.addProperty("valid", valid);
-            result.addProperty("reason", reason);
-            result.addProperty("summaryId", string(summary, "summaryId"));
-            result.addProperty("exactCandidateCount", exactCandidateCount);
-            result.addProperty("authority", valid
-                    ? "EXACT_FRESH_FATAL_SUMMARY_FORMULA_AND_CONTEXT"
-                    : "NONE");
-            return result;
         }
     }
 

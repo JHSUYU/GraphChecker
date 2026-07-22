@@ -4166,27 +4166,6 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("mappingPolicy",
                 "CONCRETE_OBSERVATION_WITHOUT_SYMBOLIC_PC");
         addBranchPolicyResolution(active, mapping, siteId);
-        ScheduledTarget scheduledTarget = active.activation.target(
-                siteId, occurrence);
-        if (active.activation.emitsScheduledTargetEvidence()) {
-            mapping.addProperty("scheduledTarget", scheduledTarget != null);
-        }
-        if (scheduledTarget != null
-                && active.activation.emitsScheduledTargetEvidence()) {
-            boolean matched = scheduledTarget.desiredOutcome
-                    == observedOutcome;
-            mapping.addProperty("scheduledDesiredOutcome",
-                    scheduledTarget.desiredOutcome);
-            mapping.addProperty("scheduledOutcomeMatched", matched);
-            mapping.addProperty("conditionAuthority",
-                    "UPSTREAM_ONLY_CONCRETE_PROPAGATION");
-            mapping.addProperty("replayValidation", matched
-                    && active.activation.observationOnlyReplay
-                    ? "PASS" : "FAIL");
-            mapping.addProperty("mappingNote",
-                    "branch was observed without symbolic execution, "
-                            + "materialization, or override at the target");
-        }
         active.branchMappings.add(mapping);
     }
 
@@ -4234,13 +4213,14 @@ public final class ConcolicRegionRuntime {
                     "proof does not join one exact replay constraint and "
                             + "prefix/target declaration");
         }
-        ScheduledTarget target = active.activation.target(siteId,
+        boolean target = active.activation.isReplayTarget(siteId,
                 occurrence);
         if ("TARGET".equals(proof.proofRole)
-                && (target == null
-                || target.desiredOutcome != observedOutcome)
+                && (!target
+                || active.activation.replayContract.requiredTakenOutcome()
+                != observedOutcome)
                 || "PREFIX".equals(proof.proofRole)
-                && target != null) {
+                && target) {
             return ConcreteGuardCertification.invalid(proof,
                     "proof role does not match the exact prefix/target event");
         }
@@ -4396,18 +4376,6 @@ public final class ConcolicRegionRuntime {
                     array(vmAttestation.event, "conditionIndices"));
         }
         addBranchPolicyResolution(active, mapping, siteId);
-        ScheduledTarget scheduledTarget = active.activation.target(
-                siteId, occurrence);
-        if (active.activation.emitsScheduledTargetEvidence()) {
-            mapping.addProperty("scheduledTarget", scheduledTarget != null);
-        }
-        if (scheduledTarget != null
-                && active.activation.emitsScheduledTargetEvidence()) {
-            mapping.addProperty("scheduledDesiredOutcome",
-                    scheduledTarget.desiredOutcome);
-            mapping.addProperty("scheduledOutcomeMatched",
-                    scheduledTarget.desiredOutcome == observedOutcome);
-        }
         if (conditionIndex >= 0) {
             // Gson 2.2.x exposes its native tree-copy method only at package
             // scope.
@@ -4456,9 +4424,8 @@ public final class ConcolicRegionRuntime {
             mapping.addProperty("conditionAuthority",
                     "UNRESOLVED_VM_EXACT_BRANCH_EVENT");
         } else if (conditionIndex < 0 && conditionCandidates == 0
-                && (scheduledTarget != null
-                || !active.activation.concreteGuardProofs(siteId,
-                occurrence).isEmpty())) {
+                && !active.activation.concreteGuardProofs(siteId,
+                occurrence).isEmpty()) {
             ConcreteGuardCertification certification =
                     certifyConcreteGuard(active, vmAttestation, siteId,
                             occurrence, observedOutcome, conditions,
@@ -12203,46 +12170,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static final class ScheduledTarget {
-        private final String siteId;
-        private final int occurrence;
-        private final boolean desiredOutcome;
-        private final boolean concreteGuardReplayProofRequired;
-        private final boolean concreteGuardReplayProofMarkerValid;
-
-        private ScheduledTarget(JsonObject json) {
-            this.siteId = string(json, "siteId");
-            this.occurrence = Math.max(1, integer(json, "occurrence", 1));
-            this.desiredOutcome = bool(json, "desiredOutcome", false);
-            Boolean proofRequired = strictBoolean(json,
-                    "concreteGuardReplayProofRequired");
-            this.concreteGuardReplayProofMarkerValid = !json.has(
-                    "concreteGuardReplayProofRequired")
-                    || proofRequired != null;
-            // Missing is the legacy, fail-closed interpretation: a NULL
-            // guard needs a certificate.  New worklist rows always carry the
-            // exact boolean and may explicitly select the ordinary VM-PC
-            // route with false.
-            this.concreteGuardReplayProofRequired = proofRequired == null
-                    || proofRequired;
-        }
-
-        private ScheduledTarget(BranchReplayContract contract) {
-            this.siteId = contract.source().siteId();
-            this.occurrence = contract.source().occurrence();
-            this.desiredOutcome = contract.requiredTakenOutcome();
-            this.concreteGuardReplayProofRequired =
-                    BranchWitness.CERTIFIED_NO_PC.equals(
-                            contract.source().evidenceKind());
-            this.concreteGuardReplayProofMarkerValid = true;
-        }
-
-        private boolean matches(String actualSiteId, int actualOccurrence) {
-            return siteId.equals(actualSiteId)
-                    && occurrence == actualOccurrence;
-        }
-    }
-
     private static final class ExpectedConcreteGuardEvent {
         private final String role;
         private final int prefixOrdinal;
@@ -12960,7 +12887,6 @@ public final class ConcolicRegionRuntime {
                 mapValueElementFieldProjections;
         private final List<OutputCaptureRequest> outputCaptures;
         private final BranchReplayContract replayContract;
-        private final ScheduledTarget targetBranch;
         private final List<ConcreteGuardReplayProof>
                 concreteGuardReplayProofs;
         private boolean concreteGuardProofCatalogValid = true;
@@ -13017,36 +12943,31 @@ public final class ConcolicRegionRuntime {
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
-            boolean outputPathReplay = "REPLAY_OUTPUT_PATH_FLIP".equals(
-                    string(json, "executionPhase"));
+            String executionPhase = string(json, "executionPhase");
+            boolean branchReplay = "REPLAY_OUTPUT_PATH_FLIP".equals(
+                    executionPhase) || "REPLAY_DIRECTED_TARGET".equals(
+                    executionPhase);
             JsonElement encodedReplayContract = json.get("replayContract");
-            if (outputPathReplay && encodedReplayContract == null) {
+            if (branchReplay && encodedReplayContract == null) {
                 throw new IllegalArgumentException(
-                        "REPLAY_OUTPUT_PATH_FLIP requires replayContract");
+                        executionPhase + " requires replayContract");
             }
-            if (outputPathReplay && (json.has("targetBranch")
+            if (branchReplay && (json.has("targetBranch")
+                    || json.has("branchCaptureSelector")
+                    || json.has("directedTargetQuery")
                     || json.has("expectedBranchPrefix")
                     || json.has("pathReplayConstraints")
                     || json.has("pathReplayNegatedCondition")
                     || json.has("pathReplayTargetConditionIndex")
                     || json.has("branchOverrideProhibited"))) {
                 throw new IllegalArgumentException(
-                        "REPLAY_OUTPUT_PATH_FLIP rejects retired branch "
+                        executionPhase + " rejects retired branch "
                                 + "replay aliases");
             }
             this.replayContract = encodedReplayContract == null ? null
                     : BranchReplayContract.fromJson(
                     requireObject(encodedReplayContract,
                             "replayContract"));
-            JsonElement target = json.get("targetBranch");
-            this.targetBranch = replayContract != null
-                    ? new ScheduledTarget(replayContract)
-                    : target != null && target.isJsonObject()
-                    ? new ScheduledTarget(target.getAsJsonObject()) : null;
-            if (targetBranch != null
-                    && !targetBranch.concreteGuardReplayProofMarkerValid) {
-                concreteGuardProofCatalogValid = false;
-            }
             this.concreteGuardReplayProofs = new ArrayList<>();
             for (JsonElement proof : array(json,
                     "concreteGuardReplayProofs")) {
@@ -13157,12 +13078,6 @@ public final class ConcolicRegionRuntime {
                         element.getAsJsonObject());
                 if (request.valid()) outputCaptures.add(request);
             }
-        }
-
-        /** Legacy directed-target discovery still reports schedule metadata.
-         * Contract-driven path replay reports only its immutable witness. */
-        private boolean emitsScheduledTargetEvidence() {
-            return replayContract == null && targetBranch != null;
         }
 
         private static JsonObject requireObject(JsonElement value,
@@ -13292,10 +13207,10 @@ public final class ConcolicRegionRuntime {
             return null;
         }
 
-        private ScheduledTarget target(String siteId, int occurrence) {
-            return targetBranch != null
-                    && targetBranch.matches(siteId, occurrence)
-                    ? targetBranch : null;
+        private boolean isReplayTarget(String siteId, int occurrence) {
+            return replayContract != null
+                    && replayContract.source().siteId().equals(siteId)
+                    && replayContract.source().occurrence() == occurrence;
         }
 
         private List<ConcreteGuardReplayProof> concreteGuardProofs(

@@ -1181,8 +1181,13 @@ do_bootstrap_project() {
       and ((.modelAssignments // []) | length) == 0
       and ((.forcedBranches // []) | length) == 0
       and ((.replayMaterializations // []) | length) == 0
-      and (.directedTargetQuery | type) == "object"
-      and (.targetBranch | type) == "object")
+      and .replayContract.schemaVersion == 1
+      and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
+      and (.replayContract.contractId
+        | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
+      and (has("directedTargetQuery") | not)
+      and (has("targetBranch") | not)
+      and (has("branchCaptureSelector") | not))
   ' "${bootstrap_root}/activation_plan.jsonl" >/dev/null \
     || die "primitive bootstrap activation bundle violates replay policy"
 }
@@ -1209,8 +1214,11 @@ do_seed_target() {
       and .[0].regionId == $region
       and .[0].activationId == $activation
       and .[0].valid == true
-      and .[0].targetReplayValidated == false
       and .[0].branchOverrideUsed == false
+      and .[0].executionAdmission.required == false
+      and .[0].executionAdmission.authority
+        == "OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY"
+      and (.[0] | has("targetReplayValidated") | not)
     ' "${summary}" >/dev/null; then
     die "target seed import is not one valid unforced observation"
   fi
@@ -1222,9 +1230,15 @@ do_seed_target() {
       length == 1
       and .[0].regionId == $region
       and .[0].activationId == $activation
+      and .[0].schemaVersion == 1
+      and .[0].kind == "TARGET_BRANCH_SOLVER_QUERY"
       and .[0].readyForSolver == true
       and .[0].readyForReplay == false
-      and .[0].targetReplayValidated == false
+      and .[0].replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
+      and .[0].solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
+      and (.[0] | has("targetReplayValidated") | not)
+      and (.[0] | has("targetBranch") | not)
+      and (.[0] | has("directedTargetQuery") | not)
     ' "${target_schedule}/branch_queries.jsonl" >/dev/null; then
     die "target seed scheduler did not emit one solver-ready bootstrap query"
   fi

@@ -470,6 +470,33 @@ public class BooleanReachConditionExtractorTest {
     }
 
     @Test
+    public void canonicalBranchIdsReplaceLegacySummaryBindingAuthority() {
+        JsonObject manifest = new JsonObject();
+        manifest.addProperty("fatalRegion", "REGION.F");
+        manifest.addProperty("fatalActivation", "ACT.F");
+        manifest.addProperty("fatalRegionInstanceId", "INSTANCE.F");
+        manifest.addProperty("fatalOccurrence", 1);
+        manifest.addProperty("fatalDesiredOutcome", true);
+        manifest.addProperty("fatalReplayContractId",
+                "BRANCH.REPLAY.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        manifest.addProperty("fatalSolverPathContextId",
+                "SOLVER.PATH.CONTEXT.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        String canonical = BooleanReachConditionExtractor
+                .compositionBindingId(manifest);
+        assertTrue(canonical.matches("[0-9a-f]{64}"));
+        manifest.addProperty("validatedSummaryId", "RETIRED.SUMMARY");
+        assertEquals(canonical, BooleanReachConditionExtractor
+                .compositionBindingId(manifest));
+
+        manifest.remove("fatalReplayContractId");
+        assertEquals("", BooleanReachConditionExtractor
+                .compositionBindingId(manifest));
+    }
+
+    @Test
     public void z3SolverAttestsExecutableAndRejectsNonzeroSatOutput()
             throws Exception {
         Path directory = Files.createTempDirectory("fake-z3-");
@@ -668,7 +695,12 @@ public class BooleanReachConditionExtractorTest {
             target.addProperty("fatalRegionInstanceId", "INSTANCE.F");
             target.addProperty("fatalOccurrence", 1);
             target.addProperty("fatalDesiredOutcome", true);
-            target.addProperty("validatedSummaryId", "SUMMARY.F");
+            target.addProperty("fatalReplayContractId",
+                    "BRANCH.REPLAY.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            target.addProperty("fatalSolverPathContextId",
+                    "SOLVER.PATH.CONTEXT.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                            + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         }
         String bindingId = BooleanReachConditionExtractor
                 .compositionBindingId(manifest);

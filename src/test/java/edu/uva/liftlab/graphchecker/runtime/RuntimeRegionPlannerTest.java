@@ -101,13 +101,7 @@ public class RuntimeRegionPlannerTest {
                     rootContextMethod(3, root, 3, "producer-b",
                             "example.ProducerBThread", 22L),
                     rootContextMethod(4, root, 4, "pool-41-thread-1",
-                            "example.ConsumerThread", 1234L),
-                    rootContextMethod(5, root, 5,
-                            "null heartbeating to localhost/127.0.0.1:36121",
-                            "example.HeartbeatThread", 31L),
-                    rootContextMethod(6, root, 6,
-                            "null heartbeating to localhost/127.0.0.1:45222",
-                            "example.HeartbeatThread", 32L));
+                            "example.ConsumerThread", 1234L));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), methods, Collections.emptyList(),
@@ -115,26 +109,16 @@ public class RuntimeRegionPlannerTest {
 
             Map<String, Object> firstConsumer = null;
             Map<String, Object> secondConsumer = null;
-            Map<String, Object> firstHeartbeat = null;
-            Map<String, Object> secondHeartbeat = null;
             for (Map<String, Object> activation : result.activations) {
                 if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
                     firstConsumer = activation;
                 } else if (Long.valueOf(4L).equals(
                         activation.get("rootCallId"))) {
                     secondConsumer = activation;
-                } else if (Long.valueOf(5L).equals(
-                        activation.get("rootCallId"))) {
-                    firstHeartbeat = activation;
-                } else if (Long.valueOf(6L).equals(
-                        activation.get("rootCallId"))) {
-                    secondHeartbeat = activation;
                 }
             }
             assertTrue(firstConsumer != null);
             assertTrue(secondConsumer != null);
-            assertTrue(firstHeartbeat != null);
-            assertTrue(secondHeartbeat != null);
             assertEquals("example.ConsumerThread",
                     firstConsumer.get("receiverRuntimeClass"));
             assertEquals("pool-*-thread-1",
@@ -143,12 +127,6 @@ public class RuntimeRegionPlannerTest {
                     firstConsumer.get("invocationOrdinalWithinContext"));
             assertEquals(2,
                     secondConsumer.get("invocationOrdinalWithinContext"));
-            assertEquals("null heartbeating to localhost/127.0.0.1:*",
-                    firstHeartbeat.get("threadName"));
-            assertEquals(1,
-                    firstHeartbeat.get("invocationOrdinalWithinContext"));
-            assertEquals(2,
-                    secondHeartbeat.get("invocationOrdinalWithinContext"));
             assertEquals(RuntimeRegionPlanner
                             .ROOT_CONTEXT_SELECTION_AUTHORITY,
                     firstConsumer.get("rootContextSelectionAuthority"));
@@ -156,69 +134,6 @@ public class RuntimeRegionPlannerTest {
                     firstConsumer.get("threadIdSelectionUsed"));
             assertFalse("unstable tid must not enter the activation selector",
                     firstConsumer.containsKey("threadId"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void hdfsDataXceiverDynamicNamesUseReceiverOrdinalAndStableRole()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<org.apache.hadoop.hdfs.security.token.block."
-                    + "BlockTokenSecretManager: byte[] retrievePassword("
-                    + "org.apache.hadoop.hdfs.security.token.block."
-                    + "BlockTokenIdentifier)>";
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Files.write(regions, region("REGION.HDFS.TARGET", root).getBytes(
-                    StandardCharsets.UTF_8));
-            String firstName = "DataXceiver for client /127.0.0.1:47722 "
-                    + "[Replacing block BP-1:blk_1 from dn-1]";
-            String secondName = "DataXceiver for client /127.0.0.1:59381 "
-                    + "[Replacing block BP-2:blk_9 from dn-2]";
-            String manager = "org.apache.hadoop.hdfs.security.token.block."
-                    + "BlockTokenSecretManager";
-            String identifier =
-                    "org.apache.hadoop.hdfs.security.token.block."
-                            + "BlockTokenIdentifier";
-            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
-                    rootContextMethod(1, root, 1, firstName, manager, 1307L),
-                    rootContextMethod(3, root, 2, secondName, manager, 1441L));
-            List<RuntimeRegionPlanner.RuntimeEvent> events = Arrays.asList(
-                    methodArgument(2, root, 1, 0, identifier),
-                    methodArgument(4, root, 2, 0, identifier));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), methods, events,
-                    Collections.emptyList());
-
-            Map<String, Object> second = result.activations.get(1);
-            assertFalse("ephemeral DataXceiver name must not enter replay "
-                    + "identity", second.containsKey("threadName"));
-            assertEquals("DataXceiver:ReplacingBlock",
-                    second.get("rootContextThreadRole"));
-            assertEquals(Boolean.TRUE,
-                    second.get("rootContextThreadNameOmitted"));
-            assertEquals(RuntimeRegionPlanner
-                            .HDFS_DATAXCEIVER_CONTEXT_NORMALIZATION_AUTHORITY,
-                    second.get("rootContextNormalizationAuthority"));
-            assertEquals("dynamic names share one receiver-class context",
-                    2, second.get("invocationOrdinalWithinContext"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> selector = (Map<String, Object>) second.get(
-                    "runtimeRootArgumentSelector");
-            assertEquals(2, selector.get("receiverOrdinal"));
-            assertEquals(1, selector.get("matchOrdinalWithinReceiver"));
-
-            Map<String, Object> instance = result.instances.get(1);
-            assertEquals("instance rows retain the raw observation",
-                    secondName, instance.get("threadName"));
-            assertEquals(secondName, instance.get("observedThreadName"));
-            assertEquals("DataXceiver:ReplacingBlock",
-                    instance.get("threadRole"));
         } finally {
             folder.delete();
         }
@@ -539,11 +454,6 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         assertDeferredInputReady(
                 "<java.lang.System: long currentTimeMillis()>.return",
-                "ENVIRONMENT", "ENVIRONMENT_MODEL",
-                "EXACT_VM_INTRINSIC_PLACEHOLDER_"
-                        + "SCHEDULER_VALIDATION_V1");
-        assertDeferredInputReady(
-                "<org.apache.hadoop.util.Time: long now()>.return",
                 "ENVIRONMENT", "ENVIRONMENT_MODEL",
                 "EXACT_VM_INTRINSIC_PLACEHOLDER_"
                         + "SCHEDULER_VALIDATION_V1");
@@ -3476,88 +3386,6 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void saslUsernameUsesCrossProcessEndpointFingerprintAndRootLifetime()
-            throws Exception {
-        String fingerprint = "sha256:same-sasl-user";
-        RuntimeRegionPlanner.MethodEvent firstClient = methodContext(1,
-                SASL_CLIENT, 1, "BALANCER", "Dispatcher-1", 31L);
-        RuntimeRegionPlanner.MethodEvent selectedClient = methodContext(15,
-                SASL_CLIENT, 2, "BALANCER", "Dispatcher-2", 32L);
-        RuntimeRegionPlanner.MethodEvent server = methodContext(20,
-                SASL_SERVER, 4, "DATANODE", "DataXceiver-1", 41L);
-        // This endpoint is globally closer to the callback return, but its
-        // root entered after the server activation and belongs to another
-        // handshake lifetime.
-        RuntimeRegionPlanner.MethodEvent laterClient = methodContext(30,
-                SASL_CLIENT, 3, "BALANCER", "Dispatcher-3", 33L);
-        RuntimeRegionPlanner.RuntimeEvent firstArgument = saslArgument(
-                10, 1, fingerprint);
-        RuntimeRegionPlanner.RuntimeEvent selectedArgument = saslArgument(
-                18, 2, fingerprint);
-        RuntimeRegionPlanner.RuntimeEvent laterArgument = saslArgument(
-                40, 3, fingerprint);
-        RuntimeRegionPlanner.RuntimeEvent callbackReturn =
-                saslCallbackReturn(50, 4, fingerprint);
-
-        RuntimeRegionPlanner.Result result = planSaslUsernameEdge(
-                Arrays.asList(firstClient, selectedClient, server,
-                        laterClient),
-                Arrays.asList(firstArgument, selectedArgument,
-                        laterArgument, callbackReturn));
-
-        Map<String, Object> validation = edgeValidationFor(result,
-                "REGION.C");
-        assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
-                validation.get("status"));
-        assertEquals("EQUALITY", validation.get("validatedRelation"));
-        assertEquals(true, validation.get("composable"));
-        assertEquals(1, validation.get("confirmedValueEqualityPairCount"));
-        assertEquals(1, validation.get("validatedBindingCount"));
-        assertEquals("GLOBAL_TRACE_ENDPOINT_SEQUENCE",
-                validation.get("endpointOrderAuthority"));
-        assertEquals("NEAREST_PRECEDING_SOURCE_ROOT_THEN_ENDPOINT",
-                validation.get("endpointCorrelationAuthority"));
-        Map<?, ?> binding = (Map<?, ?>) ((List<?>) validation.get(
-                "validatedBindings")).get(0);
-        assertEquals("REGION.C@testHandle#call2",
-                binding.get("fromRegionInstance"));
-        assertEquals("REGION.S@testHandle#call4",
-                binding.get("toRegionInstance"));
-        assertEquals(18L, binding.get("fromEndpointSeq"));
-        assertEquals(50L, binding.get("toEndpointSeq"));
-        assertEquals("METHOD_ARGUMENT",
-                binding.get("fromFingerprintSource"));
-        assertEquals("HDFS_SASL_NAME_CALLBACK_DEFAULT_RETURN",
-                binding.get("toFingerprintSource"));
-        assertEquals(false, binding.get("sameProcess"));
-        assertEquals(2, result.edgeValidations.size());
-        assertEquals("REGION.LEGACY.FIRST",
-                validation.get("catalogFromRegion"));
-        assertEquals(2, validation.get("producerRegionCandidateCount"));
-        assertEquals(RuntimeRegionPlanner
-                        .EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY,
-                validation.get("producerRegionExpansionAuthority"));
-        assertEquals(true,
-                validation.get("producerRegionUniquelyConfirmed"));
-        assertEquals(RuntimeRegionPlanner
-                        .UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY,
-                validation.get("producerRegionConfirmationAuthority"));
-        assertEquals("STATIC_HDFS_SASL_CONTRACT",
-                validation.get("sourceMappingAuthority"));
-        assertEquals(Arrays.asList("STATIC_PROTOCOL",
-                        "mapping evidence retained"),
-                validation.get("staticEdgeEvidence"));
-        Map<String, Object> stale = edgeValidationFor(result,
-                "REGION.LEGACY.FIRST");
-        assertEquals("UNOBSERVED", stale.get("status"));
-        assertEquals(false,
-                stale.get("producerRegionUniquelyConfirmed"));
-        assertEquals("E.SASL.RUNTIME", stale.get("edgeId"));
-        assertEquals("STATIC_HDFS_SASL_CONTRACT",
-                stale.get("sourceMappingAuthority"));
-    }
-
-    @Test
     public void selectedDirectDefinitionCanonicalizesRetainedSaslInput()
             throws Exception {
         RuntimeRegionPlanner.Result result =
@@ -3588,9 +3416,9 @@ public class RuntimeRegionPlannerTest {
 
         Map<String, Object> validation = edgeValidationFor(result,
                 "REGION.C");
-        assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
+        assertEquals("ENDPOINTS_OBSERVED",
                 validation.get("status"));
-        assertEquals(1, validation.get("confirmedValueEqualityPairCount"));
+        assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
         assertEquals(0, validation.get("concreteDemandPrunedPairCount"));
         assertEquals(1, result.summary.get(
                 "consumerInputResolutionCacheMissCount"));

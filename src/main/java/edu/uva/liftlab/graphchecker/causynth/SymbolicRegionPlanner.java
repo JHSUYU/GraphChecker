@@ -383,7 +383,7 @@ final class SymbolicRegionPlanner {
         /**
          * Region-local targets that have an in-region definition.  Input
          * selection asks this question for hundreds of candidates; scanning
-         * the complete causal edge set for every candidate made HDFS region
+         * the complete causal edge set for every candidate made large region
          * planning quadratic in practice.
          *
          * A broad exception region and each requested-output demand slice
@@ -1222,13 +1222,9 @@ final class SymbolicRegionPlanner {
             }
 
             // Contradiction is a property of an invocation site, not of the
-            // callee method.  A method may be invoked once on the rejected
-            // branch and again on the required path.  HDFS does exactly that
-            // with DNConf.getEncryptDataTransfer(): doSaslHandshake invokes it
-            // while constructing InvalidMagicNumberException on the rejected
-            // magic-number branch, while receive invokes the same getter to
-            // decide whether the target SASL path is enabled.  Excluding the
-            // method globally would therefore lose a real external input.
+            // callee method. A method may be invoked once on the rejected
+            // branch and again on the required path. Excluding the method
+            // globally would therefore lose a real external input.
             Map<String, Set<String>> oppositeSitesByCallee =
                     new LinkedHashMap<>();
             for (Map<String, Object> edge : edges) {
@@ -6490,7 +6486,7 @@ final class SymbolicRegionPlanner {
 
         /**
          * Recognizes a synthetic protocol target that is only an alias for a
-         * value computed by the receiving region.  Explicit HDFS contracts can
+         * value computed by the receiving region. Configured protocol mappings can
          * attach a protocol edge directly to a caller local even though the
          * same local is defined by an in-region accessor call.  Keeping that
          * bare local as another boundary symbol both duplicates the real
@@ -8868,19 +8864,12 @@ final class SymbolicRegionPlanner {
         String kind = lower(string(edge.get("kind")));
         return "PROTOCOL_TRANSFER".equals(transfer)
                 || kind.contains("rpc")
-                || kind.contains("sasl")
                 || kind.contains("async")
                 || kind.contains("thread_handoff");
     }
 
     private static String boundaryKind(Map<String, Object> edge) {
         String kind = lower(string(edge.get("kind")));
-        if (kind.contains("sasl")) {
-            return "SASL_TRANSFER";
-        }
-        if (kind.contains("heartbeat")) {
-            return "HEARTBEAT_TRANSFER";
-        }
         if (kind.contains("rpc") && kind.contains("return")) {
             return "RPC_RETURN";
         }
@@ -8914,7 +8903,6 @@ final class SymbolicRegionPlanner {
                 || "dispatch".equals(name)
                 || "receive".equals(name)
                 || "process".equals(name)
-                || "doSaslHandshake".equals(name)
                 || name.startsWith("on") && name.length() > 2;
     }
 
@@ -8947,9 +8935,6 @@ final class SymbolicRegionPlanner {
                 || lower.contains("environment")
                 || lower.contains("currenttimemillis")
                 || lower.contains("nanotime")
-                || lower.contains("username")
-                || lower.contains("namecallback")
-                || lower.contains("sasl")
                 || lower.contains("rpc")
                 || input.endsWith(".return")
                 || methodForCell(input).equals(rootMethod);
@@ -8976,10 +8961,6 @@ final class SymbolicRegionPlanner {
             return cell.contains("@this")
                     ? "RECEIVER_FIELD" : "SHARED_HEAP";
         }
-        if (lower.contains("sasl") || lower.contains("namecallback")
-                || lower.contains("username")) {
-            return "PROTOCOL_INPUT";
-        }
         if (lower.contains("rpc")) {
             return "RPC_INPUT";
         }
@@ -9005,8 +8986,7 @@ final class SymbolicRegionPlanner {
         boolean callResult = value.endsWith(".return")
                 || value.contains(">.return");
         return callResult && (value.contains("<java.util.random:")
-                || value.contains("<java.security.securerandom:")
-                || value.contains("<org.apache.hadoop.util.time:"));
+                || value.contains("<java.security.securerandom:"));
     }
 
     private static boolean bugPredicateOutput(String output) {

@@ -294,32 +294,28 @@ public class ConcolicSummaryImporterTest {
                     "REPLAY_DIRECTED_TARGET");
             activation.add("captureGoal",
                     RegionCaptureGoal.targetBranch().toJson());
-            JsonObject target = new JsonObject();
-            target.addProperty("siteId", "example.Target#u8");
-            target.addProperty("occurrence", 1);
-            target.addProperty("desiredOutcome", false);
-            activation.add("targetBranch", target);
-            JsonObject query = new JsonObject();
-            query.addProperty("activationId", "ACT.T");
-            query.addProperty("regionId", "REGION.T");
-            query.addProperty("siteId", "example.Target#u8");
-            query.addProperty("occurrence", 1);
-            query.addProperty("desiredOutcome", false);
-            query.addProperty("readyForSolver", true);
             JsonObject originalCondition = new JsonObject();
+            originalCondition.addProperty("_type", "BinaryExpression");
             originalCondition.addProperty("_op", "!=");
-            JsonObject negatedCondition = new JsonObject();
-            negatedCondition.addProperty("_op", "==");
-            query.add("originalTargetCondition", originalCondition);
-            query.add("negatedTargetCondition", negatedCondition);
-            JsonArray constraints = new JsonArray();
-            constraints.add(negatedCondition.deepCopy());
-            query.add("constraints", constraints);
-            JsonObject symbolicContext = new JsonObject();
-            symbolicContext.addProperty("regionInstanceId",
-                    "REGION.T@test#call7");
-            query.add("symbolicContext", symbolicContext);
-            activation.add("directedTargetQuery", query);
+            JsonObject left = new JsonObject();
+            left.addProperty("_type", "SymbolExpression");
+            left.addProperty("_java_type", "I");
+            left.addProperty("_exp", "M_I_field_REGION.T.in.0_example/Target");
+            JsonObject right = new JsonObject();
+            right.addProperty("_type", "ConstExpr");
+            right.addProperty("_java_type", "I");
+            right.addProperty("_exp", "Y_I_0");
+            originalCondition.add("_left", left);
+            originalCondition.add("_right", right);
+            JsonObject sourceEvent = new JsonObject();
+            sourceEvent.addProperty("eventId", 1);
+            sourceEvent.addProperty("contextId", 7);
+            BranchWitness sourceWitness = BranchWitness.vmPc(
+                    "example.Target#u8", "example.Target", 8, 1, true,
+                    originalCondition, 0, sourceEvent);
+            BranchReplayContract targetContract = BranchReplayContract.flip(
+                    Collections.<BranchWitness>emptyList(), sourceWitness);
+            activation.add("replayContract", targetContract.toJson());
             JsonObject expectedMaterialization = new JsonObject();
             expectedMaterialization.addProperty("kind", "REFERENCE_RESULT");
             expectedMaterialization.addProperty("method",
@@ -358,9 +354,14 @@ public class ConcolicSummaryImporterTest {
             branch.addProperty("observedOutcome", false);
             branch.addProperty("effectiveOutcome", false);
             branch.addProperty("overrideApplied", false);
-            branch.addProperty("scheduledTarget", true);
-            branch.addProperty("scheduledDesiredOutcome", false);
-            branch.addProperty("scheduledOutcomeMatched", true);
+            JsonObject replayEvent = new JsonObject();
+            replayEvent.addProperty("eventId", 2);
+            replayEvent.addProperty("contextId", 7);
+            BranchWitness replayWitness = BranchWitness.vmPc(
+                    "example.Target#u8", "example.Target", 8, 1, false,
+                    targetContract.requiredSatisfiedPredicate(), 0,
+                    replayEvent);
+            branch.add("witness", replayWitness.toJson());
             JsonArray branches = new JsonArray();
             branches.add(branch);
             raw.add("branchMappings", branches);
@@ -391,16 +392,21 @@ public class ConcolicSummaryImporterTest {
             JsonObject acceptedSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                     .getAsJsonObject();
-            assertTrue(acceptedSummary.get("targetReplayValidated")
-                    .getAsBoolean());
-            assertEquals("example.Target#u8", acceptedSummary
-                    .getAsJsonObject("directedTargetQuery").get("siteId")
-                    .getAsString());
+            assertFalse(acceptedSummary.has("targetReplayValidated"));
+            assertEquals(targetContract.contractId(), acceptedSummary
+                    .getAsJsonObject("executionAdmission")
+                    .getAsJsonObject("branchReplayObservation")
+                    .get("contractId").getAsString());
+            assertFalse(acceptedSummary.has("directedTargetQuery"));
             assertEquals("SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION",
                     acceptedSummary.getAsJsonObject("executionAdmission")
                             .get("authority").getAsString());
 
             branch.addProperty("observedOutcome", true);
+            BranchWitness wrongWitness = BranchWitness.vmPc(
+                    "example.Target#u8", "example.Target", 8, 1, true,
+                    originalCondition, 0, replayEvent);
+            branch.add("witness", wrongWitness.toJson());
             write(results, raw + "\n");
             Path rejectedOutput = root.resolve("rejected.jsonl");
             Path rejectedDiagnostics = root.resolve("rejected-diagnostics.jsonl");
@@ -411,13 +417,13 @@ public class ConcolicSummaryImporterTest {
             assertEquals(0, rejected.validSummaryCount);
             assertTrue(new String(Files.readAllBytes(rejectedDiagnostics),
                     StandardCharsets.UTF_8).contains(
-                    "DIRECTED_TARGET_BRANCH_NOT_OBSERVED"));
+                    "TARGET_OUTCOME_MISMATCH"));
 
             JsonObject seedActivation = activation.deepCopy();
             seedActivation.addProperty("targetReplayRequired", false);
             seedActivation.addProperty("executionPhase",
                     "CAPTURE_THEN_NEGATE");
-            seedActivation.remove("directedTargetQuery");
+            seedActivation.remove("replayContract");
             seedActivation.remove("replayMaterializations");
             branch.addProperty("observedOutcome", false);
             branch.addProperty("overrideApplied", false);
@@ -1203,7 +1209,7 @@ public class ConcolicSummaryImporterTest {
 
             JsonObject summary = importCertifiedGuardFixture(
                     folder.getRoot().toPath(), fixture);
-            assertTrue(summary.get("targetReplayValidated").getAsBoolean());
+            assertFalse(summary.has("targetReplayValidated"));
             assertTrue(summary.getAsJsonObject("captureGoal").get("kind")
                     .getAsString().equals(RegionCaptureGoal.OUTPUT_CLOSURE));
             assertEquals("SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_REQUESTED_"
@@ -3652,21 +3658,21 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void admitsHadoopTimeNowAliasAsUnforcedVmEnvironment()
+    public void admitsSystemClockAsUnforcedVmEnvironment()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
-            String hadoopTimeNow =
-                    "<org.apache.hadoop.util.Time: long now()>.return";
+            String vmClock =
+                    "<java.lang.System: long currentTimeMillis()>.return";
             JsonObject placeholder = placeholderExpression(
                     "currentTimeMills", 3);
             PlaceholderFixture imported = importPlaceholderFixture(
                     folder.getRoot().toPath(),
                     exactCurrentTimePlaceholderMaterialization(
-                            hadoopTimeNow),
+                            vmClock),
                     placeholderCondition(placeholder), false,
-                    hadoopTimeNow);
+                    vmClock);
 
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
@@ -3688,7 +3694,7 @@ public class ConcolicSummaryImporterTest {
                     requirement.get("placeholderFunction").getAsString());
             assertEquals("CUSTOM_JDK_SYMBOLIC_ND_FUNC",
                     requirement.get("captureAuthority").getAsString());
-            assertEquals(hadoopTimeNow,
+            assertEquals(vmClock,
                     requirement.get("cell").getAsString());
             assertFalse(requirement.get("modelControllable")
                     .getAsBoolean());
@@ -3708,7 +3714,7 @@ public class ConcolicSummaryImporterTest {
             assertEquals(3, binding.get("placeholderCount").getAsInt());
             assertEquals("REGION.TIME.in.0",
                     binding.get("inputPort").getAsString());
-            assertEquals(hadoopTimeNow,
+            assertEquals(vmClock,
                     binding.get("cell").getAsString());
             assertEquals("UNIQUE_USED_PLACEHOLDER_IDENTITY_TO_EXACT_"
                             + "SLICE_INPUT",

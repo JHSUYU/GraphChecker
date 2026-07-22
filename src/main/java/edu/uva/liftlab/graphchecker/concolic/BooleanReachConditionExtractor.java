@@ -1582,7 +1582,8 @@ public final class BooleanReachConditionExtractor {
         }
         for (String field : new String[]{"fatalRegion", "fatalActivation",
                 "fatalRegionInstanceId", "fatalOccurrence",
-                "fatalDesiredOutcome", "validatedSummaryId"}) {
+                "fatalDesiredOutcome", "fatalReplayContractId",
+                "fatalSolverPathContextId"}) {
             JsonElement left = manifest == null ? null : manifest.get(field);
             JsonElement right = relationships == null
                     ? null : relationships.get(field);
@@ -1618,7 +1619,9 @@ public final class BooleanReachConditionExtractor {
         material.addProperty("schemaVersion", 1);
         for (String field : new String[]{"fatalRegion", "fatalActivation",
                 "fatalRegionInstanceId"}) {
-            material.addProperty(field, string(manifest, field));
+            String value = string(manifest, field);
+            if (value.isEmpty()) return "";
+            material.addProperty(field, value);
         }
         for (String field : new String[]{"fatalOccurrence",
                 "fatalDesiredOutcome"}) {
@@ -1626,8 +1629,12 @@ public final class BooleanReachConditionExtractor {
             if (value == null) return "";
             material.add(field, value.deepCopy());
         }
-        material.addProperty("validatedSummaryId",
-                string(manifest, "validatedSummaryId"));
+        for (String field : new String[]{"fatalReplayContractId",
+                "fatalSolverPathContextId"}) {
+            String value = string(manifest, field);
+            if (value.isEmpty()) return "";
+            material.addProperty(field, value);
+        }
         material.add("composedSmtArtifact", object(manifest,
                 "composedSmtArtifact").deepCopy());
         material.add("staticRegionsArtifact", object(manifest,

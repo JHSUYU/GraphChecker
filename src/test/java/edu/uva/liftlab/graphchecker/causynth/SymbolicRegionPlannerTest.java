@@ -203,7 +203,7 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
-    public void keepsSaslTransferBetweenConcolicRegions() {
+    public void keepsConfiguredRpcTransferBetweenConcolicRegions() {
         String sender = "<example.Client: java.lang.String buildUserName()>";
         String receiver = "<example.Server: void handle(java.lang.String)>";
         List<Map<String, Object>> plans = Arrays.asList(
@@ -214,14 +214,14 @@ public class SymbolicRegionPlannerTest {
         List<Map<String, Object>> edges = Arrays.asList(
                 edge(receiver, "SEED", "seed", receiver + "#failure:missingKey",
                         receiver + ".return", 2),
-                edge(receiver, "PROTOCOL_TRANSFER", "hdfs_sasl_username_bridge",
+                edge(receiver, "PROTOCOL_TRANSFER", "rpc_argument",
                         sender + ".return", receiver + ".param0:userName", 3));
 
         SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(edges, plans);
 
         assertEquals(2, result.regions.size());
         assertEquals(1, result.regionEdges.size());
-        assertEquals("SASL_TRANSFER", result.regionEdges.get(0).get("kind"));
+        assertEquals("RPC_ARGUMENT", result.regionEdges.get(0).get("kind"));
         assertEquals("", result.regionEdges.get(0).get("relation"));
         assertEquals("EQUALITY", result.regionEdges.get(0).get(
                 "candidateRelation"));
@@ -3300,9 +3300,9 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
-    public void keepsHeartbeatPayloadBetweenNameNodeAndDataNodeRegions() {
-        String sender = "<example.NameNode: void addKeyUpdateCommand()>";
-        String receiver = "<example.DataNode: void processAccessKeyUpdateCommand()>";
+    public void keepsConfiguredRpcPayloadBetweenRegions() {
+        String sender = "<example.Producer: void publish()>";
+        String receiver = "<example.Consumer: void receive()>";
         String payload = sender + "::exportedKeys#field:allKeys";
         String received = receiver + "::exportedKeys#field:allKeys";
         List<Map<String, Object>> plans = Arrays.asList(
@@ -3312,14 +3312,14 @@ public class SymbolicRegionPlannerTest {
                         Collections.singletonList("<example.Secret: int allKeys>")));
         List<Map<String, Object>> edges = Collections.singletonList(
                 edge(receiver, "PROTOCOL_TRANSFER",
-                        "projected_hdfs_heartbeat_key_update",
+                        "rpc_argument",
                         payload, received, 4));
 
         SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(edges, plans);
 
         assertEquals(2, result.regions.size());
         assertEquals(1, result.regionEdges.size());
-        assertEquals("HEARTBEAT_TRANSFER", result.regionEdges.get(0).get("kind"));
+        assertEquals("RPC_ARGUMENT", result.regionEdges.get(0).get("kind"));
         assertEquals(Boolean.TRUE, result.coverage.get("complete"));
     }
 
@@ -3627,9 +3627,6 @@ public class SymbolicRegionPlannerTest {
                 sourceKind.invoke(null, lifetime, updater));
         assertEquals("ENVIRONMENT", sourceKind.invoke(null,
                 "<java.lang.System: long currentTimeMillis()>.return",
-                updater));
-        assertEquals("ENVIRONMENT", sourceKind.invoke(null,
-                "<org.apache.hadoop.util.Time: long now()>.return",
                 updater));
         assertEquals("OPAQUE_CALL", sourceKind.invoke(null,
                 "<example.RpcProtocol: example.Response fetch()>.return",
