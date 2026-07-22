@@ -50,6 +50,21 @@ input class tree. With no id there must be exactly one marker. The exception
 type is taken from the annotated `NEW`; the removed `seed_exception` and
 `target_exception` keys are rejected rather than searched globally.
 
+## Binary branch replay protocol
+
+An observed binary decision is represented once by a content-hashed
+`BranchWitness`. It owns the exact site/occurrence, source outcome, canonical
+satisfied predicate, and one evidence variant (`VM_PC` or
+`CERTIFIED_NO_PC`). `BranchReplayContract.flip()` is the sole polarity
+operation and produces the ordered-prefix-plus-flipped-target request consumed
+unchanged by the worklist, solver, instrumentation, runtime, importer, and
+verifier. Retired target/prefix/negated-condition aliases are rejected for an
+output path replay. Multiway switches use their own successor-aware records.
+
+The three-thread reference runner stops at a hash-bound, independently
+Z3-checked `CANDIDATE_ONLY` result. Promoting that candidate to a trusted result
+by an injection-free natural replay is intentionally the remaining TODO.
+
 ## Paths and configuration
 
 The generic config grammar is one `key=value` per line. It is parsed as data,
