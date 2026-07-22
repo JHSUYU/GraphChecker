@@ -192,6 +192,209 @@ validate_multitype_producer_artifacts() {
     || die "multitype guarded merge lost double/long/string/loop semantics"
 }
 
+validate_container_producer_artifacts() {
+  local work_root=$1
+  local campaign_root="${work_root}/producer-campaign"
+  local array_summary="${campaign_root}/arrayvalue/merged_region_summaries.jsonl"
+  local map_summary="${campaign_root}/mapvalue/merged_region_summaries.jsonl"
+  local -a path_manifests worklists replay_reports
+
+  [[ -d "${campaign_root}" ]] \
+    || die "container producer campaign not found: ${campaign_root}"
+  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_manifest.json | sort)
+  mapfile -t worklists < <(find "${campaign_root}" -mindepth 3 \
+    -maxdepth 3 -type f -name region_path_worklist.jsonl \
+    -size +0c | sort)
+  mapfile -t replay_reports < <(find "${campaign_root}" -mindepth 3 \
+    -maxdepth 3 -type f -name path_replay_verification.json | sort)
+  [[ ${#path_manifests[@]} -eq 2 ]] \
+    || die "containers expected two producer path manifests"
+  [[ ${#worklists[@]} -eq 2 ]] \
+    || die "containers expected one non-empty path worklist per producer"
+  [[ ${#replay_reports[@]} -eq 2 ]] \
+    || die "containers expected one replay verification per producer"
+  require_file "array guarded merge" "${array_summary}"
+  require_file "map guarded merge" "${map_summary}"
+
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .schemaVersion == 1
+      and .kind == "REGION_PATH_WORKLIST"
+      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .complete == true
+      and .wallClockBoundReached == false
+      and .gapCount == 0
+      and ((.gaps // []) | length) == 0
+      and .pendingTaskCount == 0
+      and .observedPathCount == 2
+      and .candidateFlipCount > 0
+      and ([.pathCountByRegion[]] | add) == .observedPathCount)
+  ' "${path_manifests[@]}" >/dev/null \
+    || die "container producer path closure is incomplete"
+
+  # Path tasks carry one immutable replay contract for branch truth and a
+  # separate, content-addressed context only for non-branch solver nodes.
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .schemaVersion == 3
+      and .kind == "REGION_PATH_FLIP"
+      and .dynamicIdsExcludedFromQueryKey == true
+      and .replayContract.schemaVersion == 1
+      and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
+      and (.replayContract.contractId
+        | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
+      and .replayContract.source.schemaVersion == 1
+      and .replayContract.source.kind == "BINARY_BRANCH_WITNESS"
+      and (.replayContract.source.witnessId
+        | test("^BRANCH\\.WITNESS\\.[0-9a-f]{64}$"))
+      and .solverPathContext.schemaVersion == 1
+      and .solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
+      and .solverPathContext.authority
+        == "SOURCE_SUMMARY_POSITIONED_NON_BRANCH_CONSTRAINTS_V1"
+      and (.solverPathContext.contextId
+        | test("^SOLVER\\.PATH\\.CONTEXT\\.[0-9a-f]{64}$"))
+      and (.solverPathContext.constraints | type) == "array"
+      and all(.solverPathContext.constraints[]?;
+        (.summaryPcIndex | type) == "number"
+        and .summaryPcIndex >= 0
+        and (.expression._type == "_array_expr"
+          or .expression._type == "MethodExpression"))
+      and (has("forcedBranches") | not)
+      and (has("pathCondition") | not))
+  ' "${worklists[@]}" >/dev/null \
+    || die "container path task lost the witness/context authority split"
+
+  jq -e '
+    .valid == true
+    and .relationallyComplete == true
+    and .regionRelation.kind == "GUARDED_PATH_MERGE"
+    and .regionRelation.complete == true
+    and .regionRelation.pathClosureStatus
+      == "COMPLETE_BOUNDED_PATH_CLOSURE"
+    and .regionRelation.guardSemantics
+      == "EXACT_NORMALIZED_PATH_CONDITION"
+    and .regionRelation.caseCount == 2
+    and (.requestedOutputSlice.containerElementFieldBindings | length) == 1
+    and .requestedOutputSlice.containerElementFieldBindings[0] as $static
+    | ($static.schemaVersion == 2
+      and $static.kind == "ARRAY_ELEMENT_FIELD"
+      and $static.materializationMode == "CONTAINER_SNAPSHOT"
+      and $static.selectorAuthority == "EXACT_ARRAY_INDEX"
+      and $static.elementIndex == 1
+      and $static.elementOccurrence == 1
+      and $static.fieldPath == ["state", "guard", "enabled"]
+      and $static.complete == true
+      and $static.proofAuthority
+        == "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
+      and ($static.proofCausalEdgeIds | length)
+        > ($static.fieldPath | length)
+      and (.requestedOutputSlice.inputPorts
+        | index($static.baseInputSymbol)) != null
+      and (.requestedOutputSlice.inputPorts
+        | index($static.containerInputPort)) != null
+      and ([.regionRelation.cases[].guard.conditions[]._op] | sort)
+        == ["!=", "=="]
+      and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
+        == ["Y_I_-1", "Y_I_1"]
+      and all(.regionRelation.cases[];
+        .relationallyComplete == true
+        and (.dynamicFieldBindings | length) == 1
+        and .dynamicFieldBindings[0] as $dynamic
+        | ($dynamic.schemaVersion == 2
+          and $dynamic.kind
+            == "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING"
+          and $dynamic.complete == true
+          and $dynamic.containerBindingId == $static.bindingId
+          and $dynamic.baseInputSymbol == $static.baseInputSymbol
+          and $dynamic.containerInputPort == $static.containerInputPort
+          and $dynamic.selectorAuthority == "EXACT_ARRAY_INDEX"
+          and $dynamic.elementIndex == 1
+          and $dynamic.elementOccurrence == 1
+          and $dynamic.fieldPath == $static.fieldPath
+          and $dynamic.containerSelector.complete == true
+          and $dynamic.containerSelector.elementIndex == 1
+          and $dynamic.fieldExpression._type == "SymbolExpression"
+          and $dynamic.fieldExpression._java_type == "Z"
+          and ($dynamic.fieldExpression._exp
+            | contains($dynamic.dynamicFieldSymbol)))))
+  ' "${array_summary}" >/dev/null \
+    || die "array producer lost exact index-1 nested field semantics"
+
+  jq -e '
+    .valid == true
+    and .relationallyComplete == true
+    and .regionRelation.kind == "GUARDED_PATH_MERGE"
+    and .regionRelation.complete == true
+    and .regionRelation.pathClosureStatus
+      == "COMPLETE_BOUNDED_PATH_CLOSURE"
+    and .regionRelation.guardSemantics
+      == "EXACT_NORMALIZED_PATH_CONDITION"
+    and .regionRelation.caseCount == 2
+    and ([.regionRelation.cases[].guard.conditions[]._op] | sort)
+      == ["!=", "=="]
+    and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
+      == ["Y_I_0", "Y_I_10"]
+    and all(.regionRelation.cases[];
+      .relationallyComplete == true
+      and (.dynamicFieldBindings | length) == 1
+      and (.heapObservations | length) == 1
+      and .dynamicFieldBindings[0] as $dynamic
+      | .heapObservations[0] as $observation
+      | ($dynamic.schemaVersion == 1
+        and $dynamic.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
+        and $dynamic.complete == true
+        and $dynamic.fieldPath == ["state", "guard", "enabled"]
+        and $dynamic.keyExpression._type == "ConstExpr"
+        and $dynamic.keyExpression._java_type == "I"
+        and $dynamic.keyExpression._exp == "Y_I_7"
+        and $dynamic.entryValueRefWitnessJoinCertified == true
+        and $observation.schemaVersion == 1
+        and $observation.kind == "MAP_ENTRY_READ"
+        and $observation.complete == true
+        and $observation.stateBaseComplete == true
+        and $observation.stateBindingAuthority
+          == "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1"
+        and $observation.entryValueFieldBindingComplete == true
+        and ($observation.entryFieldBindings | length) == 1
+        and $observation.entryFieldBindings[0].dynamicBindingId
+          == $dynamic.dynamicBindingId
+        and $observation.entryFieldBindings[0].fieldPath
+          == $dynamic.fieldPath
+        and $observation.entryFieldBindings[0].keyExpression
+          == $dynamic.keyExpression))
+  ' "${map_summary}" >/dev/null \
+    || die "map producer lost exact key-7 nested entry field semantics"
+
+  # Replays mutate inputs only.  The VM observes the requested contract; it
+  # never receives a forced branch decision.
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .schemaVersion == 1
+      and .kind == "CONCOLIC_PATH_REPLAY_VERIFICATION_MANIFEST"
+      and .valid == true
+      and .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+      and .failureCount == 0
+      and .branchReplayObservation.kind == "BRANCH_REPLAY_OBSERVATION"
+      and .branchReplayObservation.requested == true
+      and .branchReplayObservation.valid == true
+      and (.branchReplayObservation.contractId
+        | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
+      and .replayValidation.valid == true
+      and .replayValidation.status == "VALIDATED_UNFORCED_REPLAY"
+      and .replayValidation.inputModelOnly == true
+      and .replayValidation.branchAndInputReplayValidated == true
+      and .replayValidation.outputClosureAdmissionGap == false
+      and ((.replayValidation.failures // []) | length) == 0)
+    and ([.[].replayValidation.containerReplayRebindingCount] | add) == 1
+    and ([.[].replayValidation.freshMapEntryRebindingCount] | add) == 1
+  ' "${replay_reports[@]}" >/dev/null \
+    || die "container path replay was forced or lost exact rebinding"
+}
+
 validate_semantic_profile() {
   local label=$1
   local smt=$2
@@ -274,9 +477,32 @@ validate_semantic_profile() {
         || die "multitype SMT omitted Java dcmpl greater-than semantics"
       validate_multitype_producer_artifacts "${work_root}"
       ;;
-    dependent-scalar|containers)
-      # Optional extended cases retain the common artifact/replay checks.  The
-      # core profiles above are the deliberately small semantic contract.
+    dependent-scalar)
+      # This optional case retains the common artifact/replay checks.  Its
+      # cross-producer scalar dependency has dedicated Java regression tests.
+      ;;
+    containers)
+      jq -e '
+        .rootBooleanInputCount == 2
+        and .existentialNonBooleanRootInputCount == 0
+        and .valuationCount == 4
+        and .satisfyingValuationCount == 1
+        and .unsatisfyingValuationCount == 3
+        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+          == ["11"])
+      ' "${reach_report}" >/dev/null \
+        || die "containers lost its exact nested-field reach profile"
+      jq -e '
+        .resolvedProducerCount == 2
+        and .guardedRegionRelationCount == 2
+        and .guardedPathCaseCount == 4
+        and .caseProjectionCatalogComplete == true
+        and .caseProjectionCatalogCount == 4
+        and .heapObservationCount == 2
+        and .heapObservationFieldBindingCount == 2
+      ' "${work_root}/bootstrap/composed_smt_manifest.json" >/dev/null \
+        || die "containers lost guarded array/map composition evidence"
+      validate_container_producer_artifacts "${work_root}"
       ;;
     *) die "no semantic profile for matrix label: ${label}" ;;
   esac
