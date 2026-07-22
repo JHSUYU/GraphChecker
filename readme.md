@@ -2,191 +2,21 @@
 
 GraphChecker 从静态数据流、运行时跨 region 证据和逐 region concolic execution 中构造
 `region.in -> region.out` 关系，再沿 region graph 递归组合成一个可直接交给 Z3 的 SMT。
-当前参考工作负载是三线程 RPC fixture；HDFS 实验仍保留为受控的领域实例。
+当前维护的验证矩阵是通用三线程 RPC fixture 及其 cross-method、multitype、
+dependent-scalar、container、unreachable-parity 变体。最后一组要求完整流程生成的
+SMT 由 Z3 判定为 `unsat`。
 
-## 第 0 层：项目定位与不可扩展边界
+## 项目定位
 
-这是一个纯学术的软件工程与程序分析项目，研究静态分析、运行时分析、
-concolic execution、symbolic state propagation、guarded symbolic merging 和 SMT
-composition。被分析对象是无害的开源 Apache Hadoop HDFS 代码，baseline 工作负载是
-HDFS 自有单元测试在本机 `MiniDFSCluster` 中的执行；fresh expiry 实验另使用一个明确
-标注为 diagnostic 的本地派生 harness。
+这是一个纯学术的软件工程与程序分析项目，研究静态分析、运行时分析、concolic execution、
+symbolic state propagation、guarded symbolic merging 和 SMT composition。核心流程只接受
+配置、程序证据和类型化 artifact，不包含面向某个应用或 bug 的公式。
 
-`EncryptedTransfer`、encryption key、SASL、token 等词来自 HDFS 上游类名和正常测试
-行为，并不表示网络攻击、入侵、利用、漏洞武器化或访问第三方系统。所有 HDFS、
-Soot 和自定义 OpenJDK 修改都只用于在受控研究环境中观察和建模程序行为。
+旧 HDFS 实验 adapter、冻结静态 catalog checkpoint、领域 port mapper 和显式 contract
+registry 已退出维护并从仓库删除；通用 RPC、container、Java 语义和 fail-closed evidence
+检查继续由 maintained workload matrix 覆盖。
 
-固定研究边界如下，脚本也会在每次 HDFS 操作前校验仓库和提交：
-
-| 项目 | 固定值 |
-| --- | --- |
-| Hadoop 仓库 | `/opt/hadoop` |
-| Hadoop commit | `ece33208b89a6a06c1b362d10fab31343fe5df13` |
-| HDFS baseline 单测 | `org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1` |
-| workload | 只使用 `org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1` |
-| 执行环境 | 本机、Docker 内的自定义 OpenJDK、`MiniDFSCluster` |
-| 源码模式 | `UPSTREAM_PRE_HDFS_11741`；循环仅允许由分析器有界/模糊处理，不修改 workload |
-| 固定源码 SHA-256 | `be9ce1a57980fdab5612abed1886362842099e1df657b0cdb8c95dbb0a480093` |
-| 禁止事项 | 扩展到第三方系统、真实网络目标、攻击或利用工作流 |
-
-任何后续检查点或新对话都必须继续注明上述仓库、commit、唯一 baseline 单测
-和执行边界。这里的“固定”是为了保证实验可复现和不越界，不是说分析框架
-只能用于 HDFS；核心 concolic/worklist/IR/composer 仍应保持项目无关。
-
-### HDFS-11741 通用递归 composition → fatal SMT checkpoint（2026-07-18）
-
-Hadoop worktree 保持 pre-fix commit，baseline test 未修改。v4 静态 catalog 和唯一一次
-baseline workload 的 runtime trace 已冻结；后续步骤直接复用这些产物，不再重复运行 Soot、
-runtime instrumentation 或 workload。输入路径、summary 列表、输出文件名、Z3 路径和语义
-policy 均由 `experiments/hdfs/conf/hdfs.properties` 配置，并可用对应的
-`CAUSYNTH_HDFS_GENERIC_*` 环境变量覆盖。配置中没有生成的 activation/region ID。
-
-正式结果位于 `target/hdfs-11741-generic-final-v7`。这条路径不再调用
-`Hdfs11741BootstrapComposer`，也没有注入面向本 bug 的 case formula：HDFS-specific 部分只负责
-按 method/cell/timeline policy 选择语义角色以及提供已声明的 RPC/SASL mapping；之后由 legacy
-branch-flip scheduler 和普通 `ConcolicSmtComposer` 完成 target fatal PC、递归 port binding、
-summary symbolic merging、SMT emission 和 Z3 调用。solver manifest 对此记录为
-`domainSemanticAdapterUsed=false`、`caseFormulaInjected=false`。
-
-当前自动化证据链如下：
-
-- selector 从 frozen catalog 自动选出 NameNode、DataNode、KeyUpdater、Dispatcher 和 target
-  五个有序语义角色。它依据 root/anchor/required method、requested cell、runtime instance
-  顺序和完整值 fingerprint 选择，不依赖某次生成的 activation/region 名字；
-- exact composition 包含四个 producer summary：NameNode、DataNode、KeyUpdater 和
-  Dispatcher。target replay summary 由 scheduler 单独消费，用来翻转最后的 `key == null`
-  fatal branch，因此不重复列在 composition manifest 的 `includedSummaries` 中；
-- composer 从 target input port 出发，沿 frozen runtime binding catalog 递归解析唯一 producer。
-  当前三条 exact binding 分别覆盖 Dispatcher→target 的 SASL username 值相等、DataNode
-  `allKeys` post-state→target lookup map 的 shared-field read-from，以及
-  KeyUpdater `currentKey`→Dispatcher cache input 的 declared-field projection。Dispatcher
-  summary 内部另用 exact equality-preserving causal path 证明 cached keyId 与生成的
-  `DataEncryptionKey.keyId` 相等；Java int→decimal string→parse-int round trip 由通用 String
-  codec 语义翻译，而不是 HDFS case formula；
-- NameNode→KeyUpdater/DataNode 的 RPC payload 在现有 frozen trace 中没有完整 transaction
-  fingerprint，所以这两条边使用 policy 中显式声明、selector 自动解析的配置化 field mapping。
-  policy 只写稳定 role/port alias/cell/field path，不写 ACT/REGION ID；selector 将其解析到本次
-  runtime instance，通用 composer 再把 equality group 展开为三个有类型约束：NameNode
-  `MAP_PUT.keyExpression` 分别等于 KeyUpdater `currentKey.keyId` 和 DataNode iterator
-  `keyId`，NameNode `expiryDate` 等于 DataNode entry `expiryDate`。manifest 记录
-  `configuredTransportProducerCount=1`、`configuredTransportBindingCount=2`、
-  `configuredTransportConstraintCount=3`。这是可见的 `CONFIGURED_NN_SNAPSHOT_FANOUT`
-  approximation，不是 domain composer 注入的整段 bug formula。NameNode source 采用 manifest
-  可审计的 `GUARDS_AND_SELECTED_TERMS_ONLY` projection：保留 source path guards 和被选中的
-  payload terms，但不声称已经构造完整 heap transformer；
-- DataNode summary 对内层 `removeExpiredKeys()` iterator 保留一个相关 map entry：
-  `expiry < Time.now() -> remove(keyId)`。composer 将 exact post-state edge 与 fatal
-  `Map.get(keyId) == null`、删除前 membership 和 `MAP_REMOVE` store semantics 组合起来；base SMT
-  没有直接断言“removed key = fatal lookup key”，该相等关系是由 pre-present、post-absent 和
-  remove transformer 推出的。对正式 SMT 额外断言这个派生等式的否定，Z3 返回 `unsat`；再
-  强制 NameNode snapshot key 与 fatal lookup key 不同也返回 `unsat`，说明配置化 fanout、
-  KeyUpdater/Dispatcher/SASL codec 和 DataNode remove 两条链已在同一模型中汇合；
-- NameNode projection summary 保留其初始 guard `snapshotExpiry >= NameNode Time.now()`；DataNode
-  summary 保留稍后 `snapshotExpiry < DataNode Time.now()`，所以同一 SMT 明确得到时间跨越。
-  外层 NameNode heartbeat 与 DataNode `BPServiceActor.run` 长循环只保留配置声明的有界
-  witness/path prefix，DataNode iterator 只展开上述一个相关 entry。一个与 fatal `allKeys`
-  无关的 ancillary computed map key 保留为 typed opaque concrete-workload result；这些都是
-  manifest 可见的 approximation，而不是 sound/complete 的全 HDFS 循环模型；
-- 正式 composition 状态为 `STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION`：
-  `structurallyComplete=true`、`eligibleForBootstrapModel=true`，并且
-  `missingSummaryRegions`、`incompleteSummaryRegions`、`unsupportedExpressions`、
-  `unboundPorts` 均为空。Z3 4.8.12 已真实运行并返回 `sat`；
-- `complete=false` 只表示这个 solver model 尚未经过一次自然 fatal replay 验证，不表示当前
-  summary→binding→SMT 结构缺失。它证明的是声明的一 DN、单相关 iterator entry 和有界外层
-  loop scope 下存在到达 `retrieveDataEncryptionKey()` 中 `key == null` exception branch 的模型。
-
-冻结的静态图仍有 150,000 条边、64 个 region 和 8,728 条 region edge；唯一 workload
-运行 56.856 秒并通过，raw trace 有 839,101 行且 streaming manifest 为
-`CLOSED/complete`。最终 offline aggregation 有 499 个 activation 和 57 条 confirmed
-read-from edge。这些较大的分析步骤不是下面一键 composition 命令的一部分。
-
-正式 artifact 为：
-
-```text
-target/hdfs-11741-generic-final-v7/
-  semantic-selection/replay_selection_manifest.json
-  directed-target-query/branch_queries.jsonl
-  hdfs_11741_generic.smt2
-  hdfs_11741_generic_manifest.json
-  hdfs_11741_generic_relationships.json
-  hdfs_11741_generic_z3.out
-  hdfs_11741_generic_z3_manifest.json
-```
-
-其中 composition manifest、SMT 和 solver output 的 SHA-256 分别为
-`5ad1029f26572691e4c286209ce93152375ccf438681c6e2d2d35b9fa2a764bd`、
-`5b58bc1a2e1f68ce28f479771b370a218e9a28ca983990da10fe4b314236e786`、
-`d9dbf94b05b8314af9ca7f2034e92685c33447917605a7243b1099c693a12e5e`。
-
-从配置指定的 frozen artifacts 一键重现 selector→fatal flip→generic composition→Z3：
-
-```bash
-mvn -q -DskipTests package
-CAUSYNTH_HDFS_GENERIC_OUTPUT_DIR=/opt/GraphChecker/target/hdfs-11741-generic-fresh \
-  experiments/hdfs/run_hdfs.sh hdfs-11741-compose-generic \
-  org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
-```
-
-输出目录必须尚不存在且位于 workspace 内，以保证并行 worker/重复实验彼此隔离。除新的输出
-目录外，命令所需路径和文件名均读取 properties；如需搬迁 frozen artifacts，应修改配置或
-使用同名 `CAUSYNTH_HDFS_GENERIC_*` override，而不是修改脚本或写入生成的 ID。
-
-派生 key 关系可从 relationships artifact 自动取出并做独立反证检查；下面命令在正式 SMT
-末尾加入关系的否定，预期输出 `unsat`：
-
-```bash
-artifact=/opt/GraphChecker/target/hdfs-11741-generic-final-v7
-derived_relation=$(jq -r \
-  '.relationships[] | select(.kind == "DERIVED_MAP_REMOVE_FATAL_MISS_KEY_EQUALITY") | .formula' \
-  "$artifact/hdfs_11741_generic_relationships.json")
-{
-  sed '$d' "$artifact/hdfs_11741_generic.smt2"
-  printf '(assert (not %s))\n(check-sat)\n' "$derived_relation"
-} | /usr/bin/z3 -in -smt2
-```
-
-#### Activation-specific concolic 静态复用
-
-纯 concolic replay class generation 不再为每个 activation 重建同一份 150,000-edge
-静态图。`freeze-concolic-static` 会把 regions、coverage、static graph、region edges、
-target spec、原始 class tree 和 supplemental class tree 绑定到一个只读 manifest；loader
-再用同目录的 schema-2 `schedule_input_provenance.json` 校验 exact plan、regions 和 graph
-SHA。冻结前还会强制 static-process provenance 中的 Hadoop source revision、target-spec
-路径/SHA 和 class-tree 路径完全一致。每个 worker 只流式投影所选 region 的 `methods` 与
-`branchPolicies`，继续复用原有 root/materialization/replay/output-capture instrumentation。
-
-真实 `ACT.30 / REGION.0` 测量中，原先完整静态重建约需 1,428 秒；复用模式的
-GraphChecker pass 稳定在 30.9–31.2 秒，包含 runtime dependency 发布的完整
-`process-concolic` 为 34–35 秒。所选 1 个 root、9 个 branch policy 全部安装，报告记录
-`staticAnalysisSkipped=true`，约为 42 倍的端到端加速。固定 regex 也已在静态/运行时
-region planner 热路径预编译。`trace+concolic` campaign 和 `ALL` bundle 暂不使用 partial
-catalog，会明确回退完整分析。
-
-静态复用优化由完整 Maven 回归、generic shell workflow 和 parallel HDFS concolic batch
-fixture 覆盖；具体测试数量不作为协议或 artifact 的一部分。
-
-```bash
-mvn -q -DskipTests package
-experiments/hdfs/run_hdfs.sh freeze-concolic-static
-experiments/hdfs/run_hdfs.sh process-concolic \
-  /path/to/scheduled_activation_plan.jsonl ACT.id
-```
-
-成功的 fast process 只在 job-owned static output 中写
-`concolic_instrumentation_report.json` 和 `concolic_process_provenance.json`；不会调用
-partial `OutputWriter.writeAll()`，因此不会用空 graph/plan 覆盖冻结 catalog。manifest、
-artifact 文件名、输出目录和 Java/`jar` 命令均由 properties 或环境变量配置。process
-provenance 还绑定最终 replay class tree 的确定性 SHA-256 与 file count；batch runner 和
-exact reuse `replay-concolic` 会在启动 custom JDK 前重新计算 class tree，并复核 manifest、
-instrumentation report、GraphChecker JAR 的路径/SHA 和 authority，缺失 provenance 时直接
-拒绝运行。显式 full-static/legacy replay 可设置
-`CAUSYNTH_CONCOLIC_PROCESS_PROVENANCE_REQUIRED=false`；也可单独运行
-`verify-concolic-process` 审计。实际 instrumentation root 必须属于所选 region 的 method
-catalog，并与 pipeline 安装的唯一 root 精确相等；supplemental process dirs 保留 Soot
-classpath 顺序并拒绝重复。可删除的 class output 只允许 checked-in exact path、专用
-replay root 的严格子目录，或 batch/campaign 已校验后显式授权的 exact job path。
-
-#### 三线程候选模型 milestone（2026-07-21）
+## 三线程候选模型 milestone（2026-07-21）
 
 generic 三线程流程当前自动完成 annotation 定位、静态切片、runtime discovery、逐 producer
 路径闭合、递归 SMT composition、Z3 求解和有限 root-input 投影。终态 manifest 明确写为
@@ -227,9 +57,9 @@ exception_target_id: three-thread-rpc
 ```
 
 未提供 id 时必须恰好只有一个 marker；缺失、重复或无法唯一映射到 Jimple throw 都会
-fail closed。旧的 `seed_exception`/`target_exception` 配置入口已删除。annotation 只消除
-目标定位上的重复确认；跨线程 producer、read-from、顺序、对象/值 identity 和 runtime
-instance 仍必须由原有静态/运行时证据验证。
+fail closed。旧的 exception-name 搜索、`seed_variables`、`seed_function` 及其配置 alias
+均已删除。annotation 只消除目标定位上的重复确认；跨线程 producer、read-from、顺序、
+对象/值 identity 和 runtime instance 仍必须由静态/运行时证据验证。
 
 三线程 fixture 位于
 `src/test/java/edu/uva/liftlab/graphchecker/fixtures/ThreeThreadRpcWorkload.java`：
@@ -284,10 +114,6 @@ target/three-thread-rpc/bootstrap/bootstrap_boolean_model.json
 `target/three-thread-rpc/bootstrap/candidate_result_manifest.json`，其中
 `naturalReplayPromotionImplemented=false`。
 
-HDFS 冻结 trace 的同一聚合已由 demand re-slice 从 10:26.98 降到 2:16.54，
-关键 SASL/READ_FROM 边和五个 selector activation 均保留。最终 HDFS SMT 仍需补齐
-checkout 中缺失的五个 replay summary；详见 `experiments/generic/three-thread-rpc/README.md`。
-
 ## 核心抽象
 
 ### Region
@@ -323,8 +149,8 @@ leaf getter，静态 output demand 仍可把 leaf 反投影到 exact container s
 下游 `region.in` 的定义值。返回值、field 写、array 写或传给下游调用的值都可能是 out；
 与任何下游 input 无关的临时值不应成为 out。一个 region 可以有多个 output。
 
-静态 dataflow 给出候选 `out -> in` 边；跨线程/RPC 场景允许配置方法级拓扑，但最终边仍
-需要具体 runtime publish/read、顺序和对象/值证据确认。
+静态 dataflow 给出候选 `out -> in` 边；跨线程/RPC 关系由程序中的调用、publish/read
+与共享状态自动发现，最终边需要具体 runtime 顺序、对象或完整值 fingerprint 证据确认。
 
 ### Region relation
 
@@ -400,13 +226,21 @@ Scheduler 为每次 capture 选择一个 region activation。GraphChecker runtim
 engine-backed owner，避免其他应用线程或 GraphChecker 自身 bookkeeping 污染当前 path
 condition。
 
-每个二元 branch 只产生一个不可变、内容哈希的 `BranchWitness`。它包含稳定的
-`site + occurrence`、源 execution 实际满足的 outcome/predicate，以及互斥的 `VM_PC` 或
-`CERTIFIED_NO_PC` evidence。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的
-位置：它保留有序 prefix、翻转一个 source witness，并丢弃旧 suffix。worklist、solver、
-activation、静态插桩、runtime、importer 和 verifier 都传递或解析同一个 contract，不再各自
-重建 `targetBranch`、`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。
-`switch` 仍作为独立的 successor-aware observation，不伪装成二元 branch。
+每个可求解的二元 branch 只产生一个不可变、内容哈希的 `BranchWitness`。它包含稳定的
+`site + occurrence`、源 execution 实际满足的 outcome/predicate，以及唯一允许的 `VM_PC`
+evidence。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的位置：它保留有序
+prefix、翻转一个 source witness，并丢弃旧 suffix。worklist、solver、activation、静态插桩、
+runtime、importer 和 verifier 都传递或解析同一个 contract，不再各自重建 `targetBranch`、
+`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。精确 VM event 若没有
+对应 PC，只能作为 observation 和诊断信息，不能制造 predicate、witness 或 flip；`switch`
+也仍是独立的 successor-aware observation，不伪装成二元 branch。
+
+源 path condition 中夹在 branch 之间的 array-load 或 method-relation 节点不是 branch
+evidence。schema-3 worklist 把它们放入另一个不可变、内容哈希的 `SolverPathContext`，并保留
+原始 `summaryPcIndex`；该对象只接受 `_array_expr` 和 `MethodExpression`，遇到没有 witness
+的 Boolean predicate 会直接拒绝。solver 分别断言 context 与 contract，runtime replay 只
+消费 contract。这样既不会丢掉求解所需的非 branch 关系，也不会再把同一个 branch witness
+复制成多套 path-condition/target/prefix JSON 来相互确认。
 
 invocation ordinal 只表示同一 receiver-class/thread context 中的第几次调用，用于定位动态
 activation，不代表程序语义，也不进入稳定 worklist key。
@@ -458,13 +292,18 @@ candidate；当前流程没有 final/trusted 发布状态。
 Manifest 中的来源检查不是密码学“证书系统”，而是防止把不同 execution、旧 summary 或
 merged relation 内部的错误 case 拼在一起。核心规则是：选中的 case 必须唯一属于本次
 composer 实际使用的 merged summary，同时其原始 summary 和 activation 必须唯一存在且
-身份一致。
+身份一致。branch 层的检查以 `BranchWitness`/`BranchReplayContract` 的 canonical JSON 与
+content hash 为准；下游只解析并消费该权威对象，不再逐字段重建一份“等价证书”。
 
-领域 adapter 在 final relationship 中只能提供候选映射，不能把程序没有执行出来的
-equality、cache、expiry、membership 或 codec 语义冒充 runtime fact。研究用 bootstrap
-可以在 policy 明确授权后加入这些 contract，但必须逐项写入 approximation catalog，并保持
-`complete=false`、`relationallyComplete=false`；HDFS-11741 checkpoint 使用的正是后一种
-边界。
+Composition manifest 是跨文件绑定的唯一 authority：它对本次 CLI 实际读取的 regions、
+fatal query、summary、生成的 SMT 和 relationship catalog 做精确路径、长度和 SHA-256
+绑定。relationship catalog 只保存 schema、候选关系数组和当前 verification eligibility，
+不再复制 fatal identity、stage、artifact hash 或第二个 `compositionBindingId` 来与 manifest
+逐字段互证。
+
+自动 topology discovery 不能把程序没有执行出来的 equality、cache、expiry、membership
+或 codec 语义冒充 runtime fact。自动 composition 只接受静态、runtime 和 concolic 阶段
+共同满足的证据门槛；手写 RPC mapping 不再是输入协议。
 
 ## 配置与命令
 
@@ -513,14 +352,13 @@ producer campaigns、bootstrap composition、Z3 projection 和 candidate manifes
 | `ConcolicScheduler` | 为 target 或 producer 选择 activation 并生成 capture/materialization plan |
 | `ConcolicPathFlipPlanner` / `RegionPathWorklist` | pending flip、稳定去重、Z3 输入和 closure |
 | `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
+| `SolverPathContext` | 与 branch authority 分离的、有位置且内容哈希的非 branch solver constraints |
 | `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
 | `ConcolicSummaryImporter` | 将 raw custom-JDK 结果严格导入 `R(in,out)` path summary |
 | `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `ConcolicPrimitiveBootstrapProjector` | 把 SAT case 投影回 producer 的真实输入动作 |
-| `ConcolicStaticCatalogReuse` | 校验冻结 catalog/class-tree/schedule 哈希并加载一个 replay region |
-| `ConcolicStaticCatalogManifest` | 发布可复用静态 catalog 的 immutable manifest |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
 
 custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端到端 fixture、拓扑、

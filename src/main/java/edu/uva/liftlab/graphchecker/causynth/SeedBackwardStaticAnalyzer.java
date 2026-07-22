@@ -32,9 +32,6 @@ import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,9 +49,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.CallbackRegistration;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorCallsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionConstruction;
@@ -62,16 +57,13 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Exceptio
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MappedEndpoint;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MethodCallsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.RpcTarget;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.SeedLookupAnchor;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.StaticPortMapping;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
 
 
-/** Static exception/variable-seeded backward data-flow analysis. */
+/** Static backward data-flow analysis from one annotated exception target. */
 final class SeedBackwardStaticAnalyzer {
     private static final Logger LOG = LoggerFactory.getLogger(
             CausynthPipeline.class);
@@ -89,17 +81,6 @@ final class SeedBackwardStaticAnalyzer {
     private static final int MAX_METHOD_CALLERS_PER_METHOD = 200;
     private static final int MAX_FIELD_WRITERS_PER_FIELD = 80;
     private static final int MAX_FIELD_PATH_DEPTH = 4;
-    private static final String HDFS_SASL_CLIENT =
-            "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient";
-    private static final String HDFS_SASL_SERVER =
-            "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer";
-    private static final String COMMON_SASL_SERVER =
-            "org.apache.hadoop.security.SaslRpcServer";
-    private static final String COMMON_SASL_CLIENT =
-            "org.apache.hadoop.security.SaslRpcClient";
-    private static final String COMMON_SECRET_MANAGER =
-            "org.apache.hadoop.security.token.SecretManager";
-
     private final CausynthTargetContext target;
     private final int maxMethods;
     private final int maxEdges;
@@ -119,13 +100,11 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantFieldEffectsByMethod =
             new LinkedHashMap<>();
-    private final List<StaticPortMapping> staticPortMappings = new ArrayList<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
     private final Set<String> selectedMethods = new LinkedHashSet<>();
     private final Map<String, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> emittedRpcMappings = new LinkedHashSet<>();
-    private final Set<String> emittedStaticPortMappings = new LinkedHashSet<>();
     private final Set<String> expandedFieldWriterFields = new LinkedHashSet<>();
     private final Set<String> expandedConstructorCallees = new LinkedHashSet<>();
     private final Set<String> expandedMethodCallerKeys = new LinkedHashSet<>();
@@ -141,8 +120,6 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, Set<String>> projectionAliasCache =
             new LinkedHashMap<>();
     private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
-            new LinkedHashMap<>();
-    private final Map<String, Boolean> exceptionReachabilityCache =
             new LinkedHashMap<>();
     private final RuntimeDispatchEvidence runtimeDispatchEvidence;
     private final Set<String> runtimeRecursiveMethods =
@@ -188,17 +165,7 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
         }
-        if (isHdfsKeyPropagationFastPathTarget()) {
-            LOG.info("Using HDFS key-propagation scoped analysis");
-            buildHdfsScopedRpcMappings();
-            buildStaticPortMappings();
-        } else {
-            buildRpcMappings();
-        }
-        // Explicit project topology is orthogonal to the built-in RPC
-        // discovery strategy.  In particular, a scoped HDFS analysis
-        // must not silently ignore a configured cross-process boundary.
-        buildConfiguredRpcPortMappings();
+        buildRpcMappings();
     }
 
     private static int positiveSystemProperty(String property,
@@ -253,483 +220,6 @@ final class SeedBackwardStaticAnalyzer {
                 emittedRpcMappings.size());
     }
 
-    /**
-     * Loads project-owned RPC topology as navigation evidence only.  A
-     * configured producer return and consumer RPC return become one
-     * mapping-only static edge; RuntimeRegionPlanner must still observe
-     * complete, equal endpoint fingerprints before promoting it to an
-     * automatic EQUALITY relation.
-     */
-    private void buildConfiguredRpcPortMappings() {
-        Path mappingFile = target.rpcMappingFile;
-        if (mappingFile == null) return;
-        ConfiguredRpcTopologyLoader.Result result =
-                ConfiguredRpcTopologyLoader.load(mappingFile,
-                        classesByName);
-        for (ConfiguredRpcTopologyLoader.Mapping mapping
-                : result.mappings()) {
-            addStaticPortMapping("configured_rpc_return_mapping",
-                    mapping.sourceMethod, mapping.sourceCell,
-                    mapping.targetMethod, mapping.targetCell,
-                    mapping.evidence);
-        }
-        LOG.info("Loaded {} configured mapping-only RPC return edges from {}",
-                result.mappings().size(), mappingFile);
-        if (result.downstreamDeclarationCount > 0) {
-            LOG.info("Recognized {} downstream-only declared RPC "
-                            + "equalities in {}; no static semantic edge "
-                            + "was created",
-                    result.downstreamDeclarationCount, mappingFile);
-        }
-    }
-
-    private void buildStaticPortMappings() {
-        buildHdfsDataTransferSaslPortMappings();
-        buildHdfsServerSynchronousCallbackMappings();
-        buildCommonSaslRpcPortMappings();
-        buildHdfsHeartbeatKeyUpdatePortMappings();
-        LOG.info("Discovered {} mapping-only static port candidates",
-                staticPortMappings.size());
-    }
-
-    /**
-     * Locates candidate endpoint ports in a configured workload.  This
-     * mapping deliberately does not state that their values are equal or
-     * that serialization is lossless; those facts require runtime value
-     * evidence and captured region summaries.
-     */
-    private void buildHdfsHeartbeatKeyUpdatePortMappings() {
-        SootMethod sender = findMethod(
-                "org.apache.hadoop.hdfs.server.blockmanagement.BlockManager",
-                "addKeyUpdateCommand", 2);
-        if (sender == null) {
-            return;
-        }
-        List<String> sources = invokeDefinitionCells(sender,
-                "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: "
-                        + "org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys "
-                        + "exportKeys()>");
-        List<SootMethod> receivers = new ArrayList<>();
-        addIfPresent(receivers, findMethod(
-                "org.apache.hadoop.hdfs.server.datanode.BPOfferService",
-                "processAccessKeyUpdateCommand", 3));
-        // At the exact pre-HDFS-11741 revision the command handling is
-        // still inlined in the active/standby switch methods.  Newer
-        // revisions extracted processAccessKeyUpdateCommand.  Supporting
-        // both shapes keeps the protocol model revision-independent.
-        addIfPresent(receivers, findMethod(
-                "org.apache.hadoop.hdfs.server.datanode.BPOfferService",
-                "processCommandFromActive", 2));
-        addIfPresent(receivers, findMethod(
-                "org.apache.hadoop.hdfs.server.datanode.BPOfferService",
-                "processCommandFromStandby", 2));
-        for (SootMethod receiver : receivers) {
-            List<String> targets = invokeDefinitionCells(receiver,
-                    "<org.apache.hadoop.hdfs.server.protocol.KeyUpdateCommand: "
-                            + "org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys "
-                            + "getExportedKeys()>");
-            for (String source : sources) {
-                for (String targetCell : targets) {
-                    addStaticPortMapping("hdfs_heartbeat_key_update",
-                            sender.getSignature(), source,
-                            receiver.getSignature(), targetCell,
-                            "Mapping-only candidate between heartbeat endpoint ports; "
-                                    + "no value relation is asserted");
-                }
-            }
-        }
-    }
-
-    private void addIfPresent(List<SootMethod> methods, SootMethod method) {
-        if (method != null) {
-            methods.add(method);
-        }
-    }
-
-    private void buildHdfsDataTransferSaslPortMappings() {
-        SootMethod clientHandshake = findMethod(HDFS_SASL_CLIENT,
-                "doSaslHandshake", 6);
-        MethodSig clientSig = clientHandshake == null
-                ? null
-                : parseMethodSig(clientHandshake.getSignature());
-        if (clientSig == null || clientSig.params.size() <= 3) {
-            return;
-        }
-        String clientUserName = formalParam(clientSig, 3);
-
-        for (MappedEndpoint endpoint : hdfsSaslServerUserNameEndpoints()) {
-            addStaticPortMapping("hdfs_sasl_username",
-                    clientHandshake.getSignature(), clientUserName,
-                    endpoint.method, endpoint.cell,
-                    "Mapping-only candidate between SASL endpoint ports; no value relation is asserted");
-        }
-
-        SootMethod serverHandshake = findMethod(HDFS_SASL_SERVER,
-                "doSaslHandshake", 5);
-        if (serverHandshake != null) {
-            List<String> serverMagicValues = invokeDefinitionCells(
-                    serverHandshake, "<java.io.DataInputStream: int readInt()>");
-            String sentMagic = clientHandshake.getSignature()
-                    + "#protocol:SASL_TRANSFER_MAGIC_NUMBER=-559038737";
-            for (String serverMagic : serverMagicValues) {
-                addStaticPortMapping("hdfs_sasl_magic_number",
-                        clientHandshake.getSignature(), sentMagic,
-                        serverHandshake.getSignature(), serverMagic,
-                        "Mapping-only candidate between framed integer endpoint ports; no value relation is asserted");
-            }
-        }
-    }
-
-    /**
-     * Connects the server-side callback registration to the callback body.
-     *
-     * <p>The callback is invoked from the JDK SASL implementation while
-     * {@code doSaslHandshake} is still on the same thread.  It is therefore
-     * an intraregion call, unlike the client-to-server SASL user-name
-     * transfer above.  Both encrypted and general-purpose registrations are
-     * discovered, but a binding is activated only after its concrete
-     * {@code PasswordFunction.apply} implementation has independently
-     * entered the exception-directed slice.  This gives the backward slice
-     * a small object-sensitive dispatch rule: the HDFS-11741 path binds the
-     * callback to {@code SaslDataTransferServer$1}, without also pulling in
-     * the unrelated {@code $2} implementation.</p>
-     */
-    private void buildHdfsServerSynchronousCallbackMappings() {
-        SootMethod handle = findMethod(
-                HDFS_SASL_SERVER + "$SaslServerCallbackHandler",
-                "handle", 1);
-        SootMethod doHandshake = findMethod(HDFS_SASL_SERVER,
-                "doSaslHandshake", 5);
-        if (handle == null || doHandshake == null) {
-            return;
-        }
-
-        String handleThis = thisCell(handle);
-        String passwordFunctionReceiver = invokeReceiverCell(handle,
-                HDFS_SASL_SERVER + "$PasswordFunction", "apply", 1);
-        MethodSig handshakeSig = parseMethodSig(doHandshake.getSignature());
-        Fact callbackInvocation = firstInvokeFact(doHandshake,
-                "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslParticipant",
-                "evaluateChallengeOrResponse", 1);
-        if (handleThis.isEmpty() || passwordFunctionReceiver.isEmpty()
-                || handshakeSig == null || callbackInvocation == null) {
-            return;
-        }
-        String handshakeCallback = formalParam(handshakeSig, 4);
-
-        for (String registrationName : Arrays.asList(
-                "getEncryptedStreams", "getSaslStreams")) {
-            SootMethod registration = findMethod(HDFS_SASL_SERVER,
-                    registrationName, 3);
-            CallbackRegistration binding = callbackRegistration(
-                    registration);
-            if (binding == null) {
-                continue;
-            }
-            String evidence = "HDFS registers " + binding.implementationMethod
-                    + " in SaslServerCallbackHandler and JDK SASL invokes handle "
-                    + "synchronously on the registration thread";
-            addStaticPortMapping("synchronous_callback_receiver",
-                    registration.getSignature(), binding.handlerCell,
-                    handle.getSignature(), handleThis, evidence,
-                    binding.implementationMethod, doHandshake.getSignature(),
-                    callbackInvocation, handshakeCallback);
-            addStaticPortMapping("synchronous_callback_capture_receiver",
-                    registration.getSignature(), binding.implementationCell,
-                    handle.getSignature(), passwordFunctionReceiver, evidence,
-                    binding.implementationMethod, doHandshake.getSignature(),
-                    callbackInvocation, handshakeCallback);
-        }
-    }
-
-    private CallbackRegistration callbackRegistration(SootMethod method) {
-        if (method == null) {
-            return null;
-        }
-        List<Fact> facts = factsFromMethod(method);
-        String handlerConstructorOwner =
-                HDFS_SASL_SERVER + "$SaslServerCallbackHandler";
-        for (Fact fact : facts) {
-            MethodSig invoked = parseMethodSig(fact.invoke);
-            if (invoked == null || !"<init>".equals(invoked.name)
-                    || !handlerConstructorOwner.equals(invoked.owner)) {
-                continue;
-            }
-            List<String> rawActuals = actualInvokeArgs(fact.unitText);
-            if (rawActuals.isEmpty()) {
-                continue;
-            }
-            String implementationLocal = rawActuals.get(0);
-            String implementationType = allocationTypeBefore(facts,
-                    fact.unitIndex, implementationLocal);
-            SootMethod implementation = findMethod(implementationType,
-                    "apply", 1);
-            String handlerLocal = invokeBaseLocal(fact.unitText);
-            if (implementation == null || handlerLocal == null) {
-                continue;
-            }
-            return new CallbackRegistration(
-                    canonical(method.getSignature(), handlerLocal),
-                    canonical(method.getSignature(), implementationLocal),
-                    implementation.getSignature());
-        }
-        return null;
-    }
-
-    private String allocationTypeBefore(List<Fact> facts, int before,
-                                        String local) {
-        if (facts == null || local == null) {
-            return "";
-        }
-        for (int index = Math.min(before - 1, facts.size() - 1);
-             index >= 0; index--) {
-            Unit unit = facts.get(index).unit;
-            if (!(unit instanceof AssignStmt)) {
-                continue;
-            }
-            AssignStmt assignment = (AssignStmt) unit;
-            if (!local.equals(assignment.getLeftOp().toString())) {
-                continue;
-            }
-            Matcher allocation = Pattern.compile("^new\\s+([^\\s]+)$")
-                    .matcher(assignment.getRightOp().toString().trim());
-            return allocation.matches() ? allocation.group(1) : "";
-        }
-        return "";
-    }
-
-    private String thisCell(SootMethod method) {
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return "";
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof IdentityStmt)) {
-                continue;
-            }
-            IdentityStmt identity = (IdentityStmt) unit;
-            if (identity.getRightOp().toString().startsWith("@this:")) {
-                return canonical(method.getSignature(),
-                        identity.getLeftOp().toString());
-            }
-        }
-        return "";
-    }
-
-    private String invokeReceiverCell(SootMethod method, String owner,
-                                      String name, int paramCount) {
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return "";
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt)
-                    || !((Stmt) unit).containsInvokeExpr()) {
-                continue;
-            }
-            InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-            MethodSig signature = parseMethodSig(
-                    invoke.getMethodRef().getSignature());
-            if (signature == null || !owner.equals(signature.owner)
-                    || !name.equals(signature.name)
-                    || signature.params.size() != paramCount
-                    || !(invoke instanceof InstanceInvokeExpr)) {
-                continue;
-            }
-            return canonical(method.getSignature(),
-                    ((InstanceInvokeExpr) invoke).getBase().toString());
-        }
-        return "";
-    }
-
-    private Fact firstInvokeFact(SootMethod method, String owner,
-                                 String name, int paramCount) {
-        for (Fact fact : factsFromMethod(method)) {
-            MethodSig invoked = parseMethodSig(fact.invoke);
-            if (invoked != null && owner.equals(invoked.owner)
-                    && name.equals(invoked.name)
-                    && invoked.params.size() == paramCount) {
-                return fact;
-            }
-        }
-        return null;
-    }
-
-    private void buildCommonSaslRpcPortMappings() {
-        SootMethod clientHandle = findMethod(
-                COMMON_SASL_CLIENT + "$SaslClientCallbackHandler",
-                "handle", 1);
-        SootMethod serverHandle = findMethod(
-                COMMON_SASL_SERVER + "$SaslDigestCallbackHandler",
-                "handle", 1);
-        if (clientHandle == null || serverHandle == null) {
-            return;
-        }
-        List<String> sources = invokeArgumentCells(clientHandle,
-                "<javax.security.auth.callback.NameCallback: void setName(java.lang.String)>",
-                0);
-        List<String> targets = invokeDefinitionCells(serverHandle,
-                "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>");
-        for (String source : sources) {
-            for (String targetCell : targets) {
-                addStaticPortMapping("common_sasl_rpc_username",
-                        clientHandle.getSignature(), source,
-                        serverHandle.getSignature(), targetCell,
-                        "Mapping-only candidate between callback endpoint ports; "
-                                + "no value relation is asserted");
-            }
-        }
-
-        SootMethod getIdentifier = findMethod(COMMON_SASL_SERVER,
-                "getIdentifier", 2);
-        MethodSig getIdentifierSig = getIdentifier == null
-                ? null : parseMethodSig(getIdentifier.getSignature());
-        if (getIdentifierSig != null) {
-            addStaticPortMapping("identifier_deserialization_return",
-                    getIdentifier.getSignature(),
-                    formalParam(getIdentifierSig, 0),
-                    getIdentifier.getSignature(),
-                    getIdentifier.getSignature() + ".return",
-                    "Mapping-only candidate between decoder input/output ports; "
-                            + "the transformer must come from a region summary");
-        }
-    }
-
-    private List<String> invokeArgumentCells(SootMethod method,
-                                             String invokeSignature,
-                                             int argumentIndex) {
-        List<String> cells = new ArrayList<>();
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException exception) {
-            return cells;
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt) || !((Stmt) unit).containsInvokeExpr()) {
-                continue;
-            }
-            InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-            if (!invokeSignature.equals(invoke.getMethodRef().getSignature())
-                    || argumentIndex < 0 || argumentIndex >= invoke.getArgCount()) {
-                continue;
-            }
-            String cell = canonical(method.getSignature(),
-                    invoke.getArg(argumentIndex).toString());
-            if (!ignoreNode(cell)) {
-                cells.add(cell);
-            }
-        }
-        return cells;
-    }
-
-    private List<String> invokeDefinitionCells(SootMethod method,
-                                               String invokeSignature) {
-        List<String> cells = new ArrayList<>();
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException exception) {
-            return cells;
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt) || !((Stmt) unit).containsInvokeExpr()
-                    || !invokeSignature.equals(((Stmt) unit).getInvokeExpr()
-                    .getMethodRef().getSignature())) {
-                continue;
-            }
-            for (ValueBox box : unit.getDefBoxes()) {
-                String cell = canonical(method.getSignature(),
-                        box.getValue().toString());
-                if (!ignoreNode(cell)) {
-                    cells.add(cell);
-                }
-            }
-        }
-        return cells;
-    }
-
-    private List<MappedEndpoint> hdfsSaslServerUserNameEndpoints() {
-        List<MappedEndpoint> endpoints = new ArrayList<>();
-        SootMethod handle = findMethod(HDFS_SASL_SERVER + "$SaslServerCallbackHandler",
-                "handle", 1);
-        if (handle == null) {
-            return endpoints;
-        }
-        Body body;
-        try {
-            body = handle.retrieveActiveBody();
-        } catch (RuntimeException exception) {
-            return endpoints;
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!nameCallbackDefaultNameInvoke(unit)) {
-                continue;
-            }
-            for (ValueBox box : unit.getDefBoxes()) {
-                String cell = canonical(handle.getSignature(),
-                        box.getValue().toString());
-                if (!ignoreNode(cell)) {
-                    endpoints.add(new MappedEndpoint(handle.getSignature(), cell));
-                }
-            }
-        }
-        return endpoints;
-    }
-
-    private boolean nameCallbackDefaultNameInvoke(Unit unit) {
-        if (!(unit instanceof Stmt) || !((Stmt) unit).containsInvokeExpr()) {
-            return false;
-        }
-        String signature = ((Stmt) unit).getInvokeExpr().getMethodRef()
-                .getSignature();
-        return "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>"
-                .equals(signature);
-    }
-
-    private SootMethod findMethod(String owner, String name, int paramCount) {
-        SootClass sootClass = classesByName.get(owner);
-        if (sootClass == null) {
-            return null;
-        }
-        for (SootMethod method : sootClass.getMethods()) {
-            MethodSig sig = parseMethodSig(method.getSignature());
-            if (sig != null
-                    && method.isConcrete()
-                    && name.equals(sig.name)
-                    && sig.params.size() == paramCount) {
-                return method;
-            }
-        }
-        return null;
-    }
-
-    private void addStaticPortMapping(String kind, String sourceMethod,
-                                      String sourceCell, String targetMethod,
-                                      String targetCell, String evidence) {
-        addStaticPortMapping(kind, sourceMethod, sourceCell, targetMethod,
-                targetCell, evidence, "", targetMethod, null, "");
-    }
-
-    private void addStaticPortMapping(String kind, String sourceMethod,
-                                      String sourceCell, String targetMethod,
-                                      String targetCell, String evidence,
-                                      String activationMethod,
-                                      String edgeMethod, Fact pathSite,
-                                      String pathCell) {
-        String key = kind + "\n" + sourceCell + "\n" + targetCell;
-        if (!emittedStaticPortMappings.add(key)) {
-            return;
-        }
-        staticPortMappings.add(new StaticPortMapping(kind, sourceMethod,
-                sourceCell, targetMethod, targetCell, evidence,
-                activationMethod, edgeMethod, pathSite, pathCell));
-    }
-
     private boolean isRpcProtocolClass(SootClass sootClass) {
         String name = sootClass.getName();
         return sootClass.isInterface()
@@ -750,74 +240,6 @@ final class SeedBackwardStaticAnalyzer {
                 ignored -> new ArrayList<>()).add(target);
         rpcSourcesByTarget.computeIfAbsent(target.targetSignature,
                 ignored -> new ArrayList<>()).add(target);
-    }
-
-    private void buildHdfsScopedRpcMappings() {
-        addHdfsRpcMapping(
-                "org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol",
-                "getBlockKeys", 0,
-                "org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolTranslatorPB",
-                "getBlockKeys", 0);
-        addHdfsRpcMapping(
-                "org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol",
-                "getBlockKeys", 0,
-                "org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer",
-                "getBlockKeys", 0);
-        addRpcMappingBySignature(
-                "<org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolPB: "
-                        + "org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos$GetBlockKeysResponseProto "
-                        + "getBlockKeys(com.google.protobuf.RpcController,"
-                        + "org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos$GetBlockKeysRequestProto)>",
-                "<org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolServerSideTranslatorPB: "
-                        + "org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos$GetBlockKeysResponseProto "
-                        + "getBlockKeys(com.google.protobuf.RpcController,"
-                        + "org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos$GetBlockKeysRequestProto)>",
-                "hdfs_scoped_pb_rpc");
-        LOG.info("Discovered {} HDFS-scoped RPC method mappings",
-                emittedRpcMappings.size());
-    }
-
-    private void addRpcMappingBySignature(String sourceSignature,
-                                          String targetSignature,
-                                          String kind) {
-        RpcTarget target = new RpcTarget(sourceSignature, targetSignature, kind);
-        String key = target.sourceSignature + "\n" + target.targetSignature;
-        if (!emittedRpcMappings.add(key)) {
-            return;
-        }
-        rpcTargetsBySource.computeIfAbsent(target.sourceSignature,
-                ignored -> new ArrayList<>()).add(target);
-        rpcSourcesByTarget.computeIfAbsent(target.targetSignature,
-                ignored -> new ArrayList<>()).add(target);
-    }
-
-    private void addHdfsRpcMapping(String sourceOwner, String sourceName,
-                                   int sourceParamCount,
-                                   String targetOwner, String targetName,
-                                   int targetParamCount) {
-        SootMethod source = findAnyMethod(sourceOwner, sourceName, sourceParamCount);
-        SootMethod targetMethod = findAnyMethod(targetOwner, targetName,
-                targetParamCount);
-        if (source == null || targetMethod == null) {
-            return;
-        }
-        addRpcMapping(source, targetMethod, "hdfs_scoped_rpc");
-    }
-
-    private SootMethod findAnyMethod(String owner, String name, int paramCount) {
-        SootClass sootClass = classesByName.get(owner);
-        if (sootClass == null) {
-            return null;
-        }
-        for (SootMethod method : sootClass.getMethods()) {
-            MethodSig sig = parseMethodSig(method.getSignature());
-            if (sig != null
-                    && name.equals(sig.name)
-                    && sig.params.size() == paramCount) {
-                return method;
-            }
-        }
-        return null;
     }
 
     private boolean classImplementsOrExtends(SootClass candidate, String targetClassName) {
@@ -850,90 +272,22 @@ final class SeedBackwardStaticAnalyzer {
 
     CausynthAnalysisResult analyze() throws IOException {
         CausynthAnalysisResult result = new CausynthAnalysisResult();
-        result.targetResolved.put("seedMode", target.seedMode());
+        result.targetResolved.put("seedMode", "EXCEPTION_ANNOTATION");
         result.targetResolved.put("seedException", target.seedException);
         result.targetResolved.put("exceptionTarget",
-                target.exceptionTargetSite == null
-                        ? Collections.emptyMap()
-                        : target.exceptionTargetSite.toMap());
-        result.targetResolved.put("seedVariables", target.seedVariables);
-        result.targetResolved.put("seedFunction", target.seedFunction);
-        result.targetResolved.put("seedPredicate", target.seedPredicate());
-        result.targetResolved.put("seedMap", target.seedMapName());
-        result.targetResolved.put("seedKeyExpression", target.seedKeyExpression());
+                target.exceptionTargetSite.toMap());
         result.targetResolved.put("analysisScope", target.analysisScope);
-        result.targetResolved.put("repoRoot", target.repoRoot.toString());
-        result.targetResolved.put("moduleDir", target.moduleDir.toString());
-
-        if (target.exceptionSeeded()) {
-            result.seeds.add(object(
-                    "id", "seed.exception_target",
-                    "kind", "annotated_exception_target",
-                    "exception", target.seedException,
-                    "site", target.exceptionTargetSite.toMap(),
-                    "discovery",
-                    "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
-        } else {
-            result.seeds.add(object(
-                    "id", "seed.local_condition",
-                    "kind", "local_condition",
-                    "predicate", target.seedPredicate(),
-                    "variables", target.seedVariables));
-        }
-
-        if (isHdfsKeyPropagationFastPathTarget()) {
-            Set<String> candidateClasses = hdfsPropagationClasses();
-            loadScopedHdfsPropagationMethods(candidateClasses);
-            // Seed the exact scalar component used to build the encrypted
-            // SASL user name before the exception worklist opens broad
-            // shared-field writer frontiers.  This is a data-dependency
-            // seed, not a value-equality assertion: the enclosing method
-            // still has to be captured as a normal symbolic region to
-            // learn the integer-to-string encoding.
-            initializeHdfsSaslUsernameKeyIdProducer();
-            initializeConfiguredSeedAnchors();
-            runWorklist();
-            finishSeedDiscovery(result);
-
-            result.edges.addAll(edges);
-            result.cells.addAll(collectCells());
-            result.traceMethods.addAll(collectLoadedTraceMethods());
-            result.slices.put("strategy",
-                    "HDFS-scoped seed backward static analysis over the NameNode/Balancer/DataNode block-key propagation chain");
-            result.slices.put("candidateClassCount", candidateClasses.size());
-            result.slices.put("rpcMappingCount", emittedRpcMappings.size());
-            result.slices.put("staticPortMappingCount", staticPortMappings.size());
-            result.slices.put("fieldWriterIndexedFieldCount",
-                    fieldWritersByField.size());
-            result.slices.put("fieldWriterExpandedFieldCount",
-                    expandedFieldWriterFields.size());
-            result.slices.put("constructorCallerIndexedConstructorCount",
-                    constructorCallersByCallee.size());
-            result.slices.put("constructorCallerExpandedConstructorCount",
-                    expandedConstructorCallees.size());
-            result.slices.put("methodCallerIndexedMethodCount",
-                    methodCallersByCallee.size());
-            result.slices.put("methodCallerExpandedKeyCount",
-                    expandedMethodCallerKeys.size());
-            addGlobalStaticIndexSummary(result.slices);
-            addRuntimeDispatchSummary(result.slices);
-            result.slices.put("loadedMethodCount", factsByMethod.size());
-            result.slices.put("selectedMethodCount", selectedMethods.size());
-            result.slices.put("edgeCount", edges.size());
-            result.slices.put("edgeKinds", summarizeEdgeKinds(edges));
-            result.slices.put("projectedPassEdgeChecks", projectedPassEdgeChecks);
-            result.slices.put("projectedPassUnsupported", projectedPassUnsupported);
-            result.slices.put("projectedPassNoSuffix", projectedPassNoSuffix);
-            result.slices.put("projectedPassCandidates", projectedPassCandidates);
-            result.slices.put("projectedPassEmitted", projectedPassEmitted);
-            addStaticAnalysisBudgetSummary(result);
-            return result;
-        }
+        result.seeds.add(object(
+                "id", "seed.exception_target",
+                "kind", "annotated_exception_target",
+                "exception", target.seedException,
+                "site", target.exceptionTargetSite.toMap(),
+                "discovery",
+                "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
 
         Set<String> candidateClasses = findCandidateClasses();
         loadClasses(candidateClasses);
-        loadStaticPortMappingClasses();
-        initializeConfiguredSeedAnchors();
+        initializeExceptionSeedAnchors();
         runWorklist();
         finishSeedDiscovery(result);
 
@@ -941,12 +295,9 @@ final class SeedBackwardStaticAnalyzer {
         result.cells.addAll(collectCells());
         result.traceMethods.addAll(collectTraceMethods());
         result.slices.put("strategy",
-                target.exceptionSeeded()
-                        ? "annotation-directed backward static analysis from one exact exception construction"
-                        : "variable-directed backward static analysis over Jimple def-use and cross-region data flow");
+                "annotation-directed backward static analysis from one exact exception construction");
         result.slices.put("candidateClassCount", candidateClasses.size());
         result.slices.put("rpcMappingCount", emittedRpcMappings.size());
-        result.slices.put("staticPortMappingCount", staticPortMappings.size());
         result.slices.put("fieldWriterIndexedFieldCount",
                 fieldWritersByField.size());
         result.slices.put("fieldWriterExpandedFieldCount",
@@ -1049,114 +400,6 @@ final class SeedBackwardStaticAnalyzer {
                         : "STATIC_CLASS_HIERARCHY_FALLBACK");
     }
 
-    private void initializeConfiguredSeedAnchors() {
-        if (target.exceptionSeeded()) {
-            initializeExceptionSeedAnchors();
-            return;
-        }
-        initializeSeedAnchors();
-        initializeHdfsDirectLookupSeedAnchors();
-    }
-
-    /**
-     * Adds the exact leaf dependency that Jimple's mutable StringBuilder
-     * lowering otherwise discovers only after walking every append state.
-     *
-     * <p>The edge says only that {@code DataEncryptionKey.keyId}
-     * contributes to the returned username.  It intentionally does not
-     * claim equality: concolic execution of the ordinary method region is
-     * responsible for its decimal-string/compound-username semantics.
-     * The source is the scalar leaf owned by parameter zero, never the
-     * {@code DataEncryptionKey} object reference.</p>
-     */
-    private void initializeHdfsSaslUsernameKeyIdProducer() {
-        SootMethod method = findMethod(HDFS_SASL_CLIENT,
-                "getUserNameFromEncryptionKey", 1);
-        MethodSig signature = method == null ? null
-                : parseMethodSig(method.getSignature());
-        if (signature == null
-                || signature.params.size() != 1
-                || !"org.apache.hadoop.hdfs.security.token.block."
-                .concat("DataEncryptionKey").equals(
-                erasedTypeName(signature.params.get(0)))
-                || !"java.lang.String".equals(signature.returnType)) {
-            return;
-        }
-        SootField keyId = resolveDeclaredField(signature.params.get(0),
-                "keyId");
-        if (keyId == null || !"int".equals(keyId.getType().toString())) {
-            return;
-        }
-        List<Fact> facts = factsByMethod.get(method.getSignature());
-        if (facts == null) {
-            facts = factsFromMethod(method);
-        }
-        if (!hdfsUsernameMethodEncodesKeyId(method.getSignature(), facts,
-                keyId.getSignature())) {
-            return;
-        }
-
-        String source = formalParam(signature, 0) + "#field:keyId";
-        String output = method.getSignature() + ".return";
-        addEdge("structured_scalar_encoding_dependency", source, output,
-                method.getSignature(), null,
-                "HDFS encrypted SASL username decimal-encodes DataEncryptionKey.keyId as its first component");
-        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                "structured_scalar_encoding_dependency", source, output,
-                method.getSignature()));
-        if (edge != null) {
-            edge.put("sourceFieldSignature", keyId.getSignature());
-            edge.put("structuredEncoding", "DECIMAL_KEY_ID_PREFIX");
-            edge.put("componentDelimiter", " ");
-            edge.put("dependencyAuthority",
-                    "SOOT_HDFS_USERNAME_KEYID_FIELD_READ_V1");
-            edge.put("valueEqualityAsserted", false);
-            edge.put("objectReferenceIsSymbolicScalar", false);
-        }
-        relevant(method.getSignature()).add(source);
-        relevant(method.getSignature()).add(output);
-        selectedMethods.add(method.getSignature());
-    }
-
-    private boolean hdfsUsernameMethodEncodesKeyId(
-            String method, List<Fact> facts, String keyIdField) {
-        if (facts == null || facts.isEmpty()) {
-            return false;
-        }
-        Set<String> parameterAliases = new LinkedHashSet<>();
-        boolean returnsString = false;
-        for (Fact fact : facts) {
-            if (fact.unit instanceof IdentityStmt) {
-                IdentityStmt identity = (IdentityStmt) fact.unit;
-                if (identity.getRightOp() instanceof ParameterRef
-                        && ((ParameterRef) identity.getRightOp()).getIndex()
-                        == 0) {
-                    parameterAliases.add(canonical(method,
-                            identity.getLeftOp().toString()));
-                }
-            }
-            returnsString |= fact.isReturn;
-        }
-        parameterAliases = closeLocalAliases(method, facts,
-                parameterAliases);
-
-        boolean readsKeyId = false;
-        for (Fact fact : facts) {
-            for (InstanceFieldAccess access : fact.instanceFieldUses) {
-                if (keyIdField.equals(access.field)
-                        && parameterAliases.contains(canonical(method,
-                        access.base))) {
-                    readsKeyId = true;
-                }
-            }
-        }
-        // The method/parameter/field tuple is HDFS-specific and the edge
-        // asserts dependency only (never equality).  A direct Soot field
-        // read plus a returned String is therefore sufficient authority;
-        // the concolic region records the concrete StringBuilder encoding.
-        return returnsString && readsKeyId;
-    }
-
     private void finishSeedDiscovery(CausynthAnalysisResult result) {
         result.seeds.addAll(discoveredExceptionSeeds);
         result.targetResolved.put("discoveredSeedCount",
@@ -1165,7 +408,7 @@ final class SeedBackwardStaticAnalyzer {
                 new ArrayList<>(discoveredExceptionMethods));
         result.targetResolved.put("discoveredSeedVariables",
                 new ArrayList<>(discoveredExceptionVariables));
-        if (target.exceptionSeeded() && discoveredExceptionSeeds.size() != 1) {
+        if (discoveredExceptionSeeds.size() != 1) {
             throw new IllegalStateException("Annotated exception target did "
                     + "not resolve to exactly one Jimple throw: "
                     + target.exceptionTargetSite.stableIdentity()
@@ -1195,311 +438,8 @@ final class SeedBackwardStaticAnalyzer {
         return rows;
     }
 
-    private boolean isHdfsKeyPropagationFastPathTarget() {
-        String scope = target.analysisScope == null
-                ? ""
-                : target.analysisScope.trim().toLowerCase(Locale.ROOT);
-        return "hdfs_block_key".equals(scope)
-                || "hdfs-key-propagation".equals(scope)
-                || "hdfs_key_propagation".equals(scope);
-    }
-
-    private Set<String> hdfsPropagationClasses() {
-        return new LinkedHashSet<>(Arrays.asList(
-                "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager",
-                "org.apache.hadoop.hdfs.security.token.block.BlockPoolTokenSecretManager",
-                "org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys",
-                "org.apache.hadoop.hdfs.security.token.block.BlockKey",
-                "org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey",
-                "org.apache.hadoop.hdfs.server.balancer.KeyManager",
-                "org.apache.hadoop.hdfs.server.balancer.KeyManager$BlockKeyUpdater",
-                "org.apache.hadoop.hdfs.server.balancer.Dispatcher",
-                "org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolTranslatorPB",
-                "org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolPB",
-                "org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolServerSideTranslatorPB",
-                "org.apache.hadoop.hdfs.protocolPB.PBHelper",
-                "org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol",
-                "org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer",
-                "org.apache.hadoop.hdfs.server.namenode.FSNamesystem",
-                "org.apache.hadoop.hdfs.server.blockmanagement.BlockManager",
-                "org.apache.hadoop.hdfs.server.datanode.BPOfferService",
-                "org.apache.hadoop.hdfs.server.protocol.KeyUpdateCommand",
-                "org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration",
-                "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataEncryptionKeyFactory",
-                HDFS_SASL_CLIENT,
-                HDFS_SASL_CLIENT + "$SaslClientCallbackHandler",
-                HDFS_SASL_SERVER,
-                HDFS_SASL_SERVER + "$SaslServerCallbackHandler",
-                COMMON_SASL_SERVER,
-                COMMON_SASL_SERVER + "$SaslDigestCallbackHandler",
-                COMMON_SASL_CLIENT,
-                COMMON_SASL_CLIENT + "$SaslClientCallbackHandler",
-                COMMON_SECRET_MANAGER));
-    }
-
-    private void loadScopedHdfsPropagationMethods(Set<String> classNames) {
-        for (SootClass sootClass : Scene.v().getApplicationClasses()) {
-            String className = sootClass.getName();
-            if (!hdfsPropagationClassAllowed(classNames, className)) {
-                continue;
-            }
-            for (SootMethod method : sootClass.getMethods()) {
-                if (hdfsPropagationMethodAllowed(method)) {
-                    loadMethod(method);
-                }
-            }
-        }
-        LOG.info("Loaded {} HDFS-scoped propagation methods from {} classes",
-                factsByMethod.size(), classNames.size());
-    }
-
-    private boolean hdfsPropagationClassAllowed(Set<String> classNames,
-                                                String className) {
-        if (classNames.contains(className)) {
-            return true;
-        }
-        return className.startsWith(HDFS_SASL_SERVER + "$")
-                || className.startsWith(HDFS_SASL_CLIENT + "$")
-                || className.startsWith(COMMON_SASL_SERVER + "$")
-                || className.startsWith(COMMON_SASL_CLIENT + "$")
-                || className.startsWith(
-                "org.apache.hadoop.hdfs.server.balancer.Dispatcher$");
-    }
-
-    private boolean hdfsPropagationMethodAllowed(SootMethod method) {
-        if (method == null || !method.isConcrete()) {
-            return false;
-        }
-        MethodSig sig = parseMethodSig(method.getSignature());
-        if (sig == null) {
-            return false;
-        }
-        String owner = sig.owner;
-        String name = sig.name;
-        if ("<clinit>".equals(name)) {
-            return false;
-        }
-        if ("<init>".equals(name)) {
-            return owner.contains("KeyManager")
-                    || owner.endsWith("BlockTokenSecretManager")
-                    || owner.endsWith("BlockPoolTokenSecretManager")
-                    || owner.endsWith("ExportedBlockKeys")
-                    || owner.endsWith("BlockKey")
-                    || owner.endsWith("DataEncryptionKey")
-                    || owner.endsWith("KeyUpdateCommand")
-                    || owner.endsWith("DatanodeRegistration")
-                    || owner.contains("SaslDataTransfer")
-                    || owner.startsWith(COMMON_SASL_SERVER + "$")
-                    || owner.startsWith(COMMON_SASL_CLIENT + "$");
-        }
-        if (owner.equals(COMMON_SECRET_MANAGER)) {
-            return "retriableRetrievePassword".equals(name);
-        }
-        if (owner.equals(COMMON_SASL_SERVER)) {
-            return Arrays.asList("getIdentifier", "decodeIdentifier",
-                    "encodeIdentifier", "encodePassword").contains(name);
-        }
-        if (owner.equals(COMMON_SASL_SERVER + "$SaslDigestCallbackHandler")) {
-            return "handle".equals(name) || "getPassword".equals(name);
-        }
-        if (owner.equals(COMMON_SASL_CLIENT + "$SaslClientCallbackHandler")) {
-            return "handle".equals(name);
-        }
-        if (owner.startsWith("org.apache.hadoop.hdfs.server.balancer.Dispatcher$")) {
-            return "dispatch".equals(name);
-        }
-        if (owner.endsWith("BlockTokenSecretManager")) {
-            return Arrays.asList("exportKeys", "addKeys", "removeExpiredKeys",
-                    "updateKeys", "generateKeys", "generateDataEncryptionKey",
-                    "generateDataEncryptionKeyForTesting", "retrievePassword",
-                    "retrieveDataEncryptionKey", "getNonceGenerator", "hasKey")
-                    .contains(name);
-        }
-        if (owner.endsWith("BlockPoolTokenSecretManager")) {
-            return Arrays.asList("get", "addKeys", "retrievePassword",
-                    "retrieveDataEncryptionKey").contains(name);
-        }
-        if (owner.endsWith("ExportedBlockKeys") || owner.endsWith("BlockKey")
-                || owner.endsWith("DataEncryptionKey")) {
-            return name.startsWith("get") || name.startsWith("is");
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.balancer.KeyManager")) {
-            return Arrays.asList("startBlockKeyUpdater", "getAccessToken",
-                    "newDataEncryptionKey", "newDataEncryptionKeyForTesting",
-                    "close").contains(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.balancer.KeyManager$BlockKeyUpdater")) {
-            return "run".equals(name) || "close".equals(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.balancer.Dispatcher")) {
-            if (name.startsWith("access$")) {
-                return true;
-            }
-            return name.contains("EncryptedSasl")
-                    || name.contains("Missing")
-                    || "containsGhostKey".equals(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolTranslatorPB")
-                || owner.equals("org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolServerSideTranslatorPB")
-                || owner.equals("org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer")) {
-            return "getBlockKeys".equals(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.protocolPB.PBHelper")) {
-            return "convert".equals(name)
-                    && (method.getSignature().contains("ExportedBlockKeys")
-                    || method.getSignature().contains("BlockKey"));
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.namenode.FSNamesystem")) {
-            return "getBlockManager".equals(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.blockmanagement.BlockManager")) {
-            return Arrays.asList("getBlockKeys", "addKeyUpdateCommand",
-                    "shouldUpdateBlockKey", "generateDataEncryptionKey")
-                    .contains(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.datanode.BPOfferService")) {
-            return Arrays.asList("processHeartbeatResponseForTesting",
-                    "processAccessKeyUpdateCommand", "registrationSucceeded",
-                    "processCommandFromActor", "processCommandFromActive",
-                    "processCommandFromStandby", "getBlockPoolId").contains(name);
-        }
-        if (owner.equals("org.apache.hadoop.hdfs.server.protocol.KeyUpdateCommand")
-                || owner.equals("org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration")) {
-            return name.startsWith("get") || name.startsWith("set");
-        }
-        if (owner.equals(HDFS_SASL_CLIENT)) {
-            if (name.startsWith("access$")) {
-                return true;
-            }
-            return Arrays.asList("newSocketSend", "peerSend", "socketSend",
-                    "checkTrustAndSend", "prepareCheckTrustAndSendForTesting",
-                    "prepareSocketSendForTesting",
-                    "send", "prepareSendForTesting", "getEncryptedStreams",
-                    "prepareEncryptedStreamsForTesting",
-                    "getUserNameFromEncryptionKey", "doSaslHandshake")
-                    .contains(name);
-        }
-        if (owner.equals(HDFS_SASL_SERVER)) {
-            if (name.startsWith("access$")) {
-                return true;
-            }
-            return Arrays.asList("receive", "getEncryptedStreams",
-                    "getSaslStreams", "buildServerPassword",
-                    "getEncryptionKeyFromUserName",
-                    "getEncryptionKeyFromParsedUserNameForTesting",
-                    "receiveEncryptedSaslHandshakeForTesting",
-                    "receiveParsedEncryptedSaslHandshakeForTesting",
-                    "doSaslHandshake", "deserializeIdentifier").contains(name);
-        }
-        if (owner.equals(HDFS_SASL_SERVER + "$SaslServerCallbackHandler")) {
-            return "handle".equals(name);
-        }
-        if (owner.startsWith(HDFS_SASL_SERVER + "$")) {
-            return "apply".equals(name);
-        }
-        return false;
-    }
-
-    private Set<String> findCandidateClasses() throws IOException {
-        if (target.exceptionSeeded()) {
-            return Collections.singleton(
-                    target.exceptionTargetSite.className);
-        }
-        Set<String> sourceClasses = sourceClassesTouchingSeeds();
-        Set<String> candidates = new LinkedHashSet<>();
-        for (SootClass sootClass : Scene.v().getApplicationClasses()) {
-            String className = sootClass.getName();
-            if (classNameTouchesSeed(className)
-                    || sourceClassMatches(sourceClasses, className)
-                    || (sourceClasses.isEmpty()
-                    && classFieldsTouchSeed(sootClass))) {
-                candidates.add(className);
-            }
-        }
-        return candidates;
-    }
-
-    private Set<String> sourceClassesTouchingSeeds() throws IOException {
-        Set<String> classes = new LinkedHashSet<>();
-        List<Path> roots = new ArrayList<>();
-        if (Files.isDirectory(target.moduleDir)) {
-            roots.add(target.moduleDir);
-        }
-        if (Files.isDirectory(target.repoRoot) && !target.repoRoot.equals(target.moduleDir)) {
-            roots.add(target.repoRoot);
-        }
-        for (Path root : roots) {
-            try (Stream<Path> stream = Files.walk(root)) {
-                List<Path> files = stream
-                        .filter(path -> Files.isRegularFile(path)
-                                && path.toString().endsWith(".java")
-                                && path.toString().contains("/src/main/java/"))
-                        .collect(Collectors.toList());
-                for (Path file : files) {
-                    String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
-                    if (!sourceMatchesSeedSearch(text)) {
-                        continue;
-                    }
-                    String className = sourceClassName(file);
-                    if (className != null) {
-                        classes.add(className);
-                    }
-                }
-            }
-        }
-        return classes;
-    }
-
-    private boolean sourceMatchesSeedSearch(String text) {
-        if (target.seedFunction != null && !target.seedFunction.isEmpty()) {
-            return sourceContainsFunction(text, target.seedFunction);
-        }
-        String keyMethodName = target.seedKeyMethodName();
-        if (!keyMethodName.isEmpty()) {
-            return text.contains(target.seedMapName())
-                    && sourceContainsFunction(text, keyMethodName);
-        }
-        return containsAll(text, target.seedVariables);
-    }
-
-    private boolean sourceContainsFunction(String text, String functionName) {
-        Pattern pattern = Pattern.compile("\\b" + Pattern.quote(functionName) + "\\s*\\(");
-        return pattern.matcher(text).find();
-    }
-
-    private String sourceClassName(Path file) {
-        String path = file.toString().replace('\\', '/');
-        String marker = "/src/main/java/";
-        int index = path.indexOf(marker);
-        if (index < 0 || !path.endsWith(".java")) {
-            return null;
-        }
-        return path.substring(index + marker.length(), path.length() - ".java".length())
-                .replace('/', '.');
-    }
-
-    private boolean classNameTouchesSeed(String className) {
-        return containsAny(className, target.seedVariables);
-    }
-
-    private boolean sourceClassMatches(Set<String> sourceClasses, String sootClassName) {
-        for (String sourceClass : sourceClasses) {
-            if (sootClassName.equals(sourceClass)
-                    || sootClassName.startsWith(sourceClass + "$")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean classFieldsTouchSeed(SootClass sootClass) {
-        for (SootField field : sootClass.getFields()) {
-            if (containsAny(field.getName(), target.seedVariables)
-                    || containsAny(field.getSignature(), target.seedVariables)) {
-                return true;
-            }
-        }
-        return false;
+    private Set<String> findCandidateClasses() {
+        return Collections.singleton(target.exceptionTargetSite.className);
     }
 
     private void loadClasses(Set<String> classNames) {
@@ -1513,29 +453,6 @@ final class SeedBackwardStaticAnalyzer {
         }
         LOG.info("Loaded {} seed-candidate methods from {} classes",
                 factsByMethod.size(), classNames.size());
-    }
-
-    private void loadStaticPortMappingClasses() {
-        if (staticPortMappings.isEmpty()) {
-            return;
-        }
-        int before = factsByMethod.size();
-        loadClassFamily(HDFS_SASL_CLIENT);
-        loadClassFamily(HDFS_SASL_SERVER);
-        LOG.info("Loaded {} additional methods for hard-coded data-flow mappings",
-                factsByMethod.size() - before);
-    }
-
-    private void loadClassFamily(String className) {
-        for (SootClass sootClass : Scene.v().getApplicationClasses()) {
-            String current = sootClass.getName();
-            if (!current.equals(className) && !current.startsWith(className + "$")) {
-                continue;
-            }
-            for (SootMethod method : sootClass.getMethods()) {
-                loadMethod(method);
-            }
-        }
     }
 
     private boolean loadMethod(SootMethod method) {
@@ -1564,95 +481,6 @@ final class SeedBackwardStaticAnalyzer {
         return true;
     }
 
-    private void initializeSeedAnchors() {
-        for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
-            String method = entry.getKey();
-            if (!methodMatchesSeedFunction(method)) {
-                continue;
-            }
-            List<Fact> facts = entry.getValue();
-            for (int i = 0; i < facts.size(); i++) {
-                Fact fact = facts.get(i);
-                if (!isLookupGet(fact)) {
-                    continue;
-                }
-                SeedLookupAnchor anchor = traceLookupToSeedMap(facts, i);
-                if (anchor == null) {
-                    continue;
-                }
-                selectedMethods.add(method);
-                Set<String> relevant = relevant(method);
-                for (Fact fieldFact : anchor.seedFieldFacts) {
-                    for (String field : fieldFact.fields) {
-                        if (!fieldTouchesSeedMap(field)) {
-                            continue;
-                        }
-                        String node = canonical(method, field);
-                        relevant.add(node);
-                        addEdge("seed_field", target.seedPredicate(), node,
-                                method, fieldFact, "seed map field feeding lookup");
-                    }
-                }
-                for (String value : anchor.seedValues) {
-                    String node = canonical(method, value);
-                    if (ignoreNode(node)) {
-                        continue;
-                    }
-                    relevant.add(node);
-                    addEdge("seed_lookup_operand", target.seedPredicate(), node,
-                            method, fact, "lookup operand from seed map/key expression");
-                }
-            }
-        }
-        LOG.info("Initialized {} selected methods from seed variables",
-                selectedMethods.size());
-    }
-
-    private void initializeHdfsDirectLookupSeedAnchors() {
-        for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
-            String method = entry.getKey();
-            MethodSig sig = parseMethodSig(method);
-            if (sig == null || !"retrieveDataEncryptionKey".equals(sig.name)) {
-                continue;
-            }
-            List<Fact> facts = entry.getValue();
-            for (Fact fact : facts) {
-                if (!isLookupGet(fact) || !factFieldsTouchSeedMap(fact)) {
-                    continue;
-                }
-                selectedMethods.add(method);
-                Set<String> relevant = relevant(method);
-                for (String field : fact.fields) {
-                    if (fieldTouchesSeedMap(field)) {
-                        String node = canonical(method, field);
-                        relevant.add(node);
-                        addEdge("seed_field", target.seedPredicate(), node,
-                                method, fact, "HDFS direct encryption-key lookup seed map");
-                    }
-                }
-                for (String value : seedLookupValues(fact)) {
-                    String node = canonical(method, value);
-                    if (ignoreNode(node)) {
-                        continue;
-                    }
-                    relevant.add(node);
-                    addEdge("seed_lookup_operand", target.seedPredicate(), node,
-                            method, fact, "HDFS direct encryption-key lookup operand");
-                }
-            }
-        }
-    }
-
-    /**
-     * Discovers the initial backward-slice facts from a target exception.
-     *
-     * <p>The exception object itself is not treated as an external input.
-     * Instead, each direct throw contributes three kinds of evidence: the
-     * thrown value, constructor payload values, and CFG guards for which
-     * only a subset of successors can reach that throw.  The normal
-     * def-use worklist then reduces those local facts to parameters,
-     * receiver fields, shared heap, and protocol boundaries.</p>
-     */
     private void initializeExceptionSeedAnchors() {
         int seedIndex = 0;
         for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
@@ -2000,7 +828,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private boolean exceptionTypeMatches(String candidateType) {
-        if (!target.exceptionSeeded() || candidateType == null) {
+        if (candidateType == null) {
             return false;
         }
         String candidate = candidateType.trim();
@@ -2036,141 +864,11 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private Collection<SootMethod> methodsForStaticIndex() {
-        // The HDFS fast path bounds which bodies are retained as working
-        // facts, not which application methods may write a shared field
-        // or call a selected writer.  Restricting this index to the
-        // current factsByMethod keys makes the first index build a
-        // permanent under-approximation: a writer such as
-        // DatanodeDescriptor.setNeedKeyUpdate and its Monitor.run caller
-        // can never be discovered later because the index is one-shot.
-        // factsFromMethod is deliberately ephemeral below, so scanning
-        // the complete application method catalog does not turn the
-        // scoped working set into a whole-program retained-facts set.
+        // Restricting this one-shot index to the current worklist would
+        // permanently hide application writers and callers that become
+        // relevant later. factsFromMethod remains ephemeral, so the complete
+        // method scan does not retain a whole-program working set.
         return methodsBySignature.values();
-    }
-
-    private boolean methodMatchesSeedFunction(String method) {
-        if (target.seedFunction == null || target.seedFunction.isEmpty()) {
-            return true;
-        }
-        MethodSig sig = parseMethodSig(method);
-        return sig != null && target.seedFunction.equals(sig.name);
-    }
-
-    private boolean factTouchesSeed(Fact fact) {
-        String text = fact.method + " " + fact.unitText + " " + fact.fields;
-        return containsAny(text, target.seedVariables);
-    }
-
-    private boolean isLookupGet(Fact fact) {
-        MethodSig sig = parseMethodSig(fact.invoke);
-        if (sig == null) {
-            return false;
-        }
-        return "get".equals(sig.name) && sig.params.size() == 1;
-    }
-
-    private List<String> seedLookupValues(Fact fact) {
-        List<String> values = new ArrayList<>();
-        values.addAll(fact.defs);
-        values.addAll(nonInvokeUses(fact));
-        values.addAll(fact.fields);
-        values.addAll(actualInvokeArgs(fact.unitText));
-        return values;
-    }
-
-    private SeedLookupAnchor traceLookupToSeedMap(List<Fact> facts, int lookupIndex) {
-        Fact lookup = facts.get(lookupIndex);
-        List<Fact> seedFieldFacts = new ArrayList<>();
-        Set<String> seedValues = new LinkedHashSet<>(seedLookupValues(lookup));
-        boolean mapMatched = false;
-        if (factFieldsTouchSeedMap(lookup)) {
-            seedFieldFacts.add(lookup);
-            mapMatched = true;
-        }
-
-        Set<String> work = new LinkedHashSet<>();
-        String baseLocal = invokeBaseLocal(lookup.unitText);
-        if (baseLocal != null) {
-            work.add(baseLocal);
-        } else {
-            work.addAll(localNames(nonInvokeUses(lookup)));
-        }
-        if (work.isEmpty()) {
-            return null;
-        }
-
-        if (!mapMatched) {
-            for (int i = lookupIndex - 1; i >= 0; i--) {
-                Fact fact = facts.get(i);
-                Set<String> defs = localNames(fact.defs);
-                if (!intersectsLocal(work, defs)) {
-                    continue;
-                }
-                seedValues.addAll(fact.defs);
-                seedValues.addAll(nonInvokeUses(fact));
-                seedValues.addAll(fact.fields);
-                if (factFieldsTouchSeedMap(fact)) {
-                    seedFieldFacts.add(fact);
-                    mapMatched = true;
-                    break;
-                }
-                work.addAll(localNames(nonInvokeUses(fact)));
-            }
-        }
-        if (!mapMatched || !traceLookupKeyToSeedExpression(facts, lookupIndex, seedValues)) {
-            return null;
-        }
-        return new SeedLookupAnchor(seedFieldFacts, seedValues);
-    }
-
-    private boolean traceLookupKeyToSeedExpression(List<Fact> facts, int lookupIndex,
-                                                   Set<String> seedValues) {
-        String keyMethod = target.seedKeyMethodName();
-        if (keyMethod.isEmpty()) {
-            return true;
-        }
-        Set<String> work = localNames(actualInvokeArgs(facts.get(lookupIndex).unitText));
-        if (work.isEmpty()) {
-            return false;
-        }
-        for (int i = lookupIndex - 1; i >= 0; i--) {
-            Fact fact = facts.get(i);
-            Set<String> defs = localNames(fact.defs);
-            if (!intersectsLocal(work, defs)) {
-                continue;
-            }
-            seedValues.addAll(fact.defs);
-            seedValues.addAll(nonInvokeUses(fact));
-            seedValues.addAll(fact.fields);
-            seedValues.addAll(actualInvokeArgs(fact.unitText));
-            if (factInvokesSeedKeyMethod(fact, keyMethod)) {
-                return true;
-            }
-            work.addAll(localNames(nonInvokeUses(fact)));
-            work.addAll(localNames(actualInvokeArgs(fact.unitText)));
-        }
-        return false;
-    }
-
-    private boolean factInvokesSeedKeyMethod(Fact fact, String keyMethod) {
-        MethodSig sig = parseMethodSig(fact.invoke);
-        return sig != null && keyMethod.equals(sig.name);
-    }
-
-    private boolean factFieldsTouchSeedMap(Fact fact) {
-        for (String field : fact.fields) {
-            if (fieldTouchesSeedMap(field)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean fieldTouchesSeedMap(String field) {
-        return !target.seedVariables.isEmpty()
-                && field != null
-                && field.contains(target.seedVariables.get(0));
     }
 
     private boolean intersectsLocal(Set<String> left, Set<String> right) {
@@ -2227,7 +925,6 @@ final class SeedBackwardStaticAnalyzer {
                 changed |= expandCallers(method);
                 changed |= expandRpcCallers(method);
                 changed |= expandDispatchCallers(method);
-                changed |= expandStaticPortMappings(method);
                 changed |= expandFieldWriters(method);
                 changed |= expandConstructorCallers(method);
                 changed |= expandMethodCallers(method);
@@ -4275,7 +2972,7 @@ final class SeedBackwardStaticAnalyzer {
     private boolean processRpcInvoke(String callerMethod, Fact fact, MethodSig callee,
                                      List<String> defs, List<String> actuals,
                                      Set<String> callerRelevant) {
-        List<RpcTarget> targets = resolveRpcTargets(callerMethod, callee);
+        List<RpcTarget> targets = resolveRpcTargets(callee);
         if (targets.isEmpty()) {
             return false;
         }
@@ -4347,41 +3044,9 @@ final class SeedBackwardStaticAnalyzer {
         return changed;
     }
 
-    private List<RpcTarget> resolveRpcTargets(String callerMethod, MethodSig callee) {
+    private List<RpcTarget> resolveRpcTargets(MethodSig callee) {
         List<RpcTarget> targets = rpcTargetsBySource.get(callee.raw);
-        if (targets == null || targets.isEmpty()) {
-            return Collections.emptyList();
-        }
-        String callerOwner = ownerOf(callerMethod);
-        if (isHdfsKeyPropagationFastPathTarget()
-                && "org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol"
-                .equals(callee.owner)
-                && "getBlockKeys".equals(callee.name)
-                && !callerOwner.contains("ServerSideTranslatorPB")) {
-            return targets;
-        }
-        List<RpcTarget> preferred = new ArrayList<>();
-        for (RpcTarget target : targets) {
-            String owner = ownerOf(target.targetSignature);
-            if (callerOwner.contains("ServerSideTranslatorPB")) {
-                if (!owner.contains("TranslatorPB")
-                        && (owner.contains("RpcServer") || owner.contains(".server.")
-                        || owner.endsWith("DataNode"))) {
-                    preferred.add(target);
-                }
-            } else if (callee.owner.endsWith("PB")
-                    || callee.owner.contains("protocolPB")) {
-                if (owner.contains("ServerSideTranslatorPB")) {
-                    preferred.add(target);
-                }
-            } else if (!callerOwner.contains("ServerSideTranslatorPB")) {
-                if (owner.contains("TranslatorPB")
-                        && !owner.contains("ServerSideTranslatorPB")) {
-                    preferred.add(target);
-                }
-            }
-        }
-        return preferred.isEmpty() ? targets : preferred;
+        return targets == null ? Collections.emptyList() : targets;
     }
 
     private boolean processDispatchInvoke(String callerMethod, Fact fact,
@@ -4403,8 +3068,6 @@ final class SeedBackwardStaticAnalyzer {
             targetMethods = runtimeSelection.targets;
             runtimeSelectedDispatchSites.add(runtimeSelection.siteId);
         } else {
-            targetMethods = callbackBoundDispatchTargets(callerMethod,
-                    callee, targetMethods);
             targetMethods = CausynthPipeline.conservativeDispatchTargets(
                     targetMethods);
         }
@@ -4532,44 +3195,6 @@ final class SeedBackwardStaticAnalyzer {
      * encrypted and general-purpose PasswordFunction implementations in
      * the same handle() body.  Only the registration whose implementation
      * can reach the configured exception belongs to this backward slice.
-     */
-    private List<String> callbackBoundDispatchTargets(String callerMethod,
-                                                      MethodSig callee,
-                                                      List<String> targets) {
-        if (callee == null
-                || !callee.owner.equals(HDFS_SASL_SERVER
-                + "$PasswordFunction")
-                || !"apply".equals(callee.name)
-                || !callerMethod.contains(HDFS_SASL_SERVER
-                + "$SaslServerCallbackHandler: void handle(")) {
-            return targets;
-        }
-        Set<String> bound = new LinkedHashSet<>();
-        for (StaticPortMapping dataflow : staticPortMappings) {
-            if ("synchronous_callback_capture_receiver".equals(dataflow.kind)
-                    && reachesDiscoveredException(dataflow.activationMethod)) {
-                bound.add(dataflow.activationMethod);
-            }
-        }
-        if (bound.isEmpty()) {
-            return targets;
-        }
-        List<String> filtered = new ArrayList<>();
-        for (String target : targets) {
-            if (bound.contains(target)) {
-                filtered.add(target);
-            }
-        }
-        return filtered.isEmpty() ? targets : filtered;
-    }
-
-    /**
-     * Refines one class-hierarchy dispatch with exact runtime call-site
-     * evidence.  Runtime evidence is optional.  When present, it is
-     * authoritative only for the exact (caller, unit, declared callee)
-     * triple; observations from another unit or caller are never reused.
-     * Multiple actual callees at that exact site are deliberately
-     * rejected instead of being conjoined as one symbolic definition.
      */
     private RuntimeDispatchSelection runtimeDispatchSelection(
             String callerMethod, Fact fact, MethodSig callee,
@@ -4870,11 +3495,6 @@ final class SeedBackwardStaticAnalyzer {
                         targetMethod)) {
                     continue;
                 }
-                if (!runtimeSelection.unique()
-                        && !callbackDispatchTargetAllowed(callsite.method,
-                        targetMethod)) {
-                    continue;
-                }
                 if (runtimeSelection.unique()) {
                     runtimeSelectedDispatchSites.add(
                             runtimeSelection.siteId);
@@ -5014,163 +3634,6 @@ final class SeedBackwardStaticAnalyzer {
         return sources;
     }
 
-    private boolean callbackDispatchTargetAllowed(String callerMethod,
-                                                  String targetMethod) {
-        if (callerMethod == null || targetMethod == null
-                || !callerMethod.contains(HDFS_SASL_SERVER
-                + "$SaslServerCallbackHandler: void handle(")
-                || !targetMethod.contains(HDFS_SASL_SERVER + "$")) {
-            return true;
-        }
-        for (StaticPortMapping dataflow : staticPortMappings) {
-            if ("synchronous_callback_capture_receiver".equals(dataflow.kind)
-                    && targetMethod.equals(dataflow.activationMethod)) {
-                return reachesDiscoveredException(targetMethod);
-            }
-        }
-        return true;
-    }
-
-    private boolean expandStaticPortMappings(String method) {
-        if (staticPortMappings.isEmpty()) {
-            return false;
-        }
-        boolean changed = false;
-        Set<String> methodRelevant = relevant(method);
-        for (StaticPortMapping dataflow : staticPortMappings) {
-            if (!staticPortMappingActive(dataflow)) {
-                continue;
-            }
-            if (dataflow.targetMethod.equals(method)
-                    && relevantContainsProjectionOrExact(methodRelevant,
-                    dataflow.targetCell)) {
-                if (loadMethod(methodsBySignature.get(dataflow.sourceMethod))) {
-                    changed = true;
-                }
-                Set<String> sourceRelevant = relevant(dataflow.sourceMethod);
-                if (addEdge(dataflow.kind, dataflow.sourceCell, dataflow.targetCell,
-                        dataflow.edgeMethod, null, dataflow.evidence)) {
-                    changed = true;
-                }
-                changed |= sourceRelevant.add(dataflow.sourceCell);
-                changed |= selectedMethods.add(dataflow.sourceMethod);
-                changed |= addStaticPortMappingPathGuards(dataflow);
-            }
-            if (dataflow.sourceMethod.equals(method)
-                    && relevantContainsProjectionOrExact(methodRelevant,
-                    dataflow.sourceCell)) {
-                if (loadMethod(methodsBySignature.get(dataflow.targetMethod))) {
-                    changed = true;
-                }
-                Set<String> targetRelevant = relevant(dataflow.targetMethod);
-                if (addEdge(dataflow.kind, dataflow.sourceCell, dataflow.targetCell,
-                        dataflow.edgeMethod, null, dataflow.evidence)) {
-                    changed = true;
-                }
-                changed |= targetRelevant.add(dataflow.targetCell);
-                changed |= selectedMethods.add(dataflow.targetMethod);
-                changed |= addStaticPortMappingPathGuards(dataflow);
-            }
-        }
-        return changed;
-    }
-
-    private boolean staticPortMappingActive(StaticPortMapping dataflow) {
-        if (dataflow.activationMethod == null
-                || dataflow.activationMethod.isEmpty()) {
-            return true;
-        }
-        Set<String> demand = relevantByMethod.get(dataflow.activationMethod);
-        String returnNode = dataflow.activationMethod + ".return";
-        return (!dataflow.kind.startsWith("synchronous_callback")
-                || reachesDiscoveredException(dataflow.activationMethod))
-                && selectedMethods.contains(dataflow.activationMethod)
-                && demand != null
-                && (demand.contains(returnNode)
-                || containsProjection(demand, returnNode));
-    }
-
-    private boolean reachesDiscoveredException(String sourceMethod) {
-        if (discoveredExceptionMethods.isEmpty()) {
-            return true;
-        }
-        Boolean cached = exceptionReachabilityCache.get(sourceMethod);
-        if (cached != null) {
-            return cached;
-        }
-        Set<String> seen = new LinkedHashSet<>();
-        Deque<String> queue = new ArrayDeque<>();
-        seen.add(sourceMethod);
-        queue.add(sourceMethod);
-        while (!queue.isEmpty() && seen.size() < 256) {
-            String method = queue.removeFirst();
-            if (discoveredExceptionMethods.contains(method)) {
-                exceptionReachabilityCache.put(sourceMethod, true);
-                return true;
-            }
-            SootMethod sootMethod = methodsBySignature.get(method);
-            if (sootMethod == null) {
-                continue;
-            }
-            for (Fact fact : factsFromMethod(sootMethod)) {
-                MethodSig invoked = parseMethodSig(fact.invoke);
-                if (invoked == null
-                        || !methodsBySignature.containsKey(invoked.raw)
-                        || !isApplicationClassName(invoked.owner)
-                        || !seen.add(invoked.raw)) {
-                    continue;
-                }
-                queue.addLast(invoked.raw);
-            }
-        }
-        exceptionReachabilityCache.put(sourceMethod, false);
-        return false;
-    }
-
-    private boolean addStaticPortMappingPathGuards(
-            StaticPortMapping dataflow) {
-        if (dataflow.pathSite == null || dataflow.pathCell == null
-                || dataflow.pathCell.isEmpty()) {
-            return false;
-        }
-        SootMethod pathMethod = methodsBySignature.get(dataflow.pathSite.method);
-        boolean changed = loadMethod(pathMethod);
-        Set<String> pathRelevant = relevant(dataflow.pathSite.method);
-        changed |= selectedMethods.add(dataflow.pathSite.method);
-        for (ExceptionGuard guard : controllingGuards(
-                dataflow.pathSite.method, dataflow.pathSite)) {
-            for (String use : causalGuardUses(guard.fact)) {
-                String guardNode = canonical(dataflow.pathSite.method, use);
-                if (ignoreNode(guardNode)) {
-                    continue;
-                }
-                String kind = "synchronous_callback_path_guard";
-                changed |= addEdge(kind,
-                        guardNode, dataflow.targetCell,
-                        dataflow.pathSite.method, guard.fact,
-                        "synchronous callback invocation requires Jimple outcome "
-                                + guard.requiredOutcome + " at callback site u"
-                                + dataflow.pathSite.unitIndex);
-                Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                        kind, guardNode, dataflow.targetCell,
-                        dataflow.pathSite.method, guard.fact));
-                if (edge != null) {
-                    ControlDependenceEdgeSupport.annotatePathGuard(
-                            edge, dataflow.pathSite.method,
-                            guard.fact.unitIndex,
-                            dataflow.pathSite.unitIndex,
-                            dataflow.pathSite.unitText,
-                            guard.requiredOutcome,
-                            guard.reachingSuccessorIndices,
-                            guardNode, dataflow.targetCell);
-                    guard.branchShape.annotate(edge);
-                }
-                changed |= pathRelevant.add(guardNode);
-            }
-        }
-        return changed;
-    }
-
     private boolean propagateProjectedEdgesFromExistingEdges() {
         if (edges.isEmpty() || edges.size() >= maxEdges) {
             return false;
@@ -5227,12 +3690,7 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         if (!sig.params.isEmpty()) {
-            boolean requiredContainerLookup =
-                    ("org.apache.hadoop.hdfs.security.token.block."
-                            + "BlockPoolTokenSecretManager").equals(sig.owner)
-                            && "get".equals(sig.name)
-                            && sig.params.size() == 1;
-            return "get".equals(sig.name) && !requiredContainerLookup;
+            return "get".equals(sig.name);
         }
         boolean identifierOrKeyAccessor = (sig.owner.endsWith("Identifier")
                 || sig.owner.endsWith("BlockKey")) && sig.name.startsWith("get");
@@ -5244,7 +3702,6 @@ final class SeedBackwardStaticAnalyzer {
 
     private List<Map<String, Object>> collectCells() {
         Set<String> cells = new LinkedHashSet<>();
-        cells.add(target.seedPredicate());
         for (Map<String, Object> edge : edges) {
             cells.add(String.valueOf(edge.get("fromCell")));
             cells.add(String.valueOf(edge.get("toCell")));
@@ -5982,18 +4439,15 @@ final class SeedBackwardStaticAnalyzer {
         Map<String, Object> edge = emittedEdgeRows.get(key);
         if (edge == null) {
             String edgeId = "DF." + edgeCounter++;
-            boolean ownMappingOnly = isStaticPortMappingKind(kind);
             boolean hasProjectionBase = projectionBaseEdge != null;
             // A projected row is a derived view of its base edge.  Its
             // rendered kind must never manufacture stronger semantic
-            // authority than that base.  In particular, a static
-            // format/port mapping remains mapping-only after field
-            // projection.  Require an explicit false/true tuple on the
-            // base so older or incomplete rows fail closed.
+            // authority than that base. Require an explicit false/true tuple
+            // on the base so incomplete rows fail closed.
             boolean baseMappingOnly = hasProjectionBase
                     && !Boolean.FALSE.equals(
                     projectionBaseEdge.get("mappingOnly"));
-            boolean mappingOnly = ownMappingOnly || baseMappingOnly;
+            boolean mappingOnly = baseMappingOnly;
             boolean baseSemanticAssertionsAllowed = !hasProjectionBase
                     || Boolean.TRUE.equals(projectionBaseEdge.get(
                     "semanticAssertionsAllowed"));
@@ -6010,13 +4464,9 @@ final class SeedBackwardStaticAnalyzer {
                             && baseAutomaticDerivationAllowed;
             boolean eligibleForAutomaticSmt = semanticAssertionsAllowed
                     && baseAutomaticSmtAllowed;
-            String mappingAuthority = "";
-            if (mappingOnly) {
-                mappingAuthority = baseMappingOnly
-                        ? stringValue(projectionBaseEdge.get(
-                        "mappingAuthority"))
-                        : "STATIC_FORMAT_AND_PORT_MAPPING";
-            }
+            String mappingAuthority = mappingOnly
+                    ? stringValue(projectionBaseEdge.get(
+                    "mappingAuthority")) : "";
             String edgeTransferKind = SymbolicPlanningStage.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -6231,13 +4681,6 @@ final class SeedBackwardStaticAnalyzer {
                 + String.valueOf(to) + "\n" + method + site;
     }
 
-    private boolean isStaticPortMappingKind(String kind) {
-        for (StaticPortMapping mapping : staticPortMappings) {
-            if (mapping.kind.equals(kind)) return true;
-        }
-        return false;
-    }
-
     /**
      * Attaches constructor evidence to a Jimple allocation edge.  A
      * {@code new T} expression alone does not establish the initialized
@@ -6304,7 +4747,7 @@ final class SeedBackwardStaticAnalyzer {
                 || kind.contains("field") || kind.contains("argument")
                 || kind.contains("return") || kind.contains("rpc")
                 || kind.contains("dispatch") || kind.contains("protocol")
-                || kind.contains("sasl") || kind.contains("transfer")) {
+                || kind.contains("transfer")) {
             return "value_flow";
         }
         return "taint_depends_on";
@@ -6481,30 +4924,6 @@ final class SeedBackwardStaticAnalyzer {
             result.addAll(list);
         }
         return result;
-    }
-
-    private static boolean containsAny(String value, Collection<String> needles) {
-        if (value == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isEmpty() && value.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean containsAll(String value, Collection<String> needles) {
-        if (value == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isEmpty() && !value.contains(needle)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static String firstNonBlank(String... values) {

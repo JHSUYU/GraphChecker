@@ -257,18 +257,7 @@ public class GraphCheckerMain {
         Properties config = loadGraphCheckerConfig();
         addConfiguredProcessDirs(dirs, firstNonBlank(
                 System.getProperty("causynth.process.dirs"),
-                config.getProperty("causynth_process_dirs"),
-                config.getProperty("causynth_extra_process_dirs")));
-        String repo = firstNonBlank(
-                System.getProperty("causynth.repo"),
-                config.getProperty("causynth_repo"),
-                System.getenv("CAUSYNTH_REPO"));
-        String spec = firstNonBlank(
-                System.getProperty("causynth.target.spec"),
-                config.getProperty("causynth_target_spec"));
-        if (repo != null && spec != null) {
-            addTargetSpecProcessDirs(dirs, Paths.get(repo), Paths.get(spec));
-        }
+                config.getProperty("causynth_process_dirs")));
 
         if (dirs.size() > (inputDirs == null ? 0 : inputDirs.size())) {
             LOG.info("Expanded Soot process dirs to {}", dirs);
@@ -318,66 +307,6 @@ public class GraphCheckerMain {
             LOG.warn("Unable to read GraphChecker config {}", configPath, exception);
         }
         return properties;
-    }
-
-    private void addTargetSpecProcessDirs(Set<String> dirs, Path repo, Path specPath) {
-        if (!Files.isRegularFile(specPath)) {
-            return;
-        }
-        try {
-            List<String> lines = Files.readAllLines(specPath, StandardCharsets.UTF_8);
-            boolean inFiles = false;
-            boolean inPretestModules = false;
-            for (String rawLine : lines) {
-                String line = rawLine;
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    continue;
-                }
-                if (!line.startsWith(" ") && trimmed.endsWith(":")) {
-                    String section = trimmed.substring(0, trimmed.length() - 1);
-                    inFiles = "files".equals(section);
-                    inPretestModules = false;
-                    continue;
-                }
-                if (trimmed.startsWith("pretest_install_modules:")) {
-                    inPretestModules = true;
-                    continue;
-                }
-                if (inFiles && line.startsWith("  ")) {
-                    int colon = trimmed.indexOf(':');
-                    if (colon < 0) {
-                        continue;
-                    }
-                    String value = trimmed.substring(colon + 1).trim();
-                    String beforePipe = value.split("\\|", 2)[0].trim();
-                    addModuleClassesForSourcePath(dirs, repo, beforePipe);
-                    continue;
-                }
-                if (inPretestModules && trimmed.startsWith("- ")) {
-                    addModuleClassesDir(dirs, repo.resolve(trimmed.substring(2).trim()));
-                    continue;
-                }
-                if (!line.startsWith("    ") && !trimmed.startsWith("- ")) {
-                    inPretestModules = false;
-                }
-            }
-        } catch (IOException exception) {
-            LOG.warn("Unable to read target spec {}", specPath, exception);
-        }
-    }
-
-    private void addModuleClassesForSourcePath(Set<String> dirs, Path repo, String sourcePath) {
-        if (sourcePath == null || sourcePath.trim().isEmpty()
-                || !sourcePath.contains("/src/main/java/")) {
-            return;
-        }
-        String modulePath = sourcePath.substring(0, sourcePath.indexOf("/src/main/java/"));
-        addModuleClassesDir(dirs, repo.resolve(modulePath));
-    }
-
-    private void addModuleClassesDir(Set<String> dirs, Path moduleDir) {
-        addExistingDirectory(dirs, moduleDir.resolve("target/classes").toString());
     }
 
     private void addExistingDirectory(Set<String> dirs, String path) {

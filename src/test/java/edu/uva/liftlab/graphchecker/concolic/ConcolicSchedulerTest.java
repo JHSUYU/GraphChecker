@@ -53,8 +53,8 @@ public class ConcolicSchedulerTest {
             assertEquals("LOCAL_UNIT_TEST",
                     job.get("workloadKind").getAsString());
             assertTrue(job.get("captureReady").getAsBoolean());
-            JsonObject target = job.getAsJsonObject("targetBranch");
-            assertTrue(target.get("observedOutcome").getAsBoolean());
+            JsonObject target = job.getAsJsonObject(
+                    "branchCaptureSelector");
             assertFalse(target.get("desiredOutcome").getAsBoolean());
             assertEquals(1, target.get("occurrence").getAsInt());
 
@@ -275,9 +275,15 @@ public class ConcolicSchedulerTest {
                     + "\"status\":\"CONFIRMED_READ_FROM\","
                     + "\"eligibleForAutomaticDerivation\":true,"
                     + "\"eligibleForAutomaticSmt\":true,"
-                    + "\"composable\":true,\"evidence\":[{"
+                    + "\"composable\":true,\"validatedBindings\":[{"
+                    + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
+                    + "\"writeEvidenceAuthority\":"
+                    + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
+                    + "\"orderAuthority\":"
+                    + "\"GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1\","
                     + "\"writeSeq\":3,\"readSeq\":4,"
                     + "\"receiverObjectId\":8,"
+                    + "\"fieldReceiverIdentityConfirmed\":true,"
                     + "\"orderConfirmed\":true}]}\n";
             Files.write(fixture.edges,
                     keyEdge.getBytes(StandardCharsets.UTF_8),
@@ -310,7 +316,7 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
-    public void capturedSummaryProducesPrefixPlusNegatedTargetQuery()
+    public void capturedSummaryProducesCanonicalTargetReplayQuery()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -345,15 +351,17 @@ public class ConcolicSchedulerTest {
             JsonObject query = result.queries.get(0);
             assertTrue(query.get("readyForSolver").getAsBoolean());
             assertTrue(query.get("readyForReplay").getAsBoolean());
-            assertFalse(query.get("targetReplayValidated").getAsBoolean());
-            assertFalse(query.get("replayAlreadyValidated").getAsBoolean());
-            assertEquals(2, query.get("conditionIndex").getAsInt());
-            JsonArray constraints = query.getAsJsonArray("constraints");
-            assertEquals(3, constraints.size());
-            assertEquals("==", constraints.get(2).getAsJsonObject()
-                    .get("_op").getAsString());
-            assertEquals("!=", query.getAsJsonObject(
-                    "originalTargetCondition").get("_op").getAsString());
+            BranchReplayContract contract = BranchReplayContract.fromJson(
+                    query.getAsJsonObject("replayContract"));
+            assertEquals(TARGET, contract.source().siteId());
+            assertEquals(1, contract.orderedPrefix().size());
+            assertEquals("==", contract.requiredSatisfiedPredicate()
+                    .getAsJsonObject().get("_op").getAsString());
+            assertEquals(1, SolverPathContext.fromJson(query
+                    .getAsJsonObject("solverPathContext")).size());
+            assertFalse(query.has("constraints"));
+            assertFalse(query.has("originalTargetCondition"));
+            assertFalse(query.has("negatedTargetCondition"));
             assertEquals("FINITE_MAP_SEMANTIC_MODEL", query
                     .getAsJsonObject("semanticModel").get("solver")
                     .getAsString());
@@ -367,85 +375,17 @@ public class ConcolicSchedulerTest {
                     .getAsJsonObject().get("operationSemantics").getAsString());
             assertEquals(1, query.getAsJsonArray("replayMaterializations")
                     .get(0).getAsJsonObject().get("occurrence").getAsInt());
-            assertEquals("DROP_OLD_SUFFIX",
-                    query.get("suffixPolicy").getAsString());
+            assertEquals(BranchReplayContract.DROP_SOURCE_SUFFIX,
+                    query.getAsJsonObject("replayContract")
+                            .get("suffixPolicy").getAsString());
             assertEquals("REGION.0@testMiniDfs#call7",
                     query.get("regionInstanceId").getAsString());
             assertEquals(bridges, query.getAsJsonArray(
                     "engineArrayInputBindings"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void validatedReplayKeepsItsSameInstanceDirectedQuery()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Fixture fixture = fixture(folder.getRoot().toPath(), true);
-            String[] argv = new String[]{
-                    "--regions", fixture.regions.toString(),
-                    "--activation-plan", fixture.activations.toString(),
-                    "--edge-validations", fixture.edges.toString(),
-                    "--static-graph", fixture.staticGraph.toString(),
-                    "--summaries", fixture.summaries.toString(),
-                    "--output-dir", fixture.output.toString(),
-                    "--region-id", "REGION.0"};
-            ConcolicScheduler.Result initial = ConcolicScheduler.schedule(
-                    ConcolicScheduler.Arguments.parse(argv));
-            JsonObject directedQuery = initial.queries.get(0).deepCopy();
-
-            JsonObject summary = JsonParser.parseString(new String(
-                    Files.readAllBytes(fixture.summaries),
-                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
-            summary.addProperty("summaryId", "SUMMARY.REGION.0.VALIDATED");
-            summary.addProperty("regionInstanceId",
-                    "REGION.0@testMiniDfs#call7");
-            summary.addProperty("targetReplayValidated", true);
-            summary.addProperty("branchOverrideUsed", false);
-            JsonObject admission = new JsonObject();
-            admission.addProperty("required", true);
-            admission.addProperty("valid", true);
-            admission.addProperty("branchOverrideAccepted", false);
-            admission.addProperty("authority",
-                    "SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION");
-            summary.add("executionAdmission", admission);
-            summary.add("directedTargetQuery", directedQuery);
-            Files.write(fixture.summaries,
-                    (summary + "\n").getBytes(StandardCharsets.UTF_8));
-
-            ConcolicScheduler.Result reused = ConcolicScheduler.schedule(
-                    ConcolicScheduler.Arguments.parse(argv));
-
-            assertEquals(1, reused.queries.size());
-            JsonObject query = reused.queries.get(0);
-            assertTrue(query.get("readyForSolver").getAsBoolean());
-            assertFalse(query.get("readyForReplay").getAsBoolean());
-            assertTrue(query.get("replayAlreadyValidated").getAsBoolean());
-            assertTrue(query.get("targetReplayValidated").getAsBoolean());
-            assertEquals("SUMMARY.REGION.0.VALIDATED",
-                    query.get("validatedSummaryId").getAsString());
-            JsonObject validatedSummary = query.getAsJsonObject(
-                    "validatedTargetSummary");
-            assertEquals("REGION.0@testMiniDfs#call7", validatedSummary
-                    .get("regionInstanceId").getAsString());
-            assertTrue(validatedSummary.get("targetReplayValidated")
-                    .getAsBoolean());
-            assertFalse(validatedSummary.get("branchOverrideUsed")
-                    .getAsBoolean());
-            assertEquals("REGION.0@testMiniDfs#call7", query
-                    .getAsJsonObject("symbolicContext")
-                    .get("regionInstanceId").getAsString());
-            assertEquals("REGION.0@testMiniDfs#call7",
-                    query.get("regionInstanceId").getAsString());
-            assertEquals("TARGET_REPLAY_VALIDATED", reused.jobs.get(0)
-                    .get("phase").getAsString());
-            assertFalse(reused.scheduledActivations.get(0)
-                    .has("replayMaterializations"));
-            assertFalse(reused.scheduledActivations.get(0)
-                    .get("targetReplayRequired").getAsBoolean());
+            assertTrue(result.scheduledActivations.get(0)
+                    .has("replayContract"));
+            assertFalse(result.scheduledActivations.get(0)
+                    .has("branchCaptureSelector"));
         } finally {
             folder.delete();
         }
@@ -480,7 +420,7 @@ public class ConcolicSchedulerTest {
             assertEquals("CAPTURE_THEN_NEGATE", result.jobs.get(0)
                     .get("phase").getAsString());
             assertFalse(result.scheduledActivations.get(0)
-                    .has("directedTargetQuery"));
+                    .has("replayContract"));
             assertFalse(result.scheduledActivations.get(0)
                     .get("targetReplayRequired").getAsBoolean());
         } finally {
@@ -567,8 +507,11 @@ public class ConcolicSchedulerTest {
                     .getAsJsonObject("captureGoal").get("kind")
                     .getAsString());
             assertFalse(result.jobs.get(0).has("targetBranch"));
+            assertFalse(result.jobs.get(0).has("branchCaptureSelector"));
             assertFalse(result.scheduledActivations.get(0)
                     .has("targetBranch"));
+            assertFalse(result.scheduledActivations.get(0)
+                    .has("branchCaptureSelector"));
             assertEquals(0, result.queries.size());
             assertEquals(1, result.summary.get("upstreamCaptureJobCount")
                     .getAsInt());
@@ -866,6 +809,7 @@ public class ConcolicSchedulerTest {
                     + "\"rootMethod\":\"<example.Client: void send()>\","
                     + "\"invocationOrdinal\":1,\"symbolize\":[]}")
                     .getAsJsonObject();
+            RegionCaptureGoal.outputClosure().writeTo(nn);
             JsonObject heartbeat = JsonParser.parseString("{"
                     + "\"activationId\":\"ACT.HEARTBEAT\","
                     + "\"regionId\":\"REGION.11\","
@@ -874,6 +818,7 @@ public class ConcolicSchedulerTest {
                     + "\"rootMethod\":\"<example.Updater: void run()>\","
                     + "\"invocationOrdinal\":1,\"symbolize\":[]}")
                     .getAsJsonObject();
+            RegionCaptureGoal.outputClosure().writeTo(heartbeat);
             JsonArray heartbeatSupport = new JsonArray();
             heartbeatSupport.add(nn);
             heartbeat.add("reachabilitySupportActivations",
@@ -1089,15 +1034,9 @@ public class ConcolicSchedulerTest {
                     + "\"requestedOutputMethods\":[\"" + root + "\"],"
                     + "\"requestedOutputSlice\":{\"sites\":[\""
                     + site + "\"]},"
-                    + "\"requestedOutputCaptureRequired\":true,"
+                    + "\"requestedOutputCaptureRequired\":false,"
                     + "\"requestedOutputCaptureComplete\":true,"
-                    + "\"requestedOutputCapture\":[{"
-                    + "\"captureKind\":\"METHOD_RETURN_VALUE\","
-                    + "\"siteId\":\"" + site + "\","
-                    + "\"occurrence\":1,"
-                    + "\"occurrenceAuthority\":"
-                    + "\"RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE\","
-                    + "\"runtimeCallId\":17,\"runtimeEventSeq\":23}],"
+                    + "\"requestedOutputCapture\":[],"
                     + "\"requestedOutput\":{"
                     + "\"portId\":\"REGION.11.out.0\","
                     + "\"cell\":\"" + ALL_KEYS + "\","
@@ -1162,38 +1101,9 @@ public class ConcolicSchedulerTest {
                             + "SITE_V1",
                     binding.get("deferredResolutionDischargeAuthority")
                             .getAsString());
-            assertEquals("PRESERVED_RUNTIME_EXACT_OUTPUT_CAPTURE_V1",
-                    result.scheduledActivations.get(0).get(
-                            "requestedOutputCaptureSelectionAuthority")
-                            .getAsString());
         } finally {
             folder.delete();
         }
-    }
-
-    @Test
-    public void boundedOutputDoesNotStartAfterAnUpstreamSymbolicInput()
-            throws Exception {
-        java.lang.reflect.Method safe = ConcolicScheduler.class
-                .getDeclaredMethod("boundedDeferredStartSafe",
-                        JsonObject.class, String.class);
-        safe.setAccessible(true);
-        String transformer = "<example.Bus: void publish(int)>";
-
-        JsonObject callReturn = JsonParser.parseString("{\"symbolize\":[{"
-                + "\"location\":\"CALL_RETURN\","
-                + "\"cell\":\"<example.Source: int get()>.return\"}]}")
-                .getAsJsonObject();
-        assertEquals(false, safe.invoke(null, callReturn, transformer));
-
-        JsonObject exactTransformerField = JsonParser.parseString(
-                "{\"symbolize\":[{"
-                        + "\"location\":\"HEAP_OBJECT_FIELD\","
-                        + "\"accessMethod\":\"" + transformer + "\"}]}")
-                .getAsJsonObject();
-        assertEquals(true, safe.invoke(null, exactTransformerField,
-                transformer));
-        assertEquals(true, safe.invoke(null, new JsonObject(), transformer));
     }
 
     @Test
@@ -1204,11 +1114,12 @@ public class ConcolicSchedulerTest {
                 + "\"requestedOutputSliceComplete\":true,"
                 + "\"symbolize\":[{"
                 + "\"symbol\":\"REGION.7.in.0\","
-                + "\"cell\":\"<org.apache.hadoop.util.Time: long "
-                + "now()>.return\","
+                + "\"cell\":\"<java.lang.System: long "
+                + "currentTimeMillis()>.return\","
                 + "\"sourceKind\":\"ENVIRONMENT\","
                 + "\"location\":\"ENVIRONMENT_MODEL\"}]}"
         ).getAsJsonObject();
+        RegionCaptureGoal.outputClosure().writeTo(activation);
 
         JsonObject prepared = ConcolicScheduler.prepareOutputCapture(
                 activation,
@@ -1484,6 +1395,7 @@ public class ConcolicSchedulerTest {
         JsonObject activation = new JsonObject();
         activation.addProperty("activationId", "ACT.ARRAY.FIELD");
         activation.addProperty("regionId", "REGION.ARRAY");
+        RegionCaptureGoal.outputClosure().writeTo(activation);
         activation.addProperty("requestedOutputSliceComplete", true);
         JsonArray symbolize = new JsonArray();
         symbolize.add(action);
@@ -1556,384 +1468,11 @@ public class ConcolicSchedulerTest {
                 .getAsJsonObject().get("_op").getAsString());
     }
 
-    @Test
-    public void freshObservedQueryRebuildsFormulaAndExactNestedContext() {
-        FreshFixture fixture = freshFixture();
-
-        ConcolicScheduler.FreshTargetQueryResult result =
-                ConcolicScheduler.rebuildFreshObservedTargetQuery(
-                        fixture.regions, fixture.activations, fixture.edges,
-                        fixture.template, fixture.target,
-                        fixture.summary, "EXEC.NEW");
-
-        assertTrue(result.reason, result.ready);
-        assertEquals(3, result.admission.get("selectedBindingCount")
-                .getAsInt());
-        JsonObject query = result.query;
-        assertEquals("KEEP_FRESH_OBSERVED_DESIRED_TARGET_CONDITION",
-                query.get("targetPolicy").getAsString());
-        assertEquals("==", query.getAsJsonArray("constraints").get(1)
-                .getAsJsonObject().get("_op").getAsString());
-        assertEquals("==", query.getAsJsonObject(
-                "freshObservedTargetCondition").get("_op").getAsString());
-        assertEquals("!=", query.getAsJsonObject(
-                "originalTargetCondition").get("_op").getAsString());
-        assertFalse(query.has("semanticModel"));
-        assertFalse(query.has("replayMaterializations"));
-        assertEquals("ENGINE.NEW", query.getAsJsonArray(
-                "engineArrayInputBindings").get(0).getAsJsonObject()
-                .get("engineArrayId").getAsString());
-
-        JsonObject context = query.getAsJsonObject("symbolicContext");
-        JsonObject equality = context.getAsJsonArray("equalityRelations")
-                .get(0).getAsJsonObject();
-        JsonObject equalityBinding = equality.getAsJsonArray(
-                "selectedBindings").get(0).getAsJsonObject();
-        assertEquals("A.NEW", equalityBinding.get(
-                "fromRegionInstance").getAsString());
-        assertEquals("T.NEW", equalityBinding.get(
-                "toRegionInstance").getAsString());
-        JsonObject alternatives = context.getAsJsonArray(
-                "alternativeWriterGroups").get(0).getAsJsonObject();
-        assertEquals(2, alternatives.getAsJsonArray("alternatives").size());
-        for (int index = 0; index < 2; index++) {
-            JsonObject selected = alternatives.getAsJsonArray(
-                    "alternatives").get(index).getAsJsonObject()
-                    .getAsJsonArray("selectedBindings").get(0)
-                    .getAsJsonObject();
-            assertEquals("T.NEW", selected.get("toRegionInstance")
-                    .getAsString());
-            assertFalse(selected.get("fromRegionInstance").getAsString()
-                    .endsWith(".OLD"));
-        }
-    }
-
-    @Test
-    public void freshObservedQueryRejectsOtherEndpointFromOldExecution() {
-        FreshFixture fixture = freshFixture();
-        fixture.upstreamA.addProperty("discoveredExecutionId", "EXEC.OLD");
-
-        ConcolicScheduler.FreshTargetQueryResult result =
-                ConcolicScheduler.rebuildFreshObservedTargetQuery(
-                        fixture.regions, fixture.activations, fixture.edges,
-                        fixture.template, fixture.target,
-                        fixture.summary, "EXEC.NEW");
-
-        assertFalse(result.ready);
-        assertEquals("FRESH_TARGET_SYMBOLIC_CONTEXT_ENDPOINT_INVALID",
-                result.reason);
-        assertTrue(result.admission.getAsJsonArray("contextGaps")
-                .toString().contains(
-                        "ENDPOINT_TRANSITION_EXECUTION_NOT_ATTESTED"));
-    }
-
-    @Test
-    public void freshObservedQueryRejectsMappedConditionMismatchAndEmptyContext() {
-        FreshFixture mismatch = freshFixture();
-        mismatch.summary.getAsJsonArray("branchMappings").get(0)
-                .getAsJsonObject().getAsJsonObject("condition")
-                .addProperty("_op", "!=");
-        ConcolicScheduler.FreshTargetQueryResult mismatched =
-                ConcolicScheduler.rebuildFreshObservedTargetQuery(
-                        mismatch.regions, mismatch.activations,
-                        mismatch.edges, mismatch.template, mismatch.target,
-                        mismatch.summary, "EXEC.NEW");
-        assertFalse(mismatched.ready);
-        assertEquals("FRESH_TARGET_MAPPING_CONDITION_PATH_MISMATCH",
-                mismatched.reason);
-
-        FreshFixture empty = freshFixture();
-        ConcolicScheduler.FreshTargetQueryResult noContext =
-                ConcolicScheduler.rebuildFreshObservedTargetQuery(
-                        empty.regions, empty.activations,
-                        Collections.<JsonObject>emptyList(), empty.template,
-                        empty.target, empty.summary, "EXEC.NEW");
-        assertFalse(noContext.ready);
-        assertEquals("FRESH_TARGET_SYMBOLIC_CONTEXT_EMPTY",
-                noContext.reason);
-    }
-
-    @Test
-    public void scheduleUsesFreshObservedRebuildForTargetObservation()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            FreshFixture fixture = freshFixture();
-            fixture.target.addProperty("replayable", true);
-            fixture.target.addProperty("rootMethod", "<T: void fail()>");
-            fixture.target.addProperty("test", "fresh-test");
-            fixture.target.addProperty("targetObservationOnly", true);
-            fixture.target.addProperty("targetRebaseAuthority",
-                    "FRESH_INSTANCE_UPSTREAM_SUPPORT_TARGET_OBSERVATION");
-            fixture.target.addProperty("targetRebaseSourceExecutionId",
-                    "EXEC.NEW");
-            fixture.target.addProperty("replacesTargetActivationId",
-                    "ACT.T.OLD");
-            fixture.target.addProperty("replacesTargetRegionInstanceId",
-                    "T.OLD");
-            fixture.target.add("directedTargetQuery",
-                    fixture.template.deepCopy());
-            RegionCaptureGoal.targetBranch().writeTo(fixture.target);
-            ConcolicScheduler.FreshTargetQueryResult campaignRebuild =
-                    ConcolicScheduler.rebuildFreshObservedTargetQuery(
-                            fixture.regions, fixture.activations,
-                            fixture.edges, fixture.template, fixture.target,
-                            fixture.summary, "EXEC.NEW");
-            assertTrue(campaignRebuild.reason, campaignRebuild.ready);
-            fixture.summary.add("freshObservedTargetQuery",
-                    campaignRebuild.query.deepCopy());
-            JsonObject summaryAdmission = new JsonObject();
-            summaryAdmission.addProperty("authority",
-                    "FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER");
-            summaryAdmission.addProperty("sourceSummaryId",
-                    "SUMMARY.T.NEW");
-            summaryAdmission.addProperty("targetReplayExecutionId",
-                    "EXEC.REPLAY");
-            summaryAdmission.addProperty("derivedQuerySha256",
-                    "sha256:fixture");
-            summaryAdmission.addProperty("edgeAuthority",
-                    "CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE");
-            summaryAdmission.addProperty(
-                    "upstreamReachabilitySupportCount", 2);
-            summaryAdmission.addProperty("downstreamInjectionUsed", false);
-            fixture.summary.add("freshTargetSummaryAdmission",
-                    summaryAdmission);
-
-            Path root = folder.getRoot().toPath();
-            Path regions = root.resolve("regions.jsonl");
-            Path activations = root.resolve("activations.jsonl");
-            Path edges = root.resolve("edges.jsonl");
-            Path summaries = root.resolve("summaries.jsonl");
-            writeRows(regions, fixture.regions);
-            writeRows(activations, fixture.activations);
-            writeRows(edges, fixture.edges);
-            writeRows(summaries, Collections.singletonList(fixture.summary));
-
-            ConcolicScheduler.Result scheduled = ConcolicScheduler.schedule(
-                    ConcolicScheduler.Arguments.parse(new String[]{
-                            "--regions", regions.toString(),
-                            "--activation-plan", activations.toString(),
-                            "--edge-validations", edges.toString(),
-                            "--summaries", summaries.toString(),
-                            "--output-dir", root.resolve("out").toString(),
-                            "--activation-id", "ACT.T.NEW"}));
-
-            assertEquals(1, scheduled.queries.size());
-            JsonObject query = scheduled.queries.get(0);
-            assertTrue(query.get("readyForSolver").getAsBoolean());
-            assertTrue(query.get("replayAlreadyValidated").getAsBoolean());
-            assertEquals("SUMMARY.T.NEW",
-                    query.get("validatedSummaryId").getAsString());
-            assertEquals("FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_"
-                            + "UNFORCED_TARGET_REPLAY",
-                    query.get("replayValidationAuthority").getAsString());
-            assertEquals("SUMMARY.T.NEW", query.getAsJsonObject(
-                    "validatedTargetSummary").get("summaryId").getAsString());
-            assertEquals("ACT.T.OLD", query.getAsJsonObject(
-                    "targetRebaseProvenance").get("replacesActivationId")
-                    .getAsString());
-            assertEquals("FRESH_INSTANCE_IMPORTED_UNFORCED_TARGET_PREFIX_"
-                            + "PLUS_OBSERVED_TARGET",
-                    query.get("formulaAuthority").getAsString());
-            assertEquals("T.NEW", query.getAsJsonObject("symbolicContext")
-                    .get("regionInstanceId").getAsString());
-            assertFalse(query.getAsJsonArray("constraints").toString()
-                    .contains("T.OLD"));
-            assertFalse(query.getAsJsonObject("symbolicContext").toString()
-                    .contains("T.OLD"));
-            assertEquals("TARGET_REPLAY_VALIDATED", scheduled.jobs.get(0)
-                    .get("phase").getAsString());
-
-            Path composed = root.resolve("composed.smt2");
-            Path manifest = root.resolve("composed-manifest.json");
-            Path relationships = root.resolve("relationships.json");
-            ConcolicSmtComposer.Result handoff = ConcolicSmtComposer.compose(
-                    ConcolicSmtComposer.Arguments.parse(new String[]{
-                            "--fatal-query", root.resolve("out")
-                            .resolve("branch_queries.jsonl").toString(),
-                            "--summaries", summaries.toString(),
-                            "--regions", regions.toString(),
-                            "--merge-plan", root.resolve("out")
-                            .resolve("symbolic_merge_plan.json").toString(),
-                            "--output", composed.toString(),
-                            "--manifest", manifest.toString(),
-                            "--relationships", relationships.toString(),
-                            "--fatal-region", "REGION.T",
-                            "--activation-id", "ACT.T.NEW"}));
-            assertTrue(handoff.manifest.toString(), handoff.manifest.get(
-                    "fatalReplayValidated").getAsBoolean());
-            assertEquals("SUMMARY.T.NEW", handoff.manifest.get(
-                    "validatedFatalReplaySummary").getAsString());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void freshScheduleRejectsUnenrichedSummaryWithoutAuthorityDowngrade()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            FreshFixture fixture = freshFixture();
-            fixture.target.addProperty("replayable", true);
-            fixture.target.addProperty("rootMethod", "<T: void fail()>");
-            fixture.target.addProperty("test", "fresh-test");
-            fixture.target.addProperty("targetObservationOnly", true);
-            fixture.target.addProperty("targetRebaseAuthority",
-                    "FRESH_INSTANCE_UPSTREAM_SUPPORT_TARGET_OBSERVATION");
-            fixture.target.addProperty("targetRebaseSourceExecutionId",
-                    "EXEC.NEW");
-            fixture.target.addProperty("replacesTargetActivationId",
-                    "ACT.T.OLD");
-            fixture.target.addProperty("replacesTargetRegionInstanceId",
-                    "T.OLD");
-            fixture.target.add("directedTargetQuery",
-                    fixture.template.deepCopy());
-            RegionCaptureGoal.targetBranch().writeTo(fixture.target);
-            Path root = folder.getRoot().toPath();
-            Path regions = root.resolve("regions.jsonl");
-            Path activations = root.resolve("activations.jsonl");
-            Path edges = root.resolve("edges.jsonl");
-            Path summaries = root.resolve("summaries.jsonl");
-            writeRows(regions, fixture.regions);
-            writeRows(activations, fixture.activations);
-            writeRows(edges, fixture.edges);
-            writeRows(summaries, Collections.singletonList(fixture.summary));
-
-            ConcolicScheduler.Result scheduled = ConcolicScheduler.schedule(
-                    ConcolicScheduler.Arguments.parse(new String[]{
-                            "--regions", regions.toString(),
-                            "--activation-plan", activations.toString(),
-                            "--edge-validations", edges.toString(),
-                            "--summaries", summaries.toString(),
-                            "--output-dir", root.resolve("out").toString(),
-                            "--activation-id", "ACT.T.NEW"}));
-
-            JsonObject query = scheduled.queries.get(0);
-            assertFalse(query.get("readyForSolver").getAsBoolean());
-            assertFalse(query.get("replayAlreadyValidated").getAsBoolean());
-            assertEquals("NONE", query.get("replayValidationAuthority")
-                    .getAsString());
-            assertEquals("FRESH_SCHEDULE_SUMMARY_QUERY_MISSING",
-                    query.get("blocker").getAsString());
-            assertFalse(query.toString().contains(
-                    "SAME_INSTANCE_IMPORTED_UNFORCED_TARGET_REPLAY"));
-            assertFalse(scheduled.jobs.get(0).has(
-                    "targetReplayAlreadyValidated"));
-        } finally {
-            folder.delete();
-        }
-    }
-
     private static void writeRows(Path path, List<JsonObject> rows)
             throws Exception {
         StringBuilder content = new StringBuilder();
         for (JsonObject row : rows) content.append(row).append('\n');
         Files.write(path, content.toString().getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static FreshFixture freshFixture() {
-        JsonObject upstreamA = region("REGION.A", "REGION.A.out.0",
-                "A_CELL", false);
-        JsonObject upstreamB = region("REGION.B", "REGION.B.out.0",
-                "B_CELL", false);
-        JsonObject targetRegion = region("REGION.T", "REGION.T.in.0",
-                "T_CELL", true);
-
-        JsonObject oldA = activation("ACT.A.OLD", "REGION.A", "A.OLD",
-                "EXEC.OLD");
-        JsonObject oldB = activation("ACT.B.OLD", "REGION.B", "B.OLD",
-                "EXEC.OLD");
-        JsonObject oldTarget = activation("ACT.T.OLD", "REGION.T",
-                "T.OLD", "EXEC.OLD");
-        JsonObject freshA = activation("ACT.A.NEW", "REGION.A", "A.NEW",
-                "EXEC.NEW");
-        JsonObject freshB = activation("ACT.B.NEW", "REGION.B", "B.NEW",
-                "EXEC.NEW");
-        JsonObject freshTarget = activation("ACT.T.NEW", "REGION.T",
-                "T.NEW", "EXEC.NEW");
-        freshTarget.addProperty("postDiscoveryTargetExecutionId",
-                "EXEC.NEW");
-        JsonObject targetBranch = new JsonObject();
-        targetBranch.addProperty("siteId", "T#u7");
-        targetBranch.addProperty("occurrence", 1);
-        targetBranch.addProperty("desiredOutcome", false);
-        freshTarget.add("targetBranch", targetBranch);
-
-        JsonObject template = new JsonObject();
-        template.addProperty("activationId", "ACT.T.OLD");
-        template.addProperty("regionId", "REGION.T");
-        template.addProperty("regionInstanceId", "T.OLD");
-        template.addProperty("siteId", "T#u7");
-        template.addProperty("occurrence", 1);
-        template.addProperty("desiredOutcome", false);
-
-        JsonObject prefix = condition(">");
-        JsonObject observed = condition("==");
-        JsonObject summary = new JsonObject();
-        summary.addProperty("summaryId", "SUMMARY.T.NEW");
-        summary.addProperty("activationId", "ACT.T.NEW");
-        summary.addProperty("regionId", "REGION.T");
-        summary.addProperty("regionInstanceId", "T.NEW");
-        summary.addProperty("valid", true);
-        summary.addProperty("targetReplayValidated", true);
-        summary.addProperty("branchOverrideUsed", false);
-        summary.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
-        JsonObject replayAdmission = new JsonObject();
-        replayAdmission.addProperty("required", true);
-        replayAdmission.addProperty("valid", true);
-        replayAdmission.addProperty("branchOverrideAccepted", false);
-        replayAdmission.addProperty("authority",
-                "SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION");
-        summary.add("executionAdmission", replayAdmission);
-        JsonArray path = new JsonArray();
-        path.add(prefix);
-        path.add(observed);
-        summary.add("pathCondition", path);
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", "T#u7");
-        mapping.addProperty("occurrence", 1);
-        mapping.addProperty("conditionIndex", 1);
-        mapping.addProperty("observedOutcome", false);
-        mapping.addProperty("overrideApplied", false);
-        mapping.add("condition", observed.deepCopy());
-        JsonArray mappings = new JsonArray();
-        mappings.add(mapping);
-        summary.add("branchMappings", mappings);
-        JsonObject engine = new JsonObject();
-        engine.addProperty("engineArrayId", "ENGINE.NEW");
-        JsonArray engines = new JsonArray();
-        engines.add(engine);
-        summary.add("engineArrayInputBindings", engines);
-
-        JsonObject equality = edge("EDGE.EQ", "EQUALITY", "REGION.A",
-                "A_CELL", "REGION.T", "T_CELL");
-        JsonArray equalityBindings = new JsonArray();
-        equalityBindings.add(equalityBinding("A.OLD", "T.OLD"));
-        equalityBindings.add(equalityBinding("A.NEW", "T.NEW"));
-        equality.add("validatedBindings", equalityBindings);
-        JsonObject heapA = edge("EDGE.HEAP.A", "READ_FROM", "REGION.A",
-                "A_CELL", "REGION.T", "T_CELL");
-        JsonArray heapABindings = new JsonArray();
-        heapABindings.add(heapBinding("A.OLD", "T.OLD", 1));
-        heapABindings.add(heapBinding("A.NEW", "T.NEW", 2));
-        heapA.add("validatedBindings", heapABindings);
-        JsonObject heapB = edge("EDGE.HEAP.B", "READ_FROM", "REGION.B",
-                "B_CELL", "REGION.T", "T_CELL");
-        // Exercise fallback endpoint parsing: REGION.B::REGION.B.out.0 must
-        // still belong to REGION.B, not REGION.B::REGION.B.
-        heapB.addProperty("fromPort", "REGION.B.out.0");
-        JsonArray heapBBindings = new JsonArray();
-        heapBBindings.add(heapBinding("B.OLD", "T.OLD", 3));
-        heapBBindings.add(heapBinding("B.NEW", "T.NEW", 4));
-        heapB.add("validatedBindings", heapBBindings);
-
-        return new FreshFixture(Arrays.asList(upstreamA, upstreamB,
-                targetRegion), Arrays.asList(oldA, oldB, oldTarget, freshA,
-                freshB, freshTarget), Arrays.asList(equality, heapA, heapB),
-                template, freshTarget, freshA, summary);
     }
 
     private static JsonObject region(String id, String port, String cell,
@@ -2150,30 +1689,6 @@ public class ConcolicSchedulerTest {
                 + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\"}\n";
     }
 
-    private static final class FreshFixture {
-        private final List<JsonObject> regions;
-        private final List<JsonObject> activations;
-        private final List<JsonObject> edges;
-        private final JsonObject template;
-        private final JsonObject target;
-        private final JsonObject upstreamA;
-        private final JsonObject summary;
-
-        private FreshFixture(List<JsonObject> regions,
-                             List<JsonObject> activations,
-                             List<JsonObject> edges,
-                             JsonObject template, JsonObject target,
-                             JsonObject upstreamA, JsonObject summary) {
-            this.regions = regions;
-            this.activations = activations;
-            this.edges = edges;
-            this.template = template;
-            this.target = target;
-            this.upstreamA = upstreamA;
-            this.summary = summary;
-        }
-    }
-
     private static Fixture fixture(Path root, boolean includeSummary)
             throws Exception {
         Fixture result = new Fixture(root);
@@ -2209,6 +1724,8 @@ public class ConcolicSchedulerTest {
                 + "\"TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
                 + "THREAD_NAME_CONTEXT_ORDINAL_V1\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
+                + "\"captureGoal\":{\"kind\":\"TARGET_BRANCH\","
+                + "\"scope\":\"ONE_DIRECTED_BRANCH\"},"
                 + "\"symbolicReady\":false,\"symbolize\":["
                 + "{\"symbol\":\"REGION.0.in.0\",\"cell\":\""
                 + USERNAME + "\",\"location\":\"REGION_LIVE_IN\"},"
@@ -2264,9 +1781,15 @@ public class ConcolicSchedulerTest {
                 + "\"status\":\"CONFIRMED_READ_FROM\","
                 + "\"eligibleForAutomaticDerivation\":true,"
                 + "\"eligibleForAutomaticSmt\":true,"
-                + "\"composable\":true,\"evidence\":[{"
+                + "\"composable\":true,\"validatedBindings\":[{"
+                + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
+                + "\"writeEvidenceAuthority\":"
+                + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
+                + "\"orderAuthority\":"
+                + "\"GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1\","
                 + "\"writeSeq\":1,\"readSeq\":2,"
                 + "\"receiverObjectId\":7,"
+                + "\"fieldReceiverIdentityConfirmed\":true,"
                 + "\"orderConfirmed\":true}]}\n";
         Files.write(result.edges, edges.getBytes(StandardCharsets.UTF_8));
 
@@ -2288,36 +1811,82 @@ public class ConcolicSchedulerTest {
                 staticGraph.getBytes(StandardCharsets.UTF_8));
 
         if (includeSummary) {
-            String summary = "{\"summaryId\":\"SUMMARY.REGION.0.SEED\","
-                    + "\"activationId\":\"ACT.0\","
-                    + "\"regionId\":\"REGION.0\","
-                    + "\"regionInstanceId\":"
-                    + "\"REGION.0@testMiniDfs#call7\","
-                    + "\"captureGoal\":{\"kind\":\"TARGET_BRANCH\","
-                    + "\"scope\":\"ONE_DIRECTED_BRANCH\"},"
-                    + "\"valid\":true,\"targetReplayValidated\":false,"
-                    + "\"branchOverrideUsed\":false,"
-                    + "\"executionAdmission\":{\"required\":false,"
-                    + "\"valid\":true,\"branchOverrideAccepted\":false,"
-                    + "\"authority\":"
-                    + "\"OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY\"},"
-                    + "\"pathCondition\":["
-                    + "{\"_type\":\"BinaryExpression\",\"_op\":\">\"},"
-                    + "{\"_type\":\"MethodExpression\","
-                    + "\"_name\":\"java/util/HashMap get\","
-                    + "\"_param_list\":[{\"_type\":\"SymbolExpression\","
-                    + "\"_exp\":\"MAP\"},{\"_type\":\"SymbolExpression\","
-                    + "\"_exp\":\"KEY\"}],\"_res_exp\":{"
-                    + "\"_type\":\"SymbolExpression\",\"_exp\":\"RESULT\"}},"
-                    + "{\"_type\":\"BinaryExpression\",\"_op\":\"!=\","
-                    + "\"_left\":{\"_type\":\"SymbolExpression\","
-                    + "\"_exp\":\"RESULT\"},\"_right\":{"
-                    + "\"_type\":\"SymbolExpression\",\"_exp\":\"N\"}},"
-                    + "{\"_type\":\"BinaryExpression\",\"_op\":\"==\"}],"
-                    + "\"branchMappings\":[{\"siteId\":\"" + TARGET
-                    + "\",\"conditionIndex\":2}]}\n";
+            JsonObject summary = new JsonObject();
+            summary.addProperty("summaryId", "SUMMARY.REGION.0.SEED");
+            summary.addProperty("activationId", "ACT.0");
+            summary.addProperty("regionId", "REGION.0");
+            summary.addProperty("regionInstanceId",
+                    "REGION.0@testMiniDfs#call7");
+            summary.add("captureGoal",
+                    RegionCaptureGoal.targetBranch().toJson());
+            summary.addProperty("valid", true);
+            summary.addProperty("branchOverrideUsed", false);
+            JsonObject admission = new JsonObject();
+            admission.addProperty("required", false);
+            admission.addProperty("valid", true);
+            admission.addProperty("branchOverrideAccepted", false);
+            admission.addProperty("authority",
+                    "OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY");
+            summary.add("executionAdmission", admission);
+
+            JsonObject prefixCondition = JsonParser.parseString(
+                    "{\"_type\":\"BinaryExpression\",\"_op\":\">\"}")
+                    .getAsJsonObject();
+            JsonObject relation = JsonParser.parseString(
+                    "{\"_type\":\"MethodExpression\","
+                            + "\"_name\":\"java/util/HashMap get\","
+                            + "\"_param_list\":["
+                            + "{\"_type\":\"SymbolExpression\","
+                            + "\"_exp\":\"MAP\"},"
+                            + "{\"_type\":\"SymbolExpression\","
+                            + "\"_exp\":\"KEY\"}],"
+                            + "\"_res_exp\":{\"_type\":"
+                            + "\"SymbolExpression\",\"_exp\":\"RESULT\"}}")
+                    .getAsJsonObject();
+            JsonObject targetCondition = JsonParser.parseString(
+                    "{\"_type\":\"BinaryExpression\",\"_op\":\"!=\","
+                            + "\"_left\":{\"_type\":\"SymbolExpression\","
+                            + "\"_exp\":\"RESULT\"},"
+                            + "\"_right\":{\"_type\":\"SymbolExpression\","
+                            + "\"_exp\":\"N\"}}")
+                    .getAsJsonObject();
+            JsonArray path = new JsonArray();
+            path.add(prefixCondition);
+            path.add(relation);
+            path.add(targetCondition);
+            summary.add("pathCondition", path);
+
+            JsonObject prefixEvent = new JsonObject();
+            prefixEvent.addProperty("eventId", 1);
+            prefixEvent.addProperty("contextId", 7);
+            BranchWitness prefixWitness = BranchWitness.vmPc(
+                    "<example.Manager: byte[] lookup(int)>#u1",
+                    "<example.Manager: byte[] lookup(int)>", 1, 1, true,
+                    prefixCondition, 0, prefixEvent);
+            JsonObject targetEvent = new JsonObject();
+            targetEvent.addProperty("eventId", 2);
+            targetEvent.addProperty("contextId", 7);
+            BranchWitness targetWitness = BranchWitness.vmPc(TARGET,
+                    "<example.Manager: byte[] lookup(int)>", 8, 1, true,
+                    targetCondition, 2, targetEvent);
+            JsonObject prefixMapping = new JsonObject();
+            prefixMapping.addProperty("siteId", prefixWitness.siteId());
+            prefixMapping.addProperty("occurrence", 1);
+            prefixMapping.addProperty("conditionIndex", 0);
+            prefixMapping.addProperty("summaryPcIndex", 0);
+            prefixMapping.add("witness", prefixWitness.toJson());
+            JsonObject targetMapping = new JsonObject();
+            targetMapping.addProperty("siteId", TARGET);
+            targetMapping.addProperty("occurrence", 1);
+            targetMapping.addProperty("conditionIndex", 2);
+            targetMapping.addProperty("summaryPcIndex", 2);
+            targetMapping.add("witness", targetWitness.toJson());
+            JsonArray mappings = new JsonArray();
+            mappings.add(prefixMapping);
+            mappings.add(targetMapping);
+            summary.add("branchMappings", mappings);
             Files.write(result.summaries,
-                    summary.getBytes(StandardCharsets.UTF_8));
+                    (summary + "\n").getBytes(StandardCharsets.UTF_8));
         }
         return result;
     }

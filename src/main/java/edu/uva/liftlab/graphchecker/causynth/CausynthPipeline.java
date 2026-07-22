@@ -57,12 +57,8 @@ import soot.jimple.SwitchStmt;
 import soot.tagkit.Tag;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -80,12 +76,11 @@ import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.readRuntimeSelectedRoots;
 
 /**
- * Exception/variable-seeded static backward data-flow analysis.
+ * Annotation-directed static backward data-flow analysis.
  *
- * <p>The preferred analysis starts from a target exception in target.yaml and
+ * <p>The analysis starts from one annotated exception construction and
  * discovers the throw value, exception payload, controlling guards, and their
- * data dependencies automatically.  The legacy seed variable list remains a
- * compatibility fallback.  Local Java/Jimple calls, discovered RPC
+ * data dependencies automatically. Local Java/Jimple calls, discovered RPC
  * dispatches, interface dispatches, and explicitly enabled protocol bridges
  * all emit edges into the same static data-flow graph.</p>
  */
@@ -95,55 +90,21 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
     private static final String CONCOLIC_REGION_RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
-    private static final String STATIC_REUSE_MANIFEST_PROPERTY =
-            "causynth.concolic.static.reuse.manifest";
-    private static final String STATIC_REUSE_MANIFEST_ENV =
-            "CAUSYNTH_CONCOLIC_STATIC_REUSE_MANIFEST";
-    private static final String STATIC_REUSE_REPORT_FILE =
-            "concolic_instrumentation_report.json";
-
     private final GraphCheckerOptions options;
-    private final int sootClassCount;
-    private final int sootConcreteMethodCount;
 
-    public CausynthPipeline(GraphCheckerOptions options, int sootClassCount,
-                            int sootConcreteMethodCount) {
+    public CausynthPipeline(GraphCheckerOptions options) {
         this.options = options;
-        this.sootClassCount = sootClassCount;
-        this.sootConcreteMethodCount = sootConcreteMethodCount;
     }
 
     public void run() throws IOException {
         CausynthTargetContext target = CausynthTargetResolver.resolve(options);
-        String reuseManifest = stringValue(firstNonBlank(
-                System.getProperty(STATIC_REUSE_MANIFEST_PROPERTY),
-                System.getenv(STATIC_REUSE_MANIFEST_ENV)));
-        if (!reuseManifest.isEmpty()) {
-            String fallback = frozenConcolicReuseFallbackReason();
-            if (fallback.isEmpty()) {
-                runWithFrozenConcolicCatalog(target,
-                        Paths.get(reuseManifest));
-                return;
-            }
-            LOG.info("Frozen concolic static catalog not used ({}); "
-                    + "running the complete static pipeline", fallback);
-        }
-
         ExceptionTargetSite exceptionTarget =
                 ExceptionTargetAnnotationScanner.select(
                         options.getInputList(), target.exceptionTargetId);
-        if (exceptionTarget != null) {
-            target = target.withExceptionTarget(exceptionTarget);
-        }
-        if (!target.hasSeed()) {
-            LOG.info("Seed backward analysis skipped: no "
-                    + "@CausynthExceptionTarget or seed_variables in {}",
-                    target.specPath);
-            return;
-        }
+        target = target.withExceptionTarget(exceptionTarget);
 
-        LOG.info("Seed backward analysis starts in {} mode from {}",
-                target.seedMode(), target.seedDescription());
+        LOG.info("Seed backward analysis starts at annotated exception {}",
+                exceptionTarget.stableIdentity());
         CausynthAnalysisResult result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
         SymbolicPlanningStage.build(result);
@@ -157,114 +118,6 @@ public final class CausynthPipeline {
         enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
         LOG.info("Seed backward analysis wrote {} edges to {}",
                 result.edges.size(), target.outputDir);
-    }
-
-    private void runWithFrozenConcolicCatalog(CausynthTargetContext target,
-                                               Path manifest)
-            throws IOException {
-        String planValue = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        ConcolicStaticCatalogReuse.LoadedCatalog loaded =
-                ConcolicStaticCatalogReuse.load(manifest,
-                        Paths.get(planValue), selected);
-        loaded.validateCurrentInputs(target.specPath, options.getInputList(),
-                firstNonBlank(System.getProperty("causynth.process.dirs"),
-                        System.getenv("CAUSYNTH_PROCESS_DIRS"), ""));
-        Path output = target.outputDir.toAbsolutePath().normalize();
-        Path catalog = loaded.regionsPath.getParent();
-        if (catalog != null && output.equals(catalog.toAbsolutePath()
-                .normalize())) {
-            throw new IOException("Frozen catalog and instrumentation report "
-                    + "directories must differ: " + output);
-        }
-
-        CausynthAnalysisResult result = new CausynthAnalysisResult();
-        result.symbolicRegions.addAll(loaded.regions);
-        result.symbolicCoverage.putAll(loaded.coverage);
-        result.slices.put("staticCatalogReuse",
-                new LinkedHashMap<>(loaded.reportMetadata));
-        result.slices.put("staticCatalogReuseAuthority",
-                ConcolicStaticCatalogReuse.AUTHORITY);
-        result.slices.put("staticCatalogReuseSelectedRegionCount",
-                loaded.regions.size());
-        result.slices.put("staticAnalysisSkipped", true);
-        instrumentConcolicRegions(result);
-        verifyFrozenCatalogInstrumentation(result, loaded);
-        boolean boundedOutputClosureCoverageReady =
-                recordSymbolicCoverageAuthority(result);
-        enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
-        writeStaticReuseReport(target, result, loaded);
-        LOG.info("Reused one hash-bound static region for activation {} and "
-                        + "wrote instrumentation report to {}",
-                selected, output.resolve(STATIC_REUSE_REPORT_FILE));
-    }
-
-    private void verifyFrozenCatalogInstrumentation(
-            CausynthAnalysisResult result,
-            ConcolicStaticCatalogReuse.LoadedCatalog loaded)
-            throws IOException {
-        int roots = intValue(result.slices.get("concolicRegionRootCount"), -1);
-        int instrumented = intValue(result.slices.get(
-                "concolicRegionInstrumentedRootCount"), -1);
-        int skipped = intValue(result.slices.get(
-                "concolicRegionSkippedRootCount"), -1);
-        int expectedBranches = intValue(loaded.reportMetadata.get(
-                "loadedBranchPolicyCount"), -1);
-        int instrumentedBranches = intValue(result.slices.get(
-                "concolicMappedBranchCount"), -1);
-        Set<String> selectedRoots = new LinkedHashSet<>();
-        Object selectedRootValue = result.slices.get(
-                "concolicSelectedRootMethods");
-        if (selectedRootValue instanceof Collection<?>) {
-            for (Object value : (Collection<?>) selectedRootValue) {
-                String root = stringValue(value);
-                if (!root.isEmpty()) {
-                    selectedRoots.add(root);
-                }
-            }
-        }
-        if (roots != 1 || instrumented != roots || skipped != 0) {
-            throw new IOException("Frozen static reuse did not instrument its "
-                    + "one exact root: roots=" + roots + ", instrumented="
-                    + instrumented + ", skipped=" + skipped);
-        }
-        if (expectedBranches < 0
-                || instrumentedBranches != expectedBranches) {
-            throw new IOException("Frozen static reuse branch hook mismatch: "
-                    + instrumentedBranches + " != " + expectedBranches);
-        }
-        if (!selectedRoots.equals(Collections.singleton(
-                loaded.instrumentationRoot))) {
-            throw new IOException("Frozen static reuse instrumented an "
-                    + "unexpected runtime root: " + selectedRoots + " != "
-                    + loaded.instrumentationRoot);
-        }
-    }
-
-    private String frozenConcolicReuseFallbackReason() {
-        boolean concolic = Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.concolic"),
-                System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"), "false"));
-        boolean trace = Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.trace"),
-                System.getenv("CAUSYNTH_INSTRUMENT_TRACE"), "false"));
-        String plan = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.plan"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_PLAN")));
-        String selected = stringValue(firstNonBlank(
-                System.getProperty("causynth.concolic.activation.id"),
-                System.getenv("CAUSYNTH_CONCOLIC_ACTIVATION_ID")));
-        if (!concolic) return "CONCOLIC_INSTRUMENTATION_DISABLED";
-        if (trace) return "TRACE_INSTRUMENTATION_REQUIRES_FULL_STATIC_GRAPH";
-        if (plan.isEmpty()) return "ACTIVATION_PLAN_MISSING";
-        if (selected.isEmpty() || "ALL".equals(selected)) {
-            return "EXACT_ACTIVATION_SELECTION_MISSING";
-        }
-        return "";
     }
 
     private boolean recordSymbolicCoverageAuthority(
@@ -295,43 +148,6 @@ public final class CausynthPipeline {
                             + "exact runtime-selected bounded output closure is "
                             + "ready; preserving strict coverage outside that "
                             + "selected activation");
-        }
-    }
-
-    private void writeStaticReuseReport(CausynthTargetContext target,
-                                        CausynthAnalysisResult result,
-                                        ConcolicStaticCatalogReuse.LoadedCatalog loaded)
-            throws IOException {
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.putAll(loaded.reportMetadata);
-        report.put("sootClassCount", sootClassCount);
-        report.put("sootConcreteMethodCount", sootConcreteMethodCount);
-        report.put("instrumentation", new LinkedHashMap<>(result.slices));
-        report.put("globalSymbolicCoverageComplete",
-                Boolean.TRUE.equals(result.symbolicCoverage.get("complete")));
-        report.put("staticCatalogMutated", false);
-        report.put("complete", true);
-        Files.createDirectories(target.outputDir);
-        Path output = target.outputDir.resolve(STATIC_REUSE_REPORT_FILE);
-        Path temporary = Files.createTempFile(target.outputDir,
-                ".concolic-instrumentation-", ".json.tmp");
-        try {
-            Files.write(temporary,
-                    (CausynthJson.write(report) + System.lineSeparator())
-                            .getBytes(
-                            StandardCharsets.UTF_8),
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
-            try {
-                Files.move(temporary, output,
-                        StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-                Files.move(temporary, output,
-                        StandardCopyOption.REPLACE_EXISTING);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
         }
     }
 
@@ -447,8 +263,6 @@ public final class CausynthPipeline {
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
         taggedMethods.addAll(materializationSelection.localMethods());
         taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        taggedMethods.addAll(
-                materializationSelection.boundedOutputCompletionMethods());
         taggedMethods.addAll(replaySelection.methods());
         taggedMethods.addAll(outputCaptureSelection.methods());
         taggedMethods.addAll(backedViewMethods);
@@ -622,9 +436,6 @@ public final class CausynthPipeline {
                 instrumentConcolicReplayMaterializations(replaySelection, refs);
         int outputCaptureHookCount = instrumentConcolicOutputCaptures(
                 outputCaptureSelection, refs);
-        int boundedOutputCompletionHookCount =
-                instrumentConcolicBoundedOutputCompletions(
-                        materializationSelection, refs);
         int backedViewMutationHookCount =
                 instrumentConcolicBackedViewMutations(backedViewMethods, refs);
         int branchCount = instrumentConcolicBranches(branchSelection, refs);
@@ -640,66 +451,10 @@ public final class CausynthPipeline {
                 replayMaterializationCount);
         result.slices.put("concolicOutputCaptureHookCount",
                 outputCaptureHookCount);
-        result.slices.put("concolicBoundedOutputCompletionHookCount",
-                boundedOutputCompletionHookCount);
         result.slices.put("concolicBackedViewMutationHookCount",
                 backedViewMutationHookCount);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
-    }
-
-    private int instrumentConcolicBoundedOutputCompletions(
-            ConcolicMaterializationSelection selection,
-            ConcolicRegionRefs refs) {
-        int count = 0;
-        for (String signature : selection
-                .boundedOutputCompletionMethods()) {
-            try {
-                SootMethod method = Scene.v().getMethod(signature);
-                if (method == null || !method.isConcrete()
-                        || method.isConstructor()) {
-                    continue;
-                }
-                Body body = method.retrieveActiveBody();
-                List<Unit> original = snapshotUnits(body);
-                tagOriginalUnits(original);
-                if (selection.boundedOutputDeferredStartMethods()
-                        .contains(signature)) {
-                    Unit insertionPoint = firstNonIdentity(body);
-                    Unit enter = Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.enterBoundedOutputTransformer,
-                                    StringConstant.v(signature)));
-                    insertBeforeOrAppendNoRedirect(body, insertionPoint,
-                            Collections.singletonList(enter));
-                    count++;
-                }
-                for (Unit unit : original) {
-                    if (!(unit instanceof ReturnStmt)
-                            && !(unit instanceof ReturnVoidStmt)) {
-                        continue;
-                    }
-                    Stmt returned = (Stmt) unit;
-                    List<Unit> completion = new ArrayList<>();
-                    completion.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.pauseObservation)));
-                    completion.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.completeBoundedOutputTransformer,
-                                    StringConstant.v(signature))));
-                    completion.add(Jimple.v().newInvokeStmt(
-                            Jimple.v().newStaticInvokeExpr(
-                                    refs.resumeObservation)));
-                    insertBeforeSequence(body, returned, completion);
-                    count++;
-                }
-            } catch (RuntimeException exception) {
-                LOG.debug("Skipping bounded output completion hook for {}",
-                        signature, exception);
-            }
-        }
-        return count;
     }
 
     private Set<String> concolicRootMethods(CausynthAnalysisResult result) {
@@ -1286,11 +1041,6 @@ public final class CausynthPipeline {
                 }
                 Body body = method.retrieveActiveBody();
                 Unit unit = originalUnit(body, target.unitIndex);
-                if (target.isMethodReturnValue()) {
-                    count += instrumentMethodReturnOutputCapture(body,
-                            unit, target, refs);
-                    continue;
-                }
                 if (target.isFieldAssignmentRhs()) {
                     count += instrumentFieldAssignmentOutputCapture(body,
                             unit, target, refs);
@@ -1345,48 +1095,6 @@ public final class CausynthPipeline {
             }
         }
         return count;
-    }
-
-    /** Captures an exact helper-method return while its VM shadow is live. */
-    private int instrumentMethodReturnOutputCapture(
-            Body body, Unit unit, OutputCaptureTarget target,
-            ConcolicRegionRefs refs) {
-        if (!(unit instanceof ReturnStmt)) return 0;
-        ReturnStmt returned = (ReturnStmt) unit;
-        Value value = returned.getOp();
-        List<Unit> before = new ArrayList<>();
-        Local activeToken = newTraceLocal(body, LongType.v(),
-                "$causynthActiveToken");
-        before.add(Jimple.v().newAssignStmt(activeToken,
-                Jimple.v().newStaticInvokeExpr(refs.activeToken)));
-        // Soot may infer a narrower local type from the values carried by an
-        // int-returning method (for example byte for a local that is only
-        // ever -1 or 1).  At an actual JVM return boundary the method
-        // descriptor is the semantic type authority.  Box with that declared
-        // type so the concrete wrapper and the custom-VM expression envelope
-        // both describe the canonical method return rather than an incidental
-        // Jimple local type.
-        Value boxed = boxedCaptureValue(body, value,
-                body.getMethod().getReturnType(), before);
-        before.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.pauseObservation)));
-        Value primitiveValue = primitiveValueString(body, value, before);
-        before.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(
-                        refs.recordMethodReturnOutput,
-                        activeToken,
-                        StringConstant.v(target.method),
-                        IntConstant.v(target.unitIndex),
-                        StringConstant.v(target.siteId),
-                        StringConstant.v(target.captureBindingId),
-                        StringConstant.v(target.outputPort),
-                        StringConstant.v(target.outputCell),
-                        IntConstant.v(target.occurrence),
-                        boxed, primitiveValue)));
-        before.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
-        insertBeforeSequence(body, returned, before);
-        return 1;
     }
 
     /**
@@ -2132,9 +1840,8 @@ public final class CausynthPipeline {
     /**
      * Returns the object on which an ordinary instance call is dispatched.
      * This must come from the invoke expression itself, rather than from the
-     * enclosing method's {@code this} local: an interface call such as
-     * {@code DataEncryptionKeyFactory.newDataEncryptionKey()} may dispatch on
-     * a {@code KeyManager} owned by a different caller object.
+     * enclosing method's {@code this} local: an interface call may dispatch
+     * on a receiver owned by a different caller object.
      *
      * <p>Constructor receivers remain excluded because passing an
      * uninitialized object to a recorder call before {@code <init>} would
@@ -2804,7 +2511,6 @@ public final class CausynthPipeline {
         private final SootMethodRef recordMapIteratorRemove;
         private final SootMethodRef recordOutputCapture;
         private final SootMethodRef activeToken;
-        private final SootMethodRef recordMethodReturnOutput;
         private final SootMethodRef recordFieldAssignmentOutput;
         private final SootMethodRef pauseObservation;
         private final SootMethodRef resumeObservation;
@@ -2814,8 +2520,6 @@ public final class CausynthPipeline {
         private final SootMethodRef markConcolicBranch;
         private final SootMethodRef resolveBranch;
         private final SootMethodRef resolveSwitchBranch;
-        private final SootMethodRef enterBoundedOutputTransformer;
-        private final SootMethodRef completeBoundedOutputTransformer;
         private final SootMethodRef exitRegionFrame;
         private final SootMethodRef throwRegionFrame;
 
@@ -2837,7 +2541,6 @@ public final class CausynthPipeline {
                                    SootMethodRef recordMapIteratorRemove,
                                    SootMethodRef recordOutputCapture,
                                    SootMethodRef activeToken,
-                                   SootMethodRef recordMethodReturnOutput,
                                    SootMethodRef recordFieldAssignmentOutput,
                                    SootMethodRef pauseObservation,
                                    SootMethodRef resumeObservation,
@@ -2847,8 +2550,6 @@ public final class CausynthPipeline {
                                    SootMethodRef markConcolicBranch,
                                    SootMethodRef resolveBranch,
                                    SootMethodRef resolveSwitchBranch,
-                                   SootMethodRef enterBoundedOutputTransformer,
-                                   SootMethodRef completeBoundedOutputTransformer,
                                    SootMethodRef exitRegionFrame,
                                    SootMethodRef throwRegionFrame) {
             this.enterRegionFrame = enterRegionFrame;
@@ -2871,7 +2572,6 @@ public final class CausynthPipeline {
             this.recordMapIteratorRemove = recordMapIteratorRemove;
             this.recordOutputCapture = recordOutputCapture;
             this.activeToken = activeToken;
-            this.recordMethodReturnOutput = recordMethodReturnOutput;
             this.recordFieldAssignmentOutput =
                     recordFieldAssignmentOutput;
             this.pauseObservation = pauseObservation;
@@ -2882,10 +2582,6 @@ public final class CausynthPipeline {
             this.markConcolicBranch = markConcolicBranch;
             this.resolveBranch = resolveBranch;
             this.resolveSwitchBranch = resolveSwitchBranch;
-            this.enterBoundedOutputTransformer =
-                    enterBoundedOutputTransformer;
-            this.completeBoundedOutputTransformer =
-                    completeBoundedOutputTransformer;
             this.exitRegionFrame = exitRegionFrame;
             this.throwRegionFrame = throwRegionFrame;
         }
@@ -2976,12 +2672,6 @@ public final class CausynthPipeline {
                     Scene.v().makeMethodRef(runtime, "activeToken",
                             Collections.<Type>emptyList(), LongType.v(), true),
                     Scene.v().makeMethodRef(runtime,
-                            "recordMethodReturnOutput",
-                            Arrays.asList(LongType.v(), string, IntType.v(),
-                                    string, string, string, string,
-                                    IntType.v(), object, string),
-                            VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
                             "recordFieldAssignmentOutput",
                             Arrays.asList(LongType.v(), string, IntType.v(),
                                     string, string, string, string, string,
@@ -3011,14 +2701,6 @@ public final class CausynthPipeline {
                             Arrays.asList(LongType.v(), LongType.v(), string,
                                     IntType.v(), string, string, string,
                                     IntType.v()), IntType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "enterBoundedOutputTransformer",
-                            Collections.<Type>singletonList(string),
-                            VoidType.v(), true),
-                    Scene.v().makeMethodRef(runtime,
-                            "completeBoundedOutputTransformer",
-                            Collections.<Type>singletonList(string),
-                            VoidType.v(), true),
                     Scene.v().makeMethodRef(runtime, "exitRegionFrame",
                             Arrays.asList(string, object, string),
                             VoidType.v(), true),
@@ -3170,12 +2852,10 @@ public final class CausynthPipeline {
         boundary.put("kind", "AUTOMATIC_DERIVATION_BOUNDARY");
         boundary.put("complete", true);
         boundary.put("domainSemanticAdapterUsed", false);
-        boundary.put("staticPortMappingsAreSemanticAssertions", false);
         boundary.put("automaticEqualityAuthority",
                 "RUNTIME_COMPLETE_VALUE_FINGERPRINT_ONLY");
         boundary.put("automaticStateAuthority",
                 "RUNTIME_CONFIRMED_WRITE_READ_PAIR_ONLY");
-        boundary.put("explicitContractsIncludedInSmt", false);
         boundary.put("scope", stringValue(result.targetResolved.get(
                 "analysisScope")));
         result.slices.put("automaticDerivationBoundary", boundary);

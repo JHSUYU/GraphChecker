@@ -203,7 +203,7 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
-    public void keepsSaslTransferBetweenConcolicRegions() {
+    public void keepsRpcTransferBetweenConcolicRegions() {
         String sender = "<example.Client: java.lang.String buildUserName()>";
         String receiver = "<example.Server: void handle(java.lang.String)>";
         List<Map<String, Object>> plans = Arrays.asList(
@@ -214,14 +214,14 @@ public class SymbolicRegionPlannerTest {
         List<Map<String, Object>> edges = Arrays.asList(
                 edge(receiver, "SEED", "seed", receiver + "#failure:missingKey",
                         receiver + ".return", 2),
-                edge(receiver, "PROTOCOL_TRANSFER", "hdfs_sasl_username_bridge",
+                edge(receiver, "PROTOCOL_TRANSFER", "rpc_argument",
                         sender + ".return", receiver + ".param0:userName", 3));
 
         SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(edges, plans);
 
         assertEquals(2, result.regions.size());
         assertEquals(1, result.regionEdges.size());
-        assertEquals("SASL_TRANSFER", result.regionEdges.get(0).get("kind"));
+        assertEquals("RPC_ARGUMENT", result.regionEdges.get(0).get("kind"));
         assertEquals("", result.regionEdges.get(0).get("relation"));
         assertEquals("EQUALITY", result.regionEdges.get(0).get(
                 "candidateRelation"));
@@ -3300,9 +3300,9 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
-    public void keepsHeartbeatPayloadBetweenNameNodeAndDataNodeRegions() {
-        String sender = "<example.NameNode: void addKeyUpdateCommand()>";
-        String receiver = "<example.DataNode: void processAccessKeyUpdateCommand()>";
+    public void keepsRpcPayloadBetweenRegions() {
+        String sender = "<example.Producer: void publish()>";
+        String receiver = "<example.Consumer: void receive()>";
         String payload = sender + "::exportedKeys#field:allKeys";
         String received = receiver + "::exportedKeys#field:allKeys";
         List<Map<String, Object>> plans = Arrays.asList(
@@ -3312,164 +3312,15 @@ public class SymbolicRegionPlannerTest {
                         Collections.singletonList("<example.Secret: int allKeys>")));
         List<Map<String, Object>> edges = Collections.singletonList(
                 edge(receiver, "PROTOCOL_TRANSFER",
-                        "projected_hdfs_heartbeat_key_update",
+                        "rpc_argument",
                         payload, received, 4));
 
         SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(edges, plans);
 
         assertEquals(2, result.regions.size());
         assertEquals(1, result.regionEdges.size());
-        assertEquals("HEARTBEAT_TRANSFER", result.regionEdges.get(0).get("kind"));
+        assertEquals("RPC_ARGUMENT", result.regionEdges.get(0).get("kind"));
         assertEquals(Boolean.TRUE, result.coverage.get("complete"));
-    }
-
-    @Test
-    public void configuredHelperReturnIsCanonicalCapturedProducerOutput() {
-        String producer = "<example.ProducerThread: void run(int)>";
-        String compute = "<example.Producer: int compute(int)>";
-        String publish = "<example.Bus: void publish(int)>";
-        String consumer = "<example.ConsumerThread: void run()>";
-        String getter = "<example.Bus: int get()>";
-        String producerInput = producer + ".param0:int";
-        String computeInput = compute + ".param0:int";
-        String computeLocal = compute + "::i0";
-        String computed = compute + ".return";
-        String callerLocal = producer + "::i0";
-        String publishInput = publish + ".param0:int";
-        String publishLocal = publish + "::i0";
-        String field = "<example.Bus: int value>";
-        String observed = consumer + "::observed";
-        String failure = consumer + "#failure:bug";
-
-        List<Map<String, Object>> plans = Arrays.asList(
-                plan(producer, Collections.singletonList(producerInput),
-                        Collections.singletonList(callerLocal)),
-                plan(compute, Collections.singletonList(computeInput),
-                        Arrays.asList(computeLocal, computed,
-                                compute + "#u2")),
-                plan(publish, Collections.singletonList(publishInput),
-                        Arrays.asList(publishLocal, field,
-                                publish + "::r0#field:value")),
-                plan(consumer, Collections.singletonList(field),
-                        Arrays.asList(observed, failure)),
-                plan(getter, Collections.singletonList(field),
-                        Collections.singletonList(getter + ".return")));
-        List<Map<String, Object>> edges = new ArrayList<>();
-        Map<String, Object> computeArgument = edge(producer,
-                "IDENTITY_BINDING", "call_argument", producerInput,
-                computeInput, 1);
-        computeArgument.put("invoke", compute);
-        authoritativeValueFlow(computeArgument);
-        edges.add(computeArgument);
-        Map<String, Object> identity = edge(compute, "VALUE_PASS",
-                "local_def_use", computeInput, computeLocal, 1);
-        identity.put("siteId", compute + "#u1");
-        identity.put("unit", "i0 := @parameter0: int");
-        authoritativeValueFlow(identity);
-        edges.add(identity);
-        Map<String, Object> returned = edge(compute, "VALUE_PASS",
-                "local_def_use", computeLocal, computed, 2);
-        returned.put("siteId", compute + "#u2");
-        returned.put("unit", "return i0");
-        authoritativeValueFlow(returned);
-        edges.add(returned);
-        Map<String, Object> callerReturn = edge(producer,
-                "FUNCTION_RETURN", "call_return", computed, callerLocal, 2);
-        callerReturn.put("invoke", compute);
-        authoritativeValueFlow(callerReturn);
-        edges.add(callerReturn);
-        Map<String, Object> publishArgument = edge(producer,
-                "IDENTITY_BINDING", "call_argument", callerLocal,
-                publishInput, 3);
-        publishArgument.put("invoke", publish);
-        authoritativeValueFlow(publishArgument);
-        edges.add(publishArgument);
-        Map<String, Object> publishIdentity = edge(publish, "VALUE_PASS",
-                "local_def_use", publishInput, publishLocal, 1);
-        publishIdentity.put("siteId", publish + "#u1");
-        publishIdentity.put("unit", "i0 := @parameter0: int");
-        authoritativeValueFlow(publishIdentity);
-        edges.add(publishIdentity);
-        Map<String, Object> write = edge(publish, "HEAP_WRITE",
-                "field_write", publishLocal, field, 2);
-        write.put("siteId", publish + "#u2");
-        write.put("unit", "r0." + field + " = i0");
-        authoritativeValueFlow(write);
-        edges.add(write);
-        edges.add(configuredRpcReturnMapping("DF.RPC.MAPPING", computed,
-                getter + ".return", getter));
-        edges.add(edge(consumer, "HEAP_READ", "field_read", field,
-                observed, 1));
-        edges.add(edge(consumer, "SEED", "seed_exception_throw", observed,
-                failure, 2));
-
-        SymbolicRegionPlanner.Result result = SymbolicRegionPlanner.plan(
-                edges, plans);
-        Map<String, Object> producerRegion = regionForRoot(result, producer);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> outputs =
-                (List<Map<String, Object>>) producerRegion.get("outputs");
-        assertEquals(1, outputs.size());
-        assertEquals(computed, outputs.get(0).get("cell"));
-        assertEquals("RETURN", outputs.get(0).get("kind"));
-
-        Map<String, Object> slice = requestedOutputSlice(producerRegion,
-                computed);
-        assertEquals(Boolean.TRUE, slice.get("complete"));
-        assertEquals(Boolean.TRUE, slice.get("captureBindingsRequired"));
-        assertEquals(Boolean.TRUE, slice.get("captureBindingsComplete"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> captures =
-                (List<Map<String, Object>>) slice.get("captureBindings");
-        assertEquals(1, captures.size());
-        Map<String, Object> capture = captures.get(0);
-        assertEquals("METHOD_RETURN_VALUE", capture.get("captureKind"));
-        assertEquals(compute, capture.get("method"));
-        assertEquals(compute + "#u2", capture.get("siteId"));
-        assertEquals(2, capture.get("unitIndex"));
-        assertEquals("i0", capture.get("returnExpression"));
-        assertEquals(computeLocal, capture.get("returnCell"));
-        assertEquals("STATIC_EXACT_METHOD_RETURN_VALUE",
-                capture.get("bindingAuthority"));
-        assertEquals(0, capture.get("occurrence"));
-
-        Map<String, Object> shared = result.regionEdges.stream()
-                .filter(candidate -> "SHARED_STATE".equals(
-                        candidate.get("kind"))
-                        && field.equals(candidate.get("fromPort")))
-                .findFirst().orElseThrow(AssertionError::new);
-        assertEquals(outputs.get(0).get("portId"),
-                shared.get("fromOutputPort"));
-        assertEquals(computed, shared.get("fromOutputCell"));
-        assertEquals(Boolean.TRUE, shared.get("aliasProofComplete"));
-        assertEquals("CONFIGURED_RPC_PRODUCER_RETURN_AND_STATIC_EXACT_"
-                        + "PUBLISH_VALUE_FLOW_V1",
-                shared.get("aliasProofAuthority"));
-        assertTrue(String.valueOf(shared.get("aliasProofEdgeIds"))
-                .contains("DF.RPC.MAPPING"));
-
-        String alternate = producer + "::alternate";
-        Map<String, Object> alternateCopy = edge(producer, "VALUE_PASS",
-                "local_def_use", computed, alternate, 7);
-        alternateCopy.put("siteId", producer + "#u7");
-        alternateCopy.put("unit", "alternate = i0");
-        authoritativeValueFlow(alternateCopy);
-        edges.add(alternateCopy);
-        Map<String, Object> ambiguousWrite = edge(producer, "HEAP_WRITE",
-                "field_write", alternate, field, 8);
-        ambiguousWrite.put("siteId", producer + "#u8");
-        ambiguousWrite.put("unit", "r0." + field + " = alternate");
-        authoritativeValueFlow(ambiguousWrite);
-        edges.add(ambiguousWrite);
-        SymbolicRegionPlanner.Result ambiguous = SymbolicRegionPlanner.plan(
-                edges, plans);
-        Map<String, Object> ambiguousShared = ambiguous.regionEdges.stream()
-                .filter(candidate -> "SHARED_STATE".equals(
-                        candidate.get("kind"))
-                        && field.equals(candidate.get("fromPort")))
-                .findFirst().orElseThrow(AssertionError::new);
-        assertFalse(ambiguousShared.containsKey("fromOutputPort"));
-        assertFalse(ambiguousShared.containsKey("aliasProofComplete"));
     }
 
     @Test
@@ -3627,9 +3478,6 @@ public class SymbolicRegionPlannerTest {
                 sourceKind.invoke(null, lifetime, updater));
         assertEquals("ENVIRONMENT", sourceKind.invoke(null,
                 "<java.lang.System: long currentTimeMillis()>.return",
-                updater));
-        assertEquals("ENVIRONMENT", sourceKind.invoke(null,
-                "<org.apache.hadoop.util.Time: long now()>.return",
                 updater));
         assertEquals("OPAQUE_CALL", sourceKind.invoke(null,
                 "<example.RpcProtocol: example.Response fetch()>.return",
@@ -4385,6 +4233,19 @@ public class SymbolicRegionPlannerTest {
         assertEquals("REGION.ALIAS.in.1", resolution.get("portId"));
         assertEquals("UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN",
                 resolution.get("authority"));
+    }
+
+    @Test
+    public void exactFieldPathPortPrecedesItsRedundantProjectedAlias()
+            throws Exception {
+        ProjectedAliasFixture fixture = contractingGetfieldAliasFixture();
+        String canonical = String.valueOf(
+                fixture.inputPorts.get(1).get("cell"));
+        Map<String, String> resolution = projectedAliasResolution(
+                fixture.edges, fixture.inputPorts, canonical);
+
+        assertEquals("REGION.ALIAS.in.1", resolution.get("portId"));
+        assertEquals("EXACT_CELL_IDENTITY", resolution.get("authority"));
     }
 
     @Test
@@ -5287,6 +5148,7 @@ public class SymbolicRegionPlannerTest {
         exactProjectionSite(declaredProjection, declared, method, unitIndex,
                 unit);
         edges.add(declaredProjection);
+        edges.add(syntheticProjectionAlias(declaredProjection, method));
 
         String instanceBase = ownerLocal + "#field:" + fieldName;
         Map<String, Object> instance = edge(method, "HEAP_READ",
@@ -5303,6 +5165,20 @@ public class SymbolicRegionPlannerTest {
         contraction.put("fieldPath", "#field:" + fieldName + suffix);
         exactProjectionSite(contraction, instance, method, unitIndex, unit);
         edges.add(contraction);
+        edges.add(syntheticProjectionAlias(contraction, method));
+    }
+
+    private static Map<String, Object> syntheticProjectionAlias(
+            Map<String, Object> projection, String method) {
+        Map<String, Object> alias = new LinkedHashMap<>(projection);
+        alias.put("id", String.valueOf(projection.get("id"))
+                + ".SYNTHETIC");
+        alias.put("siteId", method + "#synthetic:"
+                + projection.get("kind"));
+        alias.remove("unitIndex");
+        alias.remove("unit");
+        alias.remove("line");
+        return alias;
     }
 
     private static void exactReadSite(Map<String, Object> edge,
@@ -5609,25 +5485,6 @@ public class SymbolicRegionPlannerTest {
         row.put("objectFromCell", returnedBase);
         row.put("objectToCell", localBase);
         row.put("fieldPath", path);
-        return row;
-    }
-
-    private static Map<String, Object> configuredRpcReturnMapping(
-            String id, String from, String to, String consumerMethod) {
-        Map<String, Object> row = edge(consumerMethod,
-                "PROTOCOL_TRANSFER", "configured_rpc_return_mapping",
-                from, to, 0);
-        row.put("id", id);
-        row.put("siteId", consumerMethod
-                + "#synthetic:configured_rpc_return_mapping");
-        row.put("relation", "");
-        row.put("candidateRelation", "value_flow");
-        row.put("mappingOnly", true);
-        row.put("mappingAuthority", "STATIC_FORMAT_AND_PORT_MAPPING");
-        row.put("semanticAssertionsAllowed", false);
-        row.put("eligibleForAutomaticDerivation", false);
-        row.put("eligibleForAutomaticSmt", false);
-        row.put("direction", "backward_provenance");
         return row;
     }
 

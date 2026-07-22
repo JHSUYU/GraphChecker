@@ -220,8 +220,8 @@ public final class ConcolicScheduler {
             scheduledActivation.add("concreteFallbacks",
                     materialization.concreteFallbacks.deepCopy());
             if (!candidate.outputClosure) {
-                scheduledActivation.add("targetBranch",
-                        candidate.target.toJson());
+                scheduledActivation.add("branchCaptureSelector",
+                        candidate.target.captureSelector().toJson());
             }
 
             if (arguments.forceBranchValidation
@@ -269,7 +269,8 @@ public final class ConcolicScheduler {
             job.addProperty("forceValidationEnabled",
                     arguments.forceBranchValidation);
             if (!candidate.outputClosure) {
-                job.add("targetBranch", candidate.target.toJson());
+                job.add("branchCaptureSelector",
+                        candidate.target.captureSelector().toJson());
             } else {
                 upstreamCaptureJobCount++;
                 JsonElement requestedOutput = candidate.activation.get(
@@ -286,79 +287,21 @@ public final class ConcolicScheduler {
                     mergePlan.contextFor(candidate.region.regionId,
                             string(candidate.activation, "regionInstanceId")));
             if (captured != null && !candidate.outputClosure) {
-                boolean freshObservation = bool(candidate.activation,
-                        "targetObservationOnly", false)
-                        || "FRESH_INSTANCE_UPSTREAM_SUPPORT_TARGET_"
-                        .concat("OBSERVATION").equals(string(
-                                candidate.activation,
-                                "targetRebaseAuthority"));
-                JsonObject query;
-                boolean replayAlreadyValidated;
-                if (freshObservation) {
-                    FreshTargetQueryResult rebuilt =
-                            rebuildFreshObservedTargetQuery(regions,
-                                    activations, edges, object(
-                                            candidate.activation,
-                                            "directedTargetQuery"),
-                                    candidate.activation, captured,
-                                    firstNonBlank(string(
-                                            candidate.activation,
-                                            "targetRebaseSourceExecutionId"),
-                                            string(candidate.activation,
-                                                    "postDiscoveryTargetExecutionId"),
-                                            string(candidate.activation,
-                                                    "discoveredExecutionId")));
-                    if (rebuilt.ready) {
-                        rebuilt = validateFreshScheduleHandoff(rebuilt,
-                                candidate.activation, captured);
-                    }
-                    query = rebuilt.query.deepCopy();
-                    replayAlreadyValidated = rebuilt.ready;
-                    if (!rebuilt.ready) {
-                        query.addProperty("activationId",
-                                candidate.activationId);
-                        query.addProperty("regionId",
-                                candidate.region.regionId);
-                        query.addProperty("regionInstanceId", string(
-                                candidate.activation, "regionInstanceId"));
-                        query.addProperty("siteId", candidate.target.siteId);
-                        query.addProperty("occurrence",
-                                candidate.target.selectedOccurrence);
-                        query.addProperty("desiredOutcome",
-                                candidate.target.desiredOutcome);
-                        query.addProperty("readyForSolver", false);
-                        query.addProperty("readyForReplay", false);
-                        query.addProperty("blocker", rebuilt.reason);
-                        query.add("freshTargetQueryAdmission",
-                                rebuilt.admission.deepCopy());
-                    }
-                } else {
-                    query = validatedDirectedTargetQuery(candidate,
-                            captured, mergePlan);
-                    replayAlreadyValidated = query.size() > 0;
-                    if (!replayAlreadyValidated) {
-                        query = branchQuery(candidate, captured, mergePlan,
-                                staticGraph);
-                    }
-                }
+                JsonObject query = branchQuery(candidate, captured,
+                        mergePlan, staticGraph);
                 job.add("branchQuery", query);
                 if (object(query, "symbolicContext").size() > 0) {
                     job.add("symbolicContext", object(query,
                             "symbolicContext").deepCopy());
                 }
-                scheduledActivation.add("directedTargetQuery",
-                        query.deepCopy());
-                boolean replayReady = !replayAlreadyValidated
-                        && bool(query, "readyForReplay", false);
+                boolean replayReady = bool(query, "readyForReplay", false);
                 job.addProperty("solverReplayReady", replayReady);
                 scheduledActivation.addProperty("targetReplayRequired",
                         replayReady);
-                if (replayAlreadyValidated) {
-                    executionPhase = "TARGET_REPLAY_VALIDATED";
-                    scheduledActivation.addProperty("executionPhase",
-                            executionPhase);
-                    job.addProperty("phase", executionPhase);
-                    job.addProperty("targetReplayAlreadyValidated", true);
+                if (replayReady) {
+                    scheduledActivation.remove("branchCaptureSelector");
+                    scheduledActivation.add("replayContract",
+                            object(query, "replayContract").deepCopy());
                 }
                 JsonArray replayMaterializations = array(query,
                         "replayMaterializations");
@@ -601,7 +544,7 @@ public final class ConcolicScheduler {
             RegionCaptureGoal.outputClosure().writeTo(result);
         }
         result.remove("summaryMode");
-        result.remove("targetBranch");
+        result.remove("branchCaptureSelector");
         result.remove("forcedBranches");
         result.remove("replayMaterializations");
         result.remove("modelAssignments");
@@ -640,347 +583,6 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /**
-     * Rebuilds the final fatal query after an unforced replay has observed the
-     * target on the fresh logical region instance.  This is deliberately an
-     * in-memory API: a campaign already owns the current activation/edge
-     * ledger and must not round-trip it through another scheduler CLI run.
-     *
-     * <p>The old target is only an identity template (site, occurrence and
-     * desired outcome).  Its path formula, engine-array bindings and symbolic
-     * context are never copied.  The formula comes from {@code freshSummary};
-     * the context is selected again from the current runtime-edge ledger.</p>
-     */
-    public static FreshTargetQueryResult rebuildFreshObservedTargetQuery(
-            List<JsonObject> regions, List<JsonObject> activations,
-            List<JsonObject> edges, JsonObject targetTemplate,
-            JsonObject freshActivation, JsonObject freshSummary,
-            String transitionExecutionId) {
-        if (targetTemplate == null || freshActivation == null
-                || freshSummary == null) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_QUERY_INPUT_MISSING");
-        }
-        String activationId = string(freshActivation, "activationId");
-        String regionId = string(freshActivation, "regionId");
-        String regionInstanceId = string(freshActivation,
-                "regionInstanceId");
-        if (activationId.isEmpty() || regionId.isEmpty()
-                || regionInstanceId.isEmpty()
-                || safe(transitionExecutionId).trim().isEmpty()) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_IDENTITY_OR_TRANSITION_EXECUTION_MISSING");
-        }
-        if (!activationId.equals(string(freshSummary, "activationId"))
-                || !regionId.equals(string(freshSummary, "regionId"))
-                || !regionInstanceId.equals(string(freshSummary,
-                "regionInstanceId"))
-                || string(freshSummary, "summaryId").isEmpty()) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_SUMMARY_INSTANCE_MISMATCH");
-        }
-        JsonObject replayAdmission = object(freshSummary,
-                "executionAdmission");
-        if (!bool(freshSummary, "valid", false)
-                || !bool(freshSummary, "targetReplayValidated", false)
-                || bool(freshSummary, "branchOverrideUsed", true)
-                || !RegionCaptureGoal.from(freshSummary).isTargetBranch()
-                || !bool(replayAdmission, "required", false)
-                || !bool(replayAdmission, "valid", false)
-                || bool(replayAdmission, "branchOverrideAccepted", true)
-                || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_"
-                .concat("OBSERVATION").equals(string(replayAdmission,
-                        "authority"))) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_UNFORCED_REPLAY_ADMISSION_INVALID");
-        }
-
-        JsonObject target = object(freshActivation, "targetBranch");
-        String siteId = firstNonBlank(string(target, "siteId"),
-                string(targetTemplate, "siteId"));
-        int occurrence = integer(target, "occurrence",
-                integer(targetTemplate, "occurrence", -1));
-        boolean desiredOutcome = target.has("desiredOutcome")
-                ? bool(target, "desiredOutcome", false)
-                : bool(targetTemplate, "desiredOutcome", false);
-        if (siteId.isEmpty() || occurrence < 1
-                || !siteId.equals(string(targetTemplate, "siteId"))
-                || occurrence != integer(targetTemplate, "occurrence", -2)
-                || desiredOutcome != bool(targetTemplate,
-                "desiredOutcome", !desiredOutcome)) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_TEMPLATE_IDENTITY_MISMATCH");
-        }
-
-        JsonObject mapping = null;
-        int mappingCount = 0;
-        for (JsonElement element : array(freshSummary, "branchMappings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject candidate = element.getAsJsonObject();
-            if (siteId.equals(string(candidate, "siteId"))
-                    && occurrence == integer(candidate, "occurrence", -1)) {
-                mapping = candidate;
-                mappingCount++;
-            }
-        }
-        if (mappingCount != 1 || mapping == null
-                || bool(mapping, "overrideApplied", false)
-                || desiredOutcome != bool(mapping, "observedOutcome",
-                bool(mapping, "outcome", !desiredOutcome))) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_BRANCH_MAPPING_NOT_UNIQUE_OR_NOT_DESIRED");
-        }
-        JsonArray path = array(freshSummary, "pathCondition");
-        int conditionIndex = integer(mapping, "conditionIndex", -1);
-        if (conditionIndex < 0 || conditionIndex >= path.size()) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_CONDITION_MAPPING_INVALID");
-        }
-        if (mapping.has("condition")
-                && !mapping.get("condition").equals(path.get(
-                conditionIndex))) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_MAPPING_CONDITION_PATH_MISMATCH");
-        }
-
-        Map<String, Region> regionIndex = new LinkedHashMap<>();
-        for (JsonObject row : regions == null
-                ? Collections.<JsonObject>emptyList() : regions) {
-            Region region = new Region(row);
-            if (region.regionId.isEmpty()
-                    || regionIndex.put(region.regionId, region) != null) {
-                return FreshTargetQueryResult.failure(
-                        "STATIC_REGION_ID_MISSING_OR_DUPLICATED");
-            }
-        }
-        if (!regionIndex.containsKey(regionId)) {
-            return FreshTargetQueryResult.failure(
-                    "FRESH_TARGET_STATIC_REGION_MISSING");
-        }
-        ExactBindingScope scope = ExactBindingScope.create(activations,
-                transitionExecutionId, freshActivation);
-        if (!scope.ready) {
-            return FreshTargetQueryResult.failure(scope.reason);
-        }
-        MergePlan mergePlan = buildMergePlan(regionIndex, edges == null
-                ? Collections.<JsonObject>emptyList() : edges,
-                Collections.<JsonObject>emptyList());
-        ExactContextResult selectedContext = mergePlan.contextForExact(
-                regionId, regionInstanceId, scope);
-        if (selectedContext.gaps.size() > 0
-                || selectedContext.selectedBindingCount == 0) {
-            JsonObject admission = new JsonObject();
-            admission.addProperty("ready", false);
-            String reason = selectedContext.gaps.size() > 0
-                    ? "FRESH_TARGET_SYMBOLIC_CONTEXT_ENDPOINT_INVALID"
-                    : "FRESH_TARGET_SYMBOLIC_CONTEXT_EMPTY";
-            admission.addProperty("reason", reason);
-            admission.add("contextGaps", selectedContext.gaps.deepCopy());
-            admission.addProperty("selectedBindingCount",
-                    selectedContext.selectedBindingCount);
-            return new FreshTargetQueryResult(false, reason,
-                    new JsonObject(), admission);
-        }
-
-        JsonArray constraints = new JsonArray();
-        for (int index = 0; index < conditionIndex; index++) {
-            constraints.add(path.get(index).deepCopy());
-        }
-        JsonElement observedTarget = path.get(conditionIndex).deepCopy();
-        constraints.add(observedTarget.deepCopy());
-        JsonObject query = new JsonObject();
-        query.addProperty("activationId", activationId);
-        query.addProperty("regionId", regionId);
-        query.addProperty("regionInstanceId", regionInstanceId);
-        query.addProperty("siteId", siteId);
-        query.addProperty("occurrence", occurrence);
-        query.addProperty("observedOutcome", desiredOutcome);
-        query.addProperty("desiredOutcome", desiredOutcome);
-        query.addProperty("conditionIndex", conditionIndex);
-        query.addProperty("prefixPolicy",
-                "KEEP_FRESH_CONDITIONS_BEFORE_TARGET");
-        query.addProperty("targetPolicy",
-                "KEEP_FRESH_OBSERVED_DESIRED_TARGET_CONDITION");
-        query.addProperty("suffixPolicy", "DROP_FRESH_SUFFIX");
-        query.add("constraints", constraints);
-        // Preserve the historical pair-shaped schema without pretending that
-        // the synthetic opposite was observed in this execution.
-        query.add("originalTargetCondition",
-                BranchPredicateAlgebra.complement(observedTarget));
-        query.add("negatedTargetCondition", observedTarget.deepCopy());
-        query.add("freshObservedTargetCondition",
-                observedTarget.deepCopy());
-        query.addProperty("targetConditionPairAuthority",
-                "FRESH_OBSERVED_DESIRED_TARGET_PLUS_SYNTHETIC_OPPOSITE");
-        query.add("engineArrayInputBindings", array(freshSummary,
-                "engineArrayInputBindings").deepCopy());
-        query.add("symbolicContext", selectedContext.context.deepCopy());
-        query.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
-        query.addProperty("readyForSolver", true);
-        query.addProperty("readyForReplay", false);
-        query.addProperty("replayAlreadyValidated", true);
-        query.addProperty("targetReplayValidated", true);
-        query.addProperty("validatedSummaryId", string(freshSummary,
-                "summaryId"));
-        query.addProperty("replayValidationAuthority",
-                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
-                        + "TARGET_REPLAY");
-        query.addProperty("formulaAuthority",
-                "FRESH_INSTANCE_IMPORTED_UNFORCED_TARGET_PREFIX_PLUS_"
-                        + "OBSERVED_TARGET");
-        JsonObject validatedSummary = new JsonObject();
-        validatedSummary.addProperty("summaryId", string(freshSummary,
-                "summaryId"));
-        validatedSummary.addProperty("activationId", activationId);
-        validatedSummary.addProperty("regionId", regionId);
-        validatedSummary.addProperty("regionInstanceId", regionInstanceId);
-        validatedSummary.addProperty("targetReplayValidated", true);
-        validatedSummary.addProperty("branchOverrideUsed", false);
-        validatedSummary.add("executionAdmission",
-                replayAdmission.deepCopy());
-        query.add("validatedTargetSummary", validatedSummary);
-        JsonObject targetRebaseProvenance = new JsonObject();
-        targetRebaseProvenance.addProperty("activationId", activationId);
-        targetRebaseProvenance.addProperty("regionInstanceId",
-                regionInstanceId);
-        targetRebaseProvenance.addProperty("transitionExecutionId",
-                transitionExecutionId);
-        targetRebaseProvenance.addProperty("downstreamInjectionUsed", false);
-        targetRebaseProvenance.addProperty("branchOverrideUsed", false);
-        targetRebaseProvenance.addProperty("authority",
-                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
-                        + "TARGET_REPLAY");
-        query.add("targetRebaseProvenance", targetRebaseProvenance);
-        JsonObject provenance = new JsonObject();
-        provenance.addProperty("freshSummaryId", string(freshSummary,
-                "summaryId"));
-        provenance.addProperty("transitionExecutionId",
-                transitionExecutionId);
-        provenance.addProperty("activationId", activationId);
-        provenance.addProperty("regionInstanceId", regionInstanceId);
-        provenance.addProperty("targetTemplateIdentitySha256",
-                RecursiveRegionWorklist.stableQueryKey(
-                        string(targetTemplate, "regionId"), siteId,
-                        "TARGET_TEMPLATE", Boolean.toString(desiredOutcome),
-                        string(targetTemplate, "activationId"),
-                        string(targetTemplate, "regionInstanceId") + "#"
-                                + occurrence));
-        provenance.addProperty("authority",
-                "FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER");
-        query.add("freshQueryRebuildProvenance", provenance);
-
-        JsonObject admission = new JsonObject();
-        admission.addProperty("ready", true);
-        admission.addProperty("reason", "");
-        admission.addProperty("selectedBindingCount",
-                selectedContext.selectedBindingCount);
-        admission.addProperty("contextAuthority",
-                "CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE");
-        admission.addProperty("formulaAuthority", string(query,
-                "formulaAuthority"));
-        admission.add("contextGaps", new JsonArray());
-        return new FreshTargetQueryResult(true, "", query, admission);
-    }
-
-    /**
-     * Binds a rebuilt formula to the enriched campaign summary before the
-     * scheduler is allowed to publish it as a validated fatal query.
-     */
-    private static FreshTargetQueryResult validateFreshScheduleHandoff(
-            FreshTargetQueryResult rebuilt, JsonObject activation,
-            JsonObject summary) {
-        JsonObject query = rebuilt.query.deepCopy();
-        JsonObject storedFresh = object(summary,
-                "freshObservedTargetQuery");
-        JsonObject summaryAdmission = object(summary,
-                "freshTargetSummaryAdmission");
-        String summaryId = string(summary, "summaryId");
-        String transitionExecutionId = string(activation,
-                "targetRebaseSourceExecutionId");
-        String issue = "";
-        if (storedFresh.size() == 0) {
-            issue = "FRESH_SCHEDULE_SUMMARY_QUERY_MISSING";
-        } else if (!"FRESH_SUMMARY_PATH_AND_CURRENT_RUNTIME_EDGE_LEDGER"
-                .equals(string(summaryAdmission, "authority"))
-                || !summaryId.equals(string(summaryAdmission,
-                "sourceSummaryId"))
-                || string(summaryAdmission,
-                "targetReplayExecutionId").isEmpty()
-                || string(summaryAdmission, "derivedQuerySha256").isEmpty()
-                || !"CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE"
-                .equals(string(summaryAdmission, "edgeAuthority"))
-                || bool(summaryAdmission, "downstreamInjectionUsed", true)) {
-            issue = "FRESH_SCHEDULE_SUMMARY_ADMISSION_INVALID";
-        } else if (!bool(activation, "targetObservationOnly", false)
-                || !"FRESH_INSTANCE_UPSTREAM_SUPPORT_TARGET_OBSERVATION"
-                .equals(string(activation, "targetRebaseAuthority"))
-                || transitionExecutionId.isEmpty()
-                || string(activation, "replacesTargetActivationId").isEmpty()
-                || string(activation,
-                "replacesTargetRegionInstanceId").isEmpty()) {
-            issue = "FRESH_SCHEDULE_ACTIVATION_REBASE_METADATA_INVALID";
-        }
-        if (!issue.isEmpty()) {
-            return failedFreshScheduleHandoff(query, rebuilt.admission,
-                    issue, new JsonObject());
-        }
-
-        JsonObject provenance = object(query,
-                "targetRebaseProvenance").deepCopy();
-        provenance.addProperty("replacesActivationId", string(activation,
-                "replacesTargetActivationId"));
-        provenance.addProperty("replacesRegionInstanceId", string(activation,
-                "replacesTargetRegionInstanceId"));
-        provenance.addProperty("transitionExecutionId",
-                transitionExecutionId);
-        provenance.addProperty("targetReplayExecutionId", string(
-                summaryAdmission, "targetReplayExecutionId"));
-        provenance.addProperty("upstreamReachabilitySupportCount", integer(
-                summaryAdmission, "upstreamReachabilitySupportCount", 0));
-        provenance.addProperty("downstreamInjectionUsed", false);
-        provenance.addProperty("branchOverrideUsed", false);
-        provenance.addProperty("authority",
-                "FRESH_INSTANCE_UPSTREAM_SUPPORT_IMPORTED_UNFORCED_"
-                        + "TARGET_REPLAY");
-        query.add("targetRebaseProvenance", provenance);
-        query.add("freshTargetSummaryAdmission",
-                summaryAdmission.deepCopy());
-
-        ConcolicSmtComposer.FreshFatalArtifactValidation validation =
-                ConcolicSmtComposer.validateFreshFatalArtifact(query,
-                        Collections.singletonList(summary));
-        if (!validation.valid) {
-            return failedFreshScheduleHandoff(query, rebuilt.admission,
-                    validation.reason, validation.toJson());
-        }
-        JsonObject admission = rebuilt.admission.deepCopy();
-        admission.add("freshFatalArtifactValidation", validation.toJson());
-        admission.addProperty("scheduleHandoffAuthority",
-                "ENRICHED_CAMPAIGN_SUMMARY_PLUS_SHARED_COMPOSER_VALIDATOR");
-        return new FreshTargetQueryResult(true, "", query, admission);
-    }
-
-    private static FreshTargetQueryResult failedFreshScheduleHandoff(
-            JsonObject source, JsonObject schedulerAdmission,
-            String reason, JsonObject artifactValidation) {
-        JsonObject query = source == null
-                ? new JsonObject() : source.deepCopy();
-        query.addProperty("readyForSolver", false);
-        query.addProperty("readyForReplay", false);
-        query.addProperty("replayAlreadyValidated", false);
-        query.addProperty("targetReplayValidated", false);
-        query.addProperty("replayValidationAuthority", "NONE");
-        query.addProperty("blocker", reason);
-        JsonObject admission = schedulerAdmission == null
-                ? new JsonObject() : schedulerAdmission.deepCopy();
-        admission.addProperty("ready", false);
-        admission.addProperty("reason", reason);
-        admission.add("freshFatalArtifactValidation",
-                artifactValidation == null
-                        ? new JsonObject() : artifactValidation.deepCopy());
-        return new FreshTargetQueryResult(false, reason, query, admission);
-    }
-
     private static List<Candidate> candidates(Arguments arguments,
                                               List<JsonObject> activations,
                                               Map<String, Region> regions,
@@ -999,9 +601,8 @@ public final class ConcolicScheduler {
                     arguments, discoveredActivation, region);
             configuredActivation = refineRequestedOutputCapture(arguments,
                     configuredActivation, evidence);
-            JsonObject activation = boundedOutputCompletion(
-                    operationalActivation(arguments, configuredActivation),
-                    definitions);
+            JsonObject activation = operationalActivation(arguments,
+                    configuredActivation);
             if (!bool(activation, "replayable", false)) {
                 continue;
             }
@@ -1029,26 +630,6 @@ public final class ConcolicScheduler {
                 result.add(new Candidate(activation, activationId, region,
                         TargetBranch.outputCapture(), true,
                         upstreamPlan, true));
-                continue;
-            }
-            if (bool(activation, "targetObservationOnly", false)) {
-                JsonObject observedTarget = object(activation,
-                        "targetBranch");
-                String siteId = string(observedTarget, "siteId");
-                int occurrence = integer(observedTarget, "occurrence", -1);
-                if (!siteId.isEmpty() && occurrence > 0
-                        && observedTarget.has("desiredOutcome")) {
-                    boolean desired = bool(observedTarget,
-                            "desiredOutcome", false);
-                    TargetBranch target = new TargetBranch(siteId, -1,
-                            occurrence, desired, desired,
-                            "FRESH_OBSERVED_TARGET_VALIDATION");
-                    result.add(new Candidate(activation, activationId,
-                            region, target, true,
-                            materializationPlan(activation, definitions,
-                                    definitionMethods),
-                            false));
-                }
                 continue;
             }
             JsonArray branches = array(activation, "branches");
@@ -1108,90 +689,6 @@ public final class ConcolicScheduler {
         // closure selection was persisted.  New catalogs never take this
         // broad method path.
         return new LinkedHashSet<>(staticRegionMethods);
-    }
-
-    /**
-     * Selects the unique outermost requested-state transformer as the end of
-     * one bounded service-loop iteration.  The logical region root is kept
-     * unchanged; replay may only complete after this transformer returns
-     * normally.  Call reachability comes from the same frozen static graph as
-     * the output slice, so an ambiguous transformer set simply keeps the
-     * concrete outer loop behavior.
-     */
-    private static JsonObject boundedOutputCompletion(
-            JsonObject activation, DefinitionIndex definitions) {
-        if (!RegionCaptureGoal.from(activation).isOutputClosure()
-                || !definitions.authoritative
-                || !"HEAP_STATE".equals(string(object(activation,
-                "requestedOutput"), "kind"))) {
-            return activation;
-        }
-        JsonObject slice = object(activation, "requestedOutputSlice");
-        Set<String> transformers = new LinkedHashSet<>();
-        for (JsonElement element : array(slice,
-                "requestedStateTransformerObligations")) {
-            if (element.isJsonObject()) {
-                String method = string(element.getAsJsonObject(), "method");
-                if (!method.isEmpty()) {
-                    transformers.add(method);
-                }
-            }
-        }
-        String outermost = definitions.uniqueOutermost(transformers);
-        if (outermost.isEmpty()) {
-            return activation;
-        }
-        JsonObject result = activation.deepCopy();
-        JsonObject boundedSlice = object(result,
-                "requestedOutputSlice").deepCopy();
-        boundedSlice.addProperty("boundedOutputCompletionMethod",
-                outermost);
-        boundedSlice.addProperty("boundedOutputCompletionNormalReturnOnly",
-                true);
-        boundedSlice.addProperty("boundedOutputCompletionAuthority",
-                "UNIQUE_OUTERMOST_REQUESTED_STATE_TRANSFORMER_"
-                        + "IN_FROZEN_CALL_GRAPH_V1");
-        if (!outermost.equals(string(result, "rootMethod"))
-                && boundedDeferredStartSafe(result, outermost)) {
-            boundedSlice.addProperty("boundedOutputDeferredEngineStart",
-                    true);
-            boundedSlice.addProperty(
-                    "boundedOutputDeferredEngineStartAuthority",
-                    "LOGICAL_ROOT_SELECTION_THEN_UNIQUE_OUTERMOST_"
-                            + "TRANSFORMER_ENTRY_V1");
-        }
-        result.add("requestedOutputSlice", boundedSlice);
-        result.addProperty("boundedOutputCompletionEnabled", true);
-        return result;
-    }
-
-    private static boolean boundedDeferredStartSafe(JsonObject activation,
-                                                     String startMethod) {
-        JsonArray actions = array(activation, "symbolize");
-        if (actions.size() == 0) {
-            actions = array(activation, "materializations");
-        }
-        for (JsonElement element : actions) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            String location = string(element.getAsJsonObject(), "location");
-            JsonObject action = element.getAsJsonObject();
-            // Delaying engine start is safe only when every input is
-            // materialized by an exact field read inside the completion
-            // transformer itself.  A call return/local/environment value may
-            // be consumed before that method is entered (as in the local RPC
-            // producers), so starting late would silently make the output
-            // concrete.
-            if (!("HEAP_OBJECT_FIELD".equals(location)
-                    || "FIELD_ACCESS".equals(
-                    string(action, "bindingMode")))
-                    || !safe(startMethod).equals(
-                    string(action, "accessMethod"))) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
@@ -1442,10 +939,6 @@ public final class ConcolicScheduler {
         String authority = string(capture, "occurrenceAuthority");
         String kind = firstNonBlank(string(capture, "captureKind"),
                 "CALL_ARGUMENT");
-        if ("METHOD_RETURN_VALUE".equals(kind)) {
-            return "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE".equals(authority)
-                    && integer(capture, "runtimeCallId", 0) > 0;
-        }
         if ("FIELD_ASSIGNMENT_RHS".equals(kind)) {
             return "RUNTIME_UNIQUE_STATIC_FIELD_ASSIGNMENT_SITE_"
                     .concat("LAST_WRITE_OCCURRENCE").equals(authority)
@@ -3157,48 +2650,32 @@ public final class ConcolicScheduler {
                                           MergePlan mergePlan,
                                           List<JsonObject> staticGraph) {
         JsonObject query = new JsonObject();
+        query.addProperty("schemaVersion", 1);
+        query.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
         query.addProperty("activationId", candidate.activationId);
         query.addProperty("regionId", candidate.region.regionId);
         query.addProperty("regionInstanceId",
                 string(candidate.activation, "regionInstanceId"));
-        query.addProperty("siteId", candidate.target.siteId);
-        query.addProperty("occurrence",
-                candidate.target.selectedOccurrence);
-        query.addProperty("observedOutcome",
-                candidate.target.observedOutcome);
-        query.addProperty("desiredOutcome",
-                candidate.target.desiredOutcome);
-        // A seed query has not yet been validated by an unforced target
-        // replay.  Emit the state explicitly so shell/config consumers do
-        // not have to distinguish JSON false from a missing property.
-        query.addProperty("targetReplayValidated", false);
-        query.addProperty("replayAlreadyValidated", false);
-        JsonArray path = array(summary, "pathCondition");
-        JsonObject mapping = branchMapping(summary, candidate.target.siteId,
-                candidate.target.selectedOccurrence);
-        int conditionIndex = integer(mapping, "conditionIndex", -1);
-        query.addProperty("conditionIndex", conditionIndex);
-        query.addProperty("prefixPolicy", "KEEP_CONDITIONS_BEFORE_TARGET");
-        query.addProperty("targetPolicy", "NEGATE_TARGET_CONDITION");
-        query.addProperty("suffixPolicy", "DROP_OLD_SUFFIX");
-        JsonArray constraints = new JsonArray();
-        if (conditionIndex >= 0 && conditionIndex < path.size()) {
-            for (int index = 0; index < conditionIndex; index++) {
-                constraints.add(path.get(index).deepCopy());
+        try {
+            BranchReplayPlan replay = BranchReplayPlan.fromSummary(summary,
+                    candidate.target.siteId,
+                    candidate.target.selectedOccurrence);
+            BranchReplayContract contract = replay.replayContract();
+            if (contract.source().sourceTakenOutcome()
+                    != candidate.target.observedOutcome
+                    || contract.requiredTakenOutcome()
+                    != candidate.target.desiredOutcome) {
+                throw new IllegalArgumentException(
+                        "captured branch polarity differs from selection");
             }
-            JsonElement negated = BranchPredicateAlgebra.complement(
-                    path.get(conditionIndex));
-            constraints.add(negated);
-            query.add("originalTargetCondition",
-                    path.get(conditionIndex).deepCopy());
-            query.add("negatedTargetCondition", negated.deepCopy());
+            query.add("replayContract", contract.toJson());
+            query.add("solverPathContext",
+                    replay.solverPathContext().toJson());
             query.addProperty("readyForSolver", true);
-        } else {
+        } catch (IllegalArgumentException incompleteWitness) {
             query.addProperty("readyForSolver", false);
-            query.addProperty("blocker",
-                    "target branch occurrence has no engine condition mapping");
+            query.addProperty("blocker", incompleteWitness.getMessage());
         }
-        query.add("constraints", constraints);
         query.add("engineArrayInputBindings", array(summary,
                 "engineArrayInputBindings").deepCopy());
         query.add("symbolicContext",
@@ -3206,79 +2683,6 @@ public final class ConcolicScheduler {
                         string(candidate.activation, "regionInstanceId")));
         addSemanticReplayModel(query, candidate, staticGraph);
         return query;
-    }
-
-    /**
-     * Reuses only the directed query that produced an already admitted replay.
-     * The query is instance-scoped evidence copied through the executed
-     * activation plan; it is never reconstructed from a global merge plan or
-     * from application/domain knowledge.  The current instance-scoped merge
-     * context is refreshed because additional upstream summaries may have
-     * become available since the replay was imported.
-     */
-    private static JsonObject validatedDirectedTargetQuery(
-            Candidate candidate, JsonObject summary, MergePlan mergePlan) {
-        if (!bool(summary, "targetReplayValidated", false)
-                || bool(summary, "branchOverrideUsed", true)
-                || !bool(object(summary, "executionAdmission"), "valid",
-                false)
-                || bool(object(summary, "executionAdmission"),
-                "branchOverrideAccepted", true)
-                || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION"
-                .equals(string(object(summary, "executionAdmission"),
-                        "authority"))
-                || !candidate.activationId.equals(string(summary,
-                "activationId"))
-                || !candidate.region.regionId.equals(string(summary,
-                "regionId"))) {
-            return new JsonObject();
-        }
-        String instance = string(candidate.activation, "regionInstanceId");
-        if (instance.isEmpty()
-                || !instance.equals(string(summary, "regionInstanceId"))) {
-            return new JsonObject();
-        }
-        JsonObject stored = object(summary, "directedTargetQuery");
-        if (!candidate.activationId.equals(string(stored, "activationId"))
-                || !candidate.region.regionId.equals(string(stored,
-                "regionId"))
-                || !candidate.target.siteId.equals(string(stored, "siteId"))
-                || candidate.target.selectedOccurrence != integer(stored,
-                "occurrence", -1)
-                || candidate.target.desiredOutcome != bool(stored,
-                "desiredOutcome", !candidate.target.desiredOutcome)
-                || !bool(stored, "readyForSolver", false)
-                || !stored.has("originalTargetCondition")
-                || !stored.has("negatedTargetCondition")
-                || array(stored, "constraints").size() == 0) {
-            return new JsonObject();
-        }
-        JsonObject result = stored.deepCopy();
-        result.add("engineArrayInputBindings", array(summary,
-                "engineArrayInputBindings").deepCopy());
-        result.addProperty("regionInstanceId", instance);
-        result.addProperty("readyForReplay", false);
-        result.addProperty("replayAlreadyValidated", true);
-        result.addProperty("targetReplayValidated", true);
-        result.addProperty("validatedSummaryId", string(summary,
-                "summaryId"));
-        result.addProperty("replayValidationAuthority",
-                "SAME_INSTANCE_IMPORTED_UNFORCED_TARGET_REPLAY");
-        result.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
-        JsonObject validatedSummary = new JsonObject();
-        validatedSummary.addProperty("summaryId", string(summary,
-                "summaryId"));
-        validatedSummary.addProperty("activationId", candidate.activationId);
-        validatedSummary.addProperty("regionId", candidate.region.regionId);
-        validatedSummary.addProperty("regionInstanceId", instance);
-        validatedSummary.addProperty("targetReplayValidated", true);
-        validatedSummary.addProperty("branchOverrideUsed", false);
-        validatedSummary.add("executionAdmission", object(summary,
-                "executionAdmission").deepCopy());
-        result.add("validatedTargetSummary", validatedSummary);
-        result.add("symbolicContext", mergePlan.contextFor(
-                candidate.region.regionId, instance));
-        return result;
     }
 
     /**
@@ -3292,7 +2696,13 @@ public final class ConcolicScheduler {
                                                Candidate candidate,
                                                List<JsonObject> staticGraph) {
         query.addProperty("readyForReplay", false);
-        JsonElement negatedElement = query.get("negatedTargetCondition");
+        JsonElement negatedElement;
+        try {
+            negatedElement = BranchReplayContract.fromJson(object(query,
+                    "replayContract")).requiredSatisfiedPredicate();
+        } catch (IllegalArgumentException malformed) {
+            return;
+        }
         if (negatedElement == null || !negatedElement.isJsonObject()) {
             return;
         }
@@ -3311,8 +2721,14 @@ public final class ConcolicScheduler {
             return;
         }
         String resultSymbol = string(left, "_exp");
-        JsonObject lookup = lookupProducing(array(query, "constraints"),
-                resultSymbol);
+        JsonArray solverContext;
+        try {
+            solverContext = SolverPathContext.fromJson(object(query,
+                    "solverPathContext")).expressions();
+        } catch (IllegalArgumentException malformed) {
+            return;
+        }
+        JsonObject lookup = lookupProducing(solverContext, resultSymbol);
         if (lookup.size() == 0) {
             return;
         }
@@ -3507,17 +2923,12 @@ public final class ConcolicScheduler {
                     || bool(admission, "branchOverrideAccepted", true)) {
                 continue;
             }
-            boolean validated = bool(summary, "targetReplayValidated", false);
-            if (validated && (!bool(admission, "required", false)
-                    || !"SOLVER_MODEL_PLUS_UNFORCED_BRANCH_AND_EXCEPTION_OBSERVATION"
-                    .equals(string(admission, "authority")))) {
+            if (bool(admission, "required", true)
+                    || !"OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY".equals(
+                    string(admission, "authority"))) {
                 continue;
             }
-            if (!validated && bool(admission, "required", true)) {
-                continue;
-            }
-            if (selected == null || validated
-                    && !bool(selected, "targetReplayValidated", false)) {
+            if (selected == null) {
                 selected = summary;
             }
         }
@@ -3844,51 +3255,6 @@ public final class ConcolicScheduler {
             return result;
         }
 
-        private String uniqueOutermost(Set<String> methods) {
-            if (methods == null || methods.isEmpty()) {
-                return "";
-            }
-            String selected = "";
-            for (String candidate : methods) {
-                boolean reachesAll = true;
-                for (String target : methods) {
-                    if (!candidate.equals(target)
-                            && !reaches(candidate, target,
-                            new LinkedHashSet<String>())) {
-                        reachesAll = false;
-                        break;
-                    }
-                }
-                if (!reachesAll) {
-                    continue;
-                }
-                if (!selected.isEmpty()) {
-                    return "";
-                }
-                selected = candidate;
-            }
-            return selected;
-        }
-
-        private boolean reaches(String source, String target,
-                                Set<String> visited) {
-            if (!visited.add(source)) {
-                return false;
-            }
-            Set<String> callees = callsByMethod.get(source);
-            if (callees == null) {
-                return false;
-            }
-            if (callees.contains(target)) {
-                return true;
-            }
-            for (String callee : callees) {
-                if (reaches(callee, target, visited)) {
-                    return true;
-                }
-            }
-            return false;
-        }
     }
 
     private static final class CaptureEvidence {
@@ -4131,19 +3497,9 @@ public final class ConcolicScheduler {
                     "OUTPUT_CLOSURE_CAPTURE");
         }
 
-        private JsonObject toJson() {
-            JsonObject value = new JsonObject();
-            value.addProperty("siteId", siteId);
-            value.addProperty("branchIndex", branchIndex);
-            value.addProperty("occurrence", selectedOccurrence);
-            value.addProperty("observedOutcome", observedOutcome);
-            value.addProperty("desiredOutcome", desiredOutcome);
-            value.addProperty("selectionMode", selectionMode);
-            value.addProperty("operation",
-                    "OUTPUT_CLOSURE_CAPTURE".equals(selectionMode)
-                            ? "CAPTURE_OUTPUT_PATH"
-                            : "NEGATE_CONDITION");
-            return value;
+        private BranchCaptureSelector captureSelector() {
+            return BranchCaptureSelector.of(siteId, selectedOccurrence,
+                    desiredOutcome);
         }
     }
 
@@ -4529,102 +3885,6 @@ public final class ConcolicScheduler {
             return context;
         }
 
-        /** Selects a context for a fresh campaign target without accepting a
-         * binding merely because either endpoint happens to mention its
-         * instance.  The static endpoint role determines which runtime side
-         * must be the target, and both endpoints are attested by the current
-         * activation catalog. */
-        private ExactContextResult contextForExact(String regionId,
-                                                   String regionInstanceId,
-                                                   ExactBindingScope scope) {
-            JsonObject context = new JsonObject();
-            JsonArray gaps = new JsonArray();
-            JsonArray equalityBindings = new JsonArray();
-            int selectedCount = 0;
-            for (JsonElement element : array(json, "equalityRelations")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject value = element.getAsJsonObject();
-                if (!relevant(value, regionId)) continue;
-                JsonArray selected = selectedBindingsExact(value, regionId,
-                        regionInstanceId, false, scope, gaps);
-                selectedCount += selected.size();
-                if (selected.size() > 0) {
-                    JsonObject copy = value.deepCopy();
-                    copy.remove("runtimeBindings");
-                    copy.add("selectedBindings", selected);
-                    equalityBindings.add(copy);
-                }
-            }
-            JsonArray equality = new JsonArray();
-            int equalityIndex = 0;
-            for (JsonElement element : equalityBindings) {
-                JsonObject relation = element.getAsJsonObject();
-                JsonArray members = new JsonArray();
-                members.add(string(relation, "fromEndpoint"));
-                members.add(string(relation, "toEndpoint"));
-                JsonObject value = new JsonObject();
-                value.addProperty("canonicalSymbol",
-                        "SELECTED.EQ." + equalityIndex++);
-                value.add("members", members);
-                value.addProperty("selectionAuthority",
-                        "EXACT_TARGET_ENDPOINT_AND_SAME_EXECUTION_"
-                                + "ACTIVATION_CATALOG");
-                equality.add(value);
-            }
-
-            JsonArray states = new JsonArray();
-            for (JsonObject value : stateMerges) {
-                if (!relevant(value, regionId)) continue;
-                JsonArray selected = selectedBindingsExact(value, regionId,
-                        regionInstanceId, true, scope, gaps);
-                selectedCount += selected.size();
-                if (selected.size() > 0) {
-                    JsonObject copy = value.deepCopy();
-                    copy.remove("runtimeBindings");
-                    copy.add("selectedBindings", selected);
-                    states.add(copy);
-                }
-            }
-
-            JsonArray alternatives = new JsonArray();
-            for (JsonObject value : alternativeWriterGroups) {
-                if (!GSON.toJson(value).contains(regionId)) continue;
-                JsonObject copy = value.deepCopy();
-                JsonArray selectedAlternatives = new JsonArray();
-                for (JsonElement element : array(copy, "alternatives")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject alternative = element.getAsJsonObject();
-                    JsonArray selected = selectedBindingsExact(alternative,
-                            regionId, regionInstanceId, true, scope, gaps);
-                    selectedCount += selected.size();
-                    if (selected.size() > 0) {
-                        JsonObject selectedAlternative =
-                                alternative.deepCopy();
-                        selectedAlternative.remove("runtimeBindings");
-                        selectedAlternative.add("selectedBindings", selected);
-                        selectedAlternatives.add(selectedAlternative);
-                    }
-                }
-                if (selectedAlternatives.size() == 1) {
-                    states.add(selectedAlternatives.get(0).deepCopy());
-                } else if (selectedAlternatives.size() > 1) {
-                    copy.add("alternatives", selectedAlternatives);
-                    alternatives.add(copy);
-                }
-            }
-            context.add("equalityClasses", equality);
-            context.add("equalityRelations", equalityBindings);
-            context.add("versionedStateMerges", states);
-            context.add("alternativeWriterGroups", alternatives);
-            context.addProperty("regionId", regionId);
-            context.addProperty("regionInstanceId", regionInstanceId);
-            context.addProperty("selectionAuthority",
-                    "CURRENT_EDGE_LEDGER_EXACT_TARGET_ENDPOINT_INSTANCE");
-            context.addProperty("transitionExecutionId",
-                    scope.executionId);
-            return new ExactContextResult(context, gaps, selectedCount);
-        }
-
         private static boolean relevant(JsonObject value, String regionId) {
             return string(value, "fromEndpoint").startsWith(regionId + ".")
                     || string(value, "fromEndpoint").startsWith(regionId + "::")
@@ -4668,239 +3928,6 @@ public final class ConcolicScheduler {
             return result;
         }
 
-        private static JsonArray selectedBindingsExact(JsonObject relation,
-                                                       String regionId,
-                                                       String regionInstanceId,
-                                                       boolean requireHeapWitness,
-                                                       ExactBindingScope scope,
-                                                       JsonArray gaps) {
-            JsonArray result = new JsonArray();
-            String fromRegion = firstNonBlank(string(relation,
-                    "fromRegion"), regionOfEndpoint(string(relation,
-                    "fromEndpoint")));
-            String toRegion = firstNonBlank(string(relation, "toRegion"),
-                    regionOfEndpoint(string(relation, "toEndpoint")));
-            boolean targetFrom = regionId.equals(fromRegion);
-            boolean targetTo = regionId.equals(toRegion);
-            if (!targetFrom && !targetTo) return result;
-            if (targetFrom && targetTo) {
-                addContextGap(gaps, relation,
-                        "AMBIGUOUS_SELF_REGION_ENDPOINT_ROLE");
-                return result;
-            }
-            for (JsonElement element : array(relation, "runtimeBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                String fromInstance = string(binding,
-                        "fromRegionInstance");
-                String toInstance = string(binding, "toRegionInstance");
-                if (targetFrom && !regionInstanceId.equals(fromInstance)
-                        || targetTo && !regionInstanceId.equals(toInstance)) {
-                    // Historical bindings are expected in a cumulative edge
-                    // ledger.  They are simply not selected for this target.
-                    continue;
-                }
-                if (requireHeapWitness
-                        && (!binding.has("writeSeq")
-                        || !binding.has("readSeq")
-                        || !binding.has("receiverObjectId")
-                        || !AutomaticRegionEdge
-                        .trustedReadFromEvidence(binding))) {
-                    addContextGap(gaps, relation,
-                            "EXACT_TARGET_HEAP_BINDING_WITNESS_INCOMPLETE_"
-                                    + "OR_UNTRUSTED");
-                    continue;
-                }
-                if (!requireHeapWitness
-                        && (!bool(binding, "valueEqualityObserved", false)
-                        || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(
-                        string(binding, "valueEqualityAuthority"))
-                        || string(binding, "valueFingerprint").isEmpty())) {
-                    addContextGap(gaps, relation,
-                            "EXACT_TARGET_EQUALITY_FINGERPRINT_INCOMPLETE");
-                    continue;
-                }
-                String issue = scope.bindingIssue(relation, binding,
-                        fromRegion, toRegion);
-                if (!issue.isEmpty()) {
-                    addContextGap(gaps, relation, issue);
-                    continue;
-                }
-                result.add(binding.deepCopy());
-            }
-            return result;
-        }
-
-        private static void addContextGap(JsonArray gaps,
-                                          JsonObject relation,
-                                          String reason) {
-            JsonObject gap = new JsonObject();
-            gap.addProperty("edgeId", string(relation, "edgeId"));
-            gap.addProperty("fromEndpoint", string(relation,
-                    "fromEndpoint"));
-            gap.addProperty("toEndpoint", string(relation, "toEndpoint"));
-            gap.addProperty("reason", reason);
-            String key = gap.toString();
-            for (JsonElement existing : gaps) {
-                if (key.equals(existing.toString())) return;
-            }
-            gaps.add(gap);
-        }
-    }
-
-    private static final class ExactContextResult {
-        private final JsonObject context;
-        private final JsonArray gaps;
-        private final int selectedBindingCount;
-
-        private ExactContextResult(JsonObject context, JsonArray gaps,
-                                   int selectedBindingCount) {
-            this.context = context;
-            this.gaps = gaps;
-            this.selectedBindingCount = selectedBindingCount;
-        }
-    }
-
-    /**
-     * Catalog authority for a fresh target's runtime bindings.  Dynamic ids
-     * are opaque: execution membership is read from activation/edge metadata,
-     * never inferred by parsing an id prefix.
-     */
-    private static final class ExactBindingScope {
-        private final String executionId;
-        private final Map<String, List<JsonObject>> activationsByInstance;
-        private final boolean ready;
-        private final String reason;
-
-        private ExactBindingScope(String executionId,
-                                  Map<String, List<JsonObject>> catalog,
-                                  boolean ready, String reason) {
-            this.executionId = executionId;
-            this.activationsByInstance = catalog;
-            this.ready = ready;
-            this.reason = reason;
-        }
-
-        private static ExactBindingScope create(
-                List<JsonObject> activations, String executionId,
-                JsonObject freshActivation) {
-            Map<String, List<JsonObject>> catalog = new LinkedHashMap<>();
-            for (JsonObject activation : activations == null
-                    ? Collections.<JsonObject>emptyList() : activations) {
-                String instance = string(activation, "regionInstanceId");
-                if (instance.isEmpty()) continue;
-                List<JsonObject> values = catalog.get(instance);
-                if (values == null) {
-                    values = new ArrayList<>();
-                    catalog.put(instance, values);
-                }
-                values.add(activation);
-            }
-            String freshInstance = string(freshActivation,
-                    "regionInstanceId");
-            List<JsonObject> matches = catalog.get(freshInstance);
-            if (matches == null || matches.size() != 1
-                    || !string(freshActivation, "activationId").equals(
-                    string(matches.get(0), "activationId"))
-                    || !string(freshActivation, "regionId").equals(
-                    string(matches.get(0), "regionId"))) {
-                return new ExactBindingScope(executionId, catalog, false,
-                        "FRESH_TARGET_ACTIVATION_CATALOG_NOT_UNIQUE");
-            }
-            String observedExecution = activationExecution(matches.get(0));
-            if (!executionId.equals(observedExecution)) {
-                return new ExactBindingScope(executionId, catalog, false,
-                        "FRESH_TARGET_ACTIVATION_EXECUTION_NOT_ATTESTED");
-            }
-            return new ExactBindingScope(executionId, catalog, true, "");
-        }
-
-        private String bindingIssue(JsonObject relation,
-                                    JsonObject binding,
-                                    String fromRegion,
-                                    String toRegion) {
-            Set<String> declaredExecutions = new LinkedHashSet<>();
-            String single = string(relation, "discoveredExecutionId");
-            if (!single.isEmpty()) declaredExecutions.add(single);
-            for (JsonElement element : array(relation,
-                    "discoveredExecutionIds")) {
-                if (element.isJsonPrimitive()) {
-                    String value = element.getAsString();
-                    if (!value.isEmpty()) declaredExecutions.add(value);
-                }
-            }
-            if (!declaredExecutions.contains(executionId)) {
-                return "EDGE_TRANSITION_EXECUTION_NOT_ATTESTED";
-            }
-            String bindingExecution = string(binding,
-                    "discoveredExecutionId");
-            if (!bindingExecution.isEmpty()
-                    && !executionId.equals(bindingExecution)) {
-                return "BINDING_EXPLICIT_EXECUTION_MISMATCH";
-            }
-            String issue = endpointIssue(string(binding,
-                    "fromRegionInstance"), fromRegion);
-            if (!issue.isEmpty()) return "FROM_" + issue;
-            issue = endpointIssue(string(binding, "toRegionInstance"),
-                    toRegion);
-            return issue.isEmpty() ? "" : "TO_" + issue;
-        }
-
-        private String endpointIssue(String instance, String region) {
-            if (instance.isEmpty() || region.isEmpty()) {
-                return "ENDPOINT_IDENTITY_MISSING";
-            }
-            List<JsonObject> matches = activationsByInstance.get(instance);
-            if (matches == null || matches.size() != 1) {
-                return "ENDPOINT_ACTIVATION_NOT_UNIQUE";
-            }
-            JsonObject activation = matches.get(0);
-            if (!region.equals(string(activation, "regionId"))) {
-                return "ENDPOINT_STATIC_REGION_MISMATCH";
-            }
-            if (!executionId.equals(activationExecution(activation))) {
-                return "ENDPOINT_TRANSITION_EXECUTION_NOT_ATTESTED";
-            }
-            return "";
-        }
-
-        private static String activationExecution(JsonObject activation) {
-            Set<String> values = new LinkedHashSet<>();
-            String discovered = string(activation,
-                    "discoveredExecutionId");
-            String target = string(activation,
-                    "postDiscoveryTargetExecutionId");
-            if (!discovered.isEmpty()) values.add(discovered);
-            if (!target.isEmpty()) values.add(target);
-            return values.size() == 1 ? values.iterator().next() : "";
-        }
-    }
-
-    public static final class FreshTargetQueryResult {
-        public final boolean ready;
-        public final String reason;
-        public final JsonObject query;
-        public final JsonObject admission;
-
-        private FreshTargetQueryResult(boolean ready, String reason,
-                                       JsonObject query,
-                                       JsonObject admission) {
-            this.ready = ready;
-            this.reason = safe(reason);
-            this.query = query == null ? new JsonObject() : query;
-            this.admission = admission == null
-                    ? new JsonObject() : admission;
-        }
-
-        private static FreshTargetQueryResult failure(String reason) {
-            JsonObject admission = new JsonObject();
-            admission.addProperty("ready", false);
-            admission.addProperty("reason", reason);
-            admission.add("contextGaps", new JsonArray());
-            admission.addProperty("selectedBindingCount", 0);
-            return new FreshTargetQueryResult(false, reason,
-                    new JsonObject(), admission);
-        }
     }
 
     public static final class Result {

@@ -138,7 +138,7 @@ public class ConcolicPathReplayVerifierTest {
 
     private static JsonObject task() {
         JsonObject task = new JsonObject();
-        task.addProperty("schemaVersion", 2);
+        task.addProperty("schemaVersion", 3);
         task.addProperty("kind", "REGION_PATH_FLIP");
         task.addProperty("queryKey", QUERY_KEY);
         task.addProperty("regionId", "REGION.15");
@@ -151,6 +151,7 @@ public class ConcolicPathReplayVerifierTest {
         task.add("replayContract", BranchReplayContract.flip(
                 java.util.Collections.singletonList(prefix), source)
                 .toJson());
+        task.add("solverPathContext", SolverPathContext.empty().toJson());
         JsonObject requested = new JsonObject();
         requested.addProperty("portId", "REGION.15.out.122");
         requested.addProperty("cell", "<example.Manager: java.util.Map "

@@ -399,11 +399,10 @@ public class RecursiveRegionWorklistTest {
         diagnosticEvidence.add(oldBinding);
         edge.add("evidence", diagnosticEvidence);
         JsonArray validated = new JsonArray();
-        JsonObject exactBinding = new JsonObject();
-        exactBinding.addProperty("fromRegionInstance",
-                "REGION.UPSTREAM#call3545");
-        exactBinding.addProperty("toRegionInstance",
-                "REGION.TARGET#call7004");
+        JsonObject exactBinding = concreteBinding("EDGE.TARGET",
+                "REGION.UPSTREAM#call3545", "REGION.TARGET#call7004",
+                "REGION.UPSTREAM.out.4", "REGION.UPSTREAM.out.4",
+                "REGION.TARGET.in.25", 10, 20);
         validated.add(exactBinding);
         edge.add("validatedBindings", validated);
 
@@ -908,6 +907,13 @@ public class RecursiveRegionWorklistTest {
         binding.addProperty("receiverObjectId", 1234);
         binding.addProperty("valueObjectId", 5678);
         binding.addProperty("field", fromCell);
+        binding.addProperty("writeEvidenceKind", "FIELD_ASSIGNMENT");
+        binding.addProperty("writeEvidenceAuthority",
+                "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1");
+        binding.addProperty("orderAuthority",
+                "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1");
+        binding.addProperty("orderConfirmed", true);
+        binding.addProperty("fieldReceiverIdentityConfirmed", true);
         return binding;
     }
 
@@ -1010,6 +1016,7 @@ public class RecursiveRegionWorklistTest {
         value.addProperty("rootMethod", "<example.Neutral: void run()>");
         value.addProperty("invocationOrdinal", 1);
         value.add("branches", new JsonArray());
+        value.add("captureGoal", RegionCaptureGoal.targetBranch().toJson());
         return value;
     }
 
@@ -1029,6 +1036,12 @@ public class RecursiveRegionWorklistTest {
         if ("READ_FROM".equals(relation)) {
             value.addProperty("status", "CONFIRMED_READ_FROM");
             value.addProperty("confirmedReadFromPairCount", 1);
+            JsonArray bindings = new JsonArray();
+            bindings.add(concreteBinding(id,
+                    fromRegion + "@test#runtime",
+                    toRegion + "@test#runtime", fromPort, fromPort,
+                    toPort, 1, 2));
+            value.add("validatedBindings", bindings);
         } else {
             value.addProperty("status",
                     "CONFIRMED_RUNTIME_VALUE_EQUALITY");

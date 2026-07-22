@@ -41,6 +41,10 @@ provide a reach formula to the composer or extractor.
 Build the custom JDK first and make Z3 available. If the custom JDK cannot run
 on the host because it needs `libffi.so.6`, the script uses the Docker image
 configured by `custom_jdk_docker_image`.
+The maintained configs intentionally leave `custom_jdk_library_path` unset:
+the runner probes the custom Zero image directly and falls back to Docker only
+when that real probe fails. Configure a library path only when the directory
+actually exists; no empty compatibility directory is accepted.
 
 Run the full workflow from an empty fixture output directory:
 
@@ -100,8 +104,8 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
 5. Compose the closed producer relations with the target seed. This produces
    a structurally complete `BOOTSTRAP` SMT model, but it is explicitly
    ineligible as a final report.
-6. Exhaustively project the bootstrap SMT over its discovered Boolean roots in
-   `BOOTSTRAP_REPLAY_MODEL` mode, invoke Z3 independently on the emitted SMT,
+6. Exhaustively project the bootstrap SMT over its discovered Boolean roots,
+   invoke Z3 independently on the emitted SMT,
    and hash-bind the SMT, composition manifest, reach model, and relationship
    candidates into one `CANDIDATE_ONLY` result manifest.
 
@@ -158,6 +162,13 @@ reads genuine instance/static field live-ins. `multitype/` combines Boolean,
 `int`, `long`, `double`, `String.contains`, and a bounded `for` loop.  Each
 uses the same runner through `CAUSYNTH_WORKFLOW_CONFIG`; none changes the
 workflow or declares fixture-specific SMT.
+`unreachable-parity/` reads the same nested array-index and map-entry field
+shapes as the container workload, but its two guarded producers publish only
+odd and even integers respectively. The annotated target requires those RPC
+values to be equal. None of the four Boolean root valuations can reach it, so
+the generated candidate SMT and independently invoked Z3 must both report
+`UNREACHABLE`/`unsat`; the fixture and scripts contain no handwritten
+reachability formula or expected-SMT shortcut.
 `FourThreadSharedFieldWorkloadTest` is the compact recursive fork/merge
 regression for `1 -> 2 -> 3` and `1 -> 4 -> 3`. Neither workload has a
 `while` loop.
@@ -192,28 +203,40 @@ experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
 
 The matrix recompiles each selected workload, runs the complete concolic
 workflow, invokes Z3 on the emitted SMT, and validates the expected root-input
-catalog and truth-table profile.  Unit tests are not run by this command.
+catalog and truth-table profile. `containers` additionally checks exact
+`array[1].state.guard.enabled` and map-key-7 rebinding, two-path guarded merges,
+schema-3 witness/context separation, input-only unforced replay, and its exact
+four-row reach profile. `unreachable-parity` additionally requires two closed
+two-case producer relations, the exact odd/even output images, zero satisfying
+rows, four unsatisfying rows, and direct Z3 `unsat`. Run all six maintained
+profiles with `run_robustness_matrix.sh all`. Unit tests are not run by this
+command.
 
 ## Completed: one binary-branch replay authority
 
 Every observed binary decision now owns one immutable, content-hashed
 `BranchWitness`: stable site/occurrence identity, the source execution's taken
-outcome, its one canonical satisfied predicate, and exactly one evidence
-variant (`VM_PC` or `CERTIFIED_NO_PC`). `BranchPredicateAlgebra` is the only
-predicate-complement implementation, and only `BranchReplayContract.flip()`
-may derive the required opposite outcome/predicate.
+outcome, its one canonical satisfied predicate, and exact `VM_PC` evidence.
+`BranchPredicateAlgebra` is the only predicate-complement implementation, and
+only `BranchReplayContract.flip()` may derive the required opposite
+outcome/predicate. A zero-PC branch event stays observation-only; it cannot be
+turned into a synthetic witness by a parallel proof protocol.
 
-The worklist emits a schema-2 task containing that contract. The solver,
-activation builder, static instrumentation gate, runtime, importer, scheduler,
-and replay verifier consume the same contract; they no longer reconstruct or
-cross-compare `targetBranch`, `expectedBranchPrefix`, replay constraints, or a
-scheduled-target envelope. Runtime observations carry new witnesses, and one
-validator checks the ordered prefix followed by the exact required target.
-Duplicate branch-event identities and content-hash tampering fail closed.
-Multiway `switch` remains a separate successor-aware observation.
+The worklist emits a schema-3 task containing that contract. A separate
+immutable, content-hashed `SolverPathContext` retains positioned non-branch
+`_array_expr`/`MethodExpression` nodes needed by the solver; it rejects an
+unwitnessed Boolean predicate and is never consumed as runtime branch evidence.
+The solver, activation builder, static instrumentation gate, runtime, importer,
+scheduler, and replay verifier consume the same replay contract; they no longer
+reconstruct or cross-compare `targetBranch`, `expectedBranchPrefix`, replay
+constraints, or a scheduled-target envelope. Runtime observations carry new
+witnesses, and one validator checks the ordered prefix followed by the exact
+required target. Duplicate branch-event identities and content-hash tampering
+fail closed. Multiway `switch` remains a separate successor-aware observation.
 
-The three core workloads pass this protocol through candidate SMT generation,
-independent Z3 checking, and their exact expected reach profiles.
+All six matrix profiles pass this protocol through candidate SMT generation,
+independent Z3 checking, and their exact expected reach profiles; one profile
+is intentionally unreachable and therefore expects Z3 `unsat`.
 
 ## TODO: promote a candidate with natural replay
 
@@ -222,24 +245,3 @@ materialize only the selected producer inputs in the full workload, prohibit
 all downstream injection and branch override, observe the annotated exception
 target naturally, and bind that observation to the candidate artifact hashes
 before introducing any trusted/final result state.
-
-## HDFS validation checkpoint
-
-The frozen HDFS trace was re-aggregated without rerunning Soot, instrumentation,
-or the workload. `target/hdfs-runtime-demand-reslice-v5` completed in 2:20.25
-with 19,043,412 KiB peak RSS, versus the 10:26.98 / 19,679,528 KiB baseline.
-All 430 instances used the runtime-guided re-slice; 63,673 candidate inputs
-were pruned, 385 confirmed external inputs were restored, and warnings are 0.
-
-The HDFS RPC/SASL mapping remains enabled for true transport boundaries.
-`REGION_EDGE.0` retains 10 SASL equality bindings, while edges 802 and 2076
-retain 50 and 10 exact read-from bindings. The v5 selector is complete and
-selects the same five runtime calls (NN, DN, KeyUpdater, Dispatcher, target)
-with all causal bounds verified.
-
-The historical v5 HDFS checkpoint cannot be recomposed from this checkout
-because its five configured replay-summary files are absent and have no
-recoverable in-repository source. Regenerating those external experiment
-artifacts is outside the three-workload reference gate. The intentionally loose
-HDFS loop/read-from policies remain documented limitations; v5 measures only
-the frozen-graph runtime re-slice, not a fresh full-HDFS catalog run.

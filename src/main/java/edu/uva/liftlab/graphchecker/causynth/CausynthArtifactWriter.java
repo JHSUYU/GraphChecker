@@ -22,9 +22,6 @@ final class CausynthArtifactWriter {
 
     void writeAll() throws IOException {
         Files.createDirectories(outputDir);
-        Files.deleteIfExists(outputDir.resolve("static_rpc_mappings.jsonl"));
-        Files.deleteIfExists(outputDir.resolve(
-                "static_hardcoded_dataflows.jsonl"));
         writeJson("target_resolved.json", result.targetResolved);
         Map<String, Object> seeds = new LinkedHashMap<>();
         seeds.put("seeds", result.seeds);

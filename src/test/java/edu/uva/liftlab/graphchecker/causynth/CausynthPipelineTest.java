@@ -1296,7 +1296,7 @@ public class CausynthPipelineTest {
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null, 0, 0), selection, refs));
+                    new CausynthPipeline(null), selection, refs));
 
             InvokeExpr hook = null;
             for (Unit unit : body.getUnits()) {
@@ -1401,7 +1401,7 @@ public class CausynthPipelineTest {
                     refsClass);
             instrument.setAccessible(true);
             assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null, 0, 0), selection, refs));
+                    new CausynthPipeline(null), selection, refs));
 
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
@@ -1434,131 +1434,6 @@ public class CausynthPipelineTest {
                     .replace("\"", ""));
             assertSame(holder, hook.getArg(9));
             assertSame(write.getRightOp(), hook.getArg(10));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void instrumentsExactMethodReturnBeforeReturnExecutes()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            G.reset();
-            Scene.v().addClass(new SootClass("java.lang.String",
-                    Modifier.PUBLIC));
-            Scene.v().addClass(new SootClass("java.lang.Integer",
-                    Modifier.PUBLIC));
-            SootClass owner = new SootClass("example.ReturnCaptureRegion",
-                    Modifier.PUBLIC);
-            Scene.v().addClass(owner);
-            owner.setApplicationClass();
-            SootMethod compute = new SootMethod("compute",
-                    Collections.emptyList(), IntType.v(),
-                    Modifier.PUBLIC | Modifier.STATIC);
-            owner.addMethod(compute);
-            Body body = Jimple.v().newBody(compute);
-            compute.setActiveBody(body);
-            // Soot commonly narrows an int method's local when all concrete
-            // definitions fit in a byte.  The return descriptor must still
-            // control capture boxing.
-            Local result = Jimple.v().newLocal("result", ByteType.v());
-            body.getLocals().add(result);
-            body.getUnits().add(Jimple.v().newAssignStmt(result,
-                    IntConstant.v(-1)));
-            ReturnStmt returned = Jimple.v().newReturnStmt(result);
-            body.getUnits().add(returned);
-
-            Path plan = folder.getRoot().toPath().resolve(
-                    "return-activation.jsonl");
-            JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", "ACT.RETURN.CAPTURE");
-            activation.addProperty("rootMethod", compute.getSignature());
-            activation.addProperty("replayable", true);
-            JsonObject capture = new JsonObject();
-            capture.addProperty("captureKind", "METHOD_RETURN_VALUE");
-            capture.addProperty("captureBindingId",
-                    "REGION.RETURN.out.0.capture.0");
-            capture.addProperty("outputPort", "REGION.RETURN.out.0");
-            capture.addProperty("outputCell", compute.getSignature()
-                    + ".return");
-            capture.addProperty("method", compute.getSignature());
-            capture.addProperty("unitIndex", 1);
-            capture.addProperty("siteId", compute.getSignature() + "#u1");
-            capture.addProperty("occurrence", 1);
-            JsonArray captures = new JsonArray();
-            captures.add(capture);
-            activation.add("requestedOutputCapture", captures);
-            Files.write(plan, (activation + "\n").getBytes(
-                    StandardCharsets.UTF_8));
-
-            ConcolicInstrumentationSelections
-                    .ConcolicOutputCaptureSelection selection =
-                    ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.from(
-                            plan, "ACT.RETURN.CAPTURE");
-            Class<?> refsClass = Class.forName(
-                    CausynthPipeline.class.getName()
-                            + "$ConcolicRegionRefs");
-            Method create = refsClass.getDeclaredMethod("create");
-            create.setAccessible(true);
-            Object refs = create.invoke(null);
-            Method instrument = CausynthPipeline.class.getDeclaredMethod(
-                    "instrumentConcolicOutputCaptures",
-                    ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.class,
-                    refsClass);
-            instrument.setAccessible(true);
-            assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null, 0, 0), selection, refs));
-
-            List<Unit> units = new ArrayList<>();
-            for (Unit unit : body.getUnits()) units.add(unit);
-            int returnIndex = units.indexOf(returned);
-            int activeTokenIndex = -1;
-            int hookIndex = -1;
-            InvokeExpr hook = null;
-            for (int index = 0; index < units.size(); index++) {
-                Unit unit = units.get(index);
-                if (!(unit instanceof Stmt)
-                        || !((Stmt) unit).containsInvokeExpr()) continue;
-                InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-                if ("activeToken".equals(invoke.getMethodRef().name())) {
-                    activeTokenIndex = index;
-                } else if ("recordMethodReturnOutput".equals(
-                        invoke.getMethodRef().name())) {
-                    hookIndex = index;
-                    hook = invoke;
-                }
-            }
-            assertTrue(activeTokenIndex >= 0);
-            assertTrue(hookIndex > activeTokenIndex);
-            assertTrue(returnIndex > hookIndex);
-            assertNotNull(hook);
-            assertEquals(compute.getSignature(), hook.getArg(1).toString()
-                    .replace("\"", ""));
-            assertEquals(1, ((IntConstant) hook.getArg(2)).value);
-            assertEquals("REGION.RETURN.out.0", hook.getArg(5).toString()
-                    .replace("\"", ""));
-            assertEquals(1, ((IntConstant) hook.getArg(7)).value);
-            assertEquals(RefType.v("java.lang.Integer"),
-                    hook.getArg(8).getType());
-
-            boolean integerConstructorObserved = false;
-            for (Unit unit : units) {
-                if (!(unit instanceof Stmt)
-                        || !((Stmt) unit).containsInvokeExpr()) continue;
-                InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-                if ("<init>".equals(invoke.getMethodRef().name())
-                        && "java.lang.Integer".equals(invoke.getMethodRef()
-                        .declaringClass().getName())) {
-                    integerConstructorObserved = true;
-                    assertEquals(Collections.singletonList(IntType.v()),
-                            invoke.getMethodRef().parameterTypes());
-                }
-            }
-            assertTrue(integerConstructorObserved);
         } finally {
             folder.delete();
         }
@@ -1783,7 +1658,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         Local entryToken = null;
         Unit entryCall = null;
@@ -1956,7 +1831,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
         body.validate();
 
         ByteArrayOutputStream classFile = new ByteArrayOutputStream();
@@ -2119,7 +1994,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         List<Unit> units = new ArrayList<>();
         Unit wrapperCall = null;
@@ -2272,7 +2147,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentConcolicRegions", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         Local argumentArray = null;
         InvokeExpr entry = null;
@@ -2384,7 +2259,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentRuntimeTrace", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         int isolationDepth = 0;
         int traceCalls = 0;
@@ -2501,7 +2376,7 @@ public class CausynthPipelineTest {
         Method instrument = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentRuntimeTrace", result.getClass());
         instrument.setAccessible(true);
-        instrument.invoke(new CausynthPipeline(null, 0, 0), result);
+        instrument.invoke(new CausynthPipeline(null), result);
 
         Value recordedReceiver = null;
         int beginCallCount = 0;
@@ -2665,7 +2540,7 @@ public class CausynthPipelineTest {
         addAnalysisRow(result, "edges", guardEdge);
         addBranchPolicy(result, method.getSignature(), 1);
 
-        CausynthPipeline pipeline = new CausynthPipeline(null, 0, 0);
+        CausynthPipeline pipeline = new CausynthPipeline(null);
         Method tracePass = CausynthPipeline.class.getDeclaredMethod(
                 "instrumentRuntimeTrace", result.getClass());
         tracePass.setAccessible(true);
@@ -2815,42 +2690,6 @@ public class CausynthPipelineTest {
         assertEquals("Iterator.remove must retain ownership through "
                         + "Map.entrySet() and Set.iterator()",
                 Collections.singleton(fixture.field.getSignature()), fields);
-    }
-
-    @Test
-    public void projectedEdgeRetainsMappingOnlyBaseAuthority()
-            throws Exception {
-        Object analyzer = newStaticAnalyzer();
-        String method = "<example.MappingFixture: void bridge()>";
-        String kind = "fixture_port_mapping";
-        String from = method + "::outbound";
-        String to = method + "::inbound";
-        registerStaticPortMapping(analyzer, kind, method, from, to);
-
-        Map<String, Object> base = emitSyntheticEdge(analyzer, kind, from,
-                to, method, null);
-        assertEquals(Boolean.TRUE, base.get("mappingOnly"));
-        assertEquals("STATIC_FORMAT_AND_PORT_MAPPING",
-                base.get("mappingAuthority"));
-
-        String path = "#field:allKeys";
-        Map<String, Object> projected = emitSyntheticEdge(analyzer,
-                "projected_" + kind, from + path, to + path, method, base);
-
-        assertEquals(Boolean.TRUE, projected.get("mappingOnly"));
-        assertEquals("", projected.get("relation"));
-        assertEquals("STATIC_FORMAT_AND_PORT_MAPPING",
-                projected.get("mappingAuthority"));
-        assertEquals(Boolean.FALSE,
-                projected.get("semanticAssertionsAllowed"));
-        assertEquals(Boolean.FALSE,
-                projected.get("eligibleForAutomaticDerivation"));
-        assertEquals(Boolean.FALSE,
-                projected.get("eligibleForAutomaticSmt"));
-        assertEquals(base.get("id"),
-                projected.get("projectionBaseEdgeId"));
-        assertEquals("PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1",
-                projected.get("authorityInheritance"));
     }
 
     @Test
@@ -3925,111 +3764,6 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void hdfsSaslUsernameProducerSeedsDataEncryptionKeyIdLeaf()
-            throws Exception {
-        G.reset();
-        SootClass object = new SootClass("java.lang.Object",
-                Modifier.PUBLIC);
-        Scene.v().addClass(object);
-        SootClass string = new SootClass("java.lang.String",
-                Modifier.PUBLIC);
-        string.setSuperclass(object);
-        Scene.v().addClass(string);
-        SootClass builder = new SootClass("java.lang.StringBuilder",
-                Modifier.PUBLIC);
-        builder.setSuperclass(object);
-        Scene.v().addClass(builder);
-        SootMethod builderConstructor = new SootMethod("<init>",
-                Collections.emptyList(), VoidType.v(), Modifier.PUBLIC);
-        SootMethod appendInt = new SootMethod("append",
-                Collections.singletonList(IntType.v()), builder.getType(),
-                Modifier.PUBLIC);
-        SootMethod toString = new SootMethod("toString",
-                Collections.emptyList(), string.getType(), Modifier.PUBLIC);
-        builder.addMethod(builderConstructor);
-        builder.addMethod(appendInt);
-        builder.addMethod(toString);
-
-        SootClass encryptionKey = new SootClass(
-                "org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey",
-                Modifier.PUBLIC);
-        encryptionKey.setSuperclass(object);
-        SootField keyId = new SootField("keyId", IntType.v(),
-                Modifier.PUBLIC);
-        encryptionKey.addField(keyId);
-        Scene.v().addClass(encryptionKey);
-        encryptionKey.setApplicationClass();
-
-        SootClass client = new SootClass(
-                "org.apache.hadoop.hdfs.protocol.datatransfer.sasl."
-                        + "SaslDataTransferClient", Modifier.PUBLIC);
-        client.setSuperclass(object);
-        Scene.v().addClass(client);
-        client.setApplicationClass();
-        SootMethod encode = new SootMethod("getUserNameFromEncryptionKey",
-                Collections.singletonList(encryptionKey.getType()),
-                string.getType(), Modifier.PRIVATE | Modifier.STATIC);
-        client.addMethod(encode);
-        Body body = Jimple.v().newBody(encode);
-        encode.setActiveBody(body);
-        Local dek = Jimple.v().newLocal("dek", encryptionKey.getType());
-        Local id = Jimple.v().newLocal("id", IntType.v());
-        Local buffer = Jimple.v().newLocal("buffer", builder.getType());
-        Local appended = Jimple.v().newLocal("appended", builder.getType());
-        Local encoded = Jimple.v().newLocal("encoded", string.getType());
-        body.getLocals().addAll(Arrays.asList(dek, id, buffer, appended,
-                encoded));
-        body.getUnits().add(Jimple.v().newIdentityStmt(dek,
-                Jimple.v().newParameterRef(encryptionKey.getType(), 0)));
-        body.getUnits().add(Jimple.v().newAssignStmt(id,
-                Jimple.v().newInstanceFieldRef(dek, keyId.makeRef())));
-        body.getUnits().add(Jimple.v().newAssignStmt(buffer,
-                Jimple.v().newNewExpr(builder.getType())));
-        body.getUnits().add(Jimple.v().newInvokeStmt(
-                Jimple.v().newSpecialInvokeExpr(buffer,
-                        builderConstructor.makeRef())));
-        body.getUnits().add(Jimple.v().newAssignStmt(appended,
-                Jimple.v().newVirtualInvokeExpr(buffer, appendInt.makeRef(),
-                        id)));
-        body.getUnits().add(Jimple.v().newAssignStmt(encoded,
-                Jimple.v().newVirtualInvokeExpr(appended,
-                        toString.makeRef())));
-        body.getUnits().add(Jimple.v().newReturnStmt(encoded));
-
-        Object analyzer = newStaticAnalyzer("hdfs_block_key");
-        Method initialize = analyzer.getClass().getDeclaredMethod(
-                "initializeHdfsSaslUsernameKeyIdProducer");
-        initialize.setAccessible(true);
-        initialize.invoke(analyzer);
-
-        Field edgesField = analyzer.getClass().getDeclaredField("edges");
-        edgesField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> edges =
-                (List<Map<String, Object>>) edgesField.get(analyzer);
-        String source = encode.getSignature()
-                + ".param0:" + encryptionKey.getName() + "#field:keyId";
-        Map<String, Object> dependency = edges.stream().filter(edge ->
-                "structured_scalar_encoding_dependency".equals(
-                        edge.get("kind"))
-                        && source.equals(edge.get("fromCell"))
-                        && (encode.getSignature() + ".return").equals(
-                        edge.get("toCell"))).findFirst().orElseThrow(
-                () -> new AssertionError("missing HDFS keyId username dependency; "
-                        + "source=" + source + "; edges=" + edges));
-        assertEquals(Boolean.FALSE, dependency.get("mappingOnly"));
-        assertEquals(Boolean.TRUE,
-                dependency.get("eligibleForAutomaticDerivation"));
-        assertEquals(Boolean.TRUE, dependency.get("eligibleForAutomaticSmt"));
-        assertEquals(Boolean.FALSE,
-                dependency.get("valueEqualityAsserted"));
-        assertEquals(Boolean.FALSE,
-                dependency.get("objectReferenceIsSymbolicScalar"));
-        assertEquals(keyId.getSignature(),
-                dependency.get("sourceFieldSignature"));
-    }
-
-    @Test
     public void containerProjectionWhitelistCoversExactMapViewsAndToArray()
             throws Exception {
         CollectionProjectionFixture fixture = collectionProjectionFixture();
@@ -4519,101 +4253,10 @@ public class CausynthPipelineTest {
     }
 
     @Test
-    public void configuredRpcTopologyResolvesExactMethodsInScopedAnalysis()
-            throws Exception {
-        RpcTopologyFixture fixture = rpcTopologyFixture();
-        JsonObject row = rpcTopologyRow(fixture);
-        Path mapping = Files.createTempFile("causynth-rpc-topology-",
-                ".jsonl");
-        try {
-            Files.write(mapping, (row + "\n").getBytes(
-                    StandardCharsets.UTF_8));
-
-            Object analyzer = newStaticAnalyzer("hdfs_block_key", mapping);
-            Field mappingsField = analyzer.getClass().getDeclaredField(
-                    "staticPortMappings");
-            mappingsField.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            List<Object> mappings = (List<Object>) mappingsField.get(analyzer);
-            assertEquals(1, mappings.size());
-            Object portMapping = mappings.get(0);
-            assertEquals("configured_rpc_return_mapping",
-                    privateString(portMapping, "kind"));
-            assertEquals(fixture.producer.getSignature(),
-                    privateString(portMapping, "sourceMethod"));
-            assertEquals(fixture.producer.getSignature() + ".return",
-                    privateString(portMapping, "sourceCell"));
-            assertEquals(fixture.consumer.getSignature(),
-                    privateString(portMapping, "targetMethod"));
-            assertEquals(fixture.consumer.getSignature() + ".return",
-                    privateString(portMapping, "targetCell"));
-            String evidence = privateString(portMapping, "evidence");
-            assertTrue(evidence, evidence.contains("channel orders"));
-            assertTrue(evidence, evidence.contains(
-                    fixture.publisher.getSignature()));
-            assertTrue(evidence, evidence.contains(
-                    fixture.transport.getSignature()));
-            assertTrue(evidence, evidence.contains("mapping only"));
-        } finally {
-            Files.deleteIfExists(mapping);
-        }
-    }
-
-    @Test
-    public void regionPortRpcEqualityIsRecognizedButNotAssertedByStaticPass()
-            throws Exception {
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", 1);
-        row.addProperty("kind", "DECLARED_RPC_EQUALITY");
-        row.addProperty("authority", "FIXTURE_DECLARATION_ONLY");
-        row.addProperty("fromEndpoint", "REGION.A.out.0");
-        row.addProperty("toEndpoint", "REGION.C.in.0");
-        Path mapping = Files.createTempFile("causynth-rpc-declared-",
-                ".jsonl");
-        try {
-            Files.write(mapping, (row + "\n").getBytes(
-                    StandardCharsets.UTF_8));
-            Object analyzer = newStaticAnalyzer("", mapping);
-            Field mappingsField = analyzer.getClass().getDeclaredField(
-                    "staticPortMappings");
-            mappingsField.setAccessible(true);
-            assertTrue(((List<?>) mappingsField.get(analyzer)).isEmpty());
-        } finally {
-            Files.deleteIfExists(mapping);
-        }
-    }
-
-    @Test
-    public void configuredRpcTopologyRejectsEndpointDeclarationDrift()
-            throws Exception {
-        RpcTopologyFixture fixture = rpcTopologyFixture();
-        JsonObject row = rpcTopologyRow(fixture);
-        row.addProperty("fromCell", fixture.producer.getSignature()
-                + ".param0:java.lang.Boolean");
-        Path mapping = Files.createTempFile("causynth-rpc-invalid-",
-                ".jsonl");
-        try {
-            Files.write(mapping, (row + "\n").getBytes(
-                    StandardCharsets.UTF_8));
-            Throwable failure = null;
-            try {
-                newStaticAnalyzer("", mapping);
-            } catch (InvocationTargetException exception) {
-                failure = exception;
-            }
-            assertNotNull("topology drift must fail closed", failure);
-            assertTrue(deepMessage(failure), deepMessage(failure).contains(
-                    "fromCell does not name the resolved producer return"));
-        } finally {
-            Files.deleteIfExists(mapping);
-        }
-    }
-
-    @Test
-    public void hdfsScopedIndexRecursesThroughConstantSetterAndCallerGuard()
+    public void globalIndexRecursesThroughConstantSetterAndCallerGuard()
             throws Exception {
         RecursiveFieldWriterFixture fixture = recursiveFieldWriterFixture();
-        Object analyzer = newStaticAnalyzer("hdfs_block_key");
+        Object analyzer = newStaticAnalyzer("fixture");
 
         // Reproduce the fast-path failure mode: only the downstream reader is
         // retained initially. The writer, setter caller, and guard-producing
@@ -4705,7 +4348,7 @@ public class CausynthPipelineTest {
         Field candidateCount = analyzer.getClass().getDeclaredField(
                 "globalStaticIndexCandidateMethodCount");
         candidateCount.setAccessible(true);
-        assertEquals("the HDFS scoped working set must not scope the global index",
+        assertEquals("the seed working set must not scope the global index",
                 4, candidateCount.getInt(analyzer));
         Field truncatedWriters = analyzer.getClass().getDeclaredField(
                 "truncatedFieldWriterIndexFields");
@@ -4732,7 +4375,7 @@ public class CausynthPipelineTest {
         instrument.setAccessible(true);
 
         int count = (Integer) instrument.invoke(
-                new CausynthPipeline(null, 0, 0),
+                new CausynthPipeline(null),
                 Collections.singleton(fixture.method.getSignature()), refs);
 
         assertEquals(4, count);
@@ -4799,80 +4442,6 @@ public class CausynthPipelineTest {
         return value instanceof Number ? ((Number) value).intValue() : -1;
     }
 
-    private static RpcTopologyFixture rpcTopologyFixture() {
-        SootClass producerOwner = new SootClass("example.rpc.Producer",
-                Modifier.PUBLIC);
-        Scene.v().addClass(producerOwner);
-        producerOwner.setApplicationClass();
-        SootMethod producer = new SootMethod("compute",
-                Collections.<soot.Type>singletonList(
-                        RefType.v("java.lang.Boolean")), IntType.v(),
-                Modifier.PUBLIC);
-        producerOwner.addMethod(producer);
-
-        SootClass bus = new SootClass("example.rpc.Bus", Modifier.PUBLIC);
-        Scene.v().addClass(bus);
-        bus.setApplicationClass();
-        SootField transport = new SootField("wire", IntType.v(),
-                Modifier.PRIVATE);
-        bus.addField(transport);
-        SootMethod publisher = new SootMethod("publish",
-                Arrays.<soot.Type>asList(RefType.v("java.lang.String"),
-                        IntType.v()), VoidType.v(), Modifier.PUBLIC);
-        bus.addMethod(publisher);
-        SootMethod consumer = new SootMethod("receive",
-                Collections.<soot.Type>emptyList(), IntType.v(),
-                Modifier.PUBLIC);
-        bus.addMethod(consumer);
-        return new RpcTopologyFixture(producer, publisher, consumer,
-                transport);
-    }
-
-    private static JsonObject rpcTopologyRow(RpcTopologyFixture fixture) {
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", 1);
-        row.addProperty("kind", "RPC_TOPOLOGY");
-        row.addProperty("authority", "TEST_RUNTIME_GATED_TOPOLOGY");
-        row.addProperty("channel", "orders");
-        row.addProperty("fromCell", fixture.producer.getSignature()
-                + ".return");
-        row.addProperty("toCell", fixture.transport.getSignature());
-
-        JsonObject producer = new JsonObject();
-        producer.addProperty("owner", fixture.producer.getDeclaringClass()
-                .getName());
-        producer.addProperty("name", fixture.producer.getName());
-        producer.addProperty("parameter", "java.lang.Boolean");
-        producer.addProperty("role", "RETURN_VALUE");
-        row.add("producer", producer);
-
-        JsonObject publisher = new JsonObject();
-        publisher.addProperty("owner", fixture.publisher.getDeclaringClass()
-                .getName());
-        publisher.addProperty("name", fixture.publisher.getName());
-        JsonArray publisherParameters = new JsonArray();
-        publisherParameters.add("java.lang.String");
-        publisherParameters.add("int");
-        publisher.add("parameters", publisherParameters);
-        publisher.addProperty("payloadParameterIndex", 1);
-        row.add("publisher", publisher);
-
-        JsonObject consumer = new JsonObject();
-        consumer.addProperty("owner", fixture.consumer.getDeclaringClass()
-                .getName());
-        consumer.addProperty("name", fixture.consumer.getName());
-        consumer.addProperty("role", "RETURN_VALUE");
-        row.add("consumer", consumer);
-        return row;
-    }
-
-    private static String privateString(Object owner, String fieldName)
-            throws Exception {
-        Field field = owner.getClass().getDeclaredField(fieldName);
-        field.setAccessible(true);
-        return String.valueOf(field.get(owner));
-    }
-
     private static String deepMessage(Throwable failure) {
         StringBuilder result = new StringBuilder();
         Throwable current = failure;
@@ -4883,20 +4452,6 @@ public class CausynthPipelineTest {
             current = current.getCause();
         }
         return result.toString();
-    }
-
-    private static void registerStaticPortMapping(Object analyzer,
-                                                  String kind,
-                                                  String method,
-                                                  String from,
-                                                  String to)
-            throws Exception {
-        Method register = analyzer.getClass().getDeclaredMethod(
-                "addStaticPortMapping", String.class, String.class,
-                String.class, String.class, String.class, String.class);
-        register.setAccessible(true);
-        register.invoke(analyzer, kind, method, from, method, to,
-                "test static port mapping");
     }
 
     private static Map<String, Object> emitSyntheticEdge(
@@ -4943,22 +4498,14 @@ public class CausynthPipelineTest {
     }
 
     private static Object newStaticAnalyzer() throws Exception {
-        return newStaticAnalyzer("", null);
+        return newStaticAnalyzer("");
     }
 
     private static Object newStaticAnalyzer(String analysisScope)
             throws Exception {
-        return newStaticAnalyzer(analysisScope, null);
-    }
-
-    private static Object newStaticAnalyzer(String analysisScope,
-                                            Path rpcMappingFile)
-            throws Exception {
         Path current = Paths.get(".").toAbsolutePath().normalize();
         CausynthTargetContext target = new CausynthTargetContext(
-                current, current,
-                current, current, Collections.emptyList(), null, null,
-                null, analysisScope, rpcMappingFile);
+                current, current, null, null, analysisScope);
         Class<?> analyzerClass = SeedBackwardStaticAnalyzer.class;
         Constructor<?> constructor = analyzerClass.getDeclaredConstructor(
                 CausynthTargetContext.class);
@@ -5887,7 +5434,7 @@ public class CausynthPipelineTest {
                 "instrumentConcolicMaterializations", selection.getClass(),
                 refs.getClass());
         instrument.setAccessible(true);
-        return (Integer) instrument.invoke(new CausynthPipeline(null, 0, 0),
+        return (Integer) instrument.invoke(new CausynthPipeline(null),
                 selection, refs);
     }
 
@@ -5898,7 +5445,7 @@ public class CausynthPipelineTest {
                 selection.getClass(), refs.getClass());
         instrument.setAccessible(true);
         return (Integer) instrument.invoke(
-                new CausynthPipeline(null, 0, 0), selection, refs);
+                new CausynthPipeline(null), selection, refs);
     }
 
     private static InvokeExpr invokeExpression(Unit unit) {
@@ -5966,23 +5513,6 @@ public class CausynthPipelineTest {
                 Collections.emptyList(), VoidType.v());
         fixture.staticMethod(system, "markConcolicBranch",
                 Arrays.asList(fixture.string, IntType.v()), LongType.v());
-    }
-
-    private static final class RpcTopologyFixture {
-        private final SootMethod producer;
-        private final SootMethod publisher;
-        private final SootMethod consumer;
-        private final SootField transport;
-
-        private RpcTopologyFixture(SootMethod producer,
-                                   SootMethod publisher,
-                                   SootMethod consumer,
-                                   SootField transport) {
-            this.producer = producer;
-            this.publisher = publisher;
-            this.consumer = consumer;
-            this.transport = transport;
-        }
     }
 
     private static final class TypeFixture {

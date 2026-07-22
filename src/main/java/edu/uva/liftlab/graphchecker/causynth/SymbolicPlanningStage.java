@@ -78,9 +78,7 @@ final class SymbolicPlanningStage {
         if (normalizedKind.contains("throw")) {
             return "EXCEPTION";
         }
-        if (normalizedKind.contains("hdfs_sasl")
-                || normalizedKind.contains("hdfs_heartbeat")
-                || normalizedKind.contains("rpc")) {
+        if (normalizedKind.contains("rpc")) {
             return "PROTOCOL_TRANSFER";
         }
         if (normalizedKind.contains("dispatch")) {

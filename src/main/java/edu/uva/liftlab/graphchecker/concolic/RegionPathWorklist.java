@@ -33,14 +33,6 @@ import java.util.TreeSet;
 public final class RegionPathWorklist {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
-    private static final String CERTIFIED_CONCRETE_GUARD_AUTHORITY =
-            "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1";
-    private static final String CONCRETE_GUARD_CERTIFICATE_AUTHORITY =
-            "RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
-                    + "VM_BRANCH_EVENT_V1";
-    private static final String CONCRETE_GUARD_PROOF_AUTHORITY =
-            "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1";
-
     private RegionPathWorklist() {
     }
 
@@ -312,19 +304,22 @@ public final class RegionPathWorklist {
                               String pathKey, JsonArray conditions,
                               JsonObject mapping) {
             int conditionIndex = integer(mapping, "conditionIndex", -1);
-            BranchReplayContract replayContract = replayContract(summary,
-                    mapping, conditions, conditionIndex);
-            if (replayContract == null) {
+            BranchReplayPlan replay;
+            try {
+                replay = BranchReplayPlan.fromSummary(summary, mapping);
+            } catch (IllegalArgumentException incompleteWitness) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
-                        "WITNESS_OR_ORDERED_PREFIX_DOES_NOT_MATCH_SUMMARY_PC",
+                        "BRANCH_WITNESS_OR_NON_BRANCH_CONTEXT_DOES_NOT_"
+                                + "PARTITION_SUMMARY_PC_PREFIX",
                         string(summary, "regionId"), pathKey,
                         branchSite(mapping), branchOccurrence(mapping));
                 return;
             }
             JsonArray prefix = new JsonArray();
-            for (BranchWitness witness : replayContract.orderedPrefix()) {
-                prefix.add(witness.sourceSatisfiedPredicate());
+            for (int index = 0; index < conditionIndex; index++) {
+                prefix.add(conditions.get(index).deepCopy());
             }
+            BranchReplayContract replayContract = replay.replayContract();
             boolean desired = replayContract.requiredTakenOutcome();
             String region = string(summary, "regionId");
             String site = replayContract.source().siteId();
@@ -368,7 +363,7 @@ public final class RegionPathWorklist {
             }
 
             JsonObject task = new JsonObject();
-            task.addProperty("schemaVersion", 2);
+            task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
             task.addProperty("regionId", region);
@@ -390,6 +385,8 @@ public final class RegionPathWorklist {
                     "rootMethod"), string(activation, "rootMethod")));
             task.add("requestedOutput", copy(output, new JsonObject()));
             task.add("replayContract", replayContract.toJson());
+            task.add("solverPathContext",
+                    replay.solverPathContext().toJson());
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
             task.add("engineArrayInputBindings", array(summary,
@@ -397,59 +394,6 @@ public final class RegionPathWorklist {
             task.addProperty("status", "PENDING_SOLVE");
             task.addProperty("dynamicIdsExcludedFromQueryKey", true);
             tasks.add(task);
-        }
-
-        private BranchReplayContract replayContract(
-                JsonObject summary, JsonObject selected,
-                JsonArray conditions, int selectedSummaryIndex) {
-            BranchWitness source = branchWitness(selected);
-            if (source == null || selectedSummaryIndex < 0
-                    || selectedSummaryIndex >= conditions.size()
-                    || integer(selected, "summaryPcIndex", -1)
-                    != selectedSummaryIndex
-                    || !BranchPredicateAlgebra.equivalent(
-                    source.sourceSatisfiedPredicate(),
-                    conditions.get(selectedSummaryIndex))) {
-                return null;
-            }
-            List<JsonObject> prefixMappings = new ArrayList<>();
-            for (JsonElement element : array(summary, "branchMappings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                int index = integer(mapping, "summaryPcIndex", -1);
-                if (index >= 0 && index < selectedSummaryIndex) {
-                    prefixMappings.add(mapping);
-                }
-            }
-            Collections.sort(prefixMappings, Comparator.comparingInt(
-                    value -> integer(value, "summaryPcIndex", -1)));
-            List<BranchWitness> prefix = new ArrayList<>();
-            int expectedIndex = 0;
-            for (JsonObject mapping : prefixMappings) {
-                int index = integer(mapping, "summaryPcIndex", -1);
-                BranchWitness witness = branchWitness(mapping);
-                if (index != expectedIndex || witness == null
-                        || !BranchPredicateAlgebra.equivalent(
-                        witness.sourceSatisfiedPredicate(),
-                        conditions.get(index))) {
-                    return null;
-                }
-                prefix.add(witness);
-                expectedIndex++;
-            }
-            // Solver and replay use the same complete retained prefix.  A
-            // semantic PC element without one exact branch witness is not
-            // silently copied into a second authority channel.
-            if (expectedIndex != selectedSummaryIndex) return null;
-            BranchReplayContract contract = BranchReplayContract.flip(
-                    prefix, source);
-            JsonArray required = contract.requiredPathPredicates();
-            if (required.size() != selectedSummaryIndex + 1) return null;
-            for (int index = 0; index < selectedSummaryIndex; index++) {
-                if (!BranchPredicateAlgebra.equivalent(required.get(index),
-                        conditions.get(index))) return null;
-            }
-            return contract;
         }
 
         private BranchWitness branchWitness(JsonObject mapping) {

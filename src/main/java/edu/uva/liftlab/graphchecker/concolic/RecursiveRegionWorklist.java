@@ -600,12 +600,11 @@ public final class RecursiveRegionWorklist {
         }
 
         /**
-         * A protocol sender may expose an outbound value at the same source
-         * cell as one of its symbolic inputs (for example the HDFS SASL
-         * username argument).  Such a boundary is an identity relation, not
-         * an unknown region output.  Admit it only after the cross-region
-         * equality itself has runtime evidence and the source endpoint names
-         * exactly one input declaration.
+         * A transport sender may expose an outbound value at the same source
+         * cell as one of its symbolic inputs. Such a boundary is an identity
+         * relation, not an unknown region output. Admit it only after the
+         * cross-region equality itself has runtime evidence and the source
+         * endpoint names exactly one input declaration.
          */
         private DependencyClosure transportEndpointIdentityClosure(
                 JsonObject definition, OutputRef output, JsonObject edge) {
@@ -617,9 +616,7 @@ public final class RecursiveRegionWorklist {
                         "NOT_A_RUNTIME_VALIDATED_TRANSPORT_EQUALITY", "NONE");
             }
             String kind = string(edge, "kind");
-            if (!(kind.contains("RPC") || kind.contains("SASL")
-                    || kind.contains("TRANSFER")
-                    || kind.contains("HEARTBEAT"))) {
+            if (!(kind.contains("RPC") || kind.contains("TRANSFER"))) {
                 return DependencyClosure.gap(
                         "MISSING_OUTPUT_DEPENDENCY_CLOSURE",
                         "NOT_A_PROTOCOL_TRANSPORT_EDGE", "NONE");

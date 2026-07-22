@@ -4,8 +4,8 @@ import com.google.gson.JsonObject;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class RegionCaptureGoalTest {
     @Test
@@ -16,21 +16,21 @@ public class RegionCaptureGoalTest {
         RegionCaptureGoal goal = RegionCaptureGoal.from(row);
 
         assertTrue(goal.isOutputClosure());
-        assertFalse(goal.cameFromLegacySchema());
         assertEquals("BOUNDED_OUTPUT_RELEVANT_PATHS",
                 goal.toJson().get("scope").getAsString());
     }
 
     @Test
-    public void legacyModeIsTranslatedOnlyAtSchemaBoundary() {
+    public void legacyModeIsRejected() {
         JsonObject row = new JsonObject();
         row.addProperty("summaryMode", "RELATIONAL_PRODUCER");
 
-        RegionCaptureGoal goal = RegionCaptureGoal.from(row);
-
-        assertTrue(goal.isOutputClosure());
-        assertTrue(goal.cameFromLegacySchema());
-        assertEquals(RegionCaptureGoal.OUTPUT_CLOSURE, goal.kind());
+        try {
+            RegionCaptureGoal.from(row);
+            fail("legacy capture mode was accepted");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("captureGoal"));
+        }
     }
 
     @Test

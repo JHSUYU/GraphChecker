@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,13 +35,9 @@ public class CausynthModuleSupportTest {
     }
 
     @Test
-    public void artifactWriterPreservesNamesAndRemovesLegacyRows()
+    public void artifactWriterPreservesStableArtifactNames()
             throws Exception {
         Path output = temporaryFolder.newFolder("artifacts").toPath();
-        Files.write(output.resolve("static_rpc_mappings.jsonl"),
-                "stale".getBytes(StandardCharsets.UTF_8));
-        Files.write(output.resolve("static_hardcoded_dataflows.jsonl"),
-                "stale".getBytes(StandardCharsets.UTF_8));
         CausynthAnalysisResult result = new CausynthAnalysisResult();
         Map<String, Object> seed = new LinkedHashMap<>();
         seed.put("id", "SEED.0");
@@ -51,10 +48,6 @@ public class CausynthModuleSupportTest {
 
         new CausynthArtifactWriter(output, result).writeAll();
 
-        assertFalse(Files.exists(output.resolve(
-                "static_rpc_mappings.jsonl")));
-        assertFalse(Files.exists(output.resolve(
-                "static_hardcoded_dataflows.jsonl")));
         assertEquals("{\"seeds\":[{\"id\":\"SEED.0\"}]}",
                 read(output.resolve("seeds.json")));
         assertEquals("{\"id\":\"DF.0\"}\n",
@@ -152,55 +145,24 @@ public class CausynthModuleSupportTest {
         Path root = temporaryFolder.newFolder("target-resolver").toPath();
         Path target = root.resolve("target.yaml");
         Path config = root.resolve("workflow.properties");
-        Path propertyRepo = root.resolve("property-repo");
-        Files.write(target, Arrays.asList(
-                "seed_function: '<example.Main: void run()>'",
-                "exception_target_id: request-failure",
-                "seed_variables:",
-                "  - cache",
-                "  - request.getKey()"), StandardCharsets.UTF_8);
+        Files.write(target, Collections.singletonList(
+                "exception_target_id: request-failure"),
+                StandardCharsets.UTF_8);
         Files.write(config, Arrays.asList(
                 "causynth_target_spec=" + target,
-                "causynth_repo=" + root.resolve("config-repo"),
-                "system_dir_path=" + root.resolve("fallback-repo"),
-                "causynth_module_dir=" + root.resolve("module"),
                 "causynth_output_dir=" + root.resolve("output"),
                 "causynth_analysis_scope=fixture-scope",
-                "causynth_scope=ignored-scope",
-                "causynth_rpc_mapping_file=" + root.resolve("rpc.jsonl"),
                 "value_with_equals=left=right"), StandardCharsets.UTF_8);
-        String previousRepo = System.getProperty("causynth.repo");
-        System.setProperty("causynth.repo", propertyRepo.toString());
-        try {
-            CausynthTargetContext context =
-                    CausynthTargetResolver.resolve(config.toString());
+        CausynthTargetContext context =
+                CausynthTargetResolver.resolve(config.toString());
 
-            assertEquals(propertyRepo.toAbsolutePath().normalize(),
-                    context.repoRoot);
-            assertEquals(root.resolve("module").toAbsolutePath().normalize(),
-                    context.moduleDir);
-            assertEquals(root.resolve("output").toAbsolutePath().normalize(),
-                    context.outputDir);
-            assertNull(context.seedException);
-            assertEquals("request-failure", context.exceptionTargetId);
-            assertEquals("<example.Main: void run()>", context.seedFunction);
-            assertEquals(Arrays.asList("cache", "request.getKey()"),
-                    context.seedVariables);
-            assertEquals("VARIABLE", context.seedMode());
-            assertEquals("fixture-scope", context.analysisScope);
-            assertEquals("left=right", CausynthTargetResolver.readConfig(
-                    config.toString()).get("value_with_equals"));
-        } finally {
-            restoreProperty("causynth.repo", previousRepo);
-        }
-
-        CausynthTargetContext variables = new CausynthTargetContext(root,
-                root, root, target, Arrays.asList("cache",
-                "request.getKey()"), null, null, null, "", null);
-        assertEquals("VARIABLE", variables.seedMode());
-        assertEquals("cache.get(request.getKey()) == null",
-                variables.seedPredicate());
-        assertEquals("getKey", variables.seedKeyMethodName());
+        assertEquals(root.resolve("output").toAbsolutePath().normalize(),
+                context.outputDir);
+        assertNull(context.seedException);
+        assertEquals("request-failure", context.exceptionTargetId);
+        assertEquals("fixture-scope", context.analysisScope);
+        assertEquals("left=right", CausynthTargetResolver.readConfig(
+                config.toString()).get("value_with_equals"));
     }
 
     @Test
@@ -356,11 +318,4 @@ public class CausynthModuleSupportTest {
         return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 
-    private static void restoreProperty(String key, String value) {
-        if (value == null) {
-            System.clearProperty(key);
-        } else {
-            System.setProperty(key, value);
-        }
-    }
 }

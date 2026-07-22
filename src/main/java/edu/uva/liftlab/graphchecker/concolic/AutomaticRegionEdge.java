@@ -28,13 +28,11 @@ public final class AutomaticRegionEdge {
 
     public static boolean composable(JsonObject edge) {
         if (edge == null || !bool(edge, "composable", false)
-                || explicitlyFalse(edge,
-                "eligibleForAutomaticDerivation")
-                || explicitlyFalse(edge, "eligibleForAutomaticSmt")) {
+                || !bool(edge, "eligibleForAutomaticDerivation", false)
+                || !bool(edge, "eligibleForAutomaticSmt", false)) {
             return false;
         }
-        String relation = firstNonBlank(string(edge, "validatedRelation"),
-                string(edge, "relation"));
+        String relation = string(edge, "validatedRelation");
         if ("READ_FROM".equals(relation)) {
             if (!"CONFIRMED_READ_FROM".equals(string(edge, "status"))
                     || integer(edge, "confirmedReadFromPairCount", 0) <= 0) {
@@ -43,10 +41,7 @@ public final class AutomaticRegionEdge {
             JsonElement bindings = edge.get("validatedBindings");
             if (bindings == null || !bindings.isJsonArray()
                     || bindings.getAsJsonArray().size() == 0) {
-                // Compatibility for discovery fixtures predating per-pair
-                // evidence. Production RuntimeRegionPlanner artifacts always
-                // carry validatedBindings and are checked below.
-                return true;
+                return false;
             }
             for (JsonElement element : bindings.getAsJsonArray()) {
                 if (!element.isJsonObject()
@@ -61,7 +56,7 @@ public final class AutomaticRegionEdge {
             String authority = string(edge, "valueEqualityAuthority");
             return bool(edge, "valueEqualityObserved", false)
                     && integer(edge, "confirmedValueEqualityPairCount", 0) > 0
-                    && authority.startsWith("RUNTIME_");
+                    && "RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(authority);
         }
         return false;
     }
@@ -124,18 +119,17 @@ public final class AutomaticRegionEdge {
     public static boolean trustedReadFromEvidence(JsonObject evidence) {
         if (evidence == null) return false;
         String kind = string(evidence, "writeEvidenceKind");
-        if (kind.isEmpty()) {
-            // Compatibility for pre-V2 field-assignment artifacts. Any row
-            // that exposes container-mutation metadata must use the explicit
-            // V2 kind and pass the complete gate below.
-            return !evidence.has("mutatorEnterSeq")
-                    && !evidence.has("mutationCompletionSeq")
-                    && !evidence.has("containerIdentityConfirmed");
-        }
         if ("FIELD_ASSIGNMENT".equals(kind)) {
-            String authority = string(evidence, "writeEvidenceAuthority");
-            return authority.isEmpty()
-                    || "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1".equals(authority);
+            long writer = firstLong(evidence, "writerEventSeq", "writeSeq");
+            long reader = firstLong(evidence, "readerEventSeq", "readSeq");
+            return "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1".equals(string(
+                    evidence, "writeEvidenceAuthority"))
+                    && TRACE_ORDER_AUTHORITY.equals(string(evidence,
+                    "orderAuthority"))
+                    && bool(evidence, "orderConfirmed", false)
+                    && bool(evidence, "fieldReceiverIdentityConfirmed", false)
+                    && longInteger(evidence, "receiverObjectId", 0L) != 0L
+                    && writer >= 0L && reader > writer;
         }
         if (!"FIELD_CONTAINER_MUTATION".equals(kind)
                 || !CONTAINER_MUTATION_READ_FROM_AUTHORITY.equals(string(
@@ -229,16 +223,6 @@ public final class AutomaticRegionEdge {
             return "RUNTIME_WRITE_READ_PAIR_NOT_PROVEN";
         }
         return "NO_AUTOMATICALLY_VALIDATED_RELATION";
-    }
-
-    private static boolean explicitlyFalse(JsonObject object, String name) {
-        JsonElement value = object.get(name);
-        try {
-            return value != null && !value.isJsonNull()
-                    && !value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return true;
-        }
     }
 
     private static String string(JsonObject object, String name) {

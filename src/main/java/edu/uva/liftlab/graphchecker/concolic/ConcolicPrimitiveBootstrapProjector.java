@@ -510,8 +510,11 @@ public final class ConcolicPrimitiveBootstrapProjector {
         String instanceId = firstNonBlank(string(fatal,
                 "regionInstanceId"), string(object(fatal,
                 "symbolicContext"), "regionInstanceId"));
-        String siteId = string(fatal, "siteId");
-        int occurrence = integer(fatal, "occurrence", -1);
+        BranchReplayContract contract = replayContract(fatal);
+        SolverPathContext solverPathContext = solverPathContext(fatal);
+        String siteId = contract.source().siteId();
+        int occurrence = contract.source().occurrence();
+        boolean desiredOutcome = contract.requiredTakenOutcome();
         if (activationId.isEmpty() || regionId.isEmpty()
                 || instanceId.isEmpty() || siteId.isEmpty()
                 || occurrence < 1
@@ -522,16 +525,17 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 "fatalRegionInstanceId"))
                 || !siteId.equals(string(composition, "fatalSite"))
                 || occurrence != integer(composition, "fatalOccurrence", -1)
-                || !sameBoolean(fatal, composition, "desiredOutcome",
-                "fatalDesiredOutcome")
+                || desiredOutcome != bool(composition,
+                "fatalDesiredOutcome", !desiredOutcome)
                 || integer(composition, "fatalConditionCount", -1)
-                != array(fatal, "constraints").size()
+                != contract.requiredPathPredicates().size()
+                + solverPathContext.size()
+                || !contract.contractId().equals(string(composition,
+                "fatalReplayContractId"))
                 || bool(composition, "fatalReplayValidated", true)
                 || !string(composition, "validatedSummaryId").isEmpty()
                 || !string(composition,
-                "validatedFatalReplaySummary").isEmpty()
-                || bool(fatal, "targetReplayValidated", false)
-                || bool(fatal, "replayAlreadyValidated", false)) {
+                "validatedFatalReplaySummary").isEmpty()) {
             throw gap("COMPOSITION_FATAL_QUERY_IDENTITY_MISMATCH");
         }
         if (!artifactMatches(object(composition, "composedSmtArtifact"),
@@ -541,35 +545,28 @@ public final class ConcolicPrimitiveBootstrapProjector {
                 sha256(arguments.fatalQueries))) {
             throw gap("COMPOSITION_FATAL_OR_SMT_ARTIFACT_MISMATCH");
         }
-        JsonObject branch = object(target, "targetBranch");
+        BranchCaptureSelector branch;
+        try {
+            branch = BranchCaptureSelector.fromJson(object(target,
+                    "branchCaptureSelector"));
+        } catch (IllegalArgumentException malformed) {
+            throw gap("TARGET_CAPTURE_SELECTOR_INVALID:"
+                    + malformed.getMessage());
+        }
         JsonObject goal = object(target, "captureGoal");
         if (!activationId.equals(string(target, "activationId"))
                 || !regionId.equals(string(target, "regionId"))
                 || !instanceId.equals(string(target, "regionInstanceId"))
                 || !"TARGET_BRANCH".equals(string(goal, "kind"))
-                || !siteId.equals(string(branch, "siteId"))
-                || occurrence != integer(branch, "occurrence", -1)
-                || !sameBoolean(fatal, branch, "desiredOutcome",
-                "desiredOutcome")
+                || !siteId.equals(branch.siteId())
+                || occurrence != branch.occurrence()
+                || desiredOutcome != branch.desiredOutcome()
                 || !bool(target, "replayable", false)
                 || !bool(target, "symbolicReady", false)
                 || !bool(target, "schedulerReady", false)
                 || !bool(target, "branchOverrideProhibited", false)) {
             throw gap("TARGET_ACTIVATION_EXACT_BINDING_MISMATCH");
         }
-    }
-
-    private static boolean sameBoolean(JsonObject left, JsonObject right,
-                                       String leftField,
-                                       String rightField) {
-        JsonElement leftValue = left == null ? null : left.get(leftField);
-        JsonElement rightValue = right == null ? null : right.get(rightField);
-        return leftValue != null && rightValue != null
-                && leftValue.isJsonPrimitive()
-                && rightValue.isJsonPrimitive()
-                && leftValue.getAsJsonPrimitive().isBoolean()
-                && rightValue.getAsJsonPrimitive().isBoolean()
-                && leftValue.getAsBoolean() == rightValue.getAsBoolean();
     }
 
     private static boolean artifactMatches(JsonObject artifact, Path path,
@@ -750,7 +747,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     || integer(root, "ordinal", -1) != ordinal
                     || !"EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION"
                     .equals(string(root, "projectionRole"))
-                    || !"STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_"
+                    || !"STATIC_JAVA_SCALAR_PORT_PLUS_COMPOSED_SMT_"
                     .concat("CANONICAL_BINDING_AND_RUNTIME_RELATIONSHIP_"
                             + "DIRECTION_V1").equals(string(root,
                             "authority"))
@@ -2045,25 +2042,20 @@ public final class ConcolicPrimitiveBootstrapProjector {
         if (!activationId.equals(string(fatal, "activationId"))
                 || !regionId.equals(string(fatal, "regionId"))
                 || !instance.equals(string(fatal, "regionInstanceId"))
-                || !bool(fatal, "readyForSolver", false)
-                || !fatal.has("originalTargetCondition")
-                || !fatal.has("negatedTargetCondition")
-                || array(fatal, "constraints").size() == 0) {
+                || !bool(fatal, "readyForSolver", false)) {
             throw gap("TARGET_FATAL_QUERY_IDENTITY_OR_FORMULA_MISMATCH");
         }
+        BranchReplayContract contract = replayContract(fatal);
+        solverPathContext(fatal);
         JsonObject result = source.deepCopy();
         result.add("modelAssignments", new JsonArray());
-        result.add("forcedBranches", new JsonArray());
         result.add("replayMaterializations", new JsonArray());
-        result.add("directedTargetQuery", fatal.deepCopy());
-        JsonObject target = new JsonObject();
-        target.addProperty("siteId", string(fatal, "siteId"));
-        target.addProperty("occurrence", integer(fatal, "occurrence", -1));
-        target.addProperty("desiredOutcome", bool(fatal,
-                "desiredOutcome", false));
-        target.addProperty("validationOnly", true);
-        target.addProperty("branchOverrideAllowed", false);
-        result.add("targetBranch", target);
+        result.remove("forcedBranches");
+        result.remove("targetBranch");
+        result.remove("branchCaptureSelector");
+        result.remove("directedTargetQuery");
+        result.remove("branchOverrideProhibited");
+        result.add("replayContract", contract.toJson());
         result.addProperty("executionPhase", "REPLAY_DIRECTED_TARGET");
         result.addProperty("targetReplayRequired", true);
         result.addProperty("branchOverrideProhibited", true);
@@ -2071,6 +2063,37 @@ public final class ConcolicPrimitiveBootstrapProjector {
         result.addProperty("observationOnlyReplay", true);
         result.addProperty("downstreamInjectionForbidden", true);
         return result;
+    }
+
+    private static BranchReplayContract replayContract(JsonObject query)
+            throws IOException {
+        JsonElement encoded = query == null ? null
+                : query.get("replayContract");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw gap("TARGET_REPLAY_CONTRACT_MISSING");
+        }
+        try {
+            return BranchReplayContract.fromJson(
+                    encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw gap("TARGET_REPLAY_CONTRACT_INVALID:"
+                    + malformed.getMessage());
+        }
+    }
+
+    private static SolverPathContext solverPathContext(JsonObject query)
+            throws IOException {
+        JsonElement encoded = query == null ? null
+                : query.get("solverPathContext");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw gap("TARGET_SOLVER_PATH_CONTEXT_MISSING");
+        }
+        try {
+            return SolverPathContext.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw gap("TARGET_SOLVER_PATH_CONTEXT_INVALID:"
+                    + malformed.getMessage());
+        }
     }
 
     private static void bundle(JsonObject row, String schedule, String root,
@@ -2118,7 +2141,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                                       Iterable<JsonObject> assignments,
                                       Set<String> terms) {
         StringBuilder result = new StringBuilder(
-                SymbolicRelationshipVerifier.stripSolverCommands(smt));
+                SmtLibQueries.stripSolverCommands(smt));
         if (result.length() > 0
                 && result.charAt(result.length() - 1) != '\n') {
             result.append('\n');

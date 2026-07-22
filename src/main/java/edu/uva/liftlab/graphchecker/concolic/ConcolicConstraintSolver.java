@@ -53,10 +53,18 @@ public final class ConcolicConstraintSolver {
             throws IOException, InterruptedException {
         Encoder encoder = new Encoder();
         BranchReplayContract replayContract = replayContract(task);
+        SolverPathContext solverPathContext = solverPathContext(task);
         rejectRetiredReplayAliases(task);
-        JsonArray constraints = replayContract.requiredPathPredicates();
-        for (int index = 0; index < constraints.size(); index++) {
-            encoder.addConstraint(constraints.get(index), "q" + index);
+        JsonArray contextConstraints = solverPathContext.expressions();
+        for (int index = 0; index < contextConstraints.size(); index++) {
+            encoder.addConstraint(contextConstraints.get(index),
+                    "q_context_" + index);
+        }
+        JsonArray branchConstraints = replayContract
+                .requiredPathPredicates();
+        for (int index = 0; index < branchConstraints.size(); index++) {
+            encoder.addConstraint(branchConstraints.get(index),
+                    "q_branch_" + index);
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
@@ -64,6 +72,12 @@ public final class ConcolicConstraintSolver {
                 replayContract.contractId());
         record.addProperty("branchConstraintAuthority",
                 "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
+        record.addProperty("solverPathContextId",
+                solverPathContext.contextId());
+        record.addProperty("nonBranchPathConstraintCount",
+                solverPathContext.size());
+        record.addProperty("nonBranchPathConstraintAuthority",
+                SolverPathContext.AUTHORITY);
         record.addProperty("solver", "Z3_SMT2");
         record.addProperty("solverInputHash", sha256(smt));
         record.addProperty("uninterpretedFunctionCount",
@@ -1534,8 +1548,29 @@ public final class ConcolicConstraintSolver {
         }
     }
 
+    private static SolverPathContext solverPathContext(JsonObject task)
+            throws IOException {
+        JsonElement encoded = task == null ? null
+                : task.get("solverPathContext");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw new IOException(
+                    "canonical path task requires solverPathContext");
+        }
+        try {
+            return SolverPathContext.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("invalid solver path context: "
+                    + malformed.getMessage(), malformed);
+        }
+    }
+
     private static void rejectRetiredReplayAliases(JsonObject task)
             throws IOException {
+        if (integer(task, "schemaVersion", -1) != 3
+                || !"REGION_PATH_FLIP".equals(string(task, "kind"))) {
+            throw new IOException(
+                    "canonical path task requires REGION_PATH_FLIP schema 3");
+        }
         String[] retired = new String[]{"constraints", "prefix",
                 "negatedCondition", "flipSite", "flipOccurrence",
                 "conditionIndex", "desiredOutcome",

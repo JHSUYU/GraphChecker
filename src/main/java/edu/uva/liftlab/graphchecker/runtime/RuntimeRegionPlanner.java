@@ -56,8 +56,6 @@ final class RuntimeRegionPlanner {
             "\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
     private static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
             Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
-    private static final Pattern HDFS_HEARTBEAT_THREAD_NAME =
-            Pattern.compile("^(.*\\sheartbeating\\s+to\\s+.+):[0-9]+$");
     private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
             Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
                     + "[0-9a-fA-F]+$");
@@ -82,9 +80,6 @@ final class RuntimeRegionPlanner {
     static final String ROOT_CONTEXT_SELECTION_AUTHORITY =
             "TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_THREAD_NAME_"
                     + "CONTEXT_ORDINAL_V1";
-    static final String HDFS_DATAXCEIVER_CONTEXT_NORMALIZATION_AUTHORITY =
-            "HDFS_DATAXCEIVER_DYNAMIC_THREAD_NAME_OMITTED_"
-                    + "ROLE_RECORDED_V1";
     static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
             "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
                     + "COMPLETED_MUTATION_BEFORE_READ_V1";
@@ -669,7 +664,7 @@ final class RuntimeRegionPlanner {
         // Anchors observed elsewhere in the workload are not evidence that a
         // static root reached this anchor. Returning the static root here would
         // turn an unrelated shared-suffix invocation into a false region
-        // activation (for example registration/addKeys as heartbeat/addKeys).
+        // activation (for example one registration callback as another).
         if (!anchors.isEmpty()) {
             return roots;
         }
@@ -767,14 +762,9 @@ final class RuntimeRegionPlanner {
      * ids are deliberately excluded because JVM-assigned ids change across
      * executions.  The receiver runtime class is mandatory for contexts
      * emitted by this planner; a non-empty thread name further separates
-     * same-class worker roles such as producer and consumer executors. HDFS
-     * DataXceiver names are execution-specific, so their selector omits the
-     * name and uses the receiver-class-wide ordinal while retaining a stable
-     * role as activation metadata. The generation number in the JDK default
-     * executor name is normalized while preserving its logical worker index.
-     * HDFS BPServiceActor heartbeat names retain their block-pool/name-service
-     * and NameNode host context while normalizing only the ephemeral endpoint
-     * port.
+     * same-class worker roles such as producer and consumer executors. The
+     * generation number in the JDK default executor name is normalized while
+     * preserving its logical worker index.
      */
     private static int invocationOrdinalWithinContext(
             MethodEvent target, List<MethodEvent> methods) {
@@ -805,25 +795,6 @@ final class RuntimeRegionPlanner {
         target.put("receiverRuntimeClass", root.receiverType);
         if (!stableThreadContext.isEmpty()) {
             target.put("threadName", stableThreadContext);
-        } else if (hdfsDataXceiverDynamicThreadName(root.threadName)) {
-            // DataXceiver embeds an identity hash, ephemeral peer port and
-            // block id in its thread name. Requiring that observation to be
-            // byte-for-byte equal during replay makes an otherwise stable
-            // receiver-class/context ordinal impossible to match. The
-            // runtime already treats an omitted threadName as a wildcard;
-            // retain a normalized role for offline activation selection and
-            // keep the raw observation separately on instance rows.
-            Object observedThread = target.get("threadName");
-            if (observedThread != null) {
-                target.put("observedThreadName", observedThread);
-            }
-            if (target.containsKey("activationId")) {
-                target.remove("threadName");
-            }
-            target.put("rootContextThreadRole", threadRole(root.threadName));
-            target.put("rootContextThreadNameOmitted", true);
-            target.put("rootContextNormalizationAuthority",
-                    HDFS_DATAXCEIVER_CONTEXT_NORMALIZATION_AUTHORITY);
         }
         target.put("threadIdSelectionUsed", false);
         target.put("invocationOrdinalWithinContext",
@@ -2806,7 +2777,7 @@ final class RuntimeRegionPlanner {
                     // runtime-selected region; it must not turn a merely
                     // overlapping static candidate into a second concrete
                     // region.  Truncated paths remain eligible when their
-                    // anchor was observed (important for long-running HDFS
+                    // anchor was observed (important for long-running
                     // workers), while wrong-subclass/wrong-exception
                     // candidates fail closed here.
                     if (!upstream.anchorObserved
@@ -4293,13 +4264,9 @@ final class RuntimeRegionPlanner {
 
     /**
      * Correlates each complete downstream endpoint with one source region
-     * instance.  A digest match alone is not enough when several concurrent
-     * handshakes carry the same value.  HDFS SASL username transfer first
-     * selects the most recently entered source instance whose root precedes
-     * the downstream root, then selects the nearest matching source endpoint
-     * in that instance.  Other transfers retain nearest-endpoint correlation.
-     * Endpoint sequence remains the authority for transfer order; root
-     * sequence only disambiguates the SASL connection/activation lifetime.
+     * instance. A digest match alone is not enough when several concurrent
+     * transfers carry the same value, so the nearest matching endpoint is the
+     * authority for transfer order.
      */
     private static Map<String, List<FingerprintMatch>>
     nearestEndpointFingerprintMatches(
@@ -4309,8 +4276,6 @@ final class RuntimeRegionPlanner {
         if ("SHARED_STATE".equals(edge.kind)) {
             return result;
         }
-        boolean correlateByRootLifetime =
-                saslUsernameRootLifetimeCorrelation(edge);
         Map<String, List<EndpointFingerprint>> sourceFingerprints =
                 new LinkedHashMap<>();
         for (InstanceEvidence source : sources) {
@@ -4327,9 +4292,6 @@ final class RuntimeRegionPlanner {
                 for (InstanceEvidence sourceInstance : sources) {
                     if (!sourceInstance.root.test.equals(
                             targetInstance.root.test)
-                            || (correlateByRootLifetime
-                            && sourceInstance.root.seq
-                            > targetInstance.root.seq)
                             || !endpointPairObserved(edge, sourceInstance,
                             targetInstance)) {
                         continue;
@@ -4342,9 +4304,8 @@ final class RuntimeRegionPlanner {
                     if (candidate == null) {
                         continue;
                     }
-                    if (betterEndpointCorrelation(correlateByRootLifetime,
-                            sourceInstance, candidate, bestInstance,
-                            bestMatch)) {
+                    if (betterEndpointCorrelation(sourceInstance, candidate,
+                            bestInstance, bestMatch)) {
                         bestInstance = sourceInstance;
                         bestMatch = candidate;
                     }
@@ -4359,17 +4320,12 @@ final class RuntimeRegionPlanner {
     }
 
     private static boolean betterEndpointCorrelation(
-            boolean correlateByRootLifetime,
             InstanceEvidence candidateInstance,
             FingerprintMatch candidate,
             InstanceEvidence currentInstance,
             FingerprintMatch current) {
         if (currentInstance == null) {
             return true;
-        }
-        if (correlateByRootLifetime
-                && candidateInstance.root.seq != currentInstance.root.seq) {
-            return candidateInstance.root.seq > currentInstance.root.seq;
         }
         if (candidate.distance() != current.distance()) {
             return candidate.distance() < current.distance();
@@ -4381,17 +4337,9 @@ final class RuntimeRegionPlanner {
                 currentInstance.instanceId) < 0;
     }
 
-    private static boolean saslUsernameRootLifetimeCorrelation(
-            StaticRegionEdge edge) {
-        return edge != null
-                && "hdfs_sasl_username".equals(edge.mappingKind);
-    }
-
     private static String endpointCorrelationAuthority(
             StaticRegionEdge edge) {
-        return saslUsernameRootLifetimeCorrelation(edge)
-                ? "NEAREST_PRECEDING_SOURCE_ROOT_THEN_ENDPOINT"
-                : "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
+        return "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
     }
 
     private static FingerprintMatch nearestMatchingSourceEndpoint(
@@ -4462,13 +4410,6 @@ final class RuntimeRegionPlanner {
                     && "METHOD_EXIT_NORMAL".equals(event.kind)
                     && method.equals(event.method)) {
                 authority = "METHOD_RETURN";
-            } else if (!source
-                    && "hdfs_sasl_username".equals(edge.mappingKind)
-                    && "CALL_SITE_RETURN".equals(event.kind)
-                    && method.equals(event.method)
-                    && nameCallbackDefaultNameGetter(
-                    event.declaredCallee)) {
-                authority = "HDFS_SASL_NAME_CALLBACK_DEFAULT_RETURN";
             } else if (!source && "CALL_SITE_RETURN".equals(event.kind)
                     && edge.siteId.equals(event.siteId)) {
                 authority = "MAPPED_CALL_RETURN_SITE";
@@ -4502,14 +4443,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return result;
-    }
-
-    private static boolean nameCallbackDefaultNameGetter(
-            String declaredCallee) {
-        String method = safe(declaredCallee);
-        return method.startsWith(
-                "<javax.security.auth.callback.NameCallback:")
-                && "getDefaultName".equals(methodName(method));
     }
 
     private static void addFingerprint(List<EndpointFingerprint> result,
@@ -7147,7 +7080,7 @@ final class RuntimeRegionPlanner {
          * Resolves a runtime-confirmed external endpoint against the full
          * static candidate input set, but permits a local alias only when the
          * already-selected concrete demand edges prove that exact direct
-         * definition.  This keeps RPC/SASL and shared-state boundary recovery
+         * definition. This keeps protocol and shared-state boundary recovery
          * independent of edge iteration order without reopening arbitrary
          * frozen-graph reachability.
          */
@@ -7264,21 +7197,6 @@ final class RuntimeRegionPlanner {
                 }
             }
             return 0;
-        }
-
-        private List<RuntimeEvent> matchingMethodReturns(
-                Map<String, Object> binding) {
-            List<RuntimeEvent> result = new ArrayList<>();
-            String method = string(binding.get("method"));
-            if (method.isEmpty()) return result;
-            for (RuntimeEvent event : runtimeEvents) {
-                if ("METHOD_EXIT_NORMAL".equals(event.kind)
-                        && method.equals(event.method)) {
-                    result.add(event);
-                }
-            }
-            result.sort(Comparator.comparingLong(value -> value.seq));
-            return result;
         }
 
         /**
@@ -9167,7 +9085,6 @@ final class RuntimeRegionPlanner {
                 refined.captureBindings.clear();
                 int matchedCaptureCount = 0;
                 boolean fieldAssignmentRequested = false;
-                boolean methodReturnRequested = false;
                 for (Map<String, Object> binding : captureBindings) {
                     String captureKind = firstNonBlank(string(binding.get(
                             "captureKind")), "CALL_ARGUMENT");
@@ -9232,41 +9149,6 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
 
-                    if ("METHOD_RETURN_VALUE".equals(captureKind)) {
-                        methodReturnRequested = true;
-                        String method = string(binding.get("method"));
-                        if (!observed.contains(method)) {
-                            continue;
-                        }
-                        List<RuntimeEvent> returns = evidence
-                                .matchingMethodReturns(binding);
-                        // METHOD_EXIT_NORMAL has the exact method/call id but
-                        // intentionally no Jimple return-site id.  Refine only
-                        // a unique invocation; otherwise the static hook's
-                        // requested occurrence would be a guess.
-                        if (returns.size() != 1) {
-                            if (returns.size() > 1) {
-                                refined.captureBindingIssues.add(
-                                        "RUNTIME_METHOD_RETURN_"
-                                                + "OCCURRENCE_AMBIGUOUS:"
-                                                + method + ":"
-                                                + returns.size());
-                            }
-                            continue;
-                        }
-                        RuntimeEvent match = returns.get(0);
-                        Map<String, Object> exact =
-                                new LinkedHashMap<>(binding);
-                        exact.put("occurrence", 1);
-                        exact.put("occurrenceAuthority",
-                                "RUNTIME_EXACT_METHOD_RETURN_OCCURRENCE");
-                        exact.put("runtimeCallId", match.callId);
-                        exact.put("runtimeEventSeq", match.seq);
-                        refined.captureBindings.add(exact);
-                        matchedCaptureCount++;
-                        continue;
-                    }
-
                     String caller = string(binding.get("callerMethod"));
                     if (!observed.contains(caller)) {
                         continue;
@@ -9294,14 +9176,10 @@ final class RuntimeRegionPlanner {
                     if (matchedCaptureCount == 0) {
                         failure = fieldAssignmentRequested
                                 ? "NO_RUNTIME_EXACT_FIELD_ASSIGNMENT_MATCH"
-                                : methodReturnRequested
-                                ? "NO_RUNTIME_EXACT_METHOD_RETURN_MATCH"
                                 : "NO_RUNTIME_EXACT_CALL_ARGUMENT_MATCH";
                     } else {
                         failure = (fieldAssignmentRequested
                                 ? "AMBIGUOUS_RUNTIME_FIELD_ASSIGNMENT_MATCH:"
-                                : methodReturnRequested
-                                ? "AMBIGUOUS_RUNTIME_METHOD_RETURN_MATCH:"
                                 : "AMBIGUOUS_RUNTIME_CALL_ARGUMENT_MATCH:")
                                 + matchedCaptureCount;
                     }
@@ -9804,21 +9682,6 @@ final class RuntimeRegionPlanner {
     private static String threadRole(String threadName) {
         String value = safe(threadName);
         String lower = value.toLowerCase(Locale.ROOT);
-        if (hdfsDataXceiverDynamicThreadName(value)) {
-            if (lower.contains("[replacing block ")) {
-                return "DataXceiver:ReplacingBlock";
-            }
-            if (lower.contains("[copying block ")) {
-                return "DataXceiver:CopyingBlock";
-            }
-            if (lower.contains("[receiving block ")) {
-                return "DataXceiver:ReceivingBlock";
-            }
-            return "DataXceiver";
-        }
-        if (lower.contains("dataxceiver")) {
-            return "DataXceiver";
-        }
         if (lower.contains("ipc") || lower.contains("rpc")) {
             return "RPCHandler";
         }
@@ -9835,39 +9698,19 @@ final class RuntimeRegionPlanner {
      * Returns the replay-stable portion of a root thread context. Ordinary
      * worker names remain exact. The JDK default executor pool generation is
      * process-global and therefore changes when unrelated pools are created;
-     * normalize that number while retaining the worker index. HDFS heartbeat
-     * names include a NameNode endpoint whose numeric port changes between
-     * MiniDFSCluster executions; retain the full prefix and host while
-     * normalizing only that final port. HDFS DataXceiver names are deliberately
-     * omitted because both formats are execution-specific:
-     * {@code DataXceiver@<identityHash>} before the operation is decoded and
-     * {@code DataXceiver for client <peer> [<operation/block>]} afterwards.
+     * normalize that number while retaining the worker index. Object-identity
+     * suffixes are normalized while retaining the logical thread type.
      */
     private static String stableRootThreadContext(String threadName) {
         String value = safe(threadName);
-        if (hdfsDataXceiverDynamicThreadName(value)) {
-            return "";
-        }
         Matcher executor = DEFAULT_EXECUTOR_THREAD_NAME.matcher(value);
         if (executor.matches()) {
             return "pool-*-thread-" + executor.group(1);
-        }
-        Matcher heartbeat = HDFS_HEARTBEAT_THREAD_NAME.matcher(value);
-        if (heartbeat.matches()) {
-            return heartbeat.group(1) + ":*";
         }
         Matcher objectIdentity = DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(
                 value);
         return objectIdentity.matches()
                 ? objectIdentity.group(1) + "@*" : value;
-    }
-
-    private static boolean hdfsDataXceiverDynamicThreadName(
-            String threadName) {
-        String lower = safe(threadName).toLowerCase(Locale.ROOT);
-        return lower.startsWith(
-                "org.apache.hadoop.hdfs.server.datanode.dataxceiver@")
-                || lower.startsWith("dataxceiver for client ");
     }
 
     private static List<MethodEvent> sortedMethods(List<MethodEvent> values) {

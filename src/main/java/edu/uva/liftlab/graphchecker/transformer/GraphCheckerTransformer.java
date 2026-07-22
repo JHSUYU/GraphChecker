@@ -38,7 +38,7 @@ public class GraphCheckerTransformer extends SceneTransformer {
                 classCount, concreteMethodCount);
 
         try {
-            new CausynthPipeline(GraphCheckerOptions.getInstance(), classCount, concreteMethodCount).run();
+            new CausynthPipeline(GraphCheckerOptions.getInstance()).run();
         } catch (IOException exception) {
             throw new RuntimeException("Causynth pipeline failed", exception);
         }
