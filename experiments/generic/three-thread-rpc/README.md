@@ -65,6 +65,14 @@ schedule paths from that properties file. Standard workflow paths follow
 `causynth_output_dir`. Keep `workload_command` consistent with the same
 fixture metadata when supplying a custom configuration.
 
+Producer exploration remains explicitly bounded.  A workload with a larger
+finite path product can raise any of
+`producer_max_paths_per_region`, `producer_max_flips_per_path`,
+`producer_max_path_tasks`, or `producer_max_path_wall_clock_ms` in its
+properties file.  The runner passes those values to every planning round and
+still fails closed if the resulting worklist reports a bound gap; it never
+treats exhaustion of a configured budget as closure.
+
 `clean` is guarded to remove only the configured fixture work root below the
 project's `target` directory (`target/three-thread-rpc` by default). It does
 not clean Maven output, the repository, or the custom JDK. `all` refuses to

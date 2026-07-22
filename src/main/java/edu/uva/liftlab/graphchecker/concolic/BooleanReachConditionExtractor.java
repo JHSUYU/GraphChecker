@@ -377,7 +377,6 @@ public final class BooleanReachConditionExtractor {
                                       List<String> gaps) {
         Map<String, List<JsonObject>> mappingsByPort =
                 new LinkedHashMap<>();
-        Map<String, Integer> caseCountByRegion = new LinkedHashMap<>();
         JsonArray cases = array(manifest, "caseProjectionCatalog");
         if (integer(manifest, "caseProjectionCatalogCount", -1)
                 != cases.size()) {
@@ -400,10 +399,6 @@ public final class BooleanReachConditionExtractor {
                 gaps.add("INCOMPLETE_CASE_PROJECTION:" + caseIndex);
                 continue;
             }
-            String caseRegion = string(pathCase, "regionId");
-            Integer previousCaseCount = caseCountByRegion.get(caseRegion);
-            caseCountByRegion.put(caseRegion, previousCaseCount == null ? 1
-                    : previousCaseCount + 1);
             for (JsonElement mappingElement : array(pathCase,
                     "rawEngineSymbolMappings")) {
                 if (!mappingElement.isJsonObject()) continue;
@@ -454,9 +449,8 @@ public final class BooleanReachConditionExtractor {
             }
             String solverTerm = encoding.solverTerm(port.id);
             String portTerm = "port__" + smtName(port.id);
-            List<JsonObject> evidence = mappingsByPort.get(port.id);
-            int regionCaseCount = caseCountByRegion.containsKey(port.regionId)
-                    ? caseCountByRegion.get(port.regionId) : 0;
+            List<JsonObject> evidence = scalarEvidence(
+                    mappingsByPort.get(port.id), encoding);
             String nullnessSolverTerm = encoding == ScalarEncoding.STRING
                     ? exactCanonicalStringNullnessTerm(evidence, port,
                     gaps) : "";
@@ -474,13 +468,11 @@ public final class BooleanReachConditionExtractor {
                         + "SMT_BINDING:") + port.id);
                 continue;
             }
-            if (regionCaseCount > 0
-                    && !exactlyOneMappingPerCase(evidence,
-                    regionCaseCount)) {
+            if (!atMostOneMappingPerUsedCase(evidence)) {
                 gaps.add((port.javaBoolean
-                        ? "BOOLEAN_CASE_MAPPING_COVERAGE_MISMATCH:"
-                        : "NON_BOOLEAN_SCALAR_CASE_MAPPING_COVERAGE_"
-                        + "MISMATCH:") + port.id + ":" + regionCaseCount);
+                        ? "BOOLEAN_CASE_MAPPING_AMBIGUOUS:"
+                        : "NON_BOOLEAN_SCALAR_CASE_MAPPING_AMBIGUOUS:")
+                        + port.id);
             }
             if (evidence != null) {
                 for (JsonObject mapping : evidence) {
@@ -595,18 +587,34 @@ public final class BooleanReachConditionExtractor {
                 + solverTerm + ") " + portTerm + ")");
     }
 
-    private static boolean exactlyOneMappingPerCase(
-            List<JsonObject> evidence, int expectedCaseCount) {
-        if (evidence == null || expectedCaseCount < 1
-                || evidence.size() != expectedCaseCount) {
-            return false;
+    private static List<JsonObject> scalarEvidence(
+            List<JsonObject> evidence, ScalarEncoding encoding) {
+        if (evidence == null || evidence.isEmpty()) {
+            return Collections.emptyList();
         }
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonObject mapping : evidence) {
+            if (encoding.solverSort.equals(string(mapping, "solverSort"))) {
+                result.add(mapping);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * A short-circuit case need not read every root.  Evidence is authoritative
+     * where the input is used; requiring it to be redundantly repeated in
+     * every case rejects valid null and early-return paths.  Multiple
+     * projections for one used case remain ambiguous and fail closed.
+     */
+    private static boolean atMostOneMappingPerUsedCase(
+            List<JsonObject> evidence) {
         Set<String> cases = new LinkedHashSet<>();
         for (JsonObject mapping : evidence) {
             String caseId = string(mapping, "caseId");
             if (caseId.isEmpty() || !cases.add(caseId)) return false;
         }
-        return cases.size() == expectedCaseCount;
+        return true;
     }
 
     /**
@@ -701,7 +709,6 @@ public final class BooleanReachConditionExtractor {
 
     private static boolean hasDynamicBridgeMetadata(JsonObject mapping) {
         for (String member : new String[]{"canonicalSolverTerm",
-                "canonicalNullnessSolverTerm",
                 "canonicalBridgeGuard", "canonicalBridgeExpression",
                 "canonicalBridgeFormula", "canonicalBridgeAssertionName",
                 "canonicalBridgeAssertion",

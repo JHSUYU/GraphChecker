@@ -725,8 +725,10 @@ public class ConcolicSmtComposerTest {
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
             JsonElement receiver = symbol("java/lang/String",
                     "M_L'String'_REGION.F.in.2_example/Transport");
+            JsonElement erasedReceiver = symbol("L",
+                    "M_L_field_REGION.F.in.2_example/Transport");
             JsonArray constraints = new JsonArray();
-            constraints.add(binaryCondition(receiver.deepCopy(), "!=",
+            constraints.add(binaryCondition(erasedReceiver, "!=",
                     symbol("", "N")));
             constraints.add(negatedOpString("equals", receiver.deepCopy(),
                     symbol("", "N")));
@@ -763,6 +765,12 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.smtLib, result.smtLib.contains(
                     "(ite " + companion + " (VRef nullRef) (VString "
                             + "sym__port__REGION_F_in_2__string))"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(= (= sym__port__REGION_F_in_2__ref nullRef) "
+                            + companion + ")"));
+            assertFalse(result.smtLib, result.smtLib.contains(
+                    "(= port__REGION_F_in_2 "
+                            + "(VRef sym__port__REGION_F_in_2__ref))"));
             assertTrue(fatalPath, fatalPath.contains(
                     "(not " + companion + ")"));
             assertTrue(fatalPath, fatalPath.contains("(str.contains "
@@ -1818,6 +1826,59 @@ public class ConcolicSmtComposerTest {
                         mapping.get("solverTerm").getAsString());
                 assertEquals("Int", mapping.get("solverSort").getAsString());
             }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void contextualBooleanLiteralIsNotAProjectionRoot()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject summary = producerSummary(singlePutEffect(), true);
+            summary.add("captureGoal",
+                    RegionCaptureGoal.outputClosure().toJson());
+            summary.add("requestedOutput",
+                    requestedOutput("REGION.P.out.0"));
+
+            JsonArray conditions = summary.getAsJsonArray("pathCondition");
+            conditions.add(binaryCondition(
+                    symbol("I", "M_I_field_REGION.P.in.2_example/Cache"),
+                    "==", constant("Z", "Y_Z_0")));
+            conditions.add(binaryCondition(
+                    opString("contains", conString("rpc-ready"),
+                            conString("ready")),
+                    "!=", constant("Z", "Y_Z_0")));
+
+            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                    java.util.Collections.singletonList(summary),
+                    closedPathManifest());
+            writeSummary(fixture, merged.summaries.get(0));
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertTrue(result.manifest.get(
+                    "caseProjectionCatalogComplete").getAsBoolean());
+            JsonObject projection = result.manifest.getAsJsonArray(
+                    "caseProjectionCatalog").get(0).getAsJsonObject();
+            assertEquals("OMIT_NON_ROOT_ENGINE_LITERALS_FROM_"
+                            + "PROJECTION_CATALOG",
+                    projection.get("contextualLiteralPolicy").getAsString());
+            assertFalse(projection.getAsJsonArray(
+                    "rawEngineSymbolMappings").toString().contains(
+                    "Y_Z_0"));
+            assertFalse(projection.getAsJsonArray(
+                    "validationGaps").toString().contains(
+                    "RAW_SYMBOL_TERM_CONFLICT"));
+            assertTrue(result.smtLib.contains(
+                    "sym__port__REGION_P_in_2__int 0"));
+            assertTrue(result.smtLib.contains("(str.contains "));
         } finally {
             folder.delete();
         }

@@ -737,8 +737,9 @@ do_explore_producer() {
   local summaries activations records planner_dir replay_activation raw imported
   local replay_verification
   local z3 solver_timeout planner_status query_key iteration selection_dir
+  local bound_spec bound_property bound_option bound_value
   local -A seen_queries=()
-  local -a _replay_activations=()
+  local -a _replay_activations=() planner_bound_args=()
   validate_discovery_inputs
   channel=$(discovered_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
@@ -763,6 +764,19 @@ do_explore_producer() {
     "${schedule}/scheduled_activation_plan.jsonl"
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
+  for bound_spec in \
+      "producer_max_paths_per_region:max-paths-per-region" \
+      "producer_max_flips_per_path:max-flips-per-path" \
+      "producer_max_path_tasks:max-tasks" \
+      "producer_max_path_wall_clock_ms:max-wall-clock-ms"; do
+    bound_property=${bound_spec%%:*}
+    bound_option=${bound_spec#*:}
+    bound_value=$(workflow_property "${bound_property}" false)
+    [[ -n "${bound_value}" ]] || continue
+    [[ "${bound_value}" =~ ^[1-9][0-9]*$ ]] \
+      || die "${bound_property} must be a positive integer"
+    planner_bound_args+=("--${bound_option}" "${bound_value}")
+  done
 
   iteration=1
   while true; do
@@ -777,7 +791,8 @@ do_explore_producer() {
       --output-dir "${planner_dir}" \
       --z3 "${z3}" \
       --solver-timeout-ms "${solver_timeout}" \
-      --region-id "${region}"
+      --region-id "${region}" \
+      "${planner_bound_args[@]}"
     planner_status=$?
     set -e
     require_file "producer path planner manifest" \
@@ -804,7 +819,8 @@ do_explore_producer() {
         --z3 "${z3}" \
         --solver-timeout-ms "${solver_timeout}" \
         --region-id "${region}" \
-        --query-key "${query_key}"
+        --query-key "${query_key}" \
+        "${planner_bound_args[@]}"
       planner_status=$?
       set -e
       planner_dir=${selection_dir}
