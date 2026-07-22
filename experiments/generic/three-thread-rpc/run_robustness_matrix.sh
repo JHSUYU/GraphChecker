@@ -19,8 +19,9 @@ Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [core|all]
   core  Run baseline, cross-method-fields, and multitype (default).
   all   Also run dependent-scalar and containers.
 
-Each entry runs the existing fixture runner's clean and all commands. This
-driver never runs unit tests and does not change per-workload runner behavior.
+Each entry runs the fixture runner's clean and candidate commands, invokes Z3
+on the emitted SMT, and validates the exact candidate reach profile. Natural
+replay promotion is intentionally outside this gate and remains a TODO.
 EOF
 }
 
@@ -416,6 +417,104 @@ validate_semantic_profile() {
   esac
 }
 
+validate_candidate_outputs() {
+  local label=$1
+  local work_root=$2
+  local z3=$3
+  local candidate_root="${work_root}/bootstrap"
+  local smt="${candidate_root}/composed_fatal.smt2"
+  local composition="${candidate_root}/composed_smt_manifest.json"
+  local reach_report="${candidate_root}/bootstrap_boolean_model.json"
+  local relationships="${candidate_root}/symbolic_relationship_candidates.json"
+  local candidate_manifest="${candidate_root}/candidate_result_manifest.json"
+  local reachability solver_output solver_status expected_status
+
+  require_file "candidate SMT" "${smt}"
+  [[ -s "${smt}" ]] || die "candidate SMT is empty: ${smt}"
+  grep -Eq '^[[:space:]]*\(check-sat\)' "${smt}" \
+    || die "candidate SMT has no check-sat command: ${smt}"
+  validate_json_object "candidate composition manifest" "${composition}"
+  validate_json_object "candidate reach model" "${reach_report}"
+  validate_json_object "candidate result manifest" "${candidate_manifest}"
+  validate_json_object "candidate relationships" "${relationships}"
+  validate_composition_common "${composition}"
+
+  jq -e '
+    .compositionStage == "BOOTSTRAP"
+    and .boundedComposition == true
+    and .structurallyComplete == true
+    and .eligibleForBootstrapModel == true
+    and .fatalReplayValidated == false
+    and .complete == false
+    and .eligibleToReportAutomaticRelationship == false
+    and .caseProjectionCatalogComplete == true
+  ' "${composition}" >/dev/null \
+    || die "candidate composition escaped BOOTSTRAP trust state"
+  jq -e '
+    .schemaVersion == 1
+    and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
+    and .complete == true
+    and .extractionMode == "BOOTSTRAP_REPLAY_MODEL"
+    and .replayBootstrapOnly == true
+    and .reportableFinalReachCondition == false
+    and .fatalReplayValidated == false
+    and .truthTableComplete == true
+    and .exactFiniteProjection == true
+    and .solverErrorCount == 0
+    and ((.discoveryGaps // []) | length) == 0
+    and (.satisfyingValuationCount + .unsatisfyingValuationCount
+      == .valuationCount)
+    and .rootBooleanInputCount == ((.rootBooleanInputs // []) | length)
+    and (.existentialNonBooleanRootInputCount // 0)
+      == ((.existentialNonBooleanRootInputs // []) | length)
+  ' "${reach_report}" >/dev/null \
+    || die "candidate Boolean reach model is incomplete"
+  jq -e '
+    .schemaVersion == 1
+    and .kind == "CONCOLIC_CANDIDATE_RESULT"
+    and .status == "COMPLETE_Z3_CHECKED_CANDIDATE"
+    and .complete == true
+    and .trustState == "CANDIDATE_ONLY"
+    and .z3Checked == true
+    and .naturalReplayPromotionImplemented == false
+  ' "${candidate_manifest}" >/dev/null \
+    || die "candidate result incorrectly claims trusted promotion"
+  jq -e '
+    .compositionStage == "BOOTSTRAP"
+    and .structurallyComplete == true
+    and .eligibleForBootstrapModel == true
+    and .eligibleForAutomaticVerification == false
+  ' "${relationships}" >/dev/null \
+    || die "candidate relationships claim final eligibility"
+
+  validate_artifact_binding "${candidate_manifest}" \
+    candidateSmtArtifact "${smt}"
+  validate_artifact_binding "${candidate_manifest}" \
+    compositionManifestArtifact "${composition}"
+  validate_artifact_binding "${candidate_manifest}" \
+    candidateReachModelArtifact "${reach_report}"
+  validate_artifact_binding "${candidate_manifest}" \
+    relationshipCandidatesArtifact "${relationships}"
+
+  reachability=$(jq -er '
+    .reachabilityStatus
+    | select(. == "REACHABLE" or . == "UNREACHABLE")
+  ' "${reach_report}") \
+    || die "candidate reach model has no reachability status"
+  expected_status=$([[ "${reachability}" == "REACHABLE" ]] \
+    && printf sat || printf unsat)
+  solver_output=$("${z3}" "${smt}") \
+    || die "z3 failed for ${label} candidate"
+  printf '%s\n' "${solver_output}" | grep -Fq '(error' \
+    && die "z3 reported an SMT error for ${label} candidate"
+  solver_status=$(awk 'NF { print $1; exit }' <<< "${solver_output}")
+  [[ "${solver_status}" == "${expected_status}" ]] \
+    || die "${label} candidate expected z3 ${expected_status}, got ${solver_status}"
+  validate_semantic_profile "${label}" "${smt}" "${reach_report}" \
+    "${work_root}"
+  echo "[three-thread-rpc-matrix] ${label}: candidate ${reachability}, z3=${solver_status}"
+}
+
 validate_final_outputs() {
   local label=$1
   local work_root=$2
@@ -480,9 +579,9 @@ run_case() {
 
   echo "[three-thread-rpc-matrix] ${label}: clean"
   CAUSYNTH_WORKFLOW_CONFIG="${config}" "${fixture_runner}" clean
-  echo "[three-thread-rpc-matrix] ${label}: all"
-  CAUSYNTH_WORKFLOW_CONFIG="${config}" "${fixture_runner}" all
-  validate_final_outputs "${label}" "${work_root}" "${z3}"
+  echo "[three-thread-rpc-matrix] ${label}: candidate"
+  CAUSYNTH_WORKFLOW_CONFIG="${config}" "${fixture_runner}" candidate
+  validate_candidate_outputs "${label}" "${work_root}" "${z3}"
 }
 
 mode=${1:-core}

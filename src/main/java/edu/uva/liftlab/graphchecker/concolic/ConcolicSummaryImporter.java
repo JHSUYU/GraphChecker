@@ -3716,6 +3716,11 @@ public final class ConcolicSummaryImporter {
 
     private static List<JsonObject> expectedConcreteGuardProofs(
             JsonObject activation, List<String> issues) {
+        JsonElement contractElement = activation.get("replayContract");
+        if (contractElement != null) {
+            return expectedConcreteGuardProofsFromContract(activation,
+                    contractElement, issues);
+        }
         List<JsonObject> result = new ArrayList<>();
         JsonElement constraintsElement = activation.get(
                 "pathReplayConstraints");
@@ -3812,6 +3817,50 @@ public final class ConcolicSummaryImporter {
             addExpectedConcreteGuardProof(result, activation, constraints,
                     "TARGET", targetSite, targetOccurrence, targetOutcome,
                     targetIndex, -1, issues);
+        }
+        return result;
+    }
+
+    private static List<JsonObject> expectedConcreteGuardProofsFromContract(
+            JsonObject activation, JsonElement encoded,
+            List<String> issues) {
+        List<JsonObject> result = new ArrayList<>();
+        final BranchReplayContract contract;
+        try {
+            contract = BranchReplayContract.fromJson(
+                    encoded.getAsJsonObject());
+        } catch (RuntimeException malformed) {
+            issues.add("BRANCH_REPLAY_CONTRACT_MALFORMED:"
+                    + malformed.getMessage());
+            return result;
+        }
+        JsonArray constraints = contract.requiredPathPredicates();
+        Set<String> events = new LinkedHashSet<>();
+        int ordinal = 0;
+        for (BranchWitness witness : contract.orderedPrefix()) {
+            if (!events.add(witness.siteId() + "\u0000"
+                    + witness.occurrence())) {
+                issues.add("PREFIX@" + ordinal
+                        + ":DUPLICATE_BRANCH_EVENT");
+            } else if (BranchWitness.CERTIFIED_NO_PC.equals(
+                    witness.evidenceKind())) {
+                addExpectedConcreteGuardProof(result, activation,
+                        constraints, "PREFIX", witness.siteId(),
+                        witness.occurrence(), witness.sourceTakenOutcome(),
+                        ordinal, ordinal, issues);
+            }
+            ordinal++;
+        }
+        BranchWitness source = contract.source();
+        if (!events.add(source.siteId() + "\u0000"
+                + source.occurrence())) {
+            issues.add("TARGET:DUPLICATE_BRANCH_EVENT");
+        } else if (BranchWitness.CERTIFIED_NO_PC.equals(
+                source.evidenceKind())) {
+            addExpectedConcreteGuardProof(result, activation, constraints,
+                    "TARGET", source.siteId(), source.occurrence(),
+                    contract.requiredTakenOutcome(),
+                    contract.orderedPrefix().size(), -1, issues);
         }
         return result;
     }
@@ -11550,16 +11599,32 @@ public final class ConcolicSummaryImporter {
             failures.add("BRANCH_OVERRIDE_ATTESTATION_MISSING_OR_MALFORMED");
         }
 
-        JsonObject target = object(activation, "targetBranch");
-        if (target.size() == 0 || !observedTargetBranch(
-                array(raw, "branchMappings"), target)) {
-            failures.add("DIRECTED_TARGET_BRANCH_NOT_OBSERVED");
-        }
-        boolean validProvenance = outputPathFlip
-                ? validOutputPathFlipProvenance(raw, activation, target)
-                : validDirectedTargetQuery(activation, target);
-        if (!validProvenance) {
-            failures.add("DIRECTED_TARGET_QUERY_PROVENANCE_MISSING");
+        JsonElement replayContract = activation.get("replayContract");
+        if (replayContract != null) {
+            validateReplayContractObservation(raw, replayContract,
+                    failures);
+            String activationQueryKey = strictString(activation,
+                    "pathQueryKey");
+            if (activationQueryKey.isEmpty()
+                    || !activationQueryKey.equals(strictString(raw,
+                    "pathQueryKey"))) {
+                failures.add("PATH_QUERY_KEY_MISMATCH");
+            }
+        } else {
+            // Kept temporarily for non-canonical unit fixtures.  Production
+            // path-flip activations carry exactly one replayContract; this
+            // legacy branch is removed with those fixtures below.
+            JsonObject target = object(activation, "targetBranch");
+            if (target.size() == 0 || !observedTargetBranch(
+                    array(raw, "branchMappings"), target)) {
+                failures.add("DIRECTED_TARGET_BRANCH_NOT_OBSERVED");
+            }
+            boolean validProvenance = outputPathFlip
+                    ? validOutputPathFlipProvenance(raw, activation, target)
+                    : validDirectedTargetQuery(activation, target);
+            if (!validProvenance) {
+                failures.add("DIRECTED_TARGET_QUERY_PROVENANCE_MISSING");
+            }
         }
 
         if (expectedMaterializations.size() != appliedMaterializations.size()) {
@@ -11611,6 +11676,44 @@ public final class ConcolicSummaryImporter {
                 : "SOLVER_MODEL_PLUS_UNFORCED_BRANCH_OBSERVATION";
         return new ReplayAdmission(true, valid, failures, valid
                 ? successAuthority : "NONE");
+    }
+
+    /**
+     * Revalidates the immutable witness stream once at the importer trust
+     * boundary.  The replay contract derives the target polarity itself, so
+     * no targetBranch/expectedPrefix/negatedCondition aliases participate in
+     * admission.
+     */
+    private static void validateReplayContractObservation(
+            JsonObject raw, JsonElement encodedContract,
+            JsonArray failures) {
+        if (!encodedContract.isJsonObject()) {
+            failures.add("REPLAY_CONTRACT_MALFORMED");
+            return;
+        }
+        final BranchReplayContract contract;
+        try {
+            contract = BranchReplayContract.fromJson(
+                    encodedContract.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            failures.add("REPLAY_CONTRACT_MALFORMED:"
+                    + malformed.getMessage());
+            return;
+        }
+        List<BranchWitness> observed = new ArrayList<>();
+        for (JsonElement element : array(raw, "branchMappings")) {
+            if (!element.isJsonObject()) continue;
+            BranchWitness witness = branchWitness(element.getAsJsonObject());
+            if (witness != null) observed.add(witness);
+        }
+        BranchReplayObservationValidator.Result validation =
+                BranchReplayObservationValidator.validate(contract,
+                        observed);
+        if (!validation.valid()) {
+            for (String failure : validation.failures()) {
+                failures.add("BRANCH_REPLAY_CONTRACT:" + failure);
+            }
+        }
     }
 
     private static boolean validDirectedTargetQuery(JsonObject activation,
