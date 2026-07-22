@@ -2,8 +2,8 @@
 
 GraphChecker 从静态数据流、运行时跨 region 证据和逐 region concolic execution 中构造
 `region.in -> region.out` 关系，再沿 region graph 递归组合成一个可直接交给 Z3 的 SMT。
-当前维护的参考工作负载是通用三线程 RPC fixture 及其 cross-method、multitype、container
-变体。
+当前维护的验证矩阵是通用三线程 RPC fixture 及其 cross-method、multitype、
+dependent-scalar、container 变体。
 
 ## 项目定位
 
@@ -56,9 +56,9 @@ exception_target_id: three-thread-rpc
 ```
 
 未提供 id 时必须恰好只有一个 marker；缺失、重复或无法唯一映射到 Jimple throw 都会
-fail closed。旧的 `seed_exception`/`target_exception` 配置入口已删除。annotation 只消除
-目标定位上的重复确认；跨线程 producer、read-from、顺序、对象/值 identity 和 runtime
-instance 仍必须由原有静态/运行时证据验证。
+fail closed。旧的 exception-name 搜索、`seed_variables`、`seed_function` 及其配置 alias
+均已删除。annotation 只消除目标定位上的重复确认；跨线程 producer、read-from、顺序、
+对象/值 identity 和 runtime instance 仍必须由静态/运行时证据验证。
 
 三线程 fixture 位于
 `src/test/java/edu/uva/liftlab/graphchecker/fixtures/ThreeThreadRpcWorkload.java`：
@@ -148,8 +148,8 @@ leaf getter，静态 output demand 仍可把 leaf 反投影到 exact container s
 下游 `region.in` 的定义值。返回值、field 写、array 写或传给下游调用的值都可能是 out；
 与任何下游 input 无关的临时值不应成为 out。一个 region 可以有多个 output。
 
-静态 dataflow 给出候选 `out -> in` 边；跨线程/RPC 场景允许配置方法级拓扑，但最终边仍
-需要具体 runtime publish/read、顺序和对象/值证据确认。
+静态 dataflow 给出候选 `out -> in` 边；跨线程/RPC 关系由程序中的调用、publish/read
+与共享状态自动发现，最终边需要具体 runtime 顺序、对象或完整值 fingerprint 证据确认。
 
 ### Region relation
 
@@ -225,13 +225,14 @@ Scheduler 为每次 capture 选择一个 region activation。GraphChecker runtim
 engine-backed owner，避免其他应用线程或 GraphChecker 自身 bookkeeping 污染当前 path
 condition。
 
-每个二元 branch 只产生一个不可变、内容哈希的 `BranchWitness`。它包含稳定的
-`site + occurrence`、源 execution 实际满足的 outcome/predicate，以及互斥的 `VM_PC` 或
-`CERTIFIED_NO_PC` evidence。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的
-位置：它保留有序 prefix、翻转一个 source witness，并丢弃旧 suffix。worklist、solver、
-activation、静态插桩、runtime、importer 和 verifier 都传递或解析同一个 contract，不再各自
-重建 `targetBranch`、`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。
-`switch` 仍作为独立的 successor-aware observation，不伪装成二元 branch。
+每个可求解的二元 branch 只产生一个不可变、内容哈希的 `BranchWitness`。它包含稳定的
+`site + occurrence`、源 execution 实际满足的 outcome/predicate，以及唯一允许的 `VM_PC`
+evidence。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的位置：它保留有序
+prefix、翻转一个 source witness，并丢弃旧 suffix。worklist、solver、activation、静态插桩、
+runtime、importer 和 verifier 都传递或解析同一个 contract，不再各自重建 `targetBranch`、
+`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。精确 VM event 若没有
+对应 PC，只能作为 observation 和诊断信息，不能制造 predicate、witness 或 flip；`switch`
+也仍是独立的 successor-aware observation，不伪装成二元 branch。
 
 源 path condition 中夹在 branch 之间的 array-load 或 method-relation 节点不是 branch
 evidence。schema-3 worklist 把它们放入另一个不可变、内容哈希的 `SolverPathContext`，并保留
@@ -293,9 +294,9 @@ composer 实际使用的 merged summary，同时其原始 summary 和 activation
 身份一致。branch 层的检查以 `BranchWitness`/`BranchReplayContract` 的 canonical JSON 与
 content hash 为准；下游只解析并消费该权威对象，不再逐字段重建一份“等价证书”。
 
-外部 mapping 只能提供候选拓扑，不能把程序没有执行出来的 equality、cache、expiry、
-membership 或 codec 语义冒充 runtime fact。自动 composition 只接受静态、runtime 和
-concolic 阶段共同满足的证据门槛。
+自动 topology discovery 不能把程序没有执行出来的 equality、cache、expiry、membership
+或 codec 语义冒充 runtime fact。自动 composition 只接受静态、runtime 和 concolic 阶段
+共同满足的证据门槛；手写 RPC mapping 不再是输入协议。
 
 ## 配置与命令
 

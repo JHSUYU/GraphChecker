@@ -16,7 +16,6 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run_engine.sh [--config FILE] [--dry-run] [--debug] <command> [args...]
-  ./run_engine.sh process <legacy-conf>
 
 Config-driven commands:
   build       Build GraphChecker with the configured Maven/POM/work directory
@@ -31,11 +30,7 @@ Config-driven commands:
   debug-stage Print an already-produced analyze/workload/schedule/merge/compose artifact
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
-
-Compatibility commands:
-  process <conf>    Run the original config-based Soot transformer
-  transform <conf>  Alias for process
-  help              Print this help message
+  help        Print this help message
 
 Extra arguments after a workflow command are forwarded to its Maven or Java
 entry point. Environment variables documented in experiments/generic/README.md
@@ -61,7 +56,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|causynth_repo|project_module_dir|causynth_module_dir|project_classes_dir|system_classes_path|project_test_classes_dir|project_classpath|java_class_path|analysis_classes_dir|instrumented_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|concolic_jdk_home|z3_bin|rpc_mapping_file|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -79,24 +74,17 @@ reset_config() {
   graphchecker_work_dir=""
   build_maven_args=""
   project_repo=""
-  causynth_repo=""
   project_module_dir=""
-  causynth_module_dir=""
   project_classes_dir=""
-  system_classes_path=""
   project_test_classes_dir=""
   project_classpath=""
-  java_class_path=""
   analysis_classes_dir=""
-  instrumented_classes_dir=""
   causynth_output_dir=""
   causynth_target_spec=""
   causynth_analysis_scope=""
   causynth_process_dirs=""
   custom_jdk_home=""
-  concolic_jdk_home=""
   z3_bin=""
-  rpc_mapping_file=""
   workload_work_dir=""
   workload_command=""
   static_regions=""
@@ -186,7 +174,6 @@ apply_environment_overrides() {
   apply_env_override causynth_process_dirs CAUSYNTH_PROCESS_DIRS
   apply_env_override custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME
   apply_env_override z3_bin CAUSYNTH_Z3
-  apply_env_override rpc_mapping_file CAUSYNTH_RPC_MAPPING_FILE
   apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
   apply_env_override workload_command CAUSYNTH_WORKLOAD_COMMAND
   apply_env_override static_regions CAUSYNTH_STATIC_REGIONS
@@ -317,16 +304,16 @@ initialize_config() {
   graphchecker_work_dir=${graphchecker_work_dir:-@project/.}
   build_maven_args=${build_maven_args:-clean package -DskipTests}
 
-  project_repo=${project_repo:-${causynth_repo:-@project/.}}
+  project_repo=${project_repo:-@project/.}
   project_repo=$(resolve_path "${project_repo}" "${workflow_path_base}")
-  project_module_dir=${project_module_dir:-${causynth_module_dir:-${project_repo}}}
-  project_classes_dir=${project_classes_dir:-${system_classes_path:-@repo/target/classes}}
+  project_module_dir=${project_module_dir:-${project_repo}}
+  project_classes_dir=${project_classes_dir:-@repo/target/classes}
   project_test_classes_dir=${project_test_classes_dir:-@repo/target/test-classes}
-  project_classpath=${project_classpath:-${java_class_path:-}}
+  project_classpath=${project_classpath:-}
   causynth_output_dir=${causynth_output_dir:-@project/target/causynth-workflow}
   causynth_target_spec=${causynth_target_spec:-@config/target.yaml}
-  analysis_classes_dir=${analysis_classes_dir:-${instrumented_classes_dir:-${causynth_output_dir}/instrumented-classes}}
-  custom_jdk_home=${custom_jdk_home:-${concolic_jdk_home:-}}
+  analysis_classes_dir=${analysis_classes_dir:-${causynth_output_dir}/instrumented-classes}
+  custom_jdk_home=${custom_jdk_home:-}
   z3_bin=${z3_bin:-z3}
   workload_work_dir=${workload_work_dir:-${project_module_dir}}
   solver_timeout_ms=${solver_timeout_ms:-20000}
@@ -355,9 +342,6 @@ initialize_config() {
   fi
   if [[ -n "${causynth_process_dirs}" ]]; then
     causynth_process_dirs=$(resolve_path_list "${causynth_process_dirs}")
-  fi
-  if [[ -n "${rpc_mapping_file}" ]]; then
-    rpc_mapping_file=$(resolve_path "${rpc_mapping_file}")
   fi
 
   static_regions=${static_regions:-${causynth_output_dir}/symbolic_regions.jsonl}
@@ -463,7 +447,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin rpc_mapping_file workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -505,8 +489,6 @@ do_build() {
 
 do_analyze() {
   require_file "target specification" "${causynth_target_spec}"
-  require_directory "project repository" "${project_repo}"
-  require_directory "project module" "${project_module_dir}"
   local input_flag
   if [[ -d "${project_classes_dir}" ]]; then
     input_flag=-i
@@ -518,8 +500,6 @@ do_analyze() {
   ensure_output_directory "${analysis_classes_dir}"
   local -a system_properties
   system_properties=(
-    "-Dcausynth.repo=${project_repo}"
-    "-Dcausynth.module.dir=${project_module_dir}"
     "-Dcausynth.output.dir=${causynth_output_dir}"
     "-Dcausynth.target.spec=${causynth_target_spec}"
   )
@@ -673,12 +653,10 @@ do_workload() {
   if [[ "${dry_run}" == true ]]; then
     print_command env \
       "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}" \
-      "CAUSYNTH_RPC_MAPPING_FILE=${rpc_mapping_file}" \
       bash -lc "${workload_command}"
   else
     (cd "${workload_work_dir}" && \
       CAUSYNTH_CUSTOM_JDK_HOME="${custom_jdk_home}" \
-      CAUSYNTH_RPC_MAPPING_FILE="${rpc_mapping_file}" \
       bash -lc "${workload_command}")
   fi
 }
@@ -965,37 +943,6 @@ debug_after_stage() {
     || debug_log "stage=$1 status=formatter-error (workflow result preserved)"
 }
 
-# Keep the original process/transform contract intact for the HDFS adapter.
-# New workflows should use `--config FILE analyze` so all paths are normalized.
-legacy_process() {
-  local requested=${1:-}
-  [[ -n "${requested}" ]] || die "process requires a config file argument"
-  [[ -f "${requested}" ]] || die "config file not found: ${requested}"
-  local legacy_config_dir
-  legacy_config_dir=$(cd "$(dirname "${requested}")" && pwd -P)
-  local legacy_config="${legacy_config_dir}/$(basename "${requested}")"
-  # shellcheck disable=SC1090
-  source "${legacy_config}"
-  local legacy_jar=${GRAPH_CHECKER_JAR:-${graphchecker_jar:-${default_graphchecker_jar}}}
-  local legacy_java=${GRAPH_CHECKER_JAVA:-${java_bin:-java}}
-  local legacy_work=${GRAPH_CHECKER_WORK_DIR:-${graphchecker_work_dir:-${graphchecker_dir}}}
-  [[ "${legacy_jar}" == /* ]] || legacy_jar="${legacy_config_dir}/${legacy_jar}"
-  if [[ "${legacy_java}" == */* && "${legacy_java}" != /* ]]; then
-    legacy_java="${legacy_config_dir}/${legacy_java}"
-  fi
-  [[ "${legacy_work}" == /* ]] || legacy_work="${legacy_config_dir}/${legacy_work}"
-  require_file "GraphChecker jar" "${legacy_jar}"
-  require_directory "system classes" "${system_classes_path}"
-  require_directory "working" "${legacy_work}"
-  run_in_directory "${legacy_work}" "${legacy_java}" \
-    -cp "${legacy_jar}:${java_class_path}" \
-    edu.uva.liftlab.graphchecker.GraphCheckerMain \
-    -i "${system_classes_path}" \
-    -x "${java_class_path}" \
-    -C "${legacy_config}" \
-    -o "${system_classes_path}"
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
@@ -1025,16 +972,6 @@ command_name=${1:-help}
 case "${command_name}" in
   help)
     usage
-    ;;
-  process|transform)
-    if [[ -n "${config_file}" ]]; then
-      initialize_config "${config_file}"
-      require_config analyze
-      do_analyze "$@"
-      debug_after_stage analyze
-    else
-      legacy_process "${1:-}"
-    fi
     ;;
   build)
     initialize_config "${config_file}"

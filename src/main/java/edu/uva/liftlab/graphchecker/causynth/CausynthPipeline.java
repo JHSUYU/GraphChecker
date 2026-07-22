@@ -76,12 +76,11 @@ import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.readRuntimeSelectedRoots;
 
 /**
- * Exception/variable-seeded static backward data-flow analysis.
+ * Annotation-directed static backward data-flow analysis.
  *
- * <p>The preferred analysis starts from a target exception in target.yaml and
+ * <p>The analysis starts from one annotated exception construction and
  * discovers the throw value, exception payload, controlling guards, and their
- * data dependencies automatically.  The legacy seed variable list remains a
- * compatibility fallback.  Local Java/Jimple calls, discovered RPC
+ * data dependencies automatically. Local Java/Jimple calls, discovered RPC
  * dispatches, interface dispatches, and explicitly enabled protocol bridges
  * all emit edges into the same static data-flow graph.</p>
  */
@@ -102,18 +101,10 @@ public final class CausynthPipeline {
         ExceptionTargetSite exceptionTarget =
                 ExceptionTargetAnnotationScanner.select(
                         options.getInputList(), target.exceptionTargetId);
-        if (exceptionTarget != null) {
-            target = target.withExceptionTarget(exceptionTarget);
-        }
-        if (!target.hasSeed()) {
-            LOG.info("Seed backward analysis skipped: no "
-                    + "@CausynthExceptionTarget or seed_variables in {}",
-                    target.specPath);
-            return;
-        }
+        target = target.withExceptionTarget(exceptionTarget);
 
-        LOG.info("Seed backward analysis starts in {} mode from {}",
-                target.seedMode(), target.seedDescription());
+        LOG.info("Seed backward analysis starts at annotated exception {}",
+                exceptionTarget.stableIdentity());
         CausynthAnalysisResult result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
         SymbolicPlanningStage.build(result);
@@ -1957,9 +1948,8 @@ public final class CausynthPipeline {
     /**
      * Returns the object on which an ordinary instance call is dispatched.
      * This must come from the invoke expression itself, rather than from the
-     * enclosing method's {@code this} local: an interface call such as
-     * {@code DataEncryptionKeyFactory.newDataEncryptionKey()} may dispatch on
-     * a {@code KeyManager} owned by a different caller object.
+     * enclosing method's {@code this} local: an interface call may dispatch
+     * on a receiver owned by a different caller object.
      *
      * <p>Constructor receivers remain excluded because passing an
      * uninitialized object to a recorder call before {@code <init>} would
@@ -2995,12 +2985,10 @@ public final class CausynthPipeline {
         boundary.put("kind", "AUTOMATIC_DERIVATION_BOUNDARY");
         boundary.put("complete", true);
         boundary.put("domainSemanticAdapterUsed", false);
-        boundary.put("staticPortMappingsAreSemanticAssertions", false);
         boundary.put("automaticEqualityAuthority",
                 "RUNTIME_COMPLETE_VALUE_FINGERPRINT_ONLY");
         boundary.put("automaticStateAuthority",
                 "RUNTIME_CONFIRMED_WRITE_READ_PAIR_ONLY");
-        boundary.put("explicitContractsIncludedInSmt", false);
         boundary.put("scope", stringValue(result.targetResolved.get(
                 "analysisScope")));
         result.slices.put("automaticDerivationBoundary", boundary);

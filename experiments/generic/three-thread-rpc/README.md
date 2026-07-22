@@ -201,10 +201,11 @@ four-row reach profile. Unit tests are not run by this command.
 
 Every observed binary decision now owns one immutable, content-hashed
 `BranchWitness`: stable site/occurrence identity, the source execution's taken
-outcome, its one canonical satisfied predicate, and exactly one evidence
-variant (`VM_PC` or `CERTIFIED_NO_PC`). `BranchPredicateAlgebra` is the only
-predicate-complement implementation, and only `BranchReplayContract.flip()`
-may derive the required opposite outcome/predicate.
+outcome, its one canonical satisfied predicate, and exact `VM_PC` evidence.
+`BranchPredicateAlgebra` is the only predicate-complement implementation, and
+only `BranchReplayContract.flip()` may derive the required opposite
+outcome/predicate. A zero-PC branch event stays observation-only; it cannot be
+turned into a synthetic witness by a parallel proof protocol.
 
 The worklist emits a schema-3 task containing that contract. A separate
 immutable, content-hashed `SolverPathContext` retains positioned non-branch
@@ -218,7 +219,7 @@ witnesses, and one validator checks the ordered prefix followed by the exact
 required target. Duplicate branch-event identities and content-hash tampering
 fail closed. Multiway `switch` remains a separate successor-aware observation.
 
-The three core workloads pass this protocol through candidate SMT generation,
+All five matrix profiles pass this protocol through candidate SMT generation,
 independent Z3 checking, and their exact expected reach profiles.
 
 ## TODO: promote a candidate with natural replay

@@ -224,9 +224,6 @@ validate_discovery_inputs() {
     and (([.[].targetRegionInstance] | unique | length) == 1)
   ' <<< "${channels}" >/dev/null \
     || die "runtime read-from discovery did not produce unique local channels"
-  if grep -Fq '"kind":"configured_rpc_return_mapping"' "${static_graph}"; then
-    die "local fixture unexpectedly contains a configured RPC mapping"
-  fi
 }
 
 discovered_channels() {

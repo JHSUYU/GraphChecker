@@ -35,10 +35,17 @@ public class AutomaticRegionEdgeTest {
 
         assertTrue(AutomaticRegionEdge.composable(edge));
         assertTrue(AutomaticRegionEdge.discoverable(edge));
+
+        edge.remove("eligibleForAutomaticSmt");
+        assertFalse(AutomaticRegionEdge.composable(edge));
+
+        edge.addProperty("eligibleForAutomaticSmt", true);
+        edge.addProperty("valueEqualityAuthority", "RUNTIME_UNTRUSTED_ALIAS");
+        assertFalse(AutomaticRegionEdge.composable(edge));
     }
 
     @Test
-    public void confirmedReadFromRemainsDiscoverableDespiteLegacyOrderFlag() {
+    public void confirmedReadFromRequiresValidatedRuntimeBinding() {
         JsonObject edge = new JsonObject();
         edge.addProperty("fromRegion", "REGION.WRITER");
         edge.addProperty("fromPort", "REGION.WRITER.out.0");
@@ -55,6 +62,11 @@ public class AutomaticRegionEdgeTest {
         edge.addProperty("endpointPairCount", 1);
         edge.addProperty("orderedPairCount", 0);
 
+        assertFalse(AutomaticRegionEdge.composable(edge));
+
+        JsonArray bindings = new JsonArray();
+        bindings.add(fieldAssignmentBinding());
+        edge.add("validatedBindings", bindings);
         assertTrue(AutomaticRegionEdge.composable(edge));
         assertTrue(AutomaticRegionEdge.discoverable(edge));
     }
@@ -125,6 +137,31 @@ public class AutomaticRegionEdgeTest {
         assertTrue(AutomaticRegionEdge.composable(edge));
     }
 
+    @Test
+    public void fieldAssignmentRequiresExactAuthorityOrderAndIdentity() {
+        JsonObject complete = fieldAssignmentBinding();
+        assertTrue(AutomaticRegionEdge.trustedReadFromEvidence(complete));
+
+        JsonObject missingKind = complete.deepCopy();
+        missingKind.remove("writeEvidenceKind");
+        assertFalse(AutomaticRegionEdge.trustedReadFromEvidence(missingKind));
+
+        JsonObject missingAuthority = complete.deepCopy();
+        missingAuthority.remove("writeEvidenceAuthority");
+        assertFalse(AutomaticRegionEdge.trustedReadFromEvidence(
+                missingAuthority));
+
+        JsonObject unconfirmedIdentity = complete.deepCopy();
+        unconfirmedIdentity.addProperty("fieldReceiverIdentityConfirmed",
+                false);
+        assertFalse(AutomaticRegionEdge.trustedReadFromEvidence(
+                unconfirmedIdentity));
+
+        JsonObject reversedOrder = complete.deepCopy();
+        reversedOrder.addProperty("readerEventSeq", 9);
+        assertFalse(AutomaticRegionEdge.trustedReadFromEvidence(reversedOrder));
+    }
+
     private static JsonObject baseEquality() {
         JsonObject edge = new JsonObject();
         edge.addProperty("fromRegion", "REGION.UP");
@@ -164,6 +201,24 @@ public class AutomaticRegionEdgeTest {
         binding.addProperty("mutatorDeclaredCallee",
                 "<java.util.Map: java.lang.Object put(java.lang.Object,"
                         + "java.lang.Object)>");
+        return binding;
+    }
+
+    private static JsonObject fieldAssignmentBinding() {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("relation", "READ_FROM");
+        binding.addProperty("selectionAuthority",
+                "RUNTIME_CONFIRMED_READ_FROM");
+        binding.addProperty("writeEvidenceKind", "FIELD_ASSIGNMENT");
+        binding.addProperty("writeEvidenceAuthority",
+                "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1");
+        binding.addProperty("orderAuthority",
+                AutomaticRegionEdge.TRACE_ORDER_AUTHORITY);
+        binding.addProperty("writerEventSeq", 10);
+        binding.addProperty("readerEventSeq", 20);
+        binding.addProperty("receiverObjectId", 55);
+        binding.addProperty("orderConfirmed", true);
+        binding.addProperty("fieldReceiverIdentityConfirmed", true);
         return binding;
     }
 }

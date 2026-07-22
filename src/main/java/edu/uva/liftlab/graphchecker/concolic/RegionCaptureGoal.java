@@ -21,24 +21,24 @@ public final class RegionCaptureGoal {
 
     private final String kind;
     private final String purpose;
-    private final boolean legacy;
 
-    private RegionCaptureGoal(String kind, String purpose, boolean legacy) {
-        this.kind = TARGET_BRANCH.equals(kind) ? TARGET_BRANCH
-                : OUTPUT_CLOSURE.equals(kind) ? OUTPUT_CLOSURE
-                : TARGET_BRANCH;
+    private RegionCaptureGoal(String kind, String purpose) {
+        if (!TARGET_BRANCH.equals(kind) && !OUTPUT_CLOSURE.equals(kind)) {
+            throw new IllegalArgumentException(
+                    "capture goal kind must be TARGET_BRANCH or OUTPUT_CLOSURE");
+        }
+        this.kind = kind;
         this.purpose = this.kind.equals(OUTPUT_CLOSURE)
                 && TRANSITION_DISCOVERY.equals(purpose)
                 ? TRANSITION_DISCOVERY : RELATION_CLOSURE;
-        this.legacy = legacy;
     }
 
     public static RegionCaptureGoal targetBranch() {
-        return new RegionCaptureGoal(TARGET_BRANCH, RELATION_CLOSURE, false);
+        return new RegionCaptureGoal(TARGET_BRANCH, RELATION_CLOSURE);
     }
 
     public static RegionCaptureGoal outputClosure() {
-        return new RegionCaptureGoal(OUTPUT_CLOSURE, RELATION_CLOSURE, false);
+        return new RegionCaptureGoal(OUTPUT_CLOSURE, RELATION_CLOSURE);
     }
 
     /**
@@ -49,37 +49,20 @@ public final class RegionCaptureGoal {
      */
     public static RegionCaptureGoal transitionDiscovery() {
         return new RegionCaptureGoal(OUTPUT_CLOSURE,
-                TRANSITION_DISCOVERY, false);
+                TRANSITION_DISCOVERY);
     }
 
     /**
-     * Reads the neutral schema first.  Older artifacts are accepted only at
-     * this boundary so the rest of the scheduler never branches on legacy
-     * region-category strings.
+     * Reads the one maintained capture-goal schema.
      */
     public static RegionCaptureGoal from(JsonObject row) {
-        if (row != null) {
-            JsonElement goalElement = row.get(FIELD);
-            if (goalElement != null && goalElement.isJsonObject()) {
-                String parsed = string(goalElement.getAsJsonObject(), "kind");
-                if (TARGET_BRANCH.equals(parsed)
-                        || OUTPUT_CLOSURE.equals(parsed)) {
-                    return new RegionCaptureGoal(parsed, string(
-                            goalElement.getAsJsonObject(), PURPOSE_FIELD),
-                            false);
-                }
-            }
-
-            // Compatibility with P0-P6 artifacts.  No caller outside this
-            // class should interpret these values.
-            String oldMode = string(row, "summaryMode");
-            if ("RELATIONAL_PRODUCER".equals(oldMode)
-                    || "RELATIONAL_PROTOCOL".equals(oldMode)) {
-                return new RegionCaptureGoal(OUTPUT_CLOSURE,
-                        RELATION_CLOSURE, true);
-            }
+        JsonElement goalElement = row == null ? null : row.get(FIELD);
+        if (goalElement == null || !goalElement.isJsonObject()) {
+            throw new IllegalArgumentException("captureGoal is required");
         }
-        return new RegionCaptureGoal(TARGET_BRANCH, RELATION_CLOSURE, true);
+        JsonObject goal = goalElement.getAsJsonObject();
+        return new RegionCaptureGoal(string(goal, "kind"),
+                string(goal, PURPOSE_FIELD));
     }
 
     public String kind() {
@@ -100,10 +83,6 @@ public final class RegionCaptureGoal {
 
     public boolean isTransitionDiscovery() {
         return isOutputClosure() && TRANSITION_DISCOVERY.equals(purpose);
-    }
-
-    public boolean cameFromLegacySchema() {
-        return legacy;
     }
 
     public JsonObject toJson() {

@@ -32,9 +32,6 @@ import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,7 +49,6 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorCallsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
@@ -63,13 +59,11 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWri
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MethodCallsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.RpcTarget;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.SeedLookupAnchor;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.StaticPortMapping;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
 
 
-/** Static exception/variable-seeded backward data-flow analysis. */
+/** Static backward data-flow analysis from one annotated exception target. */
 final class SeedBackwardStaticAnalyzer {
     private static final Logger LOG = LoggerFactory.getLogger(
             CausynthPipeline.class);
@@ -106,13 +100,11 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantFieldEffectsByMethod =
             new LinkedHashMap<>();
-    private final List<StaticPortMapping> staticPortMappings = new ArrayList<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
     private final Set<String> selectedMethods = new LinkedHashSet<>();
     private final Map<String, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> emittedRpcMappings = new LinkedHashSet<>();
-    private final Set<String> emittedStaticPortMappings = new LinkedHashSet<>();
     private final Set<String> expandedFieldWriterFields = new LinkedHashSet<>();
     private final Set<String> expandedConstructorCallees = new LinkedHashSet<>();
     private final Set<String> expandedMethodCallerKeys = new LinkedHashSet<>();
@@ -128,8 +120,6 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, Set<String>> projectionAliasCache =
             new LinkedHashMap<>();
     private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
-            new LinkedHashMap<>();
-    private final Map<String, Boolean> exceptionReachabilityCache =
             new LinkedHashMap<>();
     private final RuntimeDispatchEvidence runtimeDispatchEvidence;
     private final Set<String> runtimeRecursiveMethods =
@@ -176,8 +166,6 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         buildRpcMappings();
-        // Explicit project topology is orthogonal to built-in RPC discovery.
-        buildConfiguredRpcPortMappings();
     }
 
     private static int positiveSystemProperty(String property,
@@ -232,58 +220,6 @@ final class SeedBackwardStaticAnalyzer {
                 emittedRpcMappings.size());
     }
 
-    /**
-     * Loads project-owned RPC topology as navigation evidence only.  A
-     * configured producer return and consumer RPC return become one
-     * mapping-only static edge; RuntimeRegionPlanner must still observe
-     * complete, equal endpoint fingerprints before promoting it to an
-     * automatic EQUALITY relation.
-     */
-    private void buildConfiguredRpcPortMappings() {
-        Path mappingFile = target.rpcMappingFile;
-        if (mappingFile == null) return;
-        ConfiguredRpcTopologyLoader.Result result =
-                ConfiguredRpcTopologyLoader.load(mappingFile,
-                        classesByName);
-        for (ConfiguredRpcTopologyLoader.Mapping mapping
-                : result.mappings()) {
-            addStaticPortMapping("configured_rpc_return_mapping",
-                    mapping.sourceMethod, mapping.sourceCell,
-                    mapping.targetMethod, mapping.targetCell,
-                    mapping.evidence);
-        }
-        LOG.info("Loaded {} configured mapping-only RPC return edges from {}",
-                result.mappings().size(), mappingFile);
-        if (result.downstreamDeclarationCount > 0) {
-            LOG.info("Recognized {} downstream-only declared RPC "
-                            + "equalities in {}; no static semantic edge "
-                            + "was created",
-                    result.downstreamDeclarationCount, mappingFile);
-        }
-    }
-
-    private void addStaticPortMapping(String kind, String sourceMethod,
-                                      String sourceCell, String targetMethod,
-                                      String targetCell, String evidence) {
-        addStaticPortMapping(kind, sourceMethod, sourceCell, targetMethod,
-                targetCell, evidence, "", targetMethod, null, "");
-    }
-
-    private void addStaticPortMapping(String kind, String sourceMethod,
-                                      String sourceCell, String targetMethod,
-                                      String targetCell, String evidence,
-                                      String activationMethod,
-                                      String edgeMethod, Fact pathSite,
-                                      String pathCell) {
-        String key = kind + "\n" + sourceCell + "\n" + targetCell;
-        if (!emittedStaticPortMappings.add(key)) {
-            return;
-        }
-        staticPortMappings.add(new StaticPortMapping(kind, sourceMethod,
-                sourceCell, targetMethod, targetCell, evidence,
-                activationMethod, edgeMethod, pathSite, pathCell));
-    }
-
     private boolean isRpcProtocolClass(SootClass sootClass) {
         String name = sootClass.getName();
         return sootClass.isInterface()
@@ -336,41 +272,22 @@ final class SeedBackwardStaticAnalyzer {
 
     CausynthAnalysisResult analyze() throws IOException {
         CausynthAnalysisResult result = new CausynthAnalysisResult();
-        result.targetResolved.put("seedMode", target.seedMode());
+        result.targetResolved.put("seedMode", "EXCEPTION_ANNOTATION");
         result.targetResolved.put("seedException", target.seedException);
         result.targetResolved.put("exceptionTarget",
-                target.exceptionTargetSite == null
-                        ? Collections.emptyMap()
-                        : target.exceptionTargetSite.toMap());
-        result.targetResolved.put("seedVariables", target.seedVariables);
-        result.targetResolved.put("seedFunction", target.seedFunction);
-        result.targetResolved.put("seedPredicate", target.seedPredicate());
-        result.targetResolved.put("seedMap", target.seedMapName());
-        result.targetResolved.put("seedKeyExpression", target.seedKeyExpression());
+                target.exceptionTargetSite.toMap());
         result.targetResolved.put("analysisScope", target.analysisScope);
-        result.targetResolved.put("repoRoot", target.repoRoot.toString());
-        result.targetResolved.put("moduleDir", target.moduleDir.toString());
-
-        if (target.exceptionSeeded()) {
-            result.seeds.add(object(
-                    "id", "seed.exception_target",
-                    "kind", "annotated_exception_target",
-                    "exception", target.seedException,
-                    "site", target.exceptionTargetSite.toMap(),
-                    "discovery",
-                    "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
-        } else {
-            result.seeds.add(object(
-                    "id", "seed.local_condition",
-                    "kind", "local_condition",
-                    "predicate", target.seedPredicate(),
-                    "variables", target.seedVariables));
-        }
+        result.seeds.add(object(
+                "id", "seed.exception_target",
+                "kind", "annotated_exception_target",
+                "exception", target.seedException,
+                "site", target.exceptionTargetSite.toMap(),
+                "discovery",
+                "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
 
         Set<String> candidateClasses = findCandidateClasses();
         loadClasses(candidateClasses);
-        loadStaticPortMappingMethods();
-        initializeConfiguredSeedAnchors();
+        initializeExceptionSeedAnchors();
         runWorklist();
         finishSeedDiscovery(result);
 
@@ -378,12 +295,9 @@ final class SeedBackwardStaticAnalyzer {
         result.cells.addAll(collectCells());
         result.traceMethods.addAll(collectTraceMethods());
         result.slices.put("strategy",
-                target.exceptionSeeded()
-                        ? "annotation-directed backward static analysis from one exact exception construction"
-                        : "variable-directed backward static analysis over Jimple def-use and cross-region data flow");
+                "annotation-directed backward static analysis from one exact exception construction");
         result.slices.put("candidateClassCount", candidateClasses.size());
         result.slices.put("rpcMappingCount", emittedRpcMappings.size());
-        result.slices.put("staticPortMappingCount", staticPortMappings.size());
         result.slices.put("fieldWriterIndexedFieldCount",
                 fieldWritersByField.size());
         result.slices.put("fieldWriterExpandedFieldCount",
@@ -486,25 +400,6 @@ final class SeedBackwardStaticAnalyzer {
                         : "STATIC_CLASS_HIERARCHY_FALLBACK");
     }
 
-    private void initializeConfiguredSeedAnchors() {
-        if (target.exceptionSeeded()) {
-            initializeExceptionSeedAnchors();
-            return;
-        }
-        initializeSeedAnchors();
-    }
-
-    /**
-     * Adds the exact leaf dependency that Jimple's mutable StringBuilder
-     * lowering otherwise discovers only after walking every append state.
-     *
-     * <p>The edge says only that {@code DataEncryptionKey.keyId}
-     * contributes to the returned username.  It intentionally does not
-     * claim equality: concolic execution of the ordinary method region is
-     * responsible for its decimal-string/compound-username semantics.
-     * The source is the scalar leaf owned by parameter zero, never the
-     * {@code DataEncryptionKey} object reference.</p>
-     */
     private void finishSeedDiscovery(CausynthAnalysisResult result) {
         result.seeds.addAll(discoveredExceptionSeeds);
         result.targetResolved.put("discoveredSeedCount",
@@ -513,7 +408,7 @@ final class SeedBackwardStaticAnalyzer {
                 new ArrayList<>(discoveredExceptionMethods));
         result.targetResolved.put("discoveredSeedVariables",
                 new ArrayList<>(discoveredExceptionVariables));
-        if (target.exceptionSeeded() && discoveredExceptionSeeds.size() != 1) {
+        if (discoveredExceptionSeeds.size() != 1) {
             throw new IllegalStateException("Annotated exception target did "
                     + "not resolve to exactly one Jimple throw: "
                     + target.exceptionTargetSite.stableIdentity()
@@ -543,106 +438,8 @@ final class SeedBackwardStaticAnalyzer {
         return rows;
     }
 
-    private Set<String> findCandidateClasses() throws IOException {
-        if (target.exceptionSeeded()) {
-            return Collections.singleton(
-                    target.exceptionTargetSite.className);
-        }
-        Set<String> sourceClasses = sourceClassesTouchingSeeds();
-        Set<String> candidates = new LinkedHashSet<>();
-        for (SootClass sootClass : Scene.v().getApplicationClasses()) {
-            String className = sootClass.getName();
-            if (classNameTouchesSeed(className)
-                    || sourceClassMatches(sourceClasses, className)
-                    || (sourceClasses.isEmpty()
-                    && classFieldsTouchSeed(sootClass))) {
-                candidates.add(className);
-            }
-        }
-        return candidates;
-    }
-
-    private Set<String> sourceClassesTouchingSeeds() throws IOException {
-        Set<String> classes = new LinkedHashSet<>();
-        List<Path> roots = new ArrayList<>();
-        if (Files.isDirectory(target.moduleDir)) {
-            roots.add(target.moduleDir);
-        }
-        if (Files.isDirectory(target.repoRoot) && !target.repoRoot.equals(target.moduleDir)) {
-            roots.add(target.repoRoot);
-        }
-        for (Path root : roots) {
-            try (Stream<Path> stream = Files.walk(root)) {
-                List<Path> files = stream
-                        .filter(path -> Files.isRegularFile(path)
-                                && path.toString().endsWith(".java")
-                                && path.toString().contains("/src/main/java/"))
-                        .collect(Collectors.toList());
-                for (Path file : files) {
-                    String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
-                    if (!sourceMatchesSeedSearch(text)) {
-                        continue;
-                    }
-                    String className = sourceClassName(file);
-                    if (className != null) {
-                        classes.add(className);
-                    }
-                }
-            }
-        }
-        return classes;
-    }
-
-    private boolean sourceMatchesSeedSearch(String text) {
-        if (target.seedFunction != null && !target.seedFunction.isEmpty()) {
-            return sourceContainsFunction(text, target.seedFunction);
-        }
-        String keyMethodName = target.seedKeyMethodName();
-        if (!keyMethodName.isEmpty()) {
-            return text.contains(target.seedMapName())
-                    && sourceContainsFunction(text, keyMethodName);
-        }
-        return containsAll(text, target.seedVariables);
-    }
-
-    private boolean sourceContainsFunction(String text, String functionName) {
-        Pattern pattern = Pattern.compile("\\b" + Pattern.quote(functionName) + "\\s*\\(");
-        return pattern.matcher(text).find();
-    }
-
-    private String sourceClassName(Path file) {
-        String path = file.toString().replace('\\', '/');
-        String marker = "/src/main/java/";
-        int index = path.indexOf(marker);
-        if (index < 0 || !path.endsWith(".java")) {
-            return null;
-        }
-        return path.substring(index + marker.length(), path.length() - ".java".length())
-                .replace('/', '.');
-    }
-
-    private boolean classNameTouchesSeed(String className) {
-        return containsAny(className, target.seedVariables);
-    }
-
-    private boolean sourceClassMatches(Set<String> sourceClasses, String sootClassName) {
-        for (String sourceClass : sourceClasses) {
-            if (sootClassName.equals(sourceClass)
-                    || sootClassName.startsWith(sourceClass + "$")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean classFieldsTouchSeed(SootClass sootClass) {
-        for (SootField field : sootClass.getFields()) {
-            if (containsAny(field.getName(), target.seedVariables)
-                    || containsAny(field.getSignature(), target.seedVariables)) {
-                return true;
-            }
-        }
-        return false;
+    private Set<String> findCandidateClasses() {
+        return Collections.singleton(target.exceptionTargetSite.className);
     }
 
     private void loadClasses(Set<String> classNames) {
@@ -656,19 +453,6 @@ final class SeedBackwardStaticAnalyzer {
         }
         LOG.info("Loaded {} seed-candidate methods from {} classes",
                 factsByMethod.size(), classNames.size());
-    }
-
-    private void loadStaticPortMappingMethods() {
-        if (staticPortMappings.isEmpty()) {
-            return;
-        }
-        int before = factsByMethod.size();
-        for (StaticPortMapping mapping : staticPortMappings) {
-            loadMethod(methodsBySignature.get(mapping.sourceMethod));
-            loadMethod(methodsBySignature.get(mapping.targetMethod));
-        }
-        LOG.info("Loaded {} additional methods for configured port mappings",
-                factsByMethod.size() - before);
     }
 
     private boolean loadMethod(SootMethod method) {
@@ -695,50 +479,6 @@ final class SeedBackwardStaticAnalyzer {
         factsByMethod.put(method.getSignature(), facts);
         methodsBySignature.put(method.getSignature(), method);
         return true;
-    }
-
-    private void initializeSeedAnchors() {
-        for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
-            String method = entry.getKey();
-            if (!methodMatchesSeedFunction(method)) {
-                continue;
-            }
-            List<Fact> facts = entry.getValue();
-            for (int i = 0; i < facts.size(); i++) {
-                Fact fact = facts.get(i);
-                if (!isLookupGet(fact)) {
-                    continue;
-                }
-                SeedLookupAnchor anchor = traceLookupToSeedMap(facts, i);
-                if (anchor == null) {
-                    continue;
-                }
-                selectedMethods.add(method);
-                Set<String> relevant = relevant(method);
-                for (Fact fieldFact : anchor.seedFieldFacts) {
-                    for (String field : fieldFact.fields) {
-                        if (!fieldTouchesSeedMap(field)) {
-                            continue;
-                        }
-                        String node = canonical(method, field);
-                        relevant.add(node);
-                        addEdge("seed_field", target.seedPredicate(), node,
-                                method, fieldFact, "seed map field feeding lookup");
-                    }
-                }
-                for (String value : anchor.seedValues) {
-                    String node = canonical(method, value);
-                    if (ignoreNode(node)) {
-                        continue;
-                    }
-                    relevant.add(node);
-                    addEdge("seed_lookup_operand", target.seedPredicate(), node,
-                            method, fact, "lookup operand from seed map/key expression");
-                }
-            }
-        }
-        LOG.info("Initialized {} selected methods from seed variables",
-                selectedMethods.size());
     }
 
     private void initializeExceptionSeedAnchors() {
@@ -1088,7 +828,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private boolean exceptionTypeMatches(String candidateType) {
-        if (!target.exceptionSeeded() || candidateType == null) {
+        if (candidateType == null) {
             return false;
         }
         String candidate = candidateType.trim();
@@ -1129,130 +869,6 @@ final class SeedBackwardStaticAnalyzer {
         // relevant later. factsFromMethod remains ephemeral, so the complete
         // method scan does not retain a whole-program working set.
         return methodsBySignature.values();
-    }
-
-    private boolean methodMatchesSeedFunction(String method) {
-        if (target.seedFunction == null || target.seedFunction.isEmpty()) {
-            return true;
-        }
-        MethodSig sig = parseMethodSig(method);
-        return sig != null && target.seedFunction.equals(sig.name);
-    }
-
-    private boolean factTouchesSeed(Fact fact) {
-        String text = fact.method + " " + fact.unitText + " " + fact.fields;
-        return containsAny(text, target.seedVariables);
-    }
-
-    private boolean isLookupGet(Fact fact) {
-        MethodSig sig = parseMethodSig(fact.invoke);
-        if (sig == null) {
-            return false;
-        }
-        return "get".equals(sig.name) && sig.params.size() == 1;
-    }
-
-    private List<String> seedLookupValues(Fact fact) {
-        List<String> values = new ArrayList<>();
-        values.addAll(fact.defs);
-        values.addAll(nonInvokeUses(fact));
-        values.addAll(fact.fields);
-        values.addAll(actualInvokeArgs(fact.unitText));
-        return values;
-    }
-
-    private SeedLookupAnchor traceLookupToSeedMap(List<Fact> facts, int lookupIndex) {
-        Fact lookup = facts.get(lookupIndex);
-        List<Fact> seedFieldFacts = new ArrayList<>();
-        Set<String> seedValues = new LinkedHashSet<>(seedLookupValues(lookup));
-        boolean mapMatched = false;
-        if (factFieldsTouchSeedMap(lookup)) {
-            seedFieldFacts.add(lookup);
-            mapMatched = true;
-        }
-
-        Set<String> work = new LinkedHashSet<>();
-        String baseLocal = invokeBaseLocal(lookup.unitText);
-        if (baseLocal != null) {
-            work.add(baseLocal);
-        } else {
-            work.addAll(localNames(nonInvokeUses(lookup)));
-        }
-        if (work.isEmpty()) {
-            return null;
-        }
-
-        if (!mapMatched) {
-            for (int i = lookupIndex - 1; i >= 0; i--) {
-                Fact fact = facts.get(i);
-                Set<String> defs = localNames(fact.defs);
-                if (!intersectsLocal(work, defs)) {
-                    continue;
-                }
-                seedValues.addAll(fact.defs);
-                seedValues.addAll(nonInvokeUses(fact));
-                seedValues.addAll(fact.fields);
-                if (factFieldsTouchSeedMap(fact)) {
-                    seedFieldFacts.add(fact);
-                    mapMatched = true;
-                    break;
-                }
-                work.addAll(localNames(nonInvokeUses(fact)));
-            }
-        }
-        if (!mapMatched || !traceLookupKeyToSeedExpression(facts, lookupIndex, seedValues)) {
-            return null;
-        }
-        return new SeedLookupAnchor(seedFieldFacts, seedValues);
-    }
-
-    private boolean traceLookupKeyToSeedExpression(List<Fact> facts, int lookupIndex,
-                                                   Set<String> seedValues) {
-        String keyMethod = target.seedKeyMethodName();
-        if (keyMethod.isEmpty()) {
-            return true;
-        }
-        Set<String> work = localNames(actualInvokeArgs(facts.get(lookupIndex).unitText));
-        if (work.isEmpty()) {
-            return false;
-        }
-        for (int i = lookupIndex - 1; i >= 0; i--) {
-            Fact fact = facts.get(i);
-            Set<String> defs = localNames(fact.defs);
-            if (!intersectsLocal(work, defs)) {
-                continue;
-            }
-            seedValues.addAll(fact.defs);
-            seedValues.addAll(nonInvokeUses(fact));
-            seedValues.addAll(fact.fields);
-            seedValues.addAll(actualInvokeArgs(fact.unitText));
-            if (factInvokesSeedKeyMethod(fact, keyMethod)) {
-                return true;
-            }
-            work.addAll(localNames(nonInvokeUses(fact)));
-            work.addAll(localNames(actualInvokeArgs(fact.unitText)));
-        }
-        return false;
-    }
-
-    private boolean factInvokesSeedKeyMethod(Fact fact, String keyMethod) {
-        MethodSig sig = parseMethodSig(fact.invoke);
-        return sig != null && keyMethod.equals(sig.name);
-    }
-
-    private boolean factFieldsTouchSeedMap(Fact fact) {
-        for (String field : fact.fields) {
-            if (fieldTouchesSeedMap(field)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean fieldTouchesSeedMap(String field) {
-        return !target.seedVariables.isEmpty()
-                && field != null
-                && field.contains(target.seedVariables.get(0));
     }
 
     private boolean intersectsLocal(Set<String> left, Set<String> right) {
@@ -1309,7 +925,6 @@ final class SeedBackwardStaticAnalyzer {
                 changed |= expandCallers(method);
                 changed |= expandRpcCallers(method);
                 changed |= expandDispatchCallers(method);
-                changed |= expandStaticPortMappings(method);
                 changed |= expandFieldWriters(method);
                 changed |= expandConstructorCallers(method);
                 changed |= expandMethodCallers(method);
@@ -4019,146 +3634,6 @@ final class SeedBackwardStaticAnalyzer {
         return sources;
     }
 
-    private boolean expandStaticPortMappings(String method) {
-        if (staticPortMappings.isEmpty()) {
-            return false;
-        }
-        boolean changed = false;
-        Set<String> methodRelevant = relevant(method);
-        for (StaticPortMapping dataflow : staticPortMappings) {
-            if (!staticPortMappingActive(dataflow)) {
-                continue;
-            }
-            if (dataflow.targetMethod.equals(method)
-                    && relevantContainsProjectionOrExact(methodRelevant,
-                    dataflow.targetCell)) {
-                if (loadMethod(methodsBySignature.get(dataflow.sourceMethod))) {
-                    changed = true;
-                }
-                Set<String> sourceRelevant = relevant(dataflow.sourceMethod);
-                if (addEdge(dataflow.kind, dataflow.sourceCell, dataflow.targetCell,
-                        dataflow.edgeMethod, null, dataflow.evidence)) {
-                    changed = true;
-                }
-                changed |= sourceRelevant.add(dataflow.sourceCell);
-                changed |= selectedMethods.add(dataflow.sourceMethod);
-                changed |= addStaticPortMappingPathGuards(dataflow);
-            }
-            if (dataflow.sourceMethod.equals(method)
-                    && relevantContainsProjectionOrExact(methodRelevant,
-                    dataflow.sourceCell)) {
-                if (loadMethod(methodsBySignature.get(dataflow.targetMethod))) {
-                    changed = true;
-                }
-                Set<String> targetRelevant = relevant(dataflow.targetMethod);
-                if (addEdge(dataflow.kind, dataflow.sourceCell, dataflow.targetCell,
-                        dataflow.edgeMethod, null, dataflow.evidence)) {
-                    changed = true;
-                }
-                changed |= targetRelevant.add(dataflow.targetCell);
-                changed |= selectedMethods.add(dataflow.targetMethod);
-                changed |= addStaticPortMappingPathGuards(dataflow);
-            }
-        }
-        return changed;
-    }
-
-    private boolean staticPortMappingActive(StaticPortMapping dataflow) {
-        if (dataflow.activationMethod == null
-                || dataflow.activationMethod.isEmpty()) {
-            return true;
-        }
-        Set<String> demand = relevantByMethod.get(dataflow.activationMethod);
-        String returnNode = dataflow.activationMethod + ".return";
-        return (!dataflow.kind.startsWith("synchronous_callback")
-                || reachesDiscoveredException(dataflow.activationMethod))
-                && selectedMethods.contains(dataflow.activationMethod)
-                && demand != null
-                && (demand.contains(returnNode)
-                || containsProjection(demand, returnNode));
-    }
-
-    private boolean reachesDiscoveredException(String sourceMethod) {
-        if (discoveredExceptionMethods.isEmpty()) {
-            return true;
-        }
-        Boolean cached = exceptionReachabilityCache.get(sourceMethod);
-        if (cached != null) {
-            return cached;
-        }
-        Set<String> seen = new LinkedHashSet<>();
-        Deque<String> queue = new ArrayDeque<>();
-        seen.add(sourceMethod);
-        queue.add(sourceMethod);
-        while (!queue.isEmpty() && seen.size() < 256) {
-            String method = queue.removeFirst();
-            if (discoveredExceptionMethods.contains(method)) {
-                exceptionReachabilityCache.put(sourceMethod, true);
-                return true;
-            }
-            SootMethod sootMethod = methodsBySignature.get(method);
-            if (sootMethod == null) {
-                continue;
-            }
-            for (Fact fact : factsFromMethod(sootMethod)) {
-                MethodSig invoked = parseMethodSig(fact.invoke);
-                if (invoked == null
-                        || !methodsBySignature.containsKey(invoked.raw)
-                        || !isApplicationClassName(invoked.owner)
-                        || !seen.add(invoked.raw)) {
-                    continue;
-                }
-                queue.addLast(invoked.raw);
-            }
-        }
-        exceptionReachabilityCache.put(sourceMethod, false);
-        return false;
-    }
-
-    private boolean addStaticPortMappingPathGuards(
-            StaticPortMapping dataflow) {
-        if (dataflow.pathSite == null || dataflow.pathCell == null
-                || dataflow.pathCell.isEmpty()) {
-            return false;
-        }
-        SootMethod pathMethod = methodsBySignature.get(dataflow.pathSite.method);
-        boolean changed = loadMethod(pathMethod);
-        Set<String> pathRelevant = relevant(dataflow.pathSite.method);
-        changed |= selectedMethods.add(dataflow.pathSite.method);
-        for (ExceptionGuard guard : controllingGuards(
-                dataflow.pathSite.method, dataflow.pathSite)) {
-            for (String use : causalGuardUses(guard.fact)) {
-                String guardNode = canonical(dataflow.pathSite.method, use);
-                if (ignoreNode(guardNode)) {
-                    continue;
-                }
-                String kind = "synchronous_callback_path_guard";
-                changed |= addEdge(kind,
-                        guardNode, dataflow.targetCell,
-                        dataflow.pathSite.method, guard.fact,
-                        "synchronous callback invocation requires Jimple outcome "
-                                + guard.requiredOutcome + " at callback site u"
-                                + dataflow.pathSite.unitIndex);
-                Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                        kind, guardNode, dataflow.targetCell,
-                        dataflow.pathSite.method, guard.fact));
-                if (edge != null) {
-                    ControlDependenceEdgeSupport.annotatePathGuard(
-                            edge, dataflow.pathSite.method,
-                            guard.fact.unitIndex,
-                            dataflow.pathSite.unitIndex,
-                            dataflow.pathSite.unitText,
-                            guard.requiredOutcome,
-                            guard.reachingSuccessorIndices,
-                            guardNode, dataflow.targetCell);
-                    guard.branchShape.annotate(edge);
-                }
-                changed |= pathRelevant.add(guardNode);
-            }
-        }
-        return changed;
-    }
-
     private boolean propagateProjectedEdgesFromExistingEdges() {
         if (edges.isEmpty() || edges.size() >= maxEdges) {
             return false;
@@ -4227,7 +3702,6 @@ final class SeedBackwardStaticAnalyzer {
 
     private List<Map<String, Object>> collectCells() {
         Set<String> cells = new LinkedHashSet<>();
-        cells.add(target.seedPredicate());
         for (Map<String, Object> edge : edges) {
             cells.add(String.valueOf(edge.get("fromCell")));
             cells.add(String.valueOf(edge.get("toCell")));
@@ -4965,18 +4439,15 @@ final class SeedBackwardStaticAnalyzer {
         Map<String, Object> edge = emittedEdgeRows.get(key);
         if (edge == null) {
             String edgeId = "DF." + edgeCounter++;
-            boolean ownMappingOnly = isStaticPortMappingKind(kind);
             boolean hasProjectionBase = projectionBaseEdge != null;
             // A projected row is a derived view of its base edge.  Its
             // rendered kind must never manufacture stronger semantic
-            // authority than that base.  In particular, a static
-            // format/port mapping remains mapping-only after field
-            // projection.  Require an explicit false/true tuple on the
-            // base so older or incomplete rows fail closed.
+            // authority than that base. Require an explicit false/true tuple
+            // on the base so incomplete rows fail closed.
             boolean baseMappingOnly = hasProjectionBase
                     && !Boolean.FALSE.equals(
                     projectionBaseEdge.get("mappingOnly"));
-            boolean mappingOnly = ownMappingOnly || baseMappingOnly;
+            boolean mappingOnly = baseMappingOnly;
             boolean baseSemanticAssertionsAllowed = !hasProjectionBase
                     || Boolean.TRUE.equals(projectionBaseEdge.get(
                     "semanticAssertionsAllowed"));
@@ -4993,13 +4464,9 @@ final class SeedBackwardStaticAnalyzer {
                             && baseAutomaticDerivationAllowed;
             boolean eligibleForAutomaticSmt = semanticAssertionsAllowed
                     && baseAutomaticSmtAllowed;
-            String mappingAuthority = "";
-            if (mappingOnly) {
-                mappingAuthority = baseMappingOnly
-                        ? stringValue(projectionBaseEdge.get(
-                        "mappingAuthority"))
-                        : "STATIC_FORMAT_AND_PORT_MAPPING";
-            }
+            String mappingAuthority = mappingOnly
+                    ? stringValue(projectionBaseEdge.get(
+                    "mappingAuthority")) : "";
             String edgeTransferKind = SymbolicPlanningStage.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -5212,13 +4679,6 @@ final class SeedBackwardStaticAnalyzer {
                 ? "\n" + stableSiteId(method, fact.unitIndex, kind) : "";
         return kind + "\n" + String.valueOf(from) + "\n"
                 + String.valueOf(to) + "\n" + method + site;
-    }
-
-    private boolean isStaticPortMappingKind(String kind) {
-        for (StaticPortMapping mapping : staticPortMappings) {
-            if (mapping.kind.equals(kind)) return true;
-        }
-        return false;
     }
 
     /**
@@ -5464,30 +4924,6 @@ final class SeedBackwardStaticAnalyzer {
             result.addAll(list);
         }
         return result;
-    }
-
-    private static boolean containsAny(String value, Collection<String> needles) {
-        if (value == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isEmpty() && value.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean containsAll(String value, Collection<String> needles) {
-        if (value == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isEmpty() && !value.contains(needle)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static String firstNonBlank(String... values) {

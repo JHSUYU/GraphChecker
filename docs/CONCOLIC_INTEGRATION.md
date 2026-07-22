@@ -1,7 +1,7 @@
 # Concolic Region Integration Contract
 
 Status: the maintained generic workflow produces hash-bound, independently
-Z3-checked candidate models for the three reference workloads. Natural replay
+Z3-checked candidate models for the five reference profiles. Natural replay
 promotion remains the explicit final TODO.
 
 This document defines the project-independent contract between GraphChecker's
@@ -21,23 +21,23 @@ there is no domain-specific composition adapter.
 
 1. Every analyzed unit is a `REGION.*`; no domain-specific region types exist.
 2. A region has one of two capture goals: `TARGET_BRANCH` or `OUTPUT_CLOSURE`.
-3. The target goal performs one directed fatal-branch replay; it does not need
-   comprehensive path enumeration.
+3. The target goal captures one exact branch, then replays a single immutable
+   `BranchReplayContract`; it does not need comprehensive path enumeration.
 4. An output goal is admitted only through real record/solve/replay/import
    evidence and is merged only after its bounded path worklist closes.
 5. Input models may change real program inputs. Branch overrides never count as
    automatic concolic evidence.
-6. Static mappings discover work but do not establish value semantics.
+6. Static dataflow discovers work but does not establish runtime value
+   semantics.
 7. Cross-region equality requires a complete, invocation-matched runtime value
    fingerprint. Shared state requires a concrete write/read witness.
-8. Domain adapters may map formats and ports only. They cannot add equations.
-9. Human assumptions are `EXPLICIT_CONTRACT`, physically separate from and
-   ineligible for automatic SMT composition.
-10. Any missing evidence, unsupported expression, bound, cycle, or incomplete
+8. Manual transport mappings and domain semantic adapters are not inputs to
+   the maintained workflow.
+9. Any missing evidence, unsupported expression, bound, cycle, or incomplete
     admission remains an explicit gap.
 
-Legacy strings `RELATIONAL_PRODUCER` and `RELATIONAL_PROTOCOL` are accepted only
-when reading old artifacts. New artifacts always emit `OUTPUT_CLOSURE`.
+`TARGET_BRANCH` and `OUTPUT_CLOSURE` are the only accepted capture goals. Old
+goal aliases are rejected instead of being translated.
 
 ## 3. Static region IR
 
@@ -106,8 +106,8 @@ READ_FROM:
   status = CONFIRMED_READ_FROM
 ```
 
-An observed call order or static RPC/serialization mapping without those
-witnesses is mapping-only. `AutomaticRegionEdge` is the shared fail-closed gate.
+An observed call order without those witnesses is insufficient.
+`AutomaticRegionEdge` is the shared fail-closed gate.
 
 `ConcolicScheduler` rebuilds a target activation's equality classes from only
 the witness-bearing relations selected for that concrete region instance. A
@@ -117,11 +117,12 @@ global static equality class is never reused blindly for another invocation.
 
 ### 5.1 `TARGET_BRANCH`
 
-The scheduler selects a final fatal branch and creates:
+The scheduler selects an observed fatal branch and creates one
+`BranchReplayContract`:
 
 ```text
-old path prefix
-AND negated final condition
+ordered source BranchWitness prefix
+AND the flipped source witness predicate
 ```
 
 The solver output is converted to concrete materialization actions. A replay is
@@ -134,7 +135,10 @@ the concrete target site/occurrence reached the desired outcome
 the expected exception appears in the exception chain
 ```
 
-This goal deliberately stops after the directed fatal condition is validated.
+Only `VM_PC` witnesses are replayable. An exact VM branch event with no path
+condition remains observation-only and cannot be converted into a synthetic
+condition or alternate certificate. This goal deliberately stops after the
+contract is validated.
 
 ### 5.2 `OUTPUT_CLOSURE`
 
@@ -222,9 +226,10 @@ records prevent duplicate work after resume. Unmapped conditions are gaps.
 returns materializable assignments. The important result is the selected path
 and symbolic relation, not a displayed concrete model.
 
-The replay activation carries assignments and a validation-only target branch.
-It must not contain `forcedBranches` or replay branch overrides. The runtime
-reports applied assignment count and actual branch mappings.
+The replay activation carries assignments and the same immutable replay
+contract. It must not contain `forcedBranches`, target-branch aliases, or replay
+branch overrides. The runtime reports applied assignment count and actual
+branch witnesses.
 
 `ConcolicReplayValidator` checks:
 
@@ -247,14 +252,14 @@ worklist itself is closed without gaps.
 Unexplored or rejected paths are never treated as infeasible. An incomplete
 merge may be emitted for diagnostics, but the composer marks it incomplete.
 
-## 10. Campaign state machine
+## 10. Maintained workload orchestration
 
-`ConcolicCampaignRunner` implements:
+The generic workload driver implements:
 
 ```text
 load graph, summaries, path records, and resume activations
 repeat within bounds:
-  plan graph and paths
+  plan graph and region paths
   if a complete cached summary has a pending flip:
     solve, execute, validate, import, update path record
   else if an automatically eligible output is missing:
@@ -268,7 +273,8 @@ persist all state and manifest
 The execution backend receives file locations and environment variables only.
 The selected generic workflow performs activation-specific Soot
 instrumentation, runs its configured local workload on the custom JDK, and
-lets the importer normalize the result.
+lets the importer normalize the result. The former all-purpose Java campaign
+runner and its compatibility state machine are not part of this workflow.
 
 Persisted resume files are:
 
@@ -285,7 +291,8 @@ concolic_campaign_manifest.json
 `ConcolicSmtComposer` consumes only:
 
 ```text
-validated fatal query and target replay summary
+canonical fatal BranchReplayContract and SolverPathContext
+the observed target summary selected by that contract
 complete/guarded region summaries
 target-instance-selected equality/read-from bindings
 common region/port schemas
@@ -295,10 +302,10 @@ It does not read an external semantic-contract registry. Legacy summaries
 carrying `protocolModel` or embedded `explicitContracts` are rejected as
 incomplete.
 
-The manifest is complete only if there are no missing summaries, incomplete
-relations, unsupported expressions, unbound ports, or target replay gaps.
-`domainSemanticAdapterUsed=false` and `explicitContractsIncluded=false` are
-explicit output invariants.
+Structural composition succeeds only if there are no missing summaries,
+incomplete relations, unsupported expressions, or unbound ports. The result is
+still `CANDIDATE_ONLY`: promotion by a natural, injection-free target replay is
+the explicit remaining TODO.
 
 `SymbolicRelationshipVerifier` may run an automatic proof only when the
 candidate set says `eligibleForAutomaticVerification=true`. It first requires

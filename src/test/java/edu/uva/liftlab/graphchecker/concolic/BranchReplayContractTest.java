@@ -45,22 +45,6 @@ public class BranchReplayContractTest {
     }
 
     @Test
-    public void certifiedWitnessCannotAlsoClaimVmPcEvidence() {
-        JsonObject certificate = new JsonObject();
-        certificate.addProperty("certificateId", "CERT.1");
-        BranchWitness witness = BranchWitness.certifiedNoPc("ROOT#u3",
-                "ROOT", 3, 1, false,
-                predicate("==", "REGION.IN.ref", "N"), certificate);
-        assertEquals(BranchWitness.CERTIFIED_NO_PC,
-                witness.evidenceKind());
-        assertEquals(-1, witness.vmPcIndex());
-
-        JsonObject malformed = witness.toJson();
-        malformed.getAsJsonObject("evidence").addProperty("vmPcIndex", 0);
-        expectRejected(malformed, "keys must be");
-    }
-
-    @Test
     public void flipOwnsPolarityAndPreservesOnlyOrderedPrefix() {
         BranchWitness first = witness("ROOT#u1", 1, 1, true, "<");
         BranchWitness second = witness("ROOT#u2", 2, 1, false, "==");

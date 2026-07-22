@@ -1,2 +1,0 @@
-{"schemaVersion":1,"kind":"DECLARED_RPC_EQUALITY","authority":"TEST_DECLARED_RPC_EQUALITY","fromEndpoint":"REGION.A.out.a","toEndpoint":"REGION.C.in.a"}
-{"schemaVersion":1,"kind":"DECLARED_RPC_EQUALITY","authority":"TEST_DECLARED_RPC_EQUALITY","fromEndpoint":"REGION.B.out.b","toEndpoint":"REGION.C.in.b"}

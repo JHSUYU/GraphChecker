@@ -47,19 +47,21 @@ The analyzer reads that marker from the class file and starts its backward
 slice at the one matching Jimple throw. `target.yaml` may contain
 `exception_target_id: request-failure` to select among multiple markers in one
 input class tree. With no id there must be exactly one marker. The exception
-type is taken from the annotated `NEW`; the removed `seed_exception` and
-`target_exception` keys are rejected rather than searched globally.
+type is taken from the annotated `NEW`; the removed exception-name,
+`seed_variables`, and `seed_function` paths are rejected rather than searched
+or inferred globally.
 
 ## Binary branch replay protocol
 
-An observed binary decision is represented once by a content-hashed
-`BranchWitness`. It owns the exact site/occurrence, source outcome, canonical
-satisfied predicate, and one evidence variant (`VM_PC` or
-`CERTIFIED_NO_PC`). `BranchReplayContract.flip()` is the sole polarity
-operation and produces the ordered-prefix-plus-flipped-target request consumed
-unchanged by the worklist, solver, instrumentation, runtime, importer, and
-verifier. Retired target/prefix/negated-condition aliases are rejected for an
-output path replay. Multiway switches use their own successor-aware records.
+An observed, replayable binary decision is represented once by a
+content-hashed `BranchWitness`. It owns the exact site/occurrence, source
+outcome, canonical satisfied predicate, and `VM_PC` evidence.
+`BranchReplayContract.flip()` is the sole polarity operation and produces the
+ordered-prefix-plus-flipped-target request consumed unchanged by the worklist,
+solver, instrumentation, runtime, importer, and verifier. A zero-PC VM branch
+event is observation-only and cannot be promoted through an alternate
+certificate. Retired target/prefix/negated-condition aliases are rejected.
+Multiway switches use their own successor-aware records.
 
 The three-thread reference runner stops at a hash-bound, independently
 Z3-checked `CANDIDATE_ONLY` result. Promoting that candidate to a trusted result
@@ -105,7 +107,6 @@ The principal environment overrides are:
 | `reach_report` | `CAUSYNTH_REACH_REPORT` |
 | `reach_max_inputs` | `CAUSYNTH_REACH_MAX_INPUTS` |
 | `reach_max_valuations` | `CAUSYNTH_REACH_MAX_VALUATIONS` |
-| `rpc_mapping_file` | `CAUSYNTH_RPC_MAPPING_FILE` |
 | `runtime_region_instances` | `CAUSYNTH_RUNTIME_REGION_INSTANCES` |
 | `workload_command` | `CAUSYNTH_WORKLOAD_COMMAND` |
 
@@ -117,11 +118,6 @@ Artifact-specific overrides use the same names shown by `config`, including
 `CAUSYNTH_RELATIONSHIP_CANDIDATES`. The reachability output can be relocated
 with `CAUSYNTH_REACH_REPORT`; solver timeout remains shared with relationship
 verification through `CAUSYNTH_SOLVER_TIMEOUT_MS`.
-
-`rpc_mapping_file` is intentionally not concatenated into runtime edge
-validation automatically. A fixture adapter may translate its declared RPC
-equalities into the scheduler's validated edge schema, but production
-composition must retain its existing runtime-evidence gates.
 
 Use `--dry-run` or `GRAPH_CHECKER_DRY_RUN=true` to inspect constructed commands.
 For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded,

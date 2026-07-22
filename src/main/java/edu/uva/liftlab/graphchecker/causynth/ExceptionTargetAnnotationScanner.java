@@ -64,11 +64,11 @@ final class ExceptionTargetAnnotationScanner {
             }
         }
         if (matches.isEmpty()) {
-            if (!wanted.isEmpty()) {
-                throw new IOException("No @CausynthExceptionTarget(\""
-                        + wanted + "\") exists in the analyzed class inputs");
-            }
-            return null;
+            throw new IOException(wanted.isEmpty()
+                    ? "No @CausynthExceptionTarget exists in the analyzed "
+                    + "class inputs"
+                    : "No @CausynthExceptionTarget(\"" + wanted
+                    + "\") exists in the analyzed class inputs");
         }
         if (matches.size() != 1) {
             List<String> identities = matches.stream()

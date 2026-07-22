@@ -8330,8 +8330,8 @@ public final class ConcolicSmtComposer {
                         "(< " + write + " " + read + ")");
                 stats.orders++;
 
-                // A complete serialized value is sufficient for an RPC or
-                // SASL equality. The receiver-side object is normally a new
+                // A complete serialized value is sufficient for a transport
+                // equality. The receiver-side object is normally a new
                 // allocation, so object identity would be a false constraint.
                 if (valueEquality) {
                     continue;

@@ -33,14 +33,6 @@ import java.util.TreeSet;
 public final class RegionPathWorklist {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
-    private static final String CERTIFIED_CONCRETE_GUARD_AUTHORITY =
-            "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1";
-    private static final String CONCRETE_GUARD_CERTIFICATE_AUTHORITY =
-            "RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
-                    + "VM_BRANCH_EVENT_V1";
-    private static final String CONCRETE_GUARD_PROOF_AUTHORITY =
-            "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1";
-
     private RegionPathWorklist() {
     }
 

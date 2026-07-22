@@ -19,7 +19,6 @@ public final class BranchWitness {
     public static final int SCHEMA_VERSION = 1;
     public static final String KIND = "BINARY_BRANCH_WITNESS";
     public static final String VM_PC = "VM_PC";
-    public static final String CERTIFIED_NO_PC = "CERTIFIED_NO_PC";
     private static final String ID_PREFIX = "BRANCH.WITNESS.";
 
     private final String siteId;
@@ -71,20 +70,6 @@ public final class BranchWitness {
         evidence.addProperty("kind", VM_PC);
         evidence.addProperty("vmPcIndex", vmPcIndex);
         evidence.add("vmEvent", CanonicalJson.copy(vmEvent));
-        return new BranchWitness(siteId, method, unitIndex, occurrence,
-                sourceTakenOutcome, sourceSatisfiedPredicate, evidence);
-    }
-
-    public static BranchWitness certifiedNoPc(
-            String siteId, String method, int unitIndex, int occurrence,
-            boolean sourceTakenOutcome, JsonElement sourceSatisfiedPredicate,
-            JsonObject certificate) {
-        if (certificate == null || certificate.size() == 0) {
-            throw new IllegalArgumentException("certificate is required");
-        }
-        JsonObject evidence = new JsonObject();
-        evidence.addProperty("kind", CERTIFIED_NO_PC);
-        evidence.add("certificate", CanonicalJson.copy(certificate));
         return new BranchWitness(siteId, method, unitIndex, occurrence,
                 sourceTakenOutcome, sourceSatisfiedPredicate, evidence);
     }
@@ -205,13 +190,6 @@ public final class BranchWitness {
                     || object(source, "vmEvent").size() == 0) {
                 throw new IllegalArgumentException(
                         "VM_PC evidence requires an index and event");
-            }
-        } else if (CERTIFIED_NO_PC.equals(kind)) {
-            requireExactKeys(source, "CERTIFIED_NO_PC evidence", "kind",
-                    "certificate");
-            if (object(source, "certificate").size() == 0) {
-                throw new IllegalArgumentException(
-                        "CERTIFIED_NO_PC evidence requires a certificate");
             }
         } else {
             throw new IllegalArgumentException(

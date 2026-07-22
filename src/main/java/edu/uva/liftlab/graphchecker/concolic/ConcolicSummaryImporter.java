@@ -71,15 +71,6 @@ public final class ConcolicSummaryImporter {
             "NON_MUTATING_MAP_ENTRY_READ_EXACT_DYNAMIC_FIELD_BASE_V1";
     private static final String NON_MUTATING_DYNAMIC_FIELD_EXPRESSION_AUTHORITY =
             "EXACT_VM_BRANCH_MAPPING_DYNAMIC_SYMBOL_AND_REQUESTED_SLICE_BASE_V1";
-    private static final String CERTIFIED_CONCRETE_GUARD_AUTHORITY =
-            "EXACT_NULL_MODEL_CONCRETE_GUARD_REPLAY_V1";
-    private static final String CONCRETE_GUARD_CERTIFICATE_AUTHORITY =
-            "RUNTIME_EXACT_APPLIED_NULL_MODEL_ASSIGNMENT_AND_"
-                    + "VM_BRANCH_EVENT_V1";
-    private static final String CONCRETE_GUARD_PROOF_KIND =
-            "REFERENCE_NULL_CONCRETE_GUARD_REPLAY_PROOF";
-    private static final String CONCRETE_GUARD_PROOF_AUTHORITY =
-            "SOLVER_EXACT_REFERENCE_NULL_GUARD_AND_MODEL_ASSIGNMENT_V1";
     private static final Pattern MATERIALIZATION_HOOK_SITE =
             Pattern.compile("^<.+>#u[0-9]+$");
     private static final Pattern JIMPLE_CMP_ASSIGNMENT = Pattern.compile(
@@ -214,22 +205,6 @@ public final class ConcolicSummaryImporter {
                 }
                 continue;
             }
-            CertifiedConcreteGuardCatalog certifiedConcreteGuards =
-                    certifiedConcreteGuards(raw, activation,
-                            enginePathCondition, rawBranchMappings,
-                            admission);
-            if (!certifiedConcreteGuards.issues.isEmpty()) {
-                for (String issue : certifiedConcreteGuards.issues) {
-                    diagnostics.add(diagnostic(raw,
-                            "REJECTED_CERTIFIED_CONCRETE_GUARD", issue));
-                }
-                // A self-declared certificate is solver provenance.  Once
-                // present, any malformed, unmatched, or duplicate member
-                // invalidates the complete runtime result rather than merely
-                // dropping the synthetic predicate and preserving a weaker
-                // relational summary.
-                continue;
-            }
             DynamicSemanticPcFallbackCatalog dynamicPcFallbacks =
                     dynamicSemanticPcFallbacks(raw, activation,
                             enginePathCondition, rawBranchMappings,
@@ -242,10 +217,8 @@ public final class ConcolicSummaryImporter {
             PathNormalization normalization = normalizePathCondition(
                     enginePathCondition, admission, mappedConditions,
                     semanticBranchConditions,
-                    !mappedConditions.isEmpty()
-                            || !certifiedConcreteGuards.guards.isEmpty(),
-                    activation,
-                    dynamicPcFallbacks, certifiedConcreteGuards);
+                    !mappedConditions.isEmpty(), activation,
+                    dynamicPcFallbacks);
             JsonArray pathCondition = normalization.conditions;
             RuntimePathContamination residualRuntimePath =
                     runtimePathContamination(pathCondition);
@@ -416,9 +389,6 @@ public final class ConcolicSummaryImporter {
             normalizationSummary.addProperty(
                     "semanticBranchConditionSubstitutionCount",
                     normalization.semanticBranchConditionSubstitutionCount);
-            normalizationSummary.addProperty(
-                    "certifiedConcreteGuardConditionCount",
-                    normalization.syntheticConditionCount);
             normalizationSummary.add("conditionIndexMap",
                     normalization.indexMap());
             normalizationSummary.add("filteredConditions",
@@ -2435,12 +2405,7 @@ public final class ConcolicSummaryImporter {
             int index = integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
-            String syntheticIdentity = certifiedConcreteGuardIdentity(
-                    mapping);
-            boolean certifiedSynthetic = index < 0
-                    && normalization != null
-                    && normalization.hasSynthetic(syntheticIdentity);
-            if (index < 0 && !certifiedSynthetic) continue;
+            if (index < 0) continue;
             mappedCount++;
             int occurrence = integer(mapping, "occurrence", -1);
             int baseline = integer(mapping, "rawPathConditionBaseline",
@@ -2450,13 +2415,8 @@ public final class ConcolicSummaryImporter {
             JsonElement rawCondition = mapping.get("rawCondition");
             JsonElement condition = mapping.get("condition");
             int normalizedIndex = normalization == null
-                    ? -1 : certifiedSynthetic
-                    ? normalization.syntheticIndex(syntheticIdentity)
-                    : normalization.index(index);
-            boolean exact = certifiedSynthetic
-                    ? exactCertifiedConcretePathGuard(mapping,
-                    syntheticIdentity, normalization, sliceMethods)
-                    : index < enginePath.size()
+                    ? -1 : normalization.index(index);
+            boolean exact = index < enginePath.size()
                     && normalizedIndex >= 0
                     && normalizedIndex < normalization.conditions.size()
                     && normalization.isSemantic(index)
@@ -2531,34 +2491,6 @@ public final class ConcolicSummaryImporter {
                     + "DEPENDENCY");
         }
         return new ExactPathGuardDependency(issues.isEmpty(), issues);
-    }
-
-    private static boolean exactCertifiedConcretePathGuard(
-            JsonObject mapping, String identity,
-            PathNormalization normalization, Set<String> sliceMethods) {
-        int normalizedIndex = normalization.syntheticIndex(identity);
-        return normalizedIndex >= 0
-                && normalizedIndex < normalization.conditions.size()
-                && Boolean.TRUE.equals(strictBoolean(mapping,
-                "certifiedConcreteGuard"))
-                && CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(strictString(
-                mapping, "conditionAuthority"))
-                && CONCRETE_GUARD_CERTIFICATE_AUTHORITY.equals(strictString(
-                mapping, "concreteGuardCertificateAuthority"))
-                && exactVmConcreteGuardEnvelope(mapping)
-                && integer(mapping, "rawConditionIndex", -2) == -1
-                && integer(mapping, "engineConditionIndex", -2) == -1
-                && integer(mapping, "conditionIndex", -2) == -1
-                && integer(mapping, "rawPathConditionBaseline", -1)
-                == integer(mapping, "rawPathConditionSize", -2)
-                && mapping.has("condition")
-                && GSON.toJson(mapping.get("condition")).equals(GSON.toJson(
-                normalization.conditions.get(normalizedIndex)))
-                && sha256(GSON.toJson(mapping.get("condition"))).equals(
-                string(mapping, "certificateConditionSha256"))
-                && !exactReferenceNullConditionSymbol(
-                mapping.get("condition")).isEmpty()
-                && sliceMethods.contains(string(mapping, "method"));
     }
 
     private static boolean containsInteger(JsonArray values, int expected) {
@@ -3307,829 +3239,12 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
-    /**
-     * Admits a semantic guard which has no raw VM path-condition member only
-     * when the runtime proves that an exact solver model assignment wrote a
-     * null reference and the exact VM branch event consumed that value.  The
-     * synthetic condition is intentionally identified by a certificate key,
-     * never by a fabricated raw engine index.
-     */
-    private static CertifiedConcreteGuardCatalog certifiedConcreteGuards(
-            JsonObject raw, JsonObject activation, JsonArray rawConditions,
-            JsonArray mappings, PathAdmissionPolicy admission) {
-        List<CertifiedConcreteGuard> accepted = new ArrayList<>();
-        List<String> issues = new ArrayList<>();
-        ConcreteGuardProofCatalog proofCatalog = concreteGuardProofCatalog(
-                raw, activation);
-        issues.addAll(proofCatalog.issues);
-        if (!issues.isEmpty()) {
-            return new CertifiedConcreteGuardCatalog(accepted, issues);
-        }
-        Set<String> identities = new LinkedHashSet<>();
-        Set<String> consumedProofs = new LinkedHashSet<>();
-        int ordinal = 0;
-        for (JsonElement element : mappings) {
-            if (!element.isJsonObject()) {
-                ordinal++;
-                continue;
-            }
-            JsonObject mapping = element.getAsJsonObject();
-            List<JsonObject> eventProofs = proofCatalog.forEvent(mapping);
-            boolean selfDeclared = mapping.has("certifiedConcreteGuard")
-                    || CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(string(
-                    mapping, "conditionAuthority"))
-                    || mapping.has("concreteGuardCertificateAuthority");
-            if (!selfDeclared && eventProofs.isEmpty()) {
-                ordinal++;
-                continue;
-            }
-            JsonObject proof = eventProofs.size() == 1
-                    ? eventProofs.get(0) : null;
-            String rejection = proof == null
-                    ? eventProofs.isEmpty()
-                    ? "CERTIFICATE_HAS_NO_ACTIVATION_PROOF"
-                    : "CERTIFICATE_EVENT_PROOF_NOT_UNIQUE"
-                    : certifiedConcreteGuardRejection(raw, activation,
-                    rawConditions, mapping, admission, proof);
-            String identity = proof == null ? ""
-                    : concreteGuardProofIdentity(proof);
-            if (!rejection.isEmpty()) {
-                issues.add(firstNonBlank(string(mapping, "siteId"),
-                        "mapping@" + ordinal) + ":" + rejection);
-            } else if (!identities.add(identity)
-                    || !consumedProofs.add(identity)) {
-                issues.add(string(mapping, "siteId")
-                        + ":DUPLICATE_CERTIFICATE_IDENTITY");
-            } else {
-                accepted.add(new CertifiedConcreteGuard(identity,
-                        integer(mapping, "rawPathConditionBaseline", -1),
-                        ordinal, mapping.get("condition")));
-            }
-            ordinal++;
-        }
-        for (JsonObject proof : proofCatalog.proofs) {
-            String identity = concreteGuardProofIdentity(proof);
-            if (!consumedProofs.contains(identity)) {
-                issues.add(strictString(proof, "siteId")
-                        + ":ACTIVATION_PROOF_HAS_NO_CERTIFIED_MAPPING");
-            }
-        }
-        Collections.sort(accepted, (left, right) -> {
-            int byBoundary = Integer.compare(left.rawBoundary,
-                    right.rawBoundary);
-            return byBoundary != 0 ? byBoundary
-                    : Integer.compare(left.mappingOrdinal,
-                    right.mappingOrdinal);
-        });
-        return new CertifiedConcreteGuardCatalog(accepted, issues);
-    }
-
-    private static String certifiedConcreteGuardRejection(
-            JsonObject raw, JsonObject activation, JsonArray rawConditions,
-            JsonObject mapping, PathAdmissionPolicy admission,
-            JsonObject proof) {
-        Boolean certified = strictBoolean(mapping,
-                "certifiedConcreteGuard");
-        Integer conditionIndex = strictInteger(mapping,
-                "conditionIndex");
-        Integer rawIndex = strictInteger(mapping,
-                "rawConditionIndex");
-        Integer engineIndex = strictInteger(mapping,
-                "engineConditionIndex");
-        Integer baseline = strictInteger(mapping,
-                "rawPathConditionBaseline");
-        Integer size = strictInteger(mapping, "rawPathConditionSize");
-        Integer added = strictInteger(mapping, "rawPathConditionsAdded");
-        Integer candidates = strictInteger(mapping,
-                "branchConditionCandidateCount");
-        Integer targetAdded = strictInteger(mapping,
-                "targetMethodConditionsAdded");
-        Integer occurrence = strictInteger(mapping, "occurrence");
-        Integer vmOccurrence = strictInteger(mapping, "vmOccurrence");
-        Integer certificateOccurrence = strictInteger(mapping,
-                "certificateOccurrence");
-        Boolean outcome = strictBoolean(mapping, "outcome");
-        Boolean observed = strictBoolean(mapping, "observedOutcome");
-        Boolean effective = strictBoolean(mapping, "effectiveOutcome");
-        Boolean certificateOutcome = strictBoolean(mapping,
-                "certificateOutcome");
-        if (!Boolean.TRUE.equals(certified)
-                || !CERTIFIED_CONCRETE_GUARD_AUTHORITY.equals(
-                strictString(mapping, "conditionAuthority"))
-                || !CONCRETE_GUARD_CERTIFICATE_AUTHORITY.equals(
-                strictString(mapping,
-                        "concreteGuardCertificateAuthority"))) {
-            return "CERTIFICATE_AUTHORITY_MISMATCH";
-        }
-        if (conditionIndex == null || conditionIndex != -1
-                || rawIndex == null || rawIndex != -1
-                || engineIndex == null || engineIndex != -1
-                || mapping.has("rawCondition")) {
-            return "SYNTHETIC_GUARD_CLAIMS_RAW_VM_INDEX";
-        }
-        if (baseline == null || size == null || baseline < 0
-                || baseline != size || size > rawConditions.size()
-                || added == null || added != 0
-                || candidates == null || candidates != 0
-                || targetAdded == null || targetAdded != 0
-                || array(mapping, "vmConditionIndices").size() != 0) {
-            return "RAW_PC_BOUNDARY_NOT_EXACTLY_EMPTY";
-        }
-        if (occurrence == null || occurrence <= 0
-                || !occurrence.equals(vmOccurrence)
-                || !occurrence.equals(certificateOccurrence)
-                || outcome == null || !outcome.equals(observed)
-                || !outcome.equals(effective)
-                || !outcome.equals(certificateOutcome)) {
-            return "BRANCH_EVENT_IDENTITY_MISMATCH";
-        }
-        String activationId = string(activation, "activationId");
-        if (activationId.isEmpty()
-                || !activationId.equals(string(raw, "activationId"))
-                || !activationId.equals(strictString(mapping,
-                "certificateActivationId"))
-                || strictString(activation, "pathQueryKey").isEmpty()
-                || !strictString(activation, "pathQueryKey").equals(
-                strictString(mapping, "certificatePathQueryKey"))
-                || !strictString(mapping, "siteId").equals(strictString(
-                mapping, "certificateSiteId"))
-                || !CONCRETE_GUARD_PROOF_AUTHORITY.equals(strictString(
-                mapping, "certificateProofAuthority"))) {
-            return "ACTIVATION_OR_SITE_CERTIFICATE_MISMATCH";
-        }
-        if (!exactCertificateProofJoin(mapping, proof)) {
-            return "ACTIVATION_PROOF_CERTIFICATE_MISMATCH";
-        }
-        if (!exactVmConcreteGuardEnvelope(mapping, proof)) {
-            return "VM_BRANCH_EVENT_ENVELOPE_NOT_EXACT";
-        }
-        String method = strictString(mapping, "method");
-        String methodKey = ConcolicCodePosition.sootMethodKey(method);
-        if (method.isEmpty() || methodKey.isEmpty()
-                || !admission.methodKeys.contains(methodKey)) {
-            return "GUARD_METHOD_OUTSIDE_ADMITTED_REGION";
-        }
-        JsonElement condition = mapping.get("condition");
-        String assignmentKey = strictString(mapping,
-                "certificateModelAssignmentKey");
-        String engineSymbol = exactReferenceNullConditionSymbol(condition);
-        if (assignmentKey.isEmpty() || engineSymbol.isEmpty()
-                || !condition.equals(proof.get("condition"))
-                || !engineSymbol.equals(strictString(mapping,
-                "certificateEngineSymbol"))
-                || strictString(mapping, "certificateInputSymbol").isEmpty()
-                || strictString(mapping,
-                "certificateTargetActionSha256").isEmpty()
-                || !sha256(GSON.toJson(condition)).equals(strictString(
-                mapping, "certificateConditionSha256"))) {
-            return "REFERENCE_NULL_CONDITION_CERTIFICATE_MISMATCH";
-        }
-        JsonObject applied = uniqueAppliedNullAssignment(raw,
-                assignmentKey, engineSymbol);
-        if (applied == null) {
-            return "APPLIED_NULL_MODEL_ASSIGNMENT_NOT_UNIQUE";
-        }
-        if (!strictString(mapping, "certificateInputSymbol").equals(
-                strictString(applied, "inputSymbol"))
-                || !strictString(mapping,
-                "certificateTargetActionSha256").equals(strictString(
-                applied, "targetActionSha256"))
-                || !assignmentKey.equals(modelAssignmentKey(applied))) {
-            return "APPLIED_NULL_MODEL_ASSIGNMENT_CERTIFICATE_MISMATCH";
-        }
-        JsonObject declared = uniqueDeclaredNullAssignment(activation,
-                applied);
-        if (declared == null) {
-            return "DECLARED_NULL_MODEL_ASSIGNMENT_NOT_UNIQUE";
-        }
-        if (!exactAssignmentTarget(declared, applied, activation)) {
-            return "MODEL_ASSIGNMENT_ACTION_CERTIFICATE_MISMATCH";
-        }
-        return "";
-    }
-
-    private static boolean exactCertificateProofJoin(
-            JsonObject mapping, JsonObject proof) {
-        return strictString(mapping, "certificateActivationId").equals(
-                strictString(proof, "activationId"))
-                && strictString(mapping, "certificatePathQueryKey").equals(
-                strictString(proof, "pathQueryKey"))
-                && strictString(mapping, "certificateSiteId").equals(
-                strictString(proof, "siteId"))
-                && java.util.Objects.equals(strictInteger(mapping,
-                "certificateOccurrence"), strictInteger(proof,
-                "occurrence"))
-                && java.util.Objects.equals(strictBoolean(mapping,
-                "certificateOutcome"), strictBoolean(proof, "outcome"))
-                && strictString(mapping,
-                "certificateModelAssignmentKey").equals(strictString(
-                proof, "modelAssignmentKey"))
-                && strictString(mapping, "certificateEngineSymbol").equals(
-                strictString(proof, "engineSymbol"))
-                && strictString(mapping, "certificateInputSymbol").equals(
-                strictString(proof, "inputSymbol"))
-                && strictString(mapping,
-                "certificateTargetActionSha256").equals(strictString(
-                proof, "targetActionSha256"))
-                && strictString(mapping,
-                "certificateConditionSha256").equals(strictString(proof,
-                "conditionSha256"))
-                && strictString(mapping, "certificateProofRole").equals(
-                strictString(proof, "proofRole"))
-                && java.util.Objects.equals(strictInteger(mapping,
-                "certificateSourceConditionIndex"), strictInteger(proof,
-                "sourceConditionIndex"))
-                && java.util.Objects.equals(strictInteger(mapping,
-                "certificateConstraintIndex"), strictInteger(proof,
-                "constraintIndex"))
-                && java.util.Objects.equals(strictInteger(mapping,
-                "certificateExpectedBranchPrefixOrdinal"), strictInteger(
-                proof, "expectedBranchPrefixOrdinal"))
-                && strictString(mapping, "certificateProofAuthority")
-                .equals(strictString(proof, "authority"));
-    }
-
-    private static boolean exactVmConcreteGuardEnvelope(
-            JsonObject mapping, JsonObject proof) {
-        Long eventId = strictLong(mapping, "vmBranchEventId");
-        Long contextId = strictLong(mapping, "vmThreadContextId");
-        Long javaThreadId = strictLong(mapping, "vmOwnerJavaThreadId");
-        Long osThreadId = strictLong(mapping, "vmOwnerOsThreadId");
-        JsonElement conditionIndices = mapping.get("vmConditionIndices");
-        boolean common = Boolean.TRUE.equals(strictBoolean(mapping,
-                "vmBranchEventExpected"))
-                && Boolean.TRUE.equals(strictBoolean(mapping,
-                "vmBranchEventValidated"))
-                && eventId != null && eventId > 0L
-                && contextId != null && contextId > 0L
-                && javaThreadId != null && javaThreadId > 0L
-                && osThreadId != null && osThreadId > 0L
-                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
-                strictString(mapping, "vmBranchEventAuthority"))
-                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
-                .equals(strictString(mapping, "mappingPolicy"))
-                && Boolean.FALSE.equals(strictBoolean(mapping,
-                "overrideApplied"))
-                && "NONE".equals(strictString(mapping, "overrideMode"))
-                && conditionIndices != null
-                && conditionIndices.isJsonArray()
-                && conditionIndices.getAsJsonArray().size() == 0
-                && "PASS".equals(strictString(mapping,
-                "replayValidation"));
-        if (!common) return false;
-        String role = strictString(proof, "proofRole");
-        return "TARGET".equals(role) || "PREFIX".equals(role);
-    }
-
-    private static boolean exactVmConcreteGuardEnvelope(JsonObject mapping) {
-        JsonObject role = new JsonObject();
-        role.addProperty("proofRole", strictString(mapping,
-                "certificateProofRole"));
-        return exactVmConcreteGuardEnvelope(mapping, role);
-    }
-
-    private static ConcreteGuardProofCatalog concreteGuardProofCatalog(
-            JsonObject raw, JsonObject activation) {
-        List<JsonObject> proofs = new ArrayList<>();
-        List<String> issues = new ArrayList<>();
-        JsonElement observedProofs = raw.get("concreteGuardReplayProofs");
-        // The runtime emits an empty proof array for every activation as a
-        // stable schema field.  That empty echo does not opt an ordinary seed
-        // capture into the nullable-guard certificate protocol.  A malformed
-        // or non-empty raw catalog still requires strict validation so that a
-        // producer cannot bypass the activation-side declaration.
-        boolean rawCatalogRequiresValidation = observedProofs != null
-                && (!observedProofs.isJsonArray()
-                || observedProofs.getAsJsonArray().size() > 0);
-        boolean applicable = "REPLAY_OUTPUT_PATH_FLIP".equals(
-                strictString(activation, "executionPhase"))
-                || activation.has("concreteGuardReplayProofs")
-                || rawCatalogRequiresValidation
-                || activation.has("concreteGuardReplayProof")
-                || raw.has("concreteGuardReplayProof");
-        if (!applicable) {
-            return new ConcreteGuardProofCatalog(proofs, issues);
-        }
-        if (activation.has("concreteGuardReplayProof")
-                || raw.has("concreteGuardReplayProof")) {
-            issues.add("SINGULAR_CONCRETE_GUARD_PROOF_IS_UNSUPPORTED");
-        }
-        JsonElement declaredElement = activation.get(
-                "concreteGuardReplayProofs");
-        JsonElement observedElement = raw.get("concreteGuardReplayProofs");
-        if (declaredElement == null || !declaredElement.isJsonArray()
-                || observedElement == null || !observedElement.isJsonArray()) {
-            issues.add("CONCRETE_GUARD_PROOF_CATALOG_MISSING_OR_MALFORMED");
-            return new ConcreteGuardProofCatalog(proofs, issues);
-        }
-        JsonArray declared = declaredElement.getAsJsonArray();
-        JsonArray observed = observedElement.getAsJsonArray();
-        if (!declared.equals(observed)) {
-            issues.add("RUNTIME_CONCRETE_GUARD_PROOF_CATALOG_MISMATCH");
-        }
-
-        List<JsonObject> expected = expectedConcreteGuardProofs(
-                activation, issues);
-        Set<String> proofIdentities = new LinkedHashSet<>();
-        Set<String> eventIdentities = new LinkedHashSet<>();
-        Set<String> matchedExpected = new LinkedHashSet<>();
-        for (int index = 0; index < declared.size(); index++) {
-            JsonElement element = declared.get(index);
-            if (!element.isJsonObject()) {
-                issues.add("PROOF@" + index + ":PROOF_IS_NOT_OBJECT");
-                continue;
-            }
-            JsonObject proof = element.getAsJsonObject();
-            String rejection = concreteGuardProofRejection(activation,
-                    proof);
-            if (!rejection.isEmpty()) {
-                issues.add("PROOF@" + index + ":" + rejection);
-                continue;
-            }
-            String identity = concreteGuardProofIdentity(proof);
-            String event = concreteGuardProofEventIdentity(proof);
-            if (!proofIdentities.add(identity)) {
-                issues.add("PROOF@" + index + ":DUPLICATE_PROOF_IDENTITY");
-                continue;
-            }
-            if (!eventIdentities.add(event)) {
-                issues.add("PROOF@" + index + ":DUPLICATE_PROOF_EVENT");
-                continue;
-            }
-            JsonObject expectedProof = uniqueExpectedProof(expected, proof);
-            if (expectedProof == null) {
-                issues.add("PROOF@" + index
-                        + ":PROOF_NOT_DERIVED_FROM_REPLAY_CONSTRAINT");
-                continue;
-            }
-            matchedExpected.add(concreteGuardProofIdentity(expectedProof));
-            proofs.add(proof);
-        }
-        for (JsonObject expectedProof : expected) {
-            String identity = concreteGuardProofIdentity(expectedProof);
-            if (!matchedExpected.contains(identity)) {
-                issues.add(strictString(expectedProof, "siteId")
-                        + ":DERIVED_NULL_GUARD_PROOF_MISSING");
-            }
-        }
-        return new ConcreteGuardProofCatalog(proofs, issues);
-    }
-
-    private static List<JsonObject> expectedConcreteGuardProofs(
-            JsonObject activation, List<String> issues) {
-        JsonElement contractElement = activation.get("replayContract");
-        if (contractElement == null || !contractElement.isJsonObject()) {
-            issues.add("BRANCH_REPLAY_CONTRACT_MISSING_OR_MALFORMED");
-            return Collections.emptyList();
-        }
-        return expectedConcreteGuardProofsFromContract(activation,
-                contractElement, issues);
-    }
-
-    private static List<JsonObject> expectedConcreteGuardProofsFromContract(
-            JsonObject activation, JsonElement encoded,
-            List<String> issues) {
-        List<JsonObject> result = new ArrayList<>();
-        final BranchReplayContract contract;
-        try {
-            contract = BranchReplayContract.fromJson(
-                    encoded.getAsJsonObject());
-        } catch (RuntimeException malformed) {
-            issues.add("BRANCH_REPLAY_CONTRACT_MALFORMED:"
-                    + malformed.getMessage());
-            return result;
-        }
-        JsonArray constraints = contract.requiredPathPredicates();
-        Set<String> events = new LinkedHashSet<>();
-        int ordinal = 0;
-        for (BranchWitness witness : contract.orderedPrefix()) {
-            if (!events.add(witness.siteId() + "\u0000"
-                    + witness.occurrence())) {
-                issues.add("PREFIX@" + ordinal
-                        + ":DUPLICATE_BRANCH_EVENT");
-            } else if (BranchWitness.CERTIFIED_NO_PC.equals(
-                    witness.evidenceKind())) {
-                addExpectedConcreteGuardProof(result, activation,
-                        constraints, "PREFIX", witness.siteId(),
-                        witness.occurrence(), witness.sourceTakenOutcome(),
-                        ordinal, ordinal, issues);
-            }
-            ordinal++;
-        }
-        BranchWitness source = contract.source();
-        if (!events.add(source.siteId() + "\u0000"
-                + source.occurrence())) {
-            issues.add("TARGET:DUPLICATE_BRANCH_EVENT");
-        } else if (BranchWitness.CERTIFIED_NO_PC.equals(
-                source.evidenceKind())) {
-            addExpectedConcreteGuardProof(result, activation, constraints,
-                    "TARGET", source.siteId(), source.occurrence(),
-                    contract.requiredTakenOutcome(),
-                    contract.orderedPrefix().size(), -1, issues);
-        }
-        return result;
-    }
-
-    private static void addExpectedConcreteGuardProof(
-            List<JsonObject> result, JsonObject activation,
-            JsonArray constraints, String role, String site, int occurrence,
-            boolean outcome, int sourceIndex, int prefixOrdinal,
-            List<String> issues) {
-        JsonElement condition = constraints.get(sourceIndex);
-        if (!condition.isJsonObject()) {
-            issues.add(role + "@" + sourceIndex + ":CONDITION_NOT_OBJECT");
-            return;
-        }
-        String engineSymbol = exactReferenceNullConditionSymbol(condition);
-        if (engineSymbol.isEmpty()) return;
-        JsonObject assignment = uniqueDeclaredNullAssignmentForEngine(
-                activation, engineSymbol);
-        if (assignment == null) {
-            issues.add(role + "@" + sourceIndex
-                    + ":NULL_CONDITION_ASSIGNMENT_NOT_UNIQUE");
-            return;
-        }
-        String assignmentKey = modelAssignmentKey(assignment);
-        String inputSymbol = strictString(assignment, "inputSymbol");
-        JsonElement action = assignment.get("target");
-        if (assignmentKey.isEmpty() || inputSymbol.isEmpty()
-                || action == null || !action.isJsonObject()) {
-            issues.add(role + "@" + sourceIndex
-                    + ":NULL_ASSIGNMENT_IDENTITY_INCOMPLETE");
-            return;
-        }
-        JsonObject expected = new JsonObject();
-        expected.addProperty("schemaVersion", 1);
-        expected.addProperty("kind", CONCRETE_GUARD_PROOF_KIND);
-        expected.addProperty("authority", CONCRETE_GUARD_PROOF_AUTHORITY);
-        expected.addProperty("activationId", strictString(activation,
-                "activationId"));
-        expected.addProperty("pathQueryKey", strictString(activation,
-                "pathQueryKey"));
-        expected.addProperty("proofRole", role);
-        expected.addProperty("sourceConditionIndex", sourceIndex);
-        expected.addProperty("constraintIndex", sourceIndex);
-        expected.addProperty("expectedBranchPrefixOrdinal", prefixOrdinal);
-        expected.addProperty("siteId", site);
-        expected.addProperty("occurrence", occurrence);
-        expected.addProperty("outcome", outcome);
-        expected.addProperty("modelAssignmentKey", assignmentKey);
-        expected.addProperty("engineSymbol", engineSymbol);
-        expected.addProperty("inputSymbol", inputSymbol);
-        expected.addProperty("targetActionSha256",
-                sha256(GSON.toJson(action)));
-        expected.add("condition", condition.deepCopy());
-        expected.addProperty("conditionSha256",
-                sha256(GSON.toJson(condition)));
-        expected.addProperty("requiresExactVmBranchEvent", true);
-        expected.addProperty("requiresZeroPathConditionSuffix", true);
-        expected.addProperty("requiresUniqueAppliedNullModelAssignment",
-                true);
-        expected.addProperty("branchOverrideProhibited", true);
-        result.add(expected);
-    }
-
-    private static JsonObject uniqueDeclaredNullAssignmentForEngine(
-            JsonObject activation, String engineSymbol) {
-        JsonObject result = null;
-        for (JsonElement element : array(activation, "modelAssignments")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject assignment = element.getAsJsonObject();
-            if (!engineSymbol.equals(strictString(assignment,
-                    "engineSymbol"))) continue;
-            JsonElement targetElement = assignment.get("target");
-            JsonObject target = targetElement != null
-                    && targetElement.isJsonObject()
-                    ? targetElement.getAsJsonObject() : null;
-            if (result != null || target == null
-                    || modelAssignmentKey(assignment).isEmpty()
-                    || strictString(assignment, "solverSymbol").isEmpty()
-                    || strictString(assignment, "inputSymbol").isEmpty()
-                    || !strictString(assignment, "inputSymbol").equals(
-                    strictString(target, "symbol"))
-                    || !"NULL".equals(strictString(assignment,
-                    "valueType"))
-                    || !"null".equals(strictString(assignment, "value"))
-                    || !"Z3_PATH_FLIP_MODEL".equals(strictString(
-                    assignment, "authority"))
-                    || !Boolean.TRUE.equals(strictBoolean(assignment,
-                    "materializeAtRealDefinition"))
-                    || !Boolean.TRUE.equals(strictBoolean(assignment,
-                    "modelIsNull"))
-                    || strictString(assignment,
-                    "nullnessSolverSymbol").isEmpty()
-                    || !exactReferenceAssignmentEncoding(assignment,
-                    target)
-                    || !exactTargetActionInRuntimeCatalog(activation,
-                    target)) {
-                return null;
-            }
-            String declaredHash = strictString(assignment,
-                    "targetActionSha256");
-            if (!declaredHash.isEmpty() && !declaredHash.equals(
-                    sha256(GSON.toJson(target)))) return null;
-            result = assignment;
-        }
-        return result;
-    }
-
-    private static boolean exactTargetActionInRuntimeCatalog(
-            JsonObject activation, JsonObject target) {
-        int matches = 0;
-        for (JsonElement action : runtimeMaterializationActions(activation)) {
-            if (target.equals(action)) matches++;
-        }
-        return matches == 1;
-    }
-
-    private static String concreteGuardProofRejection(
-            JsonObject activation, JsonObject proof) {
-        Integer schema = strictInteger(proof, "schemaVersion");
-        Integer sourceIndex = strictInteger(proof,
-                "sourceConditionIndex");
-        Integer constraintIndex = strictInteger(proof, "constraintIndex");
-        Integer prefixOrdinal = strictInteger(proof,
-                "expectedBranchPrefixOrdinal");
-        Integer occurrence = strictInteger(proof, "occurrence");
-        Boolean outcome = strictBoolean(proof, "outcome");
-        String role = strictString(proof, "proofRole");
-        JsonElement condition = proof.get("condition");
-        if (!Integer.valueOf(1).equals(schema)
-                || !CONCRETE_GUARD_PROOF_KIND.equals(strictString(proof,
-                "kind"))
-                || !CONCRETE_GUARD_PROOF_AUTHORITY.equals(strictString(
-                proof, "authority"))
-                || sourceIndex == null || sourceIndex < 0
-                || constraintIndex == null || constraintIndex < 0
-                || !sourceIndex.equals(constraintIndex)
-                || prefixOrdinal == null
-                || !("PREFIX".equals(role) && prefixOrdinal >= 0
-                || "TARGET".equals(role) && prefixOrdinal == -1)
-                || occurrence == null || occurrence <= 0 || outcome == null
-                || strictString(proof, "siteId").isEmpty()
-                || strictString(proof, "modelAssignmentKey").isEmpty()
-                || strictString(proof, "engineSymbol").isEmpty()
-                || strictString(proof, "inputSymbol").isEmpty()
-                || !strictString(proof, "targetActionSha256").matches(
-                "[0-9a-f]{64}")
-                || condition == null || !condition.isJsonObject()
-                || !strictString(proof, "conditionSha256").matches(
-                "[0-9a-f]{64}")
-                || !Boolean.TRUE.equals(strictBoolean(proof,
-                "requiresExactVmBranchEvent"))
-                || !Boolean.TRUE.equals(strictBoolean(proof,
-                "requiresZeroPathConditionSuffix"))
-                || !Boolean.TRUE.equals(strictBoolean(proof,
-                "requiresUniqueAppliedNullModelAssignment"))
-                || !Boolean.TRUE.equals(strictBoolean(proof,
-                "branchOverrideProhibited"))) {
-            return "PROOF_SCHEMA_OR_REQUIRED_FLAGS_MALFORMED";
-        }
-        if (!strictString(activation, "activationId").equals(strictString(
-                proof, "activationId"))
-                || !strictString(activation, "pathQueryKey").equals(
-                strictString(proof, "pathQueryKey"))) {
-            return "PROOF_ACTIVATION_OR_QUERY_MISMATCH";
-        }
-        String engineSymbol = exactReferenceNullConditionSymbol(condition);
-        if (!strictString(proof, "engineSymbol").equals(engineSymbol)
-                || !strictString(proof, "conditionSha256").equals(
-                sha256(GSON.toJson(condition)))) {
-            return "PROOF_CONDITION_OR_HASH_MISMATCH";
-        }
-        JsonObject assignment = uniqueDeclaredNullAssignmentForEngine(
-                activation, engineSymbol);
-        if (assignment == null
-                || !modelAssignmentKey(assignment).equals(strictString(
-                proof, "modelAssignmentKey"))
-                || !strictString(assignment, "inputSymbol").equals(
-                strictString(proof, "inputSymbol"))
-                || !sha256(GSON.toJson(assignment.get("target"))).equals(
-                strictString(proof, "targetActionSha256"))) {
-            return "PROOF_DECLARED_NULL_ASSIGNMENT_MISMATCH";
-        }
-        return "";
-    }
-
-    private static JsonObject uniqueExpectedProof(
-            List<JsonObject> expected, JsonObject actual) {
-        JsonObject result = null;
-        for (JsonObject candidate : expected) {
-            if (!candidate.equals(actual)) continue;
-            if (result != null) return null;
-            result = candidate;
-        }
-        return result;
-    }
-
-    private static String concreteGuardProofIdentity(JsonObject proof) {
-        return strictString(proof, "activationId") + "\n"
-                + strictString(proof, "pathQueryKey") + "\n"
-                + strictString(proof, "proofRole") + "\n"
-                + integer(proof, "sourceConditionIndex", -1) + "\n"
-                + integer(proof, "constraintIndex", -1) + "\n"
-                + integer(proof, "expectedBranchPrefixOrdinal", -2) + "\n"
-                + strictString(proof, "siteId") + "\n"
-                + integer(proof, "occurrence", -1) + "\n"
-                + strictBoolean(proof, "outcome") + "\n"
-                + strictString(proof, "modelAssignmentKey") + "\n"
-                + strictString(proof, "conditionSha256");
-    }
-
-    private static String concreteGuardProofEventIdentity(JsonObject proof) {
-        return strictString(proof, "siteId") + "\u0000"
-                + integer(proof, "occurrence", -1);
-    }
-
-    private static JsonObject uniqueAppliedNullAssignment(
-            JsonObject raw, String assignmentKey, String engineSymbol) {
-        JsonObject result = null;
-        for (JsonElement element : array(raw, "modelAssignmentsApplied")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject assignment = element.getAsJsonObject();
-            if (!assignmentKey.equals(strictString(assignment,
-                    "modelAssignmentKey"))) continue;
-            if (result != null
-                    || !engineSymbol.equals(strictString(assignment,
-                    "engineSymbol"))
-                    || strictString(assignment, "inputSymbol").isEmpty()
-                    || !"NULL".equals(strictString(assignment,
-                    "valueType"))
-                    || !"null".equals(strictString(assignment, "value"))
-                    || !Boolean.TRUE.equals(strictBoolean(assignment,
-                    "modelIsNull"))
-                    || strictString(assignment,
-                    "nullnessSolverSymbol").isEmpty()
-                    || !("JAVA_STRING_CONTENT_PLUS_EXPLICIT_"
-                    .concat("NULLNESS_BOOL_V1").equals(strictString(
-                    assignment, "nullableStringEncodingAuthority"))
-                    || "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1"
-                    .equals(strictString(assignment,
-                    "referenceNullnessEncodingAuthority")))
-                    || !"null".equals(strictString(assignment,
-                    "concreteValueClass"))
-                    || !Boolean.FALSE.equals(strictBoolean(assignment,
-                    "branchOverride"))
-                    || !"Z3_PATH_FLIP_MODEL".equals(strictString(
-                    assignment, "authority"))
-                    || !Boolean.TRUE.equals(strictBoolean(assignment,
-                    "materializeAtRealDefinition"))) {
-                return null;
-            }
-            result = assignment;
-        }
-        return result;
-    }
-
-    private static JsonObject uniqueDeclaredNullAssignment(
-            JsonObject activation, JsonObject applied) {
-        JsonObject result = null;
-        for (JsonElement element : array(activation, "modelAssignments")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject declared = element.getAsJsonObject();
-            if (!strictString(applied, "engineSymbol").equals(
-                    strictString(declared, "engineSymbol"))
-                    || !strictString(applied, "inputSymbol").equals(
-                    strictString(declared, "inputSymbol"))
-                    || !"NULL".equals(strictString(declared,
-                    "valueType"))
-                    || !"null".equals(strictString(declared, "value"))
-                    || !Boolean.TRUE.equals(strictBoolean(declared,
-                    "modelIsNull"))
-                    || !strictString(applied, "nullnessSolverSymbol")
-                    .equals(strictString(declared,
-                    "nullnessSolverSymbol"))
-                    || !strictString(applied,
-                    "nullableStringEncodingAuthority").equals(strictString(
-                    declared, "nullableStringEncodingAuthority"))
-                    || !strictString(applied,
-                    "referenceNullnessEncodingAuthority").equals(
-                    strictString(declared,
-                            "referenceNullnessEncodingAuthority"))) {
-                continue;
-            }
-            if (result != null) return null;
-            result = declared;
-        }
-        return result;
-    }
-
-    private static boolean exactAssignmentTarget(
-            JsonObject declared, JsonObject applied,
-            JsonObject activation) {
-        if (!strictString(declared, "authority").equals(strictString(
-                applied, "authority"))
-                || !Boolean.TRUE.equals(strictBoolean(declared,
-                "materializeAtRealDefinition"))
-                || !declared.has("target") || !applied.has("target")
-                || !GSON.toJson(declared.get("target")).equals(
-                GSON.toJson(applied.get("target")))) {
-            return false;
-        }
-        String targetHash = sha256(GSON.toJson(declared.get("target")));
-        String declaredHash = strictString(declared,
-                "targetActionSha256");
-        if (!declaredHash.isEmpty() && !targetHash.equals(declaredHash)) {
-            return false;
-        }
-        if (!targetHash.equals(strictString(applied,
-                "targetActionSha256"))) return false;
-        JsonElement target = declared.get("target");
-        if (!target.isJsonObject() || !strictString(declared,
-                "inputSymbol").equals(strictString(target.getAsJsonObject(),
-                "symbol"))
-                || !exactReferenceAssignmentEncoding(declared,
-                target.getAsJsonObject())
-                || !exactReferenceAssignmentEncoding(applied,
-                target.getAsJsonObject())) {
-            return false;
-        }
-        int matches = 0;
-        for (JsonElement action : runtimeMaterializationActions(activation)) {
-            if (GSON.toJson(target).equals(GSON.toJson(action))) matches++;
-        }
-        return matches == 1;
-    }
-
-    private static boolean exactReferenceAssignmentEncoding(
-            JsonObject assignment, JsonObject target) {
-        String descriptor = javaTypeDescriptor(firstNonBlank(
-                strictString(target, "javaType"),
-                strictString(target, "inputJavaType")));
-        boolean reference = descriptor.startsWith("L")
-                || descriptor.startsWith("[");
-        if (!reference) return false;
-        String nullableString = strictString(assignment,
-                "nullableStringEncodingAuthority");
-        String nullableReference = strictString(assignment,
-                "referenceNullnessEncodingAuthority");
-        return "Ljava/lang/String;".equals(descriptor)
-                ? "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1"
-                .equals(nullableString) && nullableReference.isEmpty()
-                : nullableString.isEmpty()
-                && "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1"
-                .equals(nullableReference);
-    }
-
-    /** Returns the exact modeled reference symbol, or the empty string. */
-    private static String exactReferenceNullConditionSymbol(
-            JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) return "";
-        JsonObject binary = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(strictString(binary, "_type"))
-                || !"==".equals(strictString(binary, "_op"))) {
-            return "";
-        }
-        JsonElement left = binary.get("_left");
-        JsonElement right = binary.get("_right");
-        JsonElement symbol = exactNullReferenceExpression(left) ? right
-                : exactNullReferenceExpression(right) ? left : null;
-        if (symbol == null || !symbol.isJsonObject()) return "";
-        JsonObject object = symbol.getAsJsonObject();
-        String type = strictString(object, "_type");
-        String javaType = strictString(object, "_java_type");
-        String rawSymbol = strictString(object, "_exp");
-        boolean referenceType = javaType.startsWith("L")
-                || javaType.startsWith("[")
-                || rawSymbol.startsWith("M_L")
-                || rawSymbol.startsWith("M_[");
-        return ("SymbolExpression".equals(type)
-                || "ConSymbolExp".equals(type))
-                && referenceType && !rawSymbol.isEmpty()
-                ? rawSymbol : "";
-    }
-
-    private static boolean exactNullReferenceExpression(JsonElement value) {
-        if (value == null || !value.isJsonObject()) return false;
-        JsonObject expression = value.getAsJsonObject();
-        return "SymbolExpression".equals(strictString(expression, "_type"))
-                && "N".equals(strictString(expression, "_exp"));
-    }
-
-    private static String certifiedConcreteGuardIdentity(
-            JsonObject mapping) {
-        return strictString(mapping, "certificateActivationId") + "\n"
-                + strictString(mapping, "certificatePathQueryKey") + "\n"
-                + strictString(mapping, "certificateProofRole") + "\n"
-                + integer(mapping, "certificateSourceConditionIndex", -1)
-                + "\n" + integer(mapping, "certificateConstraintIndex", -1)
-                + "\n" + integer(mapping,
-                "certificateExpectedBranchPrefixOrdinal", -2) + "\n"
-                + strictString(mapping, "certificateSiteId") + "\n"
-                + integer(mapping, "certificateOccurrence", -1) + "\n"
-                + strictBoolean(mapping, "certificateOutcome") + "\n"
-                + strictString(mapping, "certificateModelAssignmentKey")
-                + "\n" + strictString(mapping,
-                "certificateConditionSha256");
-    }
-
     private static PathNormalization normalizePathCondition(
             JsonArray raw, PathAdmissionPolicy admission,
             Set<Integer> mappedConditions,
             Map<Integer, JsonElement> semanticBranchConditions,
             boolean requireMappedBranches, JsonObject activation,
-            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
-            CertifiedConcreteGuardCatalog certifiedConcreteGuards) {
+            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks) {
         JsonArray result = new JsonArray();
         int[] rawToNormalized = new int[raw.size()];
         String[] statuses = new String[raw.size()];
@@ -4137,13 +3252,6 @@ public final class ConcolicSummaryImporter {
         String[] codePositions = new String[raw.size()];
         String[] admissionAuthorities = new String[raw.size()];
         int[] normalizedBoundaries = new int[raw.size() + 1];
-        Map<String, Integer> syntheticToNormalized =
-                new LinkedHashMap<>();
-        Map<String, Integer> syntheticBaselines =
-                new LinkedHashMap<>();
-        Map<String, Integer> syntheticSizes = new LinkedHashMap<>();
-        List<SyntheticConditionNormalization> syntheticRows =
-                new ArrayList<>();
         String previous = null;
         int semanticCount = 0;
         int filteredCount = 0;
@@ -4157,26 +3265,6 @@ public final class ConcolicSummaryImporter {
             }
         }
         for (int index = 0; index <= raw.size(); index++) {
-            for (CertifiedConcreteGuard guard
-                    : certifiedConcreteGuards.atBoundary(index)) {
-                int normalizedBaseline = result.size();
-                // Do not collapse certified occurrences.  Two consecutive
-                // concrete guards may have the same predicate but remain two
-                // distinct branch frontiers with different occurrences.
-                result.add(guard.condition.deepCopy());
-                int syntheticIndex = result.size() - 1;
-                syntheticToNormalized.put(guard.identity, syntheticIndex);
-                syntheticBaselines.put(guard.identity,
-                        normalizedBaseline);
-                syntheticSizes.put(guard.identity, result.size());
-                syntheticRows.add(new SyntheticConditionNormalization(
-                        guard.identity, index, syntheticIndex,
-                        normalizedBaseline, result.size()));
-                previous = GSON.toJson(guard.condition);
-                semanticCount++;
-            }
-            // A raw boundary denotes the state immediately before raw[index]
-            // and after all certified no-PC guards observed at that boundary.
             normalizedBoundaries[index] = result.size();
             if (index == raw.size()) break;
             JsonElement rawCondition = raw.get(index);
@@ -4227,11 +3315,9 @@ public final class ConcolicSummaryImporter {
             String serialized = GSON.toJson(condition);
             boolean exactBranchOwned = mappedConditions.contains(index)
                     || dynamicPcFallbacks.byRawIndex.containsKey(index);
-            // Branch-owned predicates are occurrence evidence.  Equal JSON
-            // at adjacent loop iterations or after a certified zero-PC guard
-            // still denotes a distinct frontier and must keep its own index.
-            // Deduplication remains available only for unowned engine
-            // bookkeeping expressions.
+            // Branch-owned predicates are occurrence evidence and keep their
+            // own index. Deduplication remains available only for unowned
+            // engine bookkeeping expressions.
             if (exactBranchOwned || !serialized.equals(previous)) {
                 result.add(condition.deepCopy());
                 previous = serialized;
@@ -4248,8 +3334,7 @@ public final class ConcolicSummaryImporter {
                 reasons, codePositions, admissionAuthorities,
                 semanticCount, filteredCount, duplicateCount,
                 semanticBranchConditionSubstitutionCount,
-                normalizedBoundaries, syntheticToNormalized,
-                syntheticBaselines, syntheticSizes, syntheticRows);
+                normalizedBoundaries);
     }
 
     /**
@@ -4877,13 +3962,7 @@ public final class ConcolicSummaryImporter {
                     : integer(mapping, "rawConditionIndex",
                     integer(mapping, "engineConditionIndex",
                             integer(mapping, "conditionIndex", -1)));
-            String syntheticIdentity = certifiedConcreteGuardIdentity(
-                    mapping);
-            boolean certifiedSynthetic = normalization.hasSynthetic(
-                    syntheticIdentity);
-            int normalizedIndex = certifiedSynthetic
-                    ? normalization.syntheticIndex(syntheticIdentity)
-                    : normalization.index(rawIndex);
+            int normalizedIndex = normalization.index(rawIndex);
             if (witness != null) {
                 // The witness remains byte-for-byte immutable.  This is the
                 // sole bridge from the VM-PC namespace owned by its evidence
@@ -4899,15 +3978,8 @@ public final class ConcolicSummaryImporter {
                         normalizedIndex);
                 mapping.addProperty("conditionIndex", normalizedIndex);
             }
-            if (certifiedSynthetic) {
-                mapping.addProperty("syntheticCondition", true);
-                mapping.addProperty("syntheticConditionKey",
-                        syntheticIdentity);
-                mapping.addProperty("syntheticConditionAuthority",
-                        CERTIFIED_CONCRETE_GUARD_AUTHORITY);
-            }
             if (mapping.has("condition")) {
-                if (!certifiedSynthetic && !mapping.has("rawCondition")) {
+                if (!mapping.has("rawCondition")) {
                     mapping.add("rawCondition",
                             mapping.get("condition").deepCopy());
                 }
@@ -4922,14 +3994,8 @@ public final class ConcolicSummaryImporter {
             int rawSize = integer(mapping, "rawPathConditionSize",
                     integer(mapping, "enginePathConditionSize",
                             integer(mapping, "pathConditionSize", -1)));
-            int normalizedSize = certifiedSynthetic
-                    ? normalization.syntheticSize(syntheticIdentity)
-                    : rawIndex >= 0 && normalizedIndex >= 0
+            int normalizedSize = rawIndex >= 0 && normalizedIndex >= 0
                     && rawSize == rawIndex + 1
-                    // raw[index] is appended before any later zero-PC
-                    // guards at boundary index+1.  The final boundary table
-                    // includes those later guards, so it is not this
-                    // mapping's temporal size.
                     ? normalizedIndex + 1
                     : normalization.boundary(rawSize);
             if (rawSize >= 0) {
@@ -4944,9 +4010,7 @@ public final class ConcolicSummaryImporter {
                     integer(mapping, "enginePathConditionBaseline",
                             integer(mapping, "pathConditionBaseline", -1)));
             if (rawBaseline >= 0) {
-                int normalizedBaseline = certifiedSynthetic
-                        ? normalization.syntheticBaseline(syntheticIdentity)
-                        : normalization.boundary(rawBaseline);
+                int normalizedBaseline = normalization.boundary(rawBaseline);
                 mapping.addProperty("rawPathConditionBaseline", rawBaseline);
                 mapping.addProperty("enginePathConditionBaseline",
                         rawBaseline);
@@ -14796,86 +13860,6 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    private static final class CertifiedConcreteGuardCatalog {
-        private final List<CertifiedConcreteGuard> guards;
-        private final List<String> issues;
-
-        private CertifiedConcreteGuardCatalog(
-                List<CertifiedConcreteGuard> guards,
-                List<String> issues) {
-            this.guards = new ArrayList<>(guards);
-            this.issues = new ArrayList<>(issues);
-        }
-
-        private List<CertifiedConcreteGuard> atBoundary(int boundary) {
-            List<CertifiedConcreteGuard> result = new ArrayList<>();
-            for (CertifiedConcreteGuard guard : guards) {
-                if (guard.rawBoundary == boundary) result.add(guard);
-            }
-            return result;
-        }
-    }
-
-    private static final class ConcreteGuardProofCatalog {
-        private final List<JsonObject> proofs;
-        private final List<String> issues;
-
-        private ConcreteGuardProofCatalog(List<JsonObject> proofs,
-                                          List<String> issues) {
-            this.proofs = new ArrayList<>(proofs);
-            this.issues = new ArrayList<>(issues);
-        }
-
-        private List<JsonObject> forEvent(JsonObject mapping) {
-            List<JsonObject> result = new ArrayList<>();
-            String site = strictString(mapping, "siteId");
-            Integer occurrence = strictInteger(mapping, "occurrence");
-            if (site.isEmpty() || occurrence == null) return result;
-            for (JsonObject proof : proofs) {
-                if (site.equals(strictString(proof, "siteId"))
-                        && occurrence.equals(strictInteger(proof,
-                        "occurrence"))) {
-                    result.add(proof);
-                }
-            }
-            return result;
-        }
-    }
-
-    private static final class CertifiedConcreteGuard {
-        private final String identity;
-        private final int rawBoundary;
-        private final int mappingOrdinal;
-        private final JsonElement condition;
-
-        private CertifiedConcreteGuard(String identity, int rawBoundary,
-                                       int mappingOrdinal,
-                                       JsonElement condition) {
-            this.identity = identity;
-            this.rawBoundary = rawBoundary;
-            this.mappingOrdinal = mappingOrdinal;
-            this.condition = condition.deepCopy();
-        }
-    }
-
-    private static final class SyntheticConditionNormalization {
-        private final String identity;
-        private final int rawBoundary;
-        private final int normalizedIndex;
-        private final int normalizedBaseline;
-        private final int normalizedSize;
-
-        private SyntheticConditionNormalization(
-                String identity, int rawBoundary, int normalizedIndex,
-                int normalizedBaseline, int normalizedSize) {
-            this.identity = identity;
-            this.rawBoundary = rawBoundary;
-            this.normalizedIndex = normalizedIndex;
-            this.normalizedBaseline = normalizedBaseline;
-            this.normalizedSize = normalizedSize;
-        }
-    }
-
     private static final class PathNormalization {
         private final JsonArray conditions;
         private final int[] rawToNormalized;
@@ -14888,11 +13872,6 @@ public final class ConcolicSummaryImporter {
         private final int duplicateConditionCount;
         private final int semanticBranchConditionSubstitutionCount;
         private final int[] normalizedBoundaries;
-        private final Map<String, Integer> syntheticToNormalized;
-        private final Map<String, Integer> syntheticBaselines;
-        private final Map<String, Integer> syntheticSizes;
-        private final List<SyntheticConditionNormalization> syntheticRows;
-        private final int syntheticConditionCount;
 
         private PathNormalization(JsonArray conditions,
                                   int[] rawToNormalized,
@@ -14904,12 +13883,7 @@ public final class ConcolicSummaryImporter {
                                   int filteredConditionCount,
                                   int duplicateConditionCount,
                                   int semanticBranchConditionSubstitutionCount,
-                                  int[] normalizedBoundaries,
-                                  Map<String, Integer> syntheticToNormalized,
-                                  Map<String, Integer> syntheticBaselines,
-                                  Map<String, Integer> syntheticSizes,
-                                  List<SyntheticConditionNormalization>
-                                          syntheticRows) {
+                                  int[] normalizedBoundaries) {
             this.conditions = conditions;
             this.rawToNormalized = rawToNormalized;
             this.statuses = statuses;
@@ -14922,13 +13896,6 @@ public final class ConcolicSummaryImporter {
             this.semanticBranchConditionSubstitutionCount =
                     semanticBranchConditionSubstitutionCount;
             this.normalizedBoundaries = normalizedBoundaries.clone();
-            this.syntheticToNormalized = new LinkedHashMap<>(
-                    syntheticToNormalized);
-            this.syntheticBaselines = new LinkedHashMap<>(
-                    syntheticBaselines);
-            this.syntheticSizes = new LinkedHashMap<>(syntheticSizes);
-            this.syntheticRows = new ArrayList<>(syntheticRows);
-            this.syntheticConditionCount = syntheticRows.size();
         }
 
         private int index(int rawIndex) {
@@ -14960,26 +13927,6 @@ public final class ConcolicSummaryImporter {
             return normalizedBoundaries[boundary];
         }
 
-        private boolean hasSynthetic(String identity) {
-            return identity != null && !identity.isEmpty()
-                    && syntheticToNormalized.containsKey(identity);
-        }
-
-        private int syntheticIndex(String identity) {
-            Integer value = syntheticToNormalized.get(identity);
-            return value == null ? -1 : value;
-        }
-
-        private int syntheticBaseline(String identity) {
-            Integer value = syntheticBaselines.get(identity);
-            return value == null ? -1 : value;
-        }
-
-        private int syntheticSize(String identity) {
-            Integer value = syntheticSizes.get(identity);
-            return value == null ? -1 : value;
-        }
-
         private JsonArray indexMap() {
             JsonArray result = new JsonArray();
             for (int index = 0; index < rawToNormalized.length; index++) {
@@ -14997,24 +13944,6 @@ public final class ConcolicSummaryImporter {
                 if (reasons[index] != null && !reasons[index].isEmpty()) {
                     item.addProperty("reason", reasons[index]);
                 }
-                result.add(item);
-            }
-            for (SyntheticConditionNormalization synthetic
-                    : syntheticRows) {
-                JsonObject item = new JsonObject();
-                item.addProperty("rawConditionIndex", -1);
-                item.addProperty("rawBoundary", synthetic.rawBoundary);
-                item.addProperty("syntheticConditionKey",
-                        synthetic.identity);
-                item.addProperty("normalizedConditionIndex",
-                        synthetic.normalizedIndex);
-                item.addProperty("normalizedPathConditionBaseline",
-                        synthetic.normalizedBaseline);
-                item.addProperty("normalizedPathConditionSize",
-                        synthetic.normalizedSize);
-                item.addProperty("status", "SYNTHETIC_RETAINED");
-                item.addProperty("admissionAuthority",
-                        CERTIFIED_CONCRETE_GUARD_AUTHORITY);
                 result.add(item);
             }
             return result;

@@ -131,7 +131,6 @@ assert_contains "${normalized}" \
   "reach_report=${fixture_root}/artifacts/reports/reach-condition.json"
 assert_contains "${normalized}" 'reach_max_inputs=7'
 assert_contains "${normalized}" 'reach_max_valuations=128'
-assert_contains "${normalized}" 'rpc_mapping_file='
 
 overridden=$(CAUSYNTH_OUTPUT_DIR=@config/env-output \
   GRAPH_CHECKER_JAR=@config/tool/env.jar \
@@ -157,7 +156,7 @@ assert_contains "${build}" "${fixture_root}/tool/pom.xml"
 
 analyze=$("${runner}" --config "${config}" --dry-run analyze)
 assert_contains "${analyze}" 'edu.uva.liftlab.graphchecker.GraphCheckerMain'
-assert_contains "${analyze}" "-Dcausynth.repo=${fixture_root}/repo"
+assert_contains "${analyze}" "-Dcausynth.target.spec=${fixture_root}/target.yaml"
 
 quiet_stdout="${fixture_root}/quiet.stdout"
 quiet_stderr="${fixture_root}/quiet.stderr"
@@ -251,17 +250,5 @@ assert_contains "${reach_overridden}" \
   "reach_report=${fixture_root}/artifacts/env-reach.json"
 assert_contains "${reach_overridden}" 'reach_max_inputs=5'
 assert_contains "${reach_overridden}" 'reach_max_valuations=32'
-
-legacy_config="${fixture_root}/legacy.properties"
-printf '%s\n' \
-  "system_classes_path=${fixture_root}/repo/module/classes" \
-  "java_class_path=${fixture_root}/repo/module/classes" \
-  > "${legacy_config}"
-legacy=$(GRAPH_CHECKER_JAR="${fixture_root}/tool/env.jar" \
-  GRAPH_CHECKER_JAVA=java \
-  GRAPH_CHECKER_WORK_DIR="${fixture_root}/repo" \
-  "${runner}" --dry-run process "${legacy_config}")
-assert_contains "${legacy}" "${fixture_root}/tool/env.jar"
-assert_contains "${legacy}" "WORK_DIR=${fixture_root}/repo"
 
 echo 'generic workflow shell test passed'

@@ -33,16 +33,6 @@ final class CausynthStaticFacts {
     private CausynthStaticFacts() {
     }
 
-    static final class SeedLookupAnchor {
-        final List<Fact> seedFieldFacts;
-        final Set<String> seedValues;
-
-        SeedLookupAnchor(List<Fact> seedFieldFacts, Set<String> seedValues) {
-            this.seedFieldFacts = seedFieldFacts;
-            this.seedValues = seedValues;
-        }
-    }
-
     static final class RpcTarget {
         final String sourceSignature;
         final String targetSignature;
@@ -53,35 +43,6 @@ final class CausynthStaticFacts {
             this.sourceSignature = sourceSignature;
             this.targetSignature = targetSignature;
             this.kind = kind;
-        }
-    }
-
-    static final class StaticPortMapping {
-        final String kind;
-        final String sourceMethod;
-        final String sourceCell;
-        final String targetMethod;
-        final String targetCell;
-        final String evidence;
-        final String activationMethod;
-        final String edgeMethod;
-        final Fact pathSite;
-        final String pathCell;
-
-        StaticPortMapping(String kind, String sourceMethod, String sourceCell,
-                          String targetMethod, String targetCell,
-                          String evidence, String activationMethod,
-                          String edgeMethod, Fact pathSite, String pathCell) {
-            this.kind = kind;
-            this.sourceMethod = sourceMethod;
-            this.sourceCell = sourceCell;
-            this.targetMethod = targetMethod;
-            this.targetCell = targetCell;
-            this.evidence = evidence;
-            this.activationMethod = activationMethod;
-            this.edgeMethod = edgeMethod;
-            this.pathSite = pathSite;
-            this.pathCell = pathCell;
         }
     }
 

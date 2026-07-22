@@ -51,10 +51,6 @@ final class ReplayActivationFactory {
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);
-        // A CERTIFIED_NO_PC contract is rejected above. Ordinary VM-PC
-        // replay therefore needs no parallel concrete-guard proof protocol.
-        result.add("concreteGuardReplayProofs", new JsonArray());
-        result.remove("concreteGuardReplayProof");
         result.remove("forcedBranches");
         result.remove("replayMaterializations");
         result.remove("summaryMode");
@@ -83,21 +79,7 @@ final class ReplayActivationFactory {
             throw new IllegalArgumentException(
                     "path replay task requires replayContract");
         }
-        BranchReplayContract contract = BranchReplayContract.fromJson(
-                encoded.getAsJsonObject());
-        rejectConditionlessWitness(contract.source());
-        for (BranchWitness witness : contract.orderedPrefix()) {
-            rejectConditionlessWitness(witness);
-        }
-        return contract;
-    }
-
-    private static void rejectConditionlessWitness(BranchWitness witness) {
-        if (BranchWitness.CERTIFIED_NO_PC.equals(witness.evidenceKind())) {
-            throw new IllegalArgumentException(
-                    "CERTIFIED_NO_PC_REPLAY_UNSUPPORTED:" + witness.siteId()
-                            + "#" + witness.occurrence());
-        }
+        return BranchReplayContract.fromJson(encoded.getAsJsonObject());
     }
 
     private static String string(JsonObject object, String field) {
