@@ -4388,6 +4388,19 @@ public class SymbolicRegionPlannerTest {
     }
 
     @Test
+    public void exactFieldPathPortPrecedesItsRedundantProjectedAlias()
+            throws Exception {
+        ProjectedAliasFixture fixture = contractingGetfieldAliasFixture();
+        String canonical = String.valueOf(
+                fixture.inputPorts.get(1).get("cell"));
+        Map<String, String> resolution = projectedAliasResolution(
+                fixture.edges, fixture.inputPorts, canonical);
+
+        assertEquals("REGION.ALIAS.in.1", resolution.get("portId"));
+        assertEquals("EXACT_CELL_IDENTITY", resolution.get("authority"));
+    }
+
+    @Test
     public void canonicalGuardInputCarriesItsUniqueExactAccessorSite() {
         String field = "<javax.security.auth.callback.NameCallback: "
                 + "java.lang.String defaultName>";
@@ -5287,6 +5300,7 @@ public class SymbolicRegionPlannerTest {
         exactProjectionSite(declaredProjection, declared, method, unitIndex,
                 unit);
         edges.add(declaredProjection);
+        edges.add(syntheticProjectionAlias(declaredProjection, method));
 
         String instanceBase = ownerLocal + "#field:" + fieldName;
         Map<String, Object> instance = edge(method, "HEAP_READ",
@@ -5303,6 +5317,20 @@ public class SymbolicRegionPlannerTest {
         contraction.put("fieldPath", "#field:" + fieldName + suffix);
         exactProjectionSite(contraction, instance, method, unitIndex, unit);
         edges.add(contraction);
+        edges.add(syntheticProjectionAlias(contraction, method));
+    }
+
+    private static Map<String, Object> syntheticProjectionAlias(
+            Map<String, Object> projection, String method) {
+        Map<String, Object> alias = new LinkedHashMap<>(projection);
+        alias.put("id", String.valueOf(projection.get("id"))
+                + ".SYNTHETIC");
+        alias.put("siteId", method + "#synthetic:"
+                + projection.get("kind"));
+        alias.remove("unitIndex");
+        alias.remove("unit");
+        alias.remove("line");
+        return alias;
     }
 
     private static void exactReadSite(Map<String, Object> edge,

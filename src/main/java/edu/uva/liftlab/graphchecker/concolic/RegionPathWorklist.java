@@ -312,19 +312,21 @@ public final class RegionPathWorklist {
                               String pathKey, JsonArray conditions,
                               JsonObject mapping) {
             int conditionIndex = integer(mapping, "conditionIndex", -1);
-            BranchReplayContract replayContract = replayContract(summary,
+            ReplayEvidence replay = replayEvidence(summary,
                     mapping, conditions, conditionIndex);
-            if (replayContract == null) {
+            if (replay == null) {
                 gap("INVALID_BRANCH_WITNESS_PREFIX",
-                        "WITNESS_OR_ORDERED_PREFIX_DOES_NOT_MATCH_SUMMARY_PC",
+                        "BRANCH_WITNESS_OR_NON_BRANCH_CONTEXT_DOES_NOT_"
+                                + "PARTITION_SUMMARY_PC_PREFIX",
                         string(summary, "regionId"), pathKey,
                         branchSite(mapping), branchOccurrence(mapping));
                 return;
             }
             JsonArray prefix = new JsonArray();
-            for (BranchWitness witness : replayContract.orderedPrefix()) {
-                prefix.add(witness.sourceSatisfiedPredicate());
+            for (int index = 0; index < conditionIndex; index++) {
+                prefix.add(conditions.get(index).deepCopy());
             }
+            BranchReplayContract replayContract = replay.replayContract;
             boolean desired = replayContract.requiredTakenOutcome();
             String region = string(summary, "regionId");
             String site = replayContract.source().siteId();
@@ -368,7 +370,7 @@ public final class RegionPathWorklist {
             }
 
             JsonObject task = new JsonObject();
-            task.addProperty("schemaVersion", 2);
+            task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
             task.addProperty("regionId", region);
@@ -390,6 +392,7 @@ public final class RegionPathWorklist {
                     "rootMethod"), string(activation, "rootMethod")));
             task.add("requestedOutput", copy(output, new JsonObject()));
             task.add("replayContract", replayContract.toJson());
+            task.add("solverPathContext", replay.solverPathContext.toJson());
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
             task.add("engineArrayInputBindings", array(summary,
@@ -399,7 +402,7 @@ public final class RegionPathWorklist {
             tasks.add(task);
         }
 
-        private BranchReplayContract replayContract(
+        private ReplayEvidence replayEvidence(
                 JsonObject summary, JsonObject selected,
                 JsonArray conditions, int selectedSummaryIndex) {
             BranchWitness source = branchWitness(selected);
@@ -424,32 +427,39 @@ public final class RegionPathWorklist {
             Collections.sort(prefixMappings, Comparator.comparingInt(
                     value -> integer(value, "summaryPcIndex", -1)));
             List<BranchWitness> prefix = new ArrayList<>();
-            int expectedIndex = 0;
+            Set<Integer> branchPositions = new LinkedHashSet<>();
             for (JsonObject mapping : prefixMappings) {
                 int index = integer(mapping, "summaryPcIndex", -1);
                 BranchWitness witness = branchWitness(mapping);
-                if (index != expectedIndex || witness == null
+                if (!branchPositions.add(index) || witness == null
                         || !BranchPredicateAlgebra.equivalent(
                         witness.sourceSatisfiedPredicate(),
                         conditions.get(index))) {
                     return null;
                 }
                 prefix.add(witness);
-                expectedIndex++;
             }
-            // Solver and replay use the same complete retained prefix.  A
-            // semantic PC element without one exact branch witness is not
-            // silently copied into a second authority channel.
-            if (expectedIndex != selectedSummaryIndex) return null;
             BranchReplayContract contract = BranchReplayContract.flip(
                     prefix, source);
-            JsonArray required = contract.requiredPathPredicates();
-            if (required.size() != selectedSummaryIndex + 1) return null;
-            for (int index = 0; index < selectedSummaryIndex; index++) {
-                if (!BranchPredicateAlgebra.equivalent(required.get(index),
-                        conditions.get(index))) return null;
+            SolverPathContext solverContext;
+            try {
+                solverContext = SolverPathContext.fromPath(conditions,
+                        branchPositions, selectedSummaryIndex);
+            } catch (IllegalArgumentException incompletePartition) {
+                return null;
             }
-            return contract;
+            return new ReplayEvidence(contract, solverContext);
+        }
+
+        private final class ReplayEvidence {
+            private final BranchReplayContract replayContract;
+            private final SolverPathContext solverPathContext;
+
+            private ReplayEvidence(BranchReplayContract replayContract,
+                                   SolverPathContext solverPathContext) {
+                this.replayContract = replayContract;
+                this.solverPathContext = solverPathContext;
+            }
         }
 
         private BranchWitness branchWitness(JsonObject mapping) {

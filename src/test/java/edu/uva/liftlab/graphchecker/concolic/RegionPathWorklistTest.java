@@ -121,7 +121,7 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         JsonObject latest = result.tasks.get(0);
-        assertEquals(2, latest.get("schemaVersion").getAsInt());
+        assertEquals(3, latest.get("schemaVersion").getAsInt());
         BranchReplayContract contract = BranchReplayContract.fromJson(
                 latest.getAsJsonObject("replayContract"));
         assertEquals("SITE.1", contract.source().siteId());
@@ -132,6 +132,52 @@ public class RegionPathWorklistTest {
         assertFalse(latest.has("flipSite"));
         assertFalse(latest.has("desiredOutcome"));
         assertFalse(latest.has("negatedCondition"));
+    }
+
+    @Test
+    public void arrayLoadContextIsSeparatedFromTheBranchContract() {
+        JsonObject summary = summary("ACT.ARRAY.CONTEXT",
+                RegionCaptureGoal.outputClosure());
+        JsonObject arrayLoad = new JsonObject();
+        arrayLoad.addProperty("_type", "_array_expr");
+        arrayLoad.addProperty("_arr_str", "AL_1");
+        arrayLoad.addProperty("_is_load", true);
+        JsonObject index = new JsonObject();
+        index.addProperty("_type", "ConstExpr");
+        index.addProperty("_java_type", "I");
+        index.addProperty("_exp", "Y_I_1");
+        arrayLoad.add("_index_exp", index);
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "SymbolExpression");
+        value.addProperty("_java_type", "Lexample/State;");
+        value.addProperty("_exp", "EL_1-0-1");
+        arrayLoad.add("_value_exp", value);
+        JsonArray conditions = new JsonArray();
+        conditions.add(arrayLoad);
+        conditions.add(binary("<", 5));
+        summary.add("pathCondition", conditions);
+        JsonArray mappings = new JsonArray();
+        mappings.add(mapping("SITE.1", 1));
+        summary.add("branchMappings", mappings);
+        authorizeVmPcMappings(summary);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(activation(
+                        "ACT.ARRAY.CONTEXT",
+                        RegionCaptureGoal.outputClosure())),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 1, result.tasks.size());
+        JsonObject task = result.tasks.get(0);
+        BranchReplayContract replay = replayContract(task);
+        assertTrue(replay.orderedPrefix().isEmpty());
+        SolverPathContext context = SolverPathContext.fromJson(
+                task.getAsJsonObject("solverPathContext"));
+        assertEquals(1, context.size());
+        assertEquals(arrayLoad, context.expressions().get(0));
+        assertFalse(task.has("constraints"));
     }
 
     @Test

@@ -1474,6 +1474,9 @@ public class ConcolicConstraintSolverTest {
                 constraints.get(targetIndex)), targetIndex, sourceEvent);
         task.add("replayContract", BranchReplayContract.flip(prefix,
                 source).toJson());
+        task.addProperty("schemaVersion", 3);
+        task.addProperty("kind", "REGION_PATH_FLIP");
+        task.add("solverPathContext", SolverPathContext.empty().toJson());
         String[] retired = new String[]{"constraints", "prefix",
                 "negatedCondition", "flipSite", "flipOccurrence",
                 "conditionIndex", "desiredOutcome",

@@ -5986,7 +5986,7 @@ public final class ConcolicSmtComposer {
             if (!value.isJsonObject()) return;
             JsonObject object = value.getAsJsonObject();
             if (rawSymbolReferences(object, dynamic)) {
-                String canonical = GSON.toJson(object);
+                String canonical = CanonicalJson.render(object);
                 if (seen.add(canonical)) result.add(object);
             }
             for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
@@ -7960,7 +7960,7 @@ public final class ConcolicSmtComposer {
             if (explicit != null && explicit.isJsonObject()
                     && rawSymbolReferences(explicit, dynamic)) {
                 expressions.add(explicit.getAsJsonObject());
-                seen.add(GSON.toJson(explicit));
+                seen.add(CanonicalJson.render(explicit));
             }
             JsonElement conditions = summary.has("guard")
                     ? object(summary, "guard").get("conditions")

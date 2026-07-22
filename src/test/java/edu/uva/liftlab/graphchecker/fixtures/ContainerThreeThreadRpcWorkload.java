@@ -15,11 +15,12 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Three-thread target whose producer inputs are nested container leaves.
  *
- * <p>The array producer reads {@code payloads[0].state.guard.enabled}.  The
- * map producer reads {@code entry.value.state.guard.enabled}.  Both container
- * graphs are constructed before either producer region starts, so the scalar
- * leaves are genuine region live-ins.  The map contains one immutable key and
- * is traversed without a loop to keep the runtime selector unique.</p>
+ * <p>The array producer reads {@code payloads[1].state.guard.enabled} while a
+ * distinct element at index zero acts as a selector decoy.  The map producer
+ * reads {@code entry.value.state.guard.enabled}.  Both container graphs are
+ * constructed before either producer region starts, so the scalar leaves are
+ * genuine region live-ins.  The map contains one immutable key and is
+ * traversed without a loop to keep the runtime selector unique.</p>
  */
 public final class ContainerThreeThreadRpcWorkload {
     public static final String ARRAY_PRODUCER_THREAD =
@@ -60,11 +61,14 @@ public final class ContainerThreeThreadRpcWorkload {
         StateNode[] payloads;
 
         ArrayProducer(Boolean enabled) {
-            payloads = new StateNode[]{new StateNode(enabled)};
+            payloads = new StateNode[]{
+                    new StateNode(Boolean.valueOf(!enabled.booleanValue())),
+                    new StateNode(enabled)
+            };
         }
 
         public int compute() {
-            StateNode payload = payloads[0];
+            StateNode payload = payloads[1];
             boolean enabled = payload.state.guard.enabled;
             if (enabled) {
                 return 1;

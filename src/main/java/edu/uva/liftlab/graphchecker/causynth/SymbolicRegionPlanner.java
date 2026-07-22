@@ -3939,12 +3939,33 @@ final class SymbolicRegionPlanner {
                         || string(edge.get("projectionBaseEdgeId")).isEmpty()) {
                     continue;
                 }
+                // The graph writer also publishes a synthetic projection
+                // alias for demand propagation.  It is another view of the
+                // same projectionBaseEdgeId, not a second accessor witness.
+                // Only the projection attached to the concrete getfield
+                // site can authorize runtime materialization.  Counting the
+                // synthetic view as independent evidence made a two-hop
+                // path (entry.value.state.guard.enabled) look ambiguous even
+                // though every view named the same immutable base edge.
+                if (syntheticProjectionAlias(edge, kind)) {
+                    continue;
+                }
                 if (selected != null) {
                     return null;
                 }
                 selected = edge;
             }
             return selected;
+        }
+
+        private boolean syntheticProjectionAlias(
+                Map<String, Object> edge, String kind) {
+            String method = string(edge.get("method"));
+            return !method.isEmpty()
+                    && (method + "#synthetic:" + kind).equals(string(
+                    edge.get("siteId")))
+                    && integer(edge.get("unitIndex"), -1) < 0
+                    && string(edge.get("unit")).isEmpty();
         }
 
         private Map<String, Object> exactProjectionBase(
@@ -4961,6 +4982,25 @@ final class SymbolicRegionPlanner {
         private InputPortResolution inputPortForCell(
                 String cell, List<Map<String, Object>> inputPorts,
                 String rootMethod, RegionDraft slice) {
+            boolean syntheticProjection = syntheticValueProjection(cell);
+            // An exact port cell is already the canonical boundary value.
+            // Do not walk its own projected aliases and then downgrade that
+            // identity into another representation of the same leaf.
+            for (Map<String, Object> input : inputPorts) {
+                if (cell.equals(string(input.get("cell")))) {
+                    // A local projection is not a definition on its own.
+                    // It may nevertheless be the canonical port when that
+                    // port carries the complete exact field-access action.
+                    // A non-executable exact label must still resolve to a
+                    // different materializable alias below.
+                    if (!cell.contains("#field:")
+                            || exactAliasMaterializationPort(input)) {
+                        return new InputPortResolution(
+                                string(input.get("portId")),
+                                "EXACT_CELL_IDENTITY");
+                    }
+                }
+            }
             InputPortResolution projectedCarrier =
                     exactProjectedValueCarrier(cell, inputPorts, slice);
             if (!projectedCarrier.portId.isEmpty()) {
@@ -4970,15 +5010,6 @@ final class SymbolicRegionPlanner {
                     exactProjectedAliasCarrier(cell, inputPorts, slice);
             if (!projectedAliasCarrier.portId.isEmpty()) {
                 return projectedAliasCarrier;
-            }
-            boolean syntheticProjection = syntheticValueProjection(cell);
-            for (Map<String, Object> input : inputPorts) {
-                if (!syntheticProjection
-                        && cell.equals(string(input.get("cell")))) {
-                    return new InputPortResolution(
-                            string(input.get("portId")),
-                            "EXACT_CELL_IDENTITY");
-                }
             }
             String semantic = semanticFieldKey(cell, rootMethod);
             if (!semantic.isEmpty()) {
@@ -6076,8 +6107,15 @@ final class SymbolicRegionPlanner {
                 RegionDraft draft) {
             boolean observed = false;
             for (Map<String, Object> edge : analysisEdges(draft)) {
-                if (!alias.equals(string(edge.get("fromCell")))
-                        || !"field_read".equals(string(edge.get("kind")))) {
+                if (!alias.equals(string(edge.get("fromCell")))) {
+                    continue;
+                }
+                String kind = string(edge.get("kind"));
+                if (syntheticProjectionAlias(edge, kind)) {
+                    continue;
+                }
+                if (!("field_read".equals(kind)
+                        || "projected_field_read".equals(kind))) {
                     continue;
                 }
                 observed = true;

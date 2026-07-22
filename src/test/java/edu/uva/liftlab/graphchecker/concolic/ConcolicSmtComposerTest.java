@@ -3785,6 +3785,40 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void containerFieldExpressionIdentityIgnoresJsonMemberOrder()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject summary = containerFieldSummary(fixture,
+                    "DISCOVER_UNIQUE_IDENTITY_INDEX", -1, -1, true);
+            JsonObject runtime = summary.getAsJsonArray(
+                    "dynamicFieldBindings").get(0).getAsJsonObject();
+            JsonObject original = runtime.getAsJsonObject(
+                    "fieldExpression");
+            JsonObject reordered = new JsonObject();
+            reordered.add("_exp", original.get("_exp").deepCopy());
+            reordered.add("_type", original.get("_type").deepCopy());
+            reordered.add("_java_type",
+                    original.get("_java_type").deepCopy());
+            runtime.add("fieldExpression", reordered);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
+                    arguments(fixture));
+
+            assertTrue(result.manifest.toString(), result.manifest.get(
+                    "structurallyComplete").getAsBoolean());
+            assertFalse(result.manifest.getAsJsonArray(
+                    "unsupportedExpressions").toString().contains(
+                    "DYNAMIC_FIELD_EXPRESSION_AMBIGUOUS"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void deepContainerSnapshotProjectsPrimitiveLeafFromArrayRoot()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();

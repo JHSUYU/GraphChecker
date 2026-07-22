@@ -9491,15 +9491,18 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : branchMappings) {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
+            BranchWitness witness = branchWitness(mapping);
+            if (witness == null) continue;
+            JsonElement predicate = witness.sourceSatisfiedPredicate();
             DynamicBranchExpressionScan scan =
                     new DynamicBranchExpressionScan();
-            collectNonMutatingDynamicExpressions(mapping.get("condition"),
+            collectNonMutatingDynamicExpressions(predicate,
                     dynamic.dynamicFieldSymbol, expectedEngineSymbol,
                     descriptor, scan);
             if (scan.referenceCount == 0) continue;
             if (scan.invalid || scan.referenceCount != 1
                     || scan.expression == null
-                    || !exactNonMutatingBranchMapping(mapping,
+                    || !exactNonMutatingBranchWitness(witness,
                     rawPathCondition, normalization, activation, action)) {
                 return Collections.emptyList();
             }
@@ -9508,63 +9511,34 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
-    private static boolean exactNonMutatingBranchMapping(
-            JsonObject mapping, JsonArray rawPathCondition,
+    private static boolean exactNonMutatingBranchWitness(
+            BranchWitness witness, JsonArray rawPathCondition,
             PathNormalization normalization, JsonObject activation,
             JsonObject action) {
-        int rawIndex = integer(mapping, "rawConditionIndex", -1);
-        int conditionIndex = integer(mapping, "conditionIndex", -1);
-        int engineIndex = integer(mapping, "engineConditionIndex", rawIndex);
-        int baseline = integer(mapping, "rawPathConditionBaseline", -1);
-        int boundary = integer(mapping, "rawPathConditionSize", -1);
-        int occurrence = integer(mapping, "occurrence", -1);
-        int unitIndex = integer(mapping, "unitIndex", -1);
-        String method = string(mapping, "method");
-        JsonElement rawCondition = mapping.get("rawCondition");
-        JsonElement condition = mapping.get("condition");
+        if (witness == null
+                || !BranchWitness.VM_PC.equals(witness.evidenceKind())) {
+            return false;
+        }
+        int rawIndex = witness.vmPcIndex();
         int normalizedIndex = normalization.index(rawIndex);
+        JsonElement rawCondition = rawIndex >= 0
+                && rawIndex < rawPathCondition.size()
+                ? rawPathCondition.get(rawIndex) : null;
+        JsonElement condition = witness.sourceSatisfiedPredicate();
         return rawIndex >= 0 && rawIndex < rawPathCondition.size()
-                && conditionIndex == rawIndex && engineIndex == rawIndex
                 && normalization.isSemantic(rawIndex)
                 && normalizedIndex >= 0
                 && normalizedIndex < normalization.conditions.size()
-                && rawCondition != null && condition != null
-                && GSON.toJson(rawPathCondition.get(rawIndex)).equals(
-                GSON.toJson(rawCondition))
-                && GSON.toJson(normalization.conditions.get(normalizedIndex))
-                .equals(GSON.toJson(condition))
-                && validSemanticBranchCondition(mapping, rawCondition,
+                && validWitnessSemanticCondition(witness, rawCondition,
                 condition)
-                && method.equals(string(action, "accessMethod"))
+                && BranchPredicateAlgebra.equivalent(
+                normalization.conditions.get(normalizedIndex), condition)
+                && witness.method().equals(string(action, "accessMethod"))
                 && countString(object(activation,
-                "requestedOutputSlice").get("methods"), method) == 1
-                && unitIndex >= 0
-                && string(mapping, "siteId").equals(method + "#u"
-                + unitIndex)
-                && occurrence > 0
-                && occurrence == integer(mapping, "vmOccurrence", -1)
-                && integer(mapping, "vmBranchEventId", 0) > 0
-                && longInteger(mapping, "vmThreadContextId", 0L) > 0L
-                && longInteger(mapping, "vmOwnerJavaThreadId", 0L) > 0L
-                && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
-                && bool(mapping, "vmBranchEventExpected", false)
-                && bool(mapping, "vmBranchEventValidated", false)
-                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
-                string(mapping, "vmBranchEventAuthority"))
-                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
-                .equals(string(mapping, "mappingPolicy"))
-                && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX".equals(
-                string(mapping, "conditionAuthority"))
-                && !bool(mapping, "overrideApplied", true)
-                && "NONE".equals(string(mapping, "overrideMode"))
-                && bool(mapping, "outcome", false) == bool(mapping,
-                "observedOutcome", !bool(mapping, "outcome", false))
-                && bool(mapping, "outcome", false) == bool(mapping,
-                "effectiveOutcome", !bool(mapping, "outcome", false))
-                && baseline >= 0 && boundary > baseline
-                && rawIndex >= baseline && rawIndex < boundary
-                && containsInteger(array(mapping, "vmConditionIndices"),
-                rawIndex);
+                "requestedOutputSlice").get("methods"),
+                witness.method()) == 1
+                && witness.siteId().equals(witness.method() + "#u"
+                + witness.unitIndex());
     }
 
     private static void collectNonMutatingDynamicExpressions(

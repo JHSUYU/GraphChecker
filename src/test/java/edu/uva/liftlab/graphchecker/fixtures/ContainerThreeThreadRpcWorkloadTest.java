@@ -25,7 +25,8 @@ public class ContainerThreeThreadRpcWorkloadTest {
             throws Exception {
         String source = new String(Files.readAllBytes(SOURCE),
                 StandardCharsets.UTF_8);
-        assertTrue(source.contains("payloads[0]"));
+        assertTrue(source.contains("payloads[1]"));
+        assertTrue(source.contains("new StateNode(Boolean.valueOf(!enabled"));
         assertTrue(source.contains("payload.state.guard.enabled"));
         assertTrue(source.contains("value.state.guard.enabled"));
         assertTrue(source.contains("values.entrySet().iterator()"));

@@ -3251,8 +3251,22 @@ public class ConcolicSummaryImporterTest {
                     "DUPLICATE_VM_MAPPING", "INVALID_SLICE_BINDING"}) {
                 MapFixture imported = importNonMutatingDynamicMapReadFixture(
                         folder.getRoot().toPath().resolve(mode), mode);
-                JsonObject observation = imported.summary.getAsJsonArray(
-                        "heapObservations").get(0).getAsJsonObject();
+                JsonArray importedObservations = imported.summary.has(
+                        "heapObservations") ? imported.summary
+                        .getAsJsonArray("heapObservations") : null;
+                if (importedObservations == null
+                        || importedObservations.size() == 0) {
+                    // A missing or duplicate immutable witness now rejects
+                    // the result before heap-observation import.  That is a
+                    // stronger fail-closed outcome than retaining an
+                    // incomplete observation from the retired mapping-field
+                    // validation path.
+                    assertTrue(mode + ": " + imported.diagnostics,
+                            !imported.diagnostics.trim().isEmpty());
+                    continue;
+                }
+                JsonObject observation = importedObservations.get(0)
+                        .getAsJsonObject();
                 assertFalse(mode, observation.get("complete").getAsBoolean());
                 assertFalse(mode, observation.has("stateBaseProof"));
                 assertFalse(mode, observation.has("stateBaseComplete"));
@@ -4936,6 +4950,22 @@ public class ConcolicSummaryImporterTest {
         mapping.add("vmConditionIndices", singletonInteger(0));
         mapping.add("rawCondition", condition.deepCopy());
         mapping.add("condition", condition.deepCopy());
+        if (!"INVALID_VM_MAPPING".equals(mode)) {
+            JsonObject vmEvent = new JsonObject();
+            vmEvent.addProperty("authority",
+                    "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
+            vmEvent.addProperty("contextId", 2L);
+            vmEvent.addProperty("eventId", 1L);
+            vmEvent.addProperty("opcode", 153);
+            vmEvent.addProperty("ownerJavaThreadId", 3L);
+            vmEvent.addProperty("ownerOsThreadId", 4L);
+            vmEvent.addProperty("codePosition",
+                    condition.get("_code_position").getAsString());
+            vmEvent.addProperty("predicateNormalization", "IDENTITY");
+            mapping.add("witness", BranchWitness.vmPc(
+                    method + "#u11", method, 11, 1, true,
+                    condition, 0, vmEvent).toJson());
+        }
         JsonArray mappings = new JsonArray();
         mappings.add(mapping);
         if ("DUPLICATE_VM_MAPPING".equals(mode)) {
