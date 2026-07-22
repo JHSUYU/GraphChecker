@@ -366,7 +366,7 @@ public class ConcolicSchedulerTest {
     }
 
     @Test
-    public void capturedSummaryProducesCanonicalTargetReplayQuery()
+    public void capturedSummaryProducesCanonicalTargetSolverQuery()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -400,7 +400,6 @@ public class ConcolicSchedulerTest {
             assertEquals(1, result.queries.size());
             JsonObject query = result.queries.get(0);
             assertTrue(query.get("readyForSolver").getAsBoolean());
-            assertTrue(query.get("readyForReplay").getAsBoolean());
             BranchReplayContract contract = BranchReplayContract.fromJson(
                     query.getAsJsonObject("replayContract"));
             assertEquals(TARGET, contract.source().siteId());
@@ -412,19 +411,6 @@ public class ConcolicSchedulerTest {
             assertFalse(query.has("constraints"));
             assertFalse(query.has("originalTargetCondition"));
             assertFalse(query.has("negatedTargetCondition"));
-            assertEquals("FINITE_MAP_SEMANTIC_MODEL", query
-                    .getAsJsonObject("semanticModel").get("solver")
-                    .getAsString());
-            assertEquals(6, query.getAsJsonArray("replayMaterializations")
-                    .get(0).getAsJsonObject().get("unitIndex").getAsInt());
-            assertEquals("REFERENCE_RESULT", query
-                    .getAsJsonArray("replayMaterializations").get(0)
-                    .getAsJsonObject().get("kind").getAsString());
-            assertEquals("MAP_LOOKUP", query
-                    .getAsJsonArray("replayMaterializations").get(0)
-                    .getAsJsonObject().get("operationSemantics").getAsString());
-            assertEquals(1, query.getAsJsonArray("replayMaterializations")
-                    .get(0).getAsJsonObject().get("occurrence").getAsInt());
             assertEquals(BranchReplayContract.DROP_SOURCE_SUFFIX,
                     query.getAsJsonObject("replayContract")
                             .get("suffixPolicy").getAsString());
@@ -432,10 +418,12 @@ public class ConcolicSchedulerTest {
                     query.get("regionInstanceId").getAsString());
             assertEquals(bridges, query.getAsJsonArray(
                     "engineArrayInputBindings"));
-            assertTrue(result.scheduledActivations.get(0)
-                    .has("replayContract"));
             assertFalse(result.scheduledActivations.get(0)
+                    .has("replayContract"));
+            assertTrue(result.scheduledActivations.get(0)
                     .has("branchCaptureSelector"));
+            assertFalse(result.scheduledActivations.get(0)
+                    .get("targetReplayRequired").getAsBoolean());
         } finally {
             folder.delete();
         }
@@ -502,8 +490,6 @@ public class ConcolicSchedulerTest {
             assertEquals(0, result.queries.size());
             assertEquals("CAPTURE_ONLY", result.jobs.get(0)
                     .get("phase").getAsString());
-            assertFalse(result.scheduledActivations.get(0)
-                    .has("replayMaterializations"));
             assertTrue(result.summary.get("captureOnly").getAsBoolean());
         } finally {
             folder.delete();

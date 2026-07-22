@@ -248,13 +248,6 @@ public class CausynthModuleSupportTest {
         String second = "{\"activationId\":\"ACT.1\","
                 + "\"rootMethod\":\"<example.Second: void run()>\","
                 + "\"replayable\":true,\"schedulerReady\":true,"
-                + "\"replayMaterializations\":["
-                + "{\"kind\":\"PRIMITIVE_RESULT\","
-                + "\"method\":\"<example.Second: void run()>\","
-                + "\"unitIndex\":2},"
-                + "{\"kind\":\"REFERENCE_RESULT\","
-                + "\"method\":\"<example.Second: void run()>\","
-                + "\"unitIndex\":3}],"
                 + "\"requestedOutputCapture\":["
                 + "{\"captureBindingId\":\"CAP.0\","
                 + "\"outputPort\":\"REGION.1.out.0\","
@@ -275,14 +268,6 @@ public class CausynthModuleSupportTest {
         assertEquals(Arrays.asList("<example.Second: void run()>"),
                 new ArrayList<>(ConcolicInstrumentationSelections
                         .readRuntimeSelectedRoots(plan, "ACT.1")));
-
-        ConcolicInstrumentationSelections.ConcolicReplaySelection replay =
-                ConcolicInstrumentationSelections.ConcolicReplaySelection
-                        .from(plan, "ACT.1");
-        assertEquals(Arrays.asList("<example.Second: void run()>"),
-                new ArrayList<>(replay.methods()));
-        assertEquals(1, replay.targets().size());
-        assertEquals(3, replay.targets().iterator().next().unitIndex);
 
         ConcolicInstrumentationSelections
                 .ConcolicOutputCaptureSelection captures =

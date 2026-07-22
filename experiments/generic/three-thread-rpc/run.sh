@@ -905,7 +905,6 @@ do_explore_producer() {
         and (has("branchOverrideProhibited") | not)
         and ((.modelAssignments // []) | length) > 0
         and ((.forcedBranches // []) | length) == 0
-        and ((.replayMaterializations // []) | length) == 0
       )
       | .activationId
     ' "${planner_dir}/activation_plan.jsonl")
@@ -1148,7 +1147,6 @@ do_bootstrap_project() {
       == (.upstreamModelAssignmentCount - .rootBooleanInputCount)
     and .upstreamModelAssignmentCount >= .producerReplayActivationCount
     and .downstreamModelAssignmentCount == 0
-    and .downstreamReplayMaterializationCount == 0
     and .downstreamBranchOverrideCount == 0
     and .targetUnforcedReplayRequired == true
   ' "${bootstrap_root}/primitive_bootstrap_projection_manifest.json" >/dev/null \
@@ -1166,7 +1164,6 @@ do_bootstrap_project() {
     and all(.[] | select(.activationBundleMemberRole == "REACHABILITY_SUPPORT");
       ((.modelAssignments // []) | length) >= 1
       and ((.forcedBranches // []) | length) == 0
-      and ((.replayMaterializations // []) | length) == 0
       and .targetReplayRequired == false)
     and all(.[] | select(.activationBundleMemberRole == "PRIMARY");
       .activationId == $manifest[0].targetReplayActivationId
@@ -1175,7 +1172,6 @@ do_bootstrap_project() {
       and .observationOnlyReplay == true
       and ((.modelAssignments // []) | length) == 0
       and ((.forcedBranches // []) | length) == 0
-      and ((.replayMaterializations // []) | length) == 0
       and .replayContract.schemaVersion == 1
       and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
       and (.replayContract.contractId
@@ -1228,7 +1224,6 @@ do_seed_target() {
       and .[0].schemaVersion == 1
       and .[0].kind == "TARGET_BRANCH_SOLVER_QUERY"
       and .[0].readyForSolver == true
-      and .[0].readyForReplay == false
       and .[0].replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
       and .[0].solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
       and (.[0] | has("targetReplayValidated") | not)

@@ -425,8 +425,6 @@ public final class ConcolicSummaryImporter {
             summary.add("executionAdmission", replayAdmission.toJson());
             summary.addProperty("branchOverrideUsed",
                     bool(raw, "branchOverrideUsed", false));
-            summary.add("replayMaterializationsApplied", copy(raw.get(
-                    "replayMaterializationsApplied"), new JsonArray()));
             summary.add("modelAssignmentsApplied", copy(raw.get(
                     "modelAssignmentsApplied"), new JsonArray()));
             summary.add("exceptionChain", copy(raw.get("exceptionChain"),
@@ -931,7 +929,6 @@ public final class ConcolicSummaryImporter {
                 "EXACT_STATIC_TRANSFORMER_AND_RUNTIME_EMPTY_PRESTATE_V1");
         bounded.add("executionAdmission", executionAdmission);
         bounded.addProperty("branchOverrideUsed", false);
-        bounded.add("replayMaterializationsApplied", new JsonArray());
         bounded.add("modelAssignmentsApplied", new JsonArray());
         bounded.add("exceptionChain", new JsonArray());
         bounded.add("unresolvedInputs", new JsonArray());
@@ -9877,10 +9874,6 @@ public final class ConcolicSummaryImporter {
                                                    JsonObject region,
                                                    RegionCaptureGoal goal) {
         String phase = strictString(activation, "executionPhase");
-        JsonArray expectedMaterializations = array(activation,
-                "replayMaterializations");
-        JsonArray appliedMaterializations = array(raw,
-                "replayMaterializationsApplied");
         JsonArray expectedAssignments = array(activation,
                 "modelAssignments");
         JsonArray appliedAssignments = array(raw,
@@ -9891,8 +9884,6 @@ public final class ConcolicSummaryImporter {
         boolean required = Boolean.TRUE.equals(strictBoolean(activation,
                 "targetReplayRequired"))
                 || branchReplay
-                || expectedMaterializations.size() > 0
-                || appliedMaterializations.size() > 0
                 || expectedAssignments.size() > 0
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
@@ -9940,16 +9931,6 @@ public final class ConcolicSummaryImporter {
                     || !activationQueryKey.equals(strictString(raw,
                     "pathQueryKey"))) {
                 failures.add("PATH_QUERY_KEY_MISMATCH");
-            }
-        }
-
-        if (expectedMaterializations.size() != appliedMaterializations.size()) {
-            failures.add("REPLAY_MATERIALIZATION_COUNT_MISMATCH");
-        }
-        for (JsonElement expected : expectedMaterializations) {
-            if (!expected.isJsonObject() || !containsMaterialization(
-                    appliedMaterializations, expected.getAsJsonObject())) {
-                failures.add("EXPECTED_REPLAY_MATERIALIZATION_NOT_APPLIED");
             }
         }
 
@@ -10906,25 +10887,6 @@ public final class ConcolicSummaryImporter {
                     declaredHash)) return false;
         }
         return true;
-    }
-
-    private static boolean containsMaterialization(JsonArray applied,
-                                                   JsonObject expected) {
-        for (JsonElement element : applied) {
-            if (!element.isJsonObject()) continue;
-            JsonObject value = element.getAsJsonObject();
-            if (string(expected, "kind").equals(string(value, "kind"))
-                    && string(expected, "method").equals(string(value,
-                    "method"))
-                    && integer(expected, "unitIndex", -1) == integer(value,
-                    "unitIndex", -2)
-                    && Math.max(1, integer(expected, "occurrence", 1))
-                    == Math.max(1, integer(value, "occurrence", 1))
-                    && string(expected, "desiredResult").equals(string(value,
-                    "desiredResult"))
-                    && bool(value, "solverDerived", false)) return true;
-        }
-        return false;
     }
 
     private static Set<String> failureExceptions(JsonObject region) {

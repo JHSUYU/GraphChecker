@@ -265,7 +265,6 @@ public final class ConcolicScheduler {
                     materialization.concreteFallbacks.size());
             job.addProperty("symbolicCoverageComplete",
                     materialization.concreteFallbacks.size() == 0);
-            job.addProperty("solverReplayReady", false);
             job.addProperty("forceValidationEnabled",
                     arguments.forceBranchValidation);
             if (!candidate.outputClosure) {
@@ -288,28 +287,11 @@ public final class ConcolicScheduler {
                             string(candidate.activation, "regionInstanceId")));
             if (captured != null && !candidate.outputClosure) {
                 JsonObject query = branchQuery(candidate, captured,
-                        mergePlan, staticGraph);
+                        mergePlan);
                 job.add("branchQuery", query);
                 if (object(query, "symbolicContext").size() > 0) {
                     job.add("symbolicContext", object(query,
                             "symbolicContext").deepCopy());
-                }
-                boolean replayReady = bool(query, "readyForReplay", false);
-                job.addProperty("solverReplayReady", replayReady);
-                scheduledActivation.addProperty("targetReplayRequired",
-                        replayReady);
-                if (replayReady) {
-                    scheduledActivation.remove("branchCaptureSelector");
-                    scheduledActivation.add("replayContract",
-                            object(query, "replayContract").deepCopy());
-                }
-                JsonArray replayMaterializations = array(query,
-                        "replayMaterializations");
-                if (replayReady && replayMaterializations.size() > 0) {
-                    scheduledActivation.add("replayMaterializations",
-                            replayMaterializations.deepCopy());
-                    job.add("replayMaterializations",
-                            replayMaterializations.deepCopy());
                 }
                 result.queries.add(query);
             }
@@ -374,12 +356,6 @@ public final class ConcolicScheduler {
         result.summary.addProperty("definitionSiteAuthority",
                 definitions.authoritative
                         ? "STATIC_DATAFLOW_DEF_SITE" : "LOCAL_NAME_FALLBACK");
-        boolean finiteTheorySolved = false;
-        for (JsonObject query : result.queries) {
-            finiteTheorySolved |= bool(query, "readyForReplay", false);
-        }
-        result.summary.addProperty("solver", finiteTheorySolved
-                ? "FINITE_THEORY_PLUGIN" : "NOT_RUN_BY_SCHEDULER");
         result.summary.addProperty("precision",
                 "STATIC_REGION_PLUS_RUNTIME_ACTIVATION_AND_EDGE_VALIDATION");
 
@@ -546,7 +522,6 @@ public final class ConcolicScheduler {
         result.remove("summaryMode");
         result.remove("branchCaptureSelector");
         result.remove("forcedBranches");
-        result.remove("replayMaterializations");
         result.remove("modelAssignments");
         boolean outputCaptureReady = outputCaptureReady(result);
         boolean transitionTemplateReady =
@@ -2660,8 +2635,7 @@ public final class ConcolicScheduler {
 
     private static JsonObject branchQuery(Candidate candidate,
                                           JsonObject summary,
-                                          MergePlan mergePlan,
-                                          List<JsonObject> staticGraph) {
+                                          MergePlan mergePlan) {
         JsonObject query = new JsonObject();
         query.addProperty("schemaVersion", 1);
         query.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
@@ -2694,166 +2668,7 @@ public final class ConcolicScheduler {
         query.add("symbolicContext",
                 mergePlan.contextFor(candidate.region.regionId,
                         string(candidate.activation, "regionInstanceId")));
-        addSemanticReplayModel(query, candidate, staticGraph);
         return query;
-    }
-
-    /**
-     * Solves the small finite-map theory used by this demo.  A negated
-     * reference condition {@code Map.get(map,key) == null} has a direct model:
-     * the selected lookup is absent.  The replay transformer materializes that
-     * modeled function result at the exact static lookup site; it does not
-     * mutate the shared map or pretend this is a general-purpose SMT model.
-     */
-    private static void addSemanticReplayModel(JsonObject query,
-                                               Candidate candidate,
-                                               List<JsonObject> staticGraph) {
-        query.addProperty("readyForReplay", false);
-        JsonElement negatedElement;
-        try {
-            negatedElement = BranchReplayContract.fromJson(object(query,
-                    "replayContract")).requiredSatisfiedPredicate();
-        } catch (IllegalArgumentException malformed) {
-            return;
-        }
-        if (negatedElement == null || !negatedElement.isJsonObject()) {
-            return;
-        }
-        JsonObject negated = negatedElement.getAsJsonObject();
-        if (!"==".equals(string(negated, "_op"))) {
-            return;
-        }
-        JsonObject left = object(negated, "_left");
-        JsonObject right = object(negated, "_right");
-        if (isNull(left) && !isNull(right)) {
-            JsonObject swap = left;
-            left = right;
-            right = swap;
-        }
-        if (!isNull(right)) {
-            return;
-        }
-        String resultSymbol = string(left, "_exp");
-        JsonArray solverContext;
-        try {
-            solverContext = SolverPathContext.fromJson(object(query,
-                    "solverPathContext")).expressions();
-        } catch (IllegalArgumentException malformed) {
-            return;
-        }
-        JsonObject lookup = lookupProducing(solverContext, resultSymbol);
-        if (lookup.size() == 0) {
-            return;
-        }
-        String method = methodFromSite(candidate.target.siteId);
-        int branchUnit = unitFromSite(candidate.target.siteId);
-        JsonObject site = nearestMapLookup(staticGraph, method, branchUnit);
-        if (site.size() == 0) {
-            return;
-        }
-
-        JsonArray parameters = array(lookup, "_param_list");
-        JsonObject model = new JsonObject();
-        model.addProperty("status", "SAT");
-        model.addProperty("solver", "FINITE_MAP_SEMANTIC_MODEL");
-        model.addProperty("theory", "MAP_LOOKUP_ABSENCE");
-        model.addProperty("resultSymbol", resultSymbol);
-        model.addProperty("assignment", "NULL");
-        if (parameters.size() > 0) {
-            model.add("mapExpression", parameters.get(0).deepCopy());
-        }
-        if (parameters.size() > 1) {
-            model.add("keyExpression", parameters.get(1).deepCopy());
-        }
-        model.addProperty("scope",
-                "ONE_SCHEDULED_LOOKUP_RESULT_NOT_SHARED_MAP_MUTATION");
-        query.add("semanticModel", model);
-
-        JsonObject replay = new JsonObject();
-        // The transformer/runtime interface stays independent of the theory
-        // plugin that produced the model.  It only knows that a reference
-        // result at one exact site must be materialized; MAP_LOOKUP remains
-        // provenance carried by the scheduler output.
-        replay.addProperty("kind", "REFERENCE_RESULT");
-        replay.addProperty("operationSemantics", "MAP_LOOKUP");
-        replay.addProperty("method", method);
-        replay.addProperty("unitIndex", integer(site, "unitIndex", -1));
-        replay.addProperty("siteId", string(site, "siteId"));
-        replay.addProperty("occurrence",
-                Math.max(1, candidate.target.selectedOccurrence));
-        replay.addProperty("occurrencePolicy",
-                "ALIGNED_WITH_TARGET_BRANCH_OCCURRENCE");
-        replay.addProperty("desiredResult", "NULL");
-        replay.addProperty("resultSymbol", resultSymbol);
-        replay.addProperty("solverDerived", true);
-        replay.addProperty("mode",
-                "SOOT_VALUE_MATERIALIZATION_FROM_FINITE_MAP_MODEL");
-        replay.addProperty("authority",
-                "NEGATED_PC_PLUS_STATIC_MAP_LOOKUP_SITE");
-        JsonArray materializations = new JsonArray();
-        materializations.add(replay);
-        query.add("replayMaterializations", materializations);
-        query.addProperty("readyForReplay", true);
-    }
-
-    private static JsonObject lookupProducing(JsonArray constraints,
-                                              String resultSymbol) {
-        for (int index = constraints.size() - 1; index >= 0; index--) {
-            JsonElement element = constraints.get(index);
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject expression = element.getAsJsonObject();
-            if (!"MethodExpression".equals(string(expression, "_type"))
-                    || !string(expression, "_name").endsWith(" get")) {
-                continue;
-            }
-            if (resultSymbol.equals(string(object(expression, "_res_exp"),
-                    "_exp"))) {
-                return expression;
-            }
-        }
-        return new JsonObject();
-    }
-
-    private static JsonObject nearestMapLookup(List<JsonObject> staticGraph,
-                                               String method,
-                                               int beforeUnit) {
-        JsonObject best = new JsonObject();
-        int bestUnit = -1;
-        for (JsonObject edge : staticGraph) {
-            int unit = integer(edge, "unitIndex", -1);
-            if (!method.equals(string(edge, "method")) || unit < 0
-                    || unit >= beforeUnit
-                    || !"map_lookup_state".equals(string(edge, "kind"))) {
-                continue;
-            }
-            if (unit > bestUnit) {
-                best = edge.deepCopy();
-                bestUnit = unit;
-            }
-        }
-        return best;
-    }
-
-    private static boolean isNull(JsonObject expression) {
-        return "SymbolExpression".equals(string(expression, "_type"))
-                && "N".equals(string(expression, "_exp"));
-    }
-
-    private static String methodFromSite(String siteId) {
-        int marker = safe(siteId).lastIndexOf("#u");
-        return marker < 0 ? safe(siteId) : siteId.substring(0, marker);
-    }
-
-    private static int unitFromSite(String siteId) {
-        int marker = safe(siteId).lastIndexOf("#u");
-        try {
-            return marker < 0 ? Integer.MAX_VALUE
-                    : Integer.parseInt(siteId.substring(marker + 2));
-        } catch (RuntimeException ignored) {
-            return Integer.MAX_VALUE;
-        }
     }
 
     private static String workloadKind(Candidate candidate,

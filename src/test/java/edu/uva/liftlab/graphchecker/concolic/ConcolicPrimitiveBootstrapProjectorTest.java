@@ -93,8 +93,6 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         assertFalse(target.get("concreteReplayOnly").getAsBoolean());
         assertEquals(0, target.getAsJsonArray("modelAssignments").size());
         assertFalse(target.has("forcedBranches"));
-        assertEquals(0, target.getAsJsonArray(
-                "replayMaterializations").size());
         assertEquals("fixture.ConsumerThread", target.get(
                 "receiverRuntimeClass").getAsString());
         assertEquals("rpc-consumer", target.get("threadName")

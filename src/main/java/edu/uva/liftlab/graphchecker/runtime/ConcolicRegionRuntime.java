@@ -1400,79 +1400,6 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Applies a solver-derived reference result at one scheduled assignment
-     * occurrence.  The original operation has already executed, so its VM
-     * expression remains available in the captured path condition.  This
-     * runtime interface is intentionally theory-neutral: operation semantics
-     * are metadata, not Java class or project-specific behavior.
-     */
-    public static Object materializeReplayReferenceResult(
-            String method, int unitIndex, Object concreteResult) {
-        ActiveRegion active = activeRegion();
-        if (active == null) {
-            return concreteResult;
-        }
-        if (!active.engineBacked) {
-            // concreteReplayOnly plans prohibit reference-result injection.
-            // Instrumented sites may still be shared with another activation;
-            // in this mode they must be observational no-ops.
-            return concreteResult;
-        }
-        EngineApi api = engine();
-        boolean paused = false;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            String siteId = safe(method) + "#u" + unitIndex;
-            int occurrence = active.nextReplayOccurrence(siteId);
-            ReplayMaterialization action = active.activation.replay(
-                    method, unitIndex, occurrence);
-            if (action == null) {
-                return concreteResult;
-            }
-            if (!"REFERENCE_RESULT".equals(action.kind)) {
-                active.unresolved.add(siteId
-                        + ": unsupported replay value kind " + action.kind);
-                return concreteResult;
-            }
-
-            Object modeled = modeledReferenceResult(action.desiredResult,
-                    concreteResult);
-            if (modeled == UnsupportedReplayValue.INSTANCE) {
-                active.unresolved.add(siteId
-                        + ": unsupported desired reference result "
-                        + action.desiredResult);
-                return concreteResult;
-            }
-            JsonObject applied = action.toJson();
-            applied.addProperty("observedOccurrence", occurrence);
-            applied.addProperty("concreteResultWasNull", concreteResult == null);
-            applied.addProperty("modeledResultWasNull", modeled == null);
-            active.replayMaterializationsApplied.add(applied);
-            return modeled;
-        } catch (Throwable throwable) {
-            active.unresolved.add("replay materialization bookkeeping failed: "
-                    + rootCause(throwable));
-            return concreteResult;
-        } finally {
-            if (paused) {
-                resumePathCondition(active, api);
-            }
-        }
-    }
-
-    static Object modeledReferenceResult(String desiredResult,
-                                         Object concreteResult) {
-        if ("NULL".equals(desiredResult)) {
-            return null;
-        }
-        if ("UNCHANGED".equals(desiredResult)) {
-            return concreteResult;
-        }
-        return UnsupportedReplayValue.INSTANCE;
-    }
-
-    /**
      * Binds a concrete Java Map view to its backing map for the currently
      * selected activation.  Instrumentation calls this only after the view
      * factory returned normally and while path-condition recording is paused.
@@ -4564,8 +4491,6 @@ public final class ConcolicRegionRuntime {
                     GSON.toJsonTree(active.runtimeHeapEffects));
             result.add("runtimeHeapObservations",
                     active.runtimeHeapObservationsJson());
-            result.add("replayMaterializationsApplied",
-                    GSON.toJsonTree(active.replayMaterializationsApplied));
             result.add("modelAssignmentsApplied",
                     GSON.toJsonTree(active.modelAssignmentsApplied));
             result.add("fieldObservations",
@@ -4688,8 +4613,6 @@ public final class ConcolicRegionRuntime {
                     GSON.toJsonTree(active.runtimeHeapEffects));
             result.add("runtimeHeapObservations",
                     active.runtimeHeapObservationsJson());
-            result.add("replayMaterializationsApplied",
-                    GSON.toJsonTree(active.replayMaterializationsApplied));
             result.add("modelAssignmentsApplied",
                     GSON.toJsonTree(active.modelAssignmentsApplied));
             result.add("fieldObservations",
@@ -7697,8 +7620,6 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
         private final IdentityHashMap<Object, Boolean>
                 finiteMapSnapshotAttemptedMaps = new IdentityHashMap<>();
-        private final List<JsonObject> replayMaterializationsApplied =
-                new ArrayList<>();
         private final List<JsonObject> modelAssignmentsApplied =
                 new ArrayList<>();
         private final List<JsonObject> fieldObservations = new ArrayList<>();
@@ -7734,8 +7655,6 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
         private final Map<Long, PreparedBranch> preparedBranches =
-                new LinkedHashMap<>();
-        private final Map<String, Integer> replayOccurrences =
                 new LinkedHashMap<>();
         private final Map<String, Integer> heapEffectOccurrences =
                 new LinkedHashMap<>();
@@ -7889,13 +7808,6 @@ public final class ConcolicRegionRuntime {
 
         private PreparedBranch takePreparedBranch(long handle) {
             return handle <= 0L ? null : preparedBranches.remove(handle);
-        }
-
-        private int nextReplayOccurrence(String siteId) {
-            Integer previous = replayOccurrences.get(siteId);
-            int occurrence = previous == null ? 1 : previous + 1;
-            replayOccurrences.put(siteId, occurrence);
-            return occurrence;
         }
 
         private int nextHeapEffectOccurrence(String siteId) {
@@ -8713,15 +8625,6 @@ public final class ConcolicRegionRuntime {
             Long count = signatures == null ? null
                     : signatures.get(exactFieldIdentity(declared));
             return count == null ? 0L : count;
-        }
-
-        private boolean hasAppliedSolverReplay() {
-            for (JsonObject applied : replayMaterializationsApplied) {
-                if (bool(applied, "solverDerived", false)) {
-                    return true;
-                }
-            }
-            return false;
         }
 
         private ModelAssignment assignment(SymbolizeAction action,
@@ -11395,64 +11298,6 @@ public final class ConcolicRegionRuntime {
                 new ModelAssignment(assignment));
     }
 
-    /** One theory-neutral, occurrence-specific value materialization. */
-    private static final class ReplayMaterialization {
-        private final String kind;
-        private final String method;
-        private final int unitIndex;
-        private final int occurrence;
-        private final String siteId;
-        private final String desiredResult;
-        private final String operationSemantics;
-        private final String resultSymbol;
-        private final boolean solverDerived;
-        private final String mode;
-        private final String authority;
-        private final String occurrencePolicy;
-
-        private ReplayMaterialization(JsonObject json) {
-            this.kind = string(json, "kind");
-            this.method = string(json, "method");
-            this.unitIndex = integer(json, "unitIndex", -1);
-            this.occurrence = Math.max(1, integer(json, "occurrence", 1));
-            this.siteId = firstNonBlank(string(json, "siteId"),
-                    this.method + "#u" + this.unitIndex);
-            this.desiredResult = string(json, "desiredResult");
-            this.operationSemantics = firstNonBlank(
-                    string(json, "operationSemantics"),
-                    string(json, "producerSemantics"));
-            this.resultSymbol = string(json, "resultSymbol");
-            this.solverDerived = bool(json, "solverDerived", false);
-            this.mode = string(json, "mode");
-            this.authority = string(json, "authority");
-            this.occurrencePolicy = string(json, "occurrencePolicy");
-        }
-
-        private boolean matches(String actualMethod, int actualUnit,
-                                int actualOccurrence) {
-            return method.equals(safe(actualMethod))
-                    && unitIndex == actualUnit
-                    && occurrence == actualOccurrence;
-        }
-
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("kind", kind);
-            result.addProperty("method", method);
-            result.addProperty("unitIndex", unitIndex);
-            result.addProperty("siteId", siteId);
-            result.addProperty("occurrence", occurrence);
-            result.addProperty("desiredResult", desiredResult);
-            result.addProperty("operationSemantics", operationSemantics);
-            result.addProperty("resultSymbol", resultSymbol);
-            result.addProperty("solverDerived", solverDerived);
-            result.addProperty("mode", mode);
-            result.addProperty("authority", authority);
-            result.addProperty("occurrencePolicy", occurrencePolicy);
-            return result;
-        }
-    }
-
     private static final class OutputCaptureRequest {
         private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
         private static final String FIELD_ASSIGNMENT_RHS =
@@ -11911,7 +11756,6 @@ public final class ConcolicRegionRuntime {
         /** Actions that execute directly at ordinary instrumentation hooks. */
         private final List<SymbolizeAction> symbolize;
         private final Map<String, String> branchPolicies;
-        private final List<ReplayMaterialization> replayMaterializations;
         private final List<ModelAssignment> modelAssignments;
         private final List<ContainerElementFieldBindingSpec>
                 containerElementFieldBindings;
@@ -11940,7 +11784,6 @@ public final class ConcolicRegionRuntime {
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             this.branchPolicies = new LinkedHashMap<>();
-            this.replayMaterializations = new ArrayList<>();
             this.modelAssignments = new ArrayList<>();
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
@@ -12001,16 +11844,6 @@ public final class ConcolicRegionRuntime {
                 throw new IllegalArgumentException(
                         "forcedBranches was removed; binary replay is "
                                 + "natural and contract-driven");
-            }
-            for (JsonElement element : array(json,
-                    "replayMaterializations")) {
-                if (element.isJsonObject()) {
-                    ReplayMaterialization replay = new ReplayMaterialization(
-                            element.getAsJsonObject());
-                    if (!replay.method.isEmpty() && replay.unitIndex >= 0) {
-                        replayMaterializations.add(replay);
-                    }
-                }
             }
             for (JsonElement element : array(json, "modelAssignments")) {
                 if (element.isJsonObject()) {
@@ -12146,9 +11979,6 @@ public final class ConcolicRegionRuntime {
 
         private String concreteReplayError() {
             if (!concreteReplayOnly) return "";
-            if (!replayMaterializations.isEmpty()) {
-                return "concrete replay forbids reference-result injection";
-            }
             if (observationOnlyReplay && !modelAssignments.isEmpty()) {
                 return "observation-only concrete replay forbids downstream "
                         + "model assignments";
@@ -12176,16 +12006,6 @@ public final class ConcolicRegionRuntime {
         private static boolean validBranchPolicy(String policy) {
             return "EXPLORE".equals(policy)
                     || "PATH_ASSUMPTION".equals(policy);
-        }
-
-        private ReplayMaterialization replay(String method, int unitIndex,
-                                             int occurrence) {
-            for (ReplayMaterialization replay : replayMaterializations) {
-                if (replay.matches(method, unitIndex, occurrence)) {
-                    return replay;
-                }
-            }
-            return null;
         }
 
         private OutputCaptureRequest callArgumentCapture(

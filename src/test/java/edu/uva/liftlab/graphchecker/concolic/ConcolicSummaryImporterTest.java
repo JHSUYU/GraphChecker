@@ -411,17 +411,6 @@ public class ConcolicSummaryImporterTest {
             BranchReplayContract targetContract = BranchReplayContract.flip(
                     Collections.<BranchWitness>emptyList(), sourceWitness);
             activation.add("replayContract", targetContract.toJson());
-            JsonObject expectedMaterialization = new JsonObject();
-            expectedMaterialization.addProperty("kind", "REFERENCE_RESULT");
-            expectedMaterialization.addProperty("method",
-                    "<example.Target: void run()>");
-            expectedMaterialization.addProperty("unitIndex", 6);
-            expectedMaterialization.addProperty("occurrence", 1);
-            expectedMaterialization.addProperty("desiredResult", "NULL");
-            JsonArray expectedMaterializations = new JsonArray();
-            expectedMaterializations.add(expectedMaterialization);
-            activation.add("replayMaterializations",
-                    expectedMaterializations);
             write(activations, activation + "\n");
 
             JsonObject region = new JsonObject();
@@ -460,12 +449,6 @@ public class ConcolicSummaryImporterTest {
             JsonArray branches = new JsonArray();
             branches.add(branch);
             raw.add("branchMappings", branches);
-            JsonObject applied = expectedMaterialization.deepCopy();
-            applied.addProperty("solverDerived", true);
-            JsonArray appliedMaterializations = new JsonArray();
-            appliedMaterializations.add(applied);
-            raw.add("replayMaterializationsApplied",
-                    appliedMaterializations);
             JsonObject cause = new JsonObject();
             cause.addProperty("type", "example.Fatal");
             JsonArray exceptionChain = new JsonArray();
@@ -519,7 +502,6 @@ public class ConcolicSummaryImporterTest {
             seedActivation.addProperty("executionPhase",
                     "CAPTURE_THEN_NEGATE");
             seedActivation.remove("replayContract");
-            seedActivation.remove("replayMaterializations");
             branch.addProperty("observedOutcome", false);
             branch.addProperty("overrideApplied", false);
             raw.addProperty("branchOverrideUsed", false);

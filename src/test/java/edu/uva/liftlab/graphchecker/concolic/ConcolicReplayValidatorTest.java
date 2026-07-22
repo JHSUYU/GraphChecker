@@ -678,7 +678,6 @@ public class ConcolicReplayValidatorTest {
         raw.addProperty("modelAssignmentAppliedCount", 0);
         raw.add("modelAssignmentsApplied", new JsonArray());
         raw.addProperty("branchOverrideUsed", override);
-        raw.add("replayMaterializationsApplied", new JsonArray());
         JsonArray mappings = new JsonArray();
         mappings.add(mapping(branchWitness("SITE.0", true,
                 branchPredicate("REGION.3.in.0", ">"), 0), false));

@@ -80,9 +80,6 @@ public final class ConcolicReplayValidator {
                 !bool(rawResult, "branchOverrideUsed", false)
                         && !hasOverride(array(rawResult,
                         "branchMappings")));
-        require(failures, "NON_INPUT_REPLAY_MATERIALIZATION_USED",
-                array(rawResult, "replayMaterializationsApplied").size()
-                        == 0);
         String plannedActivationId = string(task, "activationId");
         // Runtime-local identity evidence must name the replay activation
         // itself; a task/source activation is never a valid fallback.
@@ -284,8 +281,7 @@ public final class ConcolicReplayValidator {
         result.addProperty("flippedBranchValidated",
                 branchObservation != null && branchObservation.valid());
         result.addProperty("inputModelOnly", !contains(failures,
-                "BRANCH_OVERRIDE_USED") && !contains(failures,
-                "NON_INPUT_REPLAY_MATERIALIZATION_USED"));
+                "BRANCH_OVERRIDE_USED"));
         result.addProperty("dynamicAssignmentIdentityValidated",
                 !dynamicPlan || !contains(failures,
                         "DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH")

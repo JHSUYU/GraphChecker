@@ -415,7 +415,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
         manifest.addProperty("upstreamModelAssignmentCount",
                 projectedPrimitiveInputCount);
         manifest.addProperty("downstreamModelAssignmentCount", 0);
-        manifest.addProperty("downstreamReplayMaterializationCount", 0);
         manifest.addProperty("downstreamBranchOverrideCount", 0);
         manifest.addProperty("downstreamInjectionForbidden", true);
         manifest.addProperty("targetUnforcedReplayRequired", true);
@@ -1929,7 +1928,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
         JsonObject result = source.deepCopy();
         result.add("modelAssignments", assignments.deepCopy());
         result.add("forcedBranches", new JsonArray());
-        result.add("replayMaterializations", new JsonArray());
         result.remove("targetBranch");
         result.remove("expectedBranchPrefix");
         result.addProperty("executionPhase",
@@ -1960,7 +1958,6 @@ public final class ConcolicPrimitiveBootstrapProjector {
         solverPathContext(fatal);
         JsonObject result = source.deepCopy();
         result.add("modelAssignments", new JsonArray());
-        result.add("replayMaterializations", new JsonArray());
         result.remove("forcedBranches");
         result.remove("targetBranch");
         result.remove("branchCaptureSelector");

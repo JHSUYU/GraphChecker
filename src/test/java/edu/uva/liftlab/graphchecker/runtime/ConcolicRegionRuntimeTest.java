@@ -877,15 +877,6 @@ public class ConcolicRegionRuntimeTest {
     }
 
     @Test
-    public void referenceReplayProtocolIsTheoryNeutral() {
-        Object concrete = new Object();
-        assertEquals(null, ConcolicRegionRuntime.modeledReferenceResult(
-                "NULL", concrete));
-        assertEquals(concrete, ConcolicRegionRuntime.modeledReferenceResult(
-                "UNCHANGED", concrete));
-    }
-
-    @Test
     public void solverScalarsAreCoercedForTheirRealJavaInputType() {
         assertEquals(7, ConcolicRegionRuntime.coerceModelValue(
                 "INT", "7", int.class));
@@ -5273,7 +5264,6 @@ public class ConcolicRegionRuntimeTest {
         activation.addProperty("concreteReplayOnly", true);
         activation.add("symbolize", new JsonArray());
         activation.add("modelAssignments", new JsonArray());
-        activation.add("replayMaterializations", new JsonArray());
         activation.add("forcedBranches", new JsonArray());
         return activation;
     }

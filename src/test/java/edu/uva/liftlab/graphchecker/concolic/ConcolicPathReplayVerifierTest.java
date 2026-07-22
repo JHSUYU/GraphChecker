@@ -206,7 +206,6 @@ public class ConcolicPathReplayVerifierTest {
         JsonArray appliedRows = new JsonArray();
         appliedRows.add(applied);
         raw.add("modelAssignmentsApplied", appliedRows);
-        raw.add("replayMaterializationsApplied", new JsonArray());
         raw.add("dynamicFieldBindings", new JsonArray());
         BranchReplayContract contract = BranchReplayContract.fromJson(
                 task.getAsJsonObject("replayContract"));
