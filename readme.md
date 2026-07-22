@@ -74,6 +74,9 @@ else a = -1;
 // Thread 2
 int b = 10;
 if (b2) b = 0;
+int var = externalIntInput;
+if (var < 10) var = 10;
+b = b + var; // Java int wrap semantics
 
 // Thread 3
 int a = getRPCFromA();
@@ -88,7 +91,7 @@ if (a > b) throw new BugReachedException(a, b);
 这个 fixture 不再 hard-code RPC mapping。Soot 首遍只生成 candidate、插桩点和 frozen
 static graph；runtime 确认具体 root/class/thread call closure 后，在 frozen graph 上做一次
 小范围 demand re-slice。跨线程 producer/consumer 关系由 shared-field receiver identity、
-write-before-read、region instance 和最终 replay 自动验证。
+write-before-read、region instance、runtime evidence 和 producer path replay 自动验证。
 
 工作负载的具体路径语义由自动生成的 guarded summaries 和 Z3 truth table 给出。例如：
 
@@ -96,8 +99,9 @@ write-before-read、region instance 和最终 replay 自动验证。
 Producer A: b1 = false -> a = -1
             b1 = true  -> a = 1
 
-Producer B: b2 = false -> b = 10
-            b2 = true  -> b = 0
+Producer B: base = ite(b2, 0, 10)
+            boundedVar = ite(var < 10, 10, var)
+            b = java_int_wrap(base + boundedVar)
 
 候选 truth table / reach condition:
   从生成的 root-input catalog 自动枚举，不由 fixture 提供公式
@@ -274,12 +278,13 @@ Composer 从 fatal query 反向遍历 region graph。若下游端口 `D.in.j` �
 
 ```text
 a = ite(b1, 1, -1)
-b = ite(b2, 0, 10)
+b = java_int_wrap(ite(b2, 0, 10) + ite(var < 10, 10, var))
 bug = (a > b)
 ```
 
-但这些文本没有 hard-code 在 workflow 中；它们来自四条 producer path summary、两条
-runtime-confirmed RPC edge 和 target branch condition。最终 SMT 由
+但这些文本没有 hard-code 在 workflow 中；它们来自 Producer A 的两条和 Producer B 的
+四条 path summary、两条 runtime-confirmed RPC edge 和 target branch condition。外部
+`int var` 保留为 root input，Boolean 投影对它作存在量化。最终 SMT 由
 `ConcolicSmtComposer` 生成，`BooleanReachConditionExtractor` 再对自动发现的 Java Boolean
 root 做有限真值表投影并生成 canonical DNF。
 

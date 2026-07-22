@@ -4,7 +4,8 @@ This fixture is the concrete end-to-end workload for the generic workflow.
 Every execution creates exactly three application worker threads:
 
 - producer A computes and publishes `a` from one `Boolean` input;
-- producer B computes and publishes `b` from one `Boolean` input;
+- producer B computes and publishes `b` from one `Boolean` and one external
+  `int` input;
 - the consumer calls `getRPCFromA()` and `getRPCFromB()`, then throws
   `BugReachedException` on the target comparison edge.
 
