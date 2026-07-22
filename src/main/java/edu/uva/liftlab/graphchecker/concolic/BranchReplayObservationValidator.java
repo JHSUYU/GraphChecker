@@ -42,7 +42,7 @@ public final class BranchReplayObservationValidator {
                 failures.add(expected.siteId() + "#"
                         + expected.occurrence() + ":PREFIX_OUTCOME_MISMATCH");
             }
-            if (!BranchPredicateAlgebra.equivalent(
+            if (!BranchPredicateAlgebra.replayEquivalent(
                     actual.sourceSatisfiedPredicate(),
                     expected.sourceSatisfiedPredicate())) {
                 failures.add(expected.siteId() + "#"
@@ -72,7 +72,7 @@ public final class BranchReplayObservationValidator {
                 failures.add(source.siteId() + "#" + source.occurrence()
                         + ":TARGET_OUTCOME_MISMATCH");
             }
-            if (!BranchPredicateAlgebra.equivalent(
+            if (!BranchPredicateAlgebra.replayEquivalent(
                     target.sourceSatisfiedPredicate(),
                     contract.requiredSatisfiedPredicate())) {
                 failures.add(source.siteId() + "#" + source.occurrence()

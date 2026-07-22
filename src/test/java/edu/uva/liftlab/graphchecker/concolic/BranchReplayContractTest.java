@@ -122,6 +122,26 @@ public class BranchReplayContractTest {
                 .contains("TARGET_BEFORE_PREFIX"));
     }
 
+    @Test
+    public void replayIdentitySurvivesNullSensitiveVmSymbolNames() {
+        JsonObject source = predicate("!=",
+                "M_L'String'_REGION.4.in.6_ProducerThread", "N");
+        source.getAsJsonObject("_left").addProperty("_java_type",
+                "java/lang/String");
+        JsonObject replay = predicate("!=",
+                "M_L_field_REGION.4.in.6_ProducerThread", "N");
+        replay.getAsJsonObject("_left").addProperty("_java_type", "L");
+
+        assertFalse(BranchPredicateAlgebra.equivalent(source, replay));
+        assertTrue(BranchPredicateAlgebra.replayEquivalent(source, replay));
+
+        JsonObject otherInput = predicate("!=",
+                "M_L_field_REGION.4.in.7_ProducerThread", "N");
+        otherInput.getAsJsonObject("_left").addProperty("_java_type", "L");
+        assertFalse(BranchPredicateAlgebra.replayEquivalent(source,
+                otherInput));
+    }
+
     private static BranchWitness witness(String site, int unit,
                                          int occurrence, boolean outcome,
                                          String operator) {
