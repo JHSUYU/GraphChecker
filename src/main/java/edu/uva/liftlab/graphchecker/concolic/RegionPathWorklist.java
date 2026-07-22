@@ -337,7 +337,8 @@ public final class RegionPathWorklist {
                     JsonElement observed = candidateConditions.get(integer(
                             candidate, "conditionIndex", -1));
                     JsonElement truePredicate = bool(candidate, "outcome",
-                            false) ? observed.deepCopy() : negate(observed);
+                            false) ? observed.deepCopy()
+                            : BranchPredicateAlgebra.complement(observed);
                     if (!solverPredicateShape(truePredicate)
                             || !closedOverInputs(truePredicate,
                             currentInputs)) {
@@ -373,7 +374,8 @@ public final class RegionPathWorklist {
             }
             JsonElement observed = bool(concrete, "outcome", false)
                     ? template.truePredicate.deepCopy()
-                    : negate(template.truePredicate);
+                    : BranchPredicateAlgebra.complement(
+                    template.truePredicate);
             recovered.add(observed);
             JsonObject synthetic = concrete.deepCopy();
             synthetic.addProperty("conditionIndex", template.prefixSize);
@@ -735,7 +737,8 @@ public final class RegionPathWorklist {
             JsonObject expression = value.getAsJsonObject();
             String type = string(expression, "_type");
             if ("BinaryExpression".equals(type)) {
-                return !opposite(string(expression, "_op")).isEmpty();
+                return BranchPredicateAlgebra.isComparisonOperator(
+                        string(expression, "_op"));
             }
             if ("NotExpression".equals(type)) {
                 return solverPredicateShape(expression.get("_operand"));
@@ -783,7 +786,7 @@ public final class RegionPathWorklist {
                 prefix.add(conditions.get(index).deepCopy());
             }
             JsonElement original = conditions.get(conditionIndex);
-            JsonElement negated = negate(original);
+            JsonElement negated = BranchPredicateAlgebra.complement(original);
             JsonArray query = prefix.deepCopy();
             query.add(negated.deepCopy());
             boolean desired = !bool(mapping, "outcome", false);
@@ -1194,39 +1197,6 @@ public final class RegionPathWorklist {
                 || "MATERIALIZATION_GAP".equals(status)
                 || "EXECUTION_ERROR".equals(status)
                 || "BOUND_REACHED".equals(status);
-    }
-
-    static JsonElement negate(JsonElement expression) {
-        if (expression != null && expression.isJsonObject()) {
-            JsonObject object = expression.getAsJsonObject();
-            if ("BinaryExpression".equals(string(object, "_type"))) {
-                String opposite = opposite(string(object, "_op"));
-                if (!opposite.isEmpty()) {
-                    JsonObject copy = object.deepCopy();
-                    copy.addProperty("_op", opposite);
-                    return copy;
-                }
-            }
-            if ("NotExpression".equals(string(object, "_type"))) {
-                JsonElement operand = object.get("_operand");
-                return operand == null ? JsonNull.INSTANCE
-                        : operand.deepCopy();
-            }
-        }
-        JsonObject negated = new JsonObject();
-        negated.addProperty("_type", "NotExpression");
-        negated.add("_operand", copy(expression, JsonNull.INSTANCE));
-        return negated;
-    }
-
-    private static String opposite(String operator) {
-        if ("==".equals(operator)) return "!=";
-        if ("!=".equals(operator)) return "==";
-        if ("<".equals(operator)) return ">=";
-        if ("<=".equals(operator)) return ">";
-        if (">".equals(operator)) return "<=";
-        if (">=".equals(operator)) return "<";
-        return "";
     }
 
     private static String canonical(JsonElement value) {

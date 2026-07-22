@@ -807,7 +807,8 @@ public class ConcolicSummaryImporterTest {
             assertEquals(1, summary.getAsJsonObject(
                     "pathConditionNormalization").get(
                     "semanticBranchConditionSubstitutionCount").getAsInt());
-            assertEquals("<", ConcolicScheduler.negate(importedCondition)
+            assertEquals("<", BranchPredicateAlgebra.complement(
+                    importedCondition)
                     .getAsJsonObject().get("_op").getAsString());
         } finally {
             folder.delete();

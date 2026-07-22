@@ -1552,7 +1552,7 @@ public class ConcolicSchedulerTest {
         JsonObject condition = JsonParser.parseString(
                 "{\"_type\":\"BinaryExpression\",\"_op\":\"<\"}")
                 .getAsJsonObject();
-        assertEquals(">=", ConcolicScheduler.negate(condition)
+        assertEquals(">=", BranchPredicateAlgebra.complement(condition)
                 .getAsJsonObject().get("_op").getAsString());
     }
 
