@@ -112,20 +112,17 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   import CH               Strictly import that producer capture
   explore-producer CH     Close and merge one producer path worklist
   bootstrap-compose       Compose producer relations with the target seed
-  bootstrap-project       Derive a SAT replay bundle or prove bootstrap UNSAT
-  bootstrap-replay        Naturally reach/import/reschedule the target bug
-  campaign                Close the bounded fixed-runtime concolic campaign
-  final                   Final compose + relationship proof + reach report
+  bootstrap-project       Prove/project the candidate SMT with Z3
+  candidate               Run the clean workflow through candidate SMT + Z3
   smoke                   prepare + analyze + trace + discovery + target
-  all                     Run the complete clean-worktree workflow above
+  all                     Alias for candidate
   clean                   Remove only the configured fixture work products
 
 No command writes SMT text or a reachability formula. Local channels are
 discovered from runtime-confirmed shared-field read-from evidence; this
 fixture has no declared RPC mapping.
-Only a replay-validated composition, or a structurally complete bootstrap
-composition proved UNSAT, is allowed to publish a final reach report.  An
-UNSAT terminal is explicitly marked as having no fatal replay.
+The terminal artifact is deliberately CANDIDATE_ONLY.  Promoting it to a
+trusted result by a natural replay is a documented follow-up TODO.
 EOF
 }
 
@@ -910,9 +907,19 @@ do_explore_producer() {
         and .captureGoal.kind == "OUTPUT_CLOSURE"
         and .executionPhase == "REPLAY_OUTPUT_PATH_FLIP"
         and .replayMode == "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
-        and .branchOverrideProhibited == true
-        and .targetBranch.validationOnly == true
-        and .targetBranch.branchOverrideAllowed == false
+        and .replayContract.schemaVersion == 1
+        and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
+        and (.replayContract.contractId
+          | test("^BRANCH\\.REPLAY\\.[0-9a-f]{64}$"))
+        and .replayContract.suffixPolicy == "DROP_SOURCE_SUFFIX"
+        and (.replayContract.source.witnessId
+          | test("^BRANCH\\.WITNESS\\.[0-9a-f]{64}$"))
+        and (.replayContract.required.takenOutcome | type) == "boolean"
+        and (.replayContract.required.satisfiedPredicate | type) == "object"
+        and (has("targetBranch") | not)
+        and (has("expectedBranchPrefix") | not)
+        and (has("pathReplayConstraints") | not)
+        and (has("branchOverrideProhibited") | not)
         and ((.modelAssignments // []) | length) > 0
         and ((.forcedBranches // []) | length) == 0
         and ((.replayMaterializations // []) | length) == 0
@@ -1802,7 +1809,66 @@ require_clean_work_root() {
     "all requires an empty fixture work root; run '$0 clean' first"
 }
 
-do_all() {
+write_candidate_manifest() {
+  local smt="${bootstrap_root}/composed_fatal.smt2"
+  local composition="${bootstrap_root}/composed_smt_manifest.json"
+  local reach="${bootstrap_root}/bootstrap_boolean_model.json"
+  local relationships="${bootstrap_root}/symbolic_relationship_candidates.json"
+  local output="${bootstrap_root}/candidate_result_manifest.json"
+  local status
+  require_file "candidate SMT" "${smt}"
+  require_file "candidate composition manifest" "${composition}"
+  require_file "candidate reach model" "${reach}"
+  require_file "candidate relationships" "${relationships}"
+  status=$(jq -er '.reachabilityStatus
+    | select(. == "REACHABLE" or . == "UNREACHABLE")' "${reach}") \
+    || die "candidate reach model has no exact reachability status"
+  jq -n \
+    --arg status "${status}" \
+    --arg smt "$(realpath -m -- "${smt}")" \
+    --arg smt_hash "$(sha256_file "${smt}")" \
+    --argjson smt_size "$(stat -c '%s' "${smt}")" \
+    --arg composition "$(realpath -m -- "${composition}")" \
+    --arg composition_hash "$(sha256_file "${composition}")" \
+    --argjson composition_size "$(stat -c '%s' "${composition}")" \
+    --arg reach "$(realpath -m -- "${reach}")" \
+    --arg reach_hash "$(sha256_file "${reach}")" \
+    --argjson reach_size "$(stat -c '%s' "${reach}")" \
+    --arg relationships "$(realpath -m -- "${relationships}")" \
+    --arg relationships_hash "$(sha256_file "${relationships}")" \
+    --argjson relationships_size "$(stat -c '%s' "${relationships}")" '
+      {
+        schemaVersion: 1,
+        kind: "CONCOLIC_CANDIDATE_RESULT",
+        status: "COMPLETE_Z3_CHECKED_CANDIDATE",
+        complete: true,
+        trustState: "CANDIDATE_ONLY",
+        reachabilityStatus: $status,
+        z3Checked: true,
+        naturalReplayPromotionImplemented: false,
+        naturalReplayPromotionTodo:
+          "Replay the candidate naturally and bind the observed exception before trusted promotion.",
+        candidateSmtArtifact: {path: $smt, sha256: $smt_hash,
+          sizeBytes: $smt_size},
+        compositionManifestArtifact: {path: $composition,
+          sha256: $composition_hash, sizeBytes: $composition_size},
+        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash,
+          sizeBytes: $reach_size},
+        relationshipCandidatesArtifact: {path: $relationships,
+          sha256: $relationships_hash, sizeBytes: $relationships_size}
+      }
+    ' >"${output}"
+  jq -e '
+    .kind == "CONCOLIC_CANDIDATE_RESULT"
+    and .status == "COMPLETE_Z3_CHECKED_CANDIDATE"
+    and .complete == true
+    and .trustState == "CANDIDATE_ONLY"
+    and .z3Checked == true
+    and .naturalReplayPromotionImplemented == false
+  ' "${output}" >/dev/null || die "candidate manifest is incomplete"
+}
+
+do_candidate() {
   local channel
   local -a channels
   require_clean_work_root
@@ -1822,16 +1888,11 @@ do_all() {
   done
   do_bootstrap_compose
   do_bootstrap_project
-  if bootstrap_is_unreachable; then
-    do_final
-    echo "[three-thread-rpc] complete end-to-end workflow (bug unreachable)"
-    return
-  fi
-  do_bootstrap_replay
-  do_campaign
-  do_final
-  echo "[three-thread-rpc] complete end-to-end workflow"
+  write_candidate_manifest
+  echo "[three-thread-rpc] complete Z3-checked candidate workflow"
 }
+
+do_all() { do_candidate; }
 
 command_name=${1:-help}
 shift || true
@@ -1853,10 +1914,7 @@ case "${command_name}" in
   explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
   bootstrap-compose) [[ $# -eq 0 ]] || die "bootstrap-compose takes no arguments"; do_bootstrap_compose ;;
   bootstrap-project) [[ $# -eq 0 ]] || die "bootstrap-project takes no arguments"; do_bootstrap_project ;;
-  bootstrap-replay) [[ $# -eq 0 ]] || die "bootstrap-replay takes no arguments"; do_bootstrap_replay ;;
-  campaign) [[ $# -eq 0 ]] || die "campaign takes no arguments"; do_campaign ;;
-  campaign-capture) [[ $# -eq 0 ]] || die "campaign-capture takes no arguments"; do_campaign_capture ;;
-  final) [[ $# -eq 0 ]] || die "final takes no arguments"; do_final ;;
+  candidate) [[ $# -eq 0 ]] || die "candidate takes no arguments"; do_candidate ;;
   smoke)
     do_prepare
     do_analyze

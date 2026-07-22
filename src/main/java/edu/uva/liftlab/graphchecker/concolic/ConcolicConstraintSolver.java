@@ -52,12 +52,21 @@ public final class ConcolicConstraintSolver {
                                Path z3, long timeoutMillis)
             throws IOException, InterruptedException {
         Encoder encoder = new Encoder();
-        JsonArray constraints = array(task, "constraints");
+        BranchReplayContract replayContract = replayContract(task);
+        JsonArray constraints = replayContract == null
+                ? array(task, "constraints")
+                : replayContract.requiredPathPredicates();
         for (int index = 0; index < constraints.size(); index++) {
             encoder.addConstraint(constraints.get(index), "q" + index);
         }
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
+        if (replayContract != null) {
+            record.addProperty("branchReplayContractId",
+                    replayContract.contractId());
+            record.addProperty("branchConstraintAuthority",
+                    "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
+        }
         record.addProperty("solver", "Z3_SMT2");
         record.addProperty("solverInputHash", sha256(smt));
         record.addProperty("uninterpretedFunctionCount",
@@ -1505,12 +1514,37 @@ public final class ConcolicConstraintSolver {
     }
 
     private static JsonElement targetConstraint(JsonObject task) {
+        BranchReplayContract replayContract;
+        try {
+            replayContract = replayContract(task);
+        } catch (IOException malformed) {
+            return null;
+        }
+        if (replayContract != null) {
+            return replayContract.requiredSatisfiedPredicate();
+        }
         JsonElement explicit = task == null ? null : task.get(
                 "negatedCondition");
         if (explicit != null && explicit.isJsonObject()) return explicit;
         JsonArray constraints = array(task, "constraints");
         return constraints.size() == 0 ? null
                 : constraints.get(constraints.size() - 1);
+    }
+
+    private static BranchReplayContract replayContract(JsonObject task)
+            throws IOException {
+        JsonElement encoded = task == null ? null
+                : task.get("replayContract");
+        if (encoded == null) return null;
+        if (!encoded.isJsonObject()) {
+            throw new IOException("replayContract must be an object");
+        }
+        try {
+            return BranchReplayContract.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("invalid branch replay contract: "
+                    + malformed.getMessage(), malformed);
+        }
     }
 
     private static Set<String> symbolicNames(JsonElement expression) {
@@ -2313,9 +2347,19 @@ public final class ConcolicConstraintSolver {
         result.addProperty("sourceSummaryId", string(task,
                 "sourceSummaryId"));
         result.addProperty("sourcePathKey", string(task, "sourcePathKey"));
-        result.addProperty("flipSite", string(task, "flipSite"));
-        result.addProperty("flipOccurrence", integer(task,
-                "flipOccurrence", 1));
+        try {
+            BranchReplayContract contract = replayContract(task);
+            if (contract != null) {
+                result.addProperty("branchReplayContractId",
+                        contract.contractId());
+            } else {
+                result.addProperty("flipSite", string(task, "flipSite"));
+                result.addProperty("flipOccurrence", integer(task,
+                        "flipOccurrence", 1));
+            }
+        } catch (IOException malformed) {
+            result.addProperty("branchReplayContractMalformed", true);
+        }
         return result;
     }
 

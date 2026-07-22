@@ -7,6 +7,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayObservationValidator;
+import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicCodePosition;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
 
@@ -4028,14 +4032,9 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            ForcedBranch force = active.activation.force(prepared.siteId,
-                    prepared.occurrence);
-            boolean effectiveOutcome = force == null
-                    ? observedOutcome : force.desiredOutcome;
             recordBranchPaused(active, api, method, unitIndex, expression,
-                    prepared.occurrence, observedOutcome, effectiveOutcome,
-                    force != null, vmEventId);
-            return effectiveOutcome;
+                    prepared.occurrence, observedOutcome, vmEventId);
+            return observedOutcome;
         } catch (Throwable throwable) {
             active.addUnresolvedOnce("branch/PC exact-event observation "
                     + "failed: " + rootCause(throwable));
@@ -4087,13 +4086,6 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            ForcedBranch binaryForce = active.activation.force(
-                    prepared.siteId, prepared.occurrence);
-            if (binaryForce != null) {
-                active.addUnresolvedOnce(prepared.siteId + "#"
-                        + prepared.occurrence + ": Boolean forced-branch "
-                        + "target cannot identify a switch successor");
-            }
             recordSwitchBranchPaused(active, api, method, unitIndex,
                     expression, prepared.occurrence, expected, vmEventId);
             return observedSuccessorIndex;
@@ -4198,7 +4190,6 @@ public final class ConcolicRegionRuntime {
     private static ConcreteGuardCertification certifyConcreteGuard(
             ActiveRegion active, VmBranchEventAttestation vmAttestation,
             String siteId, int occurrence, boolean observedOutcome,
-            boolean effectiveOutcome, boolean overrideApplied,
             JsonArray conditions, int baseline) {
         if (!active.activation.concreteGuardProofCatalogValid) {
             return ConcreteGuardCertification.invalid(null,
@@ -4230,9 +4221,7 @@ public final class ConcolicRegionRuntime {
                 proof.pathQueryKey)
                 || !siteId.equals(proof.siteId)
                 || occurrence != proof.occurrence
-                || observedOutcome != proof.outcome
-                || effectiveOutcome != observedOutcome
-                || overrideApplied) {
+                || observedOutcome != proof.outcome) {
             return ConcreteGuardCertification.invalid(proof,
                     "proof activation, path, branch, outcome, or override "
                             + "contract does not match this event");
@@ -4339,7 +4328,6 @@ public final class ConcolicRegionRuntime {
     private static void recordBranchPaused(
             ActiveRegion active, EngineApi api, String method, int unitIndex,
             String expression, int occurrence, boolean observedOutcome,
-            boolean effectiveOutcome, boolean overrideApplied,
             long vmEventId) throws Exception {
         String siteId = safe(method) + "#u" + unitIndex;
         JsonElement parsed = parseJson(api.pathCondition());
@@ -4364,10 +4352,9 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("effectiveOutcome", effectiveOutcome);
-        mapping.addProperty("overrideApplied", overrideApplied);
-        mapping.addProperty("overrideMode", overrideApplied
-                ? "SOOT_BRANCH_OVERRIDE_VALIDATION" : "NONE");
+        mapping.addProperty("effectiveOutcome", observedOutcome);
+        mapping.addProperty("overrideApplied", false);
+        mapping.addProperty("overrideMode", "NONE");
         mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
         mapping.addProperty("pathConditionBaseline", baseline);
@@ -4440,6 +4427,13 @@ public final class ConcolicRegionRuntime {
             if (vmAttestation.valid) {
                 mapping.addProperty("conditionAuthority",
                         "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
+                BranchWitness witness = BranchWitness.vmPc(siteId,
+                        safe(method), unitIndex, occurrence,
+                        observedOutcome, semanticCondition, conditionIndex,
+                        branchVmEventEvidence(vmAttestation, vmEventId,
+                                rawOperator, semanticOperator));
+                mapping.add("witness", witness.toJson());
+                active.branchWitnesses.add(witness);
             }
         } else if (vmAttestation.valid) {
             mapping.addProperty("conditionAuthority",
@@ -4461,8 +4455,8 @@ public final class ConcolicRegionRuntime {
                 occurrence).isEmpty())) {
             ConcreteGuardCertification certification =
                     certifyConcreteGuard(active, vmAttestation, siteId,
-                            occurrence, observedOutcome, effectiveOutcome,
-                            overrideApplied, conditions, baseline);
+                            occurrence, observedOutcome, conditions,
+                            baseline);
             if (certification.valid) {
                 ConcreteGuardReplayProof proof = certification.proof;
                 mapping.addProperty("certifiedConcreteGuard", true);
@@ -4504,6 +4498,12 @@ public final class ConcolicRegionRuntime {
                 mapping.addProperty("rawConditionIndex", -1);
                 mapping.addProperty("engineConditionIndex", -1);
                 mapping.addProperty("replayValidation", "PASS");
+                BranchWitness witness = BranchWitness.certifiedNoPc(siteId,
+                        safe(method), unitIndex, occurrence,
+                        observedOutcome, proof.condition,
+                        concreteGuardCertificate(certification));
+                mapping.add("witness", witness.toJson());
+                active.branchWitnesses.add(witness);
                 active.certifiedConcreteGuardProofEvents.add(
                         proof.siteId + "\u0000" + proof.occurrence);
                 mapping.addProperty("mappingNote",
@@ -4527,6 +4527,56 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = conditions.size();
         active.branchMappings.add(mapping);
+    }
+
+    private static JsonObject branchVmEventEvidence(
+            VmBranchEventAttestation attestation, long eventId,
+            String rawOperator, String semanticOperator) {
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", eventId);
+        event.addProperty("authority", attestation.authority);
+        if (attestation.event != null) {
+            event.addProperty("contextId", longInteger(attestation.event,
+                    "contextId", 0L));
+            event.addProperty("ownerJavaThreadId", longInteger(
+                    attestation.event, "ownerJavaThreadId", 0L));
+            event.addProperty("ownerOsThreadId", longInteger(
+                    attestation.event, "ownerOsThreadId", 0L));
+            event.addProperty("opcode", integer(attestation.event,
+                    "opcode", -1));
+            event.addProperty("codePosition", string(attestation.event,
+                    "codePosition"));
+        }
+        event.addProperty("predicateNormalization",
+                safe(rawOperator).equals(safe(semanticOperator))
+                        ? "IDENTITY"
+                        : "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
+        return event;
+    }
+
+    private static JsonObject concreteGuardCertificate(
+            ConcreteGuardCertification certification) {
+        ConcreteGuardReplayProof proof = certification.proof;
+        JsonObject certificate = new JsonObject();
+        certificate.addProperty("authority",
+                RUNTIME_CONCRETE_GUARD_CERTIFICATE_AUTHORITY);
+        certificate.addProperty("activationId", proof.activationId);
+        certificate.addProperty("pathQueryKey", proof.pathQueryKey);
+        certificate.addProperty("proofRole", proof.proofRole);
+        certificate.addProperty("sourceConditionIndex",
+                proof.sourceConditionIndex);
+        certificate.addProperty("constraintIndex", proof.constraintIndex);
+        certificate.addProperty("expectedBranchPrefixOrdinal",
+                proof.expectedBranchPrefixOrdinal);
+        certificate.addProperty("modelAssignmentKey",
+                certification.assignment.key);
+        certificate.addProperty("engineSymbol", proof.engineSymbol);
+        certificate.addProperty("inputSymbol", proof.inputSymbol);
+        certificate.addProperty("targetActionSha256",
+                proof.targetActionSha256);
+        certificate.addProperty("conditionSha256", proof.conditionSha256);
+        certificate.addProperty("proofAuthority", proof.authority);
+        return certificate;
     }
 
     private static void recordSwitchBranchPaused(
@@ -4999,6 +5049,10 @@ public final class ConcolicRegionRuntime {
             }
             active.validateConcreteGuardProofCoverage();
             active.validateContainerElementFieldCoverage();
+            BranchReplayObservationValidator.Result replayValidation =
+                    active.validateBranchReplayContract();
+            result.add("branchReplayValidation",
+                    replayValidation.toJson());
             result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
             result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
             result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
@@ -5118,6 +5172,10 @@ public final class ConcolicRegionRuntime {
             }
             active.validateConcreteGuardProofCoverage();
             active.validateContainerElementFieldCoverage();
+            BranchReplayObservationValidator.Result replayValidation =
+                    active.validateBranchReplayContract();
+            result.add("branchReplayValidation",
+                    replayValidation.toJson());
             result.add("unresolvedInputs",
                     GSON.toJsonTree(active.unresolved));
             result.add("symbolizedInputs", new JsonArray());
@@ -6154,7 +6212,8 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         String declared = matcher.group(1);
-        String expected = outcome ? declared : opposite(declared);
+        String expected = outcome ? declared
+                : BranchPredicateAlgebra.complementOperator(declared);
         String observed = jsonString(object, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))) {
@@ -6190,7 +6249,8 @@ public final class ConcolicRegionRuntime {
         boolean leftZero = "0".equals(left);
         boolean rightZero = "0".equals(right);
         if (leftZero == rightZero) return null;
-        String effective = outcome ? declared : opposite(declared);
+        String effective = outcome ? declared
+                : BranchPredicateAlgebra.complementOperator(declared);
         return "!=".equals(effective);
     }
 
@@ -6260,7 +6320,8 @@ public final class ConcolicRegionRuntime {
             return condition;
         }
         String expected = outcome ? matcher.group(1)
-                : opposite(matcher.group(1));
+                : BranchPredicateAlgebra.complementOperator(
+                matcher.group(1));
         String observed = jsonString(original, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))
@@ -6284,16 +6345,6 @@ public final class ConcolicRegionRuntime {
         JsonObject object = element.getAsJsonObject();
         return "SymbolExpression".equals(jsonString(object, "_type"))
                 && "N".equals(jsonString(object, "_exp"));
-    }
-
-    private static String opposite(String operator) {
-        if ("==".equals(operator)) return "!=";
-        if ("!=".equals(operator)) return "==";
-        if ("<".equals(operator)) return ">=";
-        if (">".equals(operator)) return "<=";
-        if ("<=".equals(operator)) return ">";
-        if (">=".equals(operator)) return "<";
-        return operator;
     }
 
     private static String jsonString(JsonObject object, String member) {
@@ -8154,6 +8205,7 @@ public final class ConcolicRegionRuntime {
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
+        private final List<BranchWitness> branchWitnesses = new ArrayList<>();
         private final List<JsonObject> runtimeHeapEffects = new ArrayList<>();
         private final List<JsonObject> runtimeHeapObservations =
                 new ArrayList<>();
@@ -9430,6 +9482,19 @@ public final class ConcolicRegionRuntime {
          * therefore one-to-one between required guard events and proofs, and
          * many-to-one from proofs to an exact applied assignment row.
          */
+        private BranchReplayObservationValidator.Result
+        validateBranchReplayContract() {
+            BranchReplayObservationValidator.Result result =
+                    BranchReplayObservationValidator.validate(
+                            activation.replayContract, branchWitnesses);
+            if (!result.valid()) {
+                for (String failure : result.failures()) {
+                    addUnresolvedOnce("branch replay contract: " + failure);
+                }
+            }
+            return result;
+        }
+
         private void validateConcreteGuardProofCoverage() {
             if (!hasAnyAppliedNullRow()
                     && activation.concreteGuardReplayProofs.isEmpty()) {
@@ -12146,18 +12211,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static final class ForcedBranch {
-        private final String siteId;
-        private final int occurrence;
-        private final boolean desiredOutcome;
-
-        private ForcedBranch(JsonObject json) {
-            this.siteId = string(json, "siteId");
-            this.occurrence = Math.max(1, integer(json, "occurrence", 1));
-            this.desiredOutcome = bool(json, "desiredOutcome", false);
-        }
-    }
-
     private static final class ScheduledTarget {
         private final String siteId;
         private final int occurrence;
@@ -12180,6 +12233,16 @@ public final class ConcolicRegionRuntime {
             // route with false.
             this.concreteGuardReplayProofRequired = proofRequired == null
                     || proofRequired;
+        }
+
+        private ScheduledTarget(BranchReplayContract contract) {
+            this.siteId = contract.source().siteId();
+            this.occurrence = contract.source().occurrence();
+            this.desiredOutcome = contract.requiredTakenOutcome();
+            this.concreteGuardReplayProofRequired =
+                    BranchWitness.CERTIFIED_NO_PC.equals(
+                            contract.source().evidenceKind());
+            this.concreteGuardReplayProofMarkerValid = true;
         }
 
         private boolean matches(String actualSiteId, int actualOccurrence) {
@@ -12897,7 +12960,6 @@ public final class ConcolicRegionRuntime {
         /** Actions that execute directly at ordinary instrumentation hooks. */
         private final List<SymbolizeAction> symbolize;
         private final Map<String, String> branchPolicies;
-        private final List<ForcedBranch> forcedBranches;
         private final List<ReplayMaterialization> replayMaterializations;
         private final List<ModelAssignment> modelAssignments;
         private final List<ContainerElementFieldBindingSpec>
@@ -12905,6 +12967,7 @@ public final class ConcolicRegionRuntime {
         private final List<MapValueElementProjectionSpec>
                 mapValueElementFieldProjections;
         private final List<OutputCaptureRequest> outputCaptures;
+        private final BranchReplayContract replayContract;
         private final ScheduledTarget targetBranch;
         private final JsonArray expectedBranchPrefix;
         private final JsonArray pathReplayConstraints;
@@ -12961,21 +13024,28 @@ public final class ConcolicRegionRuntime {
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             this.branchPolicies = new LinkedHashMap<>();
-            this.forcedBranches = new ArrayList<>();
             this.replayMaterializations = new ArrayList<>();
             this.modelAssignments = new ArrayList<>();
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
+            JsonElement encodedReplayContract = json.get("replayContract");
+            this.replayContract = encodedReplayContract == null ? null
+                    : BranchReplayContract.fromJson(
+                    requireObject(encodedReplayContract,
+                            "replayContract"));
             JsonElement target = json.get("targetBranch");
-            this.targetBranch = target != null && target.isJsonObject()
+            this.targetBranch = replayContract != null
+                    ? new ScheduledTarget(replayContract)
+                    : target != null && target.isJsonObject()
                     ? new ScheduledTarget(target.getAsJsonObject()) : null;
             if (targetBranch != null
                     && !targetBranch.concreteGuardReplayProofMarkerValid) {
                 concreteGuardProofCatalogValid = false;
             }
-            this.expectedBranchPrefix = copyJsonTree(array(json,
-                    "expectedBranchPrefix"));
+            this.expectedBranchPrefix = replayContract == null
+                    ? copyJsonTree(array(json, "expectedBranchPrefix"))
+                    : replayPrefix(replayContract);
             for (JsonElement expected : expectedBranchPrefix) {
                 if (expected.isJsonObject()
                         && expected.getAsJsonObject().has(
@@ -12985,12 +13055,18 @@ public final class ConcolicRegionRuntime {
                     concreteGuardProofCatalogValid = false;
                 }
             }
-            this.pathReplayConstraints = copyJsonTree(array(json,
-                    "pathReplayConstraints"));
-            this.pathReplayNegatedCondition = copyJsonTree(jsonObject(json,
-                    "pathReplayNegatedCondition"));
-            this.pathReplayTargetConditionIndex = integer(json,
-                    "pathReplayTargetConditionIndex", -1);
+            this.pathReplayConstraints = replayContract == null
+                    ? copyJsonTree(array(json, "pathReplayConstraints"))
+                    : replayContract.requiredPathPredicates();
+            this.pathReplayNegatedCondition = replayContract == null
+                    ? copyJsonTree(jsonObject(json,
+                    "pathReplayNegatedCondition"))
+                    : requireObject(
+                    replayContract.requiredSatisfiedPredicate(),
+                    "requiredSatisfiedPredicate");
+            this.pathReplayTargetConditionIndex = replayContract == null
+                    ? integer(json, "pathReplayTargetConditionIndex", -1)
+                    : replayContract.orderedPrefix().size();
             this.concreteGuardReplayProofs = new ArrayList<>();
             for (JsonElement proof : array(json,
                     "concreteGuardReplayProofs")) {
@@ -13039,14 +13115,10 @@ public final class ConcolicRegionRuntime {
                             string(branch, "policy"));
                 }
             }
-            for (JsonElement element : array(json, "forcedBranches")) {
-                if (element.isJsonObject()) {
-                    ForcedBranch forced = new ForcedBranch(
-                            element.getAsJsonObject());
-                    if (!forced.siteId.isEmpty()) {
-                        forcedBranches.add(forced);
-                    }
-                }
+            if (array(json, "forcedBranches").size() > 0) {
+                throw new IllegalArgumentException(
+                        "forcedBranches was removed; binary replay is "
+                                + "natural and contract-driven");
             }
             for (JsonElement element : array(json,
                     "replayMaterializations")) {
@@ -13105,6 +13177,35 @@ public final class ConcolicRegionRuntime {
                         element.getAsJsonObject());
                 if (request.valid()) outputCaptures.add(request);
             }
+        }
+
+        private static JsonObject requireObject(JsonElement value,
+                                                String label) {
+            if (value == null || !value.isJsonObject()) {
+                throw new IllegalArgumentException(label
+                        + " must be a JSON object");
+            }
+            return copyJsonTree(value.getAsJsonObject());
+        }
+
+        private static JsonArray replayPrefix(
+                BranchReplayContract contract) {
+            JsonArray result = new JsonArray();
+            int ordinal = 0;
+            for (BranchWitness witness : contract.orderedPrefix()) {
+                JsonObject row = new JsonObject();
+                row.addProperty("siteId", witness.siteId());
+                row.addProperty("occurrence", witness.occurrence());
+                row.addProperty("outcome",
+                        witness.sourceTakenOutcome());
+                row.addProperty("conditionIndex", ordinal);
+                row.addProperty("concreteGuardReplayProofRequired",
+                        BranchWitness.CERTIFIED_NO_PC.equals(
+                                witness.evidenceKind()));
+                result.add(row);
+                ordinal++;
+            }
+            return result;
         }
 
         private List<ContainerElementFieldBindingSpec>
@@ -13183,9 +13284,6 @@ public final class ConcolicRegionRuntime {
 
         private String concreteReplayError() {
             if (!concreteReplayOnly) return "";
-            if (!forcedBranches.isEmpty()) {
-                return "concrete replay forbids branch overrides";
-            }
             if (!replayMaterializations.isEmpty()) {
                 return "concrete replay forbids reference-result injection";
             }
@@ -13216,16 +13314,6 @@ public final class ConcolicRegionRuntime {
         private static boolean validBranchPolicy(String policy) {
             return "EXPLORE".equals(policy)
                     || "PATH_ASSUMPTION".equals(policy);
-        }
-
-        private ForcedBranch force(String siteId, int occurrence) {
-            for (ForcedBranch forced : forcedBranches) {
-                if (forced.siteId.equals(siteId)
-                        && forced.occurrence == occurrence) {
-                    return forced;
-                }
-            }
-            return null;
         }
 
         private ReplayMaterialization replay(String method, int unitIndex,

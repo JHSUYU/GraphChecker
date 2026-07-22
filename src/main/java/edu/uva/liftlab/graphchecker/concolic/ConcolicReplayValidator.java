@@ -55,6 +55,17 @@ public final class ConcolicReplayValidator {
         result.addProperty("queryKey", string(task, "queryKey"));
         result.addProperty("regionId", string(task, "regionId"));
         JsonArray failures = new JsonArray();
+        BranchReplayContract replayContract = null;
+        JsonElement encodedReplayContract = task == null ? null
+                : task.get("replayContract");
+        if (encodedReplayContract != null) {
+            try {
+                replayContract = BranchReplayContract.fromJson(
+                        encodedReplayContract.getAsJsonObject());
+            } catch (RuntimeException malformed) {
+                failures.add("INVALID_BRANCH_REPLAY_CONTRACT");
+            }
+        }
         boolean outputClosure = RegionCaptureGoal.from(task)
                 .isOutputClosure();
 
@@ -62,9 +73,12 @@ public final class ConcolicReplayValidator {
                 "CONCOLIC_REGION_RESULT".equals(string(rawResult, "event")));
         require(failures, "REGION_ID_MISMATCH", string(task, "regionId")
                 .equals(string(rawResult, "regionId")));
-        require(failures, "BRANCH_OVERRIDE_USED",
-                !bool(rawResult, "branchOverrideUsed", false)
-                        && !hasOverride(array(rawResult, "branchMappings")));
+        if (replayContract == null) {
+            require(failures, "BRANCH_OVERRIDE_USED",
+                    !bool(rawResult, "branchOverrideUsed", false)
+                            && !hasOverride(array(rawResult,
+                            "branchMappings")));
+        }
         require(failures, "NON_INPUT_REPLAY_MATERIALIZATION_USED",
                 array(rawResult, "replayMaterializationsApplied").size()
                         == 0);
@@ -167,20 +181,55 @@ public final class ConcolicReplayValidator {
         result.addProperty("containerReplayRebindingValidated",
                 containerRebindingProblems.isEmpty());
 
-        JsonArray observed = array(rawResult, "branchMappings");
-        for (JsonElement element : array(task, "expectedBranchPrefix")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject expected = element.getAsJsonObject();
-            require(failures, "PREFIX_MISMATCH:" + identity(expected),
-                    observed(observed, expected, bool(expected, "outcome",
-                            false)));
+        BranchReplayObservationValidator.Result branchObservation = null;
+        if (replayContract != null) {
+            List<BranchWitness> witnesses = new ArrayList<>();
+            int ordinal = 0;
+            for (JsonElement element : array(rawResult,
+                    "branchMappings")) {
+                if (!element.isJsonObject()) {
+                    ordinal++;
+                    continue;
+                }
+                JsonElement encoded = element.getAsJsonObject().get(
+                        "witness");
+                if (encoded == null) {
+                    ordinal++;
+                    continue;
+                }
+                try {
+                    witnesses.add(BranchWitness.fromJson(
+                            encoded.getAsJsonObject()));
+                } catch (RuntimeException malformed) {
+                    failures.add("MALFORMED_BRANCH_WITNESS_AT_" + ordinal);
+                }
+                ordinal++;
+            }
+            branchObservation = BranchReplayObservationValidator.validate(
+                    replayContract, witnesses);
+            require(failures, "BRANCH_REPLAY_CONTRACT_NOT_SATISFIED",
+                    branchObservation.valid());
+            result.add("branchReplayObservation",
+                    branchObservation.toJson());
+        } else {
+            JsonArray observed = array(rawResult, "branchMappings");
+            for (JsonElement element : array(task,
+                    "expectedBranchPrefix")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject expected = element.getAsJsonObject();
+                require(failures, "PREFIX_MISMATCH:" + identity(expected),
+                        observed(observed, expected, bool(expected, "outcome",
+                                false)));
+            }
+            JsonObject flip = new JsonObject();
+            flip.addProperty("siteId", string(task, "flipSite"));
+            flip.addProperty("occurrence", integer(task,
+                    "flipOccurrence", 1));
+            boolean desired = bool(task, "desiredOutcome", false);
+            require(failures,
+                    "FLIPPED_BRANCH_NOT_OBSERVED:" + identity(flip),
+                    observed(observed, flip, desired));
         }
-        JsonObject flip = new JsonObject();
-        flip.addProperty("siteId", string(task, "flipSite"));
-        flip.addProperty("occurrence", integer(task, "flipOccurrence", 1));
-        boolean desired = bool(task, "desiredOutcome", false);
-        require(failures, "FLIPPED_BRANCH_NOT_OBSERVED:" + identity(flip),
-                observed(observed, flip, desired));
 
         boolean rawNormalExit = !outputClosure || "NORMAL".equals(
                 string(rawResult, "exitKind"))
@@ -247,10 +296,13 @@ public final class ConcolicReplayValidator {
 
         result.add("failures", failures);
         result.addProperty("failureCount", failures.size());
-        result.addProperty("prefixValidated",
-                !containsPrefixFailure(failures));
+        result.addProperty("prefixValidated", branchObservation != null
+                ? branchObservation.valid()
+                : !containsPrefixFailure(failures));
         result.addProperty("flippedBranchValidated",
-                !contains(failures, "FLIPPED_BRANCH_NOT_OBSERVED"));
+                branchObservation != null ? branchObservation.valid()
+                        : !contains(failures,
+                        "FLIPPED_BRANCH_NOT_OBSERVED"));
         result.addProperty("inputModelOnly", !contains(failures,
                 "BRANCH_OVERRIDE_USED") && !contains(failures,
                 "NON_INPUT_REPLAY_MATERIALIZATION_USED"));
@@ -306,7 +358,9 @@ public final class ConcolicReplayValidator {
         result.addProperty("status", failures.size() == 0
                 ? "VALIDATED_UNFORCED_REPLAY" : "REPLAY_REJECTED");
         result.addProperty("admissionAuthority", failures.size() == 0
+                ? replayContract == null
                 ? "SOLVER_MODEL_PLUS_CONCRETE_BRANCH_OBSERVATION"
+                : "SOLVER_MODEL_PLUS_IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1"
                 : "NONE");
         return result;
     }

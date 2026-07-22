@@ -78,8 +78,6 @@ public final class ConcolicScheduler {
             "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
     static final String ACCESSOR_INPUT_CANONICALIZATION_AUTHORITY =
             "STATIC_UNIQUE_EXACT_ACCESSOR_FIELD_RETURN_TO_REGION_INPUT_V1";
-    private static final Map<String, String> OPPOSITE = opposites();
-
     private ConcolicScheduler() {
     }
 
@@ -807,7 +805,8 @@ public final class ConcolicScheduler {
         query.add("constraints", constraints);
         // Preserve the historical pair-shaped schema without pretending that
         // the synthetic opposite was observed in this execution.
-        query.add("originalTargetCondition", negate(observedTarget));
+        query.add("originalTargetCondition",
+                BranchPredicateAlgebra.complement(observedTarget));
         query.add("negatedTargetCondition", observedTarget.deepCopy());
         query.add("freshObservedTargetCondition",
                 observedTarget.deepCopy());
@@ -3187,7 +3186,8 @@ public final class ConcolicScheduler {
             for (int index = 0; index < conditionIndex; index++) {
                 constraints.add(path.get(index).deepCopy());
             }
-            JsonElement negated = negate(path.get(conditionIndex));
+            JsonElement negated = BranchPredicateAlgebra.complement(
+                    path.get(conditionIndex));
             constraints.add(negated);
             query.add("originalTargetCondition",
                     path.get(conditionIndex).deepCopy());
@@ -3453,23 +3453,6 @@ public final class ConcolicScheduler {
         return legacyMatch;
     }
 
-    static JsonElement negate(JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) {
-            return condition == null ? new JsonObject() : condition.deepCopy();
-        }
-        JsonObject result = condition.getAsJsonObject().deepCopy();
-        String operator = string(result, "_op");
-        String opposite = OPPOSITE.get(operator);
-        if (opposite != null) {
-            result.addProperty("_op", opposite);
-            return result;
-        }
-        JsonObject wrapper = new JsonObject();
-        wrapper.addProperty("_type", "LogicalNotExpression");
-        wrapper.add("_operand", result);
-        return wrapper;
-    }
-
     private static String workloadKind(Candidate candidate,
                                        List<JsonObject> edges) {
         for (JsonObject edge : edges) {
@@ -3693,17 +3676,6 @@ public final class ConcolicScheduler {
             map.put(key, values);
         }
         values.add(value);
-    }
-
-    private static Map<String, String> opposites() {
-        Map<String, String> result = new LinkedHashMap<>();
-        result.put("==", "!=");
-        result.put("!=", "==");
-        result.put("<", ">=");
-        result.put(">", "<=");
-        result.put("<=", ">");
-        result.put(">=", "<");
-        return result;
     }
 
     /** Exact Jimple definitions for live-in locals, recovered from the static graph. */

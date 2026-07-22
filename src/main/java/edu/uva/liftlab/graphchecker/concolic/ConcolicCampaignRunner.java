@@ -2232,6 +2232,7 @@ public final class ConcolicCampaignRunner {
                                        JsonObject source,
                                        JsonArray assignments) {
         JsonObject result = source.deepCopy();
+        BranchReplayContract replayContract = replayContract(task);
         String pathId = shortHash(string(task, "queryKey"));
         String activationId = "ACT.PATH." + pathId;
         String scheduleId = "SCHEDULE.PATH." + pathId;
@@ -2257,11 +2258,15 @@ public final class ConcolicCampaignRunner {
                 : RegionCaptureGoal.outputClosure()).toJson());
         result.add("modelAssignments", assignments.deepCopy());
         JsonObject target = new JsonObject();
-        target.addProperty("siteId", string(task, "flipSite"));
-        target.addProperty("occurrence", integer(task,
-                "flipOccurrence", 1));
-        target.addProperty("desiredOutcome", bool(task,
-                "desiredOutcome", false));
+        target.addProperty("siteId", replayContract == null
+                ? string(task, "flipSite")
+                : replayContract.source().siteId());
+        target.addProperty("occurrence", replayContract == null
+                ? integer(task, "flipOccurrence", 1)
+                : replayContract.source().occurrence());
+        target.addProperty("desiredOutcome", replayContract == null
+                ? bool(task, "desiredOutcome", false)
+                : replayContract.requiredTakenOutcome());
         target.addProperty("validationOnly", true);
         target.addProperty("branchOverrideAllowed", false);
         if (hasBoolean(task, "concreteGuardReplayProofRequired")) {
@@ -2269,11 +2274,17 @@ public final class ConcolicCampaignRunner {
                     bool(task, "concreteGuardReplayProofRequired", false));
         }
         result.add("targetBranch", target);
+        if (replayContract != null) {
+            result.add("replayContract", replayContract.toJson());
+        } else {
+            result.remove("replayContract");
+        }
         result.add("expectedBranchPrefix", array(task,
                 "expectedBranchPrefix").deepCopy());
         result.addProperty("pathQueryKey", string(task, "queryKey"));
-        result.add("pathReplayConstraints", array(task,
-                "constraints").deepCopy());
+        result.add("pathReplayConstraints", replayContract == null
+                ? array(task, "constraints").deepCopy()
+                : replayContract.requiredPathPredicates());
         JsonElement negated = task.get("negatedCondition");
         if (negated != null && negated.isJsonObject()) {
             result.add("pathReplayNegatedCondition", negated.deepCopy());
@@ -2293,7 +2304,29 @@ public final class ConcolicCampaignRunner {
         result.remove("forcedBranches");
         result.remove("replayMaterializations");
         result.remove("summaryMode");
+        if (replayContract != null) {
+            // The immutable contract is the sole binary-branch plan.  Do not
+            // serialize its site, outcome, prefix, predicate, or no-override
+            // semantics a second time under the retired activation aliases.
+            result.remove("targetBranch");
+            result.remove("expectedBranchPrefix");
+            result.remove("pathReplayConstraints");
+            result.remove("pathReplayNegatedCondition");
+            result.remove("pathReplayTargetConditionIndex");
+            result.remove("branchOverrideProhibited");
+        }
         return result;
+    }
+
+    private static BranchReplayContract replayContract(JsonObject task) {
+        JsonElement encoded = task == null ? null
+                : task.get("replayContract");
+        if (encoded == null) return null;
+        if (!encoded.isJsonObject()) {
+            throw new IllegalArgumentException(
+                    "replayContract must be an object");
+        }
+        return BranchReplayContract.fromJson(encoded.getAsJsonObject());
     }
 
     /**
@@ -2325,11 +2358,22 @@ public final class ConcolicCampaignRunner {
             if (key.isEmpty() || !assignmentKeys.add(key)) return result;
         }
 
-        JsonArray constraints = array(task, "constraints");
-        JsonArray prefix = array(task, "prefix");
-        JsonArray expectedPrefix = array(task, "expectedBranchPrefix");
-        JsonElement targetElement = task.get("negatedCondition");
-        int targetConditionIndex = integer(task, "conditionIndex", -1);
+        BranchReplayContract replayContract = replayContract(task);
+        JsonArray constraints = replayContract == null
+                ? array(task, "constraints")
+                : replayContract.requiredPathPredicates();
+        JsonArray prefix = replayContract == null
+                ? array(task, "prefix")
+                : replayPrefixPredicates(replayContract);
+        JsonArray expectedPrefix = replayContract == null
+                ? array(task, "expectedBranchPrefix")
+                : replayPrefixRows(replayContract);
+        JsonElement targetElement = replayContract == null
+                ? task.get("negatedCondition")
+                : replayContract.requiredSatisfiedPredicate();
+        int targetConditionIndex = replayContract == null
+                ? integer(task, "conditionIndex", -1)
+                : replayContract.orderedPrefix().size();
         if (targetElement == null || !targetElement.isJsonObject()
                 || constraints.size() != prefix.size() + 1
                 || targetConditionIndex != prefix.size()
@@ -2406,16 +2450,30 @@ public final class ConcolicCampaignRunner {
                 return new JsonArray();
             }
         }
-        String targetSite = string(task, "flipSite");
-        int targetOccurrence = integer(task, "flipOccurrence", -1);
+        String targetSite = replayContract == null
+                ? string(task, "flipSite")
+                : replayContract.source().siteId();
+        int targetOccurrence = replayContract == null
+                ? integer(task, "flipOccurrence", -1)
+                : replayContract.source().occurrence();
+        boolean targetOutcome = replayContract == null
+                ? bool(task, "desiredOutcome", false)
+                : replayContract.requiredTakenOutcome();
+        boolean targetProofRequired = replayContract == null
+                ? exactBoolean(task,
+                "concreteGuardReplayProofRequired", true)
+                : BranchWitness.CERTIFIED_NO_PC.equals(
+                replayContract.source().evidenceKind());
         if (targetSite.isEmpty() || targetOccurrence <= 0
-                || !hasBoolean(task, "desiredOutcome")
-                || task.has("concreteGuardReplayProofRequired")
+                || replayContract == null && !hasBoolean(task,
+                "desiredOutcome")
+                || replayContract == null
+                && task.has("concreteGuardReplayProofRequired")
                 && !hasBoolean(task,
                 "concreteGuardReplayProofRequired")) {
             return new JsonArray();
         }
-        if (!exactBoolean(task, "concreteGuardReplayProofRequired", true)) {
+        if (!targetProofRequired) {
             return result;
         }
         if (exactNullGuardWitnessCount(targetElement.getAsJsonObject(),
@@ -2425,12 +2483,40 @@ public final class ConcolicCampaignRunner {
         JsonObject targetProof = concreteGuardReplayProof(
                 targetElement.getAsJsonObject(), task, activationId,
                 assignments, "TARGET", targetSite, targetOccurrence,
-                bool(task, "desiredOutcome", false),
+                targetOutcome,
                 targetConditionIndex, constraints.size() - 1, -1);
         if (targetProof != null) {
             String event = targetSite + "\u0000" + targetOccurrence;
             if (!proofEvents.add(event)) return new JsonArray();
             result.add(targetProof);
+        }
+        return result;
+    }
+
+    private static JsonArray replayPrefixPredicates(
+            BranchReplayContract contract) {
+        JsonArray result = new JsonArray();
+        for (BranchWitness witness : contract.orderedPrefix()) {
+            result.add(witness.sourceSatisfiedPredicate());
+        }
+        return result;
+    }
+
+    private static JsonArray replayPrefixRows(
+            BranchReplayContract contract) {
+        JsonArray result = new JsonArray();
+        int index = 0;
+        for (BranchWitness witness : contract.orderedPrefix()) {
+            JsonObject row = new JsonObject();
+            row.addProperty("siteId", witness.siteId());
+            row.addProperty("occurrence", witness.occurrence());
+            row.addProperty("outcome", witness.sourceTakenOutcome());
+            row.addProperty("conditionIndex", index);
+            row.addProperty("concreteGuardReplayProofRequired",
+                    BranchWitness.CERTIFIED_NO_PC.equals(
+                            witness.evidenceKind()));
+            result.add(row);
+            index++;
         }
         return result;
     }
@@ -2697,6 +2783,48 @@ public final class ConcolicCampaignRunner {
         JsonObject result = ConcolicReplayValidator.validate(task,
                 rawResult, summary);
         JsonObject exact = exactReplayScheduleAdmission(task, rawResult);
+        BranchReplayContract replayContract = replayContract(task);
+        if (replayContract != null) {
+            JsonObject observation = object(exact,
+                    "branchReplayObservation");
+            result.add("branchReplayObservation", observation.deepCopy());
+            boolean exactValid = bool(exact, "valid", false);
+            JsonArray failures = array(result, "failures");
+            int exactFailureCount = 0;
+            if (!exactValid) {
+                failures.add("BRANCH_REPLAY_CONTRACT_NOT_SATISFIED");
+                exactFailureCount = 1;
+            }
+            int baseOutputFailures = integer(result,
+                    "outputClosureFailureCount", 0);
+            int baseNonOutputFailures = integer(result,
+                    "nonOutputClosureFailureCount", 0);
+            boolean valid = bool(result, "valid", false) && exactValid;
+            result.addProperty("exactReplayScheduleValidated", exactValid);
+            result.addProperty("exactReplayScheduleFailureCount",
+                    exactFailureCount);
+            result.addProperty("failureCount", failures.size());
+            result.addProperty("nonOutputClosureFailureCount",
+                    baseNonOutputFailures + exactFailureCount);
+            result.addProperty("outputClosureFailureCount",
+                    baseOutputFailures);
+            result.addProperty("prefixValidated",
+                    bool(result, "prefixValidated", false) && exactValid);
+            result.addProperty("flippedBranchValidated",
+                    bool(result, "flippedBranchValidated", false)
+                            && exactValid);
+            result.addProperty("branchAndInputReplayValidated",
+                    bool(result, "branchAndInputReplayValidated", false)
+                            && exactValid);
+            result.addProperty("valid", valid);
+            result.addProperty("status", valid
+                    ? "VALIDATED_BRANCH_REPLAY_CONTRACT"
+                    : "REPLAY_REJECTED");
+            result.addProperty("admissionAuthority", valid
+                    ? "SOLVER_MODEL_PLUS_IMMUTABLE_BRANCH_REPLAY_"
+                    + "CONTRACT_V1" : "NONE");
+            return result;
+        }
         JsonObject scheduled = object(exact,
                 "scheduledTargetValidation");
         JsonObject prefix = object(exact, "orderedPrefixValidation");
@@ -2752,6 +2880,46 @@ public final class ConcolicCampaignRunner {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "EXACT_REPLAY_SCHEDULE_ADMISSION");
+        BranchReplayContract replayContract = replayContract(task);
+        if (replayContract != null) {
+            List<BranchWitness> witnesses = new ArrayList<>();
+            JsonArray failures = new JsonArray();
+            int ordinal = 0;
+            for (JsonElement element : array(rawResult,
+                    "branchMappings")) {
+                if (!element.isJsonObject()) {
+                    ordinal++;
+                    continue;
+                }
+                JsonElement encoded = element.getAsJsonObject().get(
+                        "witness");
+                if (encoded == null) {
+                    ordinal++;
+                    continue;
+                }
+                try {
+                    witnesses.add(BranchWitness.fromJson(
+                            encoded.getAsJsonObject()));
+                } catch (RuntimeException malformed) {
+                    failures.add("MALFORMED_BRANCH_WITNESS_AT_" + ordinal);
+                }
+                ordinal++;
+            }
+            BranchReplayObservationValidator.Result observation =
+                    BranchReplayObservationValidator.validate(
+                            replayContract, witnesses);
+            if (!observation.valid()) {
+                failures.add("BRANCH_REPLAY_CONTRACT_NOT_SATISFIED");
+            }
+            result.add("branchReplayObservation", observation.toJson());
+            result.add("failures", failures);
+            result.addProperty("failureCount", failures.size());
+            result.addProperty("valid", failures.size() == 0);
+            result.addProperty("status", failures.size() == 0
+                    ? "VALIDATED_IMMUTABLE_BRANCH_REPLAY_CONTRACT"
+                    : "BRANCH_REPLAY_CONTRACT_REJECTED");
+            return result;
+        }
         JsonObject scheduled = exactScheduledTarget(task, rawResult);
         JsonObject prefix = exactOrderedPrefix(task, rawResult);
         result.add("scheduledTargetValidation", scheduled);

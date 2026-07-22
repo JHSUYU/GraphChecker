@@ -59,6 +59,8 @@ public final class ConcolicPathReplayVerifier {
         requireFile(arguments.summary, "path replay imported summaries");
 
         JsonObject task = readObject(arguments.task);
+        BranchReplayContract replayContract = replayContract(task,
+                "task");
         List<JsonObject> activations = readJsonl(arguments.activationPlan);
         List<JsonObject> rawRows = readJsonl(arguments.results);
         List<JsonObject> summaryRows = readJsonl(arguments.summary);
@@ -98,7 +100,7 @@ public final class ConcolicPathReplayVerifier {
         report.addProperty("regionId", regionId);
         report.addProperty("queryKey", queryKey);
 
-        validateActivation(task, activation, failures);
+        validateActivation(task, activation, replayContract, failures);
 
         require(failures, "RAW_RESULTS_FILE_ROW_COUNT_NOT_ONE",
                 rawRows.size() == 1);
@@ -142,14 +144,24 @@ public final class ConcolicPathReplayVerifier {
                     regionId.equals(string(summary, "regionId")));
         }
 
-        JsonObject scheduledTarget = exactScheduledTarget(task, raw);
-        report.add("scheduledTargetValidation", scheduledTarget);
-        require(failures, "SCHEDULED_FLIP_TARGET_NOT_EXACT",
-                bool(scheduledTarget, "valid", false));
-        JsonObject orderedPrefix = exactOrderedPrefix(task, raw);
-        report.add("orderedPrefixValidation", orderedPrefix);
-        require(failures, "REPLAY_BRANCH_PREFIX_NOT_EXACT",
-                bool(orderedPrefix, "valid", false));
+        if (replayContract != null) {
+            List<BranchWitness> observed = branchWitnesses(raw, failures);
+            BranchReplayObservationValidator.Result observation =
+                    BranchReplayObservationValidator.validate(
+                            replayContract, observed);
+            report.add("branchReplayObservation", observation.toJson());
+            require(failures, "BRANCH_REPLAY_CONTRACT_NOT_SATISFIED",
+                    observation.valid());
+        } else {
+            JsonObject scheduledTarget = exactScheduledTarget(task, raw);
+            report.add("scheduledTargetValidation", scheduledTarget);
+            require(failures, "SCHEDULED_FLIP_TARGET_NOT_EXACT",
+                    bool(scheduledTarget, "valid", false));
+            JsonObject orderedPrefix = exactOrderedPrefix(task, raw);
+            report.add("orderedPrefixValidation", orderedPrefix);
+            require(failures, "REPLAY_BRANCH_PREFIX_NOT_EXACT",
+                    bool(orderedPrefix, "valid", false));
+        }
 
         JsonObject replayValidation = ConcolicReplayValidator.validate(task,
                 raw, summary);
@@ -177,6 +189,7 @@ public final class ConcolicPathReplayVerifier {
 
     private static void validateActivation(JsonObject task,
                                            JsonObject activation,
+                                           BranchReplayContract contract,
                                            JsonArray failures) {
         String activationId = string(activation, "activationId");
         String scheduleId = string(activation, "scheduleId");
@@ -222,32 +235,88 @@ public final class ConcolicPathReplayVerifier {
         require(failures, "REPLAY_MODEL_ASSIGNMENT_PLAN_MISMATCH",
                 canonical(taskAssignments).equals(canonical(
                         activationAssignments)));
-        require(failures, "TASK_EXPECTED_PREFIX_MISSING",
-                hasArray(task, "expectedBranchPrefix"));
-        require(failures, "REPLAY_PREFIX_PLAN_MISMATCH",
-                canonical(array(task, "expectedBranchPrefix")).equals(
-                        canonical(array(activation,
-                                "expectedBranchPrefix"))));
+        if (contract != null) {
+            BranchReplayContract activationContract;
+            try {
+                activationContract = replayContract(activation,
+                        "activation");
+            } catch (IOException malformed) {
+                activationContract = null;
+            }
+            require(failures, "REPLAY_CONTRACT_MISSING_OR_MISMATCHED",
+                    activationContract != null && contract.contractId()
+                            .equals(activationContract.contractId()));
+        } else {
+            require(failures, "TASK_EXPECTED_PREFIX_MISSING",
+                    hasArray(task, "expectedBranchPrefix"));
+            require(failures, "REPLAY_PREFIX_PLAN_MISMATCH",
+                    canonical(array(task, "expectedBranchPrefix")).equals(
+                            canonical(array(activation,
+                                    "expectedBranchPrefix"))));
 
-        JsonObject target = object(activation, "targetBranch");
-        require(failures, "REPLAY_TARGET_SITE_MISMATCH",
-                string(task, "flipSite").equals(string(target, "siteId")));
-        require(failures, "REPLAY_TARGET_OCCURRENCE_MISMATCH",
-                integer(task, "flipOccurrence", -1)
-                        == integer(target, "occurrence", -2));
-        require(failures, "REPLAY_TARGET_OUTCOME_MISMATCH",
-                exactBoolean(target, "desiredOutcome",
-                        bool(task, "desiredOutcome", false)));
-        require(failures, "REPLAY_TARGET_IS_NOT_VALIDATION_ONLY",
-                exactBoolean(target, "validationOnly", true));
-        require(failures, "REPLAY_TARGET_ALLOWS_BRANCH_OVERRIDE",
-                exactBoolean(target, "branchOverrideAllowed", false));
-        require(failures, "REPLAY_PLAN_DOES_NOT_PROHIBIT_OVERRIDE",
-                exactBoolean(activation, "branchOverrideProhibited", true));
+            JsonObject target = object(activation, "targetBranch");
+            require(failures, "REPLAY_TARGET_SITE_MISMATCH",
+                    string(task, "flipSite").equals(string(target,
+                            "siteId")));
+            require(failures, "REPLAY_TARGET_OCCURRENCE_MISMATCH",
+                    integer(task, "flipOccurrence", -1)
+                            == integer(target, "occurrence", -2));
+            require(failures, "REPLAY_TARGET_OUTCOME_MISMATCH",
+                    exactBoolean(target, "desiredOutcome",
+                            bool(task, "desiredOutcome", false)));
+            require(failures, "REPLAY_TARGET_IS_NOT_VALIDATION_ONLY",
+                    exactBoolean(target, "validationOnly", true));
+            require(failures, "REPLAY_TARGET_ALLOWS_BRANCH_OVERRIDE",
+                    exactBoolean(target, "branchOverrideAllowed", false));
+            require(failures, "REPLAY_PLAN_DOES_NOT_PROHIBIT_OVERRIDE",
+                    exactBoolean(activation, "branchOverrideProhibited",
+                            true));
+        }
         require(failures, "REPLAY_PLAN_CONTAINS_FORCED_BRANCH",
                 array(activation, "forcedBranches").size() == 0);
         require(failures, "REPLAY_PLAN_CONTAINS_NON_INPUT_MATERIALIZATION",
                 array(activation, "replayMaterializations").size() == 0);
+    }
+
+    private static BranchReplayContract replayContract(
+            JsonObject container, String label) throws IOException {
+        JsonElement encoded = container == null ? null
+                : container.get("replayContract");
+        if (encoded == null) return null;
+        if (!encoded.isJsonObject()) {
+            throw new IOException(label + " replayContract is not an object");
+        }
+        try {
+            return BranchReplayContract.fromJson(encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException(label + " replayContract is invalid: "
+                    + malformed.getMessage(), malformed);
+        }
+    }
+
+    private static List<BranchWitness> branchWitnesses(
+            JsonObject raw, JsonArray failures) {
+        List<BranchWitness> result = new ArrayList<>();
+        int ordinal = 0;
+        for (JsonElement element : array(raw, "branchMappings")) {
+            if (!element.isJsonObject()) {
+                ordinal++;
+                continue;
+            }
+            JsonElement encoded = element.getAsJsonObject().get("witness");
+            if (encoded == null) {
+                ordinal++;
+                continue;
+            }
+            try {
+                result.add(BranchWitness.fromJson(
+                        encoded.getAsJsonObject()));
+            } catch (RuntimeException malformed) {
+                failures.add("MALFORMED_BRANCH_WITNESS_AT_" + ordinal);
+            }
+            ordinal++;
+        }
+        return result;
     }
 
     private static JsonObject exactScheduledTarget(JsonObject task,
