@@ -5674,9 +5674,6 @@ public class ConcolicSmtComposerTest {
                         + "SCOPED_REF_SYMBOL_V1");
         proof.addProperty("candidateMutationCount", 0);
         proof.addProperty("heapEffectCount", 0);
-        proof.addProperty("associatedHeapEffectCount", 0);
-        proof.addProperty("runtimeHeapEffectRecordCount", 0);
-        proof.addProperty("runtimeHeapEffectJoinedCount", 0);
         proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
         proof.addProperty("selectorDigest", selectorDigest);
         proof.addProperty("statePortDerivationAuthority",

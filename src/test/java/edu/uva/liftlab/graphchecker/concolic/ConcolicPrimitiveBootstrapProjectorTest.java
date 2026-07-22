@@ -407,6 +407,13 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         Assume.assumeTrue(z3Available());
         Fixture fixture = fixture();
         JsonObject binding = installDynamicLeaf(fixture, true);
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        assertEquals("FIELD_ACCESS", activation.getAsJsonArray("symbolize")
+                .get(0).getAsJsonObject().get("bindingMode").getAsString());
+        assertEquals("CONTAINER_INPUT_OBSERVATION", activation
+                .getAsJsonArray("materializations").get(0)
+                .getAsJsonObject().get("bindingMode").getAsString());
 
         ConcolicPrimitiveBootstrapProjector.Result result =
                 ConcolicPrimitiveBootstrapProjector.project(
@@ -447,6 +454,27 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
                 .get("bindingMode").getAsString());
         assertFalse(assignment.has("expectedEntryKey"));
         assertFalse(assignment.has("dynamicReplayRebindingAuthority"));
+    }
+
+    @Test
+    public void declarationOnlyContainerActionCannotAuthorizeProjection()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Fixture fixture = fixture();
+        installDynamicLeaf(fixture, true);
+
+        JsonObject activation = jsonlRow(fixture.activations,
+                "activationId", "ACT.A.1");
+        JsonObject retiredDeclarationFallback = activation.getAsJsonArray(
+                "materializations").get(0).getAsJsonObject().deepCopy();
+        activation.getAsJsonArray("symbolize").set(0,
+                retiredDeclarationFallback);
+        activation.add("materializations", new JsonArray());
+        replaceJsonlRow(fixture.activations, "activationId", "ACT.A.1",
+                activation);
+
+        expectFailure(fixture.arguments(),
+                "DYNAMIC_CONTAINER_ACTION_MISSING:REGION.A.in.array");
     }
 
     @Test
@@ -1363,7 +1391,11 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
             containerAction.addProperty("modelControllable", false);
             actions.add(containerAction);
             JsonArray declared = new JsonArray();
-            declared.add(containerAction.deepCopy());
+            JsonObject containerDeclaration = containerAction.deepCopy();
+            containerDeclaration.addProperty("bindingMode", "FIELD_ACCESS");
+            containerDeclaration.remove("arrayFieldObservationOnly");
+            containerDeclaration.remove("modelControllable");
+            declared.add(containerDeclaration);
             declared.add(fieldAction);
             activation.add("symbolize", declared);
         } else {

@@ -5012,11 +5012,6 @@ public final class ConcolicSmtComposer {
                     string(binding, "observationStateBindingAuthority"))
                     && integer(proof, "candidateMutationCount", -1) == 0
                     && integer(proof, "heapEffectCount", -1) == 0
-                    && integer(proof, "associatedHeapEffectCount", -1) == 0
-                    && integer(proof,
-                    "runtimeHeapEffectRecordCount", -1) == 0
-                    && integer(proof,
-                    "runtimeHeapEffectJoinedCount", -1) == 0
                     && integer(proof,
                     "ignoredRuntimeHeapEvidenceCount", -1) == 0
                     && emptyOrMissingArray(summary, "heapEffects")

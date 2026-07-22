@@ -1365,7 +1365,8 @@ public final class ConcolicPrimitiveBootstrapProjector {
         String port = string(selector, "containerInputPort");
         String cell = string(selector, "containerInputCell");
         JsonObject selected = null;
-        JsonArray source = array(activation, "symbolize");
+        JsonArray source = requireMaterializations(activation,
+                "SELECTED_SOURCE_ACTIVATION");
         for (JsonElement element : source) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
