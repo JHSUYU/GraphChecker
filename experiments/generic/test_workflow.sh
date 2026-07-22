@@ -204,7 +204,7 @@ assert_contains "$(<"${debug_stderr}")" 'artifact=guarded_merge'
   >"${debug_stdout}" 2>"${debug_stderr}"
 debug_text=$(<"${debug_stderr}")
 assert_contains "${debug_text}" 'artifact=composition_manifest'
-assert_contains "${debug_text}" 'artifact=final_smt'
+assert_contains "${debug_text}" 'artifact=candidate_smt'
 assert_contains "${debug_text}" '(check-sat)'
 
 schedule=$("${runner}" --config "${config}" --dry-run schedule)
@@ -220,10 +220,6 @@ assert_contains "${merged}" 'edu.uva.liftlab.graphchecker.concolic.RegionSummary
 
 composed=$("${runner}" --config "${config}" --dry-run compose)
 assert_contains "${composed}" 'edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer'
-
-solved=$("${runner}" --config "${config}" --dry-run solve)
-assert_contains "${solved}" 'edu.uva.liftlab.graphchecker.concolic.SymbolicRelationshipVerifier'
-assert_contains "${solved}" "--z3 ${fixture_root}/bin/z3"
 
 reached=$("${runner}" --config "${config}" --dry-run reach)
 assert_contains "${reached}" \

@@ -6,13 +6,11 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -43,23 +41,20 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
 /**
  * Composes one selected fatal-region query with concolic summaries of its
  * upstream regions and runtime-validated equality/read-from edges.  The
- * resulting SMT may be a structurally complete bootstrap formula used to
- * obtain a replay model; only a formula backed by a validated, unforced target
- * replay is marked as a complete final composition.
+ * resulting SMT is a structurally checked candidate formula used to obtain a
+ * bootstrap replay model. Promoting it with an unforced natural target replay
+ * is deliberately outside this component and remains the documented TODO.
  *
- * <p>This class is intentionally project independent.  Project adapters may
- * discover regions and resolve configured transport field mappings, while
- * this composer type-checks and emits only the common connector schemas; an
- * adapter cannot inject an arbitrary case formula.  Missing upstream summaries are retained
- * as uninterpreted relations and reported in the manifest, so a syntactically
- * valid SMT query is never mistaken for a complete causal model.</p>
+ * <p>This class is intentionally project independent. It consumes only common
+ * region, summary, branch-contract, solver-context, and runtime-edge schemas;
+ * no adapter can inject an arbitrary case formula. Missing upstream summaries
+ * are retained as uninterpreted relations and reported in the manifest, so a
+ * syntactically valid SMT query is never mistaken for a complete model.</p>
  */
 public final class ConcolicSmtComposer {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().serializeNulls().setPrettyPrinting()
             .create();
-    private static final Gson BINDING_GSON = new GsonBuilder()
-            .disableHtmlEscaping().serializeNulls().create();
     private static final String VALUE_REF_WITNESS_AUTHORITY =
             "ACTIVATION_LOCAL_OBJECT_TOKEN_REF_WITNESS_V1";
     private static final String VALUE_REF_WITNESS_KIND =
@@ -141,22 +136,13 @@ public final class ConcolicSmtComposer {
     public static Result compose(Arguments arguments) throws IOException {
         require(arguments.fatalQueries, "fatal branch queries");
         require(arguments.regions, "symbolic regions");
-        require(arguments.mergePlan, "symbolic merge plan");
 
         List<JsonObject> queryRows = readJsonl(arguments.fatalQueries);
         List<JsonObject> summaries = new ArrayList<>();
         for (Path summaryFile : arguments.summaries) {
             summaries.addAll(readJsonl(summaryFile));
         }
-        RuntimeBindingEnrichment runtimeBindingEnrichment =
-                enrichSummaryBindings(summaries,
-                        arguments.runtimeBindingCatalog);
         List<JsonObject> regions = readJsonl(arguments.regions);
-        // Parse the global plan for schema/backward-compatibility validation,
-        // but never recover target relations from it.  Only the scheduler's
-        // instance-scoped context embedded in the selected fatal query has
-        // enough provenance to enter automatic composition.
-        readJson(arguments.mergePlan);
         JsonObject fatal = selectFatalQuery(queryRows, arguments);
         if (fatal.size() == 0) {
             throw new IOException("No ready fatal query matches region="
@@ -178,18 +164,7 @@ public final class ConcolicSmtComposer {
         // contract is sufficient to build the candidate SMT, but it is not an
         // observation that the complete workload naturally reached the target.
         // Natural target replay promotion remains the explicit next-stage TODO.
-        boolean fatalReplayRequired = true;
-        boolean fatalReplayValidated = false;
-        String fatalReplayGap = "NATURAL_TARGET_REPLAY_PROMOTION_TODO";
-
         PortIndex ports = PortIndex.from(regions);
-        JsonObject configuredTransportInput =
-                arguments.configuredTransportBindings == null
-                        ? new JsonObject()
-                        : readJson(arguments.configuredTransportBindings);
-        ConfiguredTransportCatalog configuredTransport =
-                ConfiguredTransportCatalog.resolve(
-                        configuredTransportInput, summaries, ports);
         JsonObject rawContext = object(fatal, "symbolicContext");
         ContextScope scoped = boundedContext(rawContext,
                 arguments.boundedUpstreamRegions);
@@ -197,11 +172,10 @@ public final class ConcolicSmtComposer {
         boolean instanceScopedContext = resolutionContext.size() > 0
                 && !string(resolutionContext, "regionInstanceId").isEmpty();
 
-        // A source-scope boundary and permission to admit a certified bounded
-        // summary are independent choices.  Keep the legacy boundary option
-        // backward compatible (it implies both), while the relational option
-        // permits one bounded loop summary without discarding unrelated exact
-        // runtime bindings from the same fatal instance.
+        // A source-scope boundary also permits the corresponding bounded
+        // summaries. The relational option can admit an additional bounded
+        // loop summary without discarding unrelated exact runtime bindings
+        // from the same fatal instance.
         Set<String> boundedRelationalRegions = new LinkedHashSet<>(
                 arguments.boundedUpstreamRegions);
         boundedRelationalRegions.addAll(
@@ -211,8 +185,6 @@ public final class ConcolicSmtComposer {
                 resolutionContext,
                 summaries, arguments.boundedUpstreamRegions,
                 boundedRelationalRegions);
-        resolved.relevantRegions.addAll(
-                configuredTransport.sourceRegions());
         Set<String> relevantRegions = resolved.relevantRegions;
         // Static projection can expose several aliases for one runtime
         // writer/read event.  Resolution deliberately admits only aliases
@@ -241,7 +213,6 @@ public final class ConcolicSmtComposer {
                             + arguments.boundedUpstreamRegions);
         }
         emitter.unsupported.addAll(resolved.gaps);
-        emitter.unsupported.addAll(configuredTransport.gaps);
 
         List<String> fatalTerms = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
@@ -272,16 +243,6 @@ public final class ConcolicSmtComposer {
             includedSummaries.add(string(summary, "summaryId"));
             emitter.regionSummary(summary);
         }
-        for (ConfiguredTransportSource source
-                : configuredTransport.sources.values()) {
-            String summaryId = string(source.summary, "summaryId");
-            if (!includedSummaries.contains(summaryId)) {
-                includedSummaries.add(summaryId);
-                emitter.configuredTransportProjection(source);
-            } else {
-                emitter.configuredTransportEqualities(source, false);
-            }
-        }
         for (String regionId : missingSummaries) {
             emitter.uninterpretedRegion(regionId,
                     resolved.missingPorts(regionId, context));
@@ -300,15 +261,6 @@ public final class ConcolicSmtComposer {
                 composedSmt.getBytes(StandardCharsets.UTF_8));
         JsonObject staticRegionsArtifact = artifact(arguments.regions);
         JsonObject fatalQueriesArtifact = artifact(arguments.fatalQueries);
-        JsonObject symbolicMergePlanArtifact = artifact(arguments.mergePlan);
-        JsonObject runtimeBindingCatalogArtifact =
-                arguments.runtimeBindingCatalog == null
-                        ? new JsonObject()
-                        : artifact(arguments.runtimeBindingCatalog);
-        JsonObject configuredTransportBindingsArtifact =
-                arguments.configuredTransportBindings == null
-                        ? new JsonObject()
-                        : artifact(arguments.configuredTransportBindings);
         JsonArray summaryInputArtifacts = new JsonArray();
         for (Path input : arguments.summaries) {
             summaryInputArtifacts.add(artifact(input));
@@ -316,37 +268,6 @@ public final class ConcolicSmtComposer {
         String fatalRegionInstanceId = firstNonBlank(string(fatal,
                 "regionInstanceId"), string(object(fatal,
                 "symbolicContext"), "regionInstanceId"));
-        JsonObject bindingMaterial = new JsonObject();
-        bindingMaterial.addProperty("schemaVersion", 1);
-        bindingMaterial.addProperty("fatalRegion", fatalRegion);
-        bindingMaterial.addProperty("fatalActivation",
-                string(fatal, "activationId"));
-        bindingMaterial.addProperty("fatalRegionInstanceId",
-                fatalRegionInstanceId);
-        bindingMaterial.addProperty("fatalOccurrence", fatalOccurrence);
-        bindingMaterial.addProperty("fatalDesiredOutcome",
-                fatalDesiredOutcome);
-        bindingMaterial.addProperty("fatalReplayContractId",
-                fatalReplayContract.contractId());
-        bindingMaterial.addProperty("fatalSolverPathContextId",
-                fatalSolverPathContext.contextId());
-        bindingMaterial.add("composedSmtArtifact",
-                composedSmtArtifact.deepCopy());
-        bindingMaterial.add("staticRegionsArtifact",
-                staticRegionsArtifact.deepCopy());
-        bindingMaterial.add("fatalQueriesArtifact",
-                fatalQueriesArtifact.deepCopy());
-        bindingMaterial.add("symbolicMergePlanArtifact",
-                symbolicMergePlanArtifact.deepCopy());
-        bindingMaterial.add("runtimeBindingCatalogArtifact",
-                runtimeBindingCatalogArtifact.deepCopy());
-        bindingMaterial.add("configuredTransportBindingsArtifact",
-                configuredTransportBindingsArtifact.deepCopy());
-        bindingMaterial.add("summaryInputArtifacts",
-                summaryInputArtifacts.deepCopy());
-        String compositionBindingId = sha256(BINDING_GSON.toJson(
-                bindingMaterial).getBytes(StandardCharsets.UTF_8));
-
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
@@ -363,18 +284,15 @@ public final class ConcolicSmtComposer {
                 fatalReplayContract.contractId());
         manifest.addProperty("fatalSolverPathContextId",
                 fatalSolverPathContext.contextId());
-        manifest.addProperty("fatalReplayRequired", fatalReplayRequired);
-        manifest.addProperty("fatalReplayRequiredForFinalReport", true);
-        manifest.addProperty("fatalReplayClaimed", false);
-        manifest.addProperty("fatalReplayValidated", fatalReplayValidated);
-        manifest.addProperty("fatalReplayGap", fatalReplayGap);
-        manifest.addProperty("fatalReplayExactCandidateCount", 0);
+        manifest.addProperty("fatalReplayValidated", false);
+        manifest.addProperty("fatalReplayGap",
+                "NATURAL_TARGET_REPLAY_PROMOTION_TODO");
         manifest.addProperty("instanceScopedSymbolicContext",
                 instanceScopedContext);
         manifest.addProperty("symbolicContextAuthority",
                 instanceScopedContext
                         ? "SCHEDULER_SELECTED_RUNTIME_BINDINGS_FOR_FATAL_INSTANCE"
-                        : "MISSING_NOT_RECOVERED_FROM_GLOBAL_MERGE_PLAN");
+                        : "MISSING_INSTANCE_SCOPED_SYMBOLIC_CONTEXT");
         manifest.addProperty("boundedComposition",
                 !boundedRelationalRegions.isEmpty());
         manifest.addProperty("compositionScope",
@@ -405,9 +323,7 @@ public final class ConcolicSmtComposer {
         manifest.add("unreachableBoundedUpstreamRegions",
                 GSON.toJsonTree(resolved.unreachableBoundedRegions));
         manifest.addProperty("resolvedProducerCount",
-                resolved.selectedRegionSummaries.size()
-                        + configuredTransport.transportOnlySourceCount(
-                        resolved.selectedRegionSummaries));
+                resolved.selectedRegionSummaries.size());
         manifest.addProperty("resolvedDemandedOutputCount",
                 resolved.selectedSummaries.size());
         manifest.addProperty("resolvedEdgeBindingCount",
@@ -416,16 +332,6 @@ public final class ConcolicSmtComposer {
                 resolved.recursiveEdgeCount());
         manifest.add("resolvedEdgeBindings",
                 resolved.resolvedEdgeCatalog());
-        manifest.add("runtimeBindingEnrichment",
-                runtimeBindingEnrichment.toJson());
-        manifest.addProperty("configuredTransportBindingCount",
-                configuredTransport.bindingCount());
-        manifest.addProperty("configuredTransportConstraintCount",
-                emitter.configuredTransportConstraintCount);
-        manifest.addProperty("configuredTransportProducerCount",
-                configuredTransport.sources.size());
-        manifest.add("configuredTransportBindings",
-                emitter.configuredTransportBindings.deepCopy());
         manifest.add("includedSummaries", GSON.toJsonTree(includedSummaries));
         manifest.addProperty("boundedRelationalApproximationUsed",
                 !emitter.boundedRelationalAdmissions.isEmpty());
@@ -509,35 +415,16 @@ public final class ConcolicSmtComposer {
                 && emitter.unboundPorts.isEmpty()
                 && emitter.caseProjectionCatalogComplete
                 && bool(fatal, "readyForSolver", false);
-        boolean complete = false;
-        String compositionStage = "BOOTSTRAP";
-        manifest.addProperty("compositionStage", compositionStage);
+        manifest.addProperty("compositionStage", "BOOTSTRAP");
         manifest.addProperty("structurallyComplete", structurallyComplete);
-        manifest.addProperty("eligibleForBootstrapModel",
-                structurallyComplete && !fatalReplayValidated);
-        manifest.addProperty("complete", complete);
-        manifest.addProperty("status", complete
-                ? "COMPLETE_BOUNDED_COMPOSITION"
-                : structurallyComplete
+        manifest.addProperty("eligibleForBootstrapModel", structurallyComplete);
+        manifest.addProperty("complete", false);
+        manifest.addProperty("status", structurallyComplete
                 ? "STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION"
                 : "COMPOSITION_WITH_EXPLICIT_GAPS");
         manifest.addProperty("soundnessScope",
-                configuredTransport.bindingCount() > 0
-                        ? "SELECTED_REGION_PATHS_RUNTIME_VALIDATED_AND_"
-                        + "CONFIGURED_TRANSPORT_BINDINGS"
-                        : "SELECTED_REGION_PATHS_AND_RUNTIME_VALIDATED_"
-                        + "BINDINGS");
-        manifest.addProperty("eligibleToReportAutomaticRelationship",
-                complete && fatalReplayValidated);
-        manifest.addProperty("domainSemanticAdapterUsed", false);
-        manifest.addProperty("explicitContractsIncluded", false);
-        manifest.addProperty("configuredTransportBindingsIncluded",
-                configuredTransport.bindingCount() > 0);
-        manifest.addProperty("output",
-                arguments.output.toAbsolutePath().toString());
-        manifest.addProperty("relationshipCandidates",
-                arguments.relationships.toAbsolutePath().toString());
-        manifest.addProperty("compositionBindingId", compositionBindingId);
+                "SELECTED_REGION_PATHS_AND_RUNTIME_VALIDATED_BINDINGS");
+        manifest.addProperty("eligibleToReportAutomaticRelationship", false);
         manifest.addProperty("artifactBindingAuthority",
                 "COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1");
         manifest.add("composedSmtArtifact", composedSmtArtifact.deepCopy());
@@ -545,246 +432,16 @@ public final class ConcolicSmtComposer {
                 staticRegionsArtifact.deepCopy());
         manifest.add("fatalQueriesArtifact",
                 fatalQueriesArtifact.deepCopy());
-        manifest.add("symbolicMergePlanArtifact",
-                symbolicMergePlanArtifact.deepCopy());
-        manifest.add("runtimeBindingCatalogArtifact",
-                runtimeBindingCatalogArtifact.deepCopy());
-        manifest.add("configuredTransportBindingsArtifact",
-                configuredTransportBindingsArtifact.deepCopy());
         manifest.add("summaryInputArtifacts",
                 summaryInputArtifacts.deepCopy());
         JsonObject relationships = new JsonObject();
         relationships.addProperty("schemaVersion", 1);
         relationships.addProperty("kind",
                 "SYMBOLIC_RELATIONSHIP_CANDIDATES");
-        relationships.addProperty("baseSmt",
-                arguments.output.toAbsolutePath().toString());
-        relationships.addProperty("baseSmtSha256",
-                string(composedSmtArtifact, "sha256"));
-        relationships.addProperty("baseSmtSizeBytes",
-                longInteger(composedSmtArtifact, "sizeBytes", -1L));
-        relationships.addProperty("fatalRegion", fatalRegion);
-        relationships.addProperty("fatalActivation",
-                string(fatal, "activationId"));
-        relationships.addProperty("fatalRegionInstanceId",
-                fatalRegionInstanceId);
-        relationships.addProperty("fatalOccurrence", fatalOccurrence);
-        relationships.addProperty("fatalDesiredOutcome",
-                fatalDesiredOutcome);
-        relationships.addProperty("fatalReplayContractId",
-                fatalReplayContract.contractId());
-        relationships.addProperty("fatalSolverPathContextId",
-                fatalSolverPathContext.contextId());
-        relationships.addProperty("candidateCount",
-                emitter.relationshipCandidates.size());
         relationships.add("relationships",
                 GSON.toJsonTree(emitter.relationshipCandidates));
-        relationships.addProperty("proofMethod",
-                "CHECK_BASE_AND_NEGATED_RELATION_WITH_SMT_SOLVER");
-        relationships.addProperty("fatalReplayValidated",
-                fatalReplayValidated);
-        relationships.addProperty("compositionStage", compositionStage);
-        relationships.addProperty("structurallyComplete",
-                structurallyComplete);
-        relationships.addProperty("eligibleForBootstrapModel",
-                structurallyComplete && !fatalReplayValidated);
-        relationships.addProperty("boundedComposition",
-                !boundedRelationalRegions.isEmpty());
-        relationships.add("boundedUpstreamRegions", GSON.toJsonTree(
-                arguments.boundedUpstreamRegions));
-        relationships.add("boundedRelationalRegions", GSON.toJsonTree(
-                boundedRelationalRegions));
-        relationships.addProperty("boundedRelationalApproximationUsed",
-                !emitter.boundedRelationalAdmissions.isEmpty());
-        relationships.add("boundedRelationalSummaryRegions",
-                GSON.toJsonTree(emitter.boundedRelationalAdmissions));
-        relationships.add("requestedOutputOnlySummaryAdmissions",
-                GSON.toJsonTree(emitter.requestedOutputOnlyAdmissions));
-        relationships.addProperty("exactCausalInputAliasCount",
-                emitter.exactCausalInputAliases.size());
-        relationships.add("exactCausalInputAliases",
-                emitter.exactCausalInputAliases.deepCopy());
-        relationships.addProperty("opaqueComputedMapKeyCount",
-                emitter.opaqueComputedMapKeys.size());
-        relationships.add("opaqueComputedMapKeys",
-                emitter.opaqueComputedMapKeys.deepCopy());
-        relationships.addProperty("causalMapRemoveMissBindingCount",
-                emitter.causalMapRemoveMissBindings.size());
-        relationships.addProperty("causalMapRemoveMissConstraintCount",
-                emitter.causalMapRemoveMissConstraintCount);
-        relationships.add("causalMapRemoveMissBindings",
-                emitter.causalMapRemoveMissBindings.deepCopy());
-        relationships.addProperty("eligibleForAutomaticVerification",
-                complete && fatalReplayValidated);
-        relationships.addProperty("compositionBindingId",
-                compositionBindingId);
-        relationships.addProperty("artifactBindingAuthority",
-                "COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1");
-        relationships.add("composedSmtArtifact",
-                composedSmtArtifact.deepCopy());
-        relationships.add("staticRegionsArtifact",
-                staticRegionsArtifact.deepCopy());
-        relationships.add("fatalQueriesArtifact",
-                fatalQueriesArtifact.deepCopy());
-        relationships.add("symbolicMergePlanArtifact",
-                symbolicMergePlanArtifact.deepCopy());
-        relationships.add("runtimeBindingCatalogArtifact",
-                runtimeBindingCatalogArtifact.deepCopy());
-        relationships.add("configuredTransportBindingsArtifact",
-                configuredTransportBindingsArtifact.deepCopy());
-        relationships.addProperty("configuredTransportBindingCount",
-                configuredTransport.bindingCount());
-        relationships.addProperty("configuredTransportConstraintCount",
-                emitter.configuredTransportConstraintCount);
-        relationships.add("configuredTransportBindings",
-                emitter.configuredTransportBindings.deepCopy());
-        relationships.add("summaryInputArtifacts",
-                summaryInputArtifacts.deepCopy());
+        relationships.addProperty("eligibleForAutomaticVerification", false);
         return new Result(composedSmt, manifest, relationships);
-    }
-
-    /**
-     * Renders imported region summaries with the same expression and heap
-     * semantics used by the project-independent composer, but without adding
-     * a fatal query, merge edges, or a solver command.
-     *
-     * <p>Domain-specific bootstrap adapters may append their explicit
-     * contracts after this fragment.  Keeping this entry point here prevents
-     * such adapters from treating a replay-summary digest as a substitute for
-     * its path-condition and output transformer.  The returned SMT is a
-     * prefix: it contains the common preamble, declarations, and assertions,
-     * but deliberately contains no {@code check-sat}.</p>
-     */
-    public static SummaryFormulaFragment renderSummaryFormulaFragment(
-            List<JsonObject> regions, List<JsonObject> summaries) {
-        List<JsonObject> safeRegions = regions == null
-                ? Collections.<JsonObject>emptyList() : regions;
-        List<JsonObject> safeSummaries = summaries == null
-                ? Collections.<JsonObject>emptyList() : summaries;
-        Emitter emitter = new Emitter(PortIndex.from(safeRegions));
-        JsonObject origin = new JsonObject();
-        origin.addProperty("regionId", "SUMMARY_FRAGMENT");
-        emitter.begin(origin);
-
-        JsonArray projections = new JsonArray();
-        int guardExpressionCount = 0;
-        int outputExpressionCount = 0;
-        for (JsonObject summary : safeSummaries) {
-            if (summary == null) continue;
-            int assertionsBefore = emitter.assertionCount;
-            int assertionLinesBefore = emitter.assertions.size();
-            Set<String> scopedEngineSymbolsBefore =
-                    new LinkedHashSet<>(emitter.rawNames.keySet());
-            emitter.preamble.add("; replay summary: "
-                    + firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "regionId")));
-            emitter.regionSummary(summary);
-
-            JsonObject projection = new JsonObject();
-            projection.addProperty("summaryId", string(summary,
-                    "summaryId"));
-            projection.addProperty("activationId", string(summary,
-                    "activationId"));
-            projection.addProperty("regionId", string(summary,
-                    "regionId"));
-            int guards = summaryGuardExpressionCount(summary);
-            int outputs = summaryOutputExpressionCount(summary);
-            projection.addProperty("guardExpressionCount", guards);
-            projection.addProperty("outputExpressionCount", outputs);
-            projection.addProperty("emittedAssertionCount",
-                    emitter.assertionCount - assertionsBefore);
-            JsonArray emittedAssertions = new JsonArray();
-            for (int index = assertionLinesBefore;
-                 index < emitter.assertions.size(); index++) {
-                emittedAssertions.add(emitter.assertions.get(index));
-            }
-            projection.add("emittedAssertions", emittedAssertions);
-            JsonArray emittedSymbolBindings =
-                    emitter.newScopedEngineSymbolMappings(
-                            scopedEngineSymbolsBefore);
-            projection.add("emittedSymbolBindings",
-                    emittedSymbolBindings);
-            projection.addProperty("emittedSymbolBindingCount",
-                    emittedSymbolBindings.size());
-            projection.addProperty("emittedSymbolBindingAuthority",
-                    "EMITTER_NEW_RAW_SYMBOLS_IN_EXACT_SUMMARY_RENDER_SCOPE");
-            JsonObject exactRelation = new JsonObject();
-            exactRelation.add("pathCondition",
-                    array(summary, "pathCondition").deepCopy());
-            exactRelation.add("outputExpressions",
-                    object(summary, "outputExpressions").deepCopy());
-            if (summary.has("regionRelation")) {
-                exactRelation.add("regionRelation",
-                        summary.get("regionRelation").deepCopy());
-            }
-            projection.addProperty("guardOutputSha256", sha256(
-                    BINDING_GSON.toJson(exactRelation).getBytes(
-                            StandardCharsets.UTF_8)));
-            projections.add(projection);
-            guardExpressionCount += guards;
-            outputExpressionCount += outputs;
-        }
-
-        String smt = emitter.render();
-        JsonObject catalog = new JsonObject();
-        catalog.addProperty("schemaVersion", 1);
-        catalog.addProperty("kind", "CONCOLIC_SUMMARY_FORMULA_FRAGMENT");
-        catalog.addProperty("summaryCount", projections.size());
-        catalog.addProperty("guardExpressionCount", guardExpressionCount);
-        catalog.addProperty("outputExpressionCount", outputExpressionCount);
-        catalog.addProperty("assertionCount", emitter.assertionCount);
-        catalog.addProperty("containsSolverCommand", false);
-        catalog.addProperty("complete", !projections.isEmpty()
-                && emitter.unsupported.isEmpty());
-        catalog.addProperty("translationAuthority",
-                "CONCOLIC_SMT_COMPOSER_SHARED_EXPRESSION_AND_HEAP_EMITTER");
-        catalog.addProperty("nullableJavaStringModeled", true);
-        catalog.addProperty("nullableStringEncodingAuthority",
-                "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
-        catalog.add("summaryProjections", projections);
-        catalog.add("emittedDeclarations",
-                GSON.toJsonTree(emitter.declarations));
-        catalog.add("emittedAssertions",
-                GSON.toJsonTree(emitter.assertions));
-        catalog.add("unsupportedExpressions",
-                GSON.toJsonTree(emitter.unsupported));
-        catalog.addProperty("opaqueComputedMapKeyCount",
-                emitter.opaqueComputedMapKeys.size());
-        catalog.add("opaqueComputedMapKeys",
-                emitter.opaqueComputedMapKeys.deepCopy());
-        catalog.addProperty("smtSha256", sha256(smt.getBytes(
-                StandardCharsets.UTF_8)));
-        return new SummaryFormulaFragment(smt, catalog);
-    }
-
-    private static int summaryGuardExpressionCount(JsonObject summary) {
-        JsonObject relation = object(summary, "regionRelation");
-        if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
-            return array(summary, "pathCondition").size();
-        }
-        int result = 0;
-        for (JsonElement element : array(relation, "cases")) {
-            if (element.isJsonObject()) {
-                result += array(object(element.getAsJsonObject(), "guard"),
-                        "conditions").size();
-            }
-        }
-        return result;
-    }
-
-    private static int summaryOutputExpressionCount(JsonObject summary) {
-        JsonObject relation = object(summary, "regionRelation");
-        if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
-            return object(summary, "outputExpressions").size();
-        }
-        int result = 0;
-        for (JsonElement element : array(relation, "cases")) {
-            if (element.isJsonObject()) {
-                result += object(element.getAsJsonObject(),
-                        "outputExpressions").size();
-            }
-        }
-        return result;
     }
 
     private static void rejectRetiredFatalReplayAliases(JsonObject fatal)
@@ -872,24 +529,6 @@ public final class ConcolicSmtComposer {
             }
         }
         return new JsonObject();
-    }
-
-    private static Map<String, JsonObject> selectSummaries(
-            List<JsonObject> summaries, Set<String> regions,
-            JsonObject fatal) {
-        Map<String, JsonObject> result = new LinkedHashMap<>();
-        for (JsonObject summary : summaries) {
-            String region = string(summary, "regionId");
-            if (!regions.contains(region) || !bool(summary, "valid", true)) {
-                continue;
-            }
-            JsonObject previous = result.get(region);
-            if (previous == null || summaryRank(summary, fatal)
-                    > summaryRank(previous, fatal)) {
-                result.put(region, summary);
-            }
-        }
-        return result;
     }
 
     private static int summaryRank(JsonObject summary, JsonObject fatal) {
@@ -1476,188 +1115,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    /** A validated, role-resolved connector catalog emitted by a project
-     * selector.  The generic composer never interprets role names or RPC
-     * methods; by this point every endpoint is an ordinary typed region port
-     * or an exact summary-expression selector. */
-    private static final class ConfiguredTransportCatalog {
-        private final Map<String, ConfiguredTransportSource> sources =
-                new LinkedHashMap<>();
-        private final Set<String> gaps = new LinkedHashSet<>();
-        private int bindingCount;
-
-        private static ConfiguredTransportCatalog resolve(
-                JsonObject input, List<JsonObject> summaries,
-                PortIndex ports) {
-            ConfiguredTransportCatalog result =
-                    new ConfiguredTransportCatalog();
-            if (input == null || input.size() == 0) return result;
-            JsonObject catalog = object(input,
-                    "configuredTransportBindings");
-            if (catalog.size() == 0
-                    && "CONFIGURED_TRANSPORT_BINDINGS".equals(
-                    string(input, "kind"))) {
-                catalog = input;
-            }
-            if (catalog.size() == 0) {
-                result.gaps.add("ConfiguredTransportCatalogMissing");
-                return result;
-            }
-            if (integer(catalog, "schemaVersion", -1) != 1
-                    || !"CONFIGURED_TRANSPORT_BINDINGS".equals(
-                    string(catalog, "kind"))
-                    || string(catalog, "authority").isEmpty()) {
-                result.gaps.add("ConfiguredTransportCatalogSchema");
-                return result;
-            }
-            Set<String> bindingIds = new LinkedHashSet<>();
-            int ordinal = 0;
-            for (JsonElement element : array(catalog, "bindings")) {
-                if (!element.isJsonObject()) {
-                    result.gaps.add("ConfiguredTransportBindingMalformed:"
-                            + ordinal++);
-                    continue;
-                }
-                JsonObject binding = element.getAsJsonObject().deepCopy();
-                String bindingId = string(binding, "bindingId");
-                JsonObject source = object(binding, "source");
-                String sourceRegion = string(source, "regionId");
-                String sourceInstance = string(source,
-                        "regionInstanceId");
-                String sourceKind = string(source, "kind");
-                JsonArray targets = array(binding, "targets");
-                boolean valid = !bindingId.isEmpty()
-                        && bindingIds.add(bindingId)
-                        && bool(binding, "includeSourcePathGuards", false)
-                        && !string(binding, "approximation").isEmpty()
-                        && !sourceRegion.isEmpty()
-                        && !sourceInstance.isEmpty()
-                        && ("PORT".equals(sourceKind)
-                        || "UNIFORM_HEAP_EFFECT_EXPRESSION".equals(
-                        sourceKind))
-                        && configuredSortName(string(source,
-                        "expectedSort"))
-                        && targets.size() > 0;
-                if ("PORT".equals(sourceKind)) {
-                    valid &= validConfiguredTransportPort(source, ports,
-                            sourceRegion);
-                } else {
-                    valid &= !string(source, "effectKind").isEmpty()
-                            && !string(source,
-                            "expressionField").isEmpty();
-                }
-                Set<String> targetKeys = new LinkedHashSet<>();
-                for (JsonElement targetElement : targets) {
-                    if (!targetElement.isJsonObject()) {
-                        valid = false;
-                        continue;
-                    }
-                    JsonObject target = targetElement.getAsJsonObject();
-                    String key = string(target, "regionId") + "\u0000"
-                            + string(target, "regionInstanceId") + "\u0000"
-                            + string(target, "portId") + "\u0000"
-                            + GSON.toJson(array(target, "fieldPath"));
-                    valid &= targetKeys.add(key)
-                            && validConfiguredTransportPort(target, ports,
-                            string(target, "regionId"))
-                            && !string(target,
-                            "regionInstanceId").isEmpty()
-                            && configuredSortName(string(target,
-                            "expectedSort"));
-                    if (array(target, "fieldPath").size() > 0) {
-                        valid &= !string(target,
-                                "declaredFieldSignature").isEmpty();
-                    }
-                }
-                List<JsonObject> candidates = new ArrayList<>();
-                for (JsonObject summary : summaries) {
-                    if (bool(summary, "valid", true)
-                            && sourceRegion.equals(string(summary,
-                            "regionId"))
-                            && sourceInstance.equals(string(summary,
-                            "regionInstanceId"))) {
-                        candidates.add(summary);
-                    }
-                }
-                if (candidates.size() != 1) valid = false;
-                if (!valid) {
-                    result.gaps.add("ConfiguredTransportBindingInvalid:"
-                            + firstNonBlank(bindingId,
-                            String.valueOf(ordinal))
-                            + ":summaryMatches=" + candidates.size());
-                    ordinal++;
-                    continue;
-                }
-                binding.addProperty("authority", firstNonBlank(
-                        string(binding, "authority"),
-                        string(catalog, "authority")));
-                String summaryId = firstNonBlank(string(candidates.get(0),
-                        "summaryId"), string(candidates.get(0), "cacheKey"));
-                ConfiguredTransportSource selected = result.sources.get(
-                        summaryId);
-                if (selected == null) {
-                    selected = new ConfiguredTransportSource(
-                            candidates.get(0));
-                    result.sources.put(summaryId, selected);
-                }
-                selected.bindings.add(binding);
-                result.bindingCount++;
-                ordinal++;
-            }
-            return result;
-        }
-
-        private static boolean validConfiguredTransportPort(
-                JsonObject endpoint, PortIndex ports, String region) {
-            String port = string(endpoint, "portId");
-            return !region.isEmpty() && !port.isEmpty()
-                    && ports.contains(port) && region.equals(regionOf(port));
-        }
-
-        private static boolean configuredSortName(String value) {
-            String normalized = firstNonBlank(value).toUpperCase(
-                    Locale.ROOT);
-            return "INT".equals(normalized)
-                    || "FLOAT32".equals(normalized)
-                    || "FLOAT64".equals(normalized)
-                    || "STRING".equals(normalized)
-                    || "BOOL".equals(normalized);
-        }
-
-        private Set<String> sourceRegions() {
-            Set<String> result = new LinkedHashSet<>();
-            for (ConfiguredTransportSource source : sources.values()) {
-                result.add(string(source.summary, "regionId"));
-            }
-            return result;
-        }
-
-        private int bindingCount() {
-            return bindingCount;
-        }
-
-        private int transportOnlySourceCount(
-                Map<String, RegionSummarySelection> ordinary) {
-            int count = 0;
-            for (ConfiguredTransportSource source : sources.values()) {
-                RegionSummarySelection selection = ordinary.get(string(
-                        source.summary, "regionId"));
-                if (selection == null || !sameSummary(selection.summary,
-                        source.summary)) count++;
-            }
-            return count;
-        }
-    }
-
-    private static final class ConfiguredTransportSource {
-        private final JsonObject summary;
-        private final List<JsonObject> bindings = new ArrayList<>();
-
-        private ConfiguredTransportSource(JsonObject summary) {
-            this.summary = summary;
-        }
-    }
-
     private static final class ResolvedEdge {
         private final ProducerKey source;
         private final JsonObject summary;
@@ -2236,17 +1693,10 @@ public final class ConcolicSmtComposer {
         private final JsonArray causalMapRemoveMissBindings =
                 new JsonArray();
         private int causalMapRemoveMissConstraintCount;
-        private final JsonArray configuredTransportBindings =
-                new JsonArray();
-        private int configuredTransportConstraintCount;
         private String currentGuard = "";
         private String currentSymbolScope = "global";
         private String currentSummaryIdentity = "";
         private CaseProjectionCapture currentCaseProjection;
-
-        private Emitter(PortIndex ports) {
-            this(ports, Collections.<String>emptySet());
-        }
 
         private Emitter(PortIndex ports,
                         Set<String> boundedRelationalRegions) {
@@ -2265,70 +1715,6 @@ public final class ConcolicSmtComposer {
 
         private void restoreSymbolScope(String scope) {
             currentSymbolScope = firstNonBlank(scope, "global");
-        }
-
-        /**
-         * Projects only raw engine symbols first declared since the supplied
-         * snapshot.  A summary may temporarily enter guarded-case scopes, so
-         * ownership is captured by the render interval rather than by a
-         * textual scope prefix.  Sorting by raw and solver symbol keeps this
-         * adapter-facing catalog deterministic without exposing symbols from
-         * summaries rendered earlier by the same emitter.
-         */
-        private JsonArray newScopedEngineSymbolMappings(
-                Set<String> symbolsBefore) {
-            List<String> created = new ArrayList<>();
-            for (String scopedRaw : rawNames.keySet()) {
-                if (symbolsBefore == null
-                        || !symbolsBefore.contains(scopedRaw)) {
-                    created.add(scopedRaw);
-                }
-            }
-            Collections.sort(created, (left, right) -> {
-                int byRaw = rawPart(left).compareTo(rawPart(right));
-                if (byRaw != 0) return byRaw;
-                int bySolver = firstNonBlank(rawNames.get(left)).compareTo(
-                        firstNonBlank(rawNames.get(right)));
-                if (bySolver != 0) return bySolver;
-                return left.compareTo(right);
-            });
-
-            JsonArray result = new JsonArray();
-            for (String scopedRaw : created) {
-                Sort sort = rawSorts.get(scopedRaw);
-                String solverSymbol = firstNonBlank(rawNames.get(scopedRaw));
-                if (sort == null || solverSymbol.isEmpty()) {
-                    unsupported.add("IncompleteScopedEngineSymbolMapping:"
-                            + rawPart(scopedRaw));
-                    continue;
-                }
-                JsonObject mapping = new JsonObject();
-                mapping.addProperty("rawSymbol", rawPart(scopedRaw));
-                mapping.addProperty("solverSymbol", solverSymbol);
-                mapping.addProperty("sort", sort.smt);
-                if (sort == Sort.STRING) {
-                    String nullness = rawStringNullNames.get(scopedRaw);
-                    if (nullness == null || nullness.isEmpty()) {
-                        unsupported.add(
-                                "MissingScopedStringNullnessMapping:"
-                                        + rawPart(scopedRaw));
-                        continue;
-                    }
-                    mapping.addProperty("nullnessSolverSymbol", nullness);
-                    mapping.addProperty("nullableStringEncodingAuthority",
-                            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_"
-                                    + "NULLNESS_BOOL_V1");
-                }
-                result.add(mapping);
-            }
-            return result;
-        }
-
-        private static String rawPart(String scopedRaw) {
-            if (scopedRaw == null) return "";
-            int separator = scopedRaw.indexOf('\u0000');
-            return separator < 0 ? scopedRaw
-                    : scopedRaw.substring(separator + 1);
         }
 
         private void begin(JsonObject fatal) {
@@ -4645,248 +4031,6 @@ public final class ConcolicSmtComposer {
                 restoreSymbolScope(previousScope);
                 currentSummaryIdentity = previousSummaryIdentity;
             }
-        }
-
-        /**
-         * Renders the guard portion of a producer summary that participates
-         * only through a configured cross-process field projection.  The
-         * connector does not claim that an RPC carrier object is the same
-         * Java object in both processes: it relates only the explicitly
-         * listed scalar leaves.  Heap effects remain available as expression
-         * selectors, but their incomplete object-state closure is not
-         * promoted to a complete region transformer.
-         */
-        private void configuredTransportProjection(
-                ConfiguredTransportSource source) {
-            configuredTransportEqualities(source, true);
-        }
-
-        private void configuredTransportEqualities(
-                ConfiguredTransportSource source,
-                boolean includeSourcePathGuards) {
-            JsonObject summary = source.summary;
-            String region = string(summary, "regionId");
-            String previousSummaryIdentity = currentSummaryIdentity;
-            currentSummaryIdentity = summarySelectionIdentity(summary);
-            String previousScope = enterSymbolScope("summary:"
-                    + firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "cacheKey"),
-                    string(summary, "activationId"), region, "selected"));
-            try {
-                registerEngineArrayInputBindings(summary,
-                        "configured transport " + region);
-                registerVmIntrinsicPlaceholderBindings(summary,
-                        "configured transport " + region);
-                if (includeSourcePathGuards) {
-                    List<String> guards = new ArrayList<>();
-                    for (JsonElement element : array(summary,
-                            "pathCondition")) {
-                        if (!element.isJsonObject()
-                                || "MethodExpression".equals(string(
-                                element.getAsJsonObject(), "_type"))) {
-                            continue;
-                        }
-                        guards.add(constraint(element,
-                                "configured transport " + region));
-                    }
-                    if (!guards.isEmpty()) {
-                        assertNamed("configured_transport_path_" + region,
-                                and(guards));
-                    }
-                }
-                for (JsonObject binding : source.bindings) {
-                    emitConfiguredTransportBinding(summary, binding);
-                }
-            } finally {
-                restoreSymbolScope(previousScope);
-                currentSummaryIdentity = previousSummaryIdentity;
-            }
-        }
-
-        private void emitConfiguredTransportBinding(
-                JsonObject summary, JsonObject binding) {
-            String bindingId = string(binding, "bindingId");
-            JsonObject source = object(binding, "source");
-            Term sourceTerm = configuredTransportSourceTerm(summary,
-                    source, bindingId);
-            if (sourceTerm == null) return;
-            JsonArray targets = array(binding, "targets");
-            JsonObject audit = new JsonObject();
-            audit.addProperty("bindingId", bindingId);
-            audit.addProperty("authority", string(binding, "authority"));
-            audit.addProperty("approximation", string(binding,
-                    "approximation"));
-            audit.addProperty("sourceRegion", string(source, "regionId"));
-            audit.addProperty("sourceRegionInstance", string(source,
-                    "regionInstanceId"));
-            audit.addProperty("sourceSummaryId", string(summary,
-                    "summaryId"));
-            audit.addProperty("sourceProjectionMode",
-                    "GUARDS_AND_SELECTED_TERMS_ONLY");
-            audit.addProperty("sourcePathGuardsIncluded", true);
-            audit.addProperty("sourceHeapTransformerClaimed", false);
-            audit.addProperty("sourceSolverTerm", sourceTerm.text);
-            audit.addProperty("sort", sourceTerm.sort.name());
-            JsonArray emittedTargets = new JsonArray();
-            for (int index = 0; index < targets.size(); index++) {
-                if (!targets.get(index).isJsonObject()) {
-                    unsupported.add("ConfiguredTransportTargetMalformed:"
-                            + bindingId + ":" + index);
-                    continue;
-                }
-                JsonObject target = targets.get(index).getAsJsonObject();
-                Term targetTerm = configuredTransportTargetTerm(target,
-                        bindingId, index);
-                if (targetTerm == null
-                        || targetTerm.sort != sourceTerm.sort) {
-                    unsupported.add("ConfiguredTransportSortMismatch:"
-                            + bindingId + ":" + index);
-                    continue;
-                }
-                String formula = "(= " + sourceTerm.text + " "
-                        + targetTerm.text + ")";
-                String label = "configured_transport_" + bindingId + "_"
-                        + index;
-                assertNamed(label, formula);
-                configuredTransportConstraintCount++;
-                JsonObject roles = new JsonObject();
-                roles.addProperty("source", sourceTerm.text);
-                roles.addProperty("target", targetTerm.text);
-                roles.addProperty("sourceRegion", string(source,
-                        "regionId"));
-                roles.addProperty("targetRegion", string(target,
-                        "regionId"));
-                addRelationshipCandidate(label,
-                        "CONFIGURED_TRANSPORT_FIELD_EQUALITY", formula,
-                        false, roles,
-                        firstNonBlank(string(binding, "authority"),
-                                "CONFIGURED_TRANSPORT_BINDING"),
-                        "GENERIC_TYPED_EQUALITY_GROUP_EMITTER");
-                JsonObject targetAudit = target.deepCopy();
-                targetAudit.addProperty("solverTerm", targetTerm.text);
-                targetAudit.addProperty("formula", formula);
-                emittedTargets.add(targetAudit);
-            }
-            audit.add("source", source.deepCopy());
-            audit.add("targets", emittedTargets);
-            audit.addProperty("constraintCount", emittedTargets.size());
-            audit.addProperty("complete",
-                    emittedTargets.size() == targets.size()
-                            && targets.size() > 0);
-            configuredTransportBindings.add(audit);
-        }
-
-        private Term configuredTransportSourceTerm(JsonObject summary,
-                                                   JsonObject source,
-                                                   String bindingId) {
-            Sort expected = configuredTransportSort(string(source,
-                    "expectedSort"));
-            if (!configuredTransportScalarSort(expected)) {
-                unsupported.add("ConfiguredTransportSourceSort:"
-                        + bindingId);
-                return null;
-            }
-            String kind = string(source, "kind");
-            if ("PORT".equals(kind)) {
-                String port = string(source, "portId");
-                if (!ports.contains(port)) {
-                    unsupported.add("ConfiguredTransportSourcePort:"
-                            + bindingId + ":" + port);
-                    return null;
-                }
-                return canonicalPortTerm(port, expected);
-            }
-            if (!"UNIFORM_HEAP_EFFECT_EXPRESSION".equals(kind)) {
-                unsupported.add("ConfiguredTransportSourceKind:"
-                        + bindingId + ":" + kind);
-                return null;
-            }
-            String effectKind = string(source, "effectKind");
-            String expressionField = string(source, "expressionField");
-            Map<String, JsonElement> expressions = new LinkedHashMap<>();
-            int matchCount = 0;
-            for (JsonElement element : array(summary, "heapEffects")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject effect = element.getAsJsonObject();
-                if (!effectKind.equals(string(effect, "kind"))) continue;
-                JsonElement expression = effect.get(expressionField);
-                if (expression == null || !expression.isJsonObject()) {
-                    unsupported.add("ConfiguredTransportSourceExpression:"
-                            + bindingId);
-                    return null;
-                }
-                matchCount++;
-                expressions.put(BINDING_GSON.toJson(expression), expression);
-            }
-            if (matchCount == 0 || expressions.size() != 1) {
-                unsupported.add("ConfiguredTransportSourceUniformity:"
-                        + bindingId + ":matches=" + matchCount
-                        + ":expressions=" + expressions.size());
-                return null;
-            }
-            Term result = term(expressions.values().iterator().next(),
-                    expected);
-            if (result.sort != expected) {
-                unsupported.add("ConfiguredTransportSourceExpressionSort:"
-                        + bindingId + ":" + result.sort + "!=" + expected);
-                return null;
-            }
-            return result;
-        }
-
-        private Term configuredTransportTargetTerm(JsonObject target,
-                                                   String bindingId,
-                                                   int index) {
-            Sort expected = configuredTransportSort(string(target,
-                    "expectedSort"));
-            String port = string(target, "portId");
-            if (!configuredTransportScalarSort(expected)
-                    || !ports.contains(port)) {
-                unsupported.add("ConfiguredTransportTargetPortOrSort:"
-                        + bindingId + ":" + index + ":" + port);
-                return null;
-            }
-            JsonArray path = array(target, "fieldPath");
-            if (path.size() == 0) {
-                return canonicalPortTerm(port, expected);
-            }
-            String signature = string(target,
-                    "declaredFieldSignature");
-            Sort declaredSort = declaredExactFieldSort(signature);
-            if (declaredSort == null || declaredSort != expected) {
-                unsupported.add("ConfiguredTransportTargetFieldSort:"
-                        + bindingId + ":" + index);
-                return null;
-            }
-            String accessor = canonicalExactFieldAccessor(signature, path,
-                    expected, "configured transport " + bindingId + " "
-                            + index);
-            if (accessor.isEmpty()) return null;
-            Term owner = canonicalPortTerm(port, Sort.REF);
-            if (owner.sort != Sort.REF) {
-                unsupported.add("ConfiguredTransportTargetOwnerSort:"
-                        + bindingId + ":" + index);
-                return null;
-            }
-            assertNamed("configured_transport_owner_non_null_" + bindingId
-                            + "_" + index,
-                    "(not (= " + owner.text + " nullRef))");
-            return new Term("(" + accessor + " " + owner.text + ")",
-                    expected);
-        }
-
-        private static Sort configuredTransportSort(String name) {
-            try {
-                return Sort.valueOf(firstNonBlank(name).toUpperCase(
-                        Locale.ROOT));
-            } catch (RuntimeException malformed) {
-                return null;
-            }
-        }
-
-        private static boolean configuredTransportScalarSort(Sort sort) {
-            return sort == Sort.INT || sort.floating()
-                    || sort == Sort.STRING || sort == Sort.BOOL;
         }
 
         private void guardedRegionRelation(String region,
@@ -10229,24 +9373,10 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    /** A solver-command-free SMT prefix plus its exact projection catalog. */
-    public static final class SummaryFormulaFragment {
-        public final String smtLib;
-        public final JsonObject catalog;
-
-        private SummaryFormulaFragment(String smtLib, JsonObject catalog) {
-            this.smtLib = smtLib;
-            this.catalog = catalog;
-        }
-    }
-
     public static final class Arguments {
         private Path fatalQueries;
         private final List<Path> summaries = new ArrayList<>();
         private Path regions;
-        private Path mergePlan;
-        private Path runtimeBindingCatalog;
-        private Path configuredTransportBindings;
         private Path output;
         private Path manifest;
         private Path relationships;
@@ -10281,7 +9411,14 @@ public final class ConcolicSmtComposer {
                     boundedRegionValues.add(value);
                 } else if ("bounded-relational-region".equals(key)) {
                     boundedRelationalRegionValues.add(value);
+                } else if (!singleValueOption(key)) {
+                    throw new IllegalArgumentException(
+                            "Unknown composer option: --" + key);
                 } else {
+                    if (values.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "Duplicate composer option: --" + key);
+                    }
                     values.put(key, value);
                 }
             }
@@ -10293,11 +9430,6 @@ public final class ConcolicSmtComposer {
                 }
             }
             result.regions = path(values, "regions", true);
-            result.mergePlan = path(values, "merge-plan", true);
-            result.runtimeBindingCatalog = path(values,
-                    "runtime-binding-catalog", false);
-            result.configuredTransportBindings = path(values,
-                    "configured-transport-bindings", false);
             result.output = path(values, "output", true);
             result.manifest = values.containsKey("manifest")
                     ? Paths.get(values.get("manifest"))
@@ -10325,6 +9457,14 @@ public final class ConcolicSmtComposer {
                 }
             }
             return result;
+        }
+
+        private static boolean singleValueOption(String key) {
+            return "fatal-query".equals(key) || "regions".equals(key)
+                    || "output".equals(key) || "manifest".equals(key)
+                    || "relationships".equals(key)
+                    || "fatal-region".equals(key)
+                    || "activation-id".equals(key);
         }
 
         private static Path path(Map<String, String> values, String key,
@@ -10583,29 +9723,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static String realLiteral(String value) {
-        String raw = firstNonBlank(value).trim();
-        if (raw.isEmpty() || raw.length() > 1024
-                || "nan".equalsIgnoreCase(raw)
-                || "inf".equalsIgnoreCase(raw)
-                || "+inf".equalsIgnoreCase(raw)
-                || "-inf".equalsIgnoreCase(raw)
-                || "infinity".equalsIgnoreCase(raw)
-                || "+infinity".equalsIgnoreCase(raw)
-                || "-infinity".equalsIgnoreCase(raw)) {
-            return null;
-        }
-        try {
-            BigDecimal parsed = new BigDecimal(raw);
-            if (Math.abs((long) parsed.scale()) > 1024L
-                    || parsed.precision() > 1024) return null;
-            String plain = parsed.abs().toPlainString();
-            return parsed.signum() < 0 ? "(- " + plain + ")" : plain;
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
-    }
-
     private static String quote(String value) {
         String exact = value == null ? "" : value;
         return "\"" + exact.replace("\"", "\"\"") + "\"";
@@ -10629,183 +9746,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    /**
-     * Refreshes only runtime edge evidence on an already captured summary.
-     * The summary formula and requested-output slice remain untouched.  A
-     * catalog binding is admitted only when its enclosing activation and the
-     * binding both name the exact summary producer instance/output.
-     */
-    private static RuntimeBindingEnrichment enrichSummaryBindings(
-            List<JsonObject> summaries, Path catalog) throws IOException {
-        RuntimeBindingEnrichment stats = new RuntimeBindingEnrichment(
-                catalog != null);
-        if (catalog == null) return stats;
-        require(catalog, "runtime binding catalog");
-
-        Map<JsonObject, JsonArray> mergedBySummary = new LinkedHashMap<>();
-        Map<JsonObject, Map<String, Integer>> indexBySummary =
-                new LinkedHashMap<>();
-        for (JsonObject summary : summaries) {
-            JsonArray merged = edgeBindings(summary).deepCopy();
-            Map<String, Integer> indexByIdentity = new LinkedHashMap<>();
-            for (int index = 0; index < merged.size(); index++) {
-                JsonElement element = merged.get(index);
-                if (element.isJsonObject()) {
-                    indexByIdentity.put(runtimeBindingIdentity(
-                            element.getAsJsonObject()), index);
-                }
-            }
-            mergedBySummary.put(summary, merged);
-            indexBySummary.put(summary, indexByIdentity);
-        }
-
-        try (BufferedReader reader = Files.newBufferedReader(catalog,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                JsonElement parsed = JsonParser.parseString(line);
-                if (!parsed.isJsonObject()) {
-                    stats.malformedCatalogRows++;
-                    continue;
-                }
-                stats.catalogRows++;
-                JsonObject envelope = parsed.getAsJsonObject();
-                JsonArray bindings = array(envelope, "edgeBindings");
-                if (bindings.size() == 0
-                        && !bindingSourceRegion(envelope).isEmpty()) {
-                    bindings = new JsonArray();
-                    bindings.add(envelope);
-                }
-                for (JsonElement element : bindings) {
-                    stats.catalogBindings++;
-                    if (!element.isJsonObject()) {
-                        stats.rejectedBindings++;
-                        continue;
-                    }
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!trustedRuntimeComposition(binding)
-                            || !bindingMatchesCatalogEnvelope(binding,
-                            envelope)) {
-                        stats.rejectedBindings++;
-                        continue;
-                    }
-                    stats.trustedBindings++;
-                    for (JsonObject summary : summaries) {
-                        if (!bindingSourceMatchesSummary(binding, summary)) {
-                            continue;
-                        }
-                        stats.matchedBindings++;
-                        String identity = runtimeBindingIdentity(binding);
-                        Map<String, Integer> indexes =
-                                indexBySummary.get(summary);
-                        Integer existingIndex = indexes.get(identity);
-                        if (existingIndex == null) {
-                            JsonArray merged = mergedBySummary.get(summary);
-                            indexes.put(identity, merged.size());
-                            merged.add(binding.deepCopy());
-                            stats.addedBindings++;
-                        } else if (BINDING_GSON.toJson(
-                                mergedBySummary.get(summary).get(
-                                        existingIndex)).equals(
-                                BINDING_GSON.toJson(binding))) {
-                            stats.duplicateBindings++;
-                        } else {
-                            // The final catalog may carry a newer canonical
-                            // port/projection for the same exact writer-reader
-                            // event.  Replace that stale evidence atomically;
-                            // never retain two competing bindings.
-                            mergedBySummary.get(summary).set(existingIndex,
-                                    binding.deepCopy());
-                            stats.refreshedBindings++;
-                        }
-                    }
-                }
-            }
-        }
-        for (Map.Entry<JsonObject, JsonArray> entry
-                : mergedBySummary.entrySet()) {
-            entry.getKey().add("edgeBindings", entry.getValue());
-        }
-        return stats;
-    }
-
-    private static boolean bindingMatchesCatalogEnvelope(JsonObject binding,
-                                                          JsonObject row) {
-        String rowRegion = string(row, "regionId");
-        String rowInstance = string(row, "regionInstanceId");
-        String rowOutput = string(object(row, "requestedOutput"),
-                "portId");
-        return (rowRegion.isEmpty()
-                || rowRegion.equals(bindingSourceRegion(binding)))
-                && (rowInstance.isEmpty()
-                || rowInstance.equals(bindingSourceInstance(binding)))
-                && (rowOutput.isEmpty()
-                || rowOutput.equals(bindingSourceOutput(binding)));
-    }
-
-    private static boolean bindingSourceMatchesSummary(JsonObject binding,
-                                                       JsonObject summary) {
-        String region = bindingSourceRegion(binding);
-        String instance = bindingSourceInstance(binding);
-        String output = bindingSourceOutput(binding);
-        return bool(summary, "valid", true)
-                && region.equals(string(summary, "regionId"))
-                && !instance.isEmpty()
-                && summaryInstances(summary).contains(instance)
-                && !output.isEmpty()
-                && summaryProvidesOutput(summary, output);
-    }
-
-    private static String runtimeBindingIdentity(JsonObject binding) {
-        return firstNonBlank(string(binding, "edgeId"), "<no-edge>")
-                + "\n" + bindingRelationKind(binding)
-                + "\n" + bindingSourceRegion(binding)
-                + "\n" + bindingSourceInstance(binding)
-                + "\n" + bindingTargetInstance(binding)
-                + "\n" + firstLong(binding, "writerEventSeq",
-                "writeSeq", "fromEndpointSeq", "fromEventSeq")
-                + "\n" + firstLong(binding, "readerEventSeq",
-                "readSeq", "toEndpointSeq", "toEventSeq");
-    }
-
-    private static final class RuntimeBindingEnrichment {
-        private final boolean enabled;
-        private int catalogRows;
-        private int malformedCatalogRows;
-        private int catalogBindings;
-        private int trustedBindings;
-        private int rejectedBindings;
-        private int matchedBindings;
-        private int addedBindings;
-        private int refreshedBindings;
-        private int duplicateBindings;
-
-        private RuntimeBindingEnrichment(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("enabled", enabled);
-            result.addProperty("catalogRowCount", catalogRows);
-            result.addProperty("malformedCatalogRowCount",
-                    malformedCatalogRows);
-            result.addProperty("catalogBindingCount", catalogBindings);
-            result.addProperty("trustedBindingCount", trustedBindings);
-            result.addProperty("rejectedBindingCount", rejectedBindings);
-            result.addProperty("matchedBindingCount", matchedBindings);
-            result.addProperty("addedBindingCount", addedBindings);
-            result.addProperty("refreshedBindingCount",
-                    refreshedBindings);
-            result.addProperty("duplicateBindingCount", duplicateBindings);
-            result.addProperty("authority", enabled
-                    ? "EXACT_CATALOG_ACTIVATION_AND_SUMMARY_PRODUCER_JOIN_V1"
-                    : "DISABLED");
-            return result;
-        }
-    }
-
     private static List<JsonObject> readJsonl(Path path) throws IOException {
         if (path == null || !Files.isRegularFile(path)) {
             return Collections.emptyList();
@@ -10821,16 +9761,6 @@ public final class ConcolicSmtComposer {
             }
         }
         return result;
-    }
-
-    private static JsonObject readJson(Path path) throws IOException {
-        require(path, "JSON input");
-        JsonElement parsed = JsonParser.parseString(new String(
-                Files.readAllBytes(path), StandardCharsets.UTF_8));
-        if (!parsed.isJsonObject()) {
-            throw new IOException("Expected JSON object: " + path);
-        }
-        return parsed.getAsJsonObject();
     }
 
     private static void write(Path path, String value) throws IOException {
@@ -10853,11 +9783,6 @@ public final class ConcolicSmtComposer {
         result.addProperty("sha256", sha256(exact));
         result.addProperty("sizeBytes", exact.length);
         return result;
-    }
-
-    private static JsonElement copyOrNull(JsonObject source, String field) {
-        JsonElement value = source == null ? null : source.get(field);
-        return value == null ? JsonNull.INSTANCE : value.deepCopy();
     }
 
     private static String sha256(byte[] value) {

@@ -294,6 +294,12 @@ composer 实际使用的 merged summary，同时其原始 summary 和 activation
 身份一致。branch 层的检查以 `BranchWitness`/`BranchReplayContract` 的 canonical JSON 与
 content hash 为准；下游只解析并消费该权威对象，不再逐字段重建一份“等价证书”。
 
+Composition manifest 是跨文件绑定的唯一 authority：它对本次 CLI 实际读取的 regions、
+fatal query、summary、生成的 SMT 和 relationship catalog 做精确路径、长度和 SHA-256
+绑定。relationship catalog 只保存 schema、候选关系数组和当前 verification eligibility，
+不再复制 fatal identity、stage、artifact hash 或第二个 `compositionBindingId` 来与 manifest
+逐字段互证。
+
 自动 topology discovery 不能把程序没有执行出来的 equality、cache、expiry、membership
 或 codec 语义冒充 runtime fact。自动 composition 只接受静态、runtime 和 concolic 阶段
 共同满足的证据门槛；手写 RPC mapping 不再是输入协议。

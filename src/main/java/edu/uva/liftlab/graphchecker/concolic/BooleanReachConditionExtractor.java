@@ -30,23 +30,22 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Projects a complete composed bug-path SMT formula onto its finite Boolean
- * root-input domain.
+ * Projects a structurally complete candidate bug-path SMT formula onto its
+ * finite Boolean root-input domain.
  *
  * <p>The extractor never accepts caller-authored reachability formulas.  It
  * discovers Java Boolean input ports from the static region IR, joins them to
  * the exact canonical terms already emitted by {@link ConcolicSmtComposer},
  * removes inputs supplied by composed producer-output relationships, and asks
  * Z3 about every remaining Boolean valuation.  The resulting truth table and
- * canonical DNF are therefore derived artifacts of the final composed SMT.</p>
+ * canonical DNF are therefore derived candidate artifacts of the composed
+ * SMT. This class never promotes them to a trusted final result.</p>
  */
 public final class BooleanReachConditionExtractor {
     private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
             "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
-    private static final Gson BINDING_GSON = new GsonBuilder()
-            .disableHtmlEscaping().serializeNulls().create();
     private static final Pattern FIELD_CELL = Pattern.compile(
             "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
     private static final Pattern RETURN_CELL = Pattern.compile(
@@ -62,21 +61,17 @@ public final class BooleanReachConditionExtractor {
     public static void main(String[] argv) throws Exception {
         Arguments arguments = Arguments.parse(argv);
         JsonObject manifest = readJson(arguments.manifest);
-        Path relationshipsPath = arguments.relationships != null
-                ? arguments.relationships
-                : referencedPath(manifest, "relationshipCandidates",
-                arguments.manifest);
+        Path relationshipsPath = arguments.relationships;
         String smt = readText(arguments.smt);
         JsonObject relationships = readJson(relationshipsPath);
         List<JsonObject> regions = readJsonl(arguments.regions);
         validateArtifactBindings(arguments.smt, arguments.regions,
-                relationshipsPath, manifest, relationships);
+                relationshipsPath, manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis);
         Extraction extraction = extract(smt, manifest, regions,
                 relationships, solver,
-                arguments.maxInputs, arguments.maxValuations,
-                arguments.mode);
+                arguments.maxInputs, arguments.maxValuations);
         JsonObject report = extraction.report;
         report.add("composedSmtArtifact", artifact(arguments.smt));
         report.add("compositionManifestArtifact",
@@ -96,16 +91,6 @@ public final class BooleanReachConditionExtractor {
                               JsonObject relationships, Solver solver,
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
-        return extract(composedSmt, manifest, regions, relationships, solver,
-                maxInputs, maxValuations, Mode.FINAL_REPORT);
-    }
-
-    static Extraction extract(String composedSmt, JsonObject manifest,
-                              List<JsonObject> regions,
-                              JsonObject relationships, Solver solver,
-                              int maxInputs, int maxValuations, Mode mode)
-            throws IOException, InterruptedException {
-        Mode effectiveMode = mode == null ? Mode.FINAL_REPORT : mode;
         JsonObject report = new JsonObject();
         report.addProperty("schemaVersion", 1);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
@@ -116,19 +101,15 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("callerProvidedConditionUsed", false);
         report.addProperty("composedBugPathAlreadyConstrained", true);
         report.addProperty("composedSmtSha256", sha256(composedSmt));
-        report.addProperty("extractionMode", effectiveMode.name());
-        report.addProperty("replayBootstrapOnly",
-                effectiveMode == Mode.BOOTSTRAP_REPLAY_MODEL);
-        report.addProperty("reportableFinalReachCondition",
-                effectiveMode == Mode.FINAL_REPORT
-                        || effectiveMode == Mode.FINAL_UNREACHABLE_REPORT);
+        report.addProperty("extractionMode", "BOOTSTRAP_REPLAY_MODEL");
+        report.addProperty("replayBootstrapOnly", true);
+        report.addProperty("reportableFinalReachCondition", false);
         report.addProperty("fatalReplayValidated",
                 bool(manifest, "fatalReplayValidated", false));
         report.addProperty("fatalReplaySkippedBecauseUnreachable", false);
 
         List<String> gaps = new ArrayList<>();
-        validateCompositionAuthority(manifest, relationships, effectiveMode,
-                gaps);
+        validateCompositionAuthority(manifest, relationships, gaps);
         if (firstNonBlank(composedSmt).isEmpty()) {
             gaps.add("COMPOSED_SMT_EMPTY");
         }
@@ -270,12 +251,6 @@ public final class BooleanReachConditionExtractor {
         boolean complete = solverErrors == 0
                 && "unsat".equals(implicationStatus)
                 && satisfying + unsatisfying == valuationCount;
-        JsonArray terminalGaps = new JsonArray();
-        if (effectiveMode == Mode.FINAL_UNREACHABLE_REPORT
-                && satisfying > 0) {
-            terminalGaps.add("FINAL_UNREACHABLE_REPORT_HAS_SAT_WITNESS");
-            complete = false;
-        }
         boolean truthTableDecided = solverErrors == 0
                 && satisfying + unsatisfying == valuationCount;
         report.addProperty("bootstrapReplayModelAvailable",
@@ -283,36 +258,21 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("reachabilityStatus", !truthTableDecided
                 ? "UNKNOWN" : satisfying > 0
                 ? "REACHABLE" : "UNREACHABLE");
-        report.addProperty("fatalReplaySkippedBecauseUnreachable",
-                effectiveMode == Mode.FINAL_UNREACHABLE_REPORT
-                        && truthTableDecided && satisfying == 0);
-        report.add("discoveryGaps", terminalGaps);
+        report.addProperty("fatalReplaySkippedBecauseUnreachable", false);
+        report.add("discoveryGaps", new JsonArray());
         report.addProperty("complete", complete);
         String status = "BOOLEAN_REACH_CONDITION_WITH_SOLVER_GAPS";
         if (complete) {
-            if (effectiveMode == Mode.FINAL_REPORT) {
-                status = "COMPLETE_EXACT_BOOLEAN_REACH_CONDITION";
-            } else if (effectiveMode == Mode.FINAL_UNREACHABLE_REPORT) {
-                status = "COMPLETE_EXACT_UNREACHABLE_REACH_CONDITION";
-                report.addProperty("finalizationAuthority",
-                        "STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION_PLUS_"
-                                + "EXHAUSTIVE_BOOLEAN_PROJECTION_AND_Z3_"
-                                + "UNSAT_V1");
-            } else {
-                status = satisfying > 0
-                        ? "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
-                        : "COMPLETE_BOOTSTRAP_UNREACHABLE";
-            }
-        } else if (effectiveMode == Mode.FINAL_UNREACHABLE_REPORT
-                && satisfying > 0 && solverErrors == 0) {
-            status = "FINAL_UNREACHABLE_REPORT_REJECTED_SAT_FORMULA";
+            status = satisfying > 0
+                    ? "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"
+                    : "COMPLETE_BOOTSTRAP_UNREACHABLE";
         }
         report.addProperty("status", status);
         return new Extraction(report);
     }
 
     private static void validateCompositionAuthority(
-            JsonObject manifest, JsonObject relationships, Mode mode,
+            JsonObject manifest, JsonObject relationships,
             List<String> gaps) {
         boolean commonManifest = manifest != null
                 && integer(manifest, "schemaVersion", -1) == 1
@@ -322,52 +282,21 @@ public final class BooleanReachConditionExtractor {
                 && integer(relationships, "schemaVersion", -1) == 1
                 && "SYMBOLIC_RELATIONSHIP_CANDIDATES".equals(string(
                 relationships, "kind"));
-        if (mode == Mode.BOOTSTRAP_REPLAY_MODEL
-                || mode == Mode.FINAL_UNREACHABLE_REPORT) {
-            if (!commonManifest
-                    || !"BOOTSTRAP".equals(string(manifest,
-                    "compositionStage"))
-                    || !bool(manifest, "structurallyComplete", false)
-                    || bool(manifest, "fatalReplayValidated", true)
-                    || bool(manifest, "complete", true)
-                    || !bool(manifest, "eligibleForBootstrapModel", false)
-                    || bool(manifest,
-                    "eligibleToReportAutomaticRelationship", true)) {
-                gaps.add("COMPOSITION_MANIFEST_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
-            }
-            if (!commonRelationships
-                    || !"BOOTSTRAP".equals(string(relationships,
-                    "compositionStage"))
-                    || !bool(relationships, "structurallyComplete", false)
-                    || bool(relationships, "fatalReplayValidated", true)
-                    || !bool(relationships,
-                    "eligibleForBootstrapModel", false)
-                    || bool(relationships,
-                    "eligibleForAutomaticVerification", true)) {
-                gaps.add("RELATIONSHIP_CATALOG_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
-            }
-            return;
-        }
         if (!commonManifest
-                || !"VALIDATED_FINAL".equals(string(manifest,
+                || !"BOOTSTRAP".equals(string(manifest,
                 "compositionStage"))
                 || !bool(manifest, "structurallyComplete", false)
-                || !bool(manifest, "complete", false)
-                || !bool(manifest, "fatalReplayValidated", false)
-                || bool(manifest, "eligibleForBootstrapModel", true)
-                || !bool(manifest,
-                "eligibleToReportAutomaticRelationship", false)) {
-            gaps.add("COMPOSITION_MANIFEST_NOT_COMPLETE_AND_ELIGIBLE");
+                || bool(manifest, "fatalReplayValidated", true)
+                || bool(manifest, "complete", true)
+                || !bool(manifest, "eligibleForBootstrapModel", false)
+                || bool(manifest,
+                "eligibleToReportAutomaticRelationship", true)) {
+            gaps.add("COMPOSITION_MANIFEST_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
         }
         if (!commonRelationships
-                || !"VALIDATED_FINAL".equals(string(relationships,
-                "compositionStage"))
-                || !bool(relationships, "structurallyComplete", false)
-                || !bool(relationships, "fatalReplayValidated", false)
-                || bool(relationships, "eligibleForBootstrapModel", true)
-                || !bool(relationships,
-                "eligibleForAutomaticVerification", false)) {
-            gaps.add("RELATIONSHIP_CATALOG_NOT_COMPLETE_AND_ELIGIBLE");
+                || bool(relationships,
+                "eligibleForAutomaticVerification", true)) {
+            gaps.add("RELATIONSHIP_CATALOG_NOT_BOOTSTRAP_MODEL_ELIGIBLE");
         }
     }
 
@@ -739,9 +668,6 @@ public final class BooleanReachConditionExtractor {
                                               List<String> gaps) {
         Set<String> result = new LinkedHashSet<>();
         JsonArray rows = array(relationships, "relationships");
-        if (integer(relationships, "candidateCount", -1) != rows.size()) {
-            gaps.add("RELATIONSHIP_CANDIDATE_COUNT_MISMATCH");
-        }
         for (int index = 0; index < rows.size(); index++) {
             JsonElement element = rows.get(index);
             if (!element.isJsonObject()) {
@@ -1127,7 +1053,8 @@ public final class BooleanReachConditionExtractor {
             result.add("caseProjectionEvidence",
                     caseProjectionEvidence(caseEvidence));
             result.addProperty("authority",
-                    "STATIC_BOOLEAN_PORT_PLUS_FINAL_SMT_CANONICAL_BINDING");
+                    "STATIC_BOOLEAN_PORT_PLUS_COMPOSED_SMT_CANONICAL_"
+                            + "BINDING");
             return result;
         }
     }
@@ -1175,7 +1102,7 @@ public final class BooleanReachConditionExtractor {
             result.add("caseProjectionEvidence",
                     caseProjectionEvidence(caseEvidence));
             result.addProperty("authority",
-                    "STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_CANONICAL_"
+                    "STATIC_JAVA_SCALAR_PORT_PLUS_COMPOSED_SMT_CANONICAL_"
                             + "BINDING_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
             return result;
         }
@@ -1438,7 +1365,6 @@ public final class BooleanReachConditionExtractor {
         private long timeoutMillis = 20_000L;
         private int maxInputs = 12;
         private int maxValuations = 4096;
-        private Mode mode = Mode.FINAL_REPORT;
 
         private static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -1448,15 +1374,21 @@ public final class BooleanReachConditionExtractor {
                     throw new IllegalArgumentException(
                             "Expected --key value, got: " + argument);
                 }
-                values.put(argument.substring(2), argv[++index]);
+                String key = argument.substring(2);
+                if (!option(key)) {
+                    throw new IllegalArgumentException(
+                            "Unknown reach option: --" + key);
+                }
+                if (values.put(key, argv[++index]) != null) {
+                    throw new IllegalArgumentException(
+                            "Duplicate reach option: --" + key);
+                }
             }
             Arguments result = new Arguments();
             result.smt = required(values, "smt");
             result.manifest = required(values, "manifest");
             result.regions = required(values, "regions");
-            if (values.containsKey("relationships")) {
-                result.relationships = Paths.get(values.get("relationships"));
-            }
+            result.relationships = required(values, "relationships");
             result.output = values.containsKey("output")
                     ? Paths.get(values.get("output"))
                     : sibling(result.manifest,
@@ -1467,8 +1399,17 @@ public final class BooleanReachConditionExtractor {
             result.maxInputs = positiveInt(values.get("max-inputs"), 12);
             result.maxValuations = positiveInt(values.get(
                     "max-valuations"), 4096);
-            result.mode = Mode.parse(values.get("mode"));
             return result;
+        }
+
+        private static boolean option(String key) {
+            return "smt".equals(key) || "manifest".equals(key)
+                    || "regions".equals(key)
+                    || "relationships".equals(key)
+                    || "output".equals(key) || "z3".equals(key)
+                    || "timeout-ms".equals(key)
+                    || "max-inputs".equals(key)
+                    || "max-valuations".equals(key);
         }
 
         private static Path required(Map<String, String> values,
@@ -1478,24 +1419,6 @@ public final class BooleanReachConditionExtractor {
                 throw new IllegalArgumentException("Missing --" + key);
             }
             return Paths.get(value);
-        }
-    }
-
-    enum Mode {
-        FINAL_REPORT,
-        BOOTSTRAP_REPLAY_MODEL,
-        FINAL_UNREACHABLE_REPORT;
-
-        private static Mode parse(String value) {
-            String normalized = firstNonBlank(value, FINAL_REPORT.name())
-                    .toUpperCase(Locale.ROOT).replace('-', '_');
-            try {
-                return Mode.valueOf(normalized);
-            } catch (IllegalArgumentException exception) {
-                throw new IllegalArgumentException(
-                        "Unsupported reach extraction mode: " + value,
-                        exception);
-            }
         }
     }
 
@@ -1512,14 +1435,11 @@ public final class BooleanReachConditionExtractor {
     /**
      * Rejects cross-wired CLI artifacts before any solver process starts.
      * The composer manifest is the trust root: it fingerprints the exact SMT,
-     * static-region ledger, and relationship-candidate bytes.  The candidate
-     * catalog then independently binds itself back to the same composition
-     * and SMT digest.
+     * static-region ledger, and relationship-candidate bytes.
      */
     static void validateArtifactBindings(Path smtPath, Path regionsPath,
                                          Path relationshipsPath,
-                                         JsonObject manifest,
-                                         JsonObject relationships)
+                                         JsonObject manifest)
             throws IOException {
         if (!"COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1".equals(
                 string(manifest, "artifactBindingAuthority"))) {
@@ -1535,63 +1455,6 @@ public final class BooleanReachConditionExtractor {
                 "staticRegionsArtifact"), actualRegions);
         requireExactArtifact("relationship candidates", object(manifest,
                 "relationshipCandidatesArtifact"), actualRelationships);
-
-        String bindingId = string(manifest, "compositionBindingId");
-        if (bindingId.isEmpty() || !bindingId.matches("[0-9a-f]{64}")
-                || !bindingId.equals(string(relationships,
-                "compositionBindingId"))) {
-            throw new IOException("Composition binding id mismatch");
-        }
-        if (!bindingId.equals(compositionBindingId(manifest))) {
-            throw new IOException("Composition binding id is not derived "
-                    + "from its exact fatal identity and artifacts");
-        }
-        if (!"COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1".equals(
-                string(relationships, "artifactBindingAuthority"))) {
-            throw new IOException("Relationship catalog has no exact "
-                    + "artifact binding authority");
-        }
-        requireExactArtifact("relationship base SMT", object(relationships,
-                "composedSmtArtifact"), actualSmt);
-        requireExactArtifact("relationship static regions",
-                object(relationships, "staticRegionsArtifact"),
-                actualRegions);
-        if (!object(manifest, "fatalQueriesArtifact").equals(
-                object(relationships, "fatalQueriesArtifact"))
-                || !object(manifest, "symbolicMergePlanArtifact").equals(
-                object(relationships, "symbolicMergePlanArtifact"))
-                || !object(manifest, "runtimeBindingCatalogArtifact").equals(
-                object(relationships, "runtimeBindingCatalogArtifact"))
-                || !object(manifest,
-                "configuredTransportBindingsArtifact").equals(object(
-                relationships, "configuredTransportBindingsArtifact"))
-                || !array(manifest, "summaryInputArtifacts").equals(
-                array(relationships, "summaryInputArtifacts"))) {
-            throw new IOException("Composition source artifact binding "
-                    + "mismatch");
-        }
-        String actualSmtPath = string(actualSmt, "path");
-        if (!actualSmtPath.equals(normalizedPath(string(relationships,
-                "baseSmt")))
-                || !string(actualSmt, "sha256").equals(
-                string(relationships, "baseSmtSha256"))
-                || longInteger(actualSmt, "sizeBytes", -1L)
-                != longInteger(relationships, "baseSmtSizeBytes", -2L)) {
-            throw new IOException("Relationship base SMT fingerprint "
-                    + "mismatch");
-        }
-        for (String field : new String[]{"fatalRegion", "fatalActivation",
-                "fatalRegionInstanceId", "fatalOccurrence",
-                "fatalDesiredOutcome", "fatalReplayContractId",
-                "fatalSolverPathContextId"}) {
-            JsonElement left = manifest == null ? null : manifest.get(field);
-            JsonElement right = relationships == null
-                    ? null : relationships.get(field);
-            if (left == null || right == null || !left.equals(right)) {
-                throw new IOException("Fatal identity binding mismatch: "
-                        + field);
-            }
-        }
     }
 
     private static void requireExactArtifact(String label,
@@ -1612,63 +1475,6 @@ public final class BooleanReachConditionExtractor {
     private static String normalizedPath(String value) {
         if (firstNonBlank(value).isEmpty()) return "";
         return Paths.get(value).toAbsolutePath().normalize().toString();
-    }
-
-    static String compositionBindingId(JsonObject manifest) {
-        JsonObject material = new JsonObject();
-        material.addProperty("schemaVersion", 1);
-        for (String field : new String[]{"fatalRegion", "fatalActivation",
-                "fatalRegionInstanceId"}) {
-            String value = string(manifest, field);
-            if (value.isEmpty()) return "";
-            material.addProperty(field, value);
-        }
-        for (String field : new String[]{"fatalOccurrence",
-                "fatalDesiredOutcome"}) {
-            JsonElement value = manifest == null ? null : manifest.get(field);
-            if (value == null) return "";
-            material.add(field, value.deepCopy());
-        }
-        for (String field : new String[]{"fatalReplayContractId",
-                "fatalSolverPathContextId"}) {
-            String value = string(manifest, field);
-            if (value.isEmpty()) return "";
-            material.addProperty(field, value);
-        }
-        material.add("composedSmtArtifact", object(manifest,
-                "composedSmtArtifact").deepCopy());
-        material.add("staticRegionsArtifact", object(manifest,
-                "staticRegionsArtifact").deepCopy());
-        material.add("fatalQueriesArtifact", object(manifest,
-                "fatalQueriesArtifact").deepCopy());
-        material.add("symbolicMergePlanArtifact", object(manifest,
-                "symbolicMergePlanArtifact").deepCopy());
-        material.add("runtimeBindingCatalogArtifact", object(manifest,
-                "runtimeBindingCatalogArtifact").deepCopy());
-        if (manifest != null
-                && manifest.has("configuredTransportBindingsArtifact")) {
-            material.add("configuredTransportBindingsArtifact",
-                    object(manifest,
-                            "configuredTransportBindingsArtifact")
-                            .deepCopy());
-        }
-        material.add("summaryInputArtifacts", array(manifest,
-                "summaryInputArtifacts").deepCopy());
-        return sha256(BINDING_GSON.toJson(material));
-    }
-
-    private static Path referencedPath(JsonObject source, String field,
-                                       Path sourcePath) throws IOException {
-        String value = string(source, field);
-        if (value.isEmpty()) {
-            throw new IOException("Missing " + field + " in " + sourcePath);
-        }
-        Path result = Paths.get(value);
-        if (!result.isAbsolute()) {
-            Path parent = sourcePath.toAbsolutePath().getParent();
-            result = parent == null ? result : parent.resolve(result);
-        }
-        return result.normalize();
     }
 
     private static String readText(Path path) throws IOException {

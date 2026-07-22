@@ -100,8 +100,8 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
 5. Compose the closed producer relations with the target seed. This produces
    a structurally complete `BOOTSTRAP` SMT model, but it is explicitly
    ineligible as a final report.
-6. Exhaustively project the bootstrap SMT over its discovered Boolean roots in
-   `BOOTSTRAP_REPLAY_MODEL` mode, invoke Z3 independently on the emitted SMT,
+6. Exhaustively project the bootstrap SMT over its discovered Boolean roots,
+   invoke Z3 independently on the emitted SMT,
    and hash-bind the SMT, composition manifest, reach model, and relationship
    candidates into one `CANDIDATE_ONLY` result manifest.
 

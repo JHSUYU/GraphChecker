@@ -1030,8 +1030,6 @@ do_bootstrap_compose() {
     "${target_schedule}/concolic_region_summaries.jsonl"
   require_file "target bootstrap branch query" \
     "${target_schedule}/branch_queries.jsonl"
-  require_file "target symbolic merge plan" \
-    "${target_schedule}/symbolic_merge_plan.json"
   aggregate_producer_artifacts
   binding=$(target_binding) || return $?
   IFS=$'\t' read -r target_region target_activation <<< "${binding}"
@@ -1045,7 +1043,6 @@ do_bootstrap_compose() {
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_FATAL_QUERIES="${target_schedule}/branch_queries.jsonl" \
     CAUSYNTH_COMPOSE_SUMMARIES="${bootstrap_root}/producer_merged_summaries.jsonl:${target_schedule}/concolic_region_summaries.jsonl" \
-    CAUSYNTH_MERGE_PLAN="${target_schedule}/symbolic_merge_plan.json" \
     CAUSYNTH_COMPOSED_SMT="${bootstrap_root}/composed_fatal.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${bootstrap_root}/composed_smt_manifest.json" \
     CAUSYNTH_RELATIONSHIP_CANDIDATES="${bootstrap_root}/symbolic_relationship_candidates.json" \
@@ -1066,10 +1063,12 @@ do_bootstrap_compose() {
   ' "${bootstrap_root}/composed_smt_manifest.json" >/dev/null \
     || die "composition is not a structurally complete bootstrap model"
   jq -e '
-    .compositionStage == "BOOTSTRAP"
-    and .structurallyComplete == true
-    and .eligibleForBootstrapModel == true
+    .schemaVersion == 1
+    and .kind == "SYMBOLIC_RELATIONSHIP_CANDIDATES"
     and .eligibleForAutomaticVerification == false
+    and (.relationships | type == "array")
+    and (keys | sort) == (["eligibleForAutomaticVerification", "kind",
+      "relationships", "schemaVersion"] | sort)
   ' "${bootstrap_root}/symbolic_relationship_candidates.json" >/dev/null \
     || die "bootstrap relationship catalog claims final eligibility"
 }
@@ -1088,8 +1087,7 @@ do_bootstrap_project() {
     CAUSYNTH_COMPOSITION_MANIFEST="${bootstrap_root}/composed_smt_manifest.json" \
     CAUSYNTH_RELATIONSHIP_CANDIDATES="${bootstrap_root}/symbolic_relationship_candidates.json" \
     CAUSYNTH_REACH_REPORT="${bootstrap_root}/bootstrap_boolean_model.json" \
-    "${runner}" --config "${config}" reach \
-      --mode BOOTSTRAP_REPLAY_MODEL)
+    "${runner}" --config "${config}" reach)
   if jq -e '
     .complete == true
     and .status == "COMPLETE_BOOTSTRAP_BOOLEAN_REPLAY_MODEL"

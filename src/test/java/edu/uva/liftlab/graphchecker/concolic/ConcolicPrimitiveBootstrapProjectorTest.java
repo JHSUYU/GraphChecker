@@ -611,12 +611,12 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
     }
 
     @Test
-    public void finalReportCannotBeReusedAsBootstrapAuthority()
+    public void nonBootstrapReportCannotAuthorizeProjection()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Fixture fixture = fixture();
         JsonObject report = fixture.reach.deepCopy();
-        report.addProperty("extractionMode", "FINAL_REPORT");
+        report.addProperty("extractionMode", "UNSUPPORTED_MODE");
         report.addProperty("replayBootstrapOnly", false);
         report.addProperty("reportableFinalReachCondition", true);
         Files.write(fixture.reachPath, report.toString().getBytes(
@@ -624,7 +624,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
 
         try {
             ConcolicPrimitiveBootstrapProjector.project(fixture.arguments());
-            fail("final reach report must not authorize bootstrap replay");
+            fail("non-bootstrap report must not authorize projection");
         } catch (java.io.IOException expected) {
             assertTrue(expected.getMessage(), expected.getMessage().contains(
                     "BOOLEAN_REPORT_IS_NOT_AN_EXACT_BOOTSTRAP_MODEL"));
@@ -1189,7 +1189,7 @@ public class ConcolicPrimitiveBootstrapProjectorTest {
         evidenceRows.add(evidence);
         result.add("caseProjectionEvidence", evidenceRows);
         result.addProperty("authority",
-                "STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_CANONICAL_"
+                "STATIC_JAVA_SCALAR_PORT_PLUS_COMPOSED_SMT_CANONICAL_"
                         + "BINDING_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
         result.addProperty("ordinal", ordinal);
         return result;

@@ -747,7 +747,7 @@ public final class ConcolicPrimitiveBootstrapProjector {
                     || integer(root, "ordinal", -1) != ordinal
                     || !"EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION"
                     .equals(string(root, "projectionRole"))
-                    || !"STATIC_JAVA_SCALAR_PORT_PLUS_FINAL_SMT_"
+                    || !"STATIC_JAVA_SCALAR_PORT_PLUS_COMPOSED_SMT_"
                     .concat("CANONICAL_BINDING_AND_RUNTIME_RELATIONSHIP_"
                             + "DIRECTION_V1").equals(string(root,
                             "authority"))

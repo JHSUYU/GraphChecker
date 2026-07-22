@@ -571,10 +571,12 @@ validate_candidate_outputs() {
   ' "${candidate_manifest}" >/dev/null \
     || die "candidate result incorrectly claims trusted promotion"
   jq -e '
-    .compositionStage == "BOOTSTRAP"
-    and .structurallyComplete == true
-    and .eligibleForBootstrapModel == true
+    .schemaVersion == 1
+    and .kind == "SYMBOLIC_RELATIONSHIP_CANDIDATES"
     and .eligibleForAutomaticVerification == false
+    and (.relationships | type == "array")
+    and (keys | sort) == (["eligibleForAutomaticVerification", "kind",
+      "relationships", "schemaVersion"] | sort)
   ' "${relationships}" >/dev/null \
     || die "candidate relationships claim final eligibility"
 

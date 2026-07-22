@@ -307,6 +307,12 @@ incomplete relations, unsupported expressions, or unbound ports. The result is
 still `CANDIDATE_ONLY`: promotion by a natural, injection-free target replay is
 the explicit remaining TODO.
 
+The composition manifest is the single cross-file artifact authority. It
+fingerprints the actual CLI inputs, emitted SMT, and the complete relationship
+catalog. The catalog itself contains only its schema, candidate array, and
+verification eligibility; it does not mirror the manifest's target identity,
+stage, artifact fingerprints, or a second derived binding id.
+
 `SymbolicRelationshipVerifier` may run an automatic proof only when the
 candidate set says `eligibleForAutomaticVerification=true`. It first requires
 the base formula to be SAT, then classifies a relationship as `DERIVED` only if:

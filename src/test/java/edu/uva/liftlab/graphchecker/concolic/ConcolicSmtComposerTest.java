@@ -33,7 +33,6 @@ public class ConcolicSmtComposerTest {
                     "--fatal-query", fixture.fatal.toString(),
                     "--summaries", fixture.summaries.toString(),
                     "--regions", fixture.regions.toString(),
-                    "--merge-plan", fixture.merge.toString(),
                     "--output", fixture.output.toString(),
                     "--manifest", fixture.manifest.toString(),
                     "--relationships", relationshipsPath.toString(),
@@ -47,10 +46,8 @@ public class ConcolicSmtComposerTest {
                     Files.readAllBytes(relationshipsPath),
                     StandardCharsets.UTF_8)).getAsJsonObject();
 
-            assertTrue(manifest.get("compositionBindingId").getAsString()
-                    .matches("[0-9a-f]{64}"));
-            assertEquals(manifest.get("compositionBindingId").getAsString(),
-                    relationships.get("compositionBindingId").getAsString());
+            assertEquals("COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1",
+                    manifest.get("artifactBindingAuthority").getAsString());
             assertTrue(manifest.has("fatalRegionInstanceId"));
             assertTrue(manifest.has("fatalOccurrence"));
             assertTrue(manifest.has("fatalDesiredOutcome"));
@@ -58,9 +55,12 @@ public class ConcolicSmtComposerTest {
             assertTrue(manifest.has("fatalSolverPathContextId"));
             assertEquals(1, manifest.getAsJsonArray(
                     "summaryInputArtifacts").size());
+            assertEquals(4, relationships.size());
+            assertFalse(relationships.has("fatalRegionInstanceId"));
+            assertFalse(relationships.has("composedSmtArtifact"));
             BooleanReachConditionExtractor.validateArtifactBindings(
                     fixture.output, fixture.regions, relationshipsPath,
-                    manifest, relationships);
+                    manifest);
         } finally {
             folder.delete();
         }
@@ -163,8 +163,6 @@ public class ConcolicSmtComposerTest {
                     .getAsBoolean());
             assertFalse(result.manifest.get(
                     "eligibleToReportAutomaticRelationship").getAsBoolean());
-            assertTrue(result.relationships.get("eligibleForBootstrapModel")
-                    .getAsBoolean());
             assertFalse(result.relationships.get(
                     "eligibleForAutomaticVerification").getAsBoolean());
             assertEquals("STRUCTURALLY_COMPLETE_BOOTSTRAP_COMPOSITION",
@@ -1778,37 +1776,6 @@ public class ConcolicSmtComposerTest {
                 assertFalse(line, line.contains("(=> "));
             }
 
-            ConcolicSmtComposer.SummaryFormulaFragment fragment =
-                    ConcolicSmtComposer.renderSummaryFormulaFragment(
-                            java.util.Collections.<JsonObject>emptyList(),
-                            java.util.Arrays.asList(positive, nonPositive));
-            JsonArray summaryProjections = fragment.catalog.getAsJsonArray(
-                    "summaryProjections");
-            assertEquals(2, summaryProjections.size());
-            JsonObject firstProjection = summaryProjections.get(0)
-                    .getAsJsonObject();
-            JsonObject secondProjection = summaryProjections.get(1)
-                    .getAsJsonObject();
-            JsonObject firstBinding = emittedSymbolBinding(firstProjection,
-                    "producer_value");
-            JsonObject secondBinding = emittedSymbolBinding(secondProjection,
-                    "producer_value");
-            assertEquals("Ref", firstBinding.get("sort").getAsString());
-            assertEquals("Ref", secondBinding.get("sort").getAsString());
-            assertFalse(firstBinding.get("solverSymbol").getAsString()
-                    .equals(secondBinding.get("solverSymbol").getAsString()));
-            assertFalse(firstProjection.getAsJsonArray(
-                    "emittedSymbolBindings").toString().contains(
-                    secondBinding.get("solverSymbol").getAsString()));
-            assertFalse(secondProjection.getAsJsonArray(
-                    "emittedSymbolBindings").toString().contains(
-                    firstBinding.get("solverSymbol").getAsString()));
-            ConcolicSmtComposer.SummaryFormulaFragment rerendered =
-                    ConcolicSmtComposer.renderSummaryFormulaFragment(
-                            java.util.Collections.<JsonObject>emptyList(),
-                            java.util.Arrays.asList(positive, nonPositive));
-            assertEquals(fragment.smtLib, rerendered.smtLib);
-            assertEquals(fragment.catalog, rerendered.catalog);
         } finally {
             folder.delete();
         }
@@ -3939,9 +3906,6 @@ public class ConcolicSmtComposerTest {
             Files.write(fixture.fatal,
                     (fatal.toString() + "\n").getBytes(
                             StandardCharsets.UTF_8));
-            Files.write(fixture.merge,
-                    context.toString().getBytes(StandardCharsets.UTF_8));
-
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
 
@@ -3970,7 +3934,6 @@ public class ConcolicSmtComposerTest {
                             "--fatal-query", fixture.fatal.toString(),
                             "--summaries", fixture.summaries.toString(),
                             "--regions", fixture.regions.toString(),
-                            "--merge-plan", fixture.merge.toString(),
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
@@ -4003,7 +3966,6 @@ public class ConcolicSmtComposerTest {
                             "--fatal-query", fixture.fatal.toString(),
                             "--summaries", fixture.summaries.toString(),
                             "--regions", fixture.regions.toString(),
-                            "--merge-plan", fixture.merge.toString(),
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
@@ -4093,21 +4055,10 @@ public class ConcolicSmtComposerTest {
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), true);
             JsonObject summary = producerSummary(singlePutEffect(), true);
-            JsonObject binding = new JsonObject();
-            binding.addProperty("toRegion", "REGION.F");
-            binding.addProperty("fromRegionInstance",
-                    "REGION.P@fixture#call1");
-            binding.addProperty("toRegionInstance",
-                    "REGION.F@fixture#call2");
-            binding.addProperty("fromOutputPort", "REGION.P.out.0");
-            binding.addProperty("toInputPort", "REGION.F.in.0");
-            binding.addProperty("orderConfirmed", true);
-            binding.addProperty("objectIdentityConfirmed", true);
-            binding.addProperty("writerEventSeq", 30);
-            binding.addProperty("readerEventSeq", 40);
-            binding.addProperty("receiverObjectId", 17);
-            binding.addProperty("selectionAuthority",
-                    "RUNTIME_CONFIRMED_READ_FROM");
+            JsonObject binding = runtimeEdgeBinding("REGION.P",
+                    "REGION.P@fixture#call1", "REGION.P.out.0",
+                    "REGION.F", "REGION.F@fixture#call2",
+                    "REGION.F.in.0", 30, 40, 17);
             JsonArray bindings = new JsonArray();
             bindings.add(binding);
             summary.add("edgeBindings", bindings);
@@ -4119,7 +4070,6 @@ public class ConcolicSmtComposerTest {
                             "--summaries", fixture.summaries.toString(),
                             "--summaries", fixture.summaries.toString(),
                             "--regions", fixture.regions.toString(),
-                            "--merge-plan", fixture.merge.toString(),
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
@@ -4272,37 +4222,17 @@ public class ConcolicSmtComposerTest {
                     "REGION.U@fixture#call0", "REGION.U.out.0",
                     "REGION.P", "REGION.P@fixture#call1",
                     "REGION.P.in.0", 5, 8, 91);
-            JsonObject staleBinding = exactBinding.deepCopy();
-            staleBinding.addProperty("toInputPort",
-                    "<example.Producer: java.util.Map state>");
-            bindings.add(staleBinding);
+            bindings.add(exactBinding);
             upstream.add("edgeBindings", bindings);
             Files.write(fixture.summaries,
                     (intermediate + "\n" + upstream + "\n").getBytes(
                             StandardCharsets.UTF_8));
-
-            Path runtimeBindings = folder.getRoot().toPath().resolve(
-                    "runtime-bindings.jsonl");
-            JsonObject activation = new JsonObject();
-            activation.addProperty("regionId", "REGION.U");
-            activation.addProperty("regionInstanceId",
-                    "REGION.U@fixture#call0");
-            activation.add("requestedOutput", requestedOutput(
-                    "REGION.U.out.0"));
-            JsonArray exactBindings = new JsonArray();
-            exactBindings.add(exactBinding);
-            activation.add("edgeBindings", exactBindings);
-            Files.write(runtimeBindings, (activation + "\n").getBytes(
-                    StandardCharsets.UTF_8));
 
             ConcolicSmtComposer.Arguments bounded =
                     ConcolicSmtComposer.Arguments.parse(new String[]{
                             "--fatal-query", fixture.fatal.toString(),
                             "--summaries", fixture.summaries.toString(),
                             "--regions", fixture.regions.toString(),
-                            "--merge-plan", fixture.merge.toString(),
-                            "--runtime-binding-catalog",
-                            runtimeBindings.toString(),
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
@@ -4319,9 +4249,6 @@ public class ConcolicSmtComposerTest {
                     "resolvedProducerCount").getAsInt());
             assertEquals(1, result.manifest.get(
                     "resolvedRecursiveEdgeCount").getAsInt());
-            assertEquals(1, result.manifest.getAsJsonObject(
-                    "runtimeBindingEnrichment").get(
-                    "refreshedBindingCount").getAsInt());
             JsonArray resolvedEdges = result.manifest.getAsJsonArray(
                     "resolvedEdgeBindings");
             assertEquals(1, resolvedEdges.size());
@@ -4395,7 +4322,6 @@ public class ConcolicSmtComposerTest {
                                     "--fatal-query", fixture.fatal.toString(),
                                     "--summaries", fixture.summaries.toString(),
                                     "--regions", fixture.regions.toString(),
-                                    "--merge-plan", fixture.merge.toString(),
                                     "--output", fixture.output.toString(),
                                     "--manifest", fixture.manifest.toString(),
                                     "--fatal-region", "REGION.F",
@@ -4673,8 +4599,6 @@ public class ConcolicSmtComposerTest {
                             "<example.Flow: int transportedInt>"));
             appendRegion(fixture, region("REGION.U2", "int",
                     "upstreamInt"));
-            appendRegion(fixture, region("REGION.U3", "int",
-                    "configuredSnapshotKey"));
 
             JsonObject p = producerSummary(singlePutEffect(), true);
             p.add("requestedOutput", requestedOutput("REGION.P.out.0"));
@@ -4759,100 +4683,25 @@ public class ConcolicSmtComposerTest {
             u2Bindings.add(u2ToQ);
             u2.add("edgeBindings", u2Bindings);
 
-            // Fold the configured cross-process projection case into this
-            // existing recursive-chain test: U3 has no runtime edge and is
-            // admitted only because the generic connector names one uniform
-            // summary expression and one typed target port.
-            JsonObject u3 = JsonParser.parseString(
-                    producerSummary(singlePutEffect(), false).toString()
-                            .replace("REGION.P", "REGION.U3")
-                            .replace("SUMMARY.P", "SUMMARY.U3")
-                            .replace("ACT.P", "ACT.U3")
-                            .replace("fixture#call1", "fixture#call5"))
-                    .getAsJsonObject();
-
             Files.write(fixture.summaries,
-                    (p + "\n" + q + "\n" + u1 + "\n" + u2 + "\n"
-                            + u3 + "\n")
+                    (p + "\n" + q + "\n" + u1 + "\n" + u2 + "\n")
                             .getBytes(StandardCharsets.UTF_8));
             JsonArray fatalBindings = new JsonArray();
             fatalBindings.add(pToFatal);
             fatalBindings.add(qToFatal);
             installFatalRelations(fixture, fatalBindings);
 
-            JsonObject transport = new JsonObject();
-            transport.addProperty("schemaVersion", 1);
-            transport.addProperty("kind",
-                    "CONFIGURED_TRANSPORT_BINDINGS");
-            transport.addProperty("authority", "FIXTURE_POLICY_V1");
-            JsonObject transportBinding = new JsonObject();
-            transportBinding.addProperty("bindingId",
-                    "SNAPSHOT_KEY_FANOUT");
-            transportBinding.addProperty("authority",
-                    "FIXTURE_POLICY_V1");
-            transportBinding.addProperty("approximation",
-                    "CONFIGURED_FIXTURE_SNAPSHOT");
-            transportBinding.addProperty("includeSourcePathGuards", true);
-            JsonObject transportSource = new JsonObject();
-            transportSource.addProperty("kind",
-                    "UNIFORM_HEAP_EFFECT_EXPRESSION");
-            transportSource.addProperty("regionId", "REGION.U3");
-            transportSource.addProperty("regionInstanceId",
-                    "REGION.U3@fixture#call5");
-            transportSource.addProperty("effectKind", "MAP_PUT");
-            transportSource.addProperty("expressionField",
-                    "keyExpression");
-            transportSource.addProperty("expectedSort", "INT");
-            transportBinding.add("source", transportSource);
-            JsonObject transportTarget = new JsonObject();
-            transportTarget.addProperty("kind", "PORT");
-            transportTarget.addProperty("regionId", "REGION.F");
-            transportTarget.addProperty("regionInstanceId",
-                    "REGION.F@fixture#call2");
-            transportTarget.addProperty("portId", "REGION.F.in.1");
-            transportTarget.addProperty("expectedSort", "INT");
-            JsonArray transportTargets = new JsonArray();
-            transportTargets.add(transportTarget);
-            transportBinding.add("targets", transportTargets);
-            JsonArray transportBindings = new JsonArray();
-            transportBindings.add(transportBinding);
-            transport.add("bindings", transportBindings);
-            JsonObject selectionManifest = new JsonObject();
-            selectionManifest.add("configuredTransportBindings", transport);
-            Files.write(fixture.transport,
-                    selectionManifest.toString().getBytes(
-                            StandardCharsets.UTF_8));
-
             ConcolicSmtComposer.Result result =
                     ConcolicSmtComposer.compose(arguments(fixture));
 
             assertTrue(result.manifest.toString(), result.manifest.get(
                     "structurallyComplete").getAsBoolean());
-            assertEquals(5, result.manifest.get(
+            assertEquals(4, result.manifest.get(
                     "resolvedProducerCount").getAsInt());
             assertEquals(2, result.manifest.get(
                     "resolvedRecursiveEdgeCount").getAsInt());
             assertEquals(4, result.manifest.get(
                     "resolvedEdgeBindingCount").getAsInt());
-            assertEquals(1, result.manifest.get(
-                    "configuredTransportProducerCount").getAsInt());
-            assertEquals(1, result.manifest.get(
-                    "configuredTransportBindingCount").getAsInt());
-            assertEquals(1, result.manifest.get(
-                    "configuredTransportConstraintCount").getAsInt());
-            JsonObject transportAudit = result.manifest.getAsJsonArray(
-                    "configuredTransportBindings").get(0).getAsJsonObject();
-            assertEquals("GUARDS_AND_SELECTED_TERMS_ONLY",
-                    transportAudit.get("sourceProjectionMode").getAsString());
-            assertTrue(transportAudit.get(
-                    "sourcePathGuardsIncluded").getAsBoolean());
-            assertFalse(transportAudit.get(
-                    "sourceHeapTransformerClaimed").getAsBoolean());
-            assertTrue(result.manifest.getAsJsonArray(
-                    "includedSummaries").toString().contains(
-                    "SUMMARY.U3"));
-            assertTrue(result.smtLib.contains(
-                    ":named configured_transport_SNAPSHOT_KEY_FANOUT_0"));
             JsonArray resolvedEdges = result.manifest.getAsJsonArray(
                     "resolvedEdgeBindings");
             assertEquals(4, resolvedEdges.size());
@@ -4943,7 +4792,6 @@ public class ConcolicSmtComposerTest {
                             "--fatal-query", fixture.fatal.toString(),
                             "--summaries", fixture.summaries.toString(),
                             "--regions", fixture.regions.toString(),
-                            "--merge-plan", fixture.merge.toString(),
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
@@ -5009,7 +4857,6 @@ public class ConcolicSmtComposerTest {
                             "--fatal-query", fixture.fatal.toString(),
                             "--summaries", fixture.summaries.toString(),
                             "--regions", fixture.regions.toString(),
-                            "--merge-plan", fixture.merge.toString(),
                             "--output", fixture.output.toString(),
                             "--manifest", fixture.manifest.toString(),
                             "--fatal-region", "REGION.F",
@@ -5104,11 +4951,19 @@ public class ConcolicSmtComposerTest {
         relation.addProperty("requiresOrder", true);
         relation.addProperty("requiresObjectIdentity", true);
         JsonObject binding = new JsonObject();
+        binding.addProperty("relation", "READ_FROM");
+        binding.addProperty("relationKind", "READ_FROM");
         binding.addProperty("orderConfirmed", true);
         binding.addProperty("objectIdentityConfirmed", true);
+        binding.addProperty("fieldReceiverIdentityConfirmed", true);
         binding.addProperty("writeSeq", writeSeq);
         binding.addProperty("readSeq", readSeq);
         binding.addProperty("receiverObjectId", 41);
+        binding.addProperty("writeEvidenceKind", "FIELD_ASSIGNMENT");
+        binding.addProperty("writeEvidenceAuthority",
+                "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1");
+        binding.addProperty("orderAuthority",
+                "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1");
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
         relation.add("selectedBindings", bindings);
@@ -5245,6 +5100,8 @@ public class ConcolicSmtComposerTest {
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", "EDGE." + fromRegion + ".TO."
                 + toRegion);
+        binding.addProperty("relation", "READ_FROM");
+        binding.addProperty("relationKind", "READ_FROM");
         binding.addProperty("fromRegion", fromRegion);
         binding.addProperty("toRegion", toRegion);
         binding.addProperty("fromRegionInstance", fromInstance);
@@ -5256,6 +5113,12 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("receiverObjectId", receiver);
         binding.addProperty("orderConfirmed", true);
         binding.addProperty("objectIdentityConfirmed", true);
+        binding.addProperty("fieldReceiverIdentityConfirmed", true);
+        binding.addProperty("writeEvidenceKind", "FIELD_ASSIGNMENT");
+        binding.addProperty("writeEvidenceAuthority",
+                "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1");
+        binding.addProperty("orderAuthority",
+                "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1");
         binding.addProperty("selectionAuthority",
                 "RUNTIME_CONFIRMED_READ_FROM");
         return binding;
@@ -6218,19 +6081,6 @@ public class ConcolicSmtComposerTest {
                 + " in " + projection);
     }
 
-    private static JsonObject emittedSymbolBinding(JsonObject projection,
-                                                   String rawSymbol) {
-        for (com.google.gson.JsonElement element : projection.getAsJsonArray(
-                "emittedSymbolBindings")) {
-            JsonObject binding = element.getAsJsonObject();
-            if (rawSymbol.equals(binding.get("rawSymbol").getAsString())) {
-                return binding;
-            }
-        }
-        throw new AssertionError("missing emitted symbol " + rawSymbol
-                + " in " + projection);
-    }
-
     private static int countDeclarationLines(String smt, String... fragments) {
         int count = 0;
         for (String line : smt.split("\\r?\\n")) {
@@ -6526,15 +6376,10 @@ public class ConcolicSmtComposerTest {
                 "--fatal-query", fixture.fatal.toString(),
                 "--summaries", fixture.summaries.toString(),
                 "--regions", fixture.regions.toString(),
-                "--merge-plan", fixture.merge.toString(),
                 "--output", fixture.output.toString(),
                 "--manifest", fixture.manifest.toString(),
                 "--fatal-region", "REGION.F",
                 "--activation-id", "ACT.F"));
-        if (Files.isRegularFile(fixture.transport)) {
-            values.add("--configured-transport-bindings");
-            values.add(fixture.transport.toString());
-        }
         return ConcolicSmtComposer.Arguments.parse(
                 values.toArray(new String[0]));
     }
@@ -6645,8 +6490,30 @@ public class ConcolicSmtComposerTest {
                 + "\"edgeId\":\"EDGE.0\","
                 + "\"fromEndpoint\":\"REGION.P.out.0\","
                 + "\"toEndpoint\":\"REGION.F.in.0\","
-                + "\"selectedBindings\":[{\"orderConfirmed\":true,"
-                + "\"writeSeq\":10,\"readSeq\":20}]}]}";
+                + "\"selectedBindings\":[{"
+                + "\"relation\":\"READ_FROM\","
+                + "\"relationKind\":\"READ_FROM\","
+                + "\"fromRegion\":\"REGION.P\","
+                + "\"toRegion\":\"REGION.F\","
+                + "\"fromRegionInstance\":"
+                + "\"REGION.P@fixture#call1\","
+                + "\"toRegionInstance\":"
+                + "\"REGION.F@fixture#call2\","
+                + "\"fromOutputPort\":\"REGION.P.out.0\","
+                + "\"toInputPort\":\"REGION.F.in.0\","
+                + "\"writerEventSeq\":10,\"readerEventSeq\":20,"
+                + "\"writeSeq\":10,\"readSeq\":20,"
+                + "\"receiverObjectId\":41,"
+                + "\"orderConfirmed\":true,"
+                + "\"objectIdentityConfirmed\":true,"
+                + "\"fieldReceiverIdentityConfirmed\":true,"
+                + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
+                + "\"writeEvidenceAuthority\":"
+                + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
+                + "\"orderAuthority\":"
+                + "\"GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1\","
+                + "\"selectionAuthority\":"
+                + "\"RUNTIME_CONFIRMED_READ_FROM\"}]}]}";
         JsonObject fatal = new JsonObject();
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
@@ -6678,7 +6545,6 @@ public class ConcolicSmtComposerTest {
         Files.write(fixture.fatal, (fatal + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
-        Files.write(fixture.merge, context.getBytes(StandardCharsets.UTF_8));
         if (includeProducerSummary) {
             writeSummary(fixture, producerSummary(singlePutEffect(), true));
         } else {
@@ -6691,19 +6557,15 @@ public class ConcolicSmtComposerTest {
         private final Path fatal;
         private final Path summaries;
         private final Path regions;
-        private final Path merge;
         private final Path output;
         private final Path manifest;
-        private final Path transport;
 
         private Fixture(Path root) {
             fatal = root.resolve("fatal.jsonl");
             summaries = root.resolve("summaries.jsonl");
             regions = root.resolve("regions.jsonl");
-            merge = root.resolve("merge.json");
             output = root.resolve("composed.smt2");
             manifest = root.resolve("manifest.json");
-            transport = root.resolve("configured-transport.json");
         }
     }
 }

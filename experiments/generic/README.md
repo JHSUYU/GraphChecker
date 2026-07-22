@@ -15,17 +15,14 @@ GraphChecker checkout:
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties import
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties merge
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties compose
-./run_engine.sh --config experiments/generic/conf/workflow.example.properties solve
 ./run_engine.sh --config experiments/generic/conf/workflow.example.properties reach
 ```
 
-`solve` calls `SymbolicRelationshipVerifier` for the generated relationship
-obligations. `reach` calls `BooleanReachConditionExtractor` and asks the
-configured Z3 executable about every valuation of the automatically discovered
-Boolean root inputs. It writes a machine-readable truth table and canonical
-DNF, then checks the composed SMT plus the Java Boolean domain implies that
-DNF. Neither command accepts handwritten SMT or a caller-provided reachability
-condition.
+`reach` calls `BooleanReachConditionExtractor` and asks the configured Z3
+executable about every valuation of the automatically discovered Boolean root
+inputs. It writes a machine-readable truth table and canonical DNF, then checks
+that the composed SMT plus the Java Boolean domain implies that DNF. It does
+not accept handwritten SMT or a caller-provided reachability condition.
 
 The `reach` stage consumes four authenticated composition artifacts:
 `composed_smt`, `composition_manifest`, `static_regions`, and
@@ -116,8 +113,8 @@ Artifact-specific overrides use the same names shown by `config`, including
 `CAUSYNTH_RAW_RESULTS`, `CAUSYNTH_MERGE_SUMMARIES`,
 `CAUSYNTH_COMPOSE_SUMMARIES`, `CAUSYNTH_COMPOSED_SMT`, and
 `CAUSYNTH_RELATIONSHIP_CANDIDATES`. The reachability output can be relocated
-with `CAUSYNTH_REACH_REPORT`; solver timeout remains shared with relationship
-verification through `CAUSYNTH_SOLVER_TIMEOUT_MS`.
+with `CAUSYNTH_REACH_REPORT`; solver timeout is configured through
+`CAUSYNTH_SOLVER_TIMEOUT_MS`.
 
 Use `--dry-run` or `GRAPH_CHECKER_DRY_RUN=true` to inspect constructed commands.
 For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded,

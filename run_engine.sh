@@ -24,7 +24,6 @@ Config-driven commands:
   import      Strictly import raw concolic runtime results
   merge       Merge imported output paths into guarded region relations
   compose     Compose the fatal query and upstream summaries into SMT-LIB
-  solve       Run generated SMT relationship obligations through Z3
   reach       Project the composed bug path onto finite Boolean root inputs
   workload    Run the configured target workload command
   debug-stage Print an already-produced analyze/workload/schedule/merge/compose artifact
@@ -56,7 +55,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|symbolic_merge_plan|composed_smt|composition_manifest|relationship_candidates|proof_report|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -109,11 +108,9 @@ reset_config() {
   merge_manifest=""
   fatal_queries=""
   compose_summary_inputs=""
-  symbolic_merge_plan=""
   composed_smt=""
   composition_manifest=""
   relationship_candidates=""
-  proof_report=""
   reach_report=""
   fatal_region=""
   fatal_activation_id=""
@@ -198,11 +195,9 @@ apply_environment_overrides() {
   apply_env_override merge_manifest CAUSYNTH_MERGE_MANIFEST
   apply_env_override fatal_queries CAUSYNTH_FATAL_QUERIES
   apply_env_override compose_summary_inputs CAUSYNTH_COMPOSE_SUMMARIES
-  apply_env_override symbolic_merge_plan CAUSYNTH_MERGE_PLAN
   apply_env_override composed_smt CAUSYNTH_COMPOSED_SMT
   apply_env_override composition_manifest CAUSYNTH_COMPOSITION_MANIFEST
   apply_env_override relationship_candidates CAUSYNTH_RELATIONSHIP_CANDIDATES
-  apply_env_override proof_report CAUSYNTH_PROOF_REPORT
   apply_env_override reach_report CAUSYNTH_REACH_REPORT
   apply_env_override fatal_region CAUSYNTH_FATAL_REGION
   apply_env_override fatal_activation_id CAUSYNTH_FATAL_ACTIVATION_ID
@@ -361,11 +356,9 @@ initialize_config() {
   merge_manifest=${merge_manifest:-${schedule_output_dir}/region_relation_merge_manifest.json}
   fatal_queries=${fatal_queries:-${schedule_output_dir}/branch_queries.jsonl}
   compose_summary_inputs=${compose_summary_inputs:-${merged_summaries}}
-  symbolic_merge_plan=${symbolic_merge_plan:-${schedule_output_dir}/symbolic_merge_plan.json}
   composed_smt=${composed_smt:-${schedule_output_dir}/composed_fatal.smt2}
   composition_manifest=${composition_manifest:-${schedule_output_dir}/composed_smt_manifest.json}
   relationship_candidates=${relationship_candidates:-${schedule_output_dir}/symbolic_relationship_candidates.json}
-  proof_report=${proof_report:-${schedule_output_dir}/symbolic_relationship_proofs.json}
   reach_report=${reach_report:-${schedule_output_dir}/boolean_reach_condition.json}
 
   static_regions=$(resolve_path "${static_regions}")
@@ -385,11 +378,9 @@ initialize_config() {
   merge_manifest=$(resolve_path "${merge_manifest}")
   fatal_queries=$(resolve_path "${fatal_queries}")
   compose_summary_inputs=$(resolve_path_list "${compose_summary_inputs}")
-  symbolic_merge_plan=$(resolve_path "${symbolic_merge_plan}")
   composed_smt=$(resolve_path "${composed_smt}")
   composition_manifest=$(resolve_path "${composition_manifest}")
   relationship_candidates=$(resolve_path "${relationship_candidates}")
-  proof_report=$(resolve_path "${proof_report}")
   reach_report=$(resolve_path "${reach_report}")
   if [[ -n "${schedule_summaries}" ]]; then
     schedule_summaries=$(resolve_path "${schedule_summaries}")
@@ -447,7 +438,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries symbolic_merge_plan composed_smt composition_manifest relationship_candidates proof_report reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -597,7 +588,6 @@ do_merge() {
 do_compose() {
   require_file "fatal branch queries" "${fatal_queries}"
   require_file "symbolic regions" "${static_regions}"
-  require_file "symbolic merge plan" "${symbolic_merge_plan}"
   ensure_output_directory "$(dirname "${composed_smt}")"
   PATH_LIST_ARGUMENTS=()
   append_path_list_arguments --summaries "${compose_summary_inputs}"
@@ -610,23 +600,10 @@ do_compose() {
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
     --regions "${static_regions}" \
-    --merge-plan "${symbolic_merge_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --relationships "${relationship_candidates}" \
     "${selection[@]}" "$@"
-}
-
-do_solve() {
-  require_file "composed SMT" "${composed_smt}"
-  require_file "relationship candidates" "${relationship_candidates}"
-  ensure_output_directory "$(dirname "${proof_report}")"
-  run_java_main edu.uva.liftlab.graphchecker.concolic.SymbolicRelationshipVerifier \
-    --smt "${composed_smt}" \
-    --candidates "${relationship_candidates}" \
-    --output "${proof_report}" \
-    --z3 "${z3_bin}" \
-    --timeout-ms "${solver_timeout_ms}" "$@"
 }
 
 do_reach() {
@@ -819,7 +796,8 @@ debug_runtime_artifacts() {
 }
 
 debug_schedule_artifacts() {
-  debug_json_projection symbolic_merge_plan "${symbolic_merge_plan}" '
+  local scheduler_plan="${schedule_output_dir}/symbolic_merge_plan.json"
+  debug_json_projection symbolic_merge_plan "${scheduler_plan}" '
     def relation:
       {edgeId, kind, transportKind, fromRegion, toRegion, fromEndpoint,
        toEndpoint, runtimeStatus,
@@ -892,7 +870,7 @@ debug_compose_artifacts() {
   local path=${composed_smt}
   local bytes lines truncated=false rendered
   if [[ ! -r "${path}" ]]; then
-    debug_log "artifact=final_smt path=${path} status=missing"
+    debug_log "artifact=candidate_smt path=${path} status=missing"
     return 0
   fi
   bytes=$(debug_file_bytes "${path}")
@@ -915,7 +893,7 @@ debug_compose_artifacts() {
       printf "%s", line
       used += length(line)
     }' "${path}")
-  debug_log "artifact=final_smt path=${path} bytes=${bytes} lines=${lines} truncated=${truncated} lineCap=${debug_max_items} byteCap=${debug_max_bytes}"
+  debug_log "artifact=candidate_smt path=${path} bytes=${bytes} lines=${lines} truncated=${truncated} lineCap=${debug_max_items} byteCap=${debug_max_bytes}"
   [[ -z "${rendered}" ]] || printf '%s\n' "${rendered}" >&2
 }
 
@@ -977,7 +955,7 @@ case "${command_name}" in
     initialize_config "${config_file}"
     do_build "$@"
     ;;
-  analyze|schedule|import|merge|compose|solve|reach|workload|config|validate)
+  analyze|schedule|import|merge|compose|reach|workload|config|validate)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
@@ -986,7 +964,6 @@ case "${command_name}" in
       import) do_import "$@" ;;
       merge) do_merge "$@"; debug_after_stage merge ;;
       compose) do_compose "$@"; debug_after_stage compose ;;
-      solve) do_solve "$@" ;;
       reach) do_reach "$@" ;;
       workload) do_workload "$@"; debug_after_stage workload ;;
       config) print_normalized_config ;;
