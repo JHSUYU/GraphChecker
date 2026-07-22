@@ -112,6 +112,9 @@ discovered from runtime-confirmed shared-field read-from evidence; this
 fixture has no declared RPC mapping.
 The terminal artifact is deliberately CANDIDATE_ONLY.  Promoting it to a
 trusted result by a natural replay is a documented follow-up TODO.
+Independent producer regions run concurrently, with two worker processes by
+default. Set CAUSYNTH_REGION_JOBS=N to change the cap; N=1 preserves the
+serial execution order.
 EOF
 }
 
@@ -966,6 +969,59 @@ do_explore_producer() {
   echo "[three-thread-rpc] producer ${channel} path worklist closed after $((iteration - 1)) replay(s)"
 }
 
+run_producer_pipeline() {
+  local channel=$1
+  do_schedule_producer "${channel}"
+  do_instrument "${channel}"
+  run_custom_java "${channel}" false false
+  do_import "${channel}"
+  do_explore_producer "${channel}"
+}
+
+wait_for_producer_batch() {
+  local pid failed=false
+  for pid in "$@"; do
+    if ! wait "${pid}"; then
+      failed=true
+    fi
+  done
+  [[ "${failed}" == "false" ]]
+}
+
+run_producers_parallel() {
+  local channel max_jobs
+  local -a channels producer_pids=()
+  mapfile -t channels < <(discovered_channels)
+  [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
+
+  max_jobs=${CAUSYNTH_REGION_JOBS:-2}
+  [[ "${max_jobs}" =~ ^[1-9][0-9]*$ ]] \
+    || die "CAUSYNTH_REGION_JOBS must be a positive integer"
+  if (( max_jobs > ${#channels[@]} )); then
+    max_jobs=${#channels[@]}
+  fi
+
+  echo "[three-thread-rpc] running ${#channels[@]} producer region(s) with ${max_jobs} worker process(es)"
+  for channel in "${channels[@]}"; do
+    (
+      set -euo pipefail
+      run_producer_pipeline "${channel}"
+      echo "[three-thread-rpc] producer ${channel} pipeline complete"
+    ) &
+    producer_pids+=("$!")
+    if (( ${#producer_pids[@]} >= max_jobs )); then
+      wait_for_producer_batch "${producer_pids[@]}" \
+        || die "producer region pipeline failed"
+      producer_pids=()
+    fi
+  done
+
+  if (( ${#producer_pids[@]} > 0 )); then
+    wait_for_producer_batch "${producer_pids[@]}" \
+      || die "producer region pipeline failed"
+  fi
+}
+
 declared_producer_regions() {
   local channel binding region
   local -a channels
@@ -1244,8 +1300,6 @@ write_candidate_manifest() {
 }
 
 do_candidate() {
-  local channel
-  local -a channels
   require_clean_work_root
   do_prepare
   do_analyze
@@ -1253,14 +1307,7 @@ do_candidate() {
   do_discover
   do_schedule_target
   do_seed_target
-  mapfile -t channels < <(discovered_channels)
-  for channel in "${channels[@]}"; do
-    do_schedule_producer "${channel}"
-    do_instrument "${channel}"
-    run_custom_java "${channel}" false false
-    do_import "${channel}"
-    do_explore_producer "${channel}"
-  done
+  run_producers_parallel
   do_candidate_compose
   do_candidate_solve
   write_candidate_manifest
