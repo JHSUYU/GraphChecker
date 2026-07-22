@@ -1,1 +1,1 @@
-seed_exception: edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$CrossMethodBugReachedException
+exception_target_id: cross-method-fields

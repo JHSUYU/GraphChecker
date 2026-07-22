@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -188,7 +190,8 @@ public final class MixedTypeThreeThreadRpcWorkload {
             receivedB = b;
             received = true;
             if (a > b) {
-                throw new MixedTypeBugReachedException(a, b);
+                throw new @CausynthExceptionTarget("multitype")
+                        MixedTypeBugReachedException(a, b);
             }
         }
     }

@@ -1,4 +1,4 @@
 # Regression target for intraprocedural exception path-condition discovery.
-# The second InvalidToken throw in retrievePassword must include both the
-# non-expired-token precondition and the missing-key guard.
-seed_exception: org.apache.hadoop.security.token.SecretManager$InvalidToken
+# The marked InvalidToken construction in retrievePassword must include both
+# the non-expired-token precondition and the missing-key guard.
+exception_target_id: hdfs-invalid-token-multiguard

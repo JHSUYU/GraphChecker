@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -251,7 +253,8 @@ public final class ContainerThreeThreadRpcWorkload {
             receivedMap = mapValue;
             received = true;
             if (arrayValue > mapValue) {
-                throw new ContainerBugReachedException(arrayValue, mapValue);
+                throw new @CausynthExceptionTarget("containers")
+                        ContainerBugReachedException(arrayValue, mapValue);
             }
         }
     }

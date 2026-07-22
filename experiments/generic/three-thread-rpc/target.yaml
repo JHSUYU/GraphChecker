@@ -1,1 +1,1 @@
-seed_exception: edu.uva.liftlab.graphchecker.fixtures.ThreeThreadRpcWorkload$BugReachedException
+exception_target_id: three-thread-rpc

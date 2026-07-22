@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -167,8 +169,9 @@ public final class DependentScalarThreeThreadWorkload {
             arithmetic = receivedArithmetic;
             text = receivedText;
             if (receivedArithmetic > receivedText) {
-                throw new DependentScalarBugReachedException(
-                        receivedArithmetic, receivedText);
+                throw new @CausynthExceptionTarget("dependent-scalar")
+                        DependentScalarBugReachedException(receivedArithmetic,
+                                receivedText);
             }
         }
     }

@@ -15,6 +15,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class CausynthModuleSupportTest {
@@ -146,7 +147,7 @@ public class CausynthModuleSupportTest {
     }
 
     @Test
-    public void targetResolverPreservesConfigPriorityAndSeedParsing()
+    public void targetResolverPreservesConfigPriorityAndTargetIdParsing()
             throws Exception {
         Path root = temporaryFolder.newFolder("target-resolver").toPath();
         Path target = root.resolve("target.yaml");
@@ -154,7 +155,7 @@ public class CausynthModuleSupportTest {
         Path propertyRepo = root.resolve("property-repo");
         Files.write(target, Arrays.asList(
                 "seed_function: '<example.Main: void run()>'",
-                "seed_exception: \"example.Bug\"",
+                "exception_target_id: request-failure",
                 "seed_variables:",
                 "  - cache",
                 "  - request.getKey()"), StandardCharsets.UTF_8);
@@ -180,12 +181,12 @@ public class CausynthModuleSupportTest {
                     context.moduleDir);
             assertEquals(root.resolve("output").toAbsolutePath().normalize(),
                     context.outputDir);
-            assertEquals("example.Bug", context.seedException);
+            assertNull(context.seedException);
+            assertEquals("request-failure", context.exceptionTargetId);
             assertEquals("<example.Main: void run()>", context.seedFunction);
             assertEquals(Arrays.asList("cache", "request.getKey()"),
                     context.seedVariables);
-            assertEquals("EXCEPTION_AUTO", context.seedMode());
-            assertEquals("throws example.Bug", context.seedPredicate());
+            assertEquals("VARIABLE", context.seedMode());
             assertEquals("fixture-scope", context.analysisScope);
             assertEquals("left=right", CausynthTargetResolver.readConfig(
                     config.toString()).get("value_with_equals"));
@@ -195,8 +196,8 @@ public class CausynthModuleSupportTest {
 
         CausynthTargetContext variables = new CausynthTargetContext(root,
                 root, root, target, Arrays.asList("cache",
-                "request.getKey()"), null, null, "", null);
-        assertEquals("VARIABLE_COMPATIBILITY", variables.seedMode());
+                "request.getKey()"), null, null, null, "", null);
+        assertEquals("VARIABLE", variables.seedMode());
         assertEquals("cache.get(request.getKey()) == null",
                 variables.seedPredicate());
         assertEquals("getKey", variables.seedKeyMethodName());

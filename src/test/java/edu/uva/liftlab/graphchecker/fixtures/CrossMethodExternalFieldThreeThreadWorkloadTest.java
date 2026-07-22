@@ -221,8 +221,8 @@ public class CrossMethodExternalFieldThreeThreadWorkloadTest {
                 .getName()));
         assertTrue(configuration.contains(" false false"));
         assertFalse(configuration.contains("rpc_mapping_file"));
-        assertTrue(targetSpec.contains(CrossMethodExternalFieldThreeThreadWorkload
-                .CrossMethodBugReachedException.class.getName()));
+        assertEquals("exception_target_id: cross-method-fields",
+                targetSpec.trim());
     }
 
     private static int bounded(int value) {

@@ -115,12 +115,6 @@ public final class CausynthPipeline {
 
     public void run() throws IOException {
         CausynthTargetContext target = CausynthTargetResolver.resolve(options);
-        if (!target.hasSeed()) {
-            LOG.info("Seed backward analysis skipped: no seed_exception or seed_variables in {}",
-                    target.specPath);
-            return;
-        }
-
         String reuseManifest = stringValue(firstNonBlank(
                 System.getProperty(STATIC_REUSE_MANIFEST_PROPERTY),
                 System.getenv(STATIC_REUSE_MANIFEST_ENV)));
@@ -133,6 +127,19 @@ public final class CausynthPipeline {
             }
             LOG.info("Frozen concolic static catalog not used ({}); "
                     + "running the complete static pipeline", fallback);
+        }
+
+        ExceptionTargetSite exceptionTarget =
+                ExceptionTargetAnnotationScanner.select(
+                        options.getInputList(), target.exceptionTargetId);
+        if (exceptionTarget != null) {
+            target = target.withExceptionTarget(exceptionTarget);
+        }
+        if (!target.hasSeed()) {
+            LOG.info("Seed backward analysis skipped: no "
+                    + "@CausynthExceptionTarget or seed_variables in {}",
+                    target.specPath);
+            return;
         }
 
         LOG.info("Seed backward analysis starts in {} mode from {}",

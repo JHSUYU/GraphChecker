@@ -14,12 +14,15 @@ final class CausynthTargetContext {
     final List<String> seedVariables;
     final String seedFunction;
     final String seedException;
+    final String exceptionTargetId;
+    final ExceptionTargetSite exceptionTargetSite;
     final String analysisScope;
     final Path rpcMappingFile;
 
     CausynthTargetContext(Path repoRoot, Path moduleDir, Path outputDir,
                           Path specPath, List<String> seedVariables,
-                          String seedFunction, String seedException,
+                          String seedFunction, String exceptionTargetId,
+                          ExceptionTargetSite exceptionTargetSite,
                           String analysisScope, Path rpcMappingFile) {
         this.repoRoot = repoRoot;
         this.moduleDir = moduleDir;
@@ -27,9 +30,18 @@ final class CausynthTargetContext {
         this.specPath = specPath;
         this.seedVariables = seedVariables;
         this.seedFunction = seedFunction;
-        this.seedException = seedException;
+        this.exceptionTargetId = exceptionTargetId;
+        this.exceptionTargetSite = exceptionTargetSite;
+        this.seedException = exceptionTargetSite == null
+                ? null : exceptionTargetSite.exceptionClass;
         this.analysisScope = analysisScope;
         this.rpcMappingFile = rpcMappingFile;
+    }
+
+    CausynthTargetContext withExceptionTarget(ExceptionTargetSite site) {
+        return new CausynthTargetContext(repoRoot, moduleDir, outputDir,
+                specPath, seedVariables, seedFunction, exceptionTargetId,
+                site, analysisScope, rpcMappingFile);
     }
 
     boolean hasSeed() {
@@ -38,12 +50,12 @@ final class CausynthTargetContext {
     }
 
     boolean exceptionSeeded() {
-        return seedException != null && !seedException.trim().isEmpty();
+        return exceptionTargetSite != null;
     }
 
     String seedMode() {
         return exceptionSeeded()
-                ? "EXCEPTION_AUTO" : "VARIABLE_COMPATIBILITY";
+                ? "EXCEPTION_ANNOTATION" : "VARIABLE";
     }
 
     String seedDescription() {

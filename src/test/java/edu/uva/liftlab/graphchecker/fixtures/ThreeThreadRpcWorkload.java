@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -219,7 +221,8 @@ public final class ThreeThreadRpcWorkload {
             receivedB = b;
             received = true;
             if (a > b) {
-                throw new BugReachedException(a, b);
+                throw new @CausynthExceptionTarget("three-thread-rpc")
+                        BugReachedException(a, b);
             }
         }
     }

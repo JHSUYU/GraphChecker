@@ -1,1 +1,1 @@
-seed_exception: edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$DependentScalarBugReachedException
+exception_target_id: dependent-scalar

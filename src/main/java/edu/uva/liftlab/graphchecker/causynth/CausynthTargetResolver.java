@@ -57,8 +57,9 @@ final class CausynthTargetResolver {
                 config.get("rpc_mapping_file"),
                 config.get("causynth_rpc_mapping_file"));
         return new CausynthTargetContext(repo, module, output, specPath,
-                spec.seedVariables, spec.seedFunction, spec.seedException,
-                scope, rpcMapping == null ? null : Paths.get(rpcMapping)
+                spec.seedVariables, spec.seedFunction,
+                spec.exceptionTargetId, null, scope,
+                rpcMapping == null ? null : Paths.get(rpcMapping)
                 .toAbsolutePath().normalize());
     }
 
@@ -101,13 +102,13 @@ final class CausynthTargetResolver {
     private static final class TargetSpec {
         private final List<String> seedVariables;
         private final String seedFunction;
-        private final String seedException;
+        private final String exceptionTargetId;
 
         private TargetSpec(List<String> seedVariables, String seedFunction,
-                           String seedException) {
+                           String exceptionTargetId) {
             this.seedVariables = seedVariables;
             this.seedFunction = seedFunction;
-            this.seedException = seedException;
+            this.exceptionTargetId = exceptionTargetId;
         }
 
         private static TargetSpec load(Path path) throws IOException {
@@ -116,7 +117,7 @@ final class CausynthTargetResolver {
             }
             List<String> variables = new ArrayList<>();
             String seedFunction = null;
-            String seedException = null;
+            String exceptionTargetId = null;
             boolean inSeedVariables = false;
             for (String line : Files.readAllLines(path,
                     StandardCharsets.UTF_8)) {
@@ -134,10 +135,15 @@ final class CausynthTargetResolver {
                             || "seed_method".equals(key)) {
                         seedFunction = value;
                     }
+                    if ("exception_target_id".equals(key)) {
+                        exceptionTargetId = value;
+                    }
                     if ("seed_exception".equals(key)
                             || "target_exception".equals(key)
                             || "exception".equals(key)) {
-                        seedException = value;
+                        throw new IOException(key + " was removed; annotate "
+                                + "the exact construction with "
+                                + "@CausynthExceptionTarget instead");
                     }
                     inSeedVariables = false;
                     continue;
@@ -154,7 +160,8 @@ final class CausynthTargetResolver {
                     }
                 }
             }
-            return new TargetSpec(variables, seedFunction, seedException);
+            return new TargetSpec(variables, seedFunction,
+                    exceptionTargetId);
         }
 
         private static String unquote(String value) {

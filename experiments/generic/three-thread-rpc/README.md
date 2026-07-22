@@ -8,6 +8,16 @@ Every execution creates exactly three application worker threads:
 - the consumer calls `getRPCFromA()` and `getRPCFromB()`, then throws
   `BugReachedException` on the target comparison edge.
 
+The target construction itself is the static-analysis entry point:
+
+```java
+throw new @CausynthExceptionTarget("three-thread-rpc")
+        BugReachedException(a, b);
+```
+
+The fixture target file contains only the marker id. It does not repeat the
+exception class or ask static analysis to search every throw site.
+
 The producer workers rendezvous inside their worker frames, proving that both
 are concurrently live before either computation proceeds. The harness joins
 both producer threads to `TERMINATED` while the consumer is still `NEW`, and
@@ -64,7 +74,8 @@ The runner deliberately has no Maven/JUnit command. `run.sh all` recompiles
 the selected fixture and performs only these evidence-gated end-to-end stages:
 
 1. Compile GraphChecker and the fixture, isolate the selected fixture classes,
-   perform static analysis, instrument the trace, and execute a non-bug
+   resolve the exact classfile exception marker, perform a backward static
+   slice from that construction, instrument the trace, and execute a non-bug
    discovery seed.
 2. Resolve every producer and the common consumer target from exact runtime
    shared-field read-from bindings. Re-slice the frozen graph inside the

@@ -220,6 +220,38 @@ placeholder 或 unforced environment requirement。2026-07-18 从空 work root �
 
 ## 当前参考工作负载
 
+### 用 annotation 精确标记 exception target
+
+应用代码不再通过 `target.yaml` 中的 exception class 触发一次全局 throw/source 搜索。
+Java 8 不允许直接给 `throw` statement 加 annotation，因此目标标记放在 exception
+construction 的 type-use 位置：
+
+```java
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
+if (a > b) {
+    throw new @CausynthExceptionTarget("three-thread-rpc")
+            BugReachedException(a, b);
+}
+```
+
+`@CausynthExceptionTarget` 使用 `RetentionPolicy.CLASS`，不产生运行时行为。GraphChecker
+直接读取 classfile 的 `NEW` type annotation，得到 declaring class、JVM method descriptor、
+exception type、source line、bytecode instruction index 和同类型 construction ordinal，再将
+该唯一位置解析到对应的 Soot method/Jimple throw。静态 backward slice 因而从这一点开始，
+不再扫描源码寻找同名 exception，也不再把同类型的其他 throw 当成候选。
+
+当一个输入 class tree 有多个 marker 时，`target.yaml` 只用稳定 id 选择一个：
+
+```yaml
+exception_target_id: three-thread-rpc
+```
+
+未提供 id 时必须恰好只有一个 marker；缺失、重复或无法唯一映射到 Jimple throw 都会
+fail closed。旧的 `seed_exception`/`target_exception` 配置入口已删除。annotation 只消除
+目标定位上的重复确认；跨线程 producer、read-from、顺序、对象/值 identity 和 runtime
+instance 仍必须由原有静态/运行时证据验证。
+
 三线程 fixture 位于
 `src/test/java/edu/uva/liftlab/graphchecker/fixtures/ThreeThreadRpcWorkload.java`：
 
@@ -331,8 +363,10 @@ R_region(in, out) =
 ## 自动分析流程
 
 ```text
-Soot 静态分析
-  -> region.in/out、output slice、候选 region edges
+classfile exception annotation
+  -> 唯一 target NEW/method/Jimple throw
+Soot annotation-directed 静态分析
+  -> 从 target 反向得到 region.in/out、output slice、候选 region edges
 运行时 discovery trace
   -> activation、thread context、branch event、精确 read-from
 Scheduler

@@ -4921,7 +4921,7 @@ public class CausynthPipelineTest {
         CausynthTargetContext target = new CausynthTargetContext(
                 current, current,
                 current, current, Collections.emptyList(), null, null,
-                analysisScope, rpcMappingFile);
+                null, analysisScope, rpcMappingFile);
         Class<?> analyzerClass = SeedBackwardStaticAnalyzer.class;
         Constructor<?> constructor = analyzerClass.getDeclaredConstructor(
                 CausynthTargetContext.class);

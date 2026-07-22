@@ -1,1 +1,1 @@
-seed_exception: edu.uva.liftlab.graphchecker.fixtures.ThreeThreadRpcScenarioWorkload$DependentMergeBugReachedException
+exception_target_id: dependent-merge

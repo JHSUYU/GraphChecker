@@ -852,6 +852,10 @@ final class SeedBackwardStaticAnalyzer {
         CausynthAnalysisResult result = new CausynthAnalysisResult();
         result.targetResolved.put("seedMode", target.seedMode());
         result.targetResolved.put("seedException", target.seedException);
+        result.targetResolved.put("exceptionTarget",
+                target.exceptionTargetSite == null
+                        ? Collections.emptyMap()
+                        : target.exceptionTargetSite.toMap());
         result.targetResolved.put("seedVariables", target.seedVariables);
         result.targetResolved.put("seedFunction", target.seedFunction);
         result.targetResolved.put("seedPredicate", target.seedPredicate());
@@ -864,9 +868,11 @@ final class SeedBackwardStaticAnalyzer {
         if (target.exceptionSeeded()) {
             result.seeds.add(object(
                     "id", "seed.exception_target",
-                    "kind", "exception_target",
+                    "kind", "annotated_exception_target",
                     "exception", target.seedException,
-                    "discovery", "STATIC_THROW_GUARD_AND_PAYLOAD"));
+                    "site", target.exceptionTargetSite.toMap(),
+                    "discovery",
+                    "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
         } else {
             result.seeds.add(object(
                     "id", "seed.local_condition",
@@ -935,7 +941,9 @@ final class SeedBackwardStaticAnalyzer {
         result.cells.addAll(collectCells());
         result.traceMethods.addAll(collectTraceMethods());
         result.slices.put("strategy",
-                "seed-only backward static analysis over Jimple def-use, calls, field writers, RPC mappings, and hard-coded SASL handshake dataflow");
+                target.exceptionSeeded()
+                        ? "annotation-directed backward static analysis from one exact exception construction"
+                        : "variable-directed backward static analysis over Jimple def-use and cross-region data flow");
         result.slices.put("candidateClassCount", candidateClasses.size());
         result.slices.put("rpcMappingCount", emittedRpcMappings.size());
         result.slices.put("staticPortMappingCount", staticPortMappings.size());
@@ -1157,9 +1165,11 @@ final class SeedBackwardStaticAnalyzer {
                 new ArrayList<>(discoveredExceptionMethods));
         result.targetResolved.put("discoveredSeedVariables",
                 new ArrayList<>(discoveredExceptionVariables));
-        if (target.exceptionSeeded() && discoveredExceptionSeeds.isEmpty()) {
-            throw new IllegalStateException("No direct throw site found for seed exception "
-                    + target.seedException + " in the loaded analysis scope");
+        if (target.exceptionSeeded() && discoveredExceptionSeeds.size() != 1) {
+            throw new IllegalStateException("Annotated exception target did "
+                    + "not resolve to exactly one Jimple throw: "
+                    + target.exceptionTargetSite.stableIdentity()
+                    + "; matches=" + discoveredExceptionSeeds.size());
         }
     }
 
@@ -1391,15 +1401,18 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private Set<String> findCandidateClasses() throws IOException {
+        if (target.exceptionSeeded()) {
+            return Collections.singleton(
+                    target.exceptionTargetSite.className);
+        }
         Set<String> sourceClasses = sourceClassesTouchingSeeds();
         Set<String> candidates = new LinkedHashSet<>();
         for (SootClass sootClass : Scene.v().getApplicationClasses()) {
             String className = sootClass.getName();
             if (classNameTouchesSeed(className)
                     || sourceClassMatches(sourceClasses, className)
-                    || (sourceClasses.isEmpty() && classFieldsTouchSeed(sootClass))
-                    || (target.exceptionSeeded() && sourceClasses.isEmpty()
-                    && classDirectlyThrowsSeedException(sootClass))) {
+                    || (sourceClasses.isEmpty()
+                    && classFieldsTouchSeed(sootClass))) {
                 candidates.add(className);
             }
         }
@@ -1438,13 +1451,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private boolean sourceMatchesSeedSearch(String text) {
-        if (target.exceptionSeeded()) {
-            String simpleName = simpleClassName(target.seedException);
-            return Pattern.compile("\\bnew\\s+(?:"
-                    + Pattern.quote(target.seedException) + "|"
-                    + Pattern.quote(simpleName) + ")\\s*\\(")
-                    .matcher(text).find();
-        }
         if (target.seedFunction != null && !target.seedFunction.isEmpty()) {
             return sourceContainsFunction(text, target.seedFunction);
         }
@@ -1473,9 +1479,6 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private boolean classNameTouchesSeed(String className) {
-        if (target.exceptionSeeded()) {
-            return target.seedException.equals(className);
-        }
         return containsAny(className, target.seedVariables);
     }
 
@@ -1491,43 +1494,9 @@ final class SeedBackwardStaticAnalyzer {
 
     private boolean classFieldsTouchSeed(SootClass sootClass) {
         for (SootField field : sootClass.getFields()) {
-            if (target.exceptionSeeded()
-                    && exceptionTypeMatches(field.getType().toString())) {
-                return true;
-            }
             if (containsAny(field.getName(), target.seedVariables)
                     || containsAny(field.getSignature(), target.seedVariables)) {
                 return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean classDirectlyThrowsSeedException(SootClass sootClass) {
-        for (SootMethod method : sootClass.getMethods()) {
-            if (!method.isConcrete()) {
-                continue;
-            }
-            Body body;
-            try {
-                body = method.retrieveActiveBody();
-            } catch (RuntimeException ignored) {
-                continue;
-            }
-            for (Unit unit : body.getUnits()) {
-                if (unit instanceof ThrowStmt
-                        && exceptionTypeMatches(((ThrowStmt) unit).getOp()
-                        .getType().toString())) {
-                    return true;
-                }
-                if (unit instanceof Stmt && ((Stmt) unit).containsInvokeExpr()) {
-                    MethodSig invoked = parseMethodSig(((Stmt) unit).getInvokeExpr()
-                            .getMethodRef().getSignature());
-                    if (invoked != null && "<init>".equals(invoked.name)
-                            && exceptionTypeMatches(invoked.owner)) {
-                        return true;
-                    }
-                }
             }
         }
         return false;
@@ -1688,10 +1657,15 @@ final class SeedBackwardStaticAnalyzer {
         int seedIndex = 0;
         for (Map.Entry<String, List<Fact>> entry : factsByMethod.entrySet()) {
             String method = entry.getKey();
+            if (!target.exceptionTargetSite.methodSignature.equals(method)) {
+                continue;
+            }
             List<Fact> facts = entry.getValue();
             for (int throwIndex = 0; throwIndex < facts.size(); throwIndex++) {
                 Fact throwFact = facts.get(throwIndex);
-                if (!isTargetExceptionThrow(facts, throwIndex)) {
+                ExceptionConstruction construction =
+                        annotatedExceptionConstruction(facts, throwIndex);
+                if (construction == null) {
                     continue;
                 }
 
@@ -1711,24 +1685,20 @@ final class SeedBackwardStaticAnalyzer {
                     discoveredExceptionVariables.add(thrownValue);
                     addEdge("seed_exception_throw", thrownValue, exceptionNode,
                             method, throwFact,
-                            "direct throw of configured seed exception");
+                            "direct throw at annotated exception target");
                 }
 
-                ExceptionConstruction construction = findExceptionConstruction(
-                        facts, throwIndex, throwStmt.getOp().toString());
-                if (construction != null) {
-                    for (String actual : construction.actuals) {
-                        String node = canonical(method, actual);
-                        if (ignoreNode(node)) {
-                            continue;
-                        }
-                        methodRelevant.add(node);
-                        payloadVariables.add(node);
-                        discoveredExceptionVariables.add(node);
-                        addEdge("exception_payload_argument", node, exceptionNode,
-                                method, construction.fact,
-                                "exception constructor payload contributes to thrown value");
+                for (String actual : construction.actuals) {
+                    String node = canonical(method, actual);
+                    if (ignoreNode(node)) {
+                        continue;
                     }
+                    methodRelevant.add(node);
+                    payloadVariables.add(node);
+                    discoveredExceptionVariables.add(node);
+                    addEdge("exception_payload_argument", node, exceptionNode,
+                            method, construction.fact,
+                            "exception constructor payload contributes to thrown value");
                 }
 
                 for (ExceptionGuard guard : controllingGuards(method, throwFact)) {
@@ -1789,11 +1759,13 @@ final class SeedBackwardStaticAnalyzer {
                         "line", throwFact.line,
                         "unitIndex", throwFact.unitIndex,
                         "throwUnit", throwFact.unitText,
+                        "annotation", target.exceptionTargetSite.toMap(),
                         "throwVariables", new ArrayList<>(throwVariables),
                         "payloadVariables", new ArrayList<>(payloadVariables),
                         "guardVariables", new ArrayList<>(guardVariables),
                         "pathGuards", pathGuards,
-                        "authority", "STATIC_EXCEPTION_CAUSALITY"));
+                        "authority",
+                        "CLASSFILE_ANNOTATED_EXCEPTION_CAUSALITY_V1"));
             }
         }
         LOG.info("Discovered {} direct throw sites for {} in {} methods",
@@ -1801,17 +1773,41 @@ final class SeedBackwardStaticAnalyzer {
                 discoveredExceptionMethods.size());
     }
 
-    private boolean isTargetExceptionThrow(List<Fact> facts, int throwIndex) {
+    private ExceptionConstruction annotatedExceptionConstruction(
+            List<Fact> facts, int throwIndex) {
         Fact fact = facts.get(throwIndex);
         if (!(fact.unit instanceof ThrowStmt)) {
-            return false;
+            return null;
         }
         ThrowStmt stmt = (ThrowStmt) fact.unit;
-        if (exceptionTypeMatches(stmt.getOp().getType().toString())) {
-            return true;
+        ExceptionConstruction construction = findExceptionConstruction(facts,
+                throwIndex, stmt.getOp().toString());
+        if (construction == null) {
+            return null;
         }
-        return findExceptionConstruction(facts, throwIndex,
-                stmt.getOp().toString()) != null;
+        int ordinal = 0;
+        for (Fact candidate : facts) {
+            MethodSig invoked = parseMethodSig(candidate.invoke);
+            if (invoked == null || !"<init>".equals(invoked.name)
+                    || !target.seedException.equals(invoked.owner)) {
+                continue;
+            }
+            if (candidate == construction.fact) {
+                if (ordinal != target.exceptionTargetSite
+                        .exceptionConstructionOrdinal) {
+                    return null;
+                }
+                int annotatedLine = target.exceptionTargetSite.sourceLine;
+                if (annotatedLine > 0 && construction.fact.line > 0
+                        && annotatedLine != construction.fact.line
+                        && annotatedLine != fact.line) {
+                    return null;
+                }
+                return construction;
+            }
+            ordinal++;
+        }
+        return null;
     }
 
     private ExceptionConstruction findExceptionConstruction(List<Fact> facts,

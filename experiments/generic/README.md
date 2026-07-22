@@ -34,6 +34,22 @@ The `reach` stage consumes four authenticated composition artifacts:
 `reach_max_valuations` (default `4096`) bound exhaustive enumeration; exceeding
 either limit produces an incomplete report instead of silently sampling.
 
+## Exception target annotation
+
+The application marks the exact failing construction with the Java 8
+type-use annotation shipped by GraphChecker:
+
+```java
+throw new @CausynthExceptionTarget("request-failure") RequestException();
+```
+
+The analyzer reads that marker from the class file and starts its backward
+slice at the one matching Jimple throw. `target.yaml` may contain
+`exception_target_id: request-failure` to select among multiple markers in one
+input class tree. With no id there must be exactly one marker. The exception
+type is taken from the annotated `NEW`; the removed `seed_exception` and
+`target_exception` keys are rejected rather than searched globally.
+
 ## Paths and configuration
 
 The generic config grammar is one `key=value` per line. It is parsed as data,

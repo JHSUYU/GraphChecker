@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.fixtures;
 
+import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -309,8 +311,9 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
             receivedB = thresholdValue;
             received = true;
             if (producerValue > thresholdValue) {
-                throw new CrossMethodBugReachedException(producerValue,
-                        thresholdValue);
+                throw new @CausynthExceptionTarget("cross-method-fields")
+                        CrossMethodBugReachedException(producerValue,
+                                thresholdValue);
             }
         }
     }
