@@ -324,14 +324,11 @@ public final class ConcolicRegionRuntime {
         engineApi = new EngineApi(
                 testEngineMethod(owner, "startRegion",
                         String.class, String.class),
-                null,
                 testEngineMethod(owner, "symbolize",
                         Object.class, String.class),
-                null,
                 testEngineMethod(owner, "symbolizeField",
                         Object.class, String.class, String.class),
                 testEngineMethod(owner, "expression", Object.class),
-                null,
                 testEngineMethod(owner, "finishRegion"),
                 testEngineMethod(owner, "pathCondition"),
                 testEngineMethod(owner, "pausePathCondition"),
@@ -437,15 +434,15 @@ public final class ConcolicRegionRuntime {
             }
             if (engineStarted) {
                 if (pathConditionPaused) {
-                    // Best effort only: forceEnd is also valid while recording
+                    // Best effort only: cleanupAfterFailure is also valid while recording
                     // is paused, but balancing the API keeps diagnostics clear.
                     try {
                         api.resumePathCondition();
                     } catch (Throwable ignored) {
-                        // forceEnd below owns the definitive cleanup.
+                        // cleanupAfterFailure below owns the definitive cleanup.
                     }
                 }
-                api.forceEnd();
+                api.cleanupAfterFailure();
             }
             releaseSymbolicEngine();
             writeSkipped(activation, "engine start failed: " + rootCause(throwable));
@@ -2001,35 +1998,22 @@ public final class ConcolicRegionRuntime {
                 ? active.objectToken(cursor.key) : 0L;
         long valueObjectToken = cursor.valueKnown
                 ? active.objectToken(cursor.value) : 0L;
-        observation.addProperty("backingMapIdentity",
-                System.identityHashCode(map));
-        observation.addProperty("backingMapIdentityKnown", true);
         observation.addProperty("backingMapObjectToken",
                 backingMapObjectToken);
         observation.addProperty("backingMapObjectTokenKnown", true);
 
         boolean entryKnown = cursor.element instanceof Map.Entry;
-        observation.addProperty("entryIdentity", cursor.element == null ? 0
-                : System.identityHashCode(cursor.element));
-        observation.addProperty("entryIdentityKnown", entryKnown);
         observation.addProperty("entryObjectToken",
                 entryObjectToken);
         observation.addProperty("entryObjectTokenKnown", entryKnown);
         observation.addProperty("entryWasNull", cursor.element == null);
 
-        observation.addProperty("keyIdentity", cursor.keyKnown
-                && cursor.key != null ? System.identityHashCode(cursor.key) : 0);
-        observation.addProperty("keyIdentityKnown", cursor.keyKnown);
         observation.addProperty("keyObjectToken",
                 keyObjectToken);
         observation.addProperty("keyObjectTokenKnown", cursor.keyKnown);
         observation.addProperty("keyWasNull",
                 cursor.keyKnown && cursor.key == null);
 
-        observation.addProperty("valueIdentity", cursor.valueKnown
-                && cursor.value != null
-                ? System.identityHashCode(cursor.value) : 0);
-        observation.addProperty("valueIdentityKnown", cursor.valueKnown);
         observation.addProperty("valueObjectToken",
                 valueObjectToken);
         observation.addProperty("valueObjectTokenKnown", cursor.valueKnown);
@@ -2575,33 +2559,20 @@ public final class ConcolicRegionRuntime {
                 cursor.entryObservationSequence);
         effect.addProperty("entryReadObservationComplete",
                 cursor.entryObservationComplete);
-        effect.addProperty("backingMapIdentity",
-                System.identityHashCode(cursor.binding.map));
-        effect.addProperty("backingMapIdentityKnown", true);
         effect.addProperty("backingMapObjectToken",
                 active.objectToken(cursor.binding.map));
         effect.addProperty("backingMapObjectTokenKnown", true);
-        effect.addProperty("keyIdentity", cursor.keyKnown
-                && cursor.key != null ? System.identityHashCode(cursor.key) : 0);
-        effect.addProperty("keyIdentityKnown", cursor.keyKnown);
         effect.addProperty("keyObjectToken", cursor.keyKnown
                 ? active.objectToken(cursor.key) : 0L);
         effect.addProperty("keyObjectTokenKnown", cursor.keyKnown);
         effect.addProperty("keyWasNull",
                 cursor.keyKnown && cursor.key == null);
-        int valueIdentity = cursor.valueKnown && cursor.value != null
-                ? System.identityHashCode(cursor.value) : 0;
-        effect.addProperty("valueIdentity", valueIdentity);
-        effect.addProperty("valueIdentityKnown", cursor.valueKnown);
-        effect.addProperty("valueObjectToken", cursor.valueKnown
-                ? active.objectToken(cursor.value) : 0L);
+        long valueObjectToken = cursor.valueKnown
+                ? active.objectToken(cursor.value) : 0L;
+        effect.addProperty("valueObjectToken", valueObjectToken);
         effect.addProperty("valueObjectTokenKnown", cursor.valueKnown);
         effect.addProperty("valueWasNull",
                 cursor.valueKnown && cursor.value == null);
-        effect.addProperty("entryIdentity", cursor.element == null ? 0
-                : System.identityHashCode(cursor.element));
-        effect.addProperty("entryIdentityKnown",
-                cursor.element instanceof Map.Entry);
         effect.addProperty("entryObjectToken",
                 active.objectToken(cursor.element));
         effect.addProperty("entryObjectTokenKnown",
@@ -2610,8 +2581,6 @@ public final class ConcolicRegionRuntime {
         boolean entrySet = "ENTRY_SET".equals(cursor.binding.viewKind);
         effect.addProperty("valueRequiredForGuardProvenance", entrySet);
         if (entrySet && cursor.element instanceof Map.Entry) {
-            effect.addProperty("entryIdentity",
-                    System.identityHashCode(cursor.element));
             effect.addProperty("entryBindingAuthority",
                     "JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT");
             effect.addProperty("valueBindingAuthority",
@@ -2770,7 +2739,7 @@ public final class ConcolicRegionRuntime {
         boolean guardValueBindingComplete = !entrySet
                 || cursor.valueExpression != null
                 && cursor.element instanceof Map.Entry
-                && valueIdentity != 0;
+                && valueObjectToken > 0L;
         if (!guardValueBindingComplete) {
             unresolved = appendReason(unresolved,
                     "entry value expression is unavailable for guard provenance");
@@ -4641,7 +4610,7 @@ public final class ConcolicRegionRuntime {
             result.addProperty("engineSummaryError", rootCause(throwable));
         } finally {
             if (!engineFinished) {
-                api.forceEnd();
+                api.cleanupAfterFailure();
             }
             Long current = CURRENT_TOKEN.get();
             if (current != null && current == token) {
@@ -4650,7 +4619,7 @@ public final class ConcolicRegionRuntime {
             releaseSymbolicEngine();
         }
         // If isolation failed before metadata construction, add the minimum
-        // identity only after forceEnd has removed the symbolic VM context.
+        // identity only after cleanup has removed the symbolic VM context.
         if (!result.has("event")) {
             result.addProperty("event", "CONCOLIC_REGION_RESULT");
             result.addProperty("schemaVersion", 1);
@@ -5435,8 +5404,6 @@ public final class ConcolicRegionRuntime {
         result.add("path", GSON.toJsonTree(path));
         result.addProperty("accessOwnerClass", root == null ? "null"
                 : root.getClass().getName());
-        result.addProperty("accessOwnerIdentity", root == null ? 0
-                : System.identityHashCode(root));
         result.addProperty("accessOwnerObjectToken",
                 active.objectToken(root));
         result.addProperty("accessOwnerObjectTokenKnown", root != null);
@@ -5458,7 +5425,6 @@ public final class ConcolicRegionRuntime {
         }
         result.addProperty("available", true);
         result.addProperty("leafOwnerClass", owner.getClass().getName());
-        result.addProperty("leafOwnerIdentity", System.identityHashCode(owner));
         result.addProperty("leafOwnerObjectToken",
                 active.objectToken(owner));
         result.addProperty("leafOwnerObjectTokenKnown", true);
@@ -5483,8 +5449,6 @@ public final class ConcolicRegionRuntime {
         }
         result.addProperty("valueClass", value == null ? "null"
                 : value.getClass().getName());
-        result.addProperty("valueIdentity", value == null ? 0
-                : System.identityHashCode(value));
         result.addProperty("valueObjectToken", active.objectToken(value));
         result.addProperty("valueObjectTokenKnown", value != null);
         appendValueObservation(result, value);
@@ -5506,8 +5470,6 @@ public final class ConcolicRegionRuntime {
                 Collections.singletonList(fieldName)));
         result.addProperty("accessOwnerClass", leafOwner == null ? "null"
                 : leafOwner.getClass().getName());
-        result.addProperty("accessOwnerIdentity", leafOwner == null ? 0
-                : System.identityHashCode(leafOwner));
         result.addProperty("accessOwnerObjectToken",
                 active.objectToken(leafOwner));
         result.addProperty("accessOwnerObjectTokenKnown",
@@ -5530,15 +5492,11 @@ public final class ConcolicRegionRuntime {
         Object value = exact.value;
         result.addProperty("available", true);
         result.addProperty("leafOwnerClass", leafOwner.getClass().getName());
-        result.addProperty("leafOwnerIdentity",
-                System.identityHashCode(leafOwner));
         result.addProperty("leafOwnerObjectToken",
                 active.objectToken(leafOwner));
         result.addProperty("leafOwnerObjectTokenKnown", true);
         result.addProperty("valueClass", value == null ? "null"
                 : value.getClass().getName());
-        result.addProperty("valueIdentity", value == null ? 0
-                : System.identityHashCode(value));
         result.addProperty("valueObjectToken", active.objectToken(value));
         result.addProperty("valueObjectTokenKnown", value != null);
         appendValueObservation(result, value);
@@ -12496,61 +12454,48 @@ public final class ConcolicRegionRuntime {
 
     private static final class EngineApi {
         private final Method startRegion;
-        private final Method startLegacy;
         private final Method symbolizeWithPrefix;
-        private final Method symbolizeLegacy;
         private final Method symbolizeField;
         private final Method getExpression;
-        private final Method getSummary;
         private final Method finishRegion;
         private final Method getPathCondition;
         private final Method pausePathCondition;
         private final Method resumePathCondition;
         private final Method markBranch;
         private final Method getBranchEvents;
-        private final Method endLegacy;
+        private final Method cleanupEnd;
 
-        private EngineApi(Method startRegion, Method startLegacy,
-                          Method symbolizeWithPrefix, Method symbolizeLegacy,
-                          Method symbolizeField,
-                          Method getExpression, Method getSummary,
+        private EngineApi(Method startRegion,
+                          Method symbolizeWithPrefix, Method symbolizeField,
+                          Method getExpression,
                           Method finishRegion, Method getPathCondition,
                           Method pausePathCondition,
                           Method resumePathCondition,
                           Method markBranch, Method getBranchEvents,
-                          Method endLegacy) {
+                          Method cleanupEnd) {
             this.startRegion = startRegion;
-            this.startLegacy = startLegacy;
             this.symbolizeWithPrefix = symbolizeWithPrefix;
-            this.symbolizeLegacy = symbolizeLegacy;
             this.symbolizeField = symbolizeField;
             this.getExpression = getExpression;
-            this.getSummary = getSummary;
             this.finishRegion = finishRegion;
             this.getPathCondition = getPathCondition;
             this.pausePathCondition = pausePathCondition;
             this.resumePathCondition = resumePathCondition;
             this.markBranch = markBranch;
             this.getBranchEvents = getBranchEvents;
-            this.endLegacy = endLegacy;
+            this.cleanupEnd = cleanupEnd;
         }
 
         private boolean available() {
-            return (startRegion != null || startLegacy != null)
-                    && (symbolizeWithPrefix != null || symbolizeLegacy != null)
-                    && (finishRegion != null
-                    || getPathCondition != null && endLegacy != null)
+            return startRegion != null
+                    && symbolizeWithPrefix != null
+                    && finishRegion != null
                     && pausePathCondition != null
                     && resumePathCondition != null;
         }
 
         private void start(String regionId, String activationId) throws Exception {
-            Object status;
-            if (startRegion != null) {
-                status = startRegion.invoke(null, regionId, activationId);
-            } else {
-                status = startLegacy.invoke(null);
-            }
+            Object status = startRegion.invoke(null, regionId, activationId);
             if (status instanceof Number
                     && ((Number) status).longValue() != 0L) {
                 throw new IllegalStateException(
@@ -12560,11 +12505,7 @@ public final class ConcolicRegionRuntime {
         }
 
         private void symbolize(Object value, String prefix) throws Exception {
-            if (symbolizeWithPrefix != null) {
-                symbolizeWithPrefix.invoke(null, value, prefix);
-            } else {
-                symbolizeLegacy.invoke(null, value);
-            }
+            symbolizeWithPrefix.invoke(null, value, prefix);
         }
 
         private void symbolizeField(Object owner, String field, String prefix)
@@ -12584,16 +12525,7 @@ public final class ConcolicRegionRuntime {
         }
 
         private String finish() throws Exception {
-            if (finishRegion != null) {
-                return String.valueOf(finishRegion.invoke(null));
-            }
-            String pc = getPathCondition == null ? "[]"
-                    : String.valueOf(getPathCondition.invoke(null));
-            if (endLegacy != null) {
-                endLegacy.invoke(null);
-            }
-            return "{\"schemaVersion\":1,\"engine\":\"legacy\","
-                    + "\"active\":true,\"pathCondition\":" + pc + "}";
+            return String.valueOf(finishRegion.invoke(null));
         }
 
         private String pathCondition() throws Exception {
@@ -12631,10 +12563,10 @@ public final class ConcolicRegionRuntime {
             return String.valueOf(getBranchEvents.invoke(null));
         }
 
-        private void forceEnd() {
-            if (endLegacy != null) {
+        private void cleanupAfterFailure() {
+            if (cleanupEnd != null) {
                 try {
-                    endLegacy.invoke(null);
+                    cleanupEnd.invoke(null);
                 } catch (Throwable ignored) {
                 }
             }
@@ -12644,13 +12576,10 @@ public final class ConcolicRegionRuntime {
             Class<System> system = System.class;
             return new EngineApi(
                     method(system, "startConcolicRegion", String.class, String.class),
-                    method(system, "startConcolic"),
                     method(system, "symbolize", Object.class, String.class),
-                    method(system, "symbolize", Object.class),
                     method(system, "symbolizeField", Object.class,
                             String.class, String.class),
                     method(system, "getSymbolicExpression", Object.class),
-                    method(system, "getConcolicRegionSummary"),
                     method(system, "finishConcolicRegion"),
                     method(system, "getPathCondition"),
                     method(system, "pauseConcolicPathCondition"),

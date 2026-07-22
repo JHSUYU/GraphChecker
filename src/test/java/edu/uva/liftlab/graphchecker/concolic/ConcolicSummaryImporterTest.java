@@ -22,6 +22,83 @@ import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
     @Test
+    public void canonicalRuntimeEnvelopeRejectsMissingOrMismatchedAuthority()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path root = folder.getRoot().toPath();
+            Path activations = root.resolve("activations.jsonl");
+            Path regions = root.resolve("regions.jsonl");
+
+            JsonObject activation = new JsonObject();
+            activation.addProperty("activationId", "ACT.SCHEMA");
+            activation.addProperty("regionId", "REGION.SCHEMA");
+            write(activations, activation + "\n");
+            JsonObject region = new JsonObject();
+            region.addProperty("regionId", "REGION.SCHEMA");
+            write(regions, region + "\n");
+
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.SCHEMA");
+            raw.addProperty("regionId", "REGION.SCHEMA");
+            raw.addProperty("exitKind", "NORMAL");
+            raw = canonicalRuntimeResultForTest(raw);
+
+            JsonObject[] invalid = new JsonObject[9];
+            String[] expected = new String[]{
+                    "engineSummary must be a JSON object",
+                    "engineSummary.engine must be openjdk8-zero-concolic",
+                    "engineSummary.regionId must exactly match the result",
+                    "engineSummary.activationId must exactly match the result",
+                    "activationId must be a nonempty JSON string",
+                    "regionId must be a nonempty JSON string",
+                    "runtimeHeapEffects must be a JSON array",
+                    "runtimeHeapObservations must be a JSON array",
+                    "dynamicFieldBindings must be a JSON array"};
+            for (int index = 0; index < invalid.length; index++) {
+                invalid[index] = raw.deepCopy();
+            }
+            invalid[0].remove("engineSummary");
+            invalid[1].getAsJsonObject("engineSummary").addProperty(
+                    "engine", "unknown-engine");
+            invalid[2].getAsJsonObject("engineSummary").addProperty(
+                    "regionId", "REGION.OTHER");
+            invalid[3].getAsJsonObject("engineSummary").addProperty(
+                    "activationId", "ACT.OTHER");
+            invalid[4].remove("activationId");
+            invalid[5].addProperty("regionId", 7);
+            invalid[6].remove("runtimeHeapEffects");
+            invalid[7].remove("runtimeHeapObservations");
+            invalid[8].remove("dynamicFieldBindings");
+
+            for (int index = 0; index < invalid.length; index++) {
+                Path caseRoot = root.resolve("case-" + index);
+                Files.createDirectories(caseRoot);
+                Path results = caseRoot.resolve("results.jsonl");
+                Path output = caseRoot.resolve("summaries.jsonl");
+                Path diagnostics = caseRoot.resolve("diagnostics.jsonl");
+                writeVerbatim(results, invalid[index] + "\n");
+                ConcolicSummaryImporter.ImportResult imported =
+                        ConcolicSummaryImporter.importSummaries(
+                                results, activations, regions, output,
+                                diagnostics, caseRoot.resolve("cache"));
+                assertEquals(0, imported.validSummaryCount);
+                assertEquals(1, imported.diagnosticCount);
+                String diagnostic = new String(Files.readAllBytes(
+                        diagnostics), StandardCharsets.UTF_8);
+                assertTrue(diagnostic,
+                        diagnostic.contains("INVALID_RUNTIME_RESULT_SCHEMA"));
+                assertTrue(diagnostic, diagnostic.contains(expected[index]));
+                assertEquals(0, Files.size(output));
+            }
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void tokenValueRefWitnessRequiresExactActivationAndValueToken() {
         JsonObject witness = valueRefWitnessRecord(false);
         assertTrue(ConcolicSummaryImporter.validValueRefWitnessForTests(
@@ -1055,7 +1132,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void normalizesUnconditionalHashMapRemoveNodeShape()
+    public void normalizesPathOnlyHashMapRemoveButFailsClosedWithoutEvidence()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1097,10 +1174,11 @@ public class ConcolicSummaryImporterTest {
                     "heapEffectModel");
             assertEquals(1, model.get("candidateMutationCount").getAsInt());
             assertEquals(0, model.get("unsupportedMutationCount").getAsInt());
-            assertTrue(model.get("complete").getAsBoolean());
-            assertTrue(imported.summary.get("relationallyComplete")
+            assertFalse(model.get("complete").getAsBoolean());
+            assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertEquals(0, imported.diagnostics.trim().length());
+            assertTrue(imported.diagnostics.contains(
+                    "MISSING_RUNTIME_HEAP_EFFECT_PROVENANCE"));
         } finally {
             folder.delete();
         }
@@ -1133,184 +1211,6 @@ public class ConcolicSummaryImporterTest {
             assertEquals("OUTSIDE_REGION_SEMANTIC_METHOD_BOUNDARY",
                     normalization.getAsJsonArray("conditionIndexMap").get(0)
                             .getAsJsonObject().get("reason").getAsString());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void matchesLibraryEffectToUniqueRequestedStateTransformer()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonArray path = new JsonArray();
-            path.add(methodExpression("java/util/HashMap put", 19,
-                    symbolCopy(map), symbol("putKey", "I"),
-                    symbol("putValue", "example/Value")));
-            path.add(methodExpressionAt("java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbol("expiredKey", "java/lang/Integer"),
-                    constant("Y_Z_0", "Z"), constant("Y_Z_0", "Z")));
-            JsonArray methods = new JsonArray();
-            methods.add("<example.Store: void update()>");
-            methods.add("<example.Store: void prune()>");
-            JsonArray causalEdges = new JsonArray();
-            causalEdges.add(causalEdge("DF.WRITE.1",
-                    "<example.Store: void update()>",
-                    "<example.Store: void update()>#u1", "HEAP_WRITE",
-                    "field_mutation"));
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges);
-
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            JsonObject runtimeJoin = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "runtimeHeapEffectJoin");
-            assertTrue(runtimeJoin.get("legacy").getAsBoolean());
-            assertFalse(runtimeJoin.get("declared").getAsBoolean());
-            assertTrue(runtimeJoin.get("complete").getAsBoolean());
-            assertEquals(1, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("uncoveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("edgeFreeVoidMethodCount").getAsInt());
-            assertEquals(0, coverage.get(
-                    "applicationProvenanceMatchedTransformerCount").getAsInt());
-            assertEquals(1, coverage.get("statePortMatchedTransformerCount")
-                    .getAsInt());
-            assertEquals(0, coverage.get("unresolvedStatePortEffectCount")
-                    .getAsInt());
-            JsonObject match = coverage.getAsJsonArray("matches").get(0)
-                    .getAsJsonObject();
-            assertEquals("<example.Store: void prune()>",
-                    match.get("method").getAsString());
-            assertEquals("EDGE_FREE_VOID_SLICE_METHOD",
-                    match.get("obligationKind").getAsString());
-            assertEquals(1, match.getAsJsonArray("effectIds").size());
-            assertTrue(coverage.get("complete").getAsBoolean());
-            assertTrue(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertEquals(0, imported.diagnostics.trim().length());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void joinsRuntimeMapRemoveToExactApplicationHeapWrite()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonObject key = symbol("expiredKey", "java/lang/Integer");
-            JsonArray path = new JsonArray();
-            path.add(methodExpression("java/util/HashMap put", 19,
-                    symbolCopy(map), symbol("putKey", "I"),
-                    symbol("putValue", "example/Value")));
-            JsonObject nativeRemove = methodExpressionAt(
-                    "java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbolCopy(key), constant("Y_Z_0", "Z"),
-                    constant("Y_Z_0", "Z"));
-            path.add(nativeRemove);
-
-            String update = "<example.Store: void update()>";
-            String prune = "<example.Store: void prune()>";
-            JsonArray methods = new JsonArray();
-            methods.add(update);
-            methods.add(prune);
-            JsonArray causalEdges = new JsonArray();
-            causalEdges.add(causalEdge("DF.WRITE.1", update,
-                    update + "#u1", "HEAP_WRITE", "field_mutation"));
-            causalEdges.add(causalEdge("DF.WRITE.2", prune,
-                    prune + "#u5", "HEAP_WRITE", "field_mutation"));
-            causalEdges.add(guardedMutationEdge("DF.GUARD.2", prune,
-                    4, 5, false));
-            JsonArray runtimeEffects = new JsonArray();
-            JsonObject runtimeRemove = runtimeMapRemove(nativeRemove, 1,
-                    map, key, prune, 5);
-            runtimeRemove.addProperty("guardCandidateSiteId", prune + "#u4");
-            runtimeEffects.add(runtimeRemove);
-            JsonArray extraSymbolize = new JsonArray();
-            extraSymbolize.add(fieldAccessAction("REGION.P.in.1", "expiry"));
-            JsonArray branchMappings = new JsonArray();
-            branchMappings.add(branchMapping(prune, 4, 1, false,
-                    symbol("M_J_field_REGION.P.in.1_expiry", "J")));
-            JsonArray fieldObservations = new JsonArray();
-            fieldObservations.add(fieldObservation(
-                    "REGION.P.in.1", "expiry", 42));
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges, runtimeEffects, extraSymbolize,
-                    branchMappings, fieldObservations);
-
-            JsonObject remove = imported.summary.getAsJsonArray("heapEffects")
-                    .get(1).getAsJsonObject();
-            assertEquals("MAP_REMOVE", remove.get("kind").getAsString());
-            assertEquals(prune, remove.get("originMethod").getAsString());
-            assertEquals(5, remove.get("originUnitIndex").getAsInt());
-            assertEquals(prune + "#u5",
-                    remove.get("applicationSiteId").getAsString());
-            assertEquals("EXACT_INDEX_KIND_MAP_KEY_AND_VM_EXPRESSION",
-                    remove.get("runtimeHeapEffectJoinAuthority").getAsString());
-            assertTrue(remove.get("requiresKeyPresent").getAsBoolean());
-            assertEquals(symbol("expiredValue", "example/Value"),
-                    remove.get("removedValueExpression"));
-            assertEquals("JAVA_MAP_ENTRY_FROM_BOUND_ENTRY_SET_NEXT",
-                    remove.get("entryBindingAuthority").getAsString());
-            assertEquals("SAME_MAP_ENTRY_GET_VALUE_AT_NEXT",
-                    remove.get("valueBindingAuthority").getAsString());
-            assertTrue(remove.get("entryValueFieldBindingComplete")
-                    .getAsBoolean());
-            JsonObject fieldBinding = remove.getAsJsonArray(
-                    "entryFieldBindings").get(0).getAsJsonObject();
-            assertEquals("REGION.P.in.1",
-                    fieldBinding.get("fieldSymbol").getAsString());
-            assertEquals("<example.Value: long expiry>",
-                    fieldBinding.get("fieldSignature").getAsString());
-            assertEquals("long",
-                    fieldBinding.get("fieldJavaType").getAsString());
-            assertEquals(42, fieldBinding.get("ownerIdentity").getAsInt());
-            assertEquals("LEGACY_IDENTITY_HASH_EQUALS_REMOVED_ENTRY_VALUE",
-                    fieldBinding.get("authority").getAsString());
-            assertEquals(prune + "#u5", remove.getAsJsonObject(
-                    "applicationProvenance").get("siteId").getAsString());
-
-            JsonObject model = imported.summary.getAsJsonObject(
-                    "heapEffectModel");
-            JsonObject runtimeJoin = model.getAsJsonObject(
-                    "runtimeHeapEffectJoin");
-            assertFalse(runtimeJoin.get("legacy").getAsBoolean());
-            assertTrue(runtimeJoin.get("declared").getAsBoolean());
-            assertEquals(1, runtimeJoin.get("recordCount").getAsInt());
-            assertEquals(1, runtimeJoin.get("joinedCount").getAsInt());
-            assertTrue(runtimeJoin.get("complete").getAsBoolean());
-
-            JsonObject coverage = model.getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertEquals(2, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(coverage + "\n" + imported.diagnostics, 2,
-                    coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("uncoveredWriteSiteCount").getAsInt());
-            assertEquals(1, coverage.get(
-                    "applicationProvenanceMatchedTransformerCount").getAsInt());
-            assertEquals(0, coverage.get("statePortMatchedTransformerCount")
-                    .getAsInt());
-            assertTrue(coverage.get("complete").getAsBoolean());
-            assertTrue(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertEquals(0, imported.diagnostics.trim().length());
         } finally {
             folder.delete();
         }
@@ -1463,7 +1363,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void exactContractUsesOnlyTargetCellWritesAndOuterGuard()
+    public void exactContractDoesNotPromotePathOnlyHeapEffectToEvidence()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1500,14 +1400,14 @@ public class ConcolicSummaryImporterTest {
             assertTrue(coverage.get(
                     "requestedStateTransformerContractValid").getAsBoolean());
             assertEquals(2, coverage.get("declaredWriteSiteCount").getAsInt());
-            assertEquals(2, coverage.get("coveredWriteSiteCount").getAsInt());
-            assertEquals(0, coverage.get("uncoveredWriteSiteCount").getAsInt());
+            assertEquals(1, coverage.get("coveredWriteSiteCount").getAsInt());
+            assertEquals(1, coverage.get("uncoveredWriteSiteCount").getAsInt());
             assertEquals(0, coverage.get("edgeFreeVoidMethodCount").getAsInt());
             assertEquals(1, coverage.get("guardExcludedWriteSiteCount")
                     .getAsInt());
-            assertEquals(1, coverage.get("statePortMatchedTransformerCount")
+            assertEquals(0, coverage.get("statePortMatchedTransformerCount")
                     .getAsInt());
-            assertTrue(coverage.get("complete").getAsBoolean());
+            assertFalse(coverage.get("complete").getAsBoolean());
             assertEquals("HEAP_EFFECT_STATE_TRANSFORMER",
                     imported.summary.getAsJsonObject(
                             "requestedOutputSlice").get(
@@ -1516,9 +1416,10 @@ public class ConcolicSummaryImporterTest {
             assertFalse(coverage.toString().contains(fixture.wrapper));
             assertTrue(coverage.toString().contains(
                     fixture.outerGuardSite));
-            assertTrue(imported.summary.get("relationallyComplete")
+            assertFalse(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
-            assertEquals(0, imported.diagnostics.trim().length());
+            assertTrue(imported.diagnostics.contains(
+                    "UNOBSERVED_DECLARED_HEAP_WRITE"));
         } finally {
             folder.delete();
         }
@@ -1830,10 +1731,10 @@ public class ConcolicSummaryImporterTest {
             assertTrue(proof.toString().contains(fixture.pruneSite));
             assertTrue(proof.toString().contains(fixture.outerGuardSite));
             assertTrue(proof.toString().contains(fixture.innerGuardSite));
-            assertTrue(inactiveExpiry.summary + "\n"
-                            + inactiveExpiry.diagnostics,
-                    inactiveExpiry.summary.get("relationallyComplete")
-                            .getAsBoolean());
+            assertFalse(inactiveExpiry.summary.get("relationallyComplete")
+                    .getAsBoolean());
+            assertTrue(inactiveExpiry.diagnostics.contains(
+                    "UNOBSERVED_DECLARED_HEAP_WRITE"));
 
             MapFixture missingKey = importMapFixture(
                     folder.getRoot().toPath().resolve("key-required"),
@@ -2012,62 +1913,6 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void rejectsEntryFieldObservationFromDifferentMapValue()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonObject key = symbol("expiredKey", "java/lang/Integer");
-            JsonObject nativeRemove = methodExpressionAt(
-                    "java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 20,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbolCopy(key), constant("Y_Z_0", "Z"),
-                    constant("Y_Z_0", "Z"));
-            JsonArray path = new JsonArray();
-            path.add(nativeRemove);
-            String prune = "<example.Store: void prune()>";
-            JsonArray methods = new JsonArray();
-            methods.add(prune);
-            JsonArray causalEdges = new JsonArray();
-            causalEdges.add(causalEdge("DF.WRITE.2", prune,
-                    prune + "#u5", "HEAP_WRITE", "field_mutation"));
-            causalEdges.add(guardedMutationEdge("DF.GUARD.2", prune,
-                    4, 5, false));
-            JsonArray runtimeEffects = new JsonArray();
-            runtimeEffects.add(runtimeMapRemove(nativeRemove, 0,
-                    map, key, prune, 5));
-            JsonArray extraSymbolize = new JsonArray();
-            extraSymbolize.add(fieldAccessAction("REGION.P.in.1", "expiry"));
-            JsonArray branchMappings = new JsonArray();
-            branchMappings.add(branchMapping(prune, 4, 1, false,
-                    symbol("M_J_field_REGION.P.in.1_expiry", "J")));
-            JsonArray fieldObservations = new JsonArray();
-            fieldObservations.add(fieldObservation(
-                    "REGION.P.in.1", "expiry", 99));
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges, runtimeEffects, extraSymbolize,
-                    branchMappings, fieldObservations);
-
-            JsonObject remove = imported.summary.getAsJsonArray("heapEffects")
-                    .get(0).getAsJsonObject();
-            assertFalse(remove.get("entryValueFieldBindingComplete")
-                    .getAsBoolean());
-            assertEquals(0, remove.getAsJsonArray("entryFieldBindings").size());
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "ENTRY_VALUE_FIELD_OWNER_IDENTITY_MISMATCH"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
     public void rejectsAmbiguousRuntimeMapRemoveJoin()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -2147,59 +1992,6 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
                     "INCOMPLETE_RUNTIME_HEAP_EFFECT"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void leavesAmbiguousLibraryEffectProvenanceUnresolved()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonObject map = symbol(
-                    "M_L_field_REGION.P.in.0_example/Store", "L");
-            JsonArray path = new JsonArray();
-            path.add(methodExpression("java/util/HashMap put", 21,
-                    symbolCopy(map), symbol("putKey", "I"),
-                    symbol("putValue", "example/Value")));
-            path.add(methodExpressionAt("java/util/HashMap remove",
-                    "java.util.HashMap$HashIterator.remove()", 22,
-                    symbolCopy(map), constant("Y_I_7", "I"),
-                    symbol("expiredKey", "java/lang/Integer"),
-                    constant("Y_Z_0", "Z"), constant("Y_Z_0", "Z")));
-            JsonArray methods = new JsonArray();
-            methods.add("<example.Store: void update()>");
-            methods.add("<example.Store: void prune()>");
-            methods.add("<example.Store: void compact()>");
-            JsonArray causalEdges = new JsonArray();
-            causalEdges.add(causalEdge("DF.WRITE.1",
-                    "<example.Store: void update()>",
-                    "<example.Store: void update()>#u1", "HEAP_WRITE",
-                    "field_mutation"));
-
-            MapFixture imported = importMapFixture(
-                    folder.getRoot().toPath(), path, true, new JsonArray(),
-                    methods, causalEdges);
-
-            JsonObject coverage = imported.summary.getAsJsonObject(
-                    "heapEffectModel").getAsJsonObject(
-                    "staticTransformerCoverage");
-            assertFalse(coverage.get(
-                    "exactRequestedStateTransformerContract").getAsBoolean());
-            assertTrue(coverage.get("policy").getAsString().contains(
-                    "LEGACY_FAIL_CLOSED"));
-            assertEquals(0, coverage.get("statePortMatchedTransformerCount")
-                    .getAsInt());
-            assertEquals(1, coverage.get("unresolvedStatePortEffectCount")
-                    .getAsInt());
-            assertEquals(2, coverage.get("edgeFreeVoidMethodCount").getAsInt());
-            assertFalse(coverage.get("complete").getAsBoolean());
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "UNRESOLVED_REQUESTED_HEAP_EFFECT_PROVENANCE"));
         } finally {
             folder.delete();
         }
@@ -2624,11 +2416,14 @@ public class ConcolicSummaryImporterTest {
             JsonObject binding = observation.getAsJsonArray(
                     "entryFieldBindings").get(0).getAsJsonObject();
             assertEquals("REGION.P.in.1",
-                    binding.get("fieldSymbol").getAsString());
+                    binding.get("baseInputSymbol").getAsString());
+            assertTrue(binding.get("dynamicFieldSymbol").getAsString()
+                    .startsWith("REGION.P.in.1.field."));
             assertEquals("<example.Value: long expiry>",
                     binding.get("fieldSignature").getAsString());
             assertEquals("long", binding.get("fieldJavaType").getAsString());
-            assertEquals("ACTIVATION_LOCAL_OBJECT_TOKEN_EQUALS_ENTRY_VALUE",
+            assertEquals("RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_"
+                            + "AND_ENTRY_VALUE_TOKEN_JOIN",
                     binding.get("authority").getAsString());
 
             JsonObject model = imported.summary.getAsJsonObject(
@@ -3059,13 +2854,24 @@ public class ConcolicSummaryImporterTest {
             JsonArray effects = new JsonArray();
             effects.add(runtimeMapRemoveLinked(nativeRemove, map, key,
                     prune, 5, read, 2));
-            JsonArray mappings = readGuardMappings(prune);
+            String materializationSite = prune + "#u3";
+            String dynamic = dynamicFieldSymbol("REGION.P.in.1",
+                    materializationSite, 1);
+            JsonArray mappings = new JsonArray();
+            mappings.add(branchMapping(prune, 4, 1, true,
+                    symbol("M_J_field_" + dynamic
+                            + "_example/Value", "J")));
+            JsonArray fields = new JsonArray();
+            fields.add(dynamicFieldObservation(dynamic,
+                    materializationSite, 1, 103L, read));
+            JsonArray bindings = new JsonArray();
+            bindings.add(dynamicFieldBinding(dynamic,
+                    materializationSite, 1, 103L, read, key));
 
             MapFixture imported = importMapFixture(
                     folder.getRoot().toPath(), path, true, new JsonArray(),
                     methods, edges, effects, observations,
-                    defaultReadSymbolize(), mappings,
-                    tokenFieldObservations(103));
+                    defaultReadSymbolize(), mappings, fields, bindings);
 
             assertTrue(imported.summary.get("relationallyComplete")
                     .getAsBoolean());
@@ -3085,7 +2891,7 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertEquals("REGION.P.in.1", remove.getAsJsonArray(
                     "entryFieldBindings").get(0).getAsJsonObject()
-                    .get("fieldSymbol").getAsString());
+                    .get("baseInputSymbol").getAsString());
         } finally {
             folder.delete();
         }
@@ -3172,31 +2978,6 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertTrue(imported.diagnostics.contains(
                     "DUPLICATE_RUNTIME_HEAP_OBSERVATION"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rejectsEntryFieldOwnerTokenMismatch()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            JsonArray observations = new JsonArray();
-            observations.add(runtimeMapEntryRead(mapInputExpression(),
-                    symbol("entryKey", "I"),
-                    "<example.Store: void prune()>", 3, 0, 1, 1));
-            MapFixture imported = importGuardedNoRemoveFixture(
-                    folder.getRoot().toPath(), observations,
-                    defaultReadSymbolize(), tokenFieldObservations(999));
-
-            assertFalse(imported.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(imported.diagnostics.contains(
-                    "MAP_ENTRY_READ_FIELD_OWNER_TOKEN_MISMATCH"));
-            assertEquals(0, imported.summary.getAsJsonArray(
-                    "heapEffects").size());
         } finally {
             folder.delete();
         }
@@ -4233,10 +4014,50 @@ public class ConcolicSummaryImporterTest {
             Path root, JsonElement observations, JsonArray symbolize,
             JsonElement fieldObservations) throws Exception {
         String prune = "<example.Store: void prune()>";
+        JsonArray canonicalFields = new JsonArray();
+        JsonArray dynamicBindings = new JsonArray();
+        JsonArray mappings = readGuardMappings(prune);
+        if (observations != null && observations.isJsonArray()) {
+            JsonObject read = null;
+            for (JsonElement element : observations.getAsJsonArray()) {
+                if (element.isJsonObject()
+                        && "MAP_ENTRY_READ".equals(element.getAsJsonObject()
+                        .get("kind").getAsString())) {
+                    read = element.getAsJsonObject();
+                    break;
+                }
+            }
+            if (read != null) {
+                String site = prune + "#u3";
+                String dynamic = dynamicFieldSymbol(
+                        "REGION.P.in.1", site, 1);
+                long leafToken = read.get("valueObjectToken").getAsLong();
+                if (fieldObservations != null
+                        && fieldObservations.isJsonArray()
+                        && fieldObservations.getAsJsonArray().size() == 1
+                        && fieldObservations.getAsJsonArray().get(0)
+                        .isJsonObject()
+                        && fieldObservations.getAsJsonArray().get(0)
+                        .getAsJsonObject().has("leafOwnerObjectToken")) {
+                    leafToken = fieldObservations.getAsJsonArray().get(0)
+                            .getAsJsonObject().get("leafOwnerObjectToken")
+                            .getAsLong();
+                }
+                dynamicBindings.add(dynamicFieldBinding(dynamic, site, 1,
+                        leafToken, read, read.getAsJsonObject(
+                        "keyExpression")));
+                canonicalFields.add(dynamicFieldObservation(dynamic, site,
+                        1, leafToken, read));
+                mappings = new JsonArray();
+                mappings.add(branchMapping(prune, 4, 1, true,
+                        symbol("M_J_field_" + dynamic
+                                + "_example/Value", "J")));
+            }
+        }
         return importMapFixture(root, new JsonArray(), true,
                 new JsonArray(), singletonString(prune),
                 guardedWriteEdges(prune), new JsonArray(), observations,
-                symbolize, readGuardMappings(prune), fieldObservations);
+                symbolize, mappings, canonicalFields, dynamicBindings);
     }
 
     private static JsonObject mapInputExpression() {
@@ -7523,6 +7344,78 @@ public class ConcolicSummaryImporterTest {
     }
 
     private static void write(Path path, String value) throws Exception {
+        String[] lines = value.split("\\n", -1);
+        StringBuilder canonical = new StringBuilder();
+        for (int index = 0; index < lines.length; index++) {
+            String line = lines[index];
+            if (!line.trim().isEmpty()) {
+                JsonElement parsed = JsonParser.parseString(line);
+                if (parsed.isJsonObject()
+                        && "CONCOLIC_REGION_RESULT".equals(
+                        parsed.getAsJsonObject().has("event")
+                                ? parsed.getAsJsonObject().get("event")
+                                .getAsString() : "")) {
+                    line = canonicalRuntimeResultForTest(
+                            parsed.getAsJsonObject()).toString();
+                }
+            }
+            canonical.append(line);
+            if (index + 1 < lines.length) canonical.append('\n');
+        }
+        writeVerbatim(path, canonical.toString());
+    }
+
+    private static JsonObject canonicalRuntimeResultForTest(JsonObject raw) {
+        JsonObject result = raw.deepCopy();
+        if (!result.has("schemaVersion")) {
+            result.addProperty("schemaVersion", 1);
+        }
+        if (!result.has("executionMode")) {
+            result.addProperty("executionMode", "SYMBOLIC_CONCOLIC");
+        }
+        if (!result.has("pathConditionIsolationPolicy")) {
+            result.addProperty("pathConditionIsolationPolicy",
+                    ConcolicSummaryImporter.PATH_CONDITION_ISOLATION_POLICY);
+        }
+        for (String field : new String[]{"runtimeHeapEffects",
+                "runtimeHeapObservations", "dynamicFieldBindings"}) {
+            if (!result.has(field)) result.add(field, new JsonArray());
+        }
+
+        JsonObject engine = result.has("engineSummary")
+                && result.get("engineSummary").isJsonObject()
+                ? result.getAsJsonObject("engineSummary")
+                : new JsonObject();
+        if (!engine.has("schemaVersion")) {
+            engine.addProperty("schemaVersion", 1);
+        }
+        if (!engine.has("engine")) {
+            engine.addProperty("engine", "openjdk8-zero-concolic");
+        }
+        if (!engine.has("active")) engine.addProperty("active", true);
+        if (!engine.has("regionId")) {
+            engine.addProperty("regionId", result.get("regionId")
+                    .getAsString());
+        }
+        if (!engine.has("activationId")) {
+            engine.addProperty("activationId", result.get("activationId")
+                    .getAsString());
+        }
+        if (!engine.has("threadContextId")) {
+            engine.addProperty("threadContextId", 1L);
+        }
+        if (!engine.has("pathConditionPauseDepth")) {
+            engine.addProperty("pathConditionPauseDepth", 1);
+        }
+        if (!engine.has("pathCondition")) {
+            engine.add("pathCondition", new JsonArray());
+        }
+        result.add("engineSummary", engine);
+        return result;
+    }
+
+    private static void writeVerbatim(Path path, String value)
+            throws Exception {
         Files.write(path, value.getBytes(StandardCharsets.UTF_8));
     }
 }

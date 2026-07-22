@@ -1479,13 +1479,13 @@ public class ConcolicRegionRuntimeTest {
                     effect.get("entryBindingAuthority").getAsString());
             assertEquals("SAME_MAP_ENTRY_GET_VALUE_AT_NEXT",
                     effect.get("valueBindingAuthority").getAsString());
-            assertTrue(effect.get("backingMapIdentity").getAsInt() != 0);
-            assertTrue(effect.get("backingMapIdentityKnown").getAsBoolean());
-            assertTrue(effect.get("keyIdentity").getAsInt() != 0);
-            assertTrue(effect.get("keyIdentityKnown").getAsBoolean());
+            assertFalse(effect.has("backingMapIdentity"));
+            assertFalse(effect.has("backingMapIdentityKnown"));
+            assertFalse(effect.has("keyIdentity"));
+            assertFalse(effect.has("keyIdentityKnown"));
             assertFalse(effect.get("keyWasNull").getAsBoolean());
-            assertTrue(effect.get("valueIdentity").getAsInt() != 0);
-            assertTrue(effect.get("valueIdentityKnown").getAsBoolean());
+            assertFalse(effect.has("valueIdentity"));
+            assertFalse(effect.has("valueIdentityKnown"));
             assertFalse(effect.get("valueWasNull").getAsBoolean());
             assertEquals(observation.get("backingMapObjectToken").getAsLong(),
                     effect.get("backingMapObjectToken").getAsLong());
