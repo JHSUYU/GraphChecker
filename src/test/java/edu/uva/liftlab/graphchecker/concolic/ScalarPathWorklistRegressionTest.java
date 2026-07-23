@@ -131,12 +131,24 @@ public class ScalarPathWorklistRegressionTest {
         JsonObject summary = summary("ACT.LOOP", conditions,
                 Arrays.asList(true, true, true, false));
         JsonArray mappings = summary.getAsJsonArray("branchMappings");
+        JsonArray repeatedMappings = new JsonArray();
         for (int index = 0; index < mappings.size(); index++) {
-            JsonObject mapping = mappings.get(index).getAsJsonObject();
-            mapping.addProperty("siteId", "SITE.LOOP.HEADER");
-            mapping.addProperty("occurrence", index + 1);
+            SummaryBranchMapping mapping = SummaryBranchMapping.fromJson(
+                    mappings.get(index).getAsJsonObject());
+            BranchWitness source = mapping.witness();
+            JsonObject metadata = new JsonObject();
+            metadata.addProperty("predicateNormalization",
+                    source.predicateNormalization());
+            BranchWitness repeated = BranchWitness.vmPc(
+                    "SITE.LOOP.HEADER", source.method(),
+                    source.unitIndex(), index + 1,
+                    source.sourceTakenOutcome(),
+                    source.sourceSatisfiedPredicate(), source.vmPcIndex(),
+                    metadata);
+            repeatedMappings.add(SummaryBranchMapping.witnessed(repeated,
+                    mapping.summaryPcIndex(), mapping.policy()).toJson());
         }
-        authorizeVmPcMappings(summary);
+        summary.add("branchMappings", repeatedMappings);
         JsonObject activation = activation("ACT.LOOP", 1);
 
         RegionPathWorklist.Result full = RegionPathWorklist.plan(
@@ -245,6 +257,7 @@ public class ScalarPathWorklistRegressionTest {
     private static void authorizeVmPcMappings(JsonObject summary) {
         JsonArray conditions = summary.getAsJsonArray("pathCondition");
         JsonArray mappings = summary.getAsJsonArray("branchMappings");
+        JsonArray canonical = new JsonArray();
         for (JsonElement element : mappings) {
             JsonObject mapping = element.getAsJsonObject();
             int conditionIndex = mapping.get("conditionIndex").getAsInt();
@@ -257,9 +270,11 @@ public class ScalarPathWorklistRegressionTest {
                     mapping.get("occurrence").getAsInt(),
                     mapping.get("outcome").getAsBoolean(),
                     conditions.get(conditionIndex), conditionIndex, event);
-            mapping.add("witness", witness.toJson());
-            mapping.addProperty("summaryPcIndex", conditionIndex);
+            canonical.add(SummaryBranchMapping.witnessed(witness,
+                    conditionIndex, SummaryBranchMapping.Policy.EXPLORE)
+                    .toJson());
         }
+        summary.add("branchMappings", canonical);
     }
 
     private static BranchReplayContract replayContract(JsonObject task) {

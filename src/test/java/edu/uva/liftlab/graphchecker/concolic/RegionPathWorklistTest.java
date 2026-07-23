@@ -107,20 +107,6 @@ public class RegionPathWorklistTest {
     public void witnessSummaryEmitsOneAuthoritativeReplayContract() {
         JsonObject summary = summary("ACT.WITNESS",
                 RegionCaptureGoal.outputClosure());
-        JsonArray conditions = summary.getAsJsonArray("pathCondition");
-        JsonArray mappings = summary.getAsJsonArray("branchMappings");
-        for (int index = 0; index < mappings.size(); index++) {
-            JsonObject mapping = mappings.get(index).getAsJsonObject();
-            JsonObject event = new JsonObject();
-            event.addProperty("eventId", index + 1L);
-            event.addProperty("contextId", 7L);
-            event.addProperty("predicateNormalization", "IDENTITY");
-            BranchWitness witness = BranchWitness.vmPc(
-                    mapping.get("siteId").getAsString(), "ROOT", index,
-                    1, true, conditions.get(index), index, event);
-            mapping.add("witness", witness.toJson());
-            mapping.addProperty("summaryPcIndex", index);
-        }
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -190,9 +176,11 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void summaryWithoutBranchPolicyEnumeratesEveryWitness() {
+    public void summaryWithoutBranchPolicyFailsClosed() {
         JsonObject summary = summary("ACT.LEGACY",
                 RegionCaptureGoal.outputClosure());
+        summary.getAsJsonArray("branchMappings").get(0).getAsJsonObject()
+                .remove("policy");
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -201,9 +189,12 @@ public class RegionPathWorklistTest {
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(2, result.tasks.size());
-        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
-        assertEquals("SITE.0", sourceSite(result.tasks.get(1)));
+        assertTrue(result.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString(),
+                result.manifest.getAsJsonArray("gaps").toString()
+                        .contains("INVALID_BRANCH_MAPPING_SCHEMA"));
     }
 
     @Test
@@ -227,7 +218,7 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void policyAwareSummaryFailsClosedForMissingAndUnknownPolicies() {
+    public void policyAwareSummaryFailsClosedForUnknownPolicy() {
         JsonObject summary = summary("ACT.FAIL.CLOSED",
                 RegionCaptureGoal.outputClosure());
         summary.getAsJsonArray("branchMappings").get(1).getAsJsonObject()
@@ -243,11 +234,9 @@ public class RegionPathWorklistTest {
         assertTrue(result.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.GAPPED.name(),
                 result.manifest.get("state").getAsString());
-        assertEquals(2, result.manifest.getAsJsonArray("gaps").size());
+        assertEquals(1, result.manifest.getAsJsonArray("gaps").size());
         assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("MISSING_BRANCH_POLICY"));
-        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("UNKNOWN_BRANCH_POLICY:UNKNOWN"));
+                .contains("unsupported branch policy: UNKNOWN"));
     }
 
     @Test
@@ -322,11 +311,7 @@ public class RegionPathWorklistTest {
                 RegionCaptureGoal.outputClosure());
         second.getAsJsonArray("pathCondition").set(0, binary("<=", 0));
         second.getAsJsonArray("pathCondition").set(1, binary(">=", 5));
-        for (com.google.gson.JsonElement element
-                : second.getAsJsonArray("branchMappings")) {
-            element.getAsJsonObject().addProperty("outcome", false);
-        }
-        authorizeVmPcMappings(second);
+        replaceWitnessOutcomes(second, false);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Arrays.asList(first, second), Arrays.asList(
@@ -671,7 +656,11 @@ public class RegionPathWorklistTest {
 
         JsonObject unmodeled = summary.deepCopy();
         JsonArray onlyUnmapped = new JsonArray();
-        onlyUnmapped.add(mapping("NUMERIC.LOOP.GUARD", -1, 3));
+        onlyUnmapped.add(SummaryBranchMapping.concrete(
+                ExactConcreteBranchObservation.attested(
+                        "NUMERIC.LOOP.GUARD",
+                        "<test.Region: void run()>", 4, 3, true),
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
         unmodeled.add("branchMappings", onlyUnmapped);
         RegionPathWorklist.Result rejected = RegionPathWorklist.plan(
                 Collections.singletonList(unmodeled),
@@ -720,6 +709,7 @@ public class RegionPathWorklistTest {
                 "ACT.SWITCH.CONCRETE", true);
         JsonObject mapping = concrete.getAsJsonArray("branchMappings").get(1)
                 .getAsJsonObject();
+        mapping.remove("concreteObservation");
         mapping.addProperty("branchKind", "TABLE_SWITCH");
         mapping.addProperty("observedSuccessorIndex", 2);
         JsonArray keys = new JsonArray();
@@ -740,7 +730,7 @@ public class RegionPathWorklistTest {
         assertEquals(RegionPathWorklist.State.GAPPED.name(),
                 result.manifest.get("state").getAsString());
         assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("NO_NORMALIZED_CONDITION"));
+                .contains("INVALID_BRANCH_MAPPING_SCHEMA"));
     }
 
     private static JsonObject exactBranchTemplateSummary(
@@ -999,13 +989,24 @@ public class RegionPathWorklistTest {
 
     private static void authorizeVmPcMappings(JsonObject summary) {
         JsonArray conditions = summary.getAsJsonArray("pathCondition");
+        JsonArray canonical = new JsonArray();
         for (com.google.gson.JsonElement element
                 : summary.getAsJsonArray("branchMappings")) {
             JsonObject mapping = element.getAsJsonObject();
             int conditionIndex = mapping.get("conditionIndex").getAsInt();
+            SummaryBranchMapping.Policy policy =
+                    SummaryBranchMapping.Policy.fromWire(
+                            mapping.has("policy")
+                                    ? mapping.get("policy").getAsString()
+                                    : "EXPLORE");
             if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
-                mapping.remove("witness");
-                mapping.remove("summaryPcIndex");
+                canonical.add(SummaryBranchMapping.concrete(
+                        ExactConcreteBranchObservation.attested(
+                                mapping.get("siteId").getAsString(),
+                                "<test.Region: void run()>", 0,
+                                mapping.get("occurrence").getAsInt(),
+                                mapping.get("outcome").getAsBoolean()),
+                        policy).toJson());
                 continue;
             }
             JsonObject event = new JsonObject();
@@ -1018,9 +1019,33 @@ public class RegionPathWorklistTest {
                     mapping.get("occurrence").getAsInt(),
                     mapping.get("outcome").getAsBoolean(),
                     conditions.get(conditionIndex), conditionIndex, event);
-            mapping.add("witness", witness.toJson());
-            mapping.addProperty("summaryPcIndex", conditionIndex);
+            canonical.add(SummaryBranchMapping.witnessed(witness,
+                    conditionIndex, policy).toJson());
         }
+        summary.add("branchMappings", canonical);
+    }
+
+    private static void replaceWitnessOutcomes(
+            JsonObject summary, boolean outcome) {
+        JsonArray replacements = new JsonArray();
+        for (com.google.gson.JsonElement element
+                : summary.getAsJsonArray("branchMappings")) {
+            SummaryBranchMapping mapping = SummaryBranchMapping.fromJson(
+                    element.getAsJsonObject());
+            BranchWitness source = mapping.witness();
+            JsonObject metadata = new JsonObject();
+            metadata.addProperty("predicateNormalization",
+                    source.predicateNormalization());
+            BranchWitness replacement = BranchWitness.vmPc(
+                    source.siteId(), source.method(), source.unitIndex(),
+                    source.occurrence(), outcome,
+                    summary.getAsJsonArray("pathCondition")
+                            .get(mapping.summaryPcIndex()),
+                    source.vmPcIndex(), metadata);
+            replacements.add(SummaryBranchMapping.witnessed(replacement,
+                    mapping.summaryPcIndex(), mapping.policy()).toJson());
+        }
+        summary.add("branchMappings", replacements);
     }
 
     private static BranchReplayContract replayContract(JsonObject task) {

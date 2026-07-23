@@ -192,15 +192,6 @@ public final class ConcolicSummaryImporter {
                     activation);
             boolean outputClosure = captureGoal.isOutputClosure();
             JsonArray rawBranchMappings = array(raw, "branchMappings");
-            List<String> branchWitnessIssues = branchWitnessIssues(
-                    rawBranchMappings);
-            if (!branchWitnessIssues.isEmpty()) {
-                for (String issue : branchWitnessIssues) {
-                    diagnostics.add(diagnostic(raw,
-                            "REJECTED_BINARY_BRANCH_WITNESS", issue));
-                }
-                continue;
-            }
             DynamicSemanticPcFallbackCatalog dynamicPcFallbacks =
                     dynamicSemanticPcFallbacks(raw, activation,
                             enginePathCondition, rawBranchMappings,
@@ -225,6 +216,16 @@ public final class ConcolicSummaryImporter {
                 diagnostics.add(diagnostic(raw,
                         "RUNTIME_BOOKKEEPING_PATH_CONDITION",
                         GSON.toJson(residualRuntimePath.toJson())));
+                continue;
+            }
+            final JsonArray canonicalBranchMappings;
+            try {
+                canonicalBranchMappings = normalizeBranchMappings(
+                        rawBranchMappings, normalization, activation);
+            } catch (IllegalArgumentException malformedBranchMapping) {
+                diagnostics.add(diagnostic(raw,
+                        "REJECTED_CANONICAL_BRANCH_MAPPING",
+                        malformedBranchMapping.getMessage()));
                 continue;
             }
             EngineArrayInputBindingExtraction engineArrayBindings =
@@ -315,8 +316,8 @@ public final class ConcolicSummaryImporter {
             summary.add("edgeBindings", copy(activation.get("edgeBindings"),
                     new JsonArray()));
             summary.add("pathCondition", pathCondition.deepCopy());
-            summary.add("branchMappings", normalizeBranchMappings(
-                    rawBranchMappings, normalization));
+            summary.add("branchMappings",
+                    canonicalBranchMappings.deepCopy());
             JsonObject outputs = outputExtraction.expressions;
             heapEffects.bindOutputExpressions(outputs);
             summary.add("outputExpressions", outputs);
@@ -2466,7 +2467,7 @@ public final class ConcolicSummaryImporter {
         JsonObject semanticShape = semantic.getAsJsonObject().deepCopy();
         rawShape.remove("_op");
         semanticShape.remove("_op");
-        return GSON.toJson(rawShape).equals(GSON.toJson(semanticShape));
+        return BranchPredicateAlgebra.equivalent(rawShape, semanticShape);
     }
 
     /**
@@ -2885,46 +2886,6 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
-    private static List<String> branchWitnessIssues(JsonArray mappings) {
-        List<String> issues = new ArrayList<>();
-        Set<String> events = new LinkedHashSet<>();
-        int ordinal = 0;
-        for (JsonElement element : mappings) {
-            if (!element.isJsonObject()) {
-                ordinal++;
-                continue;
-            }
-            JsonObject mapping = element.getAsJsonObject();
-            JsonElement encoded = mapping.get("witness");
-            if (encoded == null) {
-                ordinal++;
-                continue;
-            }
-            if (!encoded.isJsonObject()) {
-                issues.add("mapping@" + ordinal
-                        + ":WITNESS_MUST_BE_AN_OBJECT");
-                ordinal++;
-                continue;
-            }
-            try {
-                BranchWitness witness = BranchWitness.fromJson(
-                        encoded.getAsJsonObject());
-                String event = witness.siteId() + "\u0000"
-                        + witness.occurrence();
-                if (!events.add(event)) {
-                    issues.add(witness.siteId() + "#"
-                            + witness.occurrence()
-                            + ":DUPLICATE_BRANCH_EVENT");
-                }
-            } catch (IllegalArgumentException malformed) {
-                issues.add("mapping@" + ordinal + ":"
-                        + malformed.getMessage());
-            }
-            ordinal++;
-        }
-        return issues;
-    }
-
     private static boolean isBinaryCondition(JsonElement condition) {
         return condition != null && condition.isJsonObject()
                 && "BinaryExpression".equals(string(
@@ -2932,87 +2893,107 @@ public final class ConcolicSummaryImporter {
     }
 
     private static JsonArray normalizeBranchMappings(
-            JsonArray rawMappings, PathNormalization normalization) {
+            JsonArray rawMappings, PathNormalization normalization,
+            JsonObject activation) {
         JsonArray result = new JsonArray();
+        Set<Integer> summaryPositions = new LinkedHashSet<>();
+        Set<String> events = new LinkedHashSet<>();
+        int ordinal = 0;
         for (JsonElement element : rawMappings) {
             if (!element.isJsonObject()) {
-                result.add(element.deepCopy());
-                continue;
+                throw new IllegalArgumentException("mapping@" + ordinal
+                        + ": branch mapping must be an object");
             }
-            JsonObject mapping = element.getAsJsonObject().deepCopy();
-            BranchWitness witness = branchWitness(mapping);
-            int rawIndex = witness != null ? witness.vmPcIndex()
-                    : integer(mapping, "rawConditionIndex",
-                    integer(mapping, "engineConditionIndex",
-                            integer(mapping, "conditionIndex", -1)));
-            int normalizedIndex = normalization.index(rawIndex);
-            if (witness != null) {
-                // The witness remains byte-for-byte immutable.  This is the
-                // sole bridge from the VM-PC namespace owned by its evidence
-                // to the normalized summary-PC namespace owned here.
-                mapping.addProperty("summaryPcIndex", normalizedIndex);
+            JsonObject raw = element.getAsJsonObject();
+            boolean witnessed = raw.has("witness");
+            boolean concrete = raw.has("concreteObservation");
+            if (witnessed == concrete) {
+                throw new IllegalArgumentException("mapping@" + ordinal
+                        + ": exactly one typed branch authority is required");
             }
-            if (mapping.has("conditionIndex")
-                    || mapping.has("rawConditionIndex")
-                    || mapping.has("engineConditionIndex")) {
-                mapping.addProperty("rawConditionIndex", rawIndex);
-                mapping.addProperty("engineConditionIndex", rawIndex);
-                mapping.addProperty("normalizedConditionIndex",
-                        normalizedIndex);
-                mapping.addProperty("conditionIndex", normalizedIndex);
-            }
-            if (mapping.has("condition")) {
-                if (!mapping.has("rawCondition")) {
-                    mapping.add("rawCondition",
-                            mapping.get("condition").deepCopy());
+
+            SummaryBranchMapping canonical;
+            if (witnessed) {
+                JsonElement encoded = raw.get("witness");
+                if (encoded == null || !encoded.isJsonObject()) {
+                    throw new IllegalArgumentException("mapping@" + ordinal
+                            + ": witness must be an object");
                 }
-                if (normalizedIndex >= 0
-                        && normalizedIndex < normalization.conditions.size()) {
-                    mapping.add("condition", normalization.conditions
-                            .get(normalizedIndex).deepCopy());
-                } else {
-                    mapping.remove("condition");
+                BranchWitness witness;
+                try {
+                    witness = BranchWitness.fromJson(
+                            encoded.getAsJsonObject());
+                } catch (IllegalArgumentException malformed) {
+                    throw new IllegalArgumentException("mapping@" + ordinal
+                            + ": " + malformed.getMessage(), malformed);
                 }
+                int normalizedIndex = normalization.index(
+                        witness.vmPcIndex());
+                if (normalizedIndex < 0
+                        || normalizedIndex
+                        >= normalization.conditions.size()
+                        || !BranchPredicateAlgebra.equivalent(
+                        witness.sourceSatisfiedPredicate(),
+                        normalization.conditions.get(normalizedIndex))) {
+                    throw new IllegalArgumentException("mapping@" + ordinal
+                            + ": branch witness does not own a normalized "
+                            + "summary PC");
+                }
+                if (!summaryPositions.add(normalizedIndex)) {
+                    throw new IllegalArgumentException("mapping@" + ordinal
+                            + ": duplicate summary PC " + normalizedIndex);
+                }
+                canonical = SummaryBranchMapping.witnessed(witness,
+                        normalizedIndex, branchPolicy(activation,
+                                witness.siteId()));
+            } else {
+                JsonElement encoded = raw.get("concreteObservation");
+                if (encoded == null || !encoded.isJsonObject()) {
+                    throw new IllegalArgumentException("mapping@" + ordinal
+                            + ": concreteObservation must be an object");
+                }
+                ExactConcreteBranchObservation observation;
+                try {
+                    observation =
+                            ExactConcreteBranchObservation.fromJson(
+                                    encoded.getAsJsonObject());
+                } catch (IllegalArgumentException malformed) {
+                    throw new IllegalArgumentException("mapping@" + ordinal
+                            + ": " + malformed.getMessage(), malformed);
+                }
+                canonical = SummaryBranchMapping.concrete(observation,
+                        branchPolicy(activation, observation.siteId()));
             }
-            int rawSize = integer(mapping, "rawPathConditionSize",
-                    integer(mapping, "enginePathConditionSize",
-                            integer(mapping, "pathConditionSize", -1)));
-            int normalizedSize = rawIndex >= 0 && normalizedIndex >= 0
-                    && rawSize == rawIndex + 1
-                    ? normalizedIndex + 1
-                    : normalization.boundary(rawSize);
-            if (rawSize >= 0) {
-                mapping.addProperty("rawPathConditionSize", rawSize);
-                mapping.addProperty("enginePathConditionSize", rawSize);
-                mapping.addProperty("normalizedPathConditionSize",
-                        normalizedSize);
-                mapping.addProperty("pathConditionSize",
-                        normalizedSize);
+            String event = canonical.siteId() + "\u0000"
+                    + canonical.occurrence();
+            if (!events.add(event)) {
+                throw new IllegalArgumentException("mapping@" + ordinal
+                        + ": duplicate branch event "
+                        + canonical.siteId() + "#"
+                        + canonical.occurrence());
             }
-            int rawBaseline = integer(mapping, "rawPathConditionBaseline",
-                    integer(mapping, "enginePathConditionBaseline",
-                            integer(mapping, "pathConditionBaseline", -1)));
-            if (rawBaseline >= 0) {
-                int normalizedBaseline = normalization.boundary(rawBaseline);
-                mapping.addProperty("rawPathConditionBaseline", rawBaseline);
-                mapping.addProperty("enginePathConditionBaseline",
-                        rawBaseline);
-                mapping.addProperty("normalizedPathConditionBaseline",
-                        normalizedBaseline);
-                mapping.addProperty("pathConditionBaseline",
-                        normalizedBaseline);
-                mapping.addProperty("rawPathConditionsAdded",
-                        Math.max(0, rawSize - rawBaseline));
-                mapping.addProperty("pathConditionsAdded", Math.max(0,
-                        normalizedSize - normalizedBaseline));
-            }
-            if (rawIndex >= 0 && normalizedIndex < 0) {
-                mapping.addProperty("mappingWarning",
-                        "raw condition was excluded by semantic path filtering");
-            }
-            result.add(mapping);
+            result.add(canonical.toJson());
+            ordinal++;
         }
         return result;
+    }
+
+    private static SummaryBranchMapping.Policy branchPolicy(
+            JsonObject activation, String siteId) {
+        String selected = "";
+        int matches = 0;
+        for (JsonElement element : array(activation, "branches")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!siteId.equals(string(branch, "siteId"))) continue;
+            matches++;
+            selected = string(branch, "policy");
+        }
+        if (matches != 1) {
+            throw new IllegalArgumentException("branch " + siteId
+                    + " must have exactly one activation policy");
+        }
+        return SummaryBranchMapping.Policy.fromWire(selected);
     }
 
     private static HeapEffectExtraction extractHeapEffects(

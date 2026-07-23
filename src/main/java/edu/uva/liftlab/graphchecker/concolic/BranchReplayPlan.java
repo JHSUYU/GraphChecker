@@ -32,12 +32,12 @@ public final class BranchReplayPlan {
     public static BranchReplayPlan fromSummary(JsonObject summary,
                                                String siteId,
                                                int occurrence) {
-        JsonObject selected = null;
-        for (JsonElement element : array(summary, "branchMappings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject mapping = element.getAsJsonObject();
-            if (siteId.equals(string(mapping, "siteId"))
-                    && occurrence == integer(mapping, "occurrence", -1)) {
+        List<SummaryBranchMapping> mappings =
+                SummaryBranchMapping.fromSummary(summary);
+        SummaryBranchMapping selected = null;
+        for (SummaryBranchMapping mapping : mappings) {
+            if (siteId.equals(mapping.siteId())
+                    && occurrence == mapping.occurrence()) {
                 if (selected != null) {
                     throw new IllegalArgumentException(
                             "target branch mapping is not unique");
@@ -49,46 +49,39 @@ public final class BranchReplayPlan {
             throw new IllegalArgumentException(
                     "target branch mapping is missing");
         }
-        return fromSummary(summary, selected);
+        return fromSummary(summary, mappings, selected);
     }
 
-    public static BranchReplayPlan fromSummary(JsonObject summary,
-                                               JsonObject selected) {
-        JsonArray path = array(summary, "pathCondition");
-        int targetPosition = integer(selected, "summaryPcIndex", -1);
-        BranchWitness source = witness(selected);
-        if (source == null || targetPosition < 0
-                || targetPosition >= path.size()
-                || !BranchPredicateAlgebra.equivalent(
-                source.sourceSatisfiedPredicate(), path.get(targetPosition))) {
+    static BranchReplayPlan fromSummary(
+            JsonObject summary, List<SummaryBranchMapping> mappings,
+            SummaryBranchMapping selected) {
+        if (selected == null || !selected.isWitnessed()) {
             throw new IllegalArgumentException(
-                    "target witness does not own its summary path position");
+                    "target branch has no immutable witness");
         }
+        JsonArray path = summary.getAsJsonArray("pathCondition");
+        int targetPosition = selected.summaryPcIndex();
+        BranchWitness source = selected.witness();
 
-        List<JsonObject> prefixMappings = new ArrayList<>();
-        for (JsonElement element : array(summary, "branchMappings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject mapping = element.getAsJsonObject();
-            int position = integer(mapping, "summaryPcIndex", -1);
-            if (position >= 0 && position < targetPosition) {
+        List<SummaryBranchMapping> prefixMappings = new ArrayList<>();
+        for (SummaryBranchMapping mapping : mappings) {
+            if (mapping.isWitnessed()
+                    && mapping.summaryPcIndex() < targetPosition) {
                 prefixMappings.add(mapping);
             }
         }
         Collections.sort(prefixMappings, Comparator.comparingInt(
-                value -> integer(value, "summaryPcIndex", -1)));
+                SummaryBranchMapping::summaryPcIndex));
 
         List<BranchWitness> prefix = new ArrayList<>();
         Set<Integer> branchPositions = new LinkedHashSet<>();
-        for (JsonObject mapping : prefixMappings) {
-            int position = integer(mapping, "summaryPcIndex", -1);
-            BranchWitness witness = witness(mapping);
-            if (!branchPositions.add(position) || witness == null
-                    || !BranchPredicateAlgebra.equivalent(
-                    witness.sourceSatisfiedPredicate(), path.get(position))) {
+        for (SummaryBranchMapping mapping : prefixMappings) {
+            int position = mapping.summaryPcIndex();
+            if (!branchPositions.add(position)) {
                 throw new IllegalArgumentException(
                         "branch witness prefix does not partition the path");
             }
-            prefix.add(witness);
+            prefix.add(mapping.witness());
         }
         return new BranchReplayPlan(BranchReplayContract.flip(prefix, source),
                 SolverPathContext.fromPath(path, branchPositions,
@@ -112,35 +105,4 @@ public final class BranchReplayPlan {
         return result;
     }
 
-    private static BranchWitness witness(JsonObject mapping) {
-        JsonElement encoded = mapping == null ? null : mapping.get("witness");
-        if (encoded == null || !encoded.isJsonObject()) return null;
-        try {
-            return BranchWitness.fromJson(encoded.getAsJsonObject());
-        } catch (IllegalArgumentException malformed) {
-            return null;
-        }
-    }
-
-    private static JsonArray array(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static int integer(JsonObject object, String name, int fallback) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value == null || !value.isJsonPrimitive()
-                ? "" : value.getAsString();
-    }
 }

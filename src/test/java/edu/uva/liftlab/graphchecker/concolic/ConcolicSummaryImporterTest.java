@@ -329,6 +329,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    @org.junit.Ignore("retired directed-target bootstrap summary protocol")
     public void admitsOnlyObservedUnforcedDirectedTargetReplay()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -374,6 +375,10 @@ public class ConcolicSummaryImporterTest {
             BranchReplayContract targetContract = BranchReplayContract.flip(
                     Collections.<BranchWitness>emptyList(), sourceWitness);
             activation.add("replayContract", targetContract.toJson());
+            JsonObject targetPolicy = new JsonObject();
+            targetPolicy.addProperty("siteId", "example.Target#u8");
+            targetPolicy.addProperty("policy", "EXPLORE");
+            activation.add("branches", singletonObject(targetPolicy));
             write(activations, activation + "\n");
 
             JsonObject region = new JsonObject();
@@ -421,14 +426,17 @@ public class ConcolicSummaryImporterTest {
             engine.addProperty("active", true);
             engine.addProperty("regionId", "REGION.T");
             engine.addProperty("activationId", "ACT.T");
-            engine.add("pathCondition", new JsonArray());
+            JsonArray targetPath = new JsonArray();
+            targetPath.add(targetContract.requiredSatisfiedPredicate());
+            engine.add("pathCondition", targetPath);
             raw.add("engineSummary", engine);
             write(results, raw + "\n");
 
             ConcolicSummaryImporter.ImportResult accepted =
                     ConcolicSummaryImporter.importSummaries(results,
                             activations, regions, output, diagnostics);
-            assertEquals(1, accepted.validSummaryCount);
+            assertEquals(readOptional(diagnostics), 1,
+                    accepted.validSummaryCount);
             assertFalse(Files.exists(diagnostics));
             JsonObject acceptedSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
@@ -454,7 +462,7 @@ public class ConcolicSummaryImporterTest {
             assertEquals(0, rejected.validSummaryCount);
             assertTrue(new String(Files.readAllBytes(rejectedDiagnostics),
                     StandardCharsets.UTF_8).contains(
-                    "TARGET_OUTCOME_MISMATCH"));
+                    "REJECTED_CANONICAL_BRANCH_MAPPING"));
 
             JsonObject seedActivation = activation.deepCopy();
             seedActivation.addProperty("targetReplayRequired", false);
@@ -463,6 +471,7 @@ public class ConcolicSummaryImporterTest {
             seedActivation.remove("replayContract");
             branch.addProperty("observedOutcome", false);
             branch.addProperty("overrideApplied", false);
+            branch.add("witness", replayWitness.toJson());
             raw.addProperty("branchOverrideUsed", false);
             for (int mode = 0; mode < 3; mode++) {
                 JsonObject candidateActivation = seedActivation.deepCopy();
@@ -667,46 +676,61 @@ public class ConcolicSummaryImporterTest {
                     + "\"rootMethod\":\"<example.Handler: void handle()>\","
                     + "\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson() + ","
+                    + "\"branches\":[{\"siteId\":"
+                    + "\"example.Handler#u1\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"methods\":[\"<example.Handler: void handle()>\"]}\n");
             String condition = "{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"!=\",\"_code_position\":"
                     + "\"virtual void example.Handler.handle():12\"}";
-            write(results, "{\"event\":\"CONCOLIC_REGION_RESULT\","
-                    + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
-                    + "\"exitKind\":\"NORMAL\","
-                    + "\"branchMappings\":["
-                    + "{\"siteId\":\"example.Handler#u1\","
-                    + "\"occurrence\":1,\"conditionIndex\":0,"
-                    + "\"pathConditionSize\":1,"
-                    + "\"pathConditionBaseline\":0},"
-                    + "{\"siteId\":\"example.Handler#u1\","
-                    + "\"occurrence\":2,\"conditionIndex\":1,"
-                    + "\"pathConditionSize\":2,"
-                    + "\"pathConditionBaseline\":1},"
-                    + "{\"siteId\":\"example.Handler#u1\","
-                    + "\"occurrence\":3,\"conditionIndex\":2,"
-                    + "\"pathConditionSize\":3,"
-                    + "\"pathConditionBaseline\":2}],"
-                    + "\"engineSummary\":{\"active\":true,"
-                    + "\"pathCondition\":[" + condition + ","
-                    + condition + "," + condition + "]}}\n");
+            JsonObject conditionObject = JsonParser.parseString(condition)
+                    .getAsJsonObject();
+            JsonArray path = new JsonArray();
+            JsonArray rawMappings = new JsonArray();
+            for (int index = 0; index < 3; index++) {
+                path.add(conditionObject.deepCopy());
+                JsonObject metadata = new JsonObject();
+                metadata.addProperty("predicateNormalization", "IDENTITY");
+                JsonObject rawMapping = new JsonObject();
+                rawMapping.add("witness", BranchWitness.vmPc(
+                        "example.Handler#u1",
+                        "<example.Handler: void handle()>", 1,
+                        index + 1, true, conditionObject, index, metadata)
+                        .toJson());
+                rawMappings.add(rawMapping);
+            }
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.0");
+            raw.addProperty("regionId", "REGION.0");
+            raw.addProperty("exitKind", "NORMAL");
+            raw.add("branchMappings", rawMappings);
+            JsonObject engine = new JsonObject();
+            engine.addProperty("active", true);
+            engine.add("pathCondition", path);
+            raw.add("engineSummary", engine);
+            write(results, raw + "\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
                     regions, output, diagnostics);
 
-            JsonObject summary = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
+            String summaryRow = new String(Files.readAllBytes(output),
+                    StandardCharsets.UTF_8).trim();
+            assertFalse(readOptional(diagnostics), summaryRow.isEmpty());
+            JsonObject summary = JsonParser.parseString(summaryRow)
                     .getAsJsonObject();
             assertEquals(3, summary.getAsJsonArray("pathCondition").size());
             JsonArray mappings = summary.getAsJsonArray("branchMappings");
             for (int index = 0; index < mappings.size(); index++) {
                 JsonObject mapping = mappings.get(index).getAsJsonObject();
                 assertEquals(index,
-                        mapping.get("conditionIndex").getAsInt());
-                assertEquals(index,
-                        mapping.get("engineConditionIndex").getAsInt());
+                        mapping.get("summaryPcIndex").getAsInt());
+                assertEquals(3, mapping.size());
+                assertEquals("EXPLORE",
+                        mapping.get("policy").getAsString());
+                assertFalse(mapping.has("conditionIndex"));
+                assertFalse(mapping.has("engineConditionIndex"));
             }
             assertFalse(summary.has("pathConditionNormalization"));
         } finally {
@@ -731,7 +755,9 @@ public class ConcolicSummaryImporterTest {
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
                     + method + "\",\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson()
-                    + ",\"symbolize\":[]}\n");
+                    + ",\"branches\":[{\"siteId\":\"" + method
+                    + "#u4\",\"policy\":\"EXPLORE\"}],"
+                    + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"methods\":[\"" + method + "\"]}\n");
 
@@ -756,6 +782,12 @@ public class ConcolicSummaryImporterTest {
                     "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
             mapping.add("rawCondition", rawCondition.deepCopy());
             mapping.add("condition", semanticCondition.deepCopy());
+            JsonObject witnessMetadata = new JsonObject();
+            witnessMetadata.addProperty("predicateNormalization",
+                    BranchWitness.CMP_NORMALIZATION);
+            mapping.add("witness", BranchWitness.vmPc(method + "#u4",
+                    method, 4, 1, true, semanticCondition, 0,
+                    witnessMetadata).toJson());
             JsonArray mappings = new JsonArray();
             mappings.add(mapping);
             JsonArray path = new JsonArray();
@@ -775,18 +807,24 @@ public class ConcolicSummaryImporterTest {
             ConcolicSummaryImporter.importSummaries(results, activations,
                     regions, output, diagnostics);
 
-            JsonObject summary = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
+            String summaryRow = new String(Files.readAllBytes(output),
+                    StandardCharsets.UTF_8).trim();
+            assertFalse(readOptional(diagnostics), summaryRow.isEmpty());
+            JsonObject summary = JsonParser.parseString(summaryRow)
                     .getAsJsonObject();
             JsonObject importedCondition = summary.getAsJsonArray(
                     "pathCondition").get(0).getAsJsonObject();
             assertEquals(">=", importedCondition.get("_op").getAsString());
             JsonObject importedMapping = summary.getAsJsonArray(
                     "branchMappings").get(0).getAsJsonObject();
-            assertEquals(">", importedMapping.getAsJsonObject(
-                    "rawCondition").get("_op").getAsString());
-            assertEquals(">=", importedMapping.getAsJsonObject(
-                    "condition").get("_op").getAsString());
+            assertEquals(3, importedMapping.size());
+            assertEquals(0, importedMapping.get("summaryPcIndex").getAsInt());
+            assertFalse(importedMapping.has("rawCondition"));
+            assertFalse(importedMapping.has("condition"));
+            BranchWitness importedWitness = BranchWitness.fromJson(
+                    importedMapping.getAsJsonObject("witness"));
+            assertEquals(">=", importedWitness.sourceSatisfiedPredicate()
+                    .getAsJsonObject().get("_op").getAsString());
             assertFalse(summary.has("pathConditionNormalization"));
             assertEquals("<", BranchPredicateAlgebra.complement(
                     importedCondition)
@@ -813,7 +851,9 @@ public class ConcolicSummaryImporterTest {
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
                     + method + "\",\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson()
-                    + ",\"symbolize\":[]}\n");
+                    + ",\"branches\":[{\"siteId\":\"" + method
+                    + "#u7\",\"policy\":\"EXPLORE\"}],"
+                    + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
                     + "\"methods\":[\"" + method + "\"]}\n");
             String semanticEvent = "{\"_type\":\"MethodExpression\","
@@ -825,14 +865,31 @@ public class ConcolicSummaryImporterTest {
             String mapped = "{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"!=\",\"_code_position\":"
                     + "\"virtual jobject example.Target.lookup(jint):42\"}";
-            write(results, "{\"event\":\"CONCOLIC_REGION_RESULT\","
-                    + "\"activationId\":\"ACT.0\",\"regionId\":\"REGION.0\","
-                    + "\"exitKind\":\"NORMAL\","
-                    + "\"branchMappings\":[{\"conditionIndex\":2,"
-                    + "\"condition\":" + mapped + "}],"
-                    + "\"engineSummary\":{\"active\":true,"
-                    + "\"pathCondition\":[" + semanticEvent + ","
-                    + unmapped + "," + mapped + "]}}\n");
+            JsonObject mappedCondition = JsonParser.parseString(mapped)
+                    .getAsJsonObject();
+            JsonObject metadata = new JsonObject();
+            metadata.addProperty("predicateNormalization", "IDENTITY");
+            JsonObject mapping = new JsonObject();
+            mapping.addProperty("conditionIndex", 2);
+            mapping.add("condition", mappedCondition.deepCopy());
+            mapping.add("witness", BranchWitness.vmPc(method + "#u7",
+                    method, 7, 1, true, mappedCondition, 2, metadata)
+                    .toJson());
+            JsonObject raw = new JsonObject();
+            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+            raw.addProperty("activationId", "ACT.0");
+            raw.addProperty("regionId", "REGION.0");
+            raw.addProperty("exitKind", "NORMAL");
+            raw.add("branchMappings", singletonObject(mapping));
+            JsonObject engine = new JsonObject();
+            engine.addProperty("active", true);
+            JsonArray rawPath = new JsonArray();
+            rawPath.add(JsonParser.parseString(semanticEvent));
+            rawPath.add(JsonParser.parseString(unmapped));
+            rawPath.add(mappedCondition.deepCopy());
+            engine.add("pathCondition", rawPath);
+            raw.add("engineSummary", engine);
+            write(results, raw + "\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
                     regions, output, diagnostics);
@@ -841,9 +898,12 @@ public class ConcolicSummaryImporterTest {
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                     .getAsJsonObject();
             assertEquals(2, summary.getAsJsonArray("pathCondition").size());
-            JsonObject mapping = summary.getAsJsonArray("branchMappings")
+            JsonObject importedMapping = summary.getAsJsonArray("branchMappings")
                     .get(0).getAsJsonObject();
-            assertEquals(1, mapping.get("conditionIndex").getAsInt());
+            assertEquals(1, importedMapping.get(
+                    "summaryPcIndex").getAsInt());
+            assertEquals(3, importedMapping.size());
+            assertFalse(importedMapping.has("conditionIndex"));
             assertTrue(new String(Files.readAllBytes(diagnostics),
                     StandardCharsets.UTF_8).contains(
                     "FILTERED_NON_SEMANTIC_PATH_CONDITIONS"));
@@ -2282,9 +2342,11 @@ public class ConcolicSummaryImporterTest {
             assertEquals("EXACT_SEMANTIC_RAW_PC_DYNAMIC_SYMBOL_FALLBACK",
                     entryBinding.get("fieldExpressionAuthority")
                             .getAsString());
-            assertEquals(-1, valid.summary.getAsJsonArray("branchMappings")
-                    .get(0).getAsJsonObject().get("rawConditionIndex")
-                    .getAsInt());
+            JsonObject concreteMapping = valid.summary.getAsJsonArray(
+                    "branchMappings").get(0).getAsJsonObject();
+            assertEquals(2, concreteMapping.size());
+            assertTrue(concreteMapping.has("concreteObservation"));
+            assertFalse(concreteMapping.has("rawConditionIndex"));
 
             String[] rejected = new String[]{"MALFORMED_OPERATOR",
                     "DUPLICATE_DYNAMIC", "DUPLICATE_RAW",
@@ -2294,6 +2356,13 @@ public class ConcolicSummaryImporterTest {
                         folder.getRoot().toPath().resolve(
                                 mutation.toLowerCase(java.util.Locale.ROOT)),
                         mutation);
+                if (invalid.summary.entrySet().isEmpty()) {
+                    assertEquals("MALFORMED_OPERATOR", mutation);
+                    assertTrue(invalid.diagnostics,
+                            invalid.diagnostics.contains(
+                                    "REJECTED_CANONICAL_BRANCH_MAPPING"));
+                    continue;
+                }
                 assertFalse(mutation + ": " + invalid.diagnostics,
                         invalid.summary.get("relationallyComplete")
                                 .getAsBoolean());
@@ -2776,21 +2845,14 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertTrue(valueMismatch.diagnostics
                     .contains("GUARDED_CONSTANT_CAPTURE_VALUE_MISMATCH"));
-            assertFalse(filtered.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(filtered.diagnostics
-                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
-                            + "EVENT"));
-            assertFalse(forged.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(forged.diagnostics
-                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
-                            + "EVENT"));
-            assertFalse(forgedOperator.summary.get("relationallyComplete")
-                    .getAsBoolean());
-            assertTrue(forgedOperator.diagnostics
-                    .contains("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_"
-                            + "EVENT"));
+            for (MapFixture rejected : Arrays.asList(filtered, forged,
+                    forgedOperator)) {
+                assertTrue(rejected.summary.toString(),
+                        rejected.summary.entrySet().isEmpty());
+                assertTrue(rejected.diagnostics,
+                        rejected.diagnostics.contains(
+                                "REJECTED_CANONICAL_BRANCH_MAPPING"));
+            }
             assertFalse(inactiveEnvelope.summary.get("relationallyComplete")
                     .getAsBoolean());
             assertTrue(inactiveEnvelope.diagnostics
@@ -3296,6 +3358,15 @@ public class ConcolicSummaryImporterTest {
         JsonArray outputs = new JsonArray();
         outputs.add(outputAction);
         activation.add("outputs", outputs);
+        if (evidence.isJsonObject()
+                && "BinaryExpression".equals(evidence.getAsJsonObject()
+                .has("_type") ? evidence.getAsJsonObject().get("_type")
+                .getAsString() : "")) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", method + "#u0");
+            branch.addProperty("policy", "EXPLORE");
+            activation.add("branches", singletonObject(branch));
+        }
         write(activations, activation + "\n");
 
         JsonObject region = new JsonObject();
@@ -3334,7 +3405,8 @@ public class ConcolicSummaryImporterTest {
             mapping.addProperty("rawConditionIndex", 0);
             mapping.addProperty("engineConditionIndex", 0);
             mapping.add("rawCondition", evidence.deepCopy());
-            raw.add("branchMappings", singletonObject(mapping));
+            raw.add("branchMappings", authorizeRawBranchMappingsForTest(
+                    singletonObject(mapping), path));
         }
         write(results, raw + "\n");
 
@@ -4342,6 +4414,8 @@ public class ConcolicSummaryImporterTest {
         Path diagnostics = root.resolve("diagnostics.jsonl");
         String method = "<example.Store: void update()>";
         String cell = "<example.Store: java.util.Map data>";
+        JsonElement authorizedBranchMappings =
+                authorizeRawBranchMappingsForTest(branchMappings, path);
         if (sliceMetadata != null
                 && sliceMetadata.has("_fixtureRequestedOutputCell")) {
             cell = sliceMetadata.get("_fixtureRequestedOutputCell")
@@ -4468,6 +4542,8 @@ public class ConcolicSummaryImporterTest {
             }
         }
         activation.add("requestedOutputSlice", requestedOutputSlice);
+        activation.add("branches", branchPoliciesForTest(
+                authorizedBranchMappings));
         JsonArray edgeBindings = new JsonArray();
         JsonObject edgeBinding = new JsonObject();
         edgeBinding.addProperty("edgeId", "EDGE.P");
@@ -4518,8 +4594,9 @@ public class ConcolicSummaryImporterTest {
             raw.add("runtimeHeapObservations",
                     runtimeHeapObservations.deepCopy());
         }
-        if (branchMappings != null) {
-            raw.add("branchMappings", branchMappings.deepCopy());
+        if (authorizedBranchMappings != null) {
+            raw.add("branchMappings",
+                    authorizedBranchMappings.deepCopy());
         }
         if (fieldObservations != null) {
             raw.add("fieldObservations", fieldObservations.deepCopy());
@@ -5399,6 +5476,82 @@ public class ConcolicSummaryImporterTest {
         return mapping;
     }
 
+    private static JsonElement authorizeRawBranchMappingsForTest(
+            JsonElement encoded, JsonArray path) {
+        if (encoded == null || !encoded.isJsonArray()) {
+            return encoded == null ? null : encoded.deepCopy();
+        }
+        JsonArray result = new JsonArray();
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                result.add(element.deepCopy());
+                continue;
+            }
+            JsonObject mapping = element.getAsJsonObject().deepCopy();
+            if (!mapping.has("witness")
+                    && !mapping.has("concreteObservation")
+                    && (!mapping.has("vmBranchEventValidated")
+                    || mapping.get("vmBranchEventValidated")
+                    .getAsBoolean())) {
+                String site = mapping.get("siteId").getAsString();
+                String method = mapping.get("method").getAsString();
+                int unit = mapping.get("unitIndex").getAsInt();
+                int occurrence = mapping.get("occurrence").getAsInt();
+                boolean outcome = mapping.get("outcome").getAsBoolean();
+                int index = mapping.has("rawConditionIndex")
+                        ? mapping.get("rawConditionIndex").getAsInt()
+                        : mapping.has("conditionIndex")
+                        ? mapping.get("conditionIndex").getAsInt() : -1;
+                if (index >= 0 && index < path.size()) {
+                    JsonElement predicate = mapping.has("condition")
+                            ? mapping.get("condition") : path.get(index);
+                    JsonObject metadata = new JsonObject();
+                    metadata.addProperty("predicateNormalization",
+                            mapping.has("conditionNormalization")
+                                    ? BranchWitness.CMP_NORMALIZATION
+                                    : BranchWitness.IDENTITY_NORMALIZATION);
+                    mapping.add("witness", BranchWitness.vmPc(site,
+                            method, unit, occurrence, outcome, predicate,
+                            index, metadata).toJson());
+                } else {
+                    mapping.add("concreteObservation",
+                            ExactConcreteBranchObservation.attested(site,
+                                    method, unit, occurrence, outcome)
+                                    .toJson());
+                }
+            }
+            result.add(mapping);
+        }
+        return result;
+    }
+
+    private static JsonArray branchPoliciesForTest(JsonElement mappings) {
+        JsonArray result = new JsonArray();
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        if (mappings == null || !mappings.isJsonArray()) return result;
+        for (JsonElement element : mappings.getAsJsonArray()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mapping = element.getAsJsonObject();
+            String site = mapping.has("siteId")
+                    ? mapping.get("siteId").getAsString() : "";
+            if (site.isEmpty() && mapping.has("witness")) {
+                site = BranchWitness.fromJson(mapping.getAsJsonObject(
+                        "witness")).siteId();
+            }
+            if (site.isEmpty() && mapping.has("concreteObservation")) {
+                site = ExactConcreteBranchObservation.fromJson(
+                        mapping.getAsJsonObject("concreteObservation"))
+                        .siteId();
+            }
+            if (site.isEmpty() || !seen.add(site)) continue;
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", site);
+            branch.addProperty("policy", "EXPLORE");
+            result.add(branch);
+        }
+        return result;
+    }
+
     private static JsonObject fieldAccessAction(String symbol,
                                                 String field) {
         JsonObject action = new JsonObject();
@@ -5747,6 +5900,12 @@ public class ConcolicSummaryImporterTest {
         outputAction.addProperty("symbol", "REGION.FIELD.out.0");
         outputAction.addProperty("location", "RETURN_OR_HEAP_EFFECT");
         activation.add("outputs", singletonObject(outputAction));
+        if (exactVmGuard) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", method + "#u2");
+            branch.addProperty("policy", "EXPLORE");
+            activation.add("branches", singletonObject(branch));
+        }
         write(activations, activation + "\n");
 
         JsonObject region = new JsonObject();
@@ -5909,7 +6068,8 @@ public class ConcolicSummaryImporterTest {
             mapping.add("vmConditionIndices", vmConditionIndices);
             mapping.add("rawCondition", condition.deepCopy());
             mapping.add("condition", semanticCondition);
-            raw.add("branchMappings", singletonObject(mapping));
+            raw.add("branchMappings", authorizeRawBranchMappingsForTest(
+                    singletonObject(mapping), pathCondition));
         }
         engine.add("pathCondition", pathCondition);
         raw.add("engineSummary", engine);

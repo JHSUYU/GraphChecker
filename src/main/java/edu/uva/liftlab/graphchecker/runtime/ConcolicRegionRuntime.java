@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayObservationValidator;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicCodePosition;
+import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
 
 import java.io.BufferedReader;
@@ -3506,9 +3507,16 @@ public final class ConcolicRegionRuntime {
                 mapping.add("witness", witness.toJson());
                 active.branchWitnesses.add(witness);
             }
-        } else if (vmAttestation.valid) {
+        } else if (vmAttestation.valid && conditionCandidates == 0) {
             mapping.addProperty("conditionAuthority",
                     "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT");
+            mapping.add("concreteObservation",
+                    ExactConcreteBranchObservation.attested(siteId,
+                            safe(method), unitIndex, occurrence,
+                            observedOutcome).toJson());
+        } else if (vmAttestation.valid) {
+            mapping.addProperty("conditionAuthority",
+                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT_PC_INDEX");
         }
         boolean pathConditionShrank = conditions.size() < baseline;
         if (pathConditionShrank) {

@@ -2120,18 +2120,12 @@ public class ConcolicSchedulerTest {
             BranchWitness targetWitness = BranchWitness.vmPc(TARGET,
                     "<example.Manager: byte[] lookup(int)>", 8, 1, true,
                     targetCondition, 2, targetEvent);
-            JsonObject prefixMapping = new JsonObject();
-            prefixMapping.addProperty("siteId", prefixWitness.siteId());
-            prefixMapping.addProperty("occurrence", 1);
-            prefixMapping.addProperty("conditionIndex", 0);
-            prefixMapping.addProperty("summaryPcIndex", 0);
-            prefixMapping.add("witness", prefixWitness.toJson());
-            JsonObject targetMapping = new JsonObject();
-            targetMapping.addProperty("siteId", TARGET);
-            targetMapping.addProperty("occurrence", 1);
-            targetMapping.addProperty("conditionIndex", 2);
-            targetMapping.addProperty("summaryPcIndex", 2);
-            targetMapping.add("witness", targetWitness.toJson());
+            JsonObject prefixMapping = SummaryBranchMapping.witnessed(
+                    prefixWitness, 0,
+                    SummaryBranchMapping.Policy.PATH_ASSUMPTION).toJson();
+            JsonObject targetMapping = SummaryBranchMapping.witnessed(
+                    targetWitness, 2,
+                    SummaryBranchMapping.Policy.EXPLORE).toJson();
             JsonArray mappings = new JsonArray();
             mappings.add(prefixMapping);
             mappings.add(targetMapping);

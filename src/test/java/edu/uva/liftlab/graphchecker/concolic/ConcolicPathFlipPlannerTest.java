@@ -178,20 +178,14 @@ public class ConcolicPathFlipPlannerTest {
     private static JsonObject mapping(String site, int unitIndex,
                                       int conditionIndex,
                                       JsonObject condition) {
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", site);
-        mapping.addProperty("occurrence", 1);
-        mapping.addProperty("conditionIndex", conditionIndex);
-        mapping.addProperty("summaryPcIndex", conditionIndex);
-        mapping.addProperty("outcome", true);
-        mapping.addProperty("policy", "EXPLORE");
         JsonObject event = new JsonObject();
         event.addProperty("eventId", conditionIndex + 1L);
         event.addProperty("contextId", 1L);
-        mapping.add("witness", BranchWitness.vmPc(site,
-                "<example.Region: void run(int)>", unitIndex, 1,
-                true, condition, conditionIndex, event).toJson());
-        return mapping;
+        return SummaryBranchMapping.witnessed(BranchWitness.vmPc(site,
+                        "<example.Region: void run(int)>", unitIndex, 1,
+                        true, condition, conditionIndex, event),
+                conditionIndex, SummaryBranchMapping.Policy.EXPLORE)
+                .toJson();
     }
 
     private static JsonObject binary(String operator, int constant) {
