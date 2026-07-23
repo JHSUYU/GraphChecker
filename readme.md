@@ -414,8 +414,15 @@ custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端
 1. maintained fixture 的最终 Z3 `sat` / `unsat` 结果正确；
 2. runtime、summary 和 composition 继续 fail closed；
 3. 每个语义事实只有一个 authority 和一个 completeness 计算点；
-4. 删除兼容路径和重复实现，降低生产代码与认知负担；
-5. 在不牺牲前三项的前提下缩小代码规模。
+4. 不过度校验、不过度设计：只在真实 trust boundary 校验一次必要不变量；
+5. 删除兼容路径和重复实现，降低生产代码与认知负担；
+6. 在不牺牲前四项的前提下缩小代码规模。
+
+“fail closed”不等于每一层重复证明全部事实。codec 只验证 wire schema、identity、scope 和
+无 partial decode；Planner/Scheduler 证明计划确实对应静态与运行时 endpoint；Runtime
+记录执行证据；Importer 在消费边界独立验证执行结果。中间层不得重新实现上下游已有的
+语义分析，也不得为了类型化而建立一套平行 framework。每个新增 abstraction 或 validation
+都必须能指出它替代的旧代码，或它所封堵的具体错误传播路径；否则不应加入。
 
 保留全部 heap、Map、array、dynamic-field、Java primitive/FP/String、跨线程 read-from 和
 runtime identity 功能时，可信的最终目标是约 45,000–55,000 行生产代码。约
@@ -429,8 +436,9 @@ runtime identity 功能时，可信的最终目标是约 45,000–55,000 行生�
 - 一个 output closure 只包含真实下游 demand 所需的 outputs。
 - 每个 output 保留自己的 backward slice、capture/transformer proof 和 completeness；
   output B 的证据不能证明 output A。
-- joint output 的所有 capture、PC 和 heap evidence 必须属于同一个 region invocation 和
-  `executionId`。
+- joint output 的所有 capture、PC 和 heap evidence 必须属于同一个原子
+  `CONCOLIC_REGION_RESULT` row；row 的 `activationId` 与 producer invocation 共同确定执行
+  身份，不再为每个 capture 复制 `executionId`。
 - 任一 requested output 缺失、重复、无精确 binding 或不完整时，整个 joint summary
   fail closed；不能生成 partial relation。
 - runtime read-from 继续要求 exact region instance、顺序以及适用的 object/value identity。
@@ -519,55 +527,97 @@ attestation 并选择 hook。
 
 ### Joint multi-output closure
 
-`OUTPUT_CLOSURE` 不再引入 `requestedOutputs` 或另一份 serialized joint slice。
-现有 `outputs[]` 是唯一 demand set，每个 member 自带自己的 slice 和观察方式：
+`OUTPUT_CLOSURE` 使用独立、显式版本化的 `outputClosure` envelope。现有
+`outputs[]` 只是可由 closure 编译出的 execution action，不再承担 demand schema；
+static region、activation、summary、worklist task 也不再靠同名 `outputs` 的形状猜测类型：
 
 ```json
 {
-  "captureGoal": {
-    "kind": "OUTPUT_CLOSURE",
-    "scope": "BOUNDED_OUTPUT_RELEVANT_PATHS"
-  },
-  "outputs": [
-    {
-      "symbol": "REGION.P.out.0",
-      "cell": "outX",
-      "kind": "PRIMITIVE",
+  "outputClosure": {
+    "schemaVersion": 1,
+    "kind": "OUTPUT_CLOSURE_CONTRACT",
+    "producer": {
+      "regionId": "REGION.P",
+      "regionInstanceId": "REGION.P@test#call7",
+      "rootCallId": 7
+    },
+    "members": [{
+      "output": {
+        "portId": "REGION.P.out.0",
+        "cell": "<P: int outX>",
+        "kind": "SINK_STATE",
+        "javaTypeDescriptor": "I",
+        "selectionAuthority": "CONFIRMED_READ_FROM_EDGE"
+      },
       "slice": {
         "inputPorts": ["REGION.P.in.0"],
         "sites": ["B_x"],
         "staticSites": ["B_x"],
         "methods": ["<P: void produce()>"],
-        "causalEdgeIds": ["E_x"]
-      },
-      "capture": {
-        "kind": "CALL_ARGUMENT",
-        "binding": {"siteId": "S_x", "occurrence": 1}
+        "causalEdgeIds": ["E_x"],
+        "captureBindingsRequired": true,
+        "captureBindings": [{
+          "captureKind": "FIELD_ASSIGNMENT_RHS",
+          "captureBindingId": "REGION.P.out.0.capture.0",
+          "outputPort": "REGION.P.out.0",
+          "outputCell": "<P: int outX>",
+          "method": "<P: void produce()>",
+          "siteId": "<P: void produce()>#u4",
+          "unitIndex": 4,
+          "fieldSignature": "<P: int outX>",
+          "occurrence": 1
+        }]
       }
-    },
-    {
-      "symbol": "REGION.P.out.1",
-      "cell": "outY",
-      "kind": "HEAP_STATE",
+    }, {
+      "output": {
+        "portId": "REGION.P.out.1",
+        "cell": "<P: int outY>",
+        "kind": "HEAP_STATE",
+        "javaTypeDescriptor": "I",
+        "selectionAuthority": "CONFIRMED_READ_FROM_EDGE"
+      },
       "slice": {
         "inputPorts": ["REGION.P.in.0"],
         "sites": ["B_y"],
         "staticSites": ["B_y"],
         "methods": ["<P: void produce()>"],
-        "causalEdgeIds": ["E_y"]
-      },
-      "capture": {
-        "kind": "FIELD_ASSIGNMENT_RHS",
-        "binding": {"siteId": "S_y", "occurrence": 1}
+        "causalEdgeIds": ["E_y"],
+        "captureBindingsRequired": true,
+        "captureBindings": [{
+          "captureKind": "FIELD_ASSIGNMENT_RHS",
+          "captureBindingId": "REGION.P.out.1.capture.0",
+          "outputPort": "REGION.P.out.1",
+          "outputCell": "<P: int outY>",
+          "method": "<P: void produce()>",
+          "siteId": "<P: void produce()>#u5",
+          "unitIndex": 5,
+          "fieldSignature": "<P: int outY>",
+          "occurrence": 1
+        }]
       }
-    }
-  ]
+    }]
+  }
 }
 ```
 
-允许的 capture variant 是 `ROOT_RETURN`、`CALL_ARGUMENT`、
-`FIELD_ASSIGNMENT_RHS`、`HEAP_TRANSFORMER` 和 `UNAVAILABLE`。它们替代 global
-`captureRequired/captureComplete` boolean；`UNAVAILABLE` 必然令 activation incomplete。
+Envelope 不保存独立 `complete` boolean，也不复制 `capture` wrapper 或 execution
+`location`；capture ledger 只存在于 member slice，execution action 从 output kind 编译。
+decoder 只检查版本、wire shape、producer/member scope 与 ledger identity，任一 member
+malformed 时整个 decode 失败，不能过滤坏 member 后返回一个较小的“完整”集合。动态
+materialization/capture 正确性仍只由 Scheduler 与 Importer 在各自 trust boundary 证明。
+完整 slice JSON 作为不可变 defensive copy 保留，因此 field owner、RHS causal edge、
+transformer obligation、runtime occurrence 和 object identity 等证据不会在类型化过程中
+丢失。
+
+每个 closure 派生两个不同身份：
+
+- `DemandKey`：版本化、按 port 排序的
+  `(portId, cell, outputKind, JVM descriptor)` 集合，只表示共同请求哪些 outputs；
+- `closureFingerprint`：对每个 member 的完整 slice/capture contract 做 canonical hash。
+
+真正的选择 scope 是
+`(regionInstanceId, DemandKey, closureFingerprint)`。改变 output 集合会使 DemandKey
+失效；集合不变但 proof 改变会使 fingerprint 失效，旧 worklist/manifest 不能误复用。
 
 执行级 `symbolize`、`branches` 和 method admission 是所有 member slice 的确定性 union，
 可在 schedule 中编译出来，但不是另一份语义 authority。原则是：
@@ -581,6 +631,13 @@ Planner 先按一次 downstream demand（初版可以使用 downstream region in
 composition demand id）收集同一 upstream instance 的 output port set，再按 canonical sorted
 set 合并等价 demand。它不会预生成所有 output 子集，也不会把无关 consumer 的 outputs
 无条件 union。
+
+首个 writer 切换只允许两个或以上的 member 都有唯一
+`CALL_ARGUMENT` / `FIELD_ASSIGNMENT_RHS` 直接 capture，且 JVM descriptor 是 custom JDK
+已经支持的 primitive scalar。任一 member 缺 capture、capture 重复或类型不支持，整个 joint
+activation fail closed。现有 singleton heap/container/root-return 路径先通过同一 envelope
+保留完整 payload 和现有验证，再逐 variant 去掉旧内部适配；不能为了尽快删除 legacy 而降低
+这些路径的证明强度。
 
 删除目标：
 
@@ -603,9 +660,11 @@ custom JDK 保持稳定底座。现有 `startRegion`、symbolize、expression ca
 pause/resume PC、branch events 和 finish API 已能在同一次 region execution 中重复捕获多个
 symbolic expressions。joint multi-output 不要求重写 VM、solver 或 HotSpot expression AST。
 
-GraphChecker runtime 为每次 ActiveRegion 生成 `executionId`，raw result、PC、heap evidence
-和每条 output capture 都携带该 id。Importer 必须验证完全一致。若未来需要由 VM 独立签发
-execution id，可以给 custom JDK envelope 增加一个字段；这不是当前重构的前置条件。
+当前一个 raw-result row 本身就是一次 ActiveRegion 的原子 execution envelope；其中的 PC、
+heap evidence 和全部 output captures 已由同一 active token 产生，并由 `activationId` 绑定
+回唯一计划。Importer 逐 member 验证 capture identity 和完整 demanded keyset 即可，不再为了
+重复表达同一事实给每个子 row 增加 `executionId`。只有未来允许一个 row 混合多次 execution
+时，才引入新的 execution identity。
 
 只有跨线程共享一个 concolic context、跨进程 execution context 或原子 multi-heap snapshot
 才可能需要较大 custom JDK 修改；这些不属于当前 joint-output scope。
@@ -638,13 +697,16 @@ replay <failure-bundle>
 
 当前实施状态（2026-07-23）：
 
-- Phase 0 `IN_PROGRESS`：真实 Z3 快速门已通过且无 skip；当前开发环境尚未构建配置指定的
-  custom JDK，完整 robustness matrix 在第一次 concolic replay 前停止，不能据此宣告
-  fixture gate 完成。
+- Phase 0 `COMPLETED`：配置指定的 custom JDK 已完整构建；六个 maintained workload
+  已经执行真实 concolic campaign 和真实 Z3，结果为五个 `sat`、一个 `unsat`，没有 skip。
+  矩阵使用一次 Maven 构建和六个隔离 workdir 并行执行，shared JAR 在执行前后由 SHA-256
+  校验为未改变。
 - Phase 1 `IN_PROGRESS`：ReplayValidator 与 ReplayVerifier 已删除各自的 canonical JSON
   实现并统一使用 `CanonicalJson`；这批不改变 worklist identity、summary id、SMT 或
   custom JDK，生产 Java 净减 51 行，当前总量为 81,543 行。
-- Phase 2–7 `NOT_STARTED`。
+- Phase 2 `IN_PROGRESS`：`OutputClosureContract` 与唯一 codec/legacy adapter 正在实现和
+  trust-boundary 审查；尚未切换生产 writer。
+- Phase 3–7 `NOT_STARTED`。
 
 #### Phase 0：冻结行为与端到端基线
 
@@ -726,6 +788,9 @@ experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
 
 # 全部六个 maintained workload
 experiments/generic/three-thread-rpc/run_robustness_matrix.sh all
+
+# 推荐：只构建一次，六个 workload 使用隔离目录和日志全部并行
+experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 ```
 
 完整矩阵的预期顶层结论固定为：

@@ -14,11 +14,11 @@ import java.util.Collections;
 import java.util.List;
 
 /** Deterministic JSON rendering used by immutable protocol identities. */
-final class CanonicalJson {
+public final class CanonicalJson {
     private CanonicalJson() {
     }
 
-    static JsonElement copy(JsonElement value) {
+    public static JsonElement copy(JsonElement value) {
         if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
         if (value.isJsonPrimitive()) return value.deepCopy();
         if (value.isJsonArray()) {
@@ -41,7 +41,7 @@ final class CanonicalJson {
         return result;
     }
 
-    static String render(JsonElement value) {
+    public static String render(JsonElement value) {
         if (value == null || value.isJsonNull()) return "null";
         if (value.isJsonPrimitive()) return value.toString();
         if (value.isJsonArray()) {
@@ -71,7 +71,7 @@ final class CanonicalJson {
         return result.append('}').toString();
     }
 
-    static String sha256(JsonElement value) {
+    public static String sha256(JsonElement value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] bytes = digest.digest(render(value).getBytes(
