@@ -362,7 +362,13 @@ scheduled_target_activation() {
 }
 
 do_prepare() {
-  (cd "${graphchecker_dir}" && "${maven_bin}" -q -DskipTests package)
+  if [[ "${GRAPH_CHECKER_SKIP_BUILD:-false}" == "true" ]]; then
+    require_file "prebuilt GraphChecker jar" "${graphchecker_jar}"
+    require_directory "prebuilt project test classes" \
+      "${project_test_classes}"
+  else
+    (cd "${graphchecker_dir}" && "${maven_bin}" -q -DskipTests package)
+  fi
   local source_dir="${project_test_classes}/${fixture_package}"
   local destination="${original_classes}/${fixture_package}"
   require_directory "compiled fixture package" "${source_dir}"
