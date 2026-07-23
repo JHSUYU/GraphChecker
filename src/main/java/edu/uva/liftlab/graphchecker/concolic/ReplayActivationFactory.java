@@ -24,6 +24,7 @@ final class ReplayActivationFactory {
                     "model assignments are required");
         }
         BranchReplayContract contract = supportedContract(task);
+        RegionCaptureGoal.from(task);
         String queryKey = string(task, "queryKey");
         if (queryKey.isEmpty()) {
             throw new IllegalArgumentException("path queryKey is required");
@@ -44,10 +45,7 @@ final class ReplayActivationFactory {
         result.addProperty("activationBundleIndex", 0);
         result.addProperty("activationBundleMemberRole", "PRIMARY");
         result.remove("reachabilitySupportForActivationId");
-        result.add("captureGoal", (RegionCaptureGoal.from(task)
-                .isTransitionDiscovery()
-                ? RegionCaptureGoal.transitionDiscovery()
-                : RegionCaptureGoal.outputClosure()).toJson());
+        result.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);

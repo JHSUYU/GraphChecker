@@ -398,11 +398,11 @@ public final class ConcolicConstraintSolver {
             }
             JsonObject object = expression.getAsJsonObject();
             String type = string(object, "_type");
-            if ("SymbolExpression".equals(type)
-                    || "ConSymbolExp".equals(type)) {
+            if ("SymbolExpression".equals(type)) {
                 return symbol(object, expected);
             }
             if ("ConstExpr".equals(type)
+                    || "ConSymbolExp".equals(type)
                     || "ConStringSymbolExp".equals(type)) {
                 return constant(object, expected, origin);
             }
@@ -1598,8 +1598,7 @@ public final class ConcolicConstraintSolver {
         if (!expression.isJsonObject()) return;
         JsonObject object = expression.getAsJsonObject();
         String type = string(object, "_type");
-        if ("SymbolExpression".equals(type)
-                || "ConSymbolExp".equals(type)) {
+        if ("SymbolExpression".equals(type)) {
             String raw = string(object, "_exp");
             if (!raw.isEmpty()) result.add(raw);
             return;

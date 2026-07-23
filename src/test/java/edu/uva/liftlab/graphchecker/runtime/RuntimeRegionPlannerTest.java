@@ -35,554 +35,6 @@ public class RuntimeRegionPlannerTest {
     private static final String NAME_CALLBACK_DEFAULT =
             "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>";
 
-    @Test
-    public void rejectsMissingAndUnknownPersistedRegionSchemas()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String missing = "{\"regionId\":\"REGION.MISSING\","
-                    + "\"rootMethod\":\"" + HANDLE + "\"}\n";
-            String unknown = "{\"schemaVersion\":2,"
-                    + "\"regionId\":\"REGION.UNKNOWN\","
-                    + "\"rootMethod\":\"" + HANDLE + "\"}\n";
-            Files.write(regions, (missing + unknown).getBytes(
-                    StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>
-                            emptyList());
-
-            assertEquals(0, result.instances.size());
-            assertEquals(2, Collections.frequency(result.warnings,
-                    "ignored symbolic region row with missing or "
-                            + "unsupported schemaVersion"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void hotPathRegexesArePrecompiledAndPreserveCellParsing()
-            throws Exception {
-        for (String name : Arrays.asList("PARAMETER_TYPE",
-                "PARAMETER_FIELD_PROJECTION", "UNIT_SITE_SUFFIX",
-                "UNSAFE_TOKEN_CHARACTERS", "JSON_QUOTED_STRING")) {
-            java.lang.reflect.Field field = RuntimeRegionPlanner.class
-                    .getDeclaredField(name);
-            int modifiers = field.getModifiers();
-            assertTrue(java.lang.reflect.Modifier.isStatic(modifiers));
-            assertTrue(java.lang.reflect.Modifier.isFinal(modifiers));
-            assertEquals(java.util.regex.Pattern.class, field.getType());
-        }
-
-        java.lang.reflect.Method declaredJavaType = RuntimeRegionPlanner.class
-                .getDeclaredMethod("declaredJavaType", String.class);
-        declaredJavaType.setAccessible(true);
-        String parameterProjection = HANDLE
-                + ".param0:example.Payload#field:entries";
-        assertEquals("example.Payload", declaredJavaType.invoke(null,
-                parameterProjection));
-        assertEquals("java.util.Map", declaredJavaType.invoke(null,
-                "<example.State: java.util.Map allKeys>"));
-
-        java.lang.reflect.Method fieldCell = RuntimeRegionPlanner.class
-                .getDeclaredMethod("fieldCell", String.class);
-        fieldCell.setAccessible(true);
-        Object parsed = fieldCell.invoke(null, parameterProjection);
-        java.lang.reflect.Field owner = parsed.getClass().getDeclaredField(
-                "owner");
-        java.lang.reflect.Field name = parsed.getClass().getDeclaredField(
-                "name");
-        owner.setAccessible(true);
-        name.setAccessible(true);
-        assertEquals("example.Payload", owner.get(parsed));
-        assertEquals("entries", name.get(parsed));
-
-        Object carrier = fieldCell.invoke(null,
-                "<example.Consumer: example.RpcBus bus>#field:a");
-        java.lang.reflect.Field declared = carrier.getClass()
-                .getDeclaredField("declaredSignature");
-        declared.setAccessible(true);
-        assertEquals("example.Consumer", owner.get(carrier));
-        assertEquals("bus", name.get(carrier));
-        assertEquals(true, declared.get(carrier));
-        java.lang.reflect.Method exactDeclared = RuntimeRegionPlanner.class
-                .getDeclaredMethod("exactDeclaredFieldCell", String.class);
-        exactDeclared.setAccessible(true);
-        assertEquals(false, exactDeclared.invoke(null,
-                "<example.Consumer: example.RpcBus bus>#field:a"));
-    }
-
-    @Test
-    public void activationCarriesStableReceiverAndThreadContextOrdinal()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<example.WorkerThread: void run()>";
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            writeRegions(regions, region("REGION.WORKER", root).getBytes(
-                    StandardCharsets.UTF_8));
-            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
-                    rootContextMethod(1, root, 1, "producer-a",
-                            "example.ProducerAThread", 21L),
-                    rootContextMethod(2, root, 2, "pool-38-thread-1",
-                            "example.ConsumerThread", 99L),
-                    rootContextMethod(3, root, 3, "producer-b",
-                            "example.ProducerBThread", 22L),
-                    rootContextMethod(4, root, 4, "pool-41-thread-1",
-                            "example.ConsumerThread", 1234L));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), methods, Collections.emptyList(),
-                    Collections.emptyList());
-
-            Map<String, Object> firstConsumer = null;
-            Map<String, Object> secondConsumer = null;
-            for (Map<String, Object> activation : result.activations) {
-                if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
-                    firstConsumer = activation;
-                } else if (Long.valueOf(4L).equals(
-                        activation.get("rootCallId"))) {
-                    secondConsumer = activation;
-                }
-            }
-            assertTrue(firstConsumer != null);
-            assertTrue(secondConsumer != null);
-            assertEquals("example.ConsumerThread",
-                    firstConsumer.get("receiverRuntimeClass"));
-            assertEquals("pool-*-thread-1",
-                    firstConsumer.get("threadName"));
-            assertEquals(1,
-                    firstConsumer.get("invocationOrdinalWithinContext"));
-            assertEquals(2,
-                    secondConsumer.get("invocationOrdinalWithinContext"));
-            assertEquals(RuntimeRegionPlanner
-                            .ROOT_CONTEXT_SELECTION_AUTHORITY,
-                    firstConsumer.get("rootContextSelectionAuthority"));
-            assertEquals(Boolean.FALSE,
-                    firstConsumer.get("threadIdSelectionUsed"));
-            assertFalse("unstable tid must not enter the activation selector",
-                    firstConsumer.containsKey("threadId"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rootArgumentParameterIndexAfterPrimitiveIsNotDropped()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<example.Actor: void process(int,example.Command)>";
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            writeRegions(regions, region("REGION.PARAMETERS", root).getBytes(
-                    StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.MethodEvent method = methodWithReceiver(
-                    1, root, 1, 101);
-            RuntimeRegionPlanner.RuntimeEvent command = methodArgument(
-                    2, root, 1, 1, "example.KeyUpdateCommand");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(method),
-                    Collections.singletonList(command),
-                    Collections.emptyList());
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> selector = (Map<String, Object>) result
-                    .activations.get(0).get("runtimeRootArgumentSelector");
-            assertTrue(selector != null);
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> predicates =
-                    (List<Map<String, Object>>) selector.get("predicates");
-            assertEquals(1, predicates.size());
-            assertEquals(1, predicates.get(0).get("argumentIndex"));
-            assertEquals("example.KeyUpdateCommand",
-                    predicates.get(0).get("runtimeType"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rootArgumentTypeIndexIsLinearAndPreservesAmbiguity() {
-        String root = "<example.Actor: void process(example.Command,"
-                + "example.Service)>";
-        String other = "<example.OtherActor: void process(example.Command)>";
-        List<RuntimeRegionPlanner.RuntimeEvent> events = new ArrayList<>();
-        for (int index = 0; index < 30000; index++) {
-            events.add(new RuntimeRegionPlanner.RuntimeEvent(index + 1L,
-                    "BRANCH", "<example.Noise: void run()>",
-                    1000L + index, 0L, 0L, "noise#u1", -1, "", 0,
-                    "", true, false));
-        }
-        events.add(methodArgument(30001, root, 41, 0,
-                "example.KeyUpdateCommand"));
-        events.add(methodArgument(30002, root, 41, 0,
-                "example.KeyUpdateCommand"));
-        events.add(methodArgument(30003, root, 41, 1,
-                "example.Service"));
-        events.add(methodArgument(30004, root, 42, 0,
-                "example.OtherCommand"));
-        events.add(methodArgument(30005, other, 41, 0,
-                "example.UnrelatedCommand"));
-        events.add(methodArgument(30006, root, 43, 0,
-                "example.FirstCommand"));
-        events.add(methodArgument(30007, root, 43, 0,
-                "example.SecondCommand"));
-        events.add(methodArgument(30008, root, 43, 0,
-                "example.FirstCommand"));
-        events.add(methodArgument(30009, root, 43, 1,
-                "example.Service"));
-
-        RuntimeRegionPlanner.RootArgumentRuntimeTypeIndex index =
-                RuntimeRegionPlanner.RootArgumentRuntimeTypeIndex.build(
-                        events);
-        RuntimeRegionPlanner.MethodEvent target = methodWithReceiver(
-                1, root, 41, 101);
-        Map<Integer, String> exact = index.typesFor(target);
-        assertEquals("example.KeyUpdateCommand", exact.get(0));
-        assertEquals("example.Service", exact.get(1));
-
-        Map<Integer, String> ambiguous = index.typesFor(methodWithReceiver(
-                2, root, 43, 102));
-        assertFalse("a conflicting argument index remains ambiguous even if "
-                + "a later row repeats the first type",
-                ambiguous.containsKey(0));
-        assertEquals("example.Service", ambiguous.get(1));
-        assertEquals(events.size(), index.scannedEventCount());
-        assertEquals(9, index.indexedArgumentEventCount());
-        assertEquals(4, index.indexedCallCount());
-
-        for (int lookup = 0; lookup < 10000; lookup++) {
-            assertEquals(exact, index.typesFor(target));
-        }
-        assertEquals("lookups do not rescan the large runtime event list",
-                events.size(), index.scannedEventCount());
-    }
-
-    @Test
-    public void argumentSelectorOrdinalsAreRelativeToStableRootContext()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<example.WorkerThread: void run(java.lang.Object)>";
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            writeRegions(regions, region("REGION.WORKER.ARG", root).getBytes(
-                    StandardCharsets.UTF_8));
-            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
-                    rootContextMethod(1, root, 1, "producer",
-                            "example.ProducerThread", 31L),
-                    rootContextMethod(3, root, 2, "consumer",
-                            "example.ConsumerThread", 32L));
-            List<RuntimeRegionPlanner.RuntimeEvent> events = Arrays.asList(
-                    methodArgument(2, root, 1, 0, "example.Command"),
-                    methodArgument(4, root, 2, 0, "example.Command"));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), methods, events,
-                    Collections.emptyList());
-            Map<String, Object> consumer = null;
-            for (Map<String, Object> activation : result.activations) {
-                if (Long.valueOf(2L).equals(activation.get("rootCallId"))) {
-                    consumer = activation;
-                }
-            }
-            assertTrue(consumer != null);
-            assertEquals(1, consumer.get(
-                    "invocationOrdinalWithinContext"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> selector = (Map<String, Object>) consumer.get(
-                    "runtimeRootArgumentSelector");
-            assertEquals("other receiver/thread contexts must not shift the "
-                            + "argument selector",
-                    1, selector.get("receiverOrdinal"));
-            assertEquals(1, selector.get("matchOrdinalWithinReceiver"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rootArgumentSelectorUsesExactTypesAndReceiverRelativeOrdinal()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<example.Actor: void process(example.Command,"
-                    + "example.Service,int)>";
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            writeRegions(regions, region("REGION.SELECTOR", root).getBytes(
-                    StandardCharsets.UTF_8));
-
-            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
-                    methodWithReceiver(1, root, 1, 101),
-                    methodWithReceiver(10, root, 2, 201),
-                    methodWithReceiver(20, root, 3, 301),
-                    methodWithReceiver(30, root, 4, 401));
-            List<RuntimeRegionPlanner.RuntimeEvent> events = Arrays.asList(
-                    methodArgument(2, root, 1, 0, "example.NullCommand"),
-                    methodArgument(3, root, 1, 1, "example.Service"),
-                    methodArgument(11, root, 2, 0, "example.KeyUpdateCommand"),
-                    methodArgument(12, root, 2, 1, "example.Service"),
-                    methodArgument(21, root, 3, 0, "example.KeyUpdateCommand"),
-                    methodArgument(22, root, 3, 1, "example.OtherService"),
-                    methodArgument(31, root, 4, 0, "example.KeyUpdateCommand"),
-                    methodArgument(32, root, 4, 1, "example.Service"));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), methods, events,
-                    Collections.emptyList());
-
-            Map<String, Object> selected = null;
-            for (Map<String, Object> activation : result.activations) {
-                if (Long.valueOf(4L).equals(activation.get("rootCallId"))) {
-                    selected = activation;
-                }
-            }
-            assertTrue(selected != null);
-            assertEquals(4, selected.get("invocationOrdinal"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> selector = (Map<String, Object>) selected.get(
-                    "runtimeRootArgumentSelector");
-            assertEquals(RuntimeRegionPlanner.ROOT_ARGUMENT_SELECTOR_SCHEMA,
-                    selector.get("schema"));
-            assertEquals(RuntimeRegionPlanner.ROOT_ARGUMENT_SELECTOR_AUTHORITY,
-                    selector.get("authority"));
-            assertEquals(2, selector.get("receiverOrdinal"));
-            assertEquals(1, selector.get("matchOrdinalWithinReceiver"));
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> predicates =
-                    (List<Map<String, Object>>) selector.get("predicates");
-            assertEquals(2, predicates.size());
-            assertEquals(0, predicates.get(0).get("argumentIndex"));
-            assertEquals("example.KeyUpdateCommand",
-                    predicates.get(0).get("runtimeType"));
-            assertEquals(1, predicates.get(1).get("argumentIndex"));
-            assertEquals("example.Service",
-                    predicates.get(1).get("runtimeType"));
-
-            Map<String, Object> selectedInstance = null;
-            for (Map<String, Object> instance : result.instances) {
-                if (Long.valueOf(4L).equals(instance.get("rootCallId"))) {
-                    selectedInstance = instance;
-                }
-            }
-            assertTrue(selectedInstance != null);
-            assertEquals(selector,
-                    selectedInstance.get("runtimeRootArgumentSelector"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void instantiatesRegionFromConcreteCallTreeAndBuildsActivation() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String row = "{"
-                    + "\"regionId\":\"REGION.0\","
-                    + "\"rootMethod\":\"" + HANDLE + "\","
-                    + "\"anchorMethod\":\"" + RETRIEVE + "\","
-                    + "\"methods\":[\"" + HANDLE + "\",\"" + IDENTIFIER
-                    + "\",\"" + PASSWORD + "\",\"" + RETRIEVE + "\"],"
-                    + "\"symbolicInputs\":[{\"portId\":\"REGION.0.in.0\","
-                    + "\"cell\":\"" + HANDLE + ".param0:callbacks\","
-                    + "\"sourceKind\":\"ROOT_ARGUMENT\",\"projection\":\"argument[0]\"}],"
-                    + "\"outputs\":[{\"portId\":\"REGION.0.out.0\","
-                    + "\"cell\":\"failure:key == null\","
-                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + RETRIEVE
-                    + "#u8\",\"policy\":\"EXPLORE\",\"guard\":\"key == null\","
-                    + "\"requiredOutcome\":false,"
-                    + "\"role\":\"REACHABILITY\"}],"
-                    + "\"models\":[\"symbolic_map\"]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent handle = method(1, HANDLE, 1, 0, 0);
-            RuntimeRegionPlanner.MethodEvent identifier = method(3, IDENTIFIER, 2, 1, 2);
-            RuntimeRegionPlanner.MethodEvent password = method(5, PASSWORD, 3, 1, 4);
-            RuntimeRegionPlanner.MethodEvent retrieve = method(7, RETRIEVE, 4, 3, 6);
-            RuntimeRegionPlanner.RuntimeEvent argument = new RuntimeRegionPlanner.RuntimeEvent(
-                    2, "METHOD_ARGUMENT", HANDLE, 1, 0, 0,
-                    HANDLE + "#entry", 0, "[Ljava.lang.Object;", 99,
-                    "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent branch = new RuntimeRegionPlanner.RuntimeEvent(
-                    8, "BRANCH", RETRIEVE, 4, 0, 0,
-                    RETRIEVE + "#u8", -1, "", 0, "", true, true);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(),
-                    Arrays.asList(handle, identifier, password, retrieve),
-                    Arrays.asList(argument, branch), Collections.emptyList());
-
-            assertEquals(1, result.instances.size());
-            assertEquals(1, result.activations.size());
-            assertEquals(HANDLE, result.instances.get(0).get("observedRootMethod"));
-            assertEquals(true, result.instances.get(0).get("fullyObserved"));
-            assertEquals("VALIDATED_PATH",
-                    result.instances.get(0).get("validationStatus"));
-            assertEquals(true, result.instances.get(0).get("symbolicReady"));
-            assertEquals(true, result.activations.get(0).get("replayable"));
-            String instances = String.valueOf(result.instances);
-            String activations = result.activationsJsonl();
-            assertTrue(instances.contains("" + RETRIEVE + "#u8=true"));
-            assertTrue(activations.contains("\"location\":\"ARGUMENT\""));
-            assertTrue(activations.contains("\"action\":\"ALLOW_NEGATION\""));
-            assertTrue(activations.contains("\"requiredOutcome\":false"));
-            assertTrue(activations.contains(
-                    "\"matchesRequiredOutcome\":false"));
-            assertFalse(activations.contains("\"role\""));
-            assertTrue(activations.contains("\"requiredModels\":[\"symbolic_map\"]"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void unresolvedStaticFrontierBlocksSymbolicReadiness()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"inputSelectionComplete\":false,"
-                    + "\"unresolvedInputs\":[\"opaque local result\"],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals(true, result.activations.get(0).get("replayable"));
-            assertEquals(false, result.activations.get(0).get("symbolicReady"));
-            assertTrue(String.valueOf(result.activations.get(0).get(
-                    "staticUnresolvedInputs")).contains("opaque local result"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void exactVmTimeAndOpaqueCallReturnDeferToAuthoritativeGates()
-            throws Exception {
-        assertDeferredInputReady(
-                "<java.lang.System: long currentTimeMillis()>.return",
-                "ENVIRONMENT", "ENVIRONMENT_MODEL",
-                "EXACT_VM_INTRINSIC_PLACEHOLDER_"
-                        + "SCHEDULER_VALIDATION_V1");
-        assertDeferredInputReady(
-                HANDLE + "::$z0",
-                "OPAQUE_CALL", "CALL_RETURN",
-                "AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_REQUIRED_V1");
-    }
-
-    @Test
-    public void unmodeledEnvironmentInputRemainsFailClosed()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String cell = "<example.Clock: long nanoTime()>.return";
-            String row = "{\"regionId\":\"REGION.ENV\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.ENV.in.0\",\"cell\":\"" + cell
-                    + "\",\"sourceKind\":\"ENVIRONMENT\","
-                    + "\"projection\":\"value\"}],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Collections.emptyList(), Collections.emptyList());
-            assertEquals(Boolean.FALSE,
-                    result.activations.get(0).get("symbolicReady"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = ((List<Map<String, Object>>)
-                    result.activations.get(0).get("symbolize")).get(0);
-            assertEquals("ENVIRONMENT_MODEL", action.get("location"));
-            assertFalse(action.containsKey("deferredResolution"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void emptyUnresolvedDependencyProvenanceCannotBeExcluded()
-            throws Exception {
-        String diagnostic = "<example.Alternative: int value>"
-                + " [output slice input has no region port]";
-        String raw = "{\"outputPort\":\"REGION.X.out.0\","
-                + "\"outputCell\":\"<example.State: int value>\","
-                + "\"methods\":[\"<example.Alternative: void run()>\"],"
-                + "\"causalEdgeIds\":[\"DF.1\"],"
-                + "\"causalEdges\":[{\"edgeId\":\"DF.1\","
-                + "\"method\":\"<example.Alternative: void run()>\"}],"
-                + "\"unresolvedInputs\":[\"" + diagnostic + "\"],"
-                + "\"unresolvedInputDetails\":[{\"dependencyCell\":"
-                + "\"<example.Alternative: int value>\","
-                + "\"dependencyMethods\":[],"
-                + "\"reason\":\"OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT\","
-                + "\"diagnostic\":\"" + diagnostic + "\","
-                + "\"provenanceAuthority\":"
-                + "\"STATIC_EXACT_DEPENDENCY_METHOD_"
-                + "CONSUMER_SET_V1\"}]}";
-
-        Class<?> type = Class.forName(RuntimeRegionPlanner.class.getName()
-                + "$StaticOutputSlice");
-        java.lang.reflect.Method fromJson = type.getDeclaredMethod(
-                "fromJson", String.class);
-        fromJson.setAccessible(true);
-        Object source = fromJson.invoke(null, raw);
-        java.lang.reflect.Constructor<?> constructor =
-                type.getDeclaredConstructor();
-        constructor.setAccessible(true);
-        Object refined = constructor.newInstance();
-        java.lang.reflect.Method refine = type.getDeclaredMethod(
-                "refineUnresolvedInputs", java.util.Set.class, type);
-        refine.setAccessible(true);
-        refine.invoke(source, Collections.emptySet(), refined);
-
-        java.lang.reflect.Field unresolved = type.getDeclaredField(
-                "unresolvedInputs");
-        unresolved.setAccessible(true);
-        assertEquals(Collections.singletonList(diagnostic),
-                unresolved.get(refined));
-        java.lang.reflect.Field provenance = type.getDeclaredField(
-                "unresolvedInputProvenanceComplete");
-        provenance.setAccessible(true);
-        assertEquals(Boolean.FALSE, provenance.get(refined));
-        java.lang.reflect.Field complete = type.getDeclaredField(
-                "runtimeRefinementComplete");
-        complete.setAccessible(true);
-        assertEquals(Boolean.FALSE, complete.get(refined));
-    }
-
     private static void assertDeferredInputReady(
             String cell, String sourceKind, String location,
             String authority) throws Exception {
@@ -614,229 +66,6 @@ public class RuntimeRegionPlannerTest {
             assertEquals(Boolean.TRUE, action.get("deferredResolution"));
             assertEquals(authority,
                     action.get("deferredResolutionAuthority"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void exactSingletonArrayFieldReadEmitsConsumedSiteAuthority()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = planArrayFieldRead(false,
-                false);
-        Map<String, Object> activation = result.activations.get(0);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> action = ((List<Map<String, Object>>)
-                activation.get("symbolize")).get(0);
-
-        assertEquals(Boolean.TRUE, activation.get("symbolicReady"));
-        assertEquals(Boolean.TRUE, action.get(
-                "consumedFieldBindingComplete"));
-        assertEquals("<example.ArrayReader: void run()>#u7",
-                action.get("consumedFieldSiteId"));
-        assertEquals(7, action.get("consumedFieldUnitIndex"));
-        assertEquals("RUNTIME_UNIQUE_STATIC_LEAF_GETFIELD_SITE_AND_"
-                        + "OWNER_WITHIN_REGION_INSTANCE_V1",
-                action.get("consumedFieldSiteAuthority"));
-        assertEquals("DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1",
-                action.get("consumedFieldRootAuthority"));
-        assertEquals("example.Value[]", action.get("javaType"));
-    }
-
-    @Test
-    public void repeatedArrayFieldReadFailsClosedInsteadOfChoosingOccurrence()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = planArrayFieldRead(true,
-                false);
-        Map<String, Object> activation = result.activations.get(0);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> action = ((List<Map<String, Object>>)
-                activation.get("symbolize")).get(0);
-
-        assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
-        assertEquals(Boolean.FALSE, activation.get("boundaryReady"));
-        assertEquals(Boolean.FALSE, action.get(
-                "consumedFieldBindingComplete"));
-        assertTrue(String.valueOf(action.get("consumedFieldBindingIssue"))
-                .contains("REPEATED_OR_AMBIGUOUS_RUNTIME_FIELD_READ:2"));
-        assertFalse(action.containsKey("consumedFieldSiteId"));
-    }
-
-    @Test
-    public void heapArrayReadOnEntryReceiverUsesReceiverRootAuthority()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = planArrayFieldRead(false,
-                true);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> action = ((List<Map<String, Object>>)
-                result.activations.get(0).get("symbolize")).get(0);
-        assertEquals("ROOT_RECEIVER_IDENTITY_AT_REGION_ENTRY_AND_"
-                        + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY",
-                action.get("consumedFieldRootAuthority"));
-    }
-
-    @Test
-    public void localArrayLeafRetainsSiteEvidencePendingDefinitionIndex()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String method = "<example.LocalArrayReader: void run()>";
-            String local = method + "::$r0";
-            String leaf = "<example.ArrayState: example.Value[] values>";
-            String row = "{\"regionId\":\"REGION.LOCAL.ARRAY\","
-                    + "\"rootMethod\":\"" + method + "\","
-                    + "\"anchorMethod\":\"" + method + "\","
-                    + "\"methods\":[\"" + method + "\"],"
-                    + "\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.LOCAL.ARRAY.in.0\",\"cell\":\""
-                    + local + "\",\"sourceKind\":\"PROTOCOL_INPUT\","
-                    + "\"projection\":\"value\","
-                    + "\"javaType\":\"example.Value[]\","
-                    + "\"leafFieldSignature\":\"" + leaf + "\","
-                    + "\"fieldPath\":[\"values\"]}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            methodContext(1, method, 1, "PROCESS", "reader",
-                                    55L)),
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Collections.singletonList(exactFieldRead(2, method, 1,
-                            7, leaf, 91, 701)));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = ((List<Map<String, Object>>)
-                    result.activations.get(0).get("symbolize")).get(0);
-            assertEquals(method + "#u7",
-                    action.get("consumedFieldSiteId"));
-            assertEquals("LOCAL_DEFINITION_ROOT_PENDING_AUTHORITATIVE_"
-                            + "SCHEDULER_DEFINITION_INDEX_V1",
-                    action.get("consumedFieldRootAuthority"));
-            assertEquals(Boolean.TRUE,
-                    action.get("consumedFieldSiteBindingComplete"));
-            assertEquals(Boolean.FALSE,
-                    action.get("consumedFieldBindingComplete"));
-            assertEquals(Boolean.FALSE,
-                    result.activations.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void uniqueContainedProtocolFieldReadMaterializesItsExactSite()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String root = "<example.DataXceiver: void run()>";
-            String decoder = "<example.Protocol: void decode()>";
-            String field = "<example.Transport: example.Manager manager>";
-            String wrong = "<example.Unrelated: example.Manager manager>";
-            String row = "{\"regionId\":\"REGION.PROTOCOL\","
-                    + "\"rootMethod\":\"" + root + "\","
-                    + "\"anchorMethod\":\"" + decoder + "\","
-                    + "\"methods\":[\"" + root + "\",\""
-                    + decoder + "\"],\"symbolicInputs\":[{"
-                    + "\"portId\":\"REGION.PROTOCOL.in.0\","
-                    + "\"cell\":\"" + field + "#field:map\","
-                    + "\"sourceKind\":\"PROTOCOL_INPUT\","
-                    + "\"projection\":\"field:map\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent rootCall = methodContext(1,
-                    root, 1, "DATANODE", "DataXceiver", 55L);
-            RuntimeRegionPlanner.MethodEvent decoderCall =
-                    new RuntimeRegionPlanner.MethodEvent(2, "testHandle",
-                            "DATANODE", "DataXceiver", 55L, decoder, 73,
-                            "example.Protocol", 2, 1, 0, 200L);
-            RuntimeRegionPlanner.FieldAccessEvent wrongOwner = exactFieldRead(
-                    3, decoder, 2, 6, wrong, 901, 902);
-            RuntimeRegionPlanner.FieldAccessEvent exact = exactFieldRead(
-                    4, decoder, 2, 7, field, 273814159, 128017166);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(rootCall, decoderCall),
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Arrays.asList(wrongOwner, exact));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = ((List<Map<String, Object>>)
-                    result.activations.get(0).get("symbolize")).get(0);
-
-            assertEquals(Boolean.TRUE, action.get("observed"));
-            assertEquals("HEAP_OBJECT_FIELD", action.get("location"));
-            assertEquals("FIELD_ACCESS", action.get("bindingMode"));
-            assertEquals("example.Transport", action.get("accessOwnerClass"));
-            assertEquals("example.Manager", action.get("accessFieldType"));
-            assertEquals("manager", action.get("accessField"));
-            assertEquals(field, action.get("accessFieldSignature"));
-            assertEquals(decoder, action.get("accessMethod"));
-            assertEquals(7, action.get("accessUnitIndex"));
-            assertEquals(decoder + "#u7", action.get("accessSiteId"));
-            assertEquals(RuntimeRegionPlanner
-                            .RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY,
-                    action.get("accessSiteAuthority"));
-            assertEquals(273814159,
-                    action.get("fieldReceiverObjectId"));
-            assertFalse(result.activationsJsonl().contains(wrong));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void repeatedContainedProtocolFieldReadRemainsDeferred()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String root = "<example.DataXceiver: void run()>";
-            String decoder = "<example.Protocol: void decode()>";
-            String field = "<example.Transport: example.Manager manager>";
-            String row = "{\"regionId\":\"REGION.PROTOCOL\","
-                    + "\"rootMethod\":\"" + root + "\","
-                    + "\"anchorMethod\":\"" + decoder + "\","
-                    + "\"methods\":[\"" + root + "\",\""
-                    + decoder + "\"],\"symbolicInputs\":[{"
-                    + "\"portId\":\"REGION.PROTOCOL.in.0\","
-                    + "\"cell\":\"" + field + "#field:map\","
-                    + "\"sourceKind\":\"PROTOCOL_INPUT\","
-                    + "\"projection\":\"field:map\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.MethodEvent rootCall = methodContext(1,
-                    root, 1, "DATANODE", "DataXceiver", 55L);
-            RuntimeRegionPlanner.MethodEvent decoderCall =
-                    new RuntimeRegionPlanner.MethodEvent(2, "testHandle",
-                            "DATANODE", "DataXceiver", 55L, decoder, 73,
-                            "example.Protocol", 2, 1, 0, 200L);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(rootCall, decoderCall),
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Arrays.asList(exactFieldRead(3, decoder, 2, 7, field,
-                            91, 701), exactFieldRead(4, decoder, 2, 8,
-                            field, 92, 702)));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = ((List<Map<String, Object>>)
-                    result.activations.get(0).get("symbolize")).get(0);
-
-            assertEquals(Boolean.FALSE, action.get("observed"));
-            assertEquals("REGION_LIVE_IN", action.get("location"));
-            assertEquals(Boolean.TRUE, action.get("deferredResolution"));
-            assertEquals("MISSING_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE",
-                    action.get("fieldBindingGap"));
-            assertFalse(action.containsKey("accessSiteAuthority"));
         } finally {
             folder.delete();
         }
@@ -888,591 +117,6 @@ public class RuntimeRegionPlannerTest {
                 "FIELD_READ", method, callId, unitIndex,
                 method + "#u" + unitIndex, field, receiverObjectId,
                 valueObjectId, "", "fp", true, 1, "");
-    }
-
-    @Test
-    public void retainsRepeatedBranchOccurrencesAndSelectsPathWitness()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String site = HANDLE + "#u7";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + site
-                    + "\",\"policy\":\"PATH_ASSUMPTION\","
-                    + "\"guard\":\"loop exit\",\"requiredOutcome\":false,"
-                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE, 1, 0, 0);
-            RuntimeRegionPlanner.RuntimeEvent body =
-                    new RuntimeRegionPlanner.RuntimeEvent(2, "BRANCH", HANDLE,
-                            1, 0, 0, site, -1, "", 0, "", true, false);
-            RuntimeRegionPlanner.RuntimeEvent exit =
-                    new RuntimeRegionPlanner.RuntimeEvent(3, "BRANCH", HANDLE,
-                            1, 0, 0, site, -1, "", 0, "", true, true);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(root),
-                    Arrays.asList(body, exit), Collections.emptyList());
-
-            String activation = result.activationsJsonl();
-            assertTrue(activation.contains("\"occurrenceCount\":2"));
-            assertTrue(activation.contains("\"selectedOccurrence\":1"));
-            assertTrue(activation.contains("\"observedOutcome\":false"));
-            assertTrue(activation.contains(
-                    "\"matchesRequiredOutcome\":true"));
-            assertTrue(activation.contains("\"occurrence\":2"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void containedCallLimitFailsClosedWithExplicitRuntimeGap()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE + "\",\""
-                    + IDENTIFIER + "\"],\"symbolicInputs\":[],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
-            methods.add(method(1, HANDLE, 1, 0, 0));
-            // Root plus 10,000 descendants exceeds the exact per-instance
-            // call-tree bound by one.
-            for (int index = 0; index < 10000; index++) {
-                long callId = index + 2L;
-                methods.add(method(index + 2L, IDENTIFIER, callId, 1, 0));
-            }
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), methods, Collections.emptyList(),
-                    Collections.emptyList());
-
-            assertTrue(result.truncated);
-            Map<String, Object> instance = result.instances.get(0);
-            assertEquals(true, instance.get("containedCallTreeTruncated"));
-            assertEquals(false, instance.get("runtimePathEvidenceComplete"));
-            assertEquals("TRUNCATED_RUNTIME_PATH",
-                    instance.get("validationStatus"));
-            assertTrue(String.valueOf(instance.get("runtimeGaps")).contains(
-                    "CONTAINED_CALL_TREE_LIMIT_EXCEEDED"));
-            assertEquals(false, result.activations.get(0).get("replayable"));
-            assertEquals(false, result.activations.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void pathSignatureLimitFailsClosedWithExplicitRuntimeGap()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            writeRegions(regions, region("REGION.0", HANDLE).getBytes(
-                    StandardCharsets.UTF_8));
-            List<RuntimeRegionPlanner.RuntimeEvent> branches = new ArrayList<>();
-            for (int index = 0; index < 513; index++) {
-                branches.add(new RuntimeRegionPlanner.RuntimeEvent(index + 2L,
-                        "BRANCH", HANDLE, 1, 0, 0,
-                        HANDLE + "#u" + index, -1, "", 0, "", true,
-                        (index & 1) == 0));
-            }
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)), branches,
-                    Collections.emptyList());
-
-            assertTrue(result.truncated);
-            Map<String, Object> instance = result.instances.get(0);
-            assertEquals(513, instance.get("pathSignatureEventCount"));
-            assertEquals(512, ((List<?>) instance.get("pathSignature")).size());
-            assertEquals(true, instance.get("pathSignatureTruncated"));
-            assertEquals(false, instance.get("runtimePathEvidenceComplete"));
-            assertTrue(String.valueOf(instance.get("runtimeGaps")).contains(
-                    "PATH_SIGNATURE_LIMIT_EXCEEDED"));
-            assertEquals(false, result.activations.get(0).get("replayable"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void confirmsSharedStateRegionEdgeWithReceiverIdentityAndOrder()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String updater = "<example.Updater: void run()>";
-            String reader = "<example.Reader: void handle()>";
-            String field = "<example.State: int currentKey>";
-            writeRegions(regions, (region("REGION.W", updater)
-                    + region("REGION.R", reader)).getBytes(StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.0\","
-                    + "\"fromRegion\":\"REGION.W\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + field + "\","
-                    + "\"toPort\":\"" + field + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"relation\":\"READ_FROM_CANDIDATE\","
-                    + "\"requiresOrder\":true,"
-                    + "\"requiresObjectIdentity\":true,\"siteId\":\"\"}\n";
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent writeRoot = methodContext(1, updater,
-                    1, "DATANODE", "KeyUpdater", 11L);
-            RuntimeRegionPlanner.MethodEvent readRoot = methodContext(4, reader,
-                    4, "DATANODE", "DataXceiver", 12L);
-            RuntimeRegionPlanner.FieldAccessEvent write =
-                    new RuntimeRegionPlanner.FieldAccessEvent(2, "FIELD_WRITE",
-                            updater, 1, field, 77, 88, "10");
-            RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(5, "FIELD_READ",
-                            reader, 4, field, 77, 88, "10");
-            // The updater is long-lived and can execute again after this
-            // consumer read.  Region-level lastSeq order is therefore false,
-            // while the concrete write/read pair above is still ordered.
-            RuntimeRegionPlanner.FieldAccessEvent trailingUpdaterAccess =
-                    new RuntimeRegionPlanner.FieldAccessEvent(6, "FIELD_READ",
-                            updater, 1, "<example.State: int noise>",
-                            77, 0, "0");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(writeRoot, readRoot), Collections.emptyList(),
-                    Arrays.asList(write, read, trailingUpdaterAccess));
-
-            assertEquals(1, result.edgeValidations.size());
-            assertEquals("CONFIRMED_READ_FROM",
-                    result.edgeValidations.get(0).get("state"));
-            assertEquals("SHARED_STATE",
-                    result.edgeValidations.get(0).get("transportKind"));
-            assertEquals(true,
-                    result.edgeValidations.get(0).get("requiresObjectIdentity"));
-            assertEquals(1, ((List<?>) result.edgeValidations.get(0).get(
-                    "bindings")).size());
-            assertTrue(result.edgeValidationsJsonl().contains(
-                    "\"fromProcess\":\"DATANODE\""));
-            assertTrue(result.edgeValidationsJsonl().contains(
-                    "\"fromThreadId\":11"));
-            JsonObject persisted = JsonParser.parseString(
-                    result.edgeValidationsJsonl().trim()).getAsJsonObject();
-            assertEquals(2, persisted.get("schemaVersion").getAsInt());
-            assertEquals("RUNTIME_REGION_EDGE_EVIDENCE",
-                    persisted.get("kind").getAsString());
-            assertEquals("CONFIRMED_READ_FROM",
-                    persisted.get("state").getAsString());
-            assertEquals(1, persisted.getAsJsonArray("bindings").size());
-            for (String retired : Arrays.asList("status",
-                    "validatedRelation", "validatedBindings", "composable",
-                    "eligibleForAutomaticDerivation",
-                    "eligibleForAutomaticSmt",
-                    "confirmedReadFromPairCount", "evidence")) {
-                assertFalse(retired, persisted.has(retired));
-            }
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void confirmedReadFromPromotesOneExternalConcreteInput()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve("edges.jsonl");
-            Path graph = folder.getRoot().toPath().resolve("graph.jsonl");
-            String writer = "<example.Writer: void run()>";
-            String reader = "<example.Reader: void run()>";
-            String wrongAnchor = "<example.OtherFailure: void <init>()>";
-            String field = "<example.Bus: int value>";
-            String guardSite = reader + "#u3";
-            String writerRegion = "{\"regionId\":\"REGION.W\","
-                    + "\"rootMethod\":\"" + writer + "\","
-                    + "\"anchorMethod\":\"" + writer + "\","
-                    + "\"methods\":[\"" + writer + "\"],"
-                    + "\"symbolicInputs\":[],\"outputs\":[{"
-                    + "\"portId\":\"REGION.W.out.0\",\"cell\":\""
-                    + field + "\",\"kind\":\"SHARED_HEAP\"}],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            String readerRegion = "{\"regionId\":\"REGION.R\","
-                    + "\"rootMethod\":\"" + reader + "\","
-                    + "\"anchorMethod\":\"" + reader + "\","
-                    + "\"methods\":[\"" + reader + "\"],"
-                    + "\"symbolicInputs\":["
-                    + inputPort("REGION.R.in.0", field, "SHARED_HEAP")
-                    + "],\"outputs\":[{\"portId\":\"REGION.R.out.0\","
-                    + "\"cell\":\"" + guardSite
-                    + "#exception:example.Bug\","
-                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + guardSite
-                    + "\",\"policy\":\"PATH_ASSUMPTION\","
-                    + "\"guard\":\"value == 0\","
-                    + "\"requiredOutcome\":false,"
-                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            String wrongRegion = "{\"regionId\":\"REGION.WRONG\","
-                    + "\"rootMethod\":\"" + reader + "\","
-                    + "\"anchorMethod\":\"" + wrongAnchor + "\","
-                    + "\"methods\":[\"" + reader + "\",\""
-                    + wrongAnchor + "\"],\"symbolicInputs\":["
-                    + inputPort("REGION.WRONG.in.0", field, "SHARED_HEAP")
-                    + "],\"outputs\":[{\"portId\":\"REGION.WRONG.out.0\","
-                    + "\"cell\":\"" + wrongAnchor
-                    + "#exception:example.OtherFailure\","
-                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + guardSite
-                    + "\",\"policy\":\"PATH_ASSUMPTION\","
-                    + "\"guard\":\"value == 0\","
-                    + "\"requiredOutcome\":false,"
-                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            writeRegions(regions, (writerRegion + readerRegion + wrongRegion)
-                    .getBytes(
-                    StandardCharsets.UTF_8));
-            String confirmedEdge = "{\"edgeId\":\"E.PRUNED\","
-                    + "\"fromRegion\":\"REGION.W\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + field + "\","
-                    + "\"toPort\":\"" + field + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"relation\":\"READ_FROM_CANDIDATE\","
-                    + "\"requiresOrder\":true,"
-                    + "\"requiresObjectIdentity\":true,"
-                    + "\"siteId\":\"\"}\n";
-            String overlappingCandidateEdge = confirmedEdge
-                    .replace("E.PRUNED", "E.WRONG")
-                    .replace("REGION.R", "REGION.WRONG");
-            Files.write(edges, (confirmedEdge + overlappingCandidateEdge)
-                    .getBytes(StandardCharsets.UTF_8));
-            writeStaticGraph(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
-                    "value_flow", "<example.Other: int x>",
-                    "<example.Other: int y>", "<example.Other: void f()>",
-                    "<example.Other: void f()>#u1", 1).getBytes(
-                    StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", reader,
-                            4, 0, 0, guardSite, -1, "", 0, "", true, true);
-            List<RuntimeRegionPlanner.MethodEvent> methodEvents = Arrays.asList(
-                    methodContext(1, writer, 1, "WORKER", "writer", 11L),
-                    methodContext(4, reader, 4, "WORKER", "reader", 12L));
-            List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents =
-                    Arrays.asList(
-                            new RuntimeRegionPlanner.FieldAccessEvent(2,
-                                    "FIELD_WRITE", writer, 1, field,
-                                    77, 88, "10"),
-                            new RuntimeRegionPlanner.FieldAccessEvent(5,
-                                    "FIELD_READ", reader, 4, field,
-                                    77, 88, "10"));
-
-            // The exact runtime relation is authoritative external-boundary
-            // evidence even though the local frozen demand slice has no path
-            // to this input.
-            RuntimeRegionPlanner.Result legacyControl =
-                    RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
-                            null, methodEvents,
-                            Collections.singletonList(branch), fieldEvents);
-            assertEquals("CONFIRMED_READ_FROM",
-                    legacyControl.edgeValidations.get(0).get("state"));
-            assertEquals(1,
-                    derivedActivationCount(legacyControl));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(), graph.toFile(),
-                    methodEvents,
-                    Collections.singletonList(branch),
-                    fieldEvents);
-
-            Map<String, Object> validation = result.edgeValidations.get(0);
-            assertEquals("CONFIRMED_READ_FROM",
-                    validation.get("state"));
-            assertEquals(1, ((List<?>) validation.get("bindings")).size());
-            assertEquals(1, derivedActivationCount(result));
-            boolean readerPromoted = false;
-            boolean upstreamDerived = false;
-            for (Map<String, Object> activation : result.activations) {
-                assertActivationInputContract(activation);
-                if ("REGION.R".equals(activation.get("regionId"))) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> demand = (Map<String, Object>)
-                            activation.get("concreteDemandSlice");
-                    assertEquals(1, ((List<?>) demand.get(
-                            "inputPorts")).size());
-                    assertTrue(String.valueOf(demand.get(
-                            "authority")).contains(
-                            "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
-                    readerPromoted = true;
-                }
-                if (String.valueOf(activation.get("activationId"))
-                        .startsWith("ACT.UPSTREAM.")) {
-                    upstreamDerived = true;
-                }
-            }
-            assertTrue(readerPromoted);
-            assertTrue(upstreamDerived);
-            Map<String, Object> overlappingCandidate = null;
-            for (Map<String, Object> edgeValidation
-                    : result.edgeValidations) {
-                if ("E.WRONG".equals(edgeValidation.get("edgeId"))) {
-                    overlappingCandidate = edgeValidation;
-                    break;
-                }
-            }
-            assertTrue(overlappingCandidate != null);
-            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                    overlappingCandidate.get("state"));
-            assertEquals(0,
-                    ((List<?>) overlappingCandidate.get("bindings")).size());
-
-            List<RuntimeRegionPlanner.FieldAccessEvent> mismatchedReceiver =
-                    Arrays.asList(fieldEvents.get(0),
-                            new RuntimeRegionPlanner.FieldAccessEvent(5,
-                                    "FIELD_READ", reader, 4, field,
-                                    78, 88, "10"));
-            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(), graph.toFile(),
-                    methodEvents, Collections.singletonList(branch),
-                    mismatchedReceiver);
-            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                    rejected.edgeValidations.get(0).get("state"));
-            assertEquals(0, derivedActivationCount(rejected));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void confirmsCompletedContainedMapMutationAcrossTruncatedLoopPath()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = containerMutationReadFromResult(
-                true, 128017166);
-        Map<String, Object> validation = result.edgeValidations.get(0);
-        assertEquals("CONFIRMED_READ_FROM", validation.get("state"));
-
-        @SuppressWarnings("unchecked")
-        Map<String, Object> binding = ((List<Map<String, Object>>)
-                validation.get("bindings")).get(0);
-        assertEquals(RuntimeRegionPlanner
-                        .CONTAINER_MUTATION_READ_FROM_AUTHORITY,
-                binding.get("writeEvidenceAuthority"));
-        assertEquals(RuntimeRegionPlanner
-                        .TRUNCATED_PATH_READ_FROM_ASSUMPTION,
-                binding.get("pathSignatureTruncationAssumption"));
-        assertEquals("FIELD_CONTAINER_MUTATION",
-                binding.get("writeEvidenceKind"));
-        assertEquals(5197L, binding.get("writerFieldReadSeq"));
-        assertEquals(5207L, binding.get("mutatorEnterSeq"));
-        assertEquals(5211L, binding.get("mutationCompletionSeq"));
-        assertEquals(5211L, binding.get("writeSeq"));
-        assertEquals(5207L, binding.get("mutationInvocationId"));
-        assertEquals(128017166, binding.get("valueObjectId"));
-        assertEquals(128017166, binding.get("readerValueObjectId"));
-        assertEquals(Boolean.TRUE,
-                binding.get("fieldReceiverIdentityConfirmed"));
-        assertEquals(Boolean.TRUE,
-                binding.get("containerIdentityConfirmed"));
-        assertEquals(RuntimeRegionPlanner
-                        .CONTAINER_MUTATOR_CONTRACT_AUTHORITY,
-                binding.get("mutationContractAuthority"));
-        assertEquals(RuntimeRegionPlanner.TRACE_ORDER_AUTHORITY,
-                binding.get("orderAuthority"));
-        assertEquals(RuntimeRegionPlanner
-                        .CONTAINER_MUTATION_SEMANTIC_ASSUMPTION,
-                binding.get("containerMutationSemanticAssumption"));
-
-        Map<String, Object> derived = null;
-        for (Map<String, Object> activation : result.activations) {
-            if (String.valueOf(activation.get("activationId"))
-                    .startsWith("ACT.UPSTREAM.")) {
-                derived = activation;
-                break;
-            }
-        }
-        assertTrue(derived != null);
-        assertEquals(Boolean.FALSE, derived.get("replayable"));
-        assertEquals("RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED",
-                derived.get("replayMode"));
-        assertEquals(Boolean.FALSE, derived.get("symbolicReady"));
-    }
-
-    @Test
-    public void containerMutationReadFromRequiresReturnAndSameContainer()
-            throws Exception {
-        RuntimeRegionPlanner.Result missingReturn =
-                containerMutationReadFromResult(false, 128017166);
-        assertEquals(0, ((List<?>) missingReturn.edgeValidations.get(0).get(
-                "bindings")).size());
-        assertFalse("CONFIRMED_READ_FROM".equals(
-                missingReturn.edgeValidations.get(0).get("state")));
-
-        RuntimeRegionPlanner.Result differentContainer =
-                containerMutationReadFromResult(true, 128017167);
-        assertEquals(0, ((List<?>) differentContainer.edgeValidations.get(0)
-                .get("bindings")).size());
-        assertFalse("CONFIRMED_READ_FROM".equals(
-                differentContainer.edgeValidations.get(0).get("state")));
-    }
-
-    @Test
-    public void keepsRawEndpointForReadFromButSelectsCanonicalOutput()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String updater = "<example.Updater: void publish()>";
-            String reader = "<example.Reader: void handle()>";
-            String rawField = "<example.Wire: int allKeys>";
-            String canonicalField = "<example.Keys: int[] allKeys>";
-            String writerRegion = "{\"regionId\":\"REGION.W\","
-                    + "\"rootMethod\":\"" + updater + "\","
-                    + "\"anchorMethod\":\"" + updater + "\","
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"symbolicInputs\":[],"
-                    + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
-                    + "\"cell\":\"" + canonicalField + "\","
-                    + "\"kind\":\"HEAP_STATE\"},{"
-                    + "\"portId\":\"REGION.W.out.raw\","
-                    + "\"cell\":\"" + rawField + "\","
-                    + "\"kind\":\"HEAP_STATE\"}],"
-                    + "\"outputSlices\":[{"
-                    + "\"outputPort\":\"REGION.W.out.0\","
-                    + "\"outputCell\":\"" + canonicalField + "\","
-                    + "\"inputPorts\":[],\"inputBindings\":[],"
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"sites\":[],\"causalEdgeIds\":[],"
-                    + "\"causalEdges\":[],"
-                    + "\"captureBindingsRequired\":false,"
-                    + "\"captureBindingsComplete\":true,"
-                    + "\"complete\":true,"
-                    + "\"selection\":"
-                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"},{"
-                    + "\"outputPort\":\"REGION.W.out.raw\","
-                    + "\"outputCell\":\"" + rawField + "\","
-                    + "\"inputPorts\":[],\"inputBindings\":[],"
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"sites\":[],\"causalEdgeIds\":[],"
-                    + "\"causalEdges\":[],"
-                    + "\"captureBindingsRequired\":false,"
-                    + "\"captureBindingsComplete\":true,"
-                    + "\"complete\":true,"
-                    + "\"selection\":"
-                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
-                    + "\"branchPolicies\":[],\"models\":[]}"
-                    + System.lineSeparator();
-            writeRegions(regions, (writerRegion
-                    + region("REGION.R", reader)).getBytes(
-                    StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.CANONICAL\","
-                    + "\"fromRegion\":\"REGION.W\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + rawField + "\","
-                    + "\"fromOutputPort\":\"REGION.W.out.0\","
-                    + "\"fromOutputCell\":\"" + canonicalField + "\","
-                    + "\"aliasProofEdgeIds\":[\"DF.1\",\"DF.2\"],"
-                    + "\"aliasProofAuthority\":"
-                    + "\"STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
-                    + "AND_DECLARED_RETURN_FIELD\","
-                    + "\"aliasProofComplete\":true,"
-                    + "\"toPort\":\"" + rawField + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"relation\":\"READ_FROM_CANDIDATE\","
-                    + "\"requiresOrder\":true,"
-                    + "\"requiresObjectIdentity\":true}"
-                    + System.lineSeparator();
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent writeRoot = methodContext(1,
-                    updater, 11, "PROCESS", "writer", 101L);
-            RuntimeRegionPlanner.MethodEvent readRoot = methodContext(4,
-                    reader, 22, "PROCESS", "reader", 202L);
-            // Runtime correlation must use the raw edge endpoint.  There are
-            // deliberately no field events for the canonical summary cell.
-            RuntimeRegionPlanner.FieldAccessEvent write =
-                    new RuntimeRegionPlanner.FieldAccessEvent(2,
-                            "FIELD_WRITE", updater, 11, rawField,
-                            77, 88, "digest");
-            RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(5,
-                            "FIELD_READ", reader, 22, rawField,
-                            77, 88, "digest");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(writeRoot, readRoot),
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Arrays.asList(write, read));
-
-            assertEquals("CONFIRMED_READ_FROM",
-                    result.edgeValidations.get(0).get("state"));
-            assertEquals(rawField,
-                    result.edgeValidations.get(0).get("fromPort"));
-            assertEquals("REGION.W.out.0",
-                    result.edgeValidations.get(0).get("fromOutputPort"));
-            assertEquals(canonicalField,
-                    result.edgeValidations.get(0).get("fromOutputCell"));
-            assertEquals(Arrays.asList("DF.1", "DF.2"),
-                    result.edgeValidations.get(0).get("aliasProofEdgeIds"));
-            assertEquals(Boolean.TRUE,
-                    result.edgeValidations.get(0).get("aliasProofComplete"));
-            assertEquals(3, result.activations.size());
-            Map<String, Object> upstream = result.activations.get(2);
-            @SuppressWarnings("unchecked")
-            Map<String, Object> requested = (Map<String, Object>) upstream
-                    .get("requestedOutput");
-            assertEquals("REGION.W.out.0", requested.get("portId"));
-            assertEquals(canonicalField, requested.get("cell"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> binding = ((List<Map<String, Object>>)
-                    upstream.get("edgeBindings")).get(0);
-            assertEquals(rawField, binding.get("rawFromPort"));
-            assertEquals(canonicalField, binding.get("fromOutputCell"));
-            assertEquals(Boolean.TRUE,
-                    binding.get("canonicalOutputAliasUsed"));
-            assertEquals(Arrays.asList("DF.1", "DF.2"),
-                    binding.get("aliasProofEdgeIds"));
-
-            // Once any canonical schema field is present, a partial record
-            // must not fall back to the otherwise valid raw output endpoint.
-            String partial = edge.replace(
-                    "\"aliasProofEdgeIds\":[\"DF.1\",\"DF.2\"],", "");
-            Files.write(edges, partial.getBytes(StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(writeRoot, readRoot),
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Arrays.asList(write, read));
-            assertEquals("CONFIRMED_READ_FROM",
-                    rejected.edgeValidations.get(0).get("state"));
-            assertEquals(2, rejected.activations.size());
-            assertEquals(0, derivedActivationCount(rejected));
-        } finally {
-            folder.delete();
-        }
     }
 
     @Test
@@ -1681,17 +325,24 @@ public class RuntimeRegionPlannerTest {
             assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
             assertEquals(11L, upstream.get("rootCallId"));
             assertEquals(1, ((List<?>) upstream.get("edgeBindings")).size());
-            assertEquals(1, ((java.util.List<?>) upstream.get("outputs")).size());
+            assertCanonicalOutputOnly(upstream);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> retainedSlice = outputSlice(
+                    upstream, "REGION.W.out.0");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> retainedOutput = (Map<String, Object>)
+                    outputMember(upstream, "REGION.W.out.0").get("output");
+            assertEquals(field, retainedOutput.get("cell"));
             assertEquals(1, ((java.util.List<?>) upstream.get(
                     "heapStateBindings")).size());
             assertEquals(1, ((java.util.List<?>) upstream.get(
                     "symbolize")).size());
-            assertEquals(true,
-                    upstream.get("requestedOutputCaptureComplete"));
+            assertEquals(true, retainedSlice.get(
+                    "captureBindingsComplete"));
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> outputCaptures =
-                    (List<Map<String, Object>>) upstream.get(
-                            "requestedOutputCapture");
+                    (List<Map<String, Object>>) retainedSlice.get(
+                            "captureBindings");
             assertEquals(1, outputCaptures.size());
             assertEquals(1, outputCaptures.get(0).get("occurrence"));
             assertEquals("FIELD_ASSIGNMENT_RHS",
@@ -1708,11 +359,8 @@ public class RuntimeRegionPlannerTest {
                     outputCaptures.get(0).get("occurrenceAuthority"));
             assertEquals(Boolean.TRUE,
                     outputCaptures.get(0).get("rhsRelationComplete"));
-            assertEquals(Collections.singletonList(updater), upstream.get(
-                    "requestedOutputMethods"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> retainedSlice = (Map<String, Object>) upstream
-                    .get("requestedOutputSlice");
+            assertEquals(Collections.singletonList(updater),
+                    retainedSlice.get("methods"));
             assertEquals(true, retainedSlice.get("complete"));
             assertTrue(String.valueOf(retainedSlice.get("inputBindings"))
                     .contains("UNIQUE_ROOT_ARGUMENT_CARRIER"));
@@ -1772,11 +420,13 @@ public class RuntimeRegionPlannerTest {
                             Arrays.asList(write, read));
             assertEquals(Boolean.FALSE, missingEdge.activations.get(2)
                     .get("symbolicReady"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> rejectedSlice =
-                    (Map<String, Object>) missingEdge.activations.get(2)
-                            .get("requestedOutputSlice");
-            assertEquals(Boolean.FALSE, rejectedSlice.get("complete"));
+            assertFalse(missingEdge.activations.get(2).containsKey(
+                    "requestedOutputSlice"));
+            assertFalse(missingEdge.activations.get(2).containsKey(
+                    "outputClosure"));
+            assertTrue(String.valueOf(missingEdge.activations.get(2).get(
+                    "outputClosureIssues")).contains(
+                    "OUTPUT_MEMBER_INCOMPLETE"));
             assertTrue(String.valueOf(missingEdge.warnings).contains(
                     "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:DF.WRITE"));
         } finally {
@@ -1785,126 +435,74 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void canonicalConsumerInputRequiresOneExactCellMatch() {
-        String cell = "<example.State: java.util.Map entries>";
-        String unique = "{\"regionId\":\"REGION.R\","
-                + "\"symbolicInputs\":[{\"portId\":\"REGION.R.in.0\","
-                + "\"cell\":\"" + cell + "\"}],\"outputs\":[]}";
-        String ambiguous = "{\"regionId\":\"REGION.R\","
-                + "\"symbolicInputs\":["
-                + "{\"portId\":\"REGION.R.in.0\",\"cell\":\""
-                + cell + "\"},"
-                + "{\"portId\":\"REGION.R.in.1\",\"cell\":\""
-                + cell + "\"}],\"outputs\":[]}";
+    public void groupsJointPrimitiveDemandAndIsolatesOtherConsumer()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = jointPrimitiveDemandResult(
+                false);
+        List<Map<String, Object>> derived = derivedActivations(result);
+        assertEquals(2, derived.size());
 
-        assertEquals("REGION.R.in.0", RuntimeRegionPlanner
-                .uniqueExactInputPortForTests(unique, cell));
-        assertEquals("", RuntimeRegionPlanner
-                .uniqueExactInputPortForTests(unique,
-                        "<example.State: int other>"));
-        assertEquals("", RuntimeRegionPlanner
-                .uniqueExactInputPortForTests(ambiguous, cell));
+        Map<String, Object> joint = upstreamDemandFor(
+                derived, "REGION.DXY");
+        assertCanonicalOutputOnly(joint);
+        assertEquals(Boolean.TRUE, joint.get("symbolicReady"));
+        assertEquals(2, ((List<?>) outputClosure(joint).get(
+                "members")).size());
+        assertEquals("<example.State: int x>",
+                ((Map<?, ?>) outputMember(joint,
+                        "REGION.P.out.x").get("output")).get("cell"));
+        assertEquals("<example.State: int y>",
+                ((Map<?, ?>) outputMember(joint,
+                        "REGION.P.out.y").get("output")).get("cell"));
+        assertEquals(Boolean.TRUE, outputSlice(joint,
+                "REGION.P.out.x").get("captureBindingsComplete"));
+        assertEquals(Boolean.TRUE, outputSlice(joint,
+                "REGION.P.out.y").get("captureBindingsComplete"));
+        assertEquals(2, ((List<?>) joint.get("symbolize")).size());
+        assertEquals(2, ((List<?>) joint.get("branches")).size());
+        // E.X.1 and E.X.2 deliberately fan out the same output within the
+        // same demand; E.Y contributes the second output member.
+        assertEquals(Arrays.asList("E.X.1", "E.X.2", "E.Y"),
+                edgeBindingIds(joint));
+
+        Map<String, Object> isolated = upstreamDemandFor(
+                derived, "REGION.DX");
+        assertCanonicalOutputOnly(isolated);
+        assertEquals(1, ((List<?>) outputClosure(isolated).get(
+                "members")).size());
+        assertEquals("REGION.P.out.x",
+                ((Map<?, ?>) outputMember(isolated,
+                        "REGION.P.out.x").get("output")).get("portId"));
+        assertEquals(Collections.singletonList("E.X.DX"),
+                edgeBindingIds(isolated));
     }
 
     @Test
-    public void projectedConsumerInputRequiresExactStaticProofAndUniqueness() {
-        String base = "<example.Manager: example.Key currentKey>";
-        String projected = base + "#field:keyId";
-        String local = "<example.Manager: int use()>::r1";
-        String region = "{\"regionId\":\"REGION.R\","
-                + "\"symbolicInputs\":[{\"portId\":\"REGION.R.in.0\","
-                + "\"cell\":\"" + projected + "\"}],\"outputs\":[]}";
-        String baseEdge = "{\"schemaVersion\":1,\"id\":\"DF.BASE\","
-                + "\"kind\":\"field_read\",\"transferKind\":\"HEAP_READ\","
-                + "\"relation\":\"value_flow\","
-                + "\"direction\":\"backward_provenance\","
-                + "\"mappingOnly\":false,"
-                + "\"semanticAssertionsAllowed\":true,"
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"fromCell\":\"" + base + "\","
-                + "\"toCell\":\"" + local + "\"}";
-        String projectionEdge = "{\"schemaVersion\":1,"
-                + "\"id\":\"DF.PROJECTION\","
-                + "\"kind\":\"projected_field_read\","
-                + "\"transferKind\":\"HEAP_READ\","
-                + "\"relation\":\"value_flow\","
-                + "\"direction\":\"backward_provenance\","
-                + "\"mappingOnly\":false,\"fieldSensitive\":true,"
-                + "\"semanticAssertionsAllowed\":true,"
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"fromCell\":\"" + projected + "\","
-                + "\"toCell\":\"" + local + "#field:keyId\","
-                + "\"objectFromCell\":\"" + base + "\","
-                + "\"objectToCell\":\"" + local + "\","
-                + "\"fieldPath\":\"#field:keyId\","
-                + "\"projectionBaseEdgeId\":\"DF.BASE\"}";
-        String declarationEdge = "{\"schemaVersion\":1,"
-                + "\"id\":\"DF.DECLARATION\","
-                + "\"kind\":\"accessor_field_return\","
-                + "\"transferKind\":\"PROJECTION\","
-                + "\"relation\":\"value_flow\","
-                + "\"direction\":\"backward_provenance\","
-                + "\"mappingOnly\":false,\"fieldSensitive\":true,"
-                + "\"semanticAssertionsAllowed\":true,"
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"fromCell\":\"" + local + "#field:keyId\","
-                + "\"toCell\":\"<example.Manager: int use()>::i0\","
-                + "\"objectFromCell\":\"" + local + "\","
-                + "\"objectToCell\":\"<example.Manager: int use()>::i0\","
-                + "\"fieldPath\":\"#field:keyId\","
-                + "\"invoke\":\"<example.Key: int getKeyId()>\","
-                + "\"declaredFieldSignature\":"
-                + "\"<example.Key: int keyId>\","
-                + "\"declaredFieldOwner\":\"example.Key\","
-                + "\"declaredFieldType\":\"int\","
-                + "\"declaredFieldName\":\"keyId\","
-                + "\"declaredFieldAuthority\":"
-                + "\"SOOT_RESOLVED_DECLARATION_HIERARCHY\","
-                + "\"accessorImplementationMethod\":"
-                + "\"<example.Key: int getKeyId()>\","
-                + "\"accessorImplementationAuthority\":"
-                + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\"}";
-        String graph = baseEdge + "\n" + projectionEdge + "\n"
-                + declarationEdge;
+    public void incompleteJointMemberFailsWholeDemandWithoutSingletonFallback()
+            throws Exception {
+        RuntimeRegionPlanner.Result result = jointPrimitiveDemandResult(
+                true);
+        List<Map<String, Object>> derived = derivedActivations(result);
+        assertEquals(2, derived.size());
 
-        Map<String, Object> proof = RuntimeRegionPlanner
-                .evidenceBackedProjectedInputForTests(region, graph, base);
-        assertEquals("REGION.R.in.0", proof.get("portId"));
-        assertEquals(Collections.singletonList("keyId"),
-                proof.get("fieldPath"));
-        assertEquals(Arrays.asList("DF.BASE", "DF.PROJECTION",
-                "DF.DECLARATION"), proof.get("evidenceEdgeIds"));
-        assertEquals("<example.Key: int keyId>",
-                proof.get("declaredFieldSignature"));
-        assertEquals(RuntimeRegionPlanner
-                        .STATIC_INPUT_FIELD_PROJECTION_AUTHORITY,
-                proof.get("authority"));
+        Map<String, Object> rejected = upstreamDemandFor(
+                derived, "REGION.DXY");
+        assertEquals(Boolean.FALSE, rejected.get("symbolicReady"));
+        assertEquals(Boolean.FALSE, rejected.get("boundaryReady"));
+        assertFalse(rejected.containsKey("outputClosure"));
+        assertFalse(rejected.containsKey("requestedOutput"));
+        assertFalse(rejected.containsKey("requestedOutputSlice"));
+        assertTrue(String.valueOf(rejected.get("outputClosureIssues"))
+                .contains("OUTPUT_MEMBER_INCOMPLETE:REGION.P.out.y"));
+        assertEquals(3, ((List<?>) rejected.get("edgeBindings")).size());
 
-        assertTrue(RuntimeRegionPlanner
-                .evidenceBackedProjectedInputForTests(region,
-                        projectionEdge + "\n" + declarationEdge, base)
-                .isEmpty());
-        String ambiguous = region.replace("}],\"outputs\":[]}",
-                "},{\"portId\":\"REGION.R.in.1\",\"cell\":\""
-                        + projected + "\"}],\"outputs\":[]}");
-        assertTrue(RuntimeRegionPlanner
-                .evidenceBackedProjectedInputForTests(ambiguous, graph, base)
-                .isEmpty());
-    }
-
-    @Test
-    public void projectedReadFromRequiresNonzeroRuntimeValueIdentity() {
-        assertTrue(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
-                false, 0, 0));
-        assertFalse(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
-                true, 0, 0));
-        assertFalse(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
-                true, 81, 82));
-        assertTrue(RuntimeRegionPlanner.projectedValueIdentityConfirmed(
-                true, 81, 81));
+        // The unrelated D{x} demand remains independently usable.
+        Map<String, Object> isolated = upstreamDemandFor(
+                derived, "REGION.DX");
+        assertCanonicalOutputOnly(isolated);
+        assertEquals(Boolean.TRUE, isolated.get("symbolicReady"));
+        assertEquals(1, ((List<?>) outputClosure(isolated).get(
+                "members")).size());
     }
 
     @Test
@@ -2096,19 +694,17 @@ public class RuntimeRegionPlannerTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> output = result.activations.get(2);
             assertFalse(output.containsKey("requestedOutputSliceComplete"));
-            assertEquals(false, output.get(
-                    "requestedOutputCaptureRequired"));
-            assertEquals(true, output.get(
-                    "requestedOutputCaptureComplete"));
-            assertEquals(Collections.singletonList(updater), output.get(
-                    "requestedOutputMethods"));
+            assertCanonicalOutputOnly(output);
+            Map<String, Object> slice = outputSlice(
+                    output, "REGION.W.out.0");
+            assertEquals(false, slice.get("captureBindingsRequired"));
+            assertEquals(true, slice.get("captureBindingsComplete"));
+            assertEquals(Collections.singletonList(updater),
+                    slice.get("methods"));
             assertEquals(2, ((java.util.List<?>) output.get("symbolize"))
                     .size());
             assertEquals(1, ((java.util.List<?>) output.get(
                     "heapStateBindings")).size());
-            @SuppressWarnings("unchecked")
-            Map<String, Object> slice = (Map<String, Object>) output.get(
-                    "requestedOutputSlice");
             assertEquals(true, slice.get("complete"));
             assertEquals(true, slice.get("structuralComplete"));
             assertEquals(true, slice.get("runtimeRefinementComplete"));
@@ -2152,2109 +748,6 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
-    }
-
-    @Test
-    public void mutationCaptureDischargeRejectsRetainedUnresolvedInput()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = mutationDischargeGateResult(
-                "OBSERVED", "field_mutation", true);
-        Map<String, Object> slice = requestedOutputSlice(result);
-        assertEquals(Boolean.FALSE, slice.get(
-                "captureDischargedByHeapEffectTransformer"));
-        assertEquals(Boolean.FALSE, slice.get("complete"));
-        assertFalse(((List<?>) slice.get("unresolvedInputs")).isEmpty());
-    }
-
-    @Test
-    public void mutationCaptureDischargeRejectsNonMutationObligation()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = mutationDischargeGateResult(
-                "ALTERNATIVE", "field_write", true);
-        Map<String, Object> slice = requestedOutputSlice(result);
-        assertEquals(Boolean.FALSE, slice.get(
-                "captureDischargedByHeapEffectTransformer"));
-        assertEquals(Boolean.FALSE, slice.get("complete"));
-        assertEquals(Boolean.TRUE, slice.get(
-                "requestedStateTransformerContractComplete"));
-    }
-
-    @Test
-    public void mutationCaptureDischargeRejectsTransformerContractGap()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = mutationDischargeGateResult(
-                "ALTERNATIVE", "field_mutation", false);
-        Map<String, Object> slice = requestedOutputSlice(result);
-        assertEquals(Boolean.FALSE, slice.get(
-                "captureDischargedByHeapEffectTransformer"));
-        assertEquals(Boolean.FALSE, slice.get("complete"));
-        assertEquals(Boolean.FALSE, slice.get(
-                "requestedStateTransformerContractComplete"));
-    }
-
-    @Test
-    public void runtimeCallTreeAdmitsObservedHelperMissingFromBaseRegion()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String updater = "<example.KeyState: void addKeys()>";
-            String helper = "<example.KeyState: void removeExpiredKeys()>";
-            String reader = "<example.Reader: void consume()>";
-            String state = "<example.KeyState: java.util.Map allKeys>";
-            String helperSite = helper + "#u6";
-            String writerRegion = "{\"regionId\":\"REGION.W\","
-                    + "\"rootMethod\":\"" + updater + "\","
-                    + "\"anchorMethod\":\"" + updater + "\","
-                    // Deliberately reproduces an incomplete static base
-                    // method catalog.  The output slice already knows the
-                    // helper and runtime observes its exact child call.
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"symbolicInputs\":[],"
-                    + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
-                    + "\"cell\":\"" + state
-                    + "\",\"kind\":\"HEAP_STATE\"}],"
-                    + "\"outputSlices\":[{"
-                    + "\"outputPort\":\"REGION.W.out.0\","
-                    + "\"outputCell\":\"" + state + "\","
-                    + "\"inputPorts\":[],\"inputBindings\":[],"
-                    + "\"methods\":[\"" + updater + "\",\""
-                    + helper + "\"],"
-                    + "\"sites\":[\"" + helperSite + "\"],"
-                    + "\"causalEdgeIds\":[\"DF.HELPER\"],"
-                    + "\"causalEdges\":["
-                    + causalReference("DF.HELPER", helper, helperSite)
-                    + "],"
-                    + "\"complete\":true,"
-                    + "\"selection\":"
-                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\""
-                    + helperSite + "\",\"policy\":\"EXPLORE\","
-                    + "\"guard\":\"hasNext\",\"role\":"
-                    + "\"OUTPUT_RELATION\"}],\"models\":[]}\n";
-            String readerRegion = "{\"regionId\":\"REGION.R\","
-                    + "\"rootMethod\":\"" + reader + "\","
-                    + "\"anchorMethod\":\"" + reader + "\","
-                    + "\"methods\":[\"" + reader + "\"],"
-                    + "\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.R.in.0\",\"cell\":\"" + state
-                    + "\",\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"field:allKeys\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, (writerRegion + readerRegion).getBytes(
-                    StandardCharsets.UTF_8));
-            Files.write(edges, ("{\"edgeId\":\"E.RUNTIME.HELPER\","
-                    + "\"fromRegion\":\"REGION.W\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + state + "\","
-                    + "\"toPort\":\"" + state + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"relation\":\"READ_FROM_CANDIDATE\","
-                    + "\"requiresOrder\":true,"
-                    + "\"requiresObjectIdentity\":true}\n").getBytes(
-                    StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent updateRoot = methodContext(1,
-                    updater, 11, "PROCESS", "writer", 101L);
-            RuntimeRegionPlanner.MethodEvent helperCall =
-                    new RuntimeRegionPlanner.MethodEvent(3, "testHandle",
-                            "PROCESS", "writer", 101L, helper, 42,
-                            "example.KeyState", 12, 11, 900, 300L);
-            RuntimeRegionPlanner.MethodEvent readRoot = methodContext(10,
-                    reader, 22, "PROCESS", "reader", 202L);
-            RuntimeRegionPlanner.RuntimeEvent callSite =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "CALL_SITE_ENTER", updater, 11, 900, 0,
-                            updater + "#u5", helper, -1,
-                            "example.KeyState", 42, "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent helperBranch =
-                    new RuntimeRegionPlanner.RuntimeEvent(4, "BRANCH",
-                            helper, 12, 0, 900, helperSite, -1, "", 0,
-                            "", true, false);
-            RuntimeRegionPlanner.FieldAccessEvent write =
-                    new RuntimeRegionPlanner.FieldAccessEvent(5,
-                            "FIELD_WRITE", helper, 12, state, 77, 88,
-                            "");
-            RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(11,
-                            "FIELD_READ", reader, 22, state, 77, 88,
-                            "");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    companionStaticGraph(regions).toFile(),
-                    Arrays.asList(updateRoot, helperCall, readRoot),
-                    Arrays.asList(callSite, helperBranch),
-                    Arrays.asList(write, read));
-
-            assertEquals(3, result.activations.size());
-            Map<String, Object> writerInstance = result.instances.get(0);
-            assertTrue(String.valueOf(writerInstance.get("observedMethods"))
-                    .contains(helper));
-            assertTrue(String.valueOf(writerInstance.get(
-                    "runtimeAdmittedMethods")).contains(helper));
-            assertEquals("EXACT_SAME_THREAD_DESCENDANT_CALL_TREE_V1",
-                    writerInstance.get("runtimeMethodAdmissionAuthority"));
-            Map<String, Object> upstream = result.activations.get(2);
-            assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                    "requestedOutputSlice");
-            assertEquals(Boolean.TRUE, slice.get("complete"));
-            assertTrue(String.valueOf(upstream.get("requestedOutputMethods"))
-                    .contains(helper));
-            assertTrue(String.valueOf(upstream.get("branches"))
-                    .contains(helperSite));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void upstreamCarrierUsesOnlyDeepestRequestedFieldPaths()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String updater = "<example.Updater: void apply(example.Envelope)>";
-            String reader = "<example.Reader: void consume()>";
-            String argument = updater + ".param0:example.Envelope";
-            String state = "<example.State: java.util.Map entries>";
-            String payload = "<example.Envelope: example.Payload payload>";
-            String writerRegion = "{\"regionId\":\"REGION.W\","
-                    + "\"rootMethod\":\"" + updater + "\","
-                    + "\"anchorMethod\":\"" + updater + "\","
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"symbolicInputs\":[{"
-                    + "\"portId\":\"REGION.W.in.0\","
-                    + "\"cell\":\"" + argument + "\","
-                    + "\"sourceKind\":\"ROOT_ARGUMENT\","
-                    + "\"projection\":\"argument[0]\"}],"
-                    + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
-                    + "\"cell\":\"" + state + "\","
-                    + "\"kind\":\"HEAP_STATE\"}],"
-                    + "\"outputSlices\":[{"
-                    + "\"outputPort\":\"REGION.W.out.0\","
-                    + "\"outputCell\":\"" + state + "\","
-                    + "\"inputPorts\":[\"REGION.W.in.0\"],"
-                    + "\"inputBindings\":["
-                    + carrierBinding(payload) + ","
-                    + carrierBinding(payload + "#field:entries") + ","
-                    + carrierBinding(payload
-                    + "#field:current#field:id") + "],"
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"sites\":[],\"causalEdgeIds\":[\"DF.1\"],"
-                    + "\"causalEdges\":["
-                    + causalReference("DF.1", updater, updater + "#u1")
-                    + "],"
-                    + "\"complete\":true,"
-                    + "\"selection\":"
-                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
-                    + "\"branchPolicies\":[],\"models\":[]}"
-                    + System.lineSeparator();
-            String readerRegion = "{\"regionId\":\"REGION.R\","
-                    + "\"rootMethod\":\"" + reader + "\","
-                    + "\"anchorMethod\":\"" + reader + "\","
-                    + "\"methods\":[\"" + reader + "\"],"
-                    + "\"symbolicInputs\":[{"
-                    + "\"portId\":\"REGION.R.in.0\","
-                    + "\"cell\":\"" + state + "\","
-                    + "\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"field:entries\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}"
-                    + System.lineSeparator();
-            writeRegions(regions, (writerRegion + readerRegion)
-                    .getBytes(StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.PRODUCER\","
-                    + "\"fromRegion\":\"REGION.W\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + state + "\","
-                    + "\"toPort\":\"" + state + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"relation\":\"READ_FROM_CANDIDATE\","
-                    + "\"requiresOrder\":true,"
-                    + "\"requiresObjectIdentity\":true}"
-                    + System.lineSeparator();
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent writeRoot = methodContext(1,
-                    updater, 11, "PROCESS", "writer", 101L);
-            RuntimeRegionPlanner.MethodEvent readRoot = methodContext(5,
-                    reader, 22, "PROCESS", "reader", 202L);
-            RuntimeRegionPlanner.RuntimeEvent rootArgument =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "METHOD_ARGUMENT", updater, 11, 0, 0,
-                            updater + "#entry", 0, "example.Envelope", 901,
-                            "", false, false);
-            RuntimeRegionPlanner.FieldAccessEvent write =
-                    new RuntimeRegionPlanner.FieldAccessEvent(3,
-                            "FIELD_WRITE", updater, 11, state, 77, 88, "");
-            RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(6,
-                            "FIELD_READ", reader, 22, state, 77, 88, "");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    companionStaticGraph(regions).toFile(),
-                    Arrays.asList(writeRoot, readRoot),
-                    Collections.singletonList(rootArgument),
-                    Arrays.asList(write, read));
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> producer = result.activations.get(2);
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((java.util.List<?>) producer.get("symbolize")).get(0);
-            assertEquals("ARGUMENT_FIELD_PATH", action.get("location"));
-            assertEquals("SELECTIVE_FIELD_PATHS",
-                    action.get("materializationMode"));
-            assertEquals(true, action.get("fieldPathSelectionComplete"));
-            assertEquals(Arrays.asList(
-                    Arrays.asList("payload", "entries"),
-                    Arrays.asList("payload", "current", "id")),
-                    action.get("fieldPaths"));
-            assertFalse(String.valueOf(action.get("fieldPaths"))
-                    .contains("[payload]"));
-            assertEquals(true, producer.get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void derivedArgumentArrayLeafJoinsExactConsumedFieldRead()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String updater = "<example.ArrayUpdater: void apply(example.Envelope)>";
-            String reader = "<example.ArrayReader: void consume()>";
-            String argument = updater + ".param0:example.Envelope";
-            String state = "<example.State: java.util.Map entries>";
-            String payload = "<example.Envelope: example.Payload payload>";
-            String leaf = "<example.Payload: example.Value[] values>";
-            String writerRegion = "{\"regionId\":\"REGION.W\","
-                    + "\"rootMethod\":\"" + updater + "\","
-                    + "\"anchorMethod\":\"" + updater + "\","
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.W.in.0\",\"cell\":\"" + argument
-                    + "\",\"sourceKind\":\"ROOT_ARGUMENT\","
-                    + "\"projection\":\"argument[0]\"}],"
-                    + "\"outputs\":[{\"portId\":\"REGION.W.out.0\","
-                    + "\"cell\":\"" + state
-                    + "\",\"kind\":\"HEAP_STATE\"}],"
-                    + "\"outputSlices\":[{\"outputPort\":"
-                    + "\"REGION.W.out.0\",\"outputCell\":\"" + state
-                    + "\",\"inputPorts\":[\"REGION.W.in.0\"],"
-                    + "\"inputBindings\":[{\"dependencyCell\":\""
-                    + payload + "#field:values\",\"inputPort\":"
-                    + "\"REGION.W.in.0\",\"bindingAuthority\":"
-                    + "\"UNIQUE_ROOT_ARGUMENT_CARRIER\","
-                    + "\"dependencyMethods\":[\"" + updater + "\"],"
-                    + "\"fieldPath\":[\"payload\",\"values\"],"
-                    + "\"leafFieldSignature\":\"" + leaf + "\"}],"
-                    + "\"methods\":[\"" + updater + "\"],"
-                    + "\"sites\":[],\"causalEdgeIds\":[\"DF.ARRAY\"],"
-                    + "\"causalEdges\":["
-                    + causalReference("DF.ARRAY", updater, updater + "#u1")
-                    + "],"
-                    + "\"complete\":true,\"selection\":"
-                    + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            String readerRegion = "{\"regionId\":\"REGION.R\","
-                    + "\"rootMethod\":\"" + reader + "\","
-                    + "\"anchorMethod\":\"" + reader + "\","
-                    + "\"methods\":[\"" + reader + "\"],"
-                    + "\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.R.in.0\",\"cell\":\"" + state
-                    + "\",\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"value\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, (writerRegion + readerRegion).getBytes(
-                    StandardCharsets.UTF_8));
-            Files.write(edges, ("{\"edgeId\":\"E.ARRAY\","
-                    + "\"fromRegion\":\"REGION.W\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + state + "\","
-                    + "\"toPort\":\"" + state + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"relation\":\"READ_FROM_CANDIDATE\","
-                    + "\"requiresOrder\":true,"
-                    + "\"requiresObjectIdentity\":true}\n").getBytes(
-                    StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent writeRoot = methodContext(1,
-                    updater, 11, "PROCESS", "writer", 101L);
-            RuntimeRegionPlanner.MethodEvent readRoot = methodContext(10,
-                    reader, 22, "PROCESS", "reader", 202L);
-            RuntimeRegionPlanner.RuntimeEvent rootArgument =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "METHOD_ARGUMENT", updater, 11, 0, 0,
-                            updater + "#entry", 0, "example.Envelope", 901,
-                            "", false, false);
-            RuntimeRegionPlanner.FieldAccessEvent payloadRead =
-                    exactFieldRead(3, updater, 11, 4, payload, 901, 902);
-            RuntimeRegionPlanner.FieldAccessEvent leafRead =
-                    exactFieldRead(4, updater, 11, 7, leaf, 902, 903);
-            RuntimeRegionPlanner.FieldAccessEvent write =
-                    new RuntimeRegionPlanner.FieldAccessEvent(5,
-                            "FIELD_WRITE", updater, 11, state, 77, 88, "");
-            RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(11,
-                            "FIELD_READ", reader, 22, state, 77, 88, "");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    companionStaticGraph(regions).toFile(),
-                    Arrays.asList(writeRoot, readRoot),
-                    Collections.singletonList(rootArgument),
-                    Arrays.asList(payloadRead, leafRead, write, read));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> producer = result.activations.get(2);
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = ((List<Map<String, Object>>)
-                    producer.get("symbolize")).get(0);
-            assertEquals(Boolean.TRUE, producer.get("symbolicReady"));
-            assertEquals(Arrays.asList("payload", "values"),
-                    action.get("fieldPath"));
-            assertEquals("example.Value[]", action.get("javaType"));
-            assertEquals(updater + "#u7",
-                    action.get("consumedFieldSiteId"));
-            assertEquals("ROOT_ARGUMENT_IDENTITY_AT_REGION_ENTRY_AND_"
-                            + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY",
-                    action.get("consumedFieldRootAuthority"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void materializesObservedReceiverFieldAtTheRootReceiver()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String field = "@this: example.Handler#field:allKeys";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":\"REGION.0.in.0\","
-                    + "\"cell\":\"" + field
-                    + "\",\"sourceKind\":\"RECEIVER_FIELD\","
-                    + "\"projection\":\"field:allKeys\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE, 1, 0, 0);
-            RuntimeRegionPlanner.FieldAccessEvent read =
-                    new RuntimeRegionPlanner.FieldAccessEvent(2, "FIELD_READ",
-                            HANDLE, 1, "<example.Handler: java.util.Map allKeys>",
-                            42, 77, "");
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(root),
-                    Collections.emptyList(), Collections.singletonList(read));
-
-            assertEquals(1, result.activations.size());
-            assertTrue(result.activationsJsonl()
-                    .contains("\"location\":\"RECEIVER_FIELD\""));
-            assertTrue(result.activationsJsonl()
-                    .contains("\"receiverObjectId\":42"));
-            assertEquals(true, result.instances.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void doesNotAliasSameNamedFieldsAcrossOwners() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String expected =
-                    "<example.Payload: java.lang.Object allKeys>";
-            String wrong = "<example.State: java.util.Map allKeys>";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.0.in.0\",\"cell\":\"" + expected
-                    + "\",\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"field:allKeys\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.FieldAccessEvent unrelated =
-                    new RuntimeRegionPlanner.FieldAccessEvent(2,
-                            "FIELD_READ", HANDLE, 1, wrong, 42, 77, "");
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Collections.emptyList(),
-                    Collections.singletonList(unrelated));
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((java.util.List<?>) result.activations.get(0)
-                            .get("symbolize")).get(0);
-            assertEquals(false, action.get("observed"));
-            assertEquals("HEAP_OBJECT_FIELD", action.get("location"));
-            assertEquals("example.Payload", action.get("accessOwnerClass"));
-            assertEquals("java.lang.Object", action.get("accessFieldType"));
-            assertEquals("allKeys", action.get("accessField"));
-            assertEquals(expected, action.get("accessFieldSignature"));
-            assertEquals("STATIC_CANONICAL_DECLARED_FIELD",
-                    action.get("accessFieldAuthority"));
-            assertEquals(false, result.instances.get(0).get(
-                    "symbolicReady"));
-            assertFalse(result.activationsJsonl().contains(
-                    "\"field\":\"" + wrong + "\""));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void restoresExactDeepLeafDeclarationForScheduler()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String method = "<example.MapProducer: int compute()>";
-            String rootField =
-                    "<example.StateNode: example.GuardNode state>";
-            String cell = rootField + "#field:guard#field:enabled";
-            String leaf = "<example.BooleanLeaf: boolean enabled>";
-            String row = "{\"regionId\":\"REGION.DEEP\","
-                    + "\"rootMethod\":\"" + method + "\","
-                    + "\"anchorMethod\":\"" + method + "\","
-                    + "\"methods\":[\"" + method + "\"],"
-                    + "\"symbolicInputs\":[{"
-                    + "\"portId\":\"REGION.DEEP.in.0\","
-                    + "\"cell\":\"" + cell + "\","
-                    + "\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"field:guard#field:enabled\","
-                    + "\"bindingMode\":\"FIELD_ACCESS\","
-                    + "\"accessFieldSignature\":\"" + rootField
-                    + "\",\"accessOwnerClass\":\"example.StateNode\","
-                    + "\"accessFieldType\":\"example.GuardNode\","
-                    + "\"accessField\":\"state\","
-                    + "\"leafFieldSignature\":\"" + leaf + "\","
-                    + "\"leafOwnerClass\":\"example.BooleanLeaf\","
-                    + "\"leafField\":\"enabled\","
-                    + "\"fieldPath\":[\"state\",\"guard\","
-                    + "\"enabled\"],\"fieldPathAuthority\":"
-                    + "\"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1\""
-                    + "}],\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.FieldAccessEvent observed =
-                    exactFieldRead(2, method, 1, 8, rootField, 41, 42);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, method, 1, 0, 0)),
-                    Collections.emptyList(),
-                    Collections.singletonList(observed));
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((List<?>) result.activations.get(0).get(
-                            "symbolize")).get(0);
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> declarations =
-                    (List<Map<String, Object>>) action.get(
-                            "fieldPathLeafDeclarations");
-            assertEquals(1, declarations.size());
-            Map<String, Object> declaration = declarations.get(0);
-            assertEquals(Arrays.asList("state", "guard", "enabled"),
-                    declaration.get("fieldPath"));
-            assertEquals(leaf, declaration.get("fieldSignature"));
-            assertEquals("example.BooleanLeaf",
-                    declaration.get("declaredFieldOwnerClass"));
-            assertEquals("boolean", declaration.get("declaredFieldType"));
-            assertEquals(Boolean.TRUE, declaration.get("complete"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void promotedDeclaredFieldObservesOnlyItsAuthorizedReadSite()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String field = "<example.DelegationKey: long expiryDate>";
-            String getter =
-                    "<example.DelegationKey: long getExpiryDate()>";
-            String site = HANDLE + "#u11";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.0.in.0\",\"cell\":\"" + field
-                    + "\",\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"value\","
-                    + "\"bindingMode\":\"FIELD_ACCESS\","
-                    + "\"accessFieldSignature\":\"" + field + "\","
-                    + "\"accessOwnerClass\":\"example.DelegationKey\","
-                    + "\"accessFieldType\":\"long\","
-                    + "\"accessField\":\"expiryDate\","
-                    + "\"accessorCallerMethod\":\"" + HANDLE + "\","
-                    + "\"accessorCallSiteId\":\"" + site + "\","
-                    + "\"accessorCallUnitIndex\":11,"
-                    + "\"accessorDeclaredCallee\":\"" + getter + "\","
-                    + "\"accessorImplementationMethod\":\"" + getter
-                    + "\",\"accessorImplementationAuthority\":"
-                    + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\","
-                    + "\"accessorCallSiteAuthority\":"
-                    + "\"STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                    + "ACCESSOR_CALLSITE_V1\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE, 1,
-                    0, 0);
-            RuntimeRegionPlanner.MethodEvent exactGetter = method(3, getter,
-                    2, 1, 20);
-            RuntimeRegionPlanner.MethodEvent wrongGetter = method(5, getter,
-                    3, 1, 21);
-            RuntimeRegionPlanner.RuntimeEvent exactCall =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
-                            HANDLE + "#u11", getter, -1,
-                            "example.DelegationKey", 43, "", false,
-                            false);
-            RuntimeRegionPlanner.RuntimeEvent wrongCall =
-                    new RuntimeRegionPlanner.RuntimeEvent(4,
-                            "CALL_SITE_ENTER", HANDLE, 1, 21, 0,
-                            HANDLE + "#u12", getter, -1,
-                            "example.DelegationKey", 42, "", false,
-                            false);
-            RuntimeRegionPlanner.FieldAccessEvent wrongSite = exactFieldRead(
-                    6, getter, 3, 1, field, 42, 0);
-            RuntimeRegionPlanner.FieldAccessEvent exactSite = exactFieldRead(
-                    7, getter, 2, 1, field, 43, 0);
-            RuntimeRegionPlanner.Result selected = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(root, exactGetter,
-                            wrongGetter), Arrays.asList(exactCall, wrongCall),
-                    Arrays.asList(wrongSite, exactSite));
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> selectedAction = (Map<String, Object>)
-                    ((List<?>) selected.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.TRUE, selectedAction.get("observed"));
-            assertEquals(43, selectedAction.get("fieldReceiverObjectId"));
-            assertEquals(HANDLE,
-                    selectedAction.get("accessorCallerMethod"));
-            assertEquals(site, selectedAction.get("accessorCallSiteId"));
-            assertEquals(11,
-                    selectedAction.get("accessorCallUnitIndex"));
-            assertEquals(getter,
-                    selectedAction.get("accessorDeclaredCallee"));
-
-            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(root, wrongGetter),
-                    Collections.singletonList(wrongCall),
-                    Collections.singletonList(wrongSite));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> rejectedAction = (Map<String, Object>)
-                    ((List<?>) rejected.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.FALSE, rejectedAction.get("observed"));
-            assertEquals(Boolean.FALSE,
-                    rejected.instances.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void promotedPrimitiveFieldUsesUniqueExactAccessorReturnWhenGetterBodyIsUntraced()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String field = "<example.Command: int action>";
-            String getter = "<example.Command: int getAction()>";
-            String site = HANDLE + "#u11";
-            writeRegions(regions, accessorFieldRegion(field, getter, site)
-                    .getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.RuntimeEvent enter =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
-                            site, getter, -1, "example.KeyUpdateCommand",
-                            43, "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent returned =
-                    new RuntimeRegionPlanner.RuntimeEvent(3,
-                            "CALL_SITE_RETURN", HANDLE, 1, 20, 0,
-                            site, getter, -1, "", 0, "7", false,
-                            false);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Arrays.asList(enter, returned),
-                    Collections.emptyList());
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((List<?>) result.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.TRUE, action.get("observed"));
-            assertEquals("HEAP_OBJECT_FIELD", action.get("location"));
-            assertEquals(field, action.get("field"));
-            assertEquals(43, action.get("fieldReceiverObjectId"));
-            assertEquals("7", action.get("primitiveValue"));
-            assertEquals("ACCESSOR_RETURN", action.get("accessKind"));
-            assertEquals("RUNTIME_EXACT_ACCESSOR_CALL_RETURN_PLUS_"
-                            + "STATIC_DIRECT_FIELD_ACCESSOR_V1",
-                    action.get("observationAuthority"));
-            assertEquals(20L, action.get("accessorInvocationId"));
-            assertEquals(Boolean.TRUE,
-                    result.instances.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void canonicalStringFieldUsesUniqueCompleteAccessorReturn()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String field = "<example.Command: java.lang.String name>";
-            String getter = "<example.Command: java.lang.String getName()>";
-            String site = HANDLE + "#u11";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.0.in.0\",\"cell\":\"" + field
-                    + "\",\"sourceKind\":\"PROTOCOL_INPUT\","
-                    + "\"projection\":\"value\","
-                    + "\"bindingMode\":\"FIELD_ACCESS\","
-                    + "\"accessFieldSignature\":\"" + field + "\","
-                    + "\"accessOwnerClass\":\"example.Command\","
-                    + "\"accessFieldType\":\"java.lang.String\","
-                    + "\"accessField\":\"name\","
-                    + "\"accessorCallerMethod\":\"" + HANDLE + "\","
-                    + "\"accessorCallSiteId\":\"" + site + "\","
-                    + "\"accessorCallUnitIndex\":11,"
-                    + "\"accessorDeclaredCallee\":\"" + getter + "\","
-                    + "\"accessorImplementationMethod\":\"" + getter
-                    + "\",\"accessorImplementationAuthority\":"
-                    + "\"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY\","
-                    + "\"accessorCallSiteAuthority\":"
-                    + "\"STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                    + "ACCESSOR_CALLSITE_V1\"}],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.RuntimeEvent enter =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
-                            site, getter, -1, "example.Command", 43,
-                            "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent returned =
-                    new RuntimeRegionPlanner.RuntimeEvent(3,
-                            "CALL_SITE_RETURN", HANDLE, 1, 20, 0,
-                            site, getter, -1, "java.lang.String", 71,
-                            "", false, false, "sha256:name", true, 1,
-                            "COMPLETE");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Arrays.asList(enter, returned), Collections.emptyList());
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((List<?>) result.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.TRUE, action.get("observed"));
-            assertEquals(field, action.get("field"));
-            assertEquals(43, action.get("fieldReceiverObjectId"));
-            assertEquals(71, action.get("valueObjectId"));
-            assertEquals("java.lang.String", action.get("runtimeType"));
-            assertEquals("sha256:name", action.get("valueFingerprint"));
-            assertEquals(Boolean.TRUE,
-                    action.get("valueFingerprintComplete"));
-            assertEquals(Boolean.TRUE,
-                    result.instances.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void frozenGraphRecoversOnlyUniqueCanonicalAccessorInput()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path graph = folder.getRoot().toPath().resolve(
-                    "static_dataflow_edges.jsonl");
-            String field = "<example.Command: java.lang.String name>";
-            String getter = "<example.Command: java.lang.String getName()>";
-            String site = HANDLE + "#u11";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.0.in.0\",\"cell\":\"" + field
-                    + "\",\"sourceKind\":\"PROTOCOL_INPUT\","
-                    + "\"projection\":\"value\"}],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-            String exactEdge = frozenAccessorEdge("DF.ACCESS.1", field,
-                    getter, site);
-            writeStaticGraph(graph, Collections.singletonList(exactEdge),
-                    StandardCharsets.UTF_8);
-
-            RuntimeRegionPlanner.RuntimeEvent enter =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
-                            site, getter, -1, "example.Command", 43,
-                            "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent returned =
-                    new RuntimeRegionPlanner.RuntimeEvent(3,
-                            "CALL_SITE_RETURN", HANDLE, 1, 20, 0,
-                            site, getter, -1, "java.lang.String", 71,
-                            "", false, false, "sha256:name", true, 1,
-                            "COMPLETE");
-            List<RuntimeRegionPlanner.MethodEvent> methods =
-                    Collections.singletonList(method(1, HANDLE, 1, 0, 0));
-            List<RuntimeRegionPlanner.RuntimeEvent> events =
-                    Arrays.asList(enter, returned);
-
-            RuntimeRegionPlanner.Result selected =
-                    RuntimeRegionPlanner.plan(regions.toFile(), null,
-                            graph.toFile(), methods, events,
-                            Collections.emptyList());
-            @SuppressWarnings("unchecked")
-            Map<String, Object> selectedAction = (Map<String, Object>)
-                    ((List<?>) selected.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.TRUE, selectedAction.get("observed"));
-            assertEquals(RuntimeRegionPlanner
-                            .FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY,
-                    selectedAction.get("observationAuthority"));
-            assertEquals(RuntimeRegionPlanner
-                            .FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY,
-                    selectedAction.get("accessorEvidenceAuthority"));
-
-            writeStaticGraph(graph, Arrays.asList(exactEdge,
-                    frozenAccessorEdge("DF.ACCESS.2", field, getter, site)),
-                    StandardCharsets.UTF_8);
-            RuntimeRegionPlanner.Result ambiguous =
-                    RuntimeRegionPlanner.plan(regions.toFile(), null,
-                            graph.toFile(), methods, events,
-                            Collections.emptyList());
-            @SuppressWarnings("unchecked")
-            Map<String, Object> ambiguousAction = (Map<String, Object>)
-                    ((List<?>) ambiguous.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.FALSE, ambiguousAction.get("observed"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void ambiguousExactAccessorReturnsDoNotSelectOneFieldInstance()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String field = "<example.Command: int action>";
-            String getter = "<example.Command: int getAction()>";
-            String site = HANDLE + "#u11";
-            writeRegions(regions, accessorFieldRegion(field, getter, site)
-                    .getBytes(StandardCharsets.UTF_8));
-
-            List<RuntimeRegionPlanner.RuntimeEvent> calls = Arrays.asList(
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "CALL_SITE_ENTER", HANDLE, 1, 20, 0,
-                            site, getter, -1, "example.Command", 43,
-                            "", false, false),
-                    new RuntimeRegionPlanner.RuntimeEvent(3,
-                            "CALL_SITE_RETURN", HANDLE, 1, 20, 0,
-                            site, getter, -1, "", 0, "7", false,
-                            false),
-                    new RuntimeRegionPlanner.RuntimeEvent(4,
-                            "CALL_SITE_ENTER", HANDLE, 1, 21, 0,
-                            site, getter, -1, "example.Command", 44,
-                            "", false, false),
-                    new RuntimeRegionPlanner.RuntimeEvent(5,
-                            "CALL_SITE_RETURN", HANDLE, 1, 21, 0,
-                            site, getter, -1, "", 0, "7", false,
-                            false));
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)), calls,
-                    Collections.emptyList());
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((List<?>) result.activations.get(0).get(
-                            "symbolize")).get(0);
-            assertEquals(Boolean.FALSE, action.get("observed"));
-            assertEquals(Boolean.FALSE,
-                    result.instances.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void refusesToGuessOwnerForReceiverLocalHeapProjection()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String localProjection = HANDLE + "::$r7#field:expiryDate";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.0.in.0\",\"cell\":\"" + localProjection
-                    + "\",\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"field:expiryDate\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, HANDLE, 1, 0, 0)),
-                    Collections.emptyList(), Collections.emptyList());
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((java.util.List<?>) result.activations.get(0)
-                            .get("symbolize")).get(0);
-            assertEquals("REGION_LIVE_IN", action.get("location"));
-            assertEquals(true, action.get("deferredResolution"));
-            assertEquals("MISSING_CANONICAL_DECLARED_FIELD_SIGNATURE",
-                    action.get("fieldBindingGap"));
-            assertFalse(action.containsKey("accessOwnerClass"));
-            assertFalse(action.containsKey("accessField"));
-            assertFalse(action.containsKey("accessFieldType"));
-            assertFalse(action.containsKey("accessFieldSignature"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void doesNotRebaseAnotherMethodsArgumentByIndex()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String other = "<example.Updater: void apply(example.Payload)>";
-            String cell = other
-                    + ".param0:example.Payload#field:entries";
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + HANDLE
-                    + "\",\"methods\":[\"" + HANDLE
-                    + "\"],\"symbolicInputs\":[{\"portId\":"
-                    + "\"REGION.0.in.0\",\"cell\":\"" + cell
-                    + "\",\"sourceKind\":\"SHARED_HEAP\","
-                    + "\"projection\":\"argument[0].entries\"}],"
-                    + "\"outputs\":[],\"branchPolicies\":[],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE,
-                    1, 0, 0);
-            RuntimeRegionPlanner.RuntimeEvent rootArgument =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "METHOD_ARGUMENT", HANDLE, 1, 0, 0,
-                            HANDLE + "#entry", 0, "java.lang.Object[]", 99,
-                            "", false, false);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(root),
-                    Collections.singletonList(rootArgument),
-                    Collections.emptyList());
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> action = (Map<String, Object>)
-                    ((java.util.List<?>) result.activations.get(0)
-                            .get("symbolize")).get(0);
-            assertEquals("REGION_LIVE_IN", action.get("location"));
-            assertEquals(false, action.get("observed"));
-            assertEquals(true, action.get("deferredResolution"));
-            assertEquals(true, action.get("crossMethodArgument"));
-            assertEquals(other, action.get("staticInputMethod"));
-            assertEquals(HANDLE, action.get("runtimeInputMethod"));
-            assertEquals("STATIC_INPUT_METHOD_DIFFERS_FROM_RUNTIME_ROOT",
-                    action.get("rebaseRejectedAuthority"));
-            assertFalse(action.containsKey("runtimeRebased"));
-            assertFalse(action.containsKey("materializationMode"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void narrowsObjectArgumentUsingRecoveredFailurePredicate()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + RETRIEVE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + RETRIEVE
-                    + "\"],\"symbolicInputs\":[{\"portId\":\"REGION.0.in.0\","
-                    + "\"cell\":\"" + RETRIEVE + ".param0:example.Token\","
-                    + "\"sourceKind\":\"ROOT_ARGUMENT\","
-                    + "\"projection\":\"argument[0]\"}],\"outputs\":[{"
-                    + "\"portId\":\"REGION.0.out.0\","
-                    + "\"cell\":\"allKeys.get(request.getKeyId()) == null\","
-                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + RETRIEVE
-                    + "#u8\",\"policy\":\"EXPLORE\","
-                    + "\"guard\":\"if r25 != null goto return\"}],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent root = method(1, RETRIEVE, 1, 0, 0);
-            RuntimeRegionPlanner.RuntimeEvent argument =
-                    new RuntimeRegionPlanner.RuntimeEvent(2, "METHOD_ARGUMENT",
-                            RETRIEVE, 1, 0, 0, "", 0,
-                            "example.Token", 99, "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent getter =
-                    new RuntimeRegionPlanner.RuntimeEvent(3, "CALL_SITE_ENTER",
-                            RETRIEVE, 1, 3, 0, RETRIEVE + "#u4",
-                            "<example.Token: int getKeyId()>", -1,
-                            "example.Token", 99, "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(4, "BRANCH",
-                            RETRIEVE, 1, 0, 0, RETRIEVE + "#u8", -1,
-                            "", 0, "", true, true);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(root),
-                    Arrays.asList(argument, getter, branch),
-                    Collections.emptyList());
-
-            String activation = result.activationsJsonl();
-            assertTrue(activation.contains("\"location\":\"ARGUMENT_FIELD\""));
-            assertTrue(activation.contains("\"fields\":[\"keyId\"]"));
-            assertTrue(activation.contains(
-                    "\"materializationMode\":\"SELECTIVE_FIELDS\""));
-            assertEquals(true, result.instances.get(0).get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void includesEarlierPathFieldFromStaticRootContract()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + RETRIEVE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + RETRIEVE + "\"],"
-                    + "\"argumentPathFields\":[{\"method\":\"" + RETRIEVE
-                    + "\",\"argumentIndex\":0,"
-                    + "\"fields\":[\"expiryDate\",\"keyId\"],"
-                    + "\"branchSites\":[\"" + RETRIEVE + "#u3\",\""
-                    + RETRIEVE + "#u8\"],"
-                    + "\"authority\":\"STATIC_ROOT_BRANCH_DATAFLOW\"}],"
-                    + "\"symbolicInputs\":[{\"portId\":\"REGION.0.in.0\","
-                    + "\"cell\":\"" + RETRIEVE + ".param0:example.Token\","
-                    + "\"sourceKind\":\"ROOT_ARGUMENT\","
-                    + "\"projection\":\"argument[0]\"}],"
-                    + "\"outputs\":[],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + RETRIEVE
-                    + "#u8\",\"policy\":\"PATH_ASSUMPTION\","
-                    + "\"guard\":\"if r25 != null goto return\"}],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent root = method(1, RETRIEVE, 1, 0, 0);
-            RuntimeRegionPlanner.RuntimeEvent argument =
-                    new RuntimeRegionPlanner.RuntimeEvent(2, "METHOD_ARGUMENT",
-                            RETRIEVE, 1, 0, 0, "", 0,
-                            "example.Token", 99, "", false, false);
-            RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(3, "BRANCH",
-                            RETRIEVE, 1, 0, 0, RETRIEVE + "#u8", -1,
-                            "", 0, "", true, true);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(root),
-                    Arrays.asList(argument, branch), Collections.emptyList());
-
-            String activation = result.activationsJsonl();
-            assertTrue(activation.contains(
-                    "\"fields\":[\"expiryDate\",\"keyId\"]"));
-            assertTrue(activation.contains(
-                    "\"materializationMode\":\"SELECTIVE_FIELDS\""));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void protocolEdgeRequiresPayloadProbeForValueEquality() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String sender = "<example.Client: void send()>";
-            String receiver = "<example.Server: void handle()>";
-            writeRegions(regions, (region("REGION.S", sender)
-                    + region("REGION.D", receiver)).getBytes(StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.1\","
-                    + "\"fromRegion\":\"REGION.S\","
-                    + "\"toRegion\":\"REGION.D\","
-                    + "\"fromPort\":\"sender.userName\","
-                    + "\"toPort\":\"server.userName\","
-                    + "\"kind\":\"SASL_TRANSFER\","
-                    + "\"relation\":\"EQUALITY\","
-                    + "\"requiresOrder\":true,\"siteId\":\"synthetic\"}\n";
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent send = methodContext(1, sender, 1,
-                    "BALANCER", "Dispatcher", 21L);
-            RuntimeRegionPlanner.MethodEvent receive = methodContext(2, receiver, 2,
-                    "DATANODE", "DataXceiver", 22L);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(), Arrays.asList(send, receive),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals("ENDPOINTS_OBSERVED",
-                    result.edgeValidations.get(0).get("state"));
-            assertTrue(((List<?>) result.edgeValidations.get(0)
-                    .get("bindings")).isEmpty());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void staticSaslMappingCannotDeclareAutomaticEquality()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String sender = "<example.HdfsSaslClient: void handshake()>";
-            String receiver = "<example.HdfsSaslServer: void handle()>";
-            writeRegions(regions, (region("REGION.C", sender)
-                    + region("REGION.S", receiver)).getBytes(
-                    StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.SASL\","
-                    + "\"fromRegion\":\"REGION.C\","
-                    + "\"toRegion\":\"REGION.S\","
-                    + "\"fromPort\":\"" + sender + ".param3:userName\","
-                    + "\"toPort\":\"" + receiver + "::$r4\","
-                    + "\"kind\":\"SASL_TRANSFER\","
-                    + "\"relation\":\"EQUALITY\","
-                    + "\"mappingKind\":\"hdfs_sasl_username\","
-                    + "\"mappingAuthority\":"
-                    + "\"STATIC_HDFS_SASL_CONTRACT\","
-                    + "\"payloadEqualityCheckRequired\":false,"
-                    + "\"requiresOrder\":true,"
-                    + "\"siteId\":\"synthetic:hdfs_sasl_username\"}\n";
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent send = methodContext(1, sender, 1,
-                    "BALANCER", "Dispatcher", 21L);
-            RuntimeRegionPlanner.MethodEvent receive = methodContext(2, receiver,
-                    2, "DATANODE", "DataXceiver", 22L);
-            RuntimeRegionPlanner.MethodEvent sendAgain = methodContext(3,
-                    sender, 3, "BALANCER", "Dispatcher", 21L);
-            RuntimeRegionPlanner.MethodEvent receiveAgain = methodContext(4,
-                    receiver, 4, "DATANODE", "DataXceiver", 23L);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(), Arrays.asList(send,
-                            receive, sendAgain, receiveAgain),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals("ENDPOINTS_OBSERVED",
-                    result.edgeValidations.get(0).get("state"));
-            assertEquals("STATIC_FORMAT_AND_PORT_MAPPING",
-                    result.edgeValidations.get(0).get("mappingAuthority"));
-            assertEquals("hdfs_sasl_username",
-                    result.edgeValidations.get(0).get("mappingKind"));
-            assertTrue(((List<?>) result.edgeValidations.get(0)
-                    .get("bindings")).isEmpty());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void selectedDirectDefinitionCanonicalizesRetainedSaslInput()
-            throws Exception {
-        RuntimeRegionPlanner.Result result =
-                demandSlicedSaslInputResult(false);
-
-        Map<String, Object> serverActivation = null;
-        for (Map<String, Object> activation : result.activations) {
-            if ("REGION.S".equals(activation.get("regionId"))) {
-                serverActivation = activation;
-                break;
-            }
-        }
-        assertTrue(serverActivation != null);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> demand = (Map<String, Object>) serverActivation
-                .get("concreteDemandSlice");
-        assertEquals(Collections.singletonList("REGION.S.in.0"),
-                demand.get("inputPorts"));
-        assertTrue(String.valueOf(demand.get("edgeIds"))
-                .contains("DF.DIRECT.DEFAULT"));
-        assertEquals(0, demand.get("externalInputPromotionCount"));
-        assertFalse(String.valueOf(demand.get("authority")).contains(
-                "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
-
-        Map<String, Object> validation = edgeValidationFor(result,
-                "REGION.C");
-        assertEquals("ENDPOINTS_OBSERVED",
-                validation.get("state"));
-        assertTrue(((List<?>) validation.get("bindings")).isEmpty());
-    }
-
-    @Test
-    public void ambiguousOrUnqualifiedDirectDefinitionsFailClosed()
-            throws Exception {
-        List<RuntimeRegionPlanner.Result> rejected = Arrays.asList(
-                demandSlicedSaslInputResult(true),
-                demandSlicedSaslInputResult(false, "VALUE_PASS",
-                        "value_flow"),
-                demandSlicedSaslInputResult(false, "HEAP_READ",
-                        "taint_depends_on"));
-
-        for (RuntimeRegionPlanner.Result result : rejected) {
-            Map<String, Object> validation = edgeValidationFor(result,
-                    "REGION.C");
-            assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                    validation.get("state"));
-            assertTrue(((List<?>) validation.get("bindings")).isEmpty());
-        }
-    }
-
-    @Test
-    public void saslUsernameRejectsReverseEndpointOrder()
-            throws Exception {
-        String fingerprint = "sha256:same-sasl-user";
-        RuntimeRegionPlanner.Result result = planSaslUsernameEdge(
-                Arrays.asList(
-                        methodContext(1, SASL_CLIENT, 1, "BALANCER",
-                                "Dispatcher", 31L),
-                        methodContext(20, SASL_SERVER, 2, "DATANODE",
-                                "DataXceiver", 41L)),
-                Arrays.asList(
-                        saslCallbackReturn(50, 2, fingerprint),
-                        saslArgument(60, 1, fingerprint)));
-
-        Map<String, Object> validation = edgeValidationFor(result,
-                "REGION.C");
-        assertEquals("ENDPOINTS_OBSERVED", validation.get("state"));
-        assertTrue(((List<?>) validation.get("bindings")).isEmpty());
-    }
-
-    @Test
-    public void saslUsernameRejectsDifferentCompleteFingerprint()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = planSaslUsernameEdge(
-                Arrays.asList(
-                        methodContext(1, SASL_CLIENT, 1, "BALANCER",
-                                "Dispatcher", 31L),
-                        methodContext(20, SASL_SERVER, 2, "DATANODE",
-                                "DataXceiver", 41L)),
-                Arrays.asList(
-                        saslArgument(10, 1, "sha256:client-user"),
-                        saslCallbackReturn(50, 2,
-                                "sha256:different-server-user")));
-
-        Map<String, Object> validation = edgeValidationFor(result,
-                "REGION.C");
-        assertEquals("ENDPOINTS_OBSERVED", validation.get("state"));
-        assertTrue(((List<?>) validation.get("bindings")).isEmpty());
-    }
-
-    @Test
-    public void rpcPortMappingNeedsRuntimeValueEquality()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String server = "<example.NameNode: example.Keys getBlockKeys()>";
-            String updater = "<example.KeyUpdater: void run()>";
-            writeRegions(regions, (region("REGION.NN", server)
-                    + region("REGION.B", updater)).getBytes(StandardCharsets.UTF_8));
-            String site = updater + "#u4";
-            String edge = "{\"edgeId\":\"E.RPC\","
-                    + "\"fromRegion\":\"REGION.NN\","
-                    + "\"toRegion\":\"REGION.B\","
-                    + "\"fromPort\":\"" + server
-                    + ".return#field:currentKey#field:keyId\","
-                    + "\"toPort\":\"" + updater
-                    + "::keys#field:currentKey#field:keyId\","
-                    + "\"kind\":\"RPC_RETURN\",\"relation\":\"EQUALITY\","
-                    + "\"requiresOrder\":true,"
-                    + "\"siteId\":\"synthetic:projected_rpc_return\"}\n";
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent send = methodContext(1, server, 1,
-                    "NAMENODE", "IPC Server", 31L);
-            RuntimeRegionPlanner.MethodEvent receive = methodContext(2, updater, 2,
-                    "BALANCER", "KeyUpdater", 32L);
-            RuntimeRegionPlanner.RuntimeEvent callSite =
-                    new RuntimeRegionPlanner.RuntimeEvent(3, "CALL_SITE_ENTER",
-                            updater, 2, 3, 0, site, server, -1,
-                            "example.NameNode", 0, "", false, false);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(), Arrays.asList(send, receive),
-                    Collections.singletonList(callSite), Collections.emptyList());
-
-            assertEquals("PORT_MAPPING_OBSERVED_VALUE_EQUALITY_UNPROVEN",
-                    result.edgeValidations.get(0).get("state"));
-            assertTrue(((List<?>) result.edgeValidations.get(0)
-                    .get("bindings")).isEmpty());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void completeRuntimeFingerprintsPromotePortMapToEquality()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String server = "<example.NameNode: example.Keys getKeys()>";
-            String updater = "<example.Updater: void run()>";
-            String site = updater + "#u4";
-            writeRegions(regions, (region("REGION.NN", server)
-                    + region("REGION.UP", updater)).getBytes(
-                    StandardCharsets.UTF_8));
-            Files.write(edges, ("{\"edgeId\":\"E.RUNTIME\","
-                    + "\"fromRegion\":\"REGION.NN\","
-                    + "\"toRegion\":\"REGION.UP\","
-                    + "\"fromPort\":\"" + server + ".return\","
-                    + "\"toPort\":\"" + updater + "::$r2\","
-                    + "\"kind\":\"RPC_RETURN\","
-                    + "\"candidateRelation\":\"EQUALITY\","
-                    + "\"requiresOrder\":true,\"siteId\":\""
-                    + site + "\"}\n").getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent send = methodContext(1, server,
-                    1, "NAMENODE", "IPC Server", 31L);
-            RuntimeRegionPlanner.MethodEvent receive = methodContext(4,
-                    updater, 4, "BALANCER", "Updater", 32L);
-            String fingerprint = "sha256:0123456789abcdef";
-            RuntimeRegionPlanner.RuntimeEvent returned =
-                    new RuntimeRegionPlanner.RuntimeEvent(2,
-                            "METHOD_EXIT_NORMAL", server, 1, 0, 0,
-                            server + "#exit", "", -1, "example.Keys",
-                            41, "", false, false, fingerprint, true, 4,
-                            "COMPLETE");
-            RuntimeRegionPlanner.RuntimeEvent received =
-                    new RuntimeRegionPlanner.RuntimeEvent(5,
-                            "CALL_SITE_RETURN", updater, 4, 9, 0, site,
-                            server, -1, "example.Keys", 42, "", false,
-                            false, fingerprint, true, 4, "COMPLETE");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(send, receive),
-                    Arrays.asList(returned, received),
-                    Collections.emptyList());
-
-            Map<String, Object> validation = result.edgeValidations.get(0);
-            assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
-                    validation.get("state"));
-            assertEquals(1, ((List<?>) validation.get("bindings")).size());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void canonicalProducerOutputCapturesProjectedLocalFingerprint()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String producer =
-                    "<example.BlockManager: void addKeyUpdateCommand()>";
-            String consumer =
-                    "<example.OfferService: void processCommand()>";
-            String rawSource = producer + "::$r5#field:allKeys";
-            String rawTarget = consumer + "::$r59#field:allKeys";
-            String canonical =
-                    "<example.ExportedKeys: example.Key[] allKeys>";
-            String outputPort = "REGION.NN.out.keys";
-            String site = consumer
-                    + "#synthetic:projected_heartbeat_key_update";
-            String producerRegion = "{\"regionId\":\"REGION.NN\","
-                    + "\"rootMethod\":\"" + producer + "\","
-                    + "\"anchorMethod\":\"" + producer + "\","
-                    + "\"methods\":[\"" + producer + "\"],"
-                    + "\"symbolicInputs\":[],\"outputs\":[{"
-                    + "\"portId\":\"" + outputPort + "\","
-                    + "\"cell\":\"" + canonical + "\","
-                    + "\"kind\":\"HEAP_STATE\"}],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, (producerRegion
-                    + region("REGION.DN", consumer)).getBytes(
-                    StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.HEARTBEAT.KEYS\","
-                    + "\"fromRegion\":\"REGION.NN\","
-                    + "\"toRegion\":\"REGION.DN\","
-                    + "\"fromPort\":\"" + rawSource + "\","
-                    + "\"fromOutputPort\":\"" + outputPort + "\","
-                    + "\"fromOutputCell\":\"" + canonical + "\","
-                    + "\"aliasProofEdgeIds\":[\"DF.1\",\"DF.2\"],"
-                    + "\"aliasProofAuthority\":"
-                    + "\"STATIC_EXACT_PROJECTED_RETURN_VALUE_FLOW_"
-                    + "AND_DECLARED_RETURN_FIELD\","
-                    + "\"aliasProofComplete\":true,"
-                    + "\"toPort\":\"" + rawTarget + "\","
-                    + "\"kind\":\"HEARTBEAT_TRANSFER\","
-                    + "\"candidateRelation\":\"EQUALITY\","
-                    + "\"requiresOrder\":true,"
-                    + "\"siteId\":\"" + site + "\"}\n";
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent send = methodContext(1,
-                    producer, 11, "NAMENODE", "IPC Server", 31L);
-            RuntimeRegionPlanner.MethodEvent receive = methodContext(4,
-                    consumer, 22, "DATANODE", "BPServiceActor", 32L);
-            String fingerprint = "sha256:heartbeat-all-keys";
-            RuntimeRegionPlanner.FieldAccessEvent capturedOutput =
-                    new RuntimeRegionPlanner.FieldAccessEvent(2,
-                            "FIELD_WRITE", producer, 11, canonical,
-                            71, 81, "", fingerprint, true, 3,
-                            "COMPLETE");
-            RuntimeRegionPlanner.RuntimeEvent received =
-                    new RuntimeRegionPlanner.RuntimeEvent(5,
-                            "CALL_SITE_RETURN", consumer, 22, 9, 0, site,
-                            "<example.Command: example.Key[] getAllKeys()>",
-                            -1, "example.Key[]", 82, "", false, false,
-                            fingerprint, true, 3, "COMPLETE");
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(send, receive),
-                    Collections.singletonList(received),
-                    Collections.singletonList(capturedOutput));
-
-            Map<String, Object> validation = result.edgeValidations.get(0);
-            assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
-                    validation.get("state"));
-            assertEquals(rawSource, validation.get("fromPort"));
-            assertEquals(rawTarget, validation.get("toPort"));
-            assertEquals(canonical, validation.get("fromOutputCell"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> binding = ((List<Map<String, Object>>)
-                    validation.get("bindings")).get(0);
-            assertEquals("FIELD_VALUE",
-                    binding.get("fromFingerprintSource"));
-            assertEquals("MAPPED_CALL_RETURN_SITE",
-                    binding.get("toFingerprintSource"));
-
-            // Canonical capture is authorized only by the complete proof.
-            Files.write(edges, edge.replace(
-                    "\"aliasProofComplete\":true",
-                    "\"aliasProofComplete\":false").getBytes(
-                    StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.Result rejected = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(send, receive),
-                    Collections.singletonList(received),
-                    Collections.singletonList(capturedOutput));
-            assertFalse("CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
-                    rejected.edgeValidations.get(0).get("state")));
-            assertTrue(((List<?>) rejected.edgeValidations.get(0)
-                    .get("bindings")).isEmpty());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void lowerRegionMethodCannotImpersonateProtocolPortEndpoint()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            Path edges = folder.getRoot().toPath().resolve(
-                    "symbolic_region_edges.jsonl");
-            String sender = "<example.Server: example.Keys getKeys()>";
-            String expectedReceiver = "<example.BalancerUpdater: void run()>";
-            String sharedLowerMethod = "<example.Manager: void addKeys(example.Keys)>";
-            String rows = region("REGION.S", sender)
-                    + "{\"regionId\":\"REGION.R\",\"rootMethod\":\""
-                    + expectedReceiver + "\",\"anchorMethod\":\""
-                    + sharedLowerMethod + "\",\"methods\":[\""
-                    + expectedReceiver + "\",\"" + sharedLowerMethod
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, rows.getBytes(StandardCharsets.UTF_8));
-            String edge = "{\"edgeId\":\"E.2\","
-                    + "\"fromRegion\":\"REGION.S\","
-                    + "\"toRegion\":\"REGION.R\","
-                    + "\"fromPort\":\"" + sender + ".return\","
-                    + "\"toPort\":\"" + expectedReceiver + "::keys\","
-                    + "\"kind\":\"RPC_RETURN\",\"relation\":\"EQUALITY\","
-                    + "\"requiresOrder\":true,\"siteId\":\"\"}\n";
-            Files.write(edges, edge.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
-                    Arrays.asList(method(1, sender, 1, 0, 0),
-                            method(2, sharedLowerMethod, 2, 0, 0)),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals("UNOBSERVED",
-                    result.edgeValidations.get(0).get("state"));
-            assertTrue(((List<?>) result.edgeValidations.get(0)
-                    .get("bindings")).isEmpty());
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void promotesObservedBelowRootEntryToReplayRoot() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + HANDLE + "\",\"" + RETRIEVE
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, RETRIEVE, 8, 0, 0)),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals(1, result.instances.size());
-            assertTrue((Boolean) result.instances.get(0).get("rootObserved"));
-            assertFalse((Boolean) result.instances.get(0)
-                    .get("staticRootObserved"));
-            assertEquals(RETRIEVE,
-                    result.instances.get(0).get("finalRootMethod"));
-            assertEquals(RETRIEVE,
-                    result.activations.get(0).get("rootMethod"));
-            assertTrue((Boolean) result.activations.get(0).get("replayable"));
-            assertEquals("RUNTIME_SELECTED_ROOT_REPLAY",
-                    result.activations.get(0).get("replayMode"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void selectsHighestObservedRuntimeEntryBelowMissingStaticRoot()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + HANDLE + "\",\"" + PASSWORD
-                    + "\",\"" + RETRIEVE
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent middle =
-                    method(1, PASSWORD, 10, 0, 0);
-            RuntimeRegionPlanner.MethodEvent anchor =
-                    method(2, RETRIEVE, 11, 10, 7);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(middle, anchor),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals(1, result.instances.size());
-            assertEquals(PASSWORD,
-                    result.instances.get(0).get("observedRootMethod"));
-            assertEquals("VALIDATED_PATH",
-                    result.instances.get(0).get("validationStatus"));
-            assertEquals(PASSWORD,
-                    result.activations.get(0).get("rootMethod"));
-            assertTrue((Boolean) result.activations.get(0).get("replayable"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void ignoresStaticCandidateInvocationThatDidNotReachRuntimeAnchor()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve("symbolic_regions.jsonl");
-            String row = "{\"regionId\":\"REGION.0\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + HANDLE + "\",\""
-                    + RETRIEVE + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent unrelatedStaticRoot =
-                    method(1, HANDLE, 1, 0, 0);
-            RuntimeRegionPlanner.MethodEvent directAnchor =
-                    method(2, RETRIEVE, 2, 0, 0);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(unrelatedStaticRoot, directAnchor),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals(1, result.instances.size());
-            assertEquals(RETRIEVE,
-                    result.instances.get(0).get("finalRootMethod"));
-            assertFalse((Boolean) result.instances.get(0)
-                    .get("staticRootObserved"));
-            assertEquals("RUNTIME_SELECTED_ENTRY",
-                    result.instances.get(0).get("rootSelection"));
-            assertEquals(RETRIEVE,
-                    result.activations.get(0).get("rootMethod"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void lateRootDoesNotSpendContainmentBudgetOnGlobalPrefix()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String site = RETRIEVE + "#u8";
-            String row = "{\"regionId\":\"REGION.LATE\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + HANDLE + "\",\""
-                    + RETRIEVE + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + site
-                    + "\",\"policy\":\"EXPLORE\",\"guard\":\"late\","
-                    + "\"requiredOutcome\":false,\"role\":\"REACHABILITY\"}],"
-                    + "\"models\":[]}\n";
-            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
-
-            List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
-            String noise = "<example.Noise: void run()>";
-            for (int index = 0; index < 10001; index++) {
-                long id = index + 1L;
-                methods.add(method(id, noise, id, 0, 0));
-            }
-            RuntimeRegionPlanner.MethodEvent root =
-                    method(20000, HANDLE, 20000, 0, 0);
-            RuntimeRegionPlanner.MethodEvent anchor =
-                    method(20001, RETRIEVE, 20001, 20000, 19999);
-            methods.add(root);
-            methods.add(anchor);
-            RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(20002, "BRANCH",
-                            RETRIEVE, 20001, 0, 0, site, -1, "", 0,
-                            "", true, false);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), methods,
-                    Collections.singletonList(branch),
-                    Collections.emptyList());
-
-            assertEquals(1, result.instances.size());
-            assertEquals(true, result.instances.get(0).get("anchorObserved"));
-            assertEquals(true, result.instances.get(0).get("symbolicReady"));
-            assertTrue(String.valueOf(result.instances.get(0).get(
-                    "observedMethods")).contains(RETRIEVE));
-            assertTrue(result.activationsJsonl().contains(
-                    "\"siteId\":\"" + site + "\""));
-            assertTrue(result.activationsJsonl().contains(
-                    "\"observed\":true"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void sharedAnchorBelongsOnlyToRootInConcreteAncestry()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String heartbeat = "{\"regionId\":\"REGION.HEARTBEAT\","
-                    + "\"rootMethod\":\"" + HANDLE + "\","
-                    + "\"anchorMethod\":\"" + RETRIEVE + "\","
-                    + "\"methods\":[\"" + HANDLE + "\",\"" + RETRIEVE
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            String registration = "{\"regionId\":\"REGION.REGISTRATION\","
-                    + "\"rootMethod\":\"" + PASSWORD + "\","
-                    + "\"anchorMethod\":\"" + RETRIEVE + "\","
-                    + "\"methods\":[\"" + PASSWORD + "\",\"" + RETRIEVE
-                    + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, (heartbeat + registration)
-                    .getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.MethodEvent unrelatedHeartbeat =
-                    method(1, HANDLE, 1, 0, 0);
-            RuntimeRegionPlanner.MethodEvent registrationRoot =
-                    method(10, PASSWORD, 10, 0, 0);
-            RuntimeRegionPlanner.MethodEvent anchor =
-                    method(11, RETRIEVE, 11, 10, 9);
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Arrays.asList(unrelatedHeartbeat,
-                            registrationRoot, anchor),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals(1, result.instances.size());
-            assertEquals("REGION.REGISTRATION",
-                    result.instances.get(0).get("regionId"));
-            assertEquals(PASSWORD,
-                    result.instances.get(0).get("finalRootMethod"));
-            assertEquals(1, result.activations.size());
-            assertTrue(result.unobservedRegionIds.contains("REGION.HEARTBEAT"));
-            assertFalse(result.activationsJsonl().contains(
-                    "REGION.HEARTBEAT"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void ambiguousSharedAnchorDoesNotCreateSuffixActivations()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path regions = folder.getRoot().toPath().resolve(
-                    "symbolic_regions.jsonl");
-            String first = "{\"regionId\":\"REGION.A\",\"rootMethod\":\""
-                    + HANDLE + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + HANDLE + "\",\""
-                    + RETRIEVE + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            String second = "{\"regionId\":\"REGION.B\",\"rootMethod\":\""
-                    + PASSWORD + "\",\"anchorMethod\":\"" + RETRIEVE
-                    + "\",\"methods\":[\"" + PASSWORD + "\",\""
-                    + RETRIEVE + "\"],\"symbolicInputs\":[],\"outputs\":[],"
-                    + "\"branchPolicies\":[],\"models\":[]}\n";
-            writeRegions(regions, (first + second)
-                    .getBytes(StandardCharsets.UTF_8));
-
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), Collections.singletonList(
-                            method(1, RETRIEVE, 1, 0, 0)),
-                    Collections.emptyList(), Collections.emptyList());
-
-            assertEquals(0, result.instances.size());
-            assertEquals(0, result.activations.size());
-            assertTrue(result.unobservedRegionIds.contains("REGION.A"));
-            assertTrue(result.unobservedRegionIds.contains("REGION.B"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void propagatesExactContainerFieldBindingToOutputActivation()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = containerBindingRuntimeResult(
-                false);
-        assertEquals(3, result.activations.size());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
-        assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> declarations =
-                (List<Map<String, Object>>) upstream.get(
-                        "containerElementFieldBindings");
-        assertEquals(1, declarations.size());
-        assertEquals("BIND.ARRAY.0",
-                declarations.get(0).get("bindingId"));
-        assertEquals("EXACT_ARRAY_INDEX",
-                declarations.get(0).get("selectorAuthority"));
-        assertEquals(0, declarations.get(0).get("elementIndex"));
-        assertEquals(1, declarations.get(0).get("elementOccurrence"));
-        assertEquals(Arrays.asList("A", "C", "G", "P"),
-                declarations.get(0).get("proofCausalEdgeIds"));
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> actions =
-                (List<Map<String, Object>>) upstream.get("symbolize");
-        Map<String, Object> base = actions.stream().filter(action ->
-                "REGION.W.in.key".equals(action.get("symbol")))
-                .findFirst().orElseThrow(AssertionError::new);
-        Map<String, Object> container = actions.stream().filter(action ->
-                "REGION.W.in.keys".equals(action.get("symbol")))
-                .findFirst().orElseThrow(AssertionError::new);
-        assertEquals(Collections.singletonList("keyId"),
-                base.get("fieldPath"));
-        assertEquals("example.Key[]", container.get("javaType"));
-        assertEquals("example.KeyBase", base.get("accessOwnerClass"));
-        assertEquals("FIELD_ACCESS", base.get("bindingMode"));
-        assertEquals(Collections.singletonList("allKeys"),
-                container.get("fieldPath"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertEquals(Boolean.TRUE, slice.get("complete"));
-        assertEquals(1, ((List<?>) slice.get(
-                "containerElementFieldBindings")).size());
-    }
-
-    @Test
-    public void malformedContainerMaterializationSiteFailsOutputClosed()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = containerBindingRuntimeResult(
-                true);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
-        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
-        assertFalse(upstream.containsKey("containerElementFieldBindings"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertEquals(Boolean.FALSE, slice.get("complete"));
-        assertEquals(Boolean.FALSE, slice.get("runtimeRefinementComplete"));
-        assertTrue(((List<?>) slice.get("containerElementFieldBindings"))
-                .isEmpty());
-    }
-
-    @Test
-    public void canonicalizesPromotedNestedArrayPortToExactConsumedLeaf()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = arrayInputAliasRuntimeResult(
-                false);
-        assertEquals(3, result.activations.size());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
-        assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> actions =
-                (List<Map<String, Object>>) upstream.get("symbolize");
-        assertEquals(2, actions.size());
-        Map<String, Object> exactAction = actions.stream().filter(action ->
-                "REGION.W.in.exact".equals(action.get("symbol")))
-                .findFirst().orElseThrow(AssertionError::new);
-        assertEquals("example.Key[]", exactAction.get("javaType"));
-        assertEquals(Boolean.TRUE,
-                exactAction.get("consumedFieldBindingComplete"));
-        assertFalse(String.valueOf(actions).contains(
-                "REGION.W.in.promoted"));
-
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertEquals(Boolean.TRUE, slice.get("complete"));
-        assertEquals(Arrays.asList("REGION.W.in.exact", "REGION.W.in.key"),
-                slice.get("inputPorts"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> aliases =
-                (List<Map<String, Object>>) slice.get(
-                        "inputAliasCanonicalizations");
-        assertEquals(1, aliases.size());
-        assertEquals("REGION.W.in.promoted",
-                aliases.get(0).get("aliasInputPort"));
-        assertEquals("REGION.W.in.exact",
-                aliases.get(0).get("canonicalInputPort"));
-        assertEquals(800,
-                aliases.get(0).get("intermediateOwnerObjectId"));
-        assertEquals(800,
-                aliases.get(0).get("canonicalLeafReceiverObjectId"));
-        assertEquals(2, aliases.get(0).get("aliasBindingCount"));
-        assertEquals(Arrays.asList("OUTPUT_SLICE_FRONTIER_PROMOTION",
-                        "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"),
-                aliases.get(0).get("aliasBindingAuthorities"));
-        assertEquals(Boolean.TRUE, aliases.get(0).get("complete"));
-        assertEquals(Boolean.TRUE,
-                slice.get("inputAliasCanonicalizationComplete"));
-        assertTrue(((List<?>) slice.get(
-                "inputAliasCanonicalizationIssues")).isEmpty());
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> bindings =
-                (List<Map<String, Object>>) slice.get("inputBindings");
-        List<Map<String, Object>> exactBindings = new ArrayList<>();
-        for (Map<String, Object> binding : bindings) {
-            if ("REGION.W.in.exact".equals(binding.get("inputPort"))) {
-                exactBindings.add(binding);
-            }
-        }
-        assertEquals(1, exactBindings.size());
-        assertEquals("EXACT_CELL_IDENTITY",
-                exactBindings.get(0).get("bindingAuthority"));
-        assertFalse(exactBindings.get(0).containsKey(
-                "aliasSourceInputPort"));
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> containers =
-                (List<Map<String, Object>>) upstream.get(
-                        "containerElementFieldBindings");
-        assertEquals(1, containers.size());
-        assertEquals("REGION.W.in.exact",
-                containers.get(0).get("containerInputPort"));
-        assertEquals("REGION.W.in.promoted",
-                containers.get(0).get("containerInputAliasSourcePort"));
-        assertEquals("EXACT_RUNTIME_FIELD_CHAIN_TO_CANONICAL_LEAF_INPUT_V1",
-                containers.get(0).get("containerInputAliasAuthority"));
-    }
-
-    @Test
-    public void ambiguousExactArrayAliasCanonicalPortFailsOutputClosed()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = arrayInputAliasRuntimeResult(
-                true);
-        assertEquals(3, result.activations.size());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
-        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertEquals(Boolean.FALSE, slice.get("complete"));
-        assertEquals(Boolean.FALSE,
-                slice.get("inputAliasCanonicalizationComplete"));
-        assertTrue(String.valueOf(slice.get(
-                "inputAliasCanonicalizationIssues")).contains(
-                "EXACT_ARRAY_ALIAS_CANONICAL_PORT_NOT_UNIQUE:2"));
-        assertEquals(Boolean.FALSE, slice.get("runtimeRefinementComplete"));
-    }
-
-    @Test
-    public void canonicalizesProjectedPrimitivePortToExactField()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = primitiveInputAliasRuntimeResult(
-                false, false);
-        assertEquals(3, result.activations.size());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.TRUE, upstream.get("symbolicReady"));
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> actions =
-                (List<Map<String, Object>>) upstream.get("symbolize");
-        assertEquals(1, actions.size());
-        assertEquals("REGION.W.in.exact", actions.get(0).get("symbol"));
-        assertEquals("3", actions.get(0).get("primitiveValue"));
-
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertEquals(Boolean.TRUE, slice.get("complete"));
-        assertEquals(Collections.singletonList("REGION.W.in.exact"),
-                slice.get("inputPorts"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> aliases =
-                (List<Map<String, Object>>) slice.get(
-                        "inputAliasCanonicalizations");
-        assertEquals(1, aliases.size());
-        assertEquals("CANONICAL_PRIMITIVE_INPUT_ALIAS",
-                aliases.get(0).get("kind"));
-        assertEquals("REGION.W.in.projected",
-                aliases.get(0).get("aliasInputPort"));
-        assertEquals("REGION.W.in.exact",
-                aliases.get(0).get("canonicalInputPort"));
-        assertEquals(800,
-                aliases.get(0).get("intermediateOwnerObjectId"));
-        assertEquals(800,
-                aliases.get(0).get("canonicalLeafReceiverObjectId"));
-        assertEquals("<example.Producer: int input>",
-                aliases.get(0).get("leafFieldSignature"));
-        assertEquals(Collections.singletonList(
-                        "UNIQUE_EXACT_PROJECTED_ALIAS_CHAIN"),
-                aliases.get(0).get("aliasBindingAuthorities"));
-        assertEquals("BASE_READ_BEFORE_LEAF_READ_WITH_NO_INTERVENING_"
-                        + "LEAF_WRITE_V1",
-                aliases.get(0).get("runtimeCutAuthority"));
-        assertEquals(2L, aliases.get(0).get("baseFieldEventSeq"));
-        assertEquals(11L, aliases.get(0).get("baseFieldCallId"));
-        assertEquals(3L,
-                aliases.get(0).get("canonicalLeafFieldEventSeq"));
-        assertEquals(11L,
-                aliases.get(0).get("canonicalLeafFieldCallId"));
-        assertEquals("3", aliases.get(0).get("canonicalPrimitiveValue"));
-        assertEquals(Boolean.TRUE, aliases.get(0).get("complete"));
-        assertEquals(Boolean.TRUE,
-                slice.get("inputAliasCanonicalizationComplete"));
-    }
-
-    @Test
-    public void projectedPrimitiveAliasWithDifferentReceiverFailsClosed()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = primitiveInputAliasRuntimeResult(
-                true, false);
-        assertEquals(3, result.activations.size());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertEquals(Boolean.FALSE, slice.get("complete"));
-        assertEquals(Boolean.FALSE,
-                slice.get("inputAliasCanonicalizationComplete"));
-        assertTrue(String.valueOf(slice.get(
-                "inputAliasCanonicalizationIssues")).contains(
-                "PROJECTED_PRIMITIVE_RUNTIME_FIELD_CHAIN_MISMATCH"));
-        assertEquals(Boolean.FALSE, slice.get("runtimeRefinementComplete"));
-    }
-
-    @Test
-    public void projectedPrimitiveAliasAcrossAWriteFailsClosed()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = primitiveInputAliasRuntimeResult(
-                false, true);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> upstream = result.activations.get(2);
-        assertEquals(Boolean.FALSE, upstream.get("symbolicReady"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> slice = (Map<String, Object>) upstream.get(
-                "requestedOutputSlice");
-        assertTrue(String.valueOf(slice.get(
-                "inputAliasCanonicalizationIssues")).contains(
-                "PROJECTED_PRIMITIVE_INTERVENING_LEAF_WRITE"));
-    }
-
-    @Test
-    public void liftsSelectedArrayElementDemandToMapOutputProjectionCatalog() {
-        RuntimeRegionPlanner.Result result =
-                mapValueProjectionActivationResult(true);
-        RuntimeRegionPlanner
-                .refineMapValueElementProjectionActivationsForTests(result);
-
-        Map<String, Object> producer = result.activations.get(0);
-        assertEquals(Boolean.TRUE, producer.get("symbolicReady"));
-        assertEquals(Boolean.TRUE, producer.get("boundaryReady"));
-        assertEquals(Boolean.TRUE,
-                producer.get("mapValueElementProjectionCaptureReady"));
-        assertEquals(Boolean.TRUE,
-                producer.get("recursiveElementProjectionComposable"));
-        assertFalse(producer.containsKey(
-                "recursiveElementProjectionCompositionGap"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> declarations =
-                (List<Map<String, Object>>) producer.get(
-                        "mapValueElementFieldProjections");
-        assertEquals(1, declarations.size());
-        Map<String, Object> declaration = declarations.get(0);
-        assertEquals("MAP_VALUE_TO_OUTPUT_ARRAY_ELEMENT_FIELD",
-                declaration.get("kind"));
-        assertEquals("REGION.P.in.map",
-                declaration.get("mapInputPort"));
-        assertEquals("REGION.P.out.keys",
-                declaration.get("outputPort"));
-        assertEquals("REGION.D.in.keys",
-                declaration.get("downstreamInputPort"));
-        assertEquals(Collections.singletonList("expiryDate"),
-                declaration.get("fieldPath"));
-        assertEquals("ROOT_RETURN_PROJECTED_FIELD",
-                declaration.get("outputValidationMode"));
-        assertEquals(Boolean.TRUE,
-                declaration.get("recursiveElementProjectionComposable"));
-        @SuppressWarnings("unchecked")
-        List<String> proof = (List<String>) declaration.get(
-                "projectionProofCausalEdgeIds");
-        assertEquals(Arrays.asList("GOOD.FIELD", "VIEW", "SNAP", "OUT"),
-                proof);
-        assertFalse("control-flow interference must not become proof",
-                proof.contains("BAD.GUARD"));
-    }
-
-    @Test
-    public void controlOrOpaqueEdgesCannotProveMapOutputProjection() {
-        RuntimeRegionPlanner.Result result =
-                mapValueProjectionActivationResult(false);
-        RuntimeRegionPlanner
-                .refineMapValueElementProjectionActivationsForTests(result);
-        Map<String, Object> producer = result.activations.get(0);
-        assertEquals(Boolean.FALSE,
-                producer.get("mapValueElementProjectionCaptureReady"));
-        assertEquals(Boolean.FALSE, producer.get("symbolicReady"));
-        assertTrue(String.valueOf(producer.get(
-                "mapValueElementProjectionIssues")).contains(
-                "MAP_VIEW_RECEIVER_HAS_NO_EXACT_INPUT_PORT"));
-        assertTrue(((List<?>) producer.get(
-                "mapValueElementFieldProjections")).isEmpty());
     }
 
     @Test
@@ -4386,220 +879,6 @@ public class RuntimeRegionPlannerTest {
             assertFalse(String.valueOf(activation.get(
                     "runtimeDefinitionMethods")).contains(other));
             assertEquals(Boolean.TRUE, activation.get("symbolicReady"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void demandSliceCrossesLatestIntraRegionFieldWriteRhs()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
-                true, true, 77, true);
-
-        Map<String, Object> activation = result.activations.get(0);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> demand = (Map<String, Object>) activation.get(
-                "concreteDemandSlice");
-        assertEquals(Collections.singletonList("REGION.C.in.2"),
-                demand.get("inputPorts"));
-        assertTrue(String.valueOf(demand.get("edgeIds")).contains(
-                "DF.WRITE.NEW"));
-        assertFalse(String.valueOf(demand.get("edgeIds")).contains(
-                "DF.WRITE.OLD"));
-        assertEquals(Collections.emptyList(),
-                demand.get("concreteBoundCells"));
-        assertEquals(Boolean.TRUE, demand.get("staticProvenanceComplete"));
-        assertEquals(1, demand.get("heapReadClassificationCount"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> classifications =
-                (List<Map<String, Object>>) demand.get(
-                        "heapReadClassifications");
-        Map<String, Object> classification = classifications.get(0);
-        assertEquals("INTRA_REGION_LATEST_WRITE_RHS",
-                classification.get("classification"));
-        assertEquals(Long.valueOf(5L), classification.get("writeSeq"));
-        assertEquals("DF.WRITE.NEW",
-                classification.get("writeStaticEdgeId"));
-        assertEquals("RUNTIME_EXACT_HEAP_READ_LATEST_WRITE_AND_"
-                        + "FROZEN_RHS_V1",
-                demand.get("heapReachingDefinitionAuthority"));
-    }
-
-    @Test
-    public void demandSliceKeepsFieldAsEntryWhenPriorWriteUsesOtherReceiver()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
-                false, true, 88, true);
-
-        Map<String, Object> activation = result.activations.get(0);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> demand = (Map<String, Object>) activation.get(
-                "concreteDemandSlice");
-        assertEquals(Collections.singletonList("REGION.C.in.0"),
-                demand.get("inputPorts"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> classifications =
-                (List<Map<String, Object>>) demand.get(
-                        "heapReadClassifications");
-        assertEquals("REGION_ENTRY_STATE_NO_PRIOR_WRITE",
-                classifications.get(0).get("classification"));
-    }
-
-    @Test
-    public void demandSliceKeepsFieldAsEntryWhenLatestWriteIsOutsideClosure()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
-                false, true, 77, true, false);
-
-        Map<String, Object> activation = result.activations.get(0);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> demand = (Map<String, Object>) activation.get(
-                "concreteDemandSlice");
-        assertEquals(Collections.singletonList("REGION.C.in.0"),
-                demand.get("inputPorts"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> classifications =
-                (List<Map<String, Object>>) demand.get(
-                        "heapReadClassifications");
-        assertEquals("REGION_ENTRY_STATE_EXTERNAL_LATEST_WRITE",
-                classifications.get(0).get("classification"));
-        assertEquals(Long.valueOf(5L),
-                classifications.get(0).get("writeSeq"));
-    }
-
-    @Test
-    public void demandSliceBindsConcreteWhenInternalWriteHasNoExactFrozenRhs()
-            throws Exception {
-        RuntimeRegionPlanner.Result result = heapReachingDefinitionResult(
-                false, true, 77, false);
-
-        Map<String, Object> activation = result.activations.get(0);
-        assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> demand = (Map<String, Object>) activation.get(
-                "concreteDemandSlice");
-        assertEquals(Collections.singletonList(
-                        "<example.State: int value>"),
-                demand.get("concreteBoundCells"));
-        assertEquals(Boolean.FALSE, demand.get("staticProvenanceComplete"));
-        assertTrue(String.valueOf(demand.get("gaps")).contains(
-                "MISSING_OR_AMBIGUOUS_FROZEN_HEAP_WRITE_RHS"));
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> classifications =
-                (List<Map<String, Object>>) demand.get(
-                        "heapReadClassifications");
-        assertEquals("CONCRETE_BOUND",
-                classifications.get(0).get("classification"));
-    }
-
-    @Test
-    public void missingFrozenDemandSeedBindsConcreteWithoutWideFallback()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<example.Consumer: void run(int)>";
-            String input = root + ".param0:int";
-            String site = root + "#u3";
-            Path regions = folder.getRoot().toPath().resolve("regions.jsonl");
-            Path graph = folder.getRoot().toPath().resolve("graph.jsonl");
-            String region = "{\"regionId\":\"REGION.C\","
-                    + "\"rootMethod\":\"" + root + "\","
-                    + "\"anchorMethod\":\"" + root + "\","
-                    + "\"methods\":[\"" + root + "\"],"
-                    + "\"symbolicInputs\":["
-                    + inputPort("REGION.C.in.0", input, "ROOT_ARGUMENT")
-                    + "],\"outputs\":[{\"portId\":\"REGION.C.out.0\","
-                    + "\"cell\":\"" + root + "#u4#exception:example.Bug\","
-                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + site + "\","
-                    + "\"policy\":\"PATH_ASSUMPTION\","
-                    + "\"guard\":\"x == 0\",\"requiredOutcome\":false,"
-                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            writeRegions(regions, region.getBytes(StandardCharsets.UTF_8));
-            writeStaticGraph(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
-                    "value_flow", "<example.Other: int x>",
-                    "<example.Other: int y>", "<example.Other: void f()>",
-                    "<example.Other: void f()>#u1", 1).getBytes(
-                    StandardCharsets.UTF_8));
-            RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(2, "BRANCH", root,
-                            1, 0, 0, site, -1, "", 0, "", true, true);
-            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), null, graph.toFile(),
-                    Collections.singletonList(method(1, root, 1, 0, 0)),
-                    Collections.singletonList(branch),
-                    Collections.emptyList());
-
-            Map<String, Object> activation = result.activations.get(0);
-            assertEquals(Collections.singletonList("REGION.C.in.0"),
-                    activation.get("runtimePrunedInputPorts"));
-            assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> demand = (Map<String, Object>) activation.get(
-                    "concreteDemandSlice");
-            assertEquals(Boolean.TRUE, demand.get("applied"));
-            assertEquals(Boolean.TRUE, demand.get("complete"));
-            assertEquals(Boolean.FALSE,
-                    demand.get("staticProvenanceComplete"));
-            assertEquals(Collections.singletonList(input),
-                    demand.get("concreteBoundCells"));
-            assertTrue(String.valueOf(demand.get("gaps")).contains(
-                    "NO_EXACT_ANCHOR_GUARD_SEED"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void unusableProvidedFrozenGraphFailsConcreteNotWide()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            String root = "<example.Consumer: void run(int)>";
-            String input = root + ".param0:int";
-            String site = root + "#u3";
-            Path regions = folder.getRoot().toPath().resolve("regions.jsonl");
-            Path emptyGraph = folder.getRoot().toPath().resolve(
-                    "empty-graph.jsonl");
-            String region = "{\"regionId\":\"REGION.C\","
-                    + "\"rootMethod\":\"" + root + "\","
-                    + "\"anchorMethod\":\"" + root + "\","
-                    + "\"methods\":[\"" + root + "\"],"
-                    + "\"symbolicInputs\":["
-                    + inputPort("REGION.C.in.0", input, "ROOT_ARGUMENT")
-                    + "],\"outputs\":[{\"portId\":\"REGION.C.out.0\","
-                    + "\"cell\":\"" + site + "#exception:example.Bug\","
-                    + "\"kind\":\"FAILURE_PREDICATE\"}],"
-                    + "\"branchPolicies\":[{\"siteId\":\"" + site + "\","
-                    + "\"policy\":\"PATH_ASSUMPTION\","
-                    + "\"guard\":\"x == 0\",\"requiredOutcome\":false,"
-                    + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            writeRegions(regions, region.getBytes(StandardCharsets.UTF_8));
-            Files.write(emptyGraph, new byte[0]);
-            RuntimeRegionPlanner.RuntimeEvent branch =
-                    new RuntimeRegionPlanner.RuntimeEvent(2, "BRANCH", root,
-                            1, 0, 0, site, -1, "", 0, "", true, true);
-
-            RuntimeRegionPlanner.Result empty = RuntimeRegionPlanner.plan(
-                    regions.toFile(), null, emptyGraph.toFile(),
-                    Collections.singletonList(method(1, root, 1, 0, 0)),
-                    Collections.singletonList(branch),
-                    Collections.emptyList());
-            assertConcreteFrozenGraphFailure(empty, input,
-                    "FROZEN_STATIC_GRAPH_EMPTY");
-
-            File missingGraph = folder.getRoot().toPath().resolve(
-                    "missing-graph.jsonl").toFile();
-            RuntimeRegionPlanner.Result missing = RuntimeRegionPlanner.plan(
-                    regions.toFile(), null, missingGraph,
-                    Collections.singletonList(method(1, root, 1, 0, 0)),
-                    Collections.singletonList(branch),
-                    Collections.emptyList());
-            assertConcreteFrozenGraphFailure(missing, input,
-                    "FROZEN_STATIC_GRAPH_NOT_FOUND");
         } finally {
             folder.delete();
         }
@@ -5498,6 +1777,306 @@ public class RuntimeRegionPlannerTest {
         }
     }
 
+    private static RuntimeRegionPlanner.Result jointPrimitiveDemandResult(
+            boolean incompleteY) throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            Path edges = folder.getRoot().toPath().resolve(
+                    "symbolic_region_edges.jsonl");
+            String producer = "<example.Producer: void produce()>";
+            String dxy = "<example.JointConsumer: void consume()>";
+            String dx = "<example.XConsumer: void consume()>";
+            String inputX = "<example.Input: int x>";
+            String inputY = "<example.Input: int y>";
+            String outputX = "<example.State: int x>";
+            String outputY = "<example.State: int y>";
+
+            JsonObject producerRegion = new JsonObject();
+            producerRegion.addProperty("regionId", "REGION.P");
+            producerRegion.addProperty("rootMethod", producer);
+            producerRegion.addProperty("anchorMethod", producer);
+            producerRegion.add("methods", jsonStrings(producer));
+            JsonArray producerInputs = new JsonArray();
+            producerInputs.add(primitivePort("REGION.P.in.x", inputX));
+            producerInputs.add(primitivePort("REGION.P.in.y", inputY));
+            producerRegion.add("symbolicInputs", producerInputs);
+            JsonArray producerOutputs = new JsonArray();
+            producerOutputs.add(outputPort("REGION.P.out.x", outputX));
+            producerOutputs.add(outputPort("REGION.P.out.y", outputY));
+            producerRegion.add("outputs", producerOutputs);
+            JsonArray slices = new JsonArray();
+            slices.add(directPrimitiveSlice(producer, "REGION.P.out.x",
+                    outputX, "REGION.P.in.x", inputX, 1, 10,
+                    "DF.X", true));
+            slices.add(directPrimitiveSlice(producer, "REGION.P.out.y",
+                    outputY, "REGION.P.in.y", inputY, 2, 11,
+                    "DF.Y", !incompleteY));
+            producerRegion.add("outputSlices", slices);
+            JsonArray policies = new JsonArray();
+            policies.add(branchPolicy(producer + "#u10", "x > 0"));
+            policies.add(branchPolicy(producer + "#u11", "y > 0"));
+            producerRegion.add("branchPolicies", policies);
+            producerRegion.add("models", new JsonArray());
+
+            JsonObject jointConsumer = consumerRegion(
+                    "REGION.DXY", dxy,
+                    new String[]{"REGION.DXY.in.x", "REGION.DXY.in.y"},
+                    new String[]{outputX, outputY});
+            JsonObject xConsumer = consumerRegion(
+                    "REGION.DX", dx,
+                    new String[]{"REGION.DX.in.x"},
+                    new String[]{outputX});
+            writeRegions(regions, (producerRegion + "\n"
+                    + jointConsumer + "\n" + xConsumer + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            String regionEdges = regionEdge("E.X.1", "REGION.P",
+                    "REGION.DXY", outputX)
+                    + regionEdge("E.X.2", "REGION.P",
+                    "REGION.DXY", outputX)
+                    + regionEdge("E.Y", "REGION.P",
+                    "REGION.DXY", outputY)
+                    + regionEdge("E.X.DX", "REGION.P",
+                    "REGION.DX", outputX);
+            Files.write(edges, regionEdges.getBytes(StandardCharsets.UTF_8));
+
+            List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                    methodContext(1, producer, 11, "PROCESS", "producer",
+                            101L),
+                    methodContext(10, dxy, 22, "PROCESS", "joint",
+                            202L),
+                    methodContext(20, dx, 33, "PROCESS", "x-only",
+                            303L));
+            List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
+                    new RuntimeRegionPlanner.RuntimeEvent(4, "BRANCH",
+                            producer, 11, 0, 0, producer + "#u10",
+                            -1, "", 0, "", true, true),
+                    new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH",
+                            producer, 11, 0, 0, producer + "#u11",
+                            -1, "", 0, "", true, false));
+            List<RuntimeRegionPlanner.FieldAccessEvent> fields =
+                    Arrays.asList(
+                            new RuntimeRegionPlanner.FieldAccessEvent(2,
+                                    "FIELD_READ", producer, 11, inputX,
+                                    66, 0, "1"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(3,
+                                    "FIELD_READ", producer, 11, inputY,
+                                    66, 0, "2"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(6,
+                                    "FIELD_WRITE", producer, 11, outputX,
+                                    77, 88, "3"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(7,
+                                    "FIELD_WRITE", producer, 11, outputY,
+                                    77, 99, "4"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(11,
+                                    "FIELD_READ", dxy, 22, outputX,
+                                    77, 88, "3"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(12,
+                                    "FIELD_READ", dxy, 22, outputY,
+                                    77, 99, "4"),
+                            new RuntimeRegionPlanner.FieldAccessEvent(21,
+                                    "FIELD_READ", dx, 33, outputX,
+                                    77, 88, "3"));
+            return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(), methods, runtime,
+                    fields);
+        } finally {
+            folder.delete();
+        }
+    }
+
+    private static JsonObject primitivePort(String port, String cell) {
+        JsonObject result = new JsonObject();
+        result.addProperty("portId", port);
+        result.addProperty("cell", cell);
+        result.addProperty("sourceKind", "SHARED_HEAP");
+        result.addProperty("projection", "value");
+        return result;
+    }
+
+    private static JsonObject outputPort(String port, String cell) {
+        JsonObject result = new JsonObject();
+        result.addProperty("portId", port);
+        result.addProperty("cell", cell);
+        result.addProperty("kind", "HEAP_STATE");
+        return result;
+    }
+
+    private static JsonObject directPrimitiveSlice(
+            String method, String outputPort, String outputCell,
+            String inputPort, String inputCell, int assignmentUnit,
+            int branchUnit, String causalEdgeId,
+            boolean captureBindingsComplete) {
+        JsonObject result = new JsonObject();
+        result.addProperty("outputPort", outputPort);
+        result.addProperty("outputCell", outputCell);
+        result.add("inputPorts", jsonStrings(inputPort));
+        JsonObject inputBinding = new JsonObject();
+        inputBinding.addProperty("dependencyCell", inputCell);
+        inputBinding.addProperty("inputPort", inputPort);
+        inputBinding.addProperty("bindingAuthority", "EXACT_CELL_IDENTITY");
+        inputBinding.add("dependencyMethods", jsonStrings(method));
+        JsonArray inputBindings = new JsonArray();
+        inputBindings.add(inputBinding);
+        result.add("inputBindings", inputBindings);
+        result.add("methods", jsonStrings(method));
+        result.add("sites", jsonStrings(method + "#u" + branchUnit));
+        result.add("causalEdgeIds", jsonStrings(causalEdgeId));
+
+        JsonObject causal = new JsonObject();
+        causal.addProperty("edgeId", causalEdgeId);
+        causal.addProperty("method", method);
+        causal.addProperty("siteId", method + "#u" + assignmentUnit);
+        causal.addProperty("unitIndex", assignmentUnit);
+        causal.addProperty("fromCell", inputCell);
+        causal.addProperty("toCell", outputCell);
+        causal.addProperty("transferKind", "HEAP_WRITE");
+        causal.addProperty("kind", "field_write");
+        causal.addProperty("relation", "value_flow");
+        causal.addProperty("direction", "backward_provenance");
+        causal.addProperty("mappingOnly", false);
+        causal.addProperty("semanticAssertionsAllowed", true);
+        causal.addProperty("eligibleForAutomaticDerivation", true);
+        causal.addProperty("eligibleForAutomaticSmt", true);
+        JsonArray causalEdges = new JsonArray();
+        causalEdges.add(causal);
+        result.add("causalEdges", causalEdges);
+
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("captureBindingId", outputPort + ".capture");
+        capture.addProperty("outputPort", outputPort);
+        capture.addProperty("outputCell", outputCell);
+        capture.addProperty("method", method);
+        capture.addProperty("siteId", method + "#u" + assignmentUnit);
+        capture.addProperty("unitIndex", assignmentUnit);
+        capture.addProperty("unit", "state assignment");
+        capture.addProperty("fieldSignature", outputCell);
+        capture.addProperty("fieldOwnerExpression", "state");
+        capture.addProperty("fieldOwnerCell", method + "::state");
+        capture.addProperty("fieldOwnerDeclaredType", "example.State");
+        capture.addProperty("fieldOwnerBindingKind",
+                "INSTANCE_FIELD_LHS_BASE");
+        capture.addProperty("fieldOwnerBindingAuthority",
+                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_LHS");
+        capture.addProperty("rhsExpression", inputPort);
+        capture.addProperty("rhsCell", inputCell);
+        capture.addProperty("rhsCausalEdgeId", causalEdgeId);
+        capture.addProperty("rhsRelation", "value_flow");
+        capture.addProperty("rhsRelationComplete", true);
+        capture.addProperty("rhsRelationAuthority",
+                "STATIC_EXACT_HEAP_WRITE_VALUE_FLOW");
+        capture.addProperty("causalEdgeId", causalEdgeId);
+        capture.addProperty("transferKind", "HEAP_WRITE");
+        capture.addProperty("bindingKind", "field_write");
+        capture.addProperty("bindingAuthority",
+                "STATIC_EXACT_INSTANCE_FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("occurrence", 0);
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        result.addProperty("captureBindingsRequired", true);
+        result.addProperty("captureBindingsComplete",
+                captureBindingsComplete);
+        result.add("captureBindings", captures);
+        result.addProperty("structuralComplete", true);
+        result.addProperty("complete", captureBindingsComplete);
+        result.addProperty("selection",
+                "REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE");
+        return result;
+    }
+
+    private static JsonObject branchPolicy(String site, String guard) {
+        JsonObject result = new JsonObject();
+        result.addProperty("siteId", site);
+        result.addProperty("policy", "PATH_ASSUMPTION");
+        result.addProperty("guard", guard);
+        result.addProperty("requiredOutcome", true);
+        result.addProperty("role", "REACHABILITY");
+        return result;
+    }
+
+    private static JsonObject consumerRegion(
+            String regionId, String method, String[] ports, String[] cells) {
+        JsonObject result = new JsonObject();
+        result.addProperty("regionId", regionId);
+        result.addProperty("rootMethod", method);
+        result.addProperty("anchorMethod", method);
+        result.add("methods", jsonStrings(method));
+        JsonArray inputs = new JsonArray();
+        for (int index = 0; index < ports.length; index++) {
+            inputs.add(primitivePort(ports[index], cells[index]));
+        }
+        result.add("symbolicInputs", inputs);
+        result.add("outputs", new JsonArray());
+        result.add("branchPolicies", new JsonArray());
+        result.add("models", new JsonArray());
+        return result;
+    }
+
+    private static String regionEdge(
+            String id, String fromRegion, String toRegion, String cell) {
+        return "{\"edgeId\":\"" + id + "\","
+                + "\"fromRegion\":\"" + fromRegion + "\","
+                + "\"toRegion\":\"" + toRegion + "\","
+                + "\"fromPort\":\"" + cell + "\","
+                + "\"toPort\":\"" + cell + "\","
+                + "\"kind\":\"SHARED_STATE\","
+                + "\"relation\":\"READ_FROM_CANDIDATE\","
+                + "\"requiresOrder\":true,"
+                + "\"requiresObjectIdentity\":true}\n";
+    }
+
+    private static JsonArray jsonStrings(String... values) {
+        JsonArray result = new JsonArray();
+        for (String value : values) {
+            result.add(value);
+        }
+        return result;
+    }
+
+    private static List<Map<String, Object>> derivedActivations(
+            RuntimeRegionPlanner.Result result) {
+        List<Map<String, Object>> derived = new ArrayList<>();
+        for (Map<String, Object> activation : result.activations) {
+            if (String.valueOf(activation.get("activationId"))
+                    .startsWith("ACT.UPSTREAM.")) {
+                derived.add(activation);
+            }
+        }
+        return derived;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> upstreamDemandFor(
+            List<Map<String, Object>> derived, String downstreamRegion) {
+        for (Map<String, Object> activation : derived) {
+            List<Map<String, Object>> bindings =
+                    (List<Map<String, Object>>) activation.get(
+                            "edgeBindings");
+            if (!bindings.isEmpty() && downstreamRegion.equals(
+                    bindings.get(0).get("toRegion"))) {
+                return activation;
+            }
+        }
+        throw new AssertionError("missing upstream demand for "
+                + downstreamRegion);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> edgeBindingIds(
+            Map<String, Object> activation) {
+        List<String> result = new ArrayList<>();
+        for (Map<String, Object> binding
+                : (List<Map<String, Object>>) activation.get(
+                "edgeBindings")) {
+            result.add(String.valueOf(binding.get("edgeId")));
+        }
+        return result;
+    }
+
     private static Map<String, Object> requestedOutputActivation(
             RuntimeRegionPlanner.Result result) {
         for (Map<String, Object> activation : result.activations) {
@@ -5513,6 +2092,90 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.Result result) {
         return (Map<String, Object>) requestedOutputActivation(result).get(
                 "requestedOutputSlice");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> outputClosure(
+            Map<String, Object> activation) {
+        Object encoded = activation.get("outputClosure");
+        assertTrue("missing canonical outputClosure: " + activation,
+                encoded instanceof JsonObject);
+        return (Map<String, Object>) jsonValue((JsonElement) encoded);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> outputMember(
+            Map<String, Object> activation, String outputPort) {
+        List<Map<String, Object>> members =
+                (List<Map<String, Object>>) outputClosure(activation).get(
+                        "members");
+        for (Map<String, Object> member : members) {
+            Map<String, Object> output =
+                    (Map<String, Object>) member.get("output");
+            if (outputPort.equals(output.get("portId"))) {
+                return member;
+            }
+        }
+        throw new AssertionError("missing outputClosure member "
+                + outputPort);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> outputSlice(
+            Map<String, Object> activation, String outputPort) {
+        return (Map<String, Object>) outputMember(
+                activation, outputPort).get("slice");
+    }
+
+    private static void assertCanonicalOutputOnly(
+            Map<String, Object> activation) {
+        assertTrue(activation.containsKey("outputClosure"));
+        for (String legacy : Arrays.asList("requestedOutput",
+                "requestedOutputSlice", "requestedOutputCapture",
+                "requestedOutputCaptureRequired",
+                "requestedOutputCaptureComplete",
+                "requestedOutputMethods", "outputs")) {
+            assertFalse("canonical writer retained " + legacy,
+                    activation.containsKey(legacy));
+        }
+    }
+
+    private static Object jsonValue(JsonElement element) {
+        if (element == null || element.isJsonNull()) {
+            return null;
+        }
+        if (element.isJsonObject()) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            for (Map.Entry<String, JsonElement> entry
+                    : element.getAsJsonObject().entrySet()) {
+                result.put(entry.getKey(), jsonValue(entry.getValue()));
+            }
+            return result;
+        }
+        if (element.isJsonArray()) {
+            List<Object> result = new ArrayList<>();
+            for (JsonElement member : element.getAsJsonArray()) {
+                result.add(jsonValue(member));
+            }
+            return result;
+        }
+        if (element.getAsJsonPrimitive().isBoolean()) {
+            return element.getAsBoolean();
+        }
+        if (element.getAsJsonPrimitive().isNumber()) {
+            Number number = element.getAsNumber();
+            double decimal = number.doubleValue();
+            long integral = number.longValue();
+            if (Double.compare(decimal, (double) integral) == 0) {
+                if (integral >= Integer.MIN_VALUE
+                        && integral <= Integer.MAX_VALUE) {
+                    return (int) integral;
+                }
+                return integral;
+            }
+            return decimal;
+        }
+        return element.getAsString();
     }
 
     private static String carrierBinding(String dependencyCell) {

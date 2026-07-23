@@ -109,6 +109,31 @@ validate_artifact_binding() {
     || die "${field} size does not match ${expected}"
 }
 
+output_closure_helpers='
+def output_members:
+  if has("outputClosure") then
+    if (.outputClosure | type) == "object"
+      and .outputClosure.schemaVersion == 1
+      and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
+      and (.outputClosure.members | type) == "array"
+      and (.outputClosure.members | length) > 0
+      and all(.outputClosure.members[];
+        (type == "object")
+        and (.output | type) == "object"
+        and (.slice | type) == "object")
+    then .outputClosure.members
+    else error("malformed explicit outputClosure")
+    end
+  else error("missing output closure")
+  end;
+def singleton_output_member:
+  output_members as $members
+  | if ($members | length) == 1
+    then $members[0]
+    else error("expected singleton output closure")
+    end;
+'
+
 validate_composition_common() {
   local manifest=$1
   jq -e '
@@ -142,6 +167,85 @@ validate_composition_common() {
     || die "composition manifest is incomplete: ${manifest}"
 }
 
+validate_cross_method_joint_output_artifacts() {
+  local work_root=$1
+  local smt=$2
+  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local merged="${work_root}/producer-campaign/a/merged_region_summaries.jsonl"
+  local composition="${work_root}/candidate/candidate_composition_manifest.json"
+  local producer_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int a>'
+  local witness_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int aWitness>'
+  local port selector
+  local -a output_ports selectors
+
+  require_file "cross-method runtime activation plan" "${activation_plan}"
+  require_file "cross-method Producer A merged relation" "${merged}"
+  require_file "cross-method composition manifest" "${composition}"
+
+  jq -e -s --arg producer "${producer_cell}" --arg witness "${witness_cell}" '
+    [.[] | select(
+      .captureGoal.kind == "OUTPUT_CLOSURE"
+      and ([.outputClosure.members[].output.cell] | sort)
+        == ([$producer, $witness] | sort))] as $joint
+    | ($joint | length) == 1
+    and ($joint[0].outputClosure.members | length) == 2
+    and ([$joint[0].edgeBindings[]
+      | select(.relation == "READ_FROM"
+        and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        and (.fromOutputCell == $producer
+          or .fromOutputCell == $witness))] as $edges
+      | ($edges | length) == 2
+      and ([$edges[].fromOutputCell] | sort)
+        == ([$producer, $witness] | sort)
+      and ([$edges[].toRegionInstance] | unique | length) == 1)
+  ' "${activation_plan}" >/dev/null \
+    || die "cross-method Producer A is not one two-output runtime demand"
+
+  jq -e --arg producer "${producer_cell}" --arg witness "${witness_cell}" '
+    . as $summary
+    | ($summary.outputClosure.members
+      | map(.output.portId) | sort) as $ports
+    | ([ $summary.outputClosure.members[].output.cell ] | sort)
+        == ([$producer, $witness] | sort)
+      and all($summary.regionRelation.cases[];
+        (.outputExpressions | keys | sort) == $ports)
+  ' "${merged}" >/dev/null \
+    || die "cross-method merged cases do not carry both Producer A outputs"
+
+  jq -e --slurpfile relation "${merged}" '
+    ($relation[0].regionRelation.cases | map(.caseId)) as $caseIds
+    | [.caseProjectionCatalog[]
+        | select(.caseId as $caseId
+          | $caseIds | index($caseId) != null)] as $selectors
+    | ($selectors | length) == ($caseIds | length)
+      and ([$selectors[].caseId] | unique | length)
+        == ($caseIds | length)
+      and ([$selectors[].selectorTerm] | unique | length)
+        == ($caseIds | length)
+  ' "${composition}" >/dev/null \
+    || die "cross-method joint relation lost its shared case selectors"
+
+  mapfile -t output_ports < <(jq -r '
+    .outputClosure.members[].output.portId | gsub("\\."; "_")
+  ' "${merged}")
+  mapfile -t selectors < <(jq -r --slurpfile relation "${merged}" '
+    ($relation[0].regionRelation.cases | map(.caseId)) as $caseIds
+    | .caseProjectionCatalog[]
+    | select(.caseId as $caseId | $caseIds | index($caseId) != null)
+    | .selectorTerm
+  ' "${composition}")
+  [[ ${#output_ports[@]} -eq 2 && ${#selectors[@]} -gt 0 ]] \
+    || die "cross-method joint selector catalog is empty"
+  # Both output equations for a relation case must be guarded by that case's
+  # one selector; independently selected summaries would fail this check.
+  for selector in "${selectors[@]}"; do
+    for port in "${output_ports[@]}"; do
+      grep -Fq "(=> ${selector} (= port__${port}" "${smt}" \
+        || die "cross-method output ${port} does not share selector ${selector}"
+    done
+  done
+}
+
 validate_multitype_producer_artifacts() {
   local work_root=$1
   local campaign_root="${work_root}/producer-campaign"
@@ -170,7 +274,8 @@ validate_multitype_producer_artifacts() {
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
 
@@ -247,20 +352,23 @@ validate_dependent_scalar_artifacts() {
   # roots converging on one TARGET_BRANCH instance.  Region numbers and event
   # sequence values are intentionally not pinned.
   jq -e -s --arg arithmetic "${arithmetic_cell}" \
-    --arg text "${text_cell}" '
+    --arg text "${text_cell}" "${output_closure_helpers}"'
     [.[] | select(
       .captureGoal.kind == "OUTPUT_CLOSURE"
       and .captureGoal.scope == "BOUNDED_OUTPUT_RELEVANT_PATHS"
       and .replayable == true
-      and .symbolicReady == true
-      and (.requestedOutput.cell == $arithmetic
-        or .requestedOutput.cell == $text))] as $producers
+      and .symbolicReady == true)
+      | select(
+        ([output_members | .[].output.cell] | index($arithmetic)) != null
+        or ([output_members | .[].output.cell] | index($text)) != null)
+    ] as $producers
     | ([$producers[].edgeBindings[]?
         | select(.relation == "READ_FROM"
           and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
           and .fromOutputCell == .toInputCell)] as $edges
       | ($producers | length) == 2
-      and ([$producers[].requestedOutput.cell] | sort)
+      and all($producers[]; (output_members | length) == 1)
+      and ([$producers[] | output_members | .[].output.cell] | sort)
         == ([$arithmetic, $text] | sort)
       and ([$producers[].regionId] | unique | length) == 2
       and ($edges | length) == 2
@@ -303,7 +411,8 @@ validate_dependent_scalar_artifacts() {
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
     and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
@@ -312,9 +421,10 @@ validate_dependent_scalar_artifacts() {
   # arithmetic producer has six feasible clamp/add path partitions.  These
   # are source-level domains, unlike region IDs, unit indexes, or symbols.
   jq -e -s --arg arithmetic "${arithmetic_cell}" \
-    --arg text "${text_cell}" '
+    --arg text "${text_cell}" "${output_closure_helpers}"'
     length == 2
-    and ([.[].requestedOutputSlice.outputCell] | sort)
+    and all(.[]; (output_members | length) == 1)
+    and ([.[] | singleton_output_member | .slice.outputCell] | sort)
       == ([$arithmetic, $text] | sort)
     and all(.[];
       .relationallyComplete == true
@@ -330,10 +440,10 @@ validate_dependent_scalar_artifacts() {
         and (.guard.conditions | length) > 0
         and (.outputExpressions | length) == 1))
     and any(.[];
-      .requestedOutputSlice.outputCell == $arithmetic
+      (singleton_output_member | .slice.outputCell == $arithmetic)
       and .regionRelation.caseCount == 6)
     and any(.[];
-      .requestedOutputSlice.outputCell == $text
+      (singleton_output_member | .slice.outputCell == $text)
       and .regionRelation.caseCount == 2
       and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
         == ["Y_I_5", "Y_I_9"]
@@ -381,7 +491,8 @@ validate_container_producer_artifacts() {
       and .observedPathCount >= 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
@@ -417,17 +528,18 @@ validate_container_producer_artifacts() {
   ' "${raw_results[@]}" >/dev/null \
     || die "container custom-JDK replay evidence is incomplete"
 
-  jq -e '
-    .relationallyComplete == true
+  jq -e "${output_closure_helpers}"'
+    (singleton_output_member | .slice) as $outputSlice
+    | $outputSlice.containerElementFieldBindings[0] as $static
+    | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
     and .regionRelation.caseCount == 2
-    and (.requestedOutputSlice.containerElementFieldBindings | length) == 1
-    and .requestedOutputSlice.containerElementFieldBindings[0] as $static
-    | ($static.schemaVersion == 2
+    and ($outputSlice.containerElementFieldBindings | length) == 1
+    and $static.schemaVersion == 2
       and $static.kind == "ARRAY_ELEMENT_FIELD"
       and $static.materializationMode == "CONTAINER_SNAPSHOT"
       and $static.selectorAuthority == "EXACT_ARRAY_INDEX"
@@ -439,9 +551,9 @@ validate_container_producer_artifacts() {
         == "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
       and ($static.proofCausalEdgeIds | length)
         > ($static.fieldPath | length)
-      and (.requestedOutputSlice.inputPorts
+      and ($outputSlice.inputPorts
         | index($static.baseInputSymbol)) != null
-      and (.requestedOutputSlice.inputPorts
+      and ($outputSlice.inputPorts
         | index($static.containerInputPort)) != null
       and ([.regionRelation.cases[].guard.conditions[]._op] | sort)
         == ["!=", "=="]
@@ -471,16 +583,17 @@ validate_container_producer_artifacts() {
   ' "${array_summary}" >/dev/null \
     || die "array producer lost exact index-1 nested field semantics"
 
-  jq -e '
-    .relationallyComplete == true
+  jq -e "${output_closure_helpers}"'
+    (singleton_output_member | .slice) as $outputSlice
+    | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
     and (.regionRelation.cases | length) >= 2
-    and (.requestedOutputSlice.inputAliasCanonicalizations | length) >= 3
-    and all(.requestedOutputSlice.inputAliasCanonicalizations[];
+    and ($outputSlice.inputAliasCanonicalizations | length) >= 3
+    and all($outputSlice.inputAliasCanonicalizations[];
       .schemaVersion == 1
       and .kind == "CANONICAL_PRIMITIVE_INPUT_ALIAS"
       and .staticAuthority
@@ -499,20 +612,20 @@ validate_container_producer_artifacts() {
       and .canonicalLeafFieldCallId > 0
       and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
       and .complete == true)
-    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+    and ([$outputSlice.inputAliasCanonicalizations[]
       | .canonicalInputCell] | index(
         "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input1>")) != null
-    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+    and ([$outputSlice.inputAliasCanonicalizations[]
       | .canonicalInputCell] | index(
         "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input2>")) != null
-    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+    and ([$outputSlice.inputAliasCanonicalizations[]
       | .canonicalInputCell] | index(
         "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input3>")) != null
-    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input1"))
-    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input2"))
-    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input3"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
       ._type == "ConstExpr" and ._exp == "Y_I_10"))
@@ -545,7 +658,7 @@ validate_container_producer_artifacts() {
         and $observation.entryFieldBindings[0].fieldPath
           == $dynamic.fieldPath
         and $observation.entryFieldBindings[0].keyExpression
-          == $dynamic.keyExpression))
+          == $dynamic.keyExpression)))
   ' "${map_summary}" >/dev/null \
     || die "map producer lost exact key-7 nested entry field semantics"
 
@@ -579,11 +692,12 @@ validate_unreachable_parity_producer_artifacts() {
       and .observedPathCount == 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
-  jq -e -s '
+  jq -e -s "${output_closure_helpers}"'
     length == 2
     and all(.[];
       .relationallyComplete == true
@@ -602,7 +716,8 @@ validate_unreachable_parity_producer_artifacts() {
     and ([.[] | .regionRelation.cases[].outputExpressions[]?._exp]
       | sort) == ["Y_I_-1", "Y_I_0", "Y_I_3", "Y_I_4"]
     and ([.[]
-      | .requestedOutputSlice.containerElementFieldBindings[]?
+      | singleton_output_member
+      | .slice.containerElementFieldBindings[]?
       | select(.kind == "ARRAY_ELEMENT_FIELD"
         and .selectorAuthority == "EXACT_ARRAY_INDEX"
         and .elementIndex == 1
@@ -648,7 +763,7 @@ validate_semantic_profile() {
     cross-method-fields)
       jq -e '
         (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 4
+        and (.existentialNonBooleanRootInputs | length) == 3
         and (.truthTable | length) == 4
         and ([.truthTable[] | select(.reachesBug == true)]
           | length) == 1
@@ -657,25 +772,19 @@ validate_semantic_profile() {
         and ([.truthTable[] | select(.reachesBug) | .valuationKey]
           == ["10"])
         and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
-          | sort) == ["I", "I", "I", "Ljava/lang/String;"]
+          | sort) == ["I", "I", "I"]
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("baseInput"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("instanceWeight"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("processWeight"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
-          | contains("routeInput"))
         and (all(.existentialNonBooleanRootInputs[];
-          (.cell | contains("boundedWeight.return") | not)
-          and (.cell | contains("ThirdHop.return") | not)
+          (.cell | contains("ThirdHop.return") | not)
           and (.cell | contains("thirdHop.return") | not)))
       ' "${reach_report}" >/dev/null \
         || die "cross-method-fields lost an external root or exact truth row"
-      grep -Fq 'str.contains' "${smt}" \
-        || die "cross-method-fields SMT omitted String.contains"
-      grep -Fq '"ready"' "${smt}" \
-        || die "cross-method-fields SMT omitted the ready needle"
+      validate_cross_method_joint_output_artifacts "${work_root}" "${smt}"
       ;;
     multitype)
       jq -e '

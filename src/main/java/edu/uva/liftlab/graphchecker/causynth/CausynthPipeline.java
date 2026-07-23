@@ -2737,11 +2737,6 @@ public final class CausynthPipeline {
                 matcher.group(3), params);
     }
 
-    private static String ownerOf(String methodSignature) {
-        MethodSig sig = parseMethodSig(methodSignature);
-        return sig == null ? "" : sig.owner;
-    }
-
     private static void buildAutomaticDerivationBoundary(
             CausynthAnalysisResult result) {
         Map<String, Object> boundary = result.automaticDerivationBoundary;
@@ -2834,18 +2829,6 @@ public final class CausynthPipeline {
             result.addAll(list);
         }
         return result;
-    }
-
-    private static boolean containsAny(String value, Collection<String> needles) {
-        if (value == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isEmpty() && value.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean containsAll(String value, Collection<String> needles) {

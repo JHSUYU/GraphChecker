@@ -102,6 +102,7 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   explore-producer CH     Close and merge one producer path worklist
   candidate-compose       Compose producer relations with the target seed
   candidate-solve         Check the candidate SMT with Z3
+  candidate-manifest      Refresh hashes for an existing solved candidate
   candidate               Run the clean workflow through candidate SMT + Z3
   smoke                   prepare + analyze + trace + discovery + target
   all                     Alias for candidate
@@ -141,6 +142,69 @@ sha256_file() {
 # channel-oriented.
 runtime_channel_rows() {
   jq -c -s '
+    def canonicalize:
+      if type == "object" then
+        to_entries
+        | sort_by(.key)
+        | map({key: .key, value: (.value | canonicalize)})
+        | from_entries
+      elif type == "array" then map(canonicalize)
+      else .
+      end;
+    def canonical_identity:
+      canonicalize | tojson | @base64;
+    def output_member_rows:
+      if has("outputClosure")
+      then .outputClosure.members[]?
+      else {
+        output: .requestedOutput?,
+        slice: .requestedOutputSlice?
+      }
+      end
+      | select(type == "object"
+          and (.output | type) == "object");
+    def output_members:
+      output_member_rows | .output
+      | select(type == "object");
+    def output_demand_key:
+      if (.outputDemandKey | type) == "string"
+          and (.outputDemandKey | length) > 0
+      then .outputDemandKey
+      else {
+        schemaVersion: 1,
+        producerRegionId: .regionId,
+        outputs: ([output_member_rows
+          | .output
+          | {
+              portId: (.portId // .symbol // ""),
+              cell: (.cell // ""),
+              kind: (.kind // ""),
+              javaTypeDescriptor: (.javaTypeDescriptor // "")
+            }]
+          | sort_by(.portId))
+      } | canonical_identity
+      end;
+    def output_closure_fingerprint:
+      if (.outputClosureFingerprint | type) == "string"
+          and (.outputClosureFingerprint | length) > 0
+      then .outputClosureFingerprint
+      elif has("outputClosure")
+      then .outputClosure | canonical_identity
+      else {
+        producer: {
+          regionId: .regionId,
+          regionInstanceId: .regionInstanceId,
+          rootCallId: .rootCallId
+        },
+        members: [output_member_rows],
+        requestedOutputCapture: (.requestedOutputCapture // []),
+        requestedOutputCaptureRequired:
+          (.requestedOutputCaptureRequired // false),
+        requestedOutputCaptureComplete:
+          (.requestedOutputCaptureComplete // false)
+      } | canonical_identity
+      end;
+
     . as $activations
     | [$activations[]
         | select(.captureGoal.kind == "OUTPUT_CLOSURE")
@@ -156,11 +220,15 @@ runtime_channel_rows() {
         error("runtime read-from graph has no unique terminal target region")
       else $terminalRegions[0] end) as $terminalRegion
     | $activations[] as $activation
+    | ($activation | output_demand_key) as $outputDemandKey
+    | ($activation | output_closure_fingerprint)
+        as $outputClosureFingerprint
+    | ($activation | output_members) as $output
     | select(
         $activation.captureGoal.kind == "OUTPUT_CLOSURE"
         and $activation.replayable == true
         and $activation.symbolicReady == true
-        and ($activation.requestedOutput.cell
+        and ($output.cell
             | type == "string" and length > 0))
     | $activation.edgeBindings[]? as $edge
     | select(
@@ -169,28 +237,66 @@ runtime_channel_rows() {
         and $edge.toRegion == $terminalRegion
         and $edge.fromRegion == $activation.regionId
         and $edge.fromRegionInstance == $activation.regionInstanceId
-        and $edge.fromOutputCell == $activation.requestedOutput.cell
-        and $edge.rawFromPort == $activation.requestedOutput.cell
+        and $edge.fromOutputCell == $output.cell
+        and $edge.rawFromPort == $output.cell
         and $edge.canonicalOutputAliasUsed == false
         and $edge.canonicalInputResolutionUsed == true
         and $edge.objectIdentityConfirmed == true
         and $edge.orderConfirmed == true
         and ($edge.toInputCell | type == "string" and length > 0))
-    | ($activation.requestedOutput.cell
+    | ($output.cell
         | capture("^<[^:]+:[[:space:]]+[^[:space:]]+"
             + "[[:space:]]+(?<name>[^ >]+)>$").name
         | ascii_upcase) as $channel
     | {
         edgeId: $edge.edgeId,
         channel: $channel,
-        fromCell: $activation.requestedOutput.cell,
+        fromCell: $output.cell,
         toCell: $edge.toInputCell,
         producerRegion: $activation.regionId,
         producerActivation: $activation.activationId,
+        outputDemandKey: $outputDemandKey,
+        outputClosureFingerprint: $outputClosureFingerprint,
         targetRegion: $edge.toRegion,
         targetRegionInstance: $edge.toRegionInstance
       }
   ' "${activation_plan}" | LC_ALL=C sort
+}
+
+producer_demand_rows() {
+  runtime_channel_rows | jq -c -s '
+    sort_by(.producerActivation, .outputDemandKey,
+      .outputClosureFingerprint, .channel, .edgeId)
+    | group_by([
+        .producerActivation,
+        .outputDemandKey,
+        .outputClosureFingerprint
+      ])
+    | .[]
+    | . as $rows
+    | if ([$rows[].producerRegion] | unique | length) != 1
+        or ([$rows[].targetRegionInstance] | unique | length) != 1
+      then error("one producer demand spans conflicting runtime scopes")
+      else {
+        producerKey: ({
+          activationId: $rows[0].producerActivation,
+          outputDemandKey: $rows[0].outputDemandKey,
+          outputClosureFingerprint:
+            $rows[0].outputClosureFingerprint
+        } | tojson | @base64),
+        producerRegion: $rows[0].producerRegion,
+        producerActivation: $rows[0].producerActivation,
+        outputDemandKey: $rows[0].outputDemandKey,
+        outputClosureFingerprint:
+          $rows[0].outputClosureFingerprint,
+        ownerChannel: ([$rows[].channel] | unique | sort | .[0]),
+        channels: ([$rows[].channel] | unique | sort),
+        edgeIntents: $rows,
+        targetRegion: $rows[0].targetRegion,
+        targetRegionInstance: $rows[0].targetRegionInstance
+      }
+      end
+  '
 }
 
 validate_discovery_inputs() {
@@ -220,17 +326,50 @@ validate_discovery_inputs() {
       and (.toCell | type == "string" and length > 0)
       and (.producerRegion | type == "string" and length > 0)
       and (.producerActivation | type == "string" and length > 0)
+      and (.outputDemandKey | type == "string" and length > 0)
+      and (.outputClosureFingerprint | type == "string" and length > 0)
       and (.targetRegion | type == "string" and length > 0)
       and (.targetRegionInstance | type == "string" and length > 0))
-    and (([.[].channel | ascii_downcase] | unique | length) == length)
-    and (([.[].producerRegion] | unique | length) == length)
+    and (([.[].edgeId] | unique | length) == length)
+    and (group_by(.channel | ascii_downcase) | all(.[];
+      ([.[].fromCell] | unique | length) == 1
+      and ([.[].producerRegion] | unique | length) == 1
+      and ([.[].producerActivation] | unique | length) == 1
+      and ([.[].outputDemandKey] | unique | length) == 1
+      and ([.[].outputClosureFingerprint] | unique | length) == 1))
     and (([.[].targetRegionInstance] | unique | length) == 1)
   ' <<< "${channels}" >/dev/null \
-    || die "runtime read-from discovery did not produce unique local channels"
+    || die "runtime read-from discovery produced inconsistent edge intents"
+  local producer_demands
+  producer_demands=$(producer_demand_rows) \
+    || die "could not group runtime channels by producer demand"
+  jq -e -s '
+    length > 0
+    and all(.[];
+      (.producerKey | type == "string" and length > 0)
+      and (.producerRegion | type == "string" and length > 0)
+      and (.producerActivation | type == "string" and length > 0)
+      and (.outputDemandKey | type == "string" and length > 0)
+      and (.outputClosureFingerprint | type == "string" and length > 0)
+      and (.ownerChannel | type == "string" and length > 0)
+      and (.channels | type == "array" and length > 0)
+      and ((.edgeIntents | type) == "array"
+        and (.edgeIntents | length) >= (.channels | length)))
+    and (([.[].producerKey] | unique | length) == length)
+    and (([.[] | .channels[] | ascii_downcase]
+      | unique | length)
+      == ([.[] | .channels[]] | length))
+    and (([.[].targetRegionInstance] | unique | length) == 1)
+  ' <<< "${producer_demands}" >/dev/null \
+    || die "runtime producer demand grouping is inconsistent"
 }
 
 discovered_channels() {
-  runtime_channel_rows | jq -r '.channel'
+  runtime_channel_rows | jq -r '.channel' | LC_ALL=C sort -fu
+}
+
+discovered_producer_channels() {
+  producer_demand_rows | jq -r '.ownerChannel'
 }
 
 discovered_channel() {
@@ -240,38 +379,53 @@ discovered_channel() {
     --arg requested "${requested}" '
     select((.channel | ascii_downcase) == ($requested | ascii_downcase))
     | .channel
-  ')
+  ' | LC_ALL=C sort -fu)
   [[ ${#matches[@]} -eq 1 ]] \
     || die "channel is not discovered exactly once: ${requested}"
   printf '%s\n' "${matches[0]}"
 }
 
-channel_value() {
-  local channel=$1
-  local property=$2
-  local value
-  value=$(runtime_channel_rows | jq -er -s \
-    --arg channel "${channel}" --arg property "${property}" '
-    .[] | select(.channel == $channel) | .[$property]
-  ') || die "runtime channel property ${property} is missing for ${channel}"
-  [[ -n "${value}" ]] \
-    || die "runtime channel property ${property} is empty for ${channel}"
-  printf '%s\n' "${value}"
-}
-
-producer_binding() {
+producer_demand_for_channel() {
   local requested=$1
   local channel
   local -a matches
   channel=$(discovered_channel "${requested}") || return $?
-  mapfile -t matches < <(runtime_channel_rows | jq -r \
+  mapfile -t matches < <(producer_demand_rows | jq -c \
     --arg channel "${channel}" '
-    select(.channel == $channel)
-    | [.producerRegion, .producerActivation] | @tsv
+    select(any(.channels[]; . == $channel))
   ')
-  [[ ${#matches[@]} -eq 1 ]] || die \
-    "expected one runtime-confirmed OUTPUT_CLOSURE for channel ${channel}; found ${#matches[@]}"
+  [[ ${#matches[@]} -eq 1 ]] \
+    || die "channel does not resolve to one producer demand: ${requested}"
   printf '%s\n' "${matches[0]}"
+}
+
+producer_owner_channel() {
+  local demand
+  demand=$(producer_demand_for_channel "$1") || return $?
+  jq -er '.ownerChannel' <<< "${demand}" \
+    || die "producer demand has no owner channel: $1"
+}
+
+channel_value() {
+  local channel=$1
+  local property=$2
+  runtime_channel_rows | jq -er -s \
+    --arg channel "${channel}" --arg property "${property}" '
+    [.[] | select(.channel == $channel) | .[$property]] | unique
+    | if length == 1 and (.[0] | tostring | length) > 0
+      then .[0]
+      else error("channel property is missing or ambiguous")
+      end
+  ' || die "runtime channel property ${property} is not unique for ${channel}"
+}
+
+producer_binding() {
+  local requested=$1
+  local demand
+  demand=$(producer_demand_for_channel "${requested}") || return $?
+  jq -er '[.producerRegion, .producerActivation] | @tsv' \
+    <<< "${demand}" \
+    || die "producer demand binding is incomplete for ${requested}"
 }
 
 target_binding() {
@@ -300,14 +454,14 @@ target_binding() {
 
 channel_schedule() {
   local channel
-  channel=$(discovered_channel "$1") || return $?
+  channel=$(producer_owner_channel "$1") || return $?
   printf '%s/schedule-%s\n' "${work_root}" \
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
 
 channel_classes() {
   local channel
-  channel=$(discovered_channel "$1") || return $?
+  channel=$(producer_owner_channel "$1") || return $?
   printf '%s/concolic-%s-classes\n' "${work_root}" \
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
@@ -327,12 +481,19 @@ scheduled_activation() {
   mapfile -t matches < <(jq -r \
     --arg region "${region}" --arg sourceActivation "${source_activation}" \
     --arg fromCell "${from_cell}" '
+    def output_members:
+      if has("outputClosure")
+      then .outputClosure.members[]?.output
+      else .requestedOutput?
+      end
+      | select(type == "object");
+
     select(
       .activationBundleMemberRole == "PRIMARY"
       and .activationId == $sourceActivation
       and .regionId == $region
       and .captureGoal.kind == "OUTPUT_CLOSURE"
-      and .requestedOutput.cell == $fromCell)
+      and any(output_members; .cell == $fromCell))
     | .activationId
   ' "${schedule}/scheduled_activation_plan.jsonl")
   [[ ${#matches[@]} -eq 1 ]] || die \
@@ -362,7 +523,13 @@ scheduled_target_activation() {
 }
 
 do_prepare() {
-  (cd "${graphchecker_dir}" && "${maven_bin}" -q -DskipTests package)
+  if [[ "${GRAPH_CHECKER_SKIP_BUILD:-false}" == "true" ]]; then
+    require_file "prebuilt GraphChecker jar" "${graphchecker_jar}"
+    require_directory "prebuilt project test classes" \
+      "${project_test_classes}"
+  else
+    (cd "${graphchecker_dir}" && "${maven_bin}" -q -DskipTests package)
+  fi
   local source_dir="${project_test_classes}/${fixture_package}"
   local destination="${original_classes}/${fixture_package}"
   require_directory "compiled fixture package" "${source_dir}"
@@ -426,7 +593,7 @@ do_schedule_producer() {
   local channel
   local region activation output binding
   validate_discovery_inputs
-  channel=$(discovered_channel "${requested}") || return $?
+  channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region activation <<< "${binding}"
   output=$(channel_schedule "${channel}") || return $?
@@ -441,7 +608,7 @@ do_instrument() {
   local requested=$1
   local channel schedule classes activation
   validate_discovery_inputs
-  channel=$(discovered_channel "${requested}") || return $?
+  channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   activation=$(scheduled_activation "${channel}") || return $?
@@ -615,7 +782,7 @@ run_custom_java() {
   local b2=$3
   local channel schedule classes activation results
   validate_discovery_inputs
-  channel=$(discovered_channel "${requested}") || return $?
+  channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   activation=$(scheduled_activation "${channel}") || return $?
@@ -629,7 +796,7 @@ do_import() {
   local channel
   local schedule
   validate_discovery_inputs
-  channel=$(discovered_channel "${requested}") || return $?
+  channel=$(producer_owner_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   scheduled_activation "${channel}" >/dev/null
   import_plan "${schedule}/scheduled_activation_plan.jsonl" \
@@ -755,7 +922,7 @@ combine_jsonl_unique() {
 
 producer_campaign_directory() {
   local channel
-  channel=$(discovered_channel "$1") || return $?
+  channel=$(producer_owner_channel "$1") || return $?
   printf '%s/%s\n' "${producer_campaign_root}" \
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
@@ -770,7 +937,7 @@ do_explore_producer() {
   local -A seen_queries=()
   local -a _replay_activations=() planner_bound_args=()
   validate_discovery_inputs
-  channel=$(discovered_channel "${requested}") || return $?
+  channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
   IFS=$'\t' read -r region _ <<< "${binding}"
   schedule=$(channel_schedule "${channel}") || return $?
@@ -1040,7 +1207,7 @@ wait_for_producer_batch() {
 run_producers_parallel() {
   local channel max_jobs
   local -a channels producer_pids=()
-  mapfile -t channels < <(discovered_channels)
+  mapfile -t channels < <(discovered_producer_channels | LC_ALL=C sort)
   [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
 
   max_jobs=${CAUSYNTH_REGION_JOBS:-8}
@@ -1050,7 +1217,7 @@ run_producers_parallel() {
     max_jobs=${#channels[@]}
   fi
 
-  echo "[three-thread-rpc] running ${#channels[@]} producer region(s) with ${max_jobs} worker process(es)"
+  echo "[three-thread-rpc] running ${#channels[@]} producer demand(s) with ${max_jobs} worker process(es)"
   for channel in "${channels[@]}"; do
     (
       set -euo pipefail
@@ -1085,7 +1252,7 @@ do_candidate_compose() {
   mkdir -p "${candidate_root}"
   binding=$(target_binding) || return $?
   IFS=$'\t' read -r target_region target_activation <<< "${binding}"
-  mapfile -t channels < <(discovered_channels | LC_ALL=C sort)
+  mapfile -t channels < <(discovered_producer_channels | LC_ALL=C sort)
   [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
   bounded_args=()
   merged_inputs=()
@@ -1106,9 +1273,8 @@ do_candidate_compose() {
     bounded_args+=(--bounded-upstream-region "${producer_region}")
     merged_inputs+=("${producer_summary}")
   done
-  jq -e -s --argjson expected "${#channels[@]}" '
+  jq -e -s --argjson expected "${#merged_inputs[@]}" '
     length == $expected
-    and ([.[].regionId] | unique | length) == $expected
     and ([.[].summaryId] | unique | length) == $expected
   ' "${merged_inputs[@]}" >/dev/null \
     || die "producer relation identities are not unique"
@@ -1163,7 +1329,12 @@ do_candidate_solve() {
     and .trustState == "CANDIDATE_ONLY"
     and .reachability == "REACHABLE"
     and ((.discoveryGaps // []) | length) == 0
-    and ([.truthTable[] | select(.reachesBug == true)] | length) > 0
+    and (.truthTable | type == "array" and length > 0)
+    and all(.truthTable[];
+      (.solverStatus == "sat" and .reachesBug == true)
+      or (.solverStatus == "unsat" and .reachesBug == false))
+    and any(.truthTable[];
+      .solverStatus == "sat" and .reachesBug == true)
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     :
   elif jq -e '
@@ -1173,6 +1344,7 @@ do_candidate_solve() {
     and .trustState == "CANDIDATE_ONLY"
     and .reachability == "UNREACHABLE"
     and ((.discoveryGaps // []) | length) == 0
+    and (.truthTable | type == "array" and length > 0)
     and ([.truthTable[] | select(.reachesBug == true)] | length) == 0
     and all(.truthTable[]; .solverStatus == "unsat"
       and .reachesBug == false)
@@ -1345,6 +1517,7 @@ case "${command_name}" in
   explore-producer) [[ $# -eq 1 ]] || die "explore-producer needs one discovered channel"; do_explore_producer "$1" ;;
   candidate-compose) [[ $# -eq 0 ]] || die "candidate-compose takes no arguments"; do_candidate_compose ;;
   candidate-solve) [[ $# -eq 0 ]] || die "candidate-solve takes no arguments"; do_candidate_solve ;;
+  candidate-manifest) [[ $# -eq 0 ]] || die "candidate-manifest takes no arguments"; write_candidate_manifest ;;
   candidate) [[ $# -eq 0 ]] || die "candidate takes no arguments"; do_candidate ;;
   smoke)
     do_prepare

@@ -7714,29 +7714,6 @@ final class SymbolicRegionPlanner {
             return matcher.find() ? matcher.group(1) : "";
         }
 
-        private boolean reaches(String from, String target, Set<String> within) {
-            if (from.equals(target)) {
-                return true;
-            }
-            Set<String> seen = new LinkedHashSet<>();
-            Deque<String> queue = new ArrayDeque<>();
-            seen.add(from);
-            queue.add(from);
-            while (!queue.isEmpty()) {
-                String current = queue.removeFirst();
-                for (String next : values(calleesByCaller.get(current))) {
-                    if (!within.contains(next) || !seen.add(next)) {
-                        continue;
-                    }
-                    if (next.equals(target)) {
-                        return true;
-                    }
-                    queue.addLast(next);
-                }
-            }
-            return false;
-        }
-
         private Boolean requiredOutcome(Map<String, Object> edge) {
             Object explicit = edge.get("requiredOutcome");
             if (explicit instanceof Boolean) {

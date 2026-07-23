@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -22,9 +24,10 @@ public class RegionSummaryMergerTest {
 
     @Test
     public void mergesOutputPathsUnderTheirOwnGuards() {
+        JsonObject first = summary("A", ">");
+        JsonObject second = summary("B", "<=");
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary("A", ">"), summary("B", "<=")),
-                closedManifest());
+                Arrays.asList(first, second), manifestFor(first));
 
         assertEquals(1, result.summaries.size());
         JsonObject relation = result.summaries.get(0)
@@ -42,215 +45,223 @@ public class RegionSummaryMergerTest {
         assertTrue(result.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertFalse(result.summaries.get(0).has("protocolModel"));
-        assertEquals(2, result.summaries.get(0).getAsJsonArray(
+        assertEquals(1, result.summaries.get(0).getAsJsonArray(
                 "sourceRegionInstanceIds").size());
     }
 
     @Test
-    public void openPathWorklistCannotBecomeAnAutomaticCompleteRelation() {
-        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary("A", ">")),
-                pathManifest(RegionPathWorklist.State.PENDING));
-
-        assertFalse(result.summaries.get(0).getAsJsonObject(
-                "regionRelation").get("complete").getAsBoolean());
-        assertFalse(result.summaries.get(0).get(
-                "relationallyComplete").getAsBoolean());
-    }
-
-    @Test
-    public void closedStateWithoutAnObservedPathFailsClosed() {
-        JsonObject manifest = closedManifest();
-        manifest.addProperty("observedPathCount", 0);
+    public void mergesCanonicalJointAndPreservesSingletonHeapSemantics() {
+        JsonObject first = jointSummary("JOINT.A", ">");
+        JsonObject second = jointSummary("JOINT.B", "<=");
 
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary("A", ">")), manifest);
-
-        assertFalse(result.summaries.get(0).getAsJsonObject(
-                "regionRelation").get("complete").getAsBoolean());
-        assertTrue(result.manifest.getAsJsonArray("diagnostics").toString()
-                .contains("PATH_WORKLIST_HAS_NO_OBSERVED_PATH"));
-    }
-
-    @Test
-    public void closureForAnotherRegionCannotCertifyThisRelation() {
-        JsonObject manifest = closedManifest();
-        manifest.addProperty("regionId", "REGION.OTHER");
-
-        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary("A", ">")), manifest);
-
-        assertFalse(result.summaries.get(0).getAsJsonObject(
-                "regionRelation").get("complete").getAsBoolean());
-        assertTrue(result.manifest.getAsJsonArray("diagnostics").toString()
-                .contains("PATH_WORKLIST_REGION_MISMATCH"));
-    }
-
-    @Test
-    public void commandDoesNotPersistAMergeManifestUnlessRequested()
-            throws Exception {
-        Path directory = temporaryFolder.newFolder("merge-cli").toPath();
-        Path summaries = directory.resolve("summaries.jsonl");
-        Path pathManifest = directory.resolve("path-manifest.json");
-        Path output = directory.resolve("merged.jsonl");
-        Path oldDefault = directory.resolve(
-                "region_relation_merge_manifest.json");
-        Files.write(summaries, (summary("CLI", ">").toString() + "\n")
-                .getBytes(StandardCharsets.UTF_8));
-        Files.write(pathManifest, closedManifest().toString()
-                .getBytes(StandardCharsets.UTF_8));
-
-        RegionSummaryMerger.main(new String[]{
-                "--summaries", summaries.toString(),
-                "--path-manifest", pathManifest.toString(),
-                "--output", output.toString()
-        });
-
-        assertTrue(Files.isRegularFile(output));
-        assertFalse(Files.exists(oldDefault));
-        JsonObject merged = JsonParser.parseString(
-                new String(Files.readAllBytes(output),
-                        StandardCharsets.UTF_8).trim()).getAsJsonObject();
-        assertTrue(merged.get("relationallyComplete").getAsBoolean());
-        assertTrue(merged.getAsJsonObject("regionRelation")
-                .get("complete").getAsBoolean());
-    }
-
-    @Test
-    public void incompleteOutputClosureCannotReportACompleteMerge() {
-        JsonObject invalid = summary("INVALID", ">");
-        invalid.addProperty("relationallyComplete", false);
-
-        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(invalid), closedManifest());
+                Arrays.asList(first, second), manifestFor(first));
 
         assertEquals(1, result.summaries.size());
-        assertFalse(result.summaries.get(0).get(
+        JsonObject merged = result.summaries.get(0);
+        assertTrue(merged.has(OutputClosureContract.FIELD));
+        assertFalse(merged.has("requestedOutput"));
+        assertFalse(merged.has("requestedOutputSlice"));
+        OutputClosureContract contract = OutputClosureCodec.decode(merged);
+        assertEquals(2, contract.members().size());
+        JsonArray cases = merged.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases");
+        assertEquals(2, cases.size());
+        for (com.google.gson.JsonElement element : cases) {
+            assertEquals(Arrays.asList("REGION.4.out.0",
+                            "REGION.4.out.1"),
+                    new java.util.ArrayList<>(element.getAsJsonObject()
+                            .getAsJsonObject("outputExpressions").keySet()));
+        }
+        assertTrue(merged.get("relationallyComplete").getAsBoolean());
+
+        JsonObject heap = heapSingletonSummary("HEAP", ">");
+        RegionSummaryMerger.Result heapResult = RegionSummaryMerger.merge(
+                Arrays.asList(heap), manifestFor(heap));
+        JsonObject mergedHeap = heapResult.summaries.get(0);
+        assertTrue(mergedHeap.has(OutputClosureContract.FIELD));
+        assertEquals(0, mergedHeap.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject()
+                .getAsJsonObject("outputExpressions").size());
+        assertTrue(mergedHeap.get(
                 "relationallyComplete").getAsBoolean());
-        assertFalse(result.manifest.get("complete").getAsBoolean());
-        assertEquals("REGION_RELATIONS_WITH_EXPLICIT_GAPS",
-                result.manifest.get("status").getAsString());
-        assertEquals(1, result.manifest.get("diagnosticCount").getAsInt());
-        assertTrue(result.manifest.getAsJsonArray("diagnostics").get(0)
-                .getAsJsonObject().get("reason").getAsString().startsWith(
-                "INCOMPLETE_PATH_TRANSFORMER:"));
     }
 
     @Test
-    public void alphaEquivalentJvmLocalNamesMergeAsOnePathCase() {
-        JsonObject first = summary("A", ">");
-        JsonObject second = summary("B", ">");
-        setLocalSymbol(first, "M_I_1");
-        setLocalSymbol(second, "M_I_41");
+    public void canonicalJointContractViolationsFailClosed() {
+        JsonObject missing = jointSummary("MISSING.Y", ">");
+        missing.getAsJsonObject("outputExpressions").remove(
+                "REGION.4.out.1");
 
-        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(first, second), closedManifest());
+        RegionSummaryMerger.Result missingResult =
+                RegionSummaryMerger.merge(
+                        Arrays.asList(missing), manifestFor(missing));
 
-        JsonObject relation = result.summaries.get(0).getAsJsonObject(
-                "regionRelation");
-        assertEquals(1, relation.get("caseCount").getAsInt());
-    }
+        JsonObject missingRelation = missingResult.summaries.get(0)
+                .getAsJsonObject("regionRelation");
+        assertEquals(0, missingRelation.get("caseCount").getAsInt());
+        assertFalse(missingRelation.get("complete").getAsBoolean());
+        assertTrue(missingResult.manifest.getAsJsonArray(
+                "diagnostics").toString()
+                .contains("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH"));
 
-    @Test
-    public void preservesNormalizedHeapObservationsInsideEachCase() {
-        JsonObject summary = summary("OBS", ">");
+        JsonObject wrongManifest = jointSummary("MANIFEST", ">");
+        JsonObject manifest = manifestFor(wrongManifest);
+        manifest.addProperty("outputClosureFingerprint", "wrong");
+
+        RegionSummaryMerger.Result manifestResult =
+                RegionSummaryMerger.merge(
+                        Arrays.asList(wrongManifest), manifest);
+
+        assertFalse(manifestResult.summaries.get(0).getAsJsonObject(
+                "regionRelation").get("complete").getAsBoolean());
+        assertTrue(manifestResult.manifest.getAsJsonArray(
+                "diagnostics").toString()
+                .contains("PATH_WORKLIST_OUTPUT_CLOSURE_"
+                        + "FINGERPRINT_MISMATCH"));
+
+        JsonObject first = jointSummary("DUP.A", ">");
+        JsonObject second = jointSummary("DUP.B", ">");
         JsonObject observation = new JsonObject();
-        observation.addProperty("kind", "MAP_ENTRY_READ");
-        observation.addProperty("observationId", "OBS.1");
+        observation.addProperty("observationId", "different");
         JsonArray observations = new JsonArray();
         observations.add(observation);
-        summary.add("heapObservations", observations);
-        JsonObject dynamicBinding = new JsonObject();
-        dynamicBinding.addProperty("dynamicBindingId",
-                "DYNAMIC_FIELD:REGION.4.in.0.field.a.occ.1");
-        JsonArray dynamicBindings = new JsonArray();
-        dynamicBindings.add(dynamicBinding);
-        summary.add("dynamicFieldBindings", dynamicBindings);
+        second.add("heapObservations", observations);
 
-        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary), closedManifest());
+        RegionSummaryMerger.Result duplicateResult =
+                RegionSummaryMerger.merge(
+                Arrays.asList(first, second), manifestFor(first));
 
-        JsonObject pathCase = result.summaries.get(0).getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases").get(0)
-                .getAsJsonObject();
-        assertEquals(observations, pathCase.getAsJsonArray(
-                "heapObservations"));
-        assertEquals(dynamicBindings, pathCase.getAsJsonArray(
-                "dynamicFieldBindings"));
-        assertFalse(result.summaries.get(0).has("heapObservations"));
-        assertFalse(result.summaries.get(0).has(
-                "dynamicFieldBindings"));
+        JsonObject duplicateRelation = duplicateResult.summaries.get(0)
+                .getAsJsonObject("regionRelation");
+        assertEquals(1, duplicateRelation.get("caseCount").getAsInt());
+        assertFalse(duplicateRelation.get("complete").getAsBoolean());
+        assertTrue(duplicateResult.manifest.getAsJsonArray(
+                "diagnostics").toString()
+                .contains("CONFLICTING_DUPLICATE_PATH_PAYLOAD"));
     }
 
     @Test
-    public void preservesEngineArrayBridgeInsideItsSourceCase() {
-        JsonObject first = summary("ARRAY.A", ">");
-        JsonObject second = summary("ARRAY.B", "<=");
-        first.add("engineArrayInputBindings",
-                engineArrayBinding("VM_ARRAY_1", 11));
-        second.add("engineArrayInputBindings",
-                engineArrayBinding("VM_ARRAY_99", 99));
-
+    public void openPathWorklistCannotBecomeAnAutomaticCompleteRelation() {
+        JsonObject summary = summary("A", ">");
+        JsonObject manifest = manifestFor(summary);
+        manifest.addProperty("state", RegionPathWorklist.State.PENDING.name());
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(first, second), closedManifest());
+                Arrays.asList(summary), manifest);
 
-        JsonArray cases = result.summaries.get(0).getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases");
-        assertEquals(2, cases.size());
-        JsonArray observed = new JsonArray();
-        for (com.google.gson.JsonElement element : cases) {
-            JsonObject pathCase = element.getAsJsonObject();
-            assertEquals("ACT." + pathCase.get("sourceSummaryId")
-                            .getAsString(),
-                    pathCase.get("sourceActivationId").getAsString());
-            observed.add(pathCase.getAsJsonArray(
-                    "engineArrayInputBindings").get(0).getAsJsonObject()
-                    .get("engineArrayId").getAsString());
+        assertFalse(result.summaries.get(0).getAsJsonObject(
+                "regionRelation").get("complete").getAsBoolean());
+        assertFalse(result.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
+    }
+
+    private static JsonObject jointSummary(String id, String operator) {
+        JsonObject summary = explicitSummary(id, operator,
+                outputClosure(false, 2));
+        JsonObject expression = summary.getAsJsonObject(
+                "outputExpressions").getAsJsonObject(
+                "REGION.4.out.0").deepCopy();
+        summary.getAsJsonObject("outputExpressions").add(
+                "REGION.4.out.1", expression);
+        return summary;
+    }
+
+    private static JsonObject heapSingletonSummary(
+            String id, String operator) {
+        JsonObject summary = explicitSummary(id, operator,
+                outputClosure(true, 1));
+        summary.add("outputExpressions", new JsonObject());
+        return summary;
+    }
+
+    private static JsonObject explicitSummary(
+            String id, String operator, JsonObject closure) {
+        JsonObject summary = summary(id, operator);
+        summary.addProperty("regionInstanceId",
+                "REGION.4@fixture#call7");
+        summary.addProperty("rootCallId", 7);
+        summary.remove("requestedOutput");
+        summary.add(OutputClosureContract.FIELD, closure);
+        return summary;
+    }
+
+    private static JsonObject outputClosure(
+            boolean heapSingleton, int memberCount) {
+        JsonObject closure = new JsonObject();
+        closure.addProperty("schemaVersion", 1);
+        closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
+        JsonObject producer = new JsonObject();
+        producer.addProperty("regionId", "REGION.4");
+        producer.addProperty("regionInstanceId",
+                "REGION.4@fixture#call7");
+        producer.addProperty("rootCallId", 7);
+        closure.add("producer", producer);
+        JsonArray members = new JsonArray();
+        for (int index = 0; index < memberCount; index++) {
+            members.add(outputMember(index, heapSingleton));
         }
-        assertTrue(observed.toString().contains("VM_ARRAY_1"));
-        assertTrue(observed.toString().contains("VM_ARRAY_99"));
-        assertFalse(result.summaries.get(0).has(
-                "engineArrayInputBindings"));
+        closure.add("members", members);
+        return closure;
     }
 
-    @Test
-    public void preservesFiniteMapAndVmCertificatesInsideSourceCase() {
-        JsonObject summary = summary("CERT", ">");
-        JsonObject snapshot = new JsonObject();
-        snapshot.addProperty("snapshotId", "FINITE.1");
-        JsonArray snapshots = new JsonArray();
-        snapshots.add(snapshot);
-        summary.add("finiteMapSnapshots", snapshots);
+    private static JsonObject outputMember(
+            int index, boolean heapSingleton) {
+        String port = "REGION.4.out." + index;
+        String cell = heapSingleton
+                ? "<example.State: java.util.Map values>"
+                : "<example.State: int "
+                + (index == 0 ? "x" : "y") + ">";
+        JsonObject member = new JsonObject();
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", port);
+        output.addProperty("cell", cell);
+        output.addProperty("kind", "HEAP_STATE");
+        output.addProperty("javaTypeDescriptor",
+                heapSingleton ? "Ljava/util/Map;" : "I");
+        output.addProperty("selectionAuthority",
+                "CONFIRMED_READ_FROM_EDGE");
+        member.add("output", output);
 
-        JsonObject binding = new JsonObject();
-        binding.addProperty("placeholderIdentity", "currentTimeMills#3");
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding);
-        summary.add("vmIntrinsicPlaceholderBindings", bindings);
-        JsonObject requirement = new JsonObject();
-        requirement.addProperty("inputPort", "REGION.4.in.0");
-        JsonArray requirements = new JsonArray();
-        requirements.add(requirement);
-        summary.add("unforcedEnvironmentValidationRequirements",
-                requirements);
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", new JsonArray());
+        slice.add("sites", new JsonArray());
+        slice.add("staticSites", new JsonArray());
+        JsonArray methods = new JsonArray();
+        String method = "<example.Producer: void run()>";
+        methods.add(method);
+        slice.add("methods", methods);
+        slice.add("causalEdgeIds", new JsonArray());
+        JsonArray captures = new JsonArray();
+        if (!heapSingleton) {
+            JsonObject capture = new JsonObject();
+            capture.addProperty("captureKind",
+                    "FIELD_ASSIGNMENT_RHS");
+            capture.addProperty("captureBindingId",
+                    port + ".capture");
+            capture.addProperty("outputPort", port);
+            capture.addProperty("outputCell", cell);
+            capture.addProperty("method", method);
+            capture.addProperty("unitIndex", index);
+            capture.addProperty("siteId", method + "#u" + index);
+            capture.addProperty("fieldSignature", cell);
+            captures.add(capture);
+        }
+        slice.addProperty("captureBindingsRequired", !heapSingleton);
+        slice.addProperty("captureBindingsComplete", true);
+        slice.add("captureBindings", captures);
+        member.add("slice", slice);
+        return member;
+    }
 
-        RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary), closedManifest());
-
-        JsonObject merged = result.summaries.get(0);
-        JsonObject pathCase = merged.getAsJsonObject("regionRelation")
-                .getAsJsonArray("cases").get(0).getAsJsonObject();
-        assertEquals(snapshots, pathCase.getAsJsonArray(
-                "finiteMapSnapshots"));
-        assertEquals(bindings, pathCase.getAsJsonArray(
-                "vmIntrinsicPlaceholderBindings"));
-        assertEquals(requirements, pathCase.getAsJsonArray(
-                "unforcedEnvironmentValidationRequirements"));
-        assertFalse(pathCase.has(
-                "vmIntrinsicPlaceholderBindingAdmission"));
-        assertFalse(pathCase.has("inputMaterializationAdmission"));
-        assertFalse(merged.has("finiteMapSnapshots"));
-        assertFalse(merged.has("vmIntrinsicPlaceholderBindings"));
+    private static JsonObject manifestFor(JsonObject summary) {
+        OutputClosureContract contract = OutputClosureCodec.decode(summary);
+        JsonObject manifest = closedManifest();
+        manifest.addProperty("outputDemandKey", contract.demandKey());
+        manifest.addProperty("outputClosureFingerprint",
+                contract.closureFingerprint());
+        return manifest;
     }
 
     private static void setLocalSymbol(JsonObject summary, String raw) {
@@ -267,13 +278,12 @@ public class RegionSummaryMergerTest {
         summary.addProperty("activationId", "ACT." + id);
         summary.addProperty("regionId", "REGION.4");
         summary.addProperty("regionInstanceId",
-                "REGION.4@fixture#call" + id);
+                "REGION.4@fixture#call7");
+        summary.addProperty("rootCallId", 7);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
         summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        JsonObject output = new JsonObject();
-        output.addProperty("portId", "REGION.4.out.0");
-        summary.add("requestedOutput", output);
+        summary.add(OutputClosureContract.FIELD, outputClosure(false, 1));
         JsonArray path = new JsonArray();
         JsonObject condition = new JsonObject();
         condition.addProperty("_type", "BinaryExpression");

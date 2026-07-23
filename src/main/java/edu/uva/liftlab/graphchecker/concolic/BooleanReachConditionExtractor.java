@@ -13,16 +13,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -60,7 +56,7 @@ public final class BooleanReachConditionExtractor {
         Arguments arguments = Arguments.parse(argv);
         JsonObject manifest = readJson(arguments.manifest);
         Path relationshipsPath = arguments.relationships;
-        String smt = readText(arguments.smt);
+        String smt = ArtifactIO.readText(arguments.smt);
         JsonObject relationships = readJson(relationshipsPath);
         List<JsonObject> regions = readJsonl(arguments.regions);
         validateArtifactBindings(arguments.smt, arguments.regions,
@@ -78,7 +74,7 @@ public final class BooleanReachConditionExtractor {
         report.add("relationshipCandidatesArtifact",
                 artifact(relationshipsPath));
         report.add("solverArtifact", solver.artifact());
-        write(arguments.output, GSON.toJson(report)
+        ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
         if (!"CANDIDATE_READY".equals(string(report, "state"))) {
@@ -660,9 +656,9 @@ public final class BooleanReachConditionExtractor {
                     return new SolverResult("timeout", "solver timeout");
                 }
                 String out = Files.isRegularFile(stdout)
-                        ? readText(stdout) : "";
+                        ? ArtifactIO.readText(stdout) : "";
                 String err = Files.isRegularFile(stderr)
-                        ? readText(stderr) : "";
+                        ? ArtifactIO.readText(stderr) : "";
                 String status = process.exitValue() == 0
                         ? solverStatus(out) : "error";
                 return new SolverResult(status, combinedOutput(out, err));
@@ -725,7 +721,7 @@ public final class BooleanReachConditionExtractor {
                     throw new IOException("Z3 -version timed out");
                 }
                 String text = Files.isRegularFile(output)
-                        ? readText(output).trim() : "";
+                        ? ArtifactIO.readText(output).trim() : "";
                 if (process.exitValue() != 0 || !text.contains("Z3")) {
                     throw new IOException("Invalid Z3 executable identity: "
                             + text);
@@ -1168,7 +1164,7 @@ public final class BooleanReachConditionExtractor {
         JsonObject result = new JsonObject();
         result.addProperty("path", path.toAbsolutePath().normalize()
                 .toString());
-        result.addProperty("sha256", sha256(bytes));
+        result.addProperty("sha256", ArtifactIO.sha256(bytes));
         result.addProperty("sizeBytes", bytes.length);
         return result;
     }
@@ -1213,15 +1209,8 @@ public final class BooleanReachConditionExtractor {
         return Paths.get(value).toAbsolutePath().normalize().toString();
     }
 
-    private static String readText(Path path) throws IOException {
-        if (path == null || !Files.isRegularFile(path)) {
-            throw new IOException("Input not found: " + path);
-        }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
-    }
-
     private static JsonObject readJson(Path path) throws IOException {
-        JsonElement value = JsonParser.parseString(readText(path));
+        JsonElement value = JsonParser.parseString(ArtifactIO.readText(path));
         if (!value.isJsonObject()) {
             throw new IOException("Expected JSON object: " + path);
         }
@@ -1229,39 +1218,8 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        List<JsonObject> result = new ArrayList<>();
-        int lineNumber = 0;
-        for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
-            lineNumber++;
-            if (line.trim().isEmpty()) continue;
-            JsonElement value = JsonParser.parseString(line);
-            if (!value.isJsonObject()) {
-                throw new IOException("Expected JSON object at " + path
-                        + ":" + lineNumber);
-            }
-            result.add(value.getAsJsonObject());
-        }
-        return result;
-    }
-
-    private static void write(Path path, String value) throws IOException {
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Path temporary = Files.createTempFile(parent,
-                path.getFileName().toString(), ".tmp");
-        try {
-            Files.write(temporary, value.getBytes(StandardCharsets.UTF_8));
-            try {
-                Files.move(temporary, path,
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-                Files.move(temporary, path,
-                        StandardCopyOption.REPLACE_EXISTING);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
+        return ArtifactIO.readJsonl(path, null,
+                "Expected JSON object at %1$s:%2$d");
     }
 
     private static String cellJavaType(String cell) {
@@ -1337,26 +1295,6 @@ public final class BooleanReachConditionExtractor {
     private static Path sibling(Path path, String name) {
         Path parent = path.toAbsolutePath().getParent();
         return parent == null ? Paths.get(name) : parent.resolve(name);
-    }
-
-    private static String sha256(String value) {
-        return sha256((value == null ? "" : value).getBytes(
-                StandardCharsets.UTF_8));
-    }
-
-    private static String sha256(byte[] value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value == null ? new byte[0] : value);
-            StringBuilder result = new StringBuilder(bytes.length * 2);
-            for (byte current : bytes) {
-                result.append(String.format(Locale.ROOT, "%02x",
-                        current & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
     }
 
     private static JsonArray array(JsonObject object, String key) {
