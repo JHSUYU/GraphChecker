@@ -2,8 +2,14 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
@@ -11,6 +17,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RegionSummaryMergerTest {
+    @Rule
+    public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+
     @Test
     public void mergesOutputPathsUnderTheirOwnGuards() {
         JsonObject manifest = new JsonObject();
@@ -34,7 +43,8 @@ public class RegionSummaryMergerTest {
                     "region:REGION.4/case:CASE."));
         }
         assertTrue(relation.get("complete").getAsBoolean());
-        assertTrue(result.manifest.get("complete").getAsBoolean());
+        assertTrue(result.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
         assertFalse(result.summaries.get(0).has("protocolModel"));
         assertEquals(2, result.summaries.get(0).getAsJsonArray(
                 "sourceRegionInstanceIds").size());
@@ -51,8 +61,38 @@ public class RegionSummaryMergerTest {
 
         assertFalse(result.summaries.get(0).getAsJsonObject(
                 "regionRelation").get("complete").getAsBoolean());
-        assertEquals("REGION_RELATIONS_WITH_EXPLICIT_GAPS",
-                result.manifest.get("status").getAsString());
+        assertFalse(result.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
+    }
+
+    @Test
+    public void commandDoesNotPersistAMergeManifestUnlessRequested()
+            throws Exception {
+        Path directory = temporaryFolder.newFolder("merge-cli").toPath();
+        Path summaries = directory.resolve("summaries.jsonl");
+        Path pathManifest = directory.resolve("path-manifest.json");
+        Path output = directory.resolve("merged.jsonl");
+        Path oldDefault = directory.resolve(
+                "region_relation_merge_manifest.json");
+        Files.write(summaries, (summary("CLI", ">").toString() + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+        Files.write(pathManifest, closedManifest().toString()
+                .getBytes(StandardCharsets.UTF_8));
+
+        RegionSummaryMerger.main(new String[]{
+                "--summaries", summaries.toString(),
+                "--path-manifest", pathManifest.toString(),
+                "--output", output.toString()
+        });
+
+        assertTrue(Files.isRegularFile(output));
+        assertFalse(Files.exists(oldDefault));
+        JsonObject merged = JsonParser.parseString(
+                new String(Files.readAllBytes(output),
+                        StandardCharsets.UTF_8).trim()).getAsJsonObject();
+        assertTrue(merged.get("relationallyComplete").getAsBoolean());
+        assertTrue(merged.getAsJsonObject("regionRelation")
+                .get("complete").getAsBoolean());
     }
 
     @Test

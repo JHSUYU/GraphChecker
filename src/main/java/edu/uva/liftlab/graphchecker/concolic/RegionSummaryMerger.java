@@ -44,12 +44,14 @@ public final class RegionSummaryMerger {
         JsonObject pathManifest = readJson(arguments.pathManifest);
         Result result = merge(summaries, pathManifest);
         writeJsonl(arguments.output, result.summaries);
-        Files.write(arguments.manifest,
-                (GSON.toJson(result.manifest) + System.lineSeparator())
-                        .getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
+        if (arguments.manifest != null) {
+            Files.write(arguments.manifest,
+                    (GSON.toJson(result.manifest) + System.lineSeparator())
+                            .getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
+        }
         System.out.println(GSON.toJson(result.manifest));
     }
 
@@ -328,8 +330,6 @@ public final class RegionSummaryMerger {
             if (result.inputs.isEmpty() || result.pathManifest == null
                     || result.output == null) throw new IllegalArgumentException(
                     "--summaries, --path-manifest, and --output are required");
-            if (result.manifest == null) result.manifest = result.output
-                    .resolveSibling("region_relation_merge_manifest.json");
             return result;
         }
     }

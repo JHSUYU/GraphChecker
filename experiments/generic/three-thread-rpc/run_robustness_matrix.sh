@@ -126,16 +126,16 @@ validate_composition_common() {
 validate_multitype_producer_artifacts() {
   local work_root=$1
   local campaign_root="${work_root}/producer-campaign"
-  local -a path_manifests merged_summaries
+  local -a path_closures merged_summaries
 
   [[ -d "${campaign_root}" ]] \
     || die "multitype producer campaign not found: ${campaign_root}"
-  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
-    -maxdepth 2 -type f -name region_path_manifest.json | sort)
+  mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_closure.json | sort)
   mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
     -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
-  [[ ${#path_manifests[@]} -eq 2 ]] \
-    || die "multitype expected two producer path manifests"
+  [[ ${#path_closures[@]} -eq 2 ]] \
+    || die "multitype expected two producer path closures"
   [[ ${#merged_summaries[@]} -eq 2 ]] \
     || die "multitype expected two producer guarded merges"
 
@@ -153,7 +153,7 @@ validate_multitype_producer_artifacts() {
       and .observedPathCount > 1
       and .candidateFlipCount > 0
       and ([.pathCountByRegion[]] | add) == .observedPathCount)
-  ' "${path_manifests[@]}" >/dev/null \
+  ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
 
   jq -e -s '
@@ -203,7 +203,7 @@ validate_dependent_scalar_artifacts() {
   local target_exception="${fixture_class}\$DependentScalarBugReachedException"
   local arithmetic_cell="<${fixture_class}\$RpcBus: int arithmeticValue>"
   local text_cell="<${fixture_class}\$RpcBus: int textValue>"
-  local -a path_manifests merged_summaries
+  local -a path_closures merged_summaries
 
   require_file "dependent-scalar annotation target" "${target_resolution}"
   require_file "dependent-scalar runtime activation plan" "${activation_plan}"
@@ -266,12 +266,12 @@ validate_dependent_scalar_artifacts() {
   ' "${activation_plan}" >/dev/null \
     || die "dependent-scalar runtime roots are not two exact producers and one target"
 
-  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
-    -maxdepth 2 -type f -name region_path_manifest.json | sort)
+  mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_closure.json | sort)
   mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
     -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
-  [[ ${#path_manifests[@]} -eq 2 ]] \
-    || die "dependent-scalar expected two producer path manifests"
+  [[ ${#path_closures[@]} -eq 2 ]] \
+    || die "dependent-scalar expected two producer path closures"
   [[ ${#merged_summaries[@]} -eq 2 ]] \
     || die "dependent-scalar expected two producer guarded merges"
 
@@ -290,7 +290,7 @@ validate_dependent_scalar_artifacts() {
       and .candidateFlipCount > 0
       and ([.pathCountByRegion[]] | add) == .observedPathCount)
     and ([.[].observedPathCount] | sort) == [2, 6]
-  ' "${path_manifests[@]}" >/dev/null \
+  ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
 
   # The string producer has exactly the two semantic outputs 5 and 9.  The
@@ -337,23 +337,22 @@ validate_container_producer_artifacts() {
   local campaign_root="${work_root}/producer-campaign"
   local array_summary="${campaign_root}/arrayvalue/merged_region_summaries.jsonl"
   local map_summary="${campaign_root}/mapvalue/merged_region_summaries.jsonl"
-  local -a path_manifests worklists replay_reports
+  local -a path_closures exploration_records raw_results
 
   [[ -d "${campaign_root}" ]] \
     || die "container producer campaign not found: ${campaign_root}"
-  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
-    -maxdepth 2 -type f -name region_path_manifest.json | sort)
-  mapfile -t worklists < <(find "${campaign_root}" -mindepth 3 \
-    -maxdepth 3 -type f -name region_path_worklist.jsonl \
-    -size +0c | sort)
-  mapfile -t replay_reports < <(find "${campaign_root}" -mindepth 3 \
-    -maxdepth 4 -type f -name path_replay_verification.json | sort)
-  [[ ${#path_manifests[@]} -eq 2 ]] \
-    || die "containers expected two producer path manifests"
-  [[ ${#worklists[@]} -eq 10 ]] \
-    || die "containers expected ten explored producer path flips"
-  [[ ${#replay_reports[@]} -eq 10 ]] \
-    || die "containers expected ten validated producer path replays"
+  mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_closure.json | sort)
+  mapfile -t exploration_records < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name path_exploration_records.jsonl | sort)
+  mapfile -t raw_results < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name raw_results.jsonl | sort)
+  [[ ${#path_closures[@]} -eq 2 ]] \
+    || die "containers expected two producer path closures"
+  [[ ${#exploration_records[@]} -eq 2 ]] \
+    || die "containers expected two producer exploration ledgers"
+  [[ ${#raw_results[@]} -eq 2 ]] \
+    || die "containers expected two producer raw-result ledgers"
   require_file "array guarded merge" "${array_summary}"
   require_file "map guarded merge" "${map_summary}"
 
@@ -372,41 +371,42 @@ validate_container_producer_artifacts() {
       and .candidateFlipCount > 0
       and ([.pathCountByRegion[]] | add) == .observedPathCount)
     and ([.[].observedPathCount] | sort) == [2, 10]
-  ' "${path_manifests[@]}" >/dev/null \
+  ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
-  # Path tasks carry one immutable replay contract for branch truth and a
-  # separate, content-addressed context only for non-branch solver nodes.
+  # Successful per-iteration files are intentionally transient. The retained
+  # ledger records one terminal status per query; the canonical raw results
+  # preserve the custom-JDK observation without duplicating replay manifests.
   jq -e -s '
-    all(.[];
-      .schemaVersion == 3
-      and .kind == "REGION_PATH_FLIP"
-      and .dynamicIdsExcludedFromQueryKey == true
-      and .replayContract.schemaVersion == 1
-      and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
-      and .replayContract.source.schemaVersion == 1
-      and .replayContract.source.kind == "BINARY_BRANCH_WITNESS"
-      and (.replayContract.source.sourceTakenOutcome | type) == "boolean"
-      and (.replayContract.source.sourceSatisfiedPredicate | type) == "object"
-      and (.replayContract.source.vmPcIndex | type) == "number"
-      and (.replayContract | has("contractId") | not)
-      and (.replayContract | has("required") | not)
-      and (.replayContract.source | has("witnessId") | not)
-      and .solverPathContext.schemaVersion == 1
-      and .solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
-      and .solverPathContext.authority
-        == "SOURCE_SUMMARY_POSITIONED_NON_BRANCH_CONSTRAINTS_V1"
-      and (.solverPathContext | has("contextId") | not)
-      and (.solverPathContext.constraints | type) == "array"
-      and all(.solverPathContext.constraints[]?;
-        (.summaryPcIndex | type) == "number"
-        and .summaryPcIndex >= 0
-        and (.expression._type == "_array_expr"
-          or .expression._type == "MethodExpression"))
-      and (has("forcedBranches") | not)
-      and (has("pathCondition") | not))
-  ' "${worklists[@]}" >/dev/null \
-    || die "container path task lost the witness/context authority split"
+    ([.[] | select(
+        .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY")]
+      | length) == 10
+    and all(.[];
+      .schemaVersion == 1
+      and .kind == "PATH_EXPLORATION_RECORD"
+      and (.queryKey | test("^[0-9a-f]{64}$"))
+      and (.status == "UNSAT"
+        or (.status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+          and (.observedPathKey | test("^[0-9a-f]{64}$"))
+          and (.summaryId | type == "string" and length > 0))))
+    and ([.[].queryKey] | unique | length) == length
+  ' "${exploration_records[@]}" >/dev/null \
+    || die "container retained exploration ledger is incomplete"
+
+  jq -e -s '
+    ([.[] | select((.pathQueryKey // "") != "")] as $replays
+      | ($replays | length) == 10
+      and all($replays[];
+        .branchOverrideUsed == false
+        and .allModelAssignmentsApplied == true
+        and .branchReplayValidation.kind == "BRANCH_REPLAY_OBSERVATION"
+        and .branchReplayValidation.requested == true
+        and .branchReplayValidation.valid == true)
+      and ([$replays[].modelAssignmentsApplied[]?
+        | select((.dynamicReplayRebindingAuthority // "") != "")]
+        | length) > 0)
+  ' "${raw_results[@]}" >/dev/null \
+    || die "container custom-JDK replay evidence is incomplete"
 
   jq -e '
     .valid == true
@@ -538,45 +538,21 @@ validate_container_producer_artifacts() {
   ' "${map_summary}" >/dev/null \
     || die "map producer lost exact key-7 nested entry field semantics"
 
-  # Replays mutate inputs only.  The VM observes the requested contract; it
-  # never receives a forced branch decision.
-  jq -e -s '
-    length == 10
-    and all(.[];
-      .schemaVersion == 1
-      and .kind == "CONCOLIC_PATH_REPLAY_VERIFICATION_MANIFEST"
-      and .valid == true
-      and .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
-      and .failureCount == 0
-      and .branchReplayObservation.kind == "BRANCH_REPLAY_OBSERVATION"
-      and .branchReplayObservation.requested == true
-      and .branchReplayObservation.valid == true
-      and (.branchReplayObservation | has("contractId") | not)
-      and .replayValidation.valid == true
-      and .replayValidation.status == "VALIDATED_UNFORCED_REPLAY"
-      and .replayValidation.inputModelOnly == true
-      and .replayValidation.branchAndInputReplayValidated == true
-      and .replayValidation.outputClosureAdmissionGap == false
-      and ((.replayValidation.failures // []) | length) == 0)
-    and ([.[].replayValidation.containerReplayRebindingCount] | add) == 1
-    and ([.[].replayValidation.freshMapEntryRebindingCount] | add) > 0
-  ' "${replay_reports[@]}" >/dev/null \
-    || die "container path replay was forced or lost exact rebinding"
 }
 
 validate_unreachable_parity_producer_artifacts() {
   local work_root=$1
   local campaign_root="${work_root}/producer-campaign"
-  local -a path_manifests merged_summaries
+  local -a path_closures merged_summaries
 
   [[ -d "${campaign_root}" ]] \
     || die "unreachable-parity producer campaign not found: ${campaign_root}"
-  mapfile -t path_manifests < <(find "${campaign_root}" -mindepth 2 \
-    -maxdepth 2 -type f -name region_path_manifest.json | sort)
+  mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_closure.json | sort)
   mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
     -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
-  [[ ${#path_manifests[@]} -eq 2 ]] \
-    || die "unreachable-parity expected two producer path manifests"
+  [[ ${#path_closures[@]} -eq 2 ]] \
+    || die "unreachable-parity expected two producer path closures"
   [[ ${#merged_summaries[@]} -eq 2 ]] \
     || die "unreachable-parity expected two producer guarded merges"
 
@@ -594,7 +570,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .observedPathCount == 2
       and .candidateFlipCount > 0
       and ([.pathCountByRegion[]] | add) == 2)
-  ' "${path_manifests[@]}" >/dev/null \
+  ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
   jq -e -s '
@@ -1033,8 +1009,9 @@ case "${mode}" in
     ;;
 esac
 
-for index in "${!labels[@]}"; do
-  run_case "${labels[${index}]}" "${configs[${index}]}"
+for matrix_position in "${!labels[@]}"; do
+  run_case "${labels[${matrix_position}]}" \
+    "${configs[${matrix_position}]}"
 done
 
 echo "[three-thread-rpc-matrix] validated ${#labels[@]} workflows"

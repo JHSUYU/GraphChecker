@@ -682,6 +682,44 @@ debug_merged_relation() {
       "${runner}" --config "${config}" debug-stage merge)
 }
 
+producer_iteration_directory() {
+  local campaign=$1
+  local iteration=$2
+  if debug_enabled; then
+    printf '%s/iteration-%04d\n' "${campaign}" "${iteration}"
+  else
+    printf '%s/current\n' "${campaign}"
+  fi
+}
+
+discard_successful_iteration() {
+  local campaign=$1
+  local scratch="${campaign}/current"
+  debug_enabled && return 0
+  [[ "${campaign}" == "${producer_campaign_root}/"* ]] \
+    || die "refusing to clean producer scratch outside campaign root: ${campaign}"
+  [[ "${scratch}" == "${campaign}/current" ]] \
+    || die "invalid producer scratch path: ${scratch}"
+  [[ -d "${scratch}" && ! -L "${scratch}" ]] \
+    || die "producer scratch is missing or unsafe: ${scratch}"
+  find "${scratch}" -mindepth 1 -delete
+  rmdir "${scratch}"
+}
+
+discard_successful_campaign_state() {
+  local campaign=$1
+  local state="${campaign}/.state"
+  debug_enabled && return 0
+  [[ "${campaign}" == "${producer_campaign_root}/"* ]] \
+    || die "refusing to clean producer state outside campaign root: ${campaign}"
+  [[ "${state}" == "${campaign}/.state" ]] \
+    || die "invalid producer state path: ${state}"
+  [[ -d "${state}" && ! -L "${state}" ]] \
+    || die "producer state is missing or unsafe: ${state}"
+  find "${state}" -mindepth 1 -delete
+  rmdir "${state}"
+}
+
 combine_jsonl_unique() {
   local identity_field=$1
   local output=$2
@@ -728,8 +766,8 @@ producer_campaign_directory() {
 do_explore_producer() {
   local requested=$1
   local channel schedule classes campaign region source_activation binding
-  local summaries activations records planner_dir replay_activation raw imported
-  local replay_verification
+  local summaries activations raw_results records state_dir planner_dir
+  local replay_activation raw imported replay_verification
   local z3 solver_timeout planner_status query_key iteration selection_dir
   local bound_spec bound_property bound_option bound_value
   local -A seen_queries=()
@@ -748,14 +786,19 @@ do_explore_producer() {
   [[ ! -e "${campaign}" ]] \
     || die "producer campaign already exists: ${campaign}"
   mkdir -p "${campaign}"
-  summaries="${campaign}/combined_region_summaries.jsonl"
-  activations="${campaign}/combined_activation_plan.jsonl"
+  state_dir="${campaign}/.state"
+  mkdir -p "${state_dir}"
+  summaries="${campaign}/observed_path_summaries.jsonl"
+  activations="${state_dir}/observed_activation_plan.jsonl"
+  raw_results="${campaign}/raw_results.jsonl"
   records="${campaign}/path_exploration_records.jsonl"
   : >"${records}"
   combine_jsonl_unique summaryId "${summaries}" \
     "${schedule}/concolic_region_summaries.jsonl"
   combine_jsonl_unique activationId "${activations}" \
     "${schedule}/scheduled_activation_plan.jsonl"
+  combine_jsonl_unique activationId "${raw_results}" \
+    "${schedule}/concolic_region_results.jsonl"
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
   for bound_spec in \
@@ -774,7 +817,9 @@ do_explore_producer() {
 
   iteration=1
   while true; do
-    planner_dir=$(printf '%s/iteration-%04d' "${campaign}" "${iteration}")
+    planner_dir=$(producer_iteration_directory "${campaign}" "${iteration}")
+    [[ ! -e "${planner_dir}" ]] \
+      || die "producer iteration scratch already exists: ${planner_dir}"
     mkdir -p "${planner_dir}"
     set +e
     run_graphchecker_main \
@@ -840,9 +885,19 @@ do_explore_producer() {
           || die "producer UNSAT result does not match its selected query"
         [[ ! -s "${planner_dir}/activation_plan.jsonl" ]] \
           || die "UNSAT producer path unexpectedly emitted a replay"
-        jq -c '.' "${planner_dir}/path_flip_solver_result.json" \
+        jq -c '{
+          schemaVersion: 1,
+          kind: "PATH_EXPLORATION_RECORD",
+          queryKey,
+          regionId,
+          sourcePathKey,
+          sourceSummaryId,
+          status,
+          solverInputHash
+        }' "${planner_dir}/path_flip_solver_result.json" \
           >>"${records}"
         echo "[three-thread-rpc] producer path proved UNSAT: ${query_key}"
+        discard_successful_iteration "${campaign}"
         iteration=$((iteration + 1))
         continue
       fi
@@ -857,7 +912,7 @@ do_explore_producer() {
       [[ ! -s "${planner_dir}/activation_plan.jsonl" ]] \
         || die "closed producer worklist retained an executable replay"
       cp -f "${planner_dir}/region_path_manifest.json" \
-        "${campaign}/region_path_manifest.json"
+        "${campaign}/region_path_closure.json"
       break
     fi
     [[ "${planner_status}" -eq 0 ]] \
@@ -932,26 +987,35 @@ do_explore_producer() {
       and (.observedPathKey | test("^[0-9a-f]{64}$"))
     ' "${replay_verification}" >/dev/null \
       || die "producer path replay did not pass the exact verifier"
-    jq -c '.' "${replay_verification}" >>"${records}"
-    combine_jsonl_unique summaryId "${campaign}/next_summaries.jsonl" \
+    combine_jsonl_unique summaryId "${state_dir}/next_summaries.jsonl" \
       "${summaries}" "${imported}"
-    mv -f "${campaign}/next_summaries.jsonl" "${summaries}"
-    combine_jsonl_unique activationId "${campaign}/next_activations.jsonl" \
+    combine_jsonl_unique activationId "${state_dir}/next_activations.jsonl" \
       "${activations}" "${planner_dir}/activation_plan.jsonl"
-    mv -f "${campaign}/next_activations.jsonl" "${activations}"
+    combine_jsonl_unique activationId "${state_dir}/next_raw_results.jsonl" \
+      "${raw_results}" "${raw}"
+    mv -f "${state_dir}/next_summaries.jsonl" "${summaries}"
+    mv -f "${state_dir}/next_activations.jsonl" "${activations}"
+    mv -f "${state_dir}/next_raw_results.jsonl" "${raw_results}"
+    jq -c '{
+      schemaVersion: 1,
+      kind: "PATH_EXPLORATION_RECORD",
+      queryKey,
+      regionId,
+      activationId,
+      observedPathKey,
+      summaryId,
+      status
+    }' "${replay_verification}" >>"${records}"
+    discard_successful_iteration "${campaign}"
     iteration=$((iteration + 1))
   done
 
   run_graphchecker_main \
     edu.uva.liftlab.graphchecker.concolic.RegionSummaryMerger \
     --summaries "${summaries}" \
-    --path-manifest "${campaign}/region_path_manifest.json" \
-    --output "${campaign}/merged_region_summaries.jsonl" \
-    --manifest "${campaign}/region_relation_merge_manifest.json"
+    --path-manifest "${campaign}/region_path_closure.json" \
+    --output "${campaign}/merged_region_summaries.jsonl"
   debug_merged_relation "${campaign}/merged_region_summaries.jsonl"
-  jq -e '.complete == true and .mergedRelationCount == 1' \
-    "${campaign}/region_relation_merge_manifest.json" >/dev/null \
-    || die "producer guarded merge is incomplete for channel ${channel}"
   jq -e -s --arg region "${region}" '
     length == 1
     and .[0].regionId == $region
@@ -960,6 +1024,8 @@ do_explore_producer() {
     and .[0].regionRelation.complete == true
   ' "${campaign}/merged_region_summaries.jsonl" >/dev/null \
     || die "producer merged relation is not complete for channel ${channel}"
+  discard_successful_iteration "${campaign}"
+  discard_successful_campaign_state "${campaign}"
   echo "[three-thread-rpc] producer ${channel} path worklist closed after $((iteration - 1)) replay(s)"
 }
 
@@ -1016,72 +1082,53 @@ run_producers_parallel() {
   fi
 }
 
-declared_producer_regions() {
-  local channel binding region
-  local -a channels
-  mapfile -t channels < <(discovered_channels)
-  for channel in "${channels[@]}"; do
-    binding=$(producer_binding "${channel}") || return $?
-    IFS=$'\t' read -r region _ <<< "${binding}"
-    printf '%s\n' "${region}"
-  done
-}
-
-aggregate_producer_artifacts() {
-  local channel campaign expected_regions actual_regions
-  local -a channels merged_inputs
-  [[ ! -e "${candidate_root}" ]] \
-    || die "candidate output already exists: ${candidate_root}"
-  mkdir -p "${candidate_root}"
-  mapfile -t channels < <(discovered_channels)
-  [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
-  merged_inputs=()
-  for channel in "${channels[@]}"; do
-    campaign=$(producer_campaign_directory "${channel}") || return $?
-    merged_inputs+=("${campaign}/merged_region_summaries.jsonl")
-  done
-  combine_jsonl_unique summaryId \
-    "${candidate_root}/producer_merged_summaries.jsonl" \
-    "${merged_inputs[@]}"
-  expected_regions=$(declared_producer_regions | sort -u)
-  actual_regions=$(jq -r '.regionId' \
-    "${candidate_root}/producer_merged_summaries.jsonl" | sort -u)
-  [[ "${expected_regions}" == "${actual_regions}" ]] \
-    || die "merged producer regions differ from runtime read-from discovery"
-  [[ "$(printf '%s\n' "${expected_regions}" | sed '/^$/d' | wc -l)" \
-      -eq "${#channels[@]}" ]] \
-    || die "discovered channels do not resolve to distinct producer regions"
-  jq -e -s --argjson expected "${#channels[@]}" '
-    length == $expected
-    and all(.[];
-      .valid == true
-      and .relationallyComplete == true
-      and .regionRelation.complete == true)
-  ' "${candidate_root}/producer_merged_summaries.jsonl" >/dev/null \
-    || die "aggregated producer relations are incomplete"
-}
-
 do_candidate_compose() {
-  local target_region target_activation binding channel producer_binding_row
-  local producer_region
-  local -a channels bounded_args
+  local target_region target_activation binding channel campaign
+  local producer_binding_row producer_region producer_summary
+  local compose_summaries
+  local -a channels bounded_args merged_inputs
   require_file "target seed summary" \
     "${target_schedule}/concolic_region_summaries.jsonl"
   require_file "target candidate branch query" \
     "${target_schedule}/branch_queries.jsonl"
-  aggregate_producer_artifacts
+  [[ ! -e "${candidate_root}" ]] \
+    || die "candidate output already exists: ${candidate_root}"
+  mkdir -p "${candidate_root}"
   binding=$(target_binding) || return $?
   IFS=$'\t' read -r target_region target_activation <<< "${binding}"
-  mapfile -t channels < <(discovered_channels)
+  mapfile -t channels < <(discovered_channels | LC_ALL=C sort)
+  [[ ${#channels[@]} -gt 0 ]] || die "runtime discovery found no producers"
   bounded_args=()
+  merged_inputs=()
   for channel in "${channels[@]}"; do
     producer_binding_row=$(producer_binding "${channel}") || return $?
     IFS=$'\t' read -r producer_region _ <<< "${producer_binding_row}"
+    campaign=$(producer_campaign_directory "${channel}") || return $?
+    producer_summary="${campaign}/merged_region_summaries.jsonl"
+    require_file "merged producer summary" "${producer_summary}"
+    jq -e -s --arg region "${producer_region}" '
+      length == 1
+      and .[0].regionId == $region
+      and (.[0].summaryId | type == "string" and length > 0)
+      and .[0].valid == true
+      and .[0].relationallyComplete == true
+      and .[0].regionRelation.complete == true
+    ' "${producer_summary}" >/dev/null \
+      || die "producer relation is incomplete for channel ${channel}"
     bounded_args+=(--bounded-upstream-region "${producer_region}")
+    merged_inputs+=("${producer_summary}")
   done
+  jq -e -s --argjson expected "${#channels[@]}" '
+    length == $expected
+    and ([.[].regionId] | unique | length) == $expected
+    and ([.[].summaryId] | unique | length) == $expected
+  ' "${merged_inputs[@]}" >/dev/null \
+    || die "producer relation identities are not unique"
+  compose_summaries=$(IFS=:; printf '%s' "${merged_inputs[*]}")
+  compose_summaries="${compose_summaries}:${target_schedule}/concolic_region_summaries.jsonl"
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_FATAL_QUERIES="${target_schedule}/branch_queries.jsonl" \
-    CAUSYNTH_COMPOSE_SUMMARIES="${candidate_root}/producer_merged_summaries.jsonl:${target_schedule}/concolic_region_summaries.jsonl" \
+    CAUSYNTH_COMPOSE_SUMMARIES="${compose_summaries}" \
     CAUSYNTH_COMPOSED_SMT="${candidate_root}/candidate.smt2" \
     CAUSYNTH_COMPOSITION_MANIFEST="${candidate_root}/candidate_composition_manifest.json" \
     CAUSYNTH_RELATIONSHIP_CANDIDATES="${candidate_root}/symbolic_relationship_candidates.json" \
