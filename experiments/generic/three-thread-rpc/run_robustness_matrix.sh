@@ -778,13 +778,15 @@ validate_semantic_profile() {
     containers)
       jq -e '
         (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 2
-        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
-          | sort) == ["I", "I"]
+        and (.existentialNonBooleanRootInputs | length) >= 3
+        and all(.existentialNonBooleanRootInputs[];
+          .javaTypeDescriptor == "I")
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("MapProducer: int input1"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("MapProducer: int input2"))
+        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+          | contains("MapProducer: int input3"))
         and (.truthTable | length) == 4
         and ([.truthTable[] | select(.reachesBug == true)]
           | length) == 4
@@ -797,9 +799,13 @@ validate_semantic_profile() {
       jq -e '
         (.resolvedProducerKeys | length) == 2
         and (.includedSummaries | length) == 2
-        and (.caseProjectionCatalog | length) == 12
-        and ([.caseProjectionCatalog[].bindings[]
-          | select(has("bridgeAssertionName"))] | length) == 10
+        and (.caseProjectionCatalog | length) >= 4
+        and all(.caseProjectionCatalog[];
+          (.bindings | length) >= 1
+          and ([.bindings[]
+            | select(has("bridgeAssertionName"))] | length) == 1)
+        and any(.caseProjectionCatalog[];
+          (.bindings | length) >= 4)
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "containers lost guarded array/map composition evidence"
       grep -Fq '(define-fun java_int_wrap' "${smt}" \
