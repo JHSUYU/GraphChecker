@@ -1134,25 +1134,22 @@ do_candidate_compose() {
     CAUSYNTH_FATAL_ACTIVATION_ID="${target_activation}" \
     "${runner}" --config "${config}" compose "${bounded_args[@]}")
   jq -e --argjson expected "${#channels[@]}" '
-    .kind == "CONCOLIC_COMPOSED_SMT"
-    and .compositionStage == "CANDIDATE"
-    and .boundedComposition == true
+    .schemaVersion == 2
+    and .kind == "CONCOLIC_COMPOSED_SMT"
+    and .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
     and ((.boundedUpstreamRegions // []) | length) == $expected
-    and .structurallyComplete == true
-    and .eligibleForCandidateModel == true
-    and .fatalReplayValidated == false
-    and .complete == false
-    and .eligibleToReportAutomaticRelationship == false
-    and .caseProjectionCatalogComplete == true
+    and ((.unsupportedExpressions // []) | length) == 0
+    and ((.unboundPorts // []) | length) == 0
   ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
     || die "composition is not a structurally complete candidate model"
   jq -e '
-    .schemaVersion == 1
+    .schemaVersion == 2
     and .kind == "SYMBOLIC_RELATIONSHIP_CANDIDATES"
-    and .eligibleForAutomaticVerification == false
+    and .trustState == "CANDIDATE_ONLY"
     and (.relationships | type == "array")
-    and (keys | sort) == (["eligibleForAutomaticVerification", "kind",
-      "relationships", "schemaVersion"] | sort)
+    and (keys | sort) == (["kind", "relationships", "schemaVersion",
+      "trustState"] | sort)
   ' "${candidate_root}/symbolic_relationship_candidates.json" >/dev/null \
     || die "candidate relationship catalog claims final eligibility"
 }
@@ -1170,29 +1167,25 @@ do_candidate_solve() {
     CAUSYNTH_REACH_REPORT="${candidate_root}/candidate_boolean_model.json" \
     "${runner}" --config "${config}" reach)
   if jq -e '
-    .complete == true
-    and .status == "COMPLETE_CANDIDATE_MODEL"
-    and .extractionMode == "CANDIDATE_MODEL"
-    and .candidateOnly == true
-    and .candidateModelAvailable == true
-    and .reportableFinalReachCondition == false
-    and .truthTableComplete == true
-    and .reachabilityStatus == "REACHABLE"
-    and .satisfyingValuationCount > 0
+    .schemaVersion == 2
+    and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
+    and .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
+    and .reachability == "REACHABLE"
+    and ((.discoveryGaps // []) | length) == 0
+    and ([.truthTable[] | select(.reachesBug == true)] | length) > 0
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     :
   elif jq -e '
-    .complete == true
-    and .status == "COMPLETE_CANDIDATE_UNREACHABLE"
-    and .extractionMode == "CANDIDATE_MODEL"
-    and .candidateOnly == true
-    and .reportableFinalReachCondition == false
-    and .truthTableComplete == true
-    and .exactFiniteProjection == true
-    and .candidateModelAvailable == false
-    and .reachabilityStatus == "UNREACHABLE"
-    and .satisfyingValuationCount == 0
-    and .unsatisfyingValuationCount == .valuationCount
+    .schemaVersion == 2
+    and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
+    and .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
+    and .reachability == "UNREACHABLE"
+    and ((.discoveryGaps // []) | length) == 0
+    and ([.truthTable[] | select(.reachesBug == true)] | length) == 0
+    and all(.truthTable[]; .solverStatus == "unsat"
+      and .reachesBug == false)
     and .reachConditionSmtLib == "false"
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     echo "[three-thread-rpc] candidate SMT is UNSAT"
@@ -1286,7 +1279,7 @@ write_candidate_manifest() {
   require_file "candidate composition manifest" "${composition}"
   require_file "candidate reach model" "${reach}"
   require_file "candidate relationships" "${relationships}"
-  status=$(jq -er '.reachabilityStatus
+  status=$(jq -er '.reachability
     | select(. == "REACHABLE" or . == "UNREACHABLE")' "${reach}") \
     || die "candidate reach model has no exact reachability status"
   jq -n \
@@ -1304,16 +1297,11 @@ write_candidate_manifest() {
     --arg relationships_hash "$(sha256_file "${relationships}")" \
     --argjson relationships_size "$(stat -c '%s' "${relationships}")" '
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         kind: "CONCOLIC_CANDIDATE_RESULT",
-        status: "COMPLETE_Z3_CHECKED_CANDIDATE",
-        complete: true,
+        state: "CANDIDATE_READY",
         trustState: "CANDIDATE_ONLY",
-        reachabilityStatus: $status,
-        z3Checked: true,
-        naturalReplayPromotionImplemented: false,
-        naturalReplayPromotionTodo:
-          "Replay the candidate naturally and bind the observed exception before trusted promotion.",
+        reachability: $status,
         candidateSmtArtifact: {path: $smt, sha256: $smt_hash,
           sizeBytes: $smt_size},
         compositionManifestArtifact: {path: $composition,
@@ -1325,12 +1313,12 @@ write_candidate_manifest() {
       }
     ' >"${output}"
   jq -e '
-    .kind == "CONCOLIC_CANDIDATE_RESULT"
-    and .status == "COMPLETE_Z3_CHECKED_CANDIDATE"
-    and .complete == true
+    .schemaVersion == 2
+    and .kind == "CONCOLIC_CANDIDATE_RESULT"
+    and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .z3Checked == true
-    and .naturalReplayPromotionImplemented == false
+    and (.reachability == "REACHABLE"
+      or .reachability == "UNREACHABLE")
   ' "${output}" >/dev/null || die "candidate manifest is incomplete"
 }
 

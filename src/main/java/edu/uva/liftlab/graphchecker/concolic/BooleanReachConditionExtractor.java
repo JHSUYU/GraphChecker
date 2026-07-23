@@ -42,8 +42,6 @@ import java.util.regex.Pattern;
  * SMT. This class never promotes them to a trusted final result.</p>
  */
 public final class BooleanReachConditionExtractor {
-    private static final String NULLABLE_STRING_ENCODING_AUTHORITY =
-            "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
     private static final Pattern FIELD_CELL = Pattern.compile(
@@ -83,7 +81,9 @@ public final class BooleanReachConditionExtractor {
         write(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
-        if (!bool(report, "complete", false)) System.exit(2);
+        if (!"CANDIDATE_READY".equals(string(report, "state"))) {
+            System.exit(2);
+        }
     }
 
     static Extraction extract(String composedSmt, JsonObject manifest,
@@ -92,22 +92,9 @@ public final class BooleanReachConditionExtractor {
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
-        report.addProperty("schemaVersion", 1);
+        report.addProperty("schemaVersion", 2);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
-        report.addProperty("projectionMethod",
-                "EXHAUSTIVE_JAVA_BOOLEAN_ROOT_INPUT_ENUMERATION");
-        report.addProperty("conditionForm",
-                "CANONICAL_DNF_WITH_CONSTANT_FOLDING");
-        report.addProperty("callerProvidedConditionUsed", false);
-        report.addProperty("composedBugPathAlreadyConstrained", true);
-        report.addProperty("composedSmtSha256", sha256(composedSmt));
-        report.addProperty("extractionMode", "CANDIDATE_MODEL");
-        report.addProperty("candidateOnly", true);
-        report.addProperty("candidateModelAvailable", false);
-        report.addProperty("reportableFinalReachCondition", false);
-        report.addProperty("fatalReplayValidated",
-                bool(manifest, "fatalReplayValidated", false));
-        report.addProperty("fatalReplaySkippedBecauseUnreachable", false);
+        report.addProperty("trustState", "CANDIDATE_ONLY");
 
         List<String> gaps = new ArrayList<>();
         validateCompositionAuthority(manifest, relationships, gaps);
@@ -119,49 +106,10 @@ public final class BooleanReachConditionExtractor {
         Discovery discovery = discover(composedSmt, manifest,
                 relationships, ports, gaps);
         List<BooleanInput> inputs = discovery.rootInputs;
-        report.addProperty("staticBooleanInputCount",
-                discovery.staticBooleanInputCount);
-        report.addProperty("usedBooleanInputCount",
-                discovery.usedBooleanInputCount);
-        report.addProperty("upstreamSuppliedBooleanInputCount",
-                discovery.upstreamSuppliedBooleanInputCount);
-        report.addProperty("rootBooleanInputCount", inputs.size());
         report.add("rootBooleanInputs", inputCatalog(inputs));
-        report.addProperty("staticNonBooleanScalarInputCount",
-                discovery.staticNonBooleanScalarInputCount);
-        report.addProperty("usedNonBooleanScalarInputCount",
-                discovery.usedNonBooleanScalarInputCount);
-        report.addProperty("upstreamSuppliedNonBooleanScalarInputCount",
-                discovery.upstreamSuppliedNonBooleanScalarInputCount);
-        report.addProperty("existentialNonBooleanRootInputCount",
-                discovery.existentialNonBooleanRootInputs.size());
         report.add("existentialNonBooleanRootInputs",
                 scalarInputCatalog(
                         discovery.existentialNonBooleanRootInputs));
-        report.addProperty("nullableJavaStringModeled",
-                discovery.nullableJavaStringInputCount > 0);
-        report.addProperty("nullableJavaStringInputCount",
-                discovery.nullableJavaStringInputCount);
-        if (discovery.nullableJavaStringInputCount > 0) {
-            report.addProperty("nullableStringEncodingAuthority",
-                    NULLABLE_STRING_ENCODING_AUTHORITY);
-        }
-        report.addProperty(
-                "existentialNonBooleanRootInputDiscoveryAuthority",
-                "STATIC_JAVA_SCALAR_PORT_TYPE_PLUS_COMPOSER_CANONICAL_"
-                        + "TERM_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
-        report.addProperty("rootInputDiscoveryAuthority",
-                "STATIC_BOOLEAN_PORT_TYPE_PLUS_COMPOSER_CANONICAL_TERM_"
-                        + "AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
-        report.addProperty("projectionDomain",
-                "JAVA_BOOLEAN_CANONICAL_INT_TERMS_ARE_0_OR_1");
-        report.addProperty("projectionDomainInputCount",
-                discovery.booleanDomainInputs.size());
-        report.add("projectionDomainAssertions",
-                domainAssertionCatalog(discovery.booleanDomainInputs));
-        report.addProperty("maxInputCount", Math.max(0, maxInputs));
-        report.addProperty("maxValuationCount",
-                Math.max(1, maxValuations));
 
         long valuationCount = inputs.size() >= 63
                 ? Long.MAX_VALUE : 1L << inputs.size();
@@ -173,10 +121,8 @@ public final class BooleanReachConditionExtractor {
             gaps.add("BOOLEAN_VALUATION_LIMIT_EXCEEDED:" + valuationCount
                     + ">" + Math.max(1, maxValuations));
         }
-        report.addProperty("valuationCount", valuationCount);
         if (!gaps.isEmpty()) {
-            return incomplete(report, gaps,
-                    "REACH_CONDITION_DISCOVERY_WITH_GAPS");
+            return incomplete(report, gaps);
         }
 
         String base = SmtLibQueries.stripSolverCommands(
@@ -185,7 +131,6 @@ public final class BooleanReachConditionExtractor {
                 discovery.booleanDomainInputs);
         List<Valuation> valuations = new ArrayList<>();
         JsonArray truthTable = new JsonArray();
-        int solverInvocations = 0;
         int satisfying = 0;
         int unsatisfying = 0;
         int solverErrors = 0;
@@ -194,7 +139,6 @@ public final class BooleanReachConditionExtractor {
             boolean[] values = valuation(ordinal, inputs.size());
             String query = valuationQuery(domainBase, inputs, values);
             SolverResult result = solver.check(query);
-            solverInvocations++;
             Valuation valuation = new Valuation(ordinal, values,
                     result.status);
             valuations.add(valuation);
@@ -215,12 +159,8 @@ public final class BooleanReachConditionExtractor {
 
         Dnf dnf = Dnf.from(inputs, valuations);
         report.add("truthTable", truthTable);
-        report.addProperty("satisfyingValuationCount", satisfying);
-        report.addProperty("unsatisfyingValuationCount", unsatisfying);
-        report.addProperty("solverErrorCount", solverErrors);
         report.add("reachCondition", dnf.toJson());
         report.addProperty("reachConditionSmtLib", dnf.formula);
-        report.addProperty("reachConditionSha256", sha256(dnf.formula));
 
         String implicationStatus = "not_checked";
         String implicationOutput = "";
@@ -229,46 +169,30 @@ public final class BooleanReachConditionExtractor {
                     + "(assert (not " + dnf.formula + "))"
                     + System.lineSeparator() + "(check-sat)"
                     + System.lineSeparator());
-            solverInvocations++;
             implicationStatus = proof.status;
             implicationOutput = proof.output;
         }
-        report.addProperty("baseImpliesReachConditionStatus",
-                implicationStatus);
-        report.addProperty("baseImpliesReachCondition",
-                "unsat".equals(implicationStatus));
-        report.addProperty("implicationPremise",
-                "COMPOSED_SMT_AND_JAVA_BOOLEAN_PROJECTION_DOMAIN");
-        if (!("unsat".equals(implicationStatus)
-                || "not_checked".equals(implicationStatus))) {
-            report.addProperty("baseImplicationSolverOutput",
-                    implicationOutput);
-        }
-        report.addProperty("solverInvocationCount", solverInvocations);
-        report.addProperty("truthTableComplete", solverErrors == 0
-                && satisfying + unsatisfying == valuationCount);
-        report.addProperty("exactFiniteProjection",
-                solverErrors == 0 && "unsat".equals(implicationStatus));
         boolean complete = solverErrors == 0
                 && "unsat".equals(implicationStatus)
                 && satisfying + unsatisfying == valuationCount;
         boolean truthTableDecided = solverErrors == 0
                 && satisfying + unsatisfying == valuationCount;
-        report.addProperty("candidateModelAvailable",
-                truthTableDecided && satisfying > 0);
-        report.addProperty("reachabilityStatus", !truthTableDecided
+        report.addProperty("reachability", !truthTableDecided
                 ? "UNKNOWN" : satisfying > 0
                 ? "REACHABLE" : "UNREACHABLE");
-        report.addProperty("fatalReplaySkippedBecauseUnreachable", false);
-        report.add("discoveryGaps", new JsonArray());
-        report.addProperty("complete", complete);
-        String status = "BOOLEAN_REACH_CONDITION_WITH_SOLVER_GAPS";
-        if (complete) {
-            status = satisfying > 0
-                    ? "COMPLETE_CANDIDATE_MODEL"
-                    : "COMPLETE_CANDIDATE_UNREACHABLE";
+        JsonArray resultGaps = new JsonArray();
+        if (solverErrors > 0) {
+            resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
+                    + solverErrors);
         }
-        report.addProperty("status", status);
+        if (!"unsat".equals(implicationStatus)) {
+            resultGaps.add("BASE_DOES_NOT_PROVE_DNF:"
+                    + implicationStatus + ":"
+                    + firstNonBlank(implicationOutput));
+        }
+        report.add("discoveryGaps", resultGaps);
+        report.addProperty("state", complete
+                ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         return new Extraction(report);
     }
 
@@ -276,27 +200,21 @@ public final class BooleanReachConditionExtractor {
             JsonObject manifest, JsonObject relationships,
             List<String> gaps) {
         boolean commonManifest = manifest != null
-                && integer(manifest, "schemaVersion", -1) == 1
-                && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"))
-                && bool(manifest, "caseProjectionCatalogComplete", false);
+                && integer(manifest, "schemaVersion", -1) == 2
+                && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"));
         boolean commonRelationships = relationships != null
-                && integer(relationships, "schemaVersion", -1) == 1
+                && integer(relationships, "schemaVersion", -1) == 2
                 && "SYMBOLIC_RELATIONSHIP_CANDIDATES".equals(string(
                 relationships, "kind"));
         if (!commonManifest
-                || !"CANDIDATE".equals(string(manifest,
-                "compositionStage"))
-                || !bool(manifest, "structurallyComplete", false)
-                || bool(manifest, "fatalReplayValidated", true)
-                || bool(manifest, "complete", true)
-                || !bool(manifest, "eligibleForCandidateModel", false)
-                || bool(manifest,
-                "eligibleToReportAutomaticRelationship", true)) {
+                || !"CANDIDATE_READY".equals(string(manifest, "state"))
+                || !"CANDIDATE_ONLY".equals(string(manifest,
+                "trustState"))) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
         if (!commonRelationships
-                || bool(relationships,
-                "eligibleForAutomaticVerification", true)) {
+                || !"CANDIDATE_ONLY".equals(string(relationships,
+                "trustState"))) {
             gaps.add("RELATIONSHIP_CATALOG_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
     }
@@ -308,10 +226,7 @@ public final class BooleanReachConditionExtractor {
         Map<String, List<JsonObject>> mappingsByPort =
                 new LinkedHashMap<>();
         JsonArray cases = array(manifest, "caseProjectionCatalog");
-        if (integer(manifest, "caseProjectionCatalogCount", -1)
-                != cases.size()) {
-            gaps.add("CASE_PROJECTION_CATALOG_COUNT_MISMATCH");
-        }
+        Set<String> caseIds = new LinkedHashSet<>();
         for (int caseIndex = 0; caseIndex < cases.size(); caseIndex++) {
             JsonElement caseElement = cases.get(caseIndex);
             if (!caseElement.isJsonObject()) {
@@ -319,39 +234,39 @@ public final class BooleanReachConditionExtractor {
                 continue;
             }
             JsonObject pathCase = caseElement.getAsJsonObject();
-            if (integer(pathCase, "schemaVersion", -1) != 1
-                    || !"GUARDED_CASE_PROJECTION_CATALOG".equals(string(
-                    pathCase, "kind"))
-                    || !bool(pathCase, "complete", false)
-                    || !"EMITTER_ACTUAL_TERM_CAPTURE_IN_CASE_SCOPE".equals(
-                    string(pathCase,
-                            "rawEngineSymbolMappingAuthority"))) {
+            String caseId = string(pathCase, "caseId");
+            String selector = string(pathCase, "selectorTerm");
+            JsonElement bindingsElement = pathCase.get("bindings");
+            if (caseId.isEmpty() || !caseIds.add(caseId)
+                    || !safeSmtAtom(selector)
+                    || bindingsElement == null
+                    || !bindingsElement.isJsonArray()) {
                 gaps.add("INCOMPLETE_CASE_PROJECTION:" + caseIndex);
                 continue;
             }
-            for (JsonElement mappingElement : array(pathCase,
-                    "rawEngineSymbolMappings")) {
-                if (!mappingElement.isJsonObject()) continue;
+            Set<String> casePorts = new LinkedHashSet<>();
+            for (JsonElement mappingElement
+                    : bindingsElement.getAsJsonArray()) {
+                if (!mappingElement.isJsonObject()) {
+                    gaps.add("NON_OBJECT_CASE_BINDING:" + caseId);
+                    continue;
+                }
                 JsonObject mapping = mappingElement.getAsJsonObject();
-                String port = string(mapping, "canonicalPort");
-                if (port.isEmpty()) continue;
+                String port = string(mapping, "portId");
+                if (port.isEmpty() || !casePorts.add(port)
+                        || !safeSmtAtom(string(mapping, "term"))) {
+                    gaps.add("INVALID_CASE_BINDING:" + caseId + ":"
+                            + port);
+                    continue;
+                }
                 List<JsonObject> values = mappingsByPort.get(port);
                 if (values == null) {
                     values = new ArrayList<>();
                     mappingsByPort.put(port, values);
                 }
                 JsonObject evidence = mapping.deepCopy();
-                evidence.addProperty("caseId", string(pathCase, "caseId"));
-                evidence.addProperty("regionId", string(pathCase,
-                        "regionId"));
-                evidence.addProperty("sourceSummaryId", string(pathCase,
-                        "sourceSummaryId"));
-                evidence.addProperty("sourceActivationId", string(pathCase,
-                        "sourceActivationId"));
-                evidence.addProperty("selectorSolverSymbol", string(pathCase,
-                        "selectorSolverSymbol"));
-                evidence.add("caseDynamicFieldBindings", array(pathCase,
-                        "dynamicFieldBindings").deepCopy());
+                evidence.addProperty("caseId", caseId);
+                evidence.addProperty("selectorTerm", selector);
                 values.add(evidence);
             }
         }
@@ -361,26 +276,16 @@ public final class BooleanReachConditionExtractor {
         List<BooleanInput> roots = new ArrayList<>();
         List<BooleanInput> domainInputs = new ArrayList<>();
         List<ScalarInput> scalarRoots = new ArrayList<>();
-        int staticBoolean = 0;
-        int usedBoolean = 0;
-        int suppliedBoolean = 0;
-        int staticScalar = 0;
-        int usedScalar = 0;
-        int suppliedScalar = 0;
-        int nullableStrings = 0;
         for (PortInfo port : ports.sortedInputs()) {
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
             if (!port.javaBoolean && encoding == null) continue;
             if (port.javaBoolean) {
-                staticBoolean++;
                 encoding = ScalarEncoding.INT;
-            } else {
-                staticScalar++;
             }
             String solverTerm = encoding.solverTerm(port.id);
             String portTerm = "port__" + smtName(port.id);
             List<JsonObject> evidence = scalarEvidence(
-                    mappingsByPort.get(port.id), encoding);
+                    mappingsByPort.get(port.id));
             String nullnessSolverTerm = encoding == ScalarEncoding.STRING
                     ? exactCanonicalStringNullnessTerm(evidence, port,
                     gaps) : "";
@@ -389,8 +294,6 @@ public final class BooleanReachConditionExtractor {
             if (!declared && (evidence == null || evidence.isEmpty())) {
                 continue;
             }
-            if (port.javaBoolean) usedBoolean++;
-            else usedScalar++;
             if (!declared) {
                 gaps.add((port.javaBoolean
                         ? "BOOLEAN_PORT_WITHOUT_CANONICAL_SMT_BINDING:"
@@ -407,7 +310,7 @@ public final class BooleanReachConditionExtractor {
             if (evidence != null) {
                 for (JsonObject mapping : evidence) {
                     boolean direct = solverTerm.equals(string(mapping,
-                            "solverTerm"));
+                            "term"));
                     boolean bridged = !direct
                             && exactDynamicCanonicalBridge(smt, mapping,
                             port.id, solverTerm, nullnessSolverTerm,
@@ -415,20 +318,16 @@ public final class BooleanReachConditionExtractor {
                     boolean stringNullnessMatches = encoding
                             != ScalarEncoding.STRING
                             || direct && nullnessSolverTerm.equals(string(
-                            mapping, "nullnessSolverTerm"))
-                            || !direct && nullnessSolverTerm.equals(string(
-                            mapping, "canonicalNullnessSolverTerm"));
+                            mapping, "nullnessTerm"))
+                            || !direct && safeSmtAtom(string(mapping,
+                            "nullnessTerm"));
                     if ((!direct && !bridged)
-                            || direct && hasDynamicBridgeMetadata(mapping)
+                            || direct && mapping.has(
+                            "bridgeAssertionName")
                             || !stringNullnessMatches
                             || encoding == ScalarEncoding.STRING
-                            && !NULLABLE_STRING_ENCODING_AUTHORITY.equals(
-                            string(mapping,
-                                    "nullableStringEncodingAuthority"))
-                            || !encoding.solverSort.equals(string(mapping,
-                            "solverSort"))
-                            || !"EMITTER_ACTUAL_TERM".equals(string(mapping,
-                            "authority"))) {
+                            && !safeSmtAtom(string(mapping,
+                            "nullnessTerm"))) {
                         gaps.add((port.javaBoolean
                                 ? "BOOLEAN_CASE_TERM_MISMATCH:"
                                 : "NON_BOOLEAN_SCALAR_CASE_TERM_MISMATCH:")
@@ -442,17 +341,14 @@ public final class BooleanReachConditionExtractor {
                         encoding.solverSort, evidence);
                 domainInputs.add(input);
                 if (upstreamSupplied.contains(port.id)) {
-                    suppliedBoolean++;
                     continue;
                 }
                 roots.add(input);
             } else if (upstreamSupplied.contains(port.id)) {
-                suppliedScalar++;
                 continue;
             } else {
                 scalarRoots.add(new ScalarInput(port, solverTerm,
                         nullnessSolverTerm, encoding, evidence));
-                if (encoding == ScalarEncoding.STRING) nullableStrings++;
             }
         }
         Collections.sort(roots, Comparator.comparing(value -> value.port.id));
@@ -460,36 +356,19 @@ public final class BooleanReachConditionExtractor {
                 value -> value.port.id));
         Collections.sort(scalarRoots, Comparator.comparing(
                 value -> value.port.id));
-        return new Discovery(roots, domainInputs, staticBoolean,
-                usedBoolean, suppliedBoolean, scalarRoots, staticScalar,
-                usedScalar, suppliedScalar, nullableStrings);
+        return new Discovery(roots, domainInputs, scalarRoots);
     }
 
     private static String exactCanonicalStringNullnessTerm(
             List<JsonObject> evidence, PortInfo port, List<String> gaps) {
         if (evidence == null || evidence.isEmpty()) return "";
-        String selected = "";
         for (JsonObject mapping : evidence) {
-            if (!NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(mapping,
-                    "nullableStringEncodingAuthority"))) {
-                gaps.add("STRING_CASE_NULLNESS_AUTHORITY_MISSING:"
-                        + port.id);
-                return "";
-            }
-            String candidate = firstNonBlank(string(mapping,
-                    "canonicalNullnessSolverTerm"), string(mapping,
-                    "nullnessSolverTerm"));
-            if (!safeSmtAtom(candidate)) {
+            if (!safeSmtAtom(string(mapping, "nullnessTerm"))) {
                 gaps.add("STRING_CASE_NULLNESS_TERM_MISSING:" + port.id);
                 return "";
             }
-            if (!selected.isEmpty() && !selected.equals(candidate)) {
-                gaps.add("STRING_CASE_NULLNESS_TERM_CONFLICT:" + port.id);
-                return "";
-            }
-            selected = candidate;
         }
-        return selected;
+        return "sym__port__" + smtName(port.id) + "__string_is_null";
     }
 
     private static boolean canonicalScalarBindingDeclared(
@@ -518,17 +397,11 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static List<JsonObject> scalarEvidence(
-            List<JsonObject> evidence, ScalarEncoding encoding) {
+            List<JsonObject> evidence) {
         if (evidence == null || evidence.isEmpty()) {
             return Collections.emptyList();
         }
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonObject mapping : evidence) {
-            if (encoding.solverSort.equals(string(mapping, "solverSort"))) {
-                result.add(mapping);
-            }
-        }
-        return result;
+        return new ArrayList<>(evidence);
     }
 
     /**
@@ -558,9 +431,9 @@ public final class BooleanReachConditionExtractor {
             String canonicalSolverTerm,
             String canonicalNullnessSolverTerm,
             ScalarEncoding encoding) {
-        String actual = string(mapping, "solverTerm");
-        String actualNullness = string(mapping, "nullnessSolverTerm");
-        String guard = string(mapping, "canonicalBridgeGuard");
+        String actual = string(mapping, "term");
+        String actualNullness = string(mapping, "nullnessTerm");
+        String guard = string(mapping, "selectorTerm");
         String expression = encoding == ScalarEncoding.STRING
                 ? "(and (= " + actual + " " + canonicalSolverTerm
                 + ") (= " + actualNullness + " "
@@ -568,85 +441,22 @@ public final class BooleanReachConditionExtractor {
                 : "(= " + actual + " " + canonicalSolverTerm + ")";
         String formula = "(=> " + guard + " " + expression + ")";
         String assertionName = string(mapping,
-                "canonicalBridgeAssertionName");
+                "bridgeAssertionName");
         String assertion = "(assert (! " + formula + " :named "
                 + assertionName + "))";
-        JsonArray ids = array(mapping, "dynamicBindingIds");
-        if (!port.equals(string(mapping, "canonicalPort"))
-                || actual.isEmpty() || actual.equals(canonicalSolverTerm)
-                || !safeSmtAtom(actual)
-                || !safeSmtAtom(canonicalSolverTerm)
-                || encoding == ScalarEncoding.STRING
-                && (!safeSmtAtom(actualNullness)
-                || !safeSmtAtom(canonicalNullnessSolverTerm)
-                || !canonicalNullnessSolverTerm.equals(string(mapping,
-                "canonicalNullnessSolverTerm"))
-                || !NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
-                mapping, "nullableStringEncodingAuthority")))
-                || !canonicalSolverTerm.equals("sym__port__"
+        return port.equals(string(mapping, "portId"))
+                && !actual.isEmpty() && !actual.equals(canonicalSolverTerm)
+                && safeSmtAtom(actual)
+                && safeSmtAtom(canonicalSolverTerm)
+                && safeSmtAtom(guard)
+                && (encoding != ScalarEncoding.STRING
+                || safeSmtAtom(actualNullness)
+                && safeSmtAtom(canonicalNullnessSolverTerm))
+                && canonicalSolverTerm.equals("sym__port__"
                 + smtName(port) + "__" + encoding.suffix)
-                || !port.startsWith(string(mapping, "regionId") + ".in.")
-                || !encoding.name().equals(string(mapping, "sort"))
-                || !canonicalSolverTerm.equals(string(mapping,
-                "canonicalSolverTerm"))
-                || !guard.equals(string(mapping, "selectorSolverSymbol"))
-                || assertionName.isEmpty()
-                || !expression.equals(string(mapping,
-                "canonicalBridgeExpression"))
-                || !formula.equals(string(mapping,
-                "canonicalBridgeFormula"))
-                || !assertion.equals(string(mapping,
-                "canonicalBridgeAssertion"))
-                || !sha256(assertion).equals(string(mapping,
-                "canonicalBridgeAssertionSha256"))
-                || !"CASE_UNIQUE_DYNAMIC_BASE_TO_CANONICAL_PORT_"
-                .concat("GUARDED_EQUALITY_V1").equals(string(mapping,
-                        "canonicalBridgeAuthority"))
-                || !"SCOPED_DYNAMIC_FIELD".equals(string(mapping,
-                "termKind"))
-                || ids.size() != 1 || !ids.get(0).isJsonPrimitive()
-                || !ids.get(0).getAsJsonPrimitive().isString()
-                || !exactSmtLine(smt, assertion)) {
-            return false;
-        }
-        String bindingId = ids.get(0).getAsString();
-        JsonObject selected = null;
-        for (JsonElement element : array(mapping,
-                "caseDynamicFieldBindings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            if (!bindingId.equals(string(binding,
-                    "dynamicBindingId"))) continue;
-            if (selected != null) return false;
-            selected = binding;
-        }
-        return selected != null
-                && port.equals(string(selected, "baseInputSymbol"))
-                && actual.equals(string(selected, "solverTerm"))
-                && (encoding != ScalarEncoding.STRING
-                || actualNullness.equals(string(selected,
-                "nullnessSolverTerm")))
-                && string(mapping, "rawEngineSymbol").equals(string(selected,
-                "fieldExpressionRawEngineSymbol"))
-                && bool(selected, "complete", false)
-                && bool(selected, "observationMatched", false)
-                && (encoding != ScalarEncoding.STRING
-                || NULLABLE_STRING_ENCODING_AUTHORITY.equals(string(
-                selected, "nullableStringEncodingAuthority")))
-                && "EMITTER_ACTUAL_DYNAMIC_FIELD_TERM".equals(string(
-                selected, "termBindingAuthority"));
-    }
-
-    private static boolean hasDynamicBridgeMetadata(JsonObject mapping) {
-        for (String member : new String[]{"canonicalSolverTerm",
-                "canonicalBridgeGuard", "canonicalBridgeExpression",
-                "canonicalBridgeFormula", "canonicalBridgeAssertionName",
-                "canonicalBridgeAssertion",
-                "canonicalBridgeAssertionSha256",
-                "canonicalBridgeAuthority"}) {
-            if (mapping.has(member)) return true;
-        }
-        return false;
+                && safeSmtAtom(assertionName)
+                && exactSmtLine(smt, assertion)
+                && uniqueNamedAssertion(smt, assertionName);
     }
 
     private static boolean safeSmtAtom(String value) {
@@ -660,6 +470,16 @@ public final class BooleanReachConditionExtractor {
         int matches = 0;
         for (String line : smt.split("\\R", -1)) {
             if (expected.equals(line)) matches++;
+        }
+        return matches == 1;
+    }
+
+    private static boolean uniqueNamedAssertion(String smt, String name) {
+        if (smt == null || !safeSmtAtom(name)) return false;
+        int matches = 0;
+        String marker = " :named " + name + "))";
+        for (String line : smt.split("\\R", -1)) {
+            if (line.contains(marker)) matches++;
         }
         return matches == 1;
     }
@@ -711,21 +531,6 @@ public final class BooleanReachConditionExtractor {
         return result.toString();
     }
 
-    private static JsonArray domainAssertionCatalog(
-            List<BooleanInput> inputs) {
-        JsonArray result = new JsonArray();
-        for (BooleanInput input : inputs) {
-            JsonObject row = new JsonObject();
-            row.addProperty("portId", input.port.id);
-            row.addProperty("solverTerm", input.solverTerm);
-            row.addProperty("solverSort", input.solverSort);
-            row.addProperty("formula", input.domainFormula());
-            row.addProperty("authority", "STATIC_JAVA_BOOLEAN_TYPE");
-            result.add(row);
-        }
-        return result;
-    }
-
     private static boolean[] valuation(int ordinal, int width) {
         boolean[] result = new boolean[width];
         for (int index = 0; index < width; index++) {
@@ -760,46 +565,28 @@ public final class BooleanReachConditionExtractor {
         JsonArray cases = new JsonArray();
         Set<String> seen = new LinkedHashSet<>();
         for (JsonObject evidence : evidenceRows) {
-            String key = string(evidence, "regionId") + "\u0000"
-                    + string(evidence, "caseId");
+            String key = string(evidence, "caseId");
             if (!seen.add(key)) continue;
             JsonObject row = new JsonObject();
-            row.addProperty("regionId", string(evidence, "regionId"));
             row.addProperty("caseId", string(evidence, "caseId"));
-            row.addProperty("sourceSummaryId", string(evidence,
-                    "sourceSummaryId"));
-            row.addProperty("sourceActivationId", string(evidence,
-                    "sourceActivationId"));
-            row.addProperty("rawEngineSymbol", string(evidence,
-                    "rawEngineSymbol"));
-            for (String member : new String[]{"solverTerm",
-                    "nullnessSolverTerm",
-                    "canonicalSolverTerm", "canonicalBridgeGuard",
-                    "canonicalNullnessSolverTerm",
-                    "canonicalBridgeAssertionName",
-                    "canonicalBridgeAssertionSha256",
-                    "canonicalBridgeAuthority",
-                    "nullableStringEncodingAuthority"}) {
+            row.addProperty("selectorTerm", string(evidence,
+                    "selectorTerm"));
+            for (String member : new String[]{"term", "nullnessTerm",
+                    "bridgeAssertionName"}) {
                 JsonElement value = evidence.get(member);
                 if (value != null) row.add(member, value.deepCopy());
             }
-            row.add("dynamicBindingIds", array(evidence,
-                    "dynamicBindingIds").deepCopy());
             cases.add(row);
         }
         return cases;
     }
 
     private static Extraction incomplete(JsonObject report,
-                                         List<String> gaps,
-                                         String status) {
+                                         List<String> gaps) {
         report.add("truthTable", new JsonArray());
         report.add("discoveryGaps", GSON.toJsonTree(gaps));
-        report.addProperty("solverInvocationCount", 0);
-        report.addProperty("truthTableComplete", false);
-        report.addProperty("exactFiniteProjection", false);
-        report.addProperty("complete", false);
-        report.addProperty("status", status);
+        report.addProperty("reachability", "UNKNOWN");
+        report.addProperty("state", "CANDIDATE_WITH_GAPS");
         return new Extraction(report);
     }
 
@@ -834,8 +621,6 @@ public final class BooleanReachConditionExtractor {
             this.artifact = BooleanReachConditionExtractor.artifact(
                     this.executable);
             this.artifact.addProperty("version", version);
-            this.artifact.addProperty("identityAuthority",
-                    "RESOLVED_REGULAR_FILE_SHA256_PLUS_Z3_VERSION_V1");
         }
 
         JsonObject artifact() {
@@ -971,40 +756,15 @@ public final class BooleanReachConditionExtractor {
     private static final class Discovery {
         private final List<BooleanInput> rootInputs;
         private final List<BooleanInput> booleanDomainInputs;
-        private final int staticBooleanInputCount;
-        private final int usedBooleanInputCount;
-        private final int upstreamSuppliedBooleanInputCount;
         private final List<ScalarInput> existentialNonBooleanRootInputs;
-        private final int staticNonBooleanScalarInputCount;
-        private final int usedNonBooleanScalarInputCount;
-        private final int upstreamSuppliedNonBooleanScalarInputCount;
-        private final int nullableJavaStringInputCount;
 
         private Discovery(List<BooleanInput> rootInputs,
                           List<BooleanInput> booleanDomainInputs,
-                          int staticBooleanInputCount,
-                          int usedBooleanInputCount,
-                          int upstreamSuppliedBooleanInputCount,
-                          List<ScalarInput> existentialNonBooleanRootInputs,
-                          int staticNonBooleanScalarInputCount,
-                          int usedNonBooleanScalarInputCount,
-                          int upstreamSuppliedNonBooleanScalarInputCount,
-                          int nullableJavaStringInputCount) {
+                          List<ScalarInput> existentialNonBooleanRootInputs) {
             this.rootInputs = rootInputs;
             this.booleanDomainInputs = booleanDomainInputs;
-            this.staticBooleanInputCount = staticBooleanInputCount;
-            this.usedBooleanInputCount = usedBooleanInputCount;
-            this.upstreamSuppliedBooleanInputCount =
-                    upstreamSuppliedBooleanInputCount;
             this.existentialNonBooleanRootInputs =
                     existentialNonBooleanRootInputs;
-            this.staticNonBooleanScalarInputCount =
-                    staticNonBooleanScalarInputCount;
-            this.usedNonBooleanScalarInputCount =
-                    usedNonBooleanScalarInputCount;
-            this.upstreamSuppliedNonBooleanScalarInputCount =
-                    upstreamSuppliedNonBooleanScalarInputCount;
-            this.nullableJavaStringInputCount = nullableJavaStringInputCount;
         }
     }
 
@@ -1047,15 +807,8 @@ public final class BooleanReachConditionExtractor {
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
             result.addProperty("solverSort", solverSort);
-            result.addProperty("booleanEncoding", "Bool".equals(solverSort)
-                    ? "SMT_BOOL" : "JAVA_BOOLEAN_AS_INT_0_1");
-            result.addProperty("root", true);
-            result.addProperty("upstreamSupplied", false);
             result.add("caseProjectionEvidence",
                     caseProjectionEvidence(caseEvidence));
-            result.addProperty("authority",
-                    "STATIC_BOOLEAN_PORT_PLUS_COMPOSED_SMT_CANONICAL_"
-                            + "BINDING");
             return result;
         }
     }
@@ -1093,18 +846,9 @@ public final class BooleanReachConditionExtractor {
                 result.addProperty("nullnessSolverTerm",
                         nullnessSolverTerm);
                 result.addProperty("nullnessSolverSort", "Bool");
-                result.addProperty("nullableStringEncodingAuthority",
-                        NULLABLE_STRING_ENCODING_AUTHORITY);
             }
-            result.addProperty("root", true);
-            result.addProperty("upstreamSupplied", false);
-            result.addProperty("projectionRole",
-                    "EXISTENTIALLY_QUANTIFIED_IN_BOOLEAN_PROJECTION");
             result.add("caseProjectionEvidence",
                     caseProjectionEvidence(caseEvidence));
-            result.addProperty("authority",
-                    "STATIC_JAVA_SCALAR_PORT_PLUS_COMPOSED_SMT_CANONICAL_"
-                            + "BINDING_AND_RUNTIME_RELATIONSHIP_DIRECTION_V1");
             return result;
         }
     }
@@ -1188,15 +932,10 @@ public final class BooleanReachConditionExtractor {
     private static final class Dnf {
         private final String formula;
         private final JsonArray clauses;
-        private final int satisfyingCount;
-        private final int valuationCount;
 
-        private Dnf(String formula, JsonArray clauses, int satisfyingCount,
-                    int valuationCount) {
+        private Dnf(String formula, JsonArray clauses) {
             this.formula = formula;
             this.clauses = clauses;
-            this.satisfyingCount = satisfyingCount;
-            this.valuationCount = valuationCount;
         }
 
         private static Dnf from(List<BooleanInput> inputs,
@@ -1235,23 +974,13 @@ public final class BooleanReachConditionExtractor {
             } else {
                 formula = join("or", terms, "false");
             }
-            return new Dnf(formula, clauses, terms.size(),
-                    valuations.size());
+            return new Dnf(formula, clauses);
         }
 
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("kind", "CANONICAL_DNF");
             result.addProperty("formula", formula);
-            result.addProperty("satisfyingValuationCount", satisfyingCount);
-            result.addProperty("valuationCount", valuationCount);
-            result.addProperty("constantFolded",
-                    "true".equals(formula) || "false".equals(formula));
             result.add("clauses", clauses.deepCopy());
-            result.addProperty("clauseCount", clauses.size());
-            result.addProperty("authority",
-                    "EXACT_SAT_ROWS_FROM_EXHAUSTIVE_BOOLEAN_TRUTH_TABLE");
             return result;
         }
     }
@@ -1442,11 +1171,6 @@ public final class BooleanReachConditionExtractor {
                                          Path relationshipsPath,
                                          JsonObject manifest)
             throws IOException {
-        if (!"COMPOSER_EXACT_CLI_INPUT_AND_OUTPUT_SHA256_V1".equals(
-                string(manifest, "artifactBindingAuthority"))) {
-            throw new IOException("Composition manifest has no exact "
-                    + "artifact binding authority");
-        }
         JsonObject actualSmt = artifact(smtPath);
         JsonObject actualRegions = artifact(regionsPath);
         JsonObject actualRelationships = artifact(relationshipsPath);

@@ -112,13 +112,32 @@ validate_artifact_binding() {
 validate_composition_common() {
   local manifest=$1
   jq -e '
-    .schemaVersion == 1
+    .schemaVersion == 2
     and .kind == "CONCOLIC_COMPOSED_SMT"
-    and .structurallyComplete == true
+    and .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
     and ((.unsupportedExpressions // []) | length) == 0
     and ((.unboundPorts // []) | length) == 0
-    and (.fatalConditionCount // 0) > 0
-    and (.resolvedProducerCount // 0) > 0
+    and ((.resolvedProducerKeys // []) | length) > 0
+    and ((.resolvedEdgeBindings // []) | length) > 0
+    and ((.caseProjectionCatalog // []) | type) == "array"
+    and ((.caseProjectionCatalog // []) | length) > 0
+    and all(.caseProjectionCatalog[];
+      (keys | sort)
+        == (["bindings", "caseId", "selectorTerm"] | sort)
+      and (.caseId | type == "string" and length > 0)
+      and (.selectorTerm | type == "string" and length > 0)
+      and (.bindings | type == "array")
+      and all(.bindings[];
+        (.portId | type == "string" and length > 0)
+        and (.term | type == "string" and length > 0)
+        and ((keys - ["portId", "term", "nullnessTerm",
+          "bridgeAssertionName"]) | length) == 0
+        and ((has("nullnessTerm") | not)
+          or (.nullnessTerm | type == "string" and length > 0))
+        and ((has("bridgeAssertionName") | not)
+          or (.bridgeAssertionName
+            | type == "string" and length > 0))))
   ' "${manifest}" >/dev/null \
     || die "composition manifest is incomplete: ${manifest}"
 }
@@ -604,11 +623,13 @@ validate_semantic_profile() {
   case "${label}" in
     baseline)
       jq -e '
-        .rootBooleanInputCount == 2
-        and .existentialNonBooleanRootInputCount == 1
-        and .valuationCount == 4
-        and .satisfyingValuationCount == 2
-        and .unsatisfyingValuationCount == 2
+        (.rootBooleanInputs | length) == 2
+        and (.existentialNonBooleanRootInputs | length) == 1
+        and (.truthTable | length) == 4
+        and ([.truthTable[] | select(.reachesBug == true)]
+          | length) == 2
+        and ([.truthTable[] | select(.reachesBug == false)]
+          | length) == 2
         and ([.truthTable[] | select(.reachesBug) | .valuationKey]
           == ["00", "10"])
         and (.existentialNonBooleanRootInputs[0].javaTypeDescriptor == "I")
@@ -623,11 +644,13 @@ validate_semantic_profile() {
       ;;
     cross-method-fields)
       jq -e '
-        .rootBooleanInputCount == 2
-        and .existentialNonBooleanRootInputCount == 4
-        and .valuationCount == 4
-        and .satisfyingValuationCount == 1
-        and .unsatisfyingValuationCount == 3
+        (.rootBooleanInputs | length) == 2
+        and (.existentialNonBooleanRootInputs | length) == 4
+        and (.truthTable | length) == 4
+        and ([.truthTable[] | select(.reachesBug == true)]
+          | length) == 1
+        and ([.truthTable[] | select(.reachesBug == false)]
+          | length) == 3
         and ([.truthTable[] | select(.reachesBug) | .valuationKey]
           == ["10"])
         and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
@@ -653,11 +676,13 @@ validate_semantic_profile() {
       ;;
     multitype)
       jq -e '
-        .rootBooleanInputCount == 2
-        and .existentialNonBooleanRootInputCount == 4
-        and .valuationCount == 4
-        and .satisfyingValuationCount == 2
-        and .unsatisfyingValuationCount == 2
+        (.rootBooleanInputs | length) == 2
+        and (.existentialNonBooleanRootInputs | length) == 4
+        and (.truthTable | length) == 4
+        and ([.truthTable[] | select(.reachesBug == true)]
+          | length) == 2
+        and ([.truthTable[] | select(.reachesBug == false)]
+          | length) == 2
         and ([.truthTable[] | select(.reachesBug) | .valuationKey]
           == ["10", "11"])
         and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
@@ -680,14 +705,16 @@ validate_semantic_profile() {
       ;;
     dependent-scalar)
       jq -e '
-        .status == "COMPLETE_CANDIDATE_MODEL"
-        and .reachabilityStatus == "REACHABLE"
-        and .candidateModelAvailable == true
-        and .rootBooleanInputCount == 1
-        and .existentialNonBooleanRootInputCount == 2
-        and .valuationCount == 2
-        and .satisfyingValuationCount == 1
-        and .unsatisfyingValuationCount == 1
+        .state == "CANDIDATE_READY"
+        and .trustState == "CANDIDATE_ONLY"
+        and .reachability == "REACHABLE"
+        and (.rootBooleanInputs | length) == 1
+        and (.existentialNonBooleanRootInputs | length) == 2
+        and (.truthTable | length) == 2
+        and ([.truthTable[] | select(.reachesBug == true)]
+          | length) == 1
+        and ([.truthTable[] | select(.reachesBug == false)]
+          | length) == 1
         and ([.truthTable[] | select(.reachesBug) | .valuationKey]
           == ["1"])
         and ([.truthTable[]
@@ -696,8 +723,11 @@ validate_semantic_profile() {
           | length) == 2
         and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
           | sort) == ["I", "Ljava/lang/String;"]
-        and .nullableJavaStringModeled == true
-        and .nullableJavaStringInputCount == 1
+        and ([.existentialNonBooleanRootInputs[]
+          | select(.javaTypeDescriptor == "Ljava/lang/String;"
+            and (.nullnessSolverTerm
+              | type == "string" and length > 0))]
+          | length) == 1
         and ([.rootBooleanInputs[].cell] | tostring
           | contains("<java.lang.Boolean: boolean booleanValue()>.return"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
@@ -719,13 +749,10 @@ validate_semantic_profile() {
         || die "dependent-scalar composition moved away from the annotated target"
       jq -e '
         . as $root
-        | .resolvedProducerCount == 2
-        and .resolvedDemandedOutputCount == 2
-        and .includedBoundedRelationCount == 2
-        and .guardedRegionRelationCount == 2
-        and .guardedPathCaseCount == 8
-        and .caseProjectionCatalogComplete == true
-        and .caseProjectionCatalogCount == 8
+        | (.resolvedProducerKeys | length) == 2
+        and (.resolvedEdgeBindings | length) == 2
+        and (.includedSummaries | length) == 2
+        and (.caseProjectionCatalog | length) == 8
         and ([.resolvedEdgeBindings[].binding.fromOutputCell] | sort)
           == [
             "<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$RpcBus: int arithmeticValue>",
@@ -751,29 +778,29 @@ validate_semantic_profile() {
       ;;
     containers)
       jq -e '
-        .rootBooleanInputCount == 2
-        and .existentialNonBooleanRootInputCount == 2
+        (.rootBooleanInputs | length) == 2
+        and (.existentialNonBooleanRootInputs | length) == 2
         and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
           | sort) == ["I", "I"]
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("MapProducer: int input1"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("MapProducer: int input2"))
-        and .valuationCount == 4
-        and .satisfyingValuationCount == 4
-        and .unsatisfyingValuationCount == 0
+        and (.truthTable | length) == 4
+        and ([.truthTable[] | select(.reachesBug == true)]
+          | length) == 4
+        and ([.truthTable[] | select(.reachesBug == false)]
+          | length) == 0
         and all(.truthTable[];
           .solverStatus == "sat" and .reachesBug == true)
       ' "${reach_report}" >/dev/null \
         || die "containers lost its Boolean/int existential reach profile"
       jq -e '
-        .resolvedProducerCount == 2
-        and .guardedRegionRelationCount == 2
-        and .guardedPathCaseCount == 12
-        and .caseProjectionCatalogComplete == true
-        and .caseProjectionCatalogCount == 12
-        and .heapObservationCount == 10
-        and .heapObservationFieldBindingCount == 10
+        (.resolvedProducerKeys | length) == 2
+        and (.includedSummaries | length) == 2
+        and (.caseProjectionCatalog | length) == 12
+        and ([.caseProjectionCatalog[].bindings[]
+          | select(has("bridgeAssertionName"))] | length) == 10
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "containers lost guarded array/map composition evidence"
       grep -Fq '(define-fun java_int_wrap' "${smt}" \
@@ -782,26 +809,26 @@ validate_semantic_profile() {
       ;;
     unreachable-parity)
       jq -e '
-        .status == "COMPLETE_CANDIDATE_UNREACHABLE"
-        and .reachabilityStatus == "UNREACHABLE"
-        and .candidateModelAvailable == false
-        and .rootBooleanInputCount == 2
-        and .existentialNonBooleanRootInputCount == 0
-        and .valuationCount == 4
-        and .satisfyingValuationCount == 0
-        and .unsatisfyingValuationCount == 4
+        .state == "CANDIDATE_READY"
+        and .trustState == "CANDIDATE_ONLY"
+        and .reachability == "UNREACHABLE"
+        and (.rootBooleanInputs | length) == 2
+        and (.existentialNonBooleanRootInputs | length) == 0
+        and (.truthTable | length) == 4
+        and ([.truthTable[] | select(.reachesBug == true)]
+          | length) == 0
+        and ([.truthTable[] | select(.reachesBug == false)]
+          | length) == 4
         and .reachConditionSmtLib == "false"
         and all(.truthTable[]; .reachesBug == false)
       ' "${reach_report}" >/dev/null \
         || die "unreachable-parity was not proved unreachable for all roots"
       jq -e '
-        .resolvedProducerCount == 2
-        and .guardedRegionRelationCount == 2
-        and .guardedPathCaseCount == 4
-        and .caseProjectionCatalogComplete == true
-        and .caseProjectionCatalogCount == 4
-        and .heapObservationCount == 2
-        and .heapObservationFieldBindingCount == 2
+        (.resolvedProducerKeys | length) == 2
+        and (.includedSummaries | length) == 2
+        and (.caseProjectionCatalog | length) == 4
+        and ([.caseProjectionCatalog[].bindings[]
+          | select(has("bridgeAssertionName"))] | length) == 2
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "unreachable-parity lost guarded container composition evidence"
       validate_unreachable_parity_producer_artifacts "${work_root}"
@@ -820,7 +847,8 @@ validate_candidate_outputs() {
   local reach_report="${candidate_root}/candidate_boolean_model.json"
   local relationships="${candidate_root}/symbolic_relationship_candidates.json"
   local candidate_manifest="${candidate_root}/candidate_result_manifest.json"
-  local reachability solver_output solver_status expected_status
+  local reachability candidate_reachability
+  local solver_output solver_status expected_status
 
   require_file "candidate SMT" "${smt}"
   [[ -s "${smt}" ]] || die "candidate SMT is empty: ${smt}"
@@ -833,58 +861,52 @@ validate_candidate_outputs() {
   validate_composition_common "${composition}"
 
   jq -e '
-    .compositionStage == "CANDIDATE"
-    and .boundedComposition == true
-    and .structurallyComplete == true
-    and .eligibleForCandidateModel == true
-    and .fatalReplayValidated == false
-    and .complete == false
-    and .eligibleToReportAutomaticRelationship == false
-    and .caseProjectionCatalogComplete == true
+    .schemaVersion == 2
+    and .kind == "CONCOLIC_COMPOSED_SMT"
+    and .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
   ' "${composition}" >/dev/null \
     || die "candidate composition escaped CANDIDATE trust state"
   jq -e '
-    .schemaVersion == 1
+    .schemaVersion == 2
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
-    and .complete == true
-    and .extractionMode == "CANDIDATE_MODEL"
-    and .candidateOnly == true
-    and ((.status == "COMPLETE_CANDIDATE_MODEL"
-        and .reachabilityStatus == "REACHABLE"
-        and .candidateModelAvailable == true)
-      or (.status == "COMPLETE_CANDIDATE_UNREACHABLE"
-        and .reachabilityStatus == "UNREACHABLE"
-        and .candidateModelAvailable == false))
-    and .reportableFinalReachCondition == false
-    and .fatalReplayValidated == false
-    and .truthTableComplete == true
-    and .exactFiniteProjection == true
-    and .solverErrorCount == 0
+    and .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
+    and (.reachability == "REACHABLE"
+      or .reachability == "UNREACHABLE")
     and ((.discoveryGaps // []) | length) == 0
-    and (.satisfyingValuationCount + .unsatisfyingValuationCount
-      == .valuationCount)
-    and .rootBooleanInputCount == ((.rootBooleanInputs // []) | length)
-    and (.existentialNonBooleanRootInputCount // 0)
-      == ((.existentialNonBooleanRootInputs // []) | length)
+    and ((.rootBooleanInputs // []) | type) == "array"
+    and ((.existentialNonBooleanRootInputs // []) | type) == "array"
+    and ((.truthTable // []) | type) == "array"
+    and all(.truthTable[];
+      (.solverStatus == "sat" and .reachesBug == true)
+      or (.solverStatus == "unsat" and .reachesBug == false))
+    and ([.truthTable[].valuationKey] | unique | length)
+      == (.truthTable | length)
+    and (if .reachability == "REACHABLE"
+      then any(.truthTable[]; .reachesBug == true)
+      else all(.truthTable[]; .reachesBug == false)
+      end)
+    and (.reachCondition | type == "object")
+    and (.reachConditionSmtLib | type == "string" and length > 0)
   ' "${reach_report}" >/dev/null \
     || die "candidate Boolean reach model is incomplete"
   jq -e '
-    .schemaVersion == 1
+    .schemaVersion == 2
     and .kind == "CONCOLIC_CANDIDATE_RESULT"
-    and .status == "COMPLETE_Z3_CHECKED_CANDIDATE"
-    and .complete == true
+    and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .z3Checked == true
-    and .naturalReplayPromotionImplemented == false
+    and (.reachability == "REACHABLE"
+      or .reachability == "UNREACHABLE")
   ' "${candidate_manifest}" >/dev/null \
     || die "candidate result incorrectly claims trusted promotion"
   jq -e '
-    .schemaVersion == 1
+    .schemaVersion == 2
     and .kind == "SYMBOLIC_RELATIONSHIP_CANDIDATES"
-    and .eligibleForAutomaticVerification == false
+    and .trustState == "CANDIDATE_ONLY"
     and (.relationships | type == "array")
-    and (keys | sort) == (["eligibleForAutomaticVerification", "kind",
-      "relationships", "schemaVersion"] | sort)
+    and (keys | sort) == (["kind", "relationships", "schemaVersion",
+      "trustState"] | sort)
   ' "${relationships}" >/dev/null \
     || die "candidate relationships claim final eligibility"
 
@@ -898,10 +920,17 @@ validate_candidate_outputs() {
     relationshipCandidatesArtifact "${relationships}"
 
   reachability=$(jq -er '
-    .reachabilityStatus
+    .reachability
     | select(. == "REACHABLE" or . == "UNREACHABLE")
   ' "${reach_report}") \
     || die "candidate reach model has no reachability status"
+  candidate_reachability=$(jq -er '
+    .reachability
+    | select(. == "REACHABLE" or . == "UNREACHABLE")
+  ' "${candidate_manifest}") \
+    || die "candidate result has no reachability status"
+  [[ "${candidate_reachability}" == "${reachability}" ]] \
+    || die "candidate result disagrees with the reach model"
   expected_status=$([[ "${reachability}" == "REACHABLE" ]] \
     && printf sat || printf unsat)
   solver_output=$("${z3}" "${smt}") \
