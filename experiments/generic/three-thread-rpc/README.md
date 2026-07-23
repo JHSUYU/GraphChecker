@@ -179,10 +179,6 @@ values to be equal. None of the four Boolean root valuations can reach it, so
 the generated candidate SMT and independently invoked Z3 must both report
 `UNREACHABLE`/`unsat`; the fixture and scripts contain no handwritten
 reachability formula or expected-SMT shortcut.
-`FourThreadSharedFieldWorkloadTest` is the compact recursive fork/merge
-regression for `1 -> 2 -> 3` and `1 -> 4 -> 3`. Neither workload has a
-`while` loop.
-
 ## Core end-to-end robustness gate
 
 The normal robustness gate is deliberately limited to these three concrete

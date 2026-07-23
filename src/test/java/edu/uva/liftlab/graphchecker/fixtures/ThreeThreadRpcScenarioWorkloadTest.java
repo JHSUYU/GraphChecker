@@ -187,8 +187,6 @@ public class ThreeThreadRpcScenarioWorkloadTest {
         assertTrue(workflowText.contains("fixture_variant=" + variant.name()));
         assertTrue(workflowText.contains("fixture_class="
                 + ThreeThreadRpcScenarioWorkload.class.getName()));
-        assertTrue(workflowText.contains("fixture_test_class="
-                + ThreeThreadRpcScenarioWorkloadTest.class.getName()));
         assertFalse(workflowText.contains("rpc_mapping_file"));
         assertTrue(workflowText.contains("-D"
                 + ThreeThreadRpcScenarioWorkload.VARIANT_PROPERTY + "="

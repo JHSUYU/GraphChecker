@@ -368,10 +368,6 @@ initialize_config() {
   fi
 }
 
-require_config() {
-  [[ -n "${config_file}" ]] || die "$1 requires --config FILE"
-}
-
 require_file() {
   [[ -f "$2" ]] || die "$1 not found: $2"
 }
