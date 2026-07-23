@@ -66,7 +66,7 @@ printf '%s\n' \
   '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","fromPort":"out.0","toRegion":"REGION.0","toPort":"in.0"}' \
   > "${fixture_root}/artifacts/symbolic_region_edges.jsonl"
 printf '%s\n' \
-  '{"edgeId":"REGION_EDGE.0","kind":"RPC_RETURN","fromRegion":"REGION.1","toRegion":"REGION.0","status":"VALIDATED"}' \
+  '{"schemaVersion":2,"kind":"RUNTIME_REGION_EDGE_EVIDENCE","edgeId":"REGION_EDGE.0","fromRegion":"REGION.1","toRegion":"REGION.0","transportKind":"RPC_RETURN","fromPort":"out.0","toPort":"in.0","requiresOrder":true,"requiresObjectIdentity":false,"state":"UNOBSERVED","bindings":[]}' \
   > "${fixture_root}/artifacts/runtime/runtime_region_edge_validation.jsonl"
 printf '%s\n' \
   '{"activationId":"ACT.0","regionInstanceId":"REGION_INSTANCE.0","regionId":"REGION.0","rootMethod":"m","observedMethods":["m"],"symbolicReady":true,"replayable":true}' \

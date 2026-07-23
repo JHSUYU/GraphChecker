@@ -88,26 +88,29 @@ trace stores only SHA-256, completeness, node count, and failure reason. A
 fingerprint-bound or reflection failure makes an equality non-composable. The
 soundness assumption for digest equality is SHA-256 collision resistance.
 
-Runtime edge validation has two authorities:
+`runtime_region_edge_validation.jsonl` schema 2 stores one runtime `state`
+and one `bindings` array per edge. Static endpoint identity is retained, but
+derived admission booleans, duplicate relation fields, counts, and diagnostic
+pair copies are not persisted. The two composable states are:
 
 ```text
-EQUALITY:
+CONFIRMED_RUNTIME_VALUE_EQUALITY:
   matching concrete region instances
   complete endpoint fingerprints
   equal digest
   valueEqualityObserved = true
   valueEqualityAuthority = RUNTIME_COMPLETE_VALUE_FINGERPRINT
 
-READ_FROM:
+CONFIRMED_READ_FROM:
   concrete field/container mutation
   concrete later read
   receiver identity
   write/read sequence and ordering
-  status = CONFIRMED_READ_FROM
 ```
 
 An observed call order without those witnesses is insufficient.
-`AutomaticRegionEdge` is the shared fail-closed gate.
+`AutomaticRegionEdge` derives the relation from the state and validates every
+binding as the shared fail-closed gate.
 
 `ConcolicScheduler` rebuilds a target activation's equality classes from only
 the witness-bearing relations selected for that concrete region instance. A

@@ -438,20 +438,18 @@ public class ConcolicSchedulerTest {
                     keyRegion.getBytes(StandardCharsets.UTF_8),
                     java.nio.file.StandardOpenOption.APPEND);
 
-            String keyEdge = "{\"edgeId\":\"E.KEY_ID\","
+            String keyEdge = "{\"schemaVersion\":2,"
+                    + "\"kind\":\"RUNTIME_REGION_EDGE_EVIDENCE\","
+                    + "\"edgeId\":\"E.KEY_ID\","
                     + "\"fromRegion\":\"REGION.12\","
                     + "\"toRegion\":\"REGION.0\","
                     + "\"fromPort\":\"" + keyIdSource + "\","
                     + "\"toPort\":\"" + CURRENT_KEY_ID + "\","
-                    + "\"kind\":\"SHARED_STATE\","
-                    + "\"validatedRelation\":\"READ_FROM\","
+                    + "\"transportKind\":\"SHARED_STATE\","
                     + "\"requiresOrder\":true,"
                     + "\"requiresObjectIdentity\":true,"
-                    + "\"confirmedReadFromPairCount\":1,"
-                    + "\"status\":\"CONFIRMED_READ_FROM\","
-                    + "\"eligibleForAutomaticDerivation\":true,"
-                    + "\"eligibleForAutomaticSmt\":true,"
-                    + "\"composable\":true,\"validatedBindings\":[{"
+                    + "\"state\":\"CONFIRMED_READ_FROM\","
+                    + "\"bindings\":[{"
                     + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
                     + "\"writeEvidenceAuthority\":"
                     + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
@@ -1683,81 +1681,6 @@ public class ConcolicSchedulerTest {
                 .getAsJsonObject().get("_op").getAsString());
     }
 
-    private static void writeRows(Path path, List<JsonObject> rows)
-            throws Exception {
-        StringBuilder content = new StringBuilder();
-        for (JsonObject row : rows) content.append(row).append('\n');
-        Files.write(path, content.toString().getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static JsonObject region(String id, String port, String cell,
-                                     boolean input) {
-        JsonObject result = new JsonObject();
-        result.addProperty("regionId", id);
-        JsonObject value = new JsonObject();
-        value.addProperty("portId", port);
-        value.addProperty("cell", cell);
-        JsonArray values = new JsonArray();
-        values.add(value);
-        result.add(input ? "symbolicInputs" : "outputs", values);
-        return result;
-    }
-
-    private static JsonObject activation(String id, String region,
-                                         String instance,
-                                         String execution) {
-        JsonObject result = new JsonObject();
-        result.addProperty("activationId", id);
-        result.addProperty("regionId", region);
-        result.addProperty("regionInstanceId", instance);
-        result.addProperty("discoveredExecutionId", execution);
-        return result;
-    }
-
-    private static JsonObject edge(String id, String relation,
-                                   String fromRegion, String fromCell,
-                                   String toRegion, String toCell) {
-        JsonObject result = new JsonObject();
-        result.addProperty("edgeId", id);
-        result.addProperty("fromRegion", fromRegion);
-        result.addProperty("fromPort", fromCell);
-        result.addProperty("toRegion", toRegion);
-        result.addProperty("toPort", toCell);
-        result.addProperty("validatedRelation", relation);
-        result.addProperty("status", "READ_FROM".equals(relation)
-                ? "CONFIRMED_READ_FROM"
-                : "CONFIRMED_RUNTIME_VALUE_EQUALITY");
-        result.addProperty("composable", true);
-        result.addProperty("eligibleForAutomaticDerivation", true);
-        result.addProperty("eligibleForAutomaticSmt", true);
-        result.addProperty("confirmedReadFromPairCount", 2);
-        result.addProperty("confirmedValueEqualityPairCount", 2);
-        if ("EQUALITY".equals(relation)) {
-            result.addProperty("valueEqualityObserved", true);
-            result.addProperty("valueEqualityAuthority",
-                    "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
-        } else {
-            result.addProperty("requiresOrder", true);
-            result.addProperty("requiresObjectIdentity", true);
-        }
-        JsonArray executions = new JsonArray();
-        executions.add("EXEC.OLD");
-        executions.add("EXEC.NEW");
-        result.add("discoveredExecutionIds", executions);
-        return result;
-    }
-
-    private static JsonObject equalityBinding(String from, String to) {
-        JsonObject result = new JsonObject();
-        result.addProperty("fromRegionInstance", from);
-        result.addProperty("toRegionInstance", to);
-        result.addProperty("valueEqualityObserved", true);
-        result.addProperty("valueEqualityAuthority",
-                "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
-        result.addProperty("valueFingerprint", "sha256:" + from + ":" + to);
-        return result;
-    }
-
     private static void setSaslEqualityEvidence(Fixture fixture,
                                                 long writer,
                                                 long reader)
@@ -1771,7 +1694,7 @@ public class ConcolicSchedulerTest {
             JsonObject edge = JsonParser.parseString(row).getAsJsonObject();
             if ("E.SASL".equals(edge.get("edgeId").getAsString())) {
                 JsonObject evidence = edge.getAsJsonArray(
-                        "validatedBindings")
+                        "bindings")
                         .get(0).getAsJsonObject().deepCopy();
                 evidence.addProperty("fromRegionInstance",
                         "REGION.1@test#call1");
@@ -1782,7 +1705,7 @@ public class ConcolicSchedulerTest {
                 evidence.addProperty("orderConfirmed", writer < reader);
                 JsonArray singleton = new JsonArray();
                 singleton.add(evidence);
-                edge.add("validatedBindings", singleton);
+                edge.add("bindings", singleton);
                 found = true;
             }
             rewritten.add(edge);
@@ -1809,7 +1732,7 @@ public class ConcolicSchedulerTest {
             JsonObject edge = JsonParser.parseString(row).getAsJsonObject();
             if ("E.SASL".equals(edge.get("edgeId").getAsString())) {
                 JsonArray current = edge.getAsJsonArray(
-                        "validatedBindings");
+                        "bindings");
                 JsonObject duplicate = current.get(0).getAsJsonObject()
                         .deepCopy();
                 duplicate.addProperty("fromEndpointSeq", writer);
@@ -1820,7 +1743,7 @@ public class ConcolicSchedulerTest {
                 for (JsonElement element : current) {
                     repeated.add(element.deepCopy());
                 }
-                edge.add("validatedBindings", repeated);
+                edge.add("bindings", repeated);
                 found = true;
             }
             content.append(edge).append('\n');
@@ -1874,17 +1797,6 @@ public class ConcolicSchedulerTest {
         assertFalse(binding.get("objectIdentityRequired").getAsBoolean());
         assertFalse(binding.has("receiverObjectId"));
         assertFalse(binding.has("objectIdentityConfirmed"));
-    }
-
-    private static JsonObject heapBinding(String from, String to,
-                                          int receiver) {
-        JsonObject result = new JsonObject();
-        result.addProperty("fromRegionInstance", from);
-        result.addProperty("toRegionInstance", to);
-        result.addProperty("writeSeq", receiver * 10);
-        result.addProperty("readSeq", receiver * 10 + 1);
-        result.addProperty("receiverObjectId", receiver);
-        return result;
     }
 
     private static JsonObject condition(String operator) {
@@ -1987,29 +1899,20 @@ public class ConcolicSchedulerTest {
         Files.write(result.activations,
                 activation.getBytes(StandardCharsets.UTF_8));
 
-        String edges = "{\"edgeId\":\"E.SASL\","
+        String edges = "{\"schemaVersion\":2,"
+                + "\"kind\":\"RUNTIME_REGION_EDGE_EVIDENCE\","
+                + "\"edgeId\":\"E.SASL\","
                 + "\"fromRegion\":\"REGION.1\","
                 + "\"toRegion\":\"REGION.0\","
                 + "\"fromPort\":\"client.userName\","
                 + "\"toPort\":\"" + USERNAME + "\","
-                + "\"kind\":\"SASL_TRANSFER\","
-                + "\"validatedRelation\":\"EQUALITY\","
-                + "\"status\":\"CONFIRMED_RUNTIME_VALUE_EQUALITY\","
-                + "\"valueEqualityObserved\":true,"
-                + "\"confirmedValueEqualityPairCount\":1,"
-                + "\"valueEqualityAuthority\":"
-                + "\"RUNTIME_COMPLETE_VALUE_FINGERPRINT\","
-                + "\"endpointOrderAuthority\":"
-                + "\"GLOBAL_TRACE_ENDPOINT_SEQUENCE\","
-                + "\"endpointCorrelationAuthority\":"
-                + "\"NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT\","
-                + "\"discoveredExecutionId\":\"EXEC.fixture\","
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"composable\":true,\"validatedBindings\":[{"
+                + "\"transportKind\":\"SASL_TRANSFER\","
+                + "\"state\":\"CONFIRMED_RUNTIME_VALUE_EQUALITY\","
+                + "\"bindings\":[{"
                 + "\"fromRegionInstance\":\"REGION.1@test#call1\","
                 + "\"toRegionInstance\":"
                 + "\"REGION.0@testMiniDfs#call7\","
+                + "\"discoveredExecutionId\":\"EXEC.fixture\","
                 + "\"valueEqualityObserved\":true,"
                 + "\"valueEqualityAuthority\":"
                 + "\"RUNTIME_COMPLETE_VALUE_FINGERPRINT\","
@@ -2018,20 +1921,18 @@ public class ConcolicSchedulerTest {
                 + "\"GLOBAL_TRACE_ENDPOINT_SEQUENCE\","
                 + "\"fromEndpointSeq\":10,\"toEndpointSeq\":20,"
                 + "\"orderConfirmed\":true}]}\n"
-                + "{\"edgeId\":\"E.STATE\","
+                + "{\"schemaVersion\":2,"
+                + "\"kind\":\"RUNTIME_REGION_EDGE_EVIDENCE\","
+                + "\"edgeId\":\"E.STATE\","
                 + "\"fromRegion\":\"REGION.11\","
                 + "\"toRegion\":\"REGION.0\","
                 + "\"fromPort\":\"" + ALL_KEYS + "\","
                 + "\"toPort\":\"" + ALL_KEYS + "\","
-                + "\"kind\":\"SHARED_STATE\","
-                + "\"validatedRelation\":\"READ_FROM\","
+                + "\"transportKind\":\"SHARED_STATE\","
                 + "\"requiresOrder\":true,"
                 + "\"requiresObjectIdentity\":true,"
-                + "\"confirmedReadFromPairCount\":1,"
-                + "\"status\":\"CONFIRMED_READ_FROM\","
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"composable\":true,\"validatedBindings\":[{"
+                + "\"state\":\"CONFIRMED_READ_FROM\","
+                + "\"bindings\":[{"
                 + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
                 + "\"writeEvidenceAuthority\":"
                 + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","

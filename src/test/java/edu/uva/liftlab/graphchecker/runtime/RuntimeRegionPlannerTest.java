@@ -438,7 +438,7 @@ public class RuntimeRegionPlannerTest {
                     result.instances.get(0).get("validationStatus"));
             assertEquals(true, result.instances.get(0).get("symbolicReady"));
             assertEquals(true, result.activations.get(0).get("replayable"));
-            String instances = result.instancesJsonl();
+            String instances = String.valueOf(result.instances);
             String activations = result.activationsJsonl();
             assertTrue(instances.contains("" + RETRIEVE + "#u8=true"));
             assertTrue(activations.contains("\"location\":\"ARGUMENT\""));
@@ -964,10 +964,7 @@ public class RuntimeRegionPlannerTest {
                     regions.toFile(), methods, Collections.emptyList(),
                     Collections.emptyList());
 
-            assertEquals(true, result.summary.get("truncated"));
-            assertEquals(1, result.summary.get(
-                    "truncatedCallTreeInstanceCount"));
-            assertEquals(1L, result.summary.get("skippedContainedCallCount"));
+            assertTrue(result.truncated);
             Map<String, Object> instance = result.instances.get(0);
             assertEquals(true, instance.get("containedCallTreeTruncated"));
             assertEquals(false, instance.get("runtimePathEvidenceComplete"));
@@ -1005,11 +1002,7 @@ public class RuntimeRegionPlannerTest {
                             method(1, HANDLE, 1, 0, 0)), branches,
                     Collections.emptyList());
 
-            assertEquals(true, result.summary.get("truncated"));
-            assertEquals(1, result.summary.get(
-                    "truncatedPathSignatureInstanceCount"));
-            assertEquals(1L, result.summary.get(
-                    "skippedPathSignatureEventCount"));
+            assertTrue(result.truncated);
             Map<String, Object> instance = result.instances.get(0);
             assertEquals(513, instance.get("pathSignatureEventCount"));
             assertEquals(512, ((List<?>) instance.get("pathSignature")).size());
@@ -1073,31 +1066,32 @@ public class RuntimeRegionPlannerTest {
 
             assertEquals(1, result.edgeValidations.size());
             assertEquals("CONFIRMED_READ_FROM",
-                    result.edgeValidations.get(0).get("status"));
-            assertEquals(1,
-                    result.edgeValidations.get(0).get("confirmedReadFromPairCount"));
-            assertEquals("READ_FROM",
-                    result.edgeValidations.get(0).get("relation"));
-            assertEquals("READ_FROM_CANDIDATE",
-                    result.edgeValidations.get(0).get("candidateRelation"));
-            assertEquals("READ_FROM",
-                    result.edgeValidations.get(0).get("validatedRelation"));
+                    result.edgeValidations.get(0).get("state"));
+            assertEquals("SHARED_STATE",
+                    result.edgeValidations.get(0).get("transportKind"));
             assertEquals(true,
                     result.edgeValidations.get(0).get("requiresObjectIdentity"));
-            assertEquals(true,
-                    result.edgeValidations.get(0).get("composable"));
-            assertEquals(1,
-                    result.edgeValidations.get(0).get("orderedPairCount"));
-            assertEquals(true, result.edgeValidations.get(0).get(
-                    "eligibleForRecursiveDiscovery"));
-            assertEquals(1, result.edgeValidations.get(0).get(
-                    "validatedBindingCount"));
             assertEquals(1, ((List<?>) result.edgeValidations.get(0).get(
-                    "validatedBindings")).size());
+                    "bindings")).size());
             assertTrue(result.edgeValidationsJsonl().contains(
                     "\"fromProcess\":\"DATANODE\""));
             assertTrue(result.edgeValidationsJsonl().contains(
                     "\"fromThreadId\":11"));
+            JsonObject persisted = JsonParser.parseString(
+                    result.edgeValidationsJsonl().trim()).getAsJsonObject();
+            assertEquals(2, persisted.get("schemaVersion").getAsInt());
+            assertEquals("RUNTIME_REGION_EDGE_EVIDENCE",
+                    persisted.get("kind").getAsString());
+            assertEquals("CONFIRMED_READ_FROM",
+                    persisted.get("state").getAsString());
+            assertEquals(1, persisted.getAsJsonArray("bindings").size());
+            for (String retired : Arrays.asList("status",
+                    "validatedRelation", "validatedBindings", "composable",
+                    "eligibleForAutomaticDerivation",
+                    "eligibleForAutomaticSmt",
+                    "confirmedReadFromPairCount", "evidence")) {
+                assertFalse(retired, persisted.has(retired));
+            }
         } finally {
             folder.delete();
         }
@@ -1202,11 +1196,9 @@ public class RuntimeRegionPlannerTest {
                             null, methodEvents,
                             Collections.singletonList(branch), fieldEvents);
             assertEquals("CONFIRMED_READ_FROM",
-                    legacyControl.edgeValidations.get(0).get("status"));
-            assertEquals(Boolean.TRUE,
-                    legacyControl.edgeValidations.get(0).get("composable"));
+                    legacyControl.edgeValidations.get(0).get("state"));
             assertEquals(1,
-                    legacyControl.summary.get("upstreamActivationCount"));
+                    derivedActivationCount(legacyControl));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), edges.toFile(), graph.toFile(),
@@ -1216,18 +1208,9 @@ public class RuntimeRegionPlannerTest {
 
             Map<String, Object> validation = result.edgeValidations.get(0);
             assertEquals("CONFIRMED_READ_FROM",
-                    validation.get("status"));
-            assertEquals(0, validation.get(
-                    "concreteDemandPrunedPairCount"));
-            assertEquals(1, validation.get("confirmedReadFromPairCount"));
-            assertEquals(1, validation.get("validatedBindingCount"));
-            assertEquals(Boolean.TRUE, validation.get("composable"));
-            assertEquals("READ_FROM", validation.get("relation"));
-            assertEquals(1, result.summary.get("upstreamActivationCount"));
-            assertEquals(1, result.summary.get(
-                    "concreteDemandPrunedRegionEdgeCount"));
-            assertEquals(1, result.summary.get(
-                    "runtimeConfirmedExternalInputPromotionCount"));
+                    validation.get("state"));
+            assertEquals(1, ((List<?>) validation.get("bindings")).size());
+            assertEquals(1, derivedActivationCount(result));
             boolean readerPromoted = false;
             boolean upstreamDerived = false;
             for (Map<String, Object> activation : result.activations) {
@@ -1257,9 +1240,9 @@ public class RuntimeRegionPlannerTest {
             }
             assertTrue(overlappingCandidate != null);
             assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                    overlappingCandidate.get("status"));
+                    overlappingCandidate.get("state"));
             assertEquals(0,
-                    overlappingCandidate.get("confirmedReadFromPairCount"));
+                    ((List<?>) overlappingCandidate.get("bindings")).size());
 
             List<RuntimeRegionPlanner.FieldAccessEvent> mismatchedReceiver =
                     Arrays.asList(fieldEvents.get(0),
@@ -1271,9 +1254,8 @@ public class RuntimeRegionPlannerTest {
                     methodEvents, Collections.singletonList(branch),
                     mismatchedReceiver);
             assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                    rejected.edgeValidations.get(0).get("status"));
-            assertEquals(0, rejected.summary.get(
-                    "runtimeConfirmedExternalInputPromotionCount"));
+                    rejected.edgeValidations.get(0).get("state"));
+            assertEquals(0, derivedActivationCount(rejected));
         } finally {
             folder.delete();
         }
@@ -1285,18 +1267,17 @@ public class RuntimeRegionPlannerTest {
         RuntimeRegionPlanner.Result result = containerMutationReadFromResult(
                 true, 128017166);
         Map<String, Object> validation = result.edgeValidations.get(0);
-        assertEquals("CONFIRMED_READ_FROM", validation.get("status"));
-        assertEquals(1, validation.get("confirmedReadFromPairCount"));
-        assertTrue(String.valueOf(validation.get("readFromAuthorities"))
-                .contains(RuntimeRegionPlanner
-                        .CONTAINER_MUTATION_READ_FROM_AUTHORITY));
-        assertTrue(String.valueOf(validation.get("readFromAssumptions"))
-                .contains(RuntimeRegionPlanner
-                        .TRUNCATED_PATH_READ_FROM_ASSUMPTION));
+        assertEquals("CONFIRMED_READ_FROM", validation.get("state"));
 
         @SuppressWarnings("unchecked")
         Map<String, Object> binding = ((List<Map<String, Object>>)
-                validation.get("validatedBindings")).get(0);
+                validation.get("bindings")).get(0);
+        assertEquals(RuntimeRegionPlanner
+                        .CONTAINER_MUTATION_READ_FROM_AUTHORITY,
+                binding.get("writeEvidenceAuthority"));
+        assertEquals(RuntimeRegionPlanner
+                        .TRUNCATED_PATH_READ_FROM_ASSUMPTION,
+                binding.get("pathSignatureTruncationAssumption"));
         assertEquals("FIELD_CONTAINER_MUTATION",
                 binding.get("writeEvidenceKind"));
         assertEquals(5197L, binding.get("writerFieldReadSeq"));
@@ -1340,17 +1321,17 @@ public class RuntimeRegionPlannerTest {
             throws Exception {
         RuntimeRegionPlanner.Result missingReturn =
                 containerMutationReadFromResult(false, 128017166);
-        assertEquals(0, missingReturn.edgeValidations.get(0).get(
-                "confirmedReadFromPairCount"));
+        assertEquals(0, ((List<?>) missingReturn.edgeValidations.get(0).get(
+                "bindings")).size());
         assertFalse("CONFIRMED_READ_FROM".equals(
-                missingReturn.edgeValidations.get(0).get("status")));
+                missingReturn.edgeValidations.get(0).get("state")));
 
         RuntimeRegionPlanner.Result differentContainer =
                 containerMutationReadFromResult(true, 128017167);
-        assertEquals(0, differentContainer.edgeValidations.get(0).get(
-                "confirmedReadFromPairCount"));
+        assertEquals(0, ((List<?>) differentContainer.edgeValidations.get(0)
+                .get("bindings")).size());
         assertFalse("CONFIRMED_READ_FROM".equals(
-                differentContainer.edgeValidations.get(0).get("status")));
+                differentContainer.edgeValidations.get(0).get("state")));
     }
 
     @Test
@@ -1447,7 +1428,7 @@ public class RuntimeRegionPlannerTest {
                     Arrays.asList(write, read));
 
             assertEquals("CONFIRMED_READ_FROM",
-                    result.edgeValidations.get(0).get("status"));
+                    result.edgeValidations.get(0).get("state"));
             assertEquals(rawField,
                     result.edgeValidations.get(0).get("fromPort"));
             assertEquals("REGION.W.out.0",
@@ -1486,9 +1467,9 @@ public class RuntimeRegionPlannerTest {
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(write, read));
             assertEquals("CONFIRMED_READ_FROM",
-                    rejected.edgeValidations.get(0).get("status"));
+                    rejected.edgeValidations.get(0).get("state"));
             assertEquals(2, rejected.activations.size());
-            assertEquals(0, rejected.summary.get("upstreamActivationCount"));
+            assertEquals(0, derivedActivationCount(rejected));
         } finally {
             folder.delete();
         }
@@ -1777,7 +1758,7 @@ public class RuntimeRegionPlannerTest {
                     edgeBinding.get("canonicalInputResolutionAuthority"));
             assertTrue(result.activationsJsonl().contains(
                     "\"writerEventSeq\":2"));
-            assertEquals(1, result.summary.get("upstreamActivationCount"));
+            assertEquals(1, derivedActivationCount(result));
 
             // The same compact row must fail closed when even one referenced
             // canonical edge is absent.
@@ -2998,8 +2979,6 @@ public class RuntimeRegionPlannerTest {
             assertEquals(RuntimeRegionPlanner
                             .FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY,
                     selectedAction.get("accessorEvidenceAuthority"));
-            assertEquals(1, selected.summary.get(
-                    "frozenStaticAccessorInputBindingCount"));
 
             writeStaticGraph(graph, Arrays.asList(exactEdge,
                     frozenAccessorEdge("DF.ACCESS.2", field, getter, site)),
@@ -3013,8 +2992,6 @@ public class RuntimeRegionPlannerTest {
                     ((List<?>) ambiguous.activations.get(0).get(
                             "symbolize")).get(0);
             assertEquals(Boolean.FALSE, ambiguousAction.get("observed"));
-            assertEquals(0, ambiguous.summary.get(
-                    "frozenStaticAccessorInputBindingCount"));
         } finally {
             folder.delete();
         }
@@ -3300,17 +3277,9 @@ public class RuntimeRegionPlannerTest {
                     Collections.emptyList(), Collections.emptyList());
 
             assertEquals("ENDPOINTS_OBSERVED",
-                    result.edgeValidations.get(0).get("status"));
-            assertEquals("PORT_ORDER_AND_VALUE_EQUALITY_UNPROVEN",
-                    result.edgeValidations.get(0).get("validation"));
-            assertEquals("",
-                    result.edgeValidations.get(0).get("relation"));
-            assertEquals("EQUALITY",
-                    result.edgeValidations.get(0).get("candidateRelation"));
-            assertEquals(true, result.edgeValidations.get(0)
-                    .get("payloadEqualityCheckRequired"));
-            assertEquals(false,
-                    result.edgeValidations.get(0).get("composable"));
+                    result.edgeValidations.get(0).get("state"));
+            assertTrue(((List<?>) result.edgeValidations.get(0)
+                    .get("bindings")).isEmpty());
         } finally {
             folder.delete();
         }
@@ -3360,22 +3329,13 @@ public class RuntimeRegionPlannerTest {
                     Collections.emptyList(), Collections.emptyList());
 
             assertEquals("ENDPOINTS_OBSERVED",
-                    result.edgeValidations.get(0).get("status"));
-            assertEquals("",
-                    result.edgeValidations.get(0).get("validatedRelation"));
+                    result.edgeValidations.get(0).get("state"));
             assertEquals("STATIC_FORMAT_AND_PORT_MAPPING",
                     result.edgeValidations.get(0).get("mappingAuthority"));
-            assertEquals("STATIC_HDFS_SASL_CONTRACT",
-                    result.edgeValidations.get(0).get(
-                            "sourceMappingAuthority"));
-            assertEquals(false,
-                    result.edgeValidations.get(0).get("composable"));
-            assertEquals(false, result.edgeValidations.get(0)
-                    .get("eligibleForAutomaticDerivation"));
-            assertEquals(false, result.edgeValidations.get(0)
-                    .get("valueEqualityObserved"));
-            assertEquals(4,
-                    result.edgeValidations.get(0).get("endpointPairCount"));
+            assertEquals("hdfs_sasl_username",
+                    result.edgeValidations.get(0).get("mappingKind"));
+            assertTrue(((List<?>) result.edgeValidations.get(0)
+                    .get("bindings")).isEmpty());
         } finally {
             folder.delete();
         }
@@ -3404,8 +3364,6 @@ public class RuntimeRegionPlannerTest {
         assertTrue(String.valueOf(demand.get("edgeIds"))
                 .contains("DF.DIRECT.DEFAULT"));
         assertEquals(0, demand.get("externalInputPromotionCount"));
-        assertEquals(0, result.summary.get(
-                "runtimeConfirmedExternalInputPromotionCount"));
         assertFalse(String.valueOf(serverActivation.get(
                 "concreteInputSelectionAuthority")).contains(
                 "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
@@ -3413,11 +3371,8 @@ public class RuntimeRegionPlannerTest {
         Map<String, Object> validation = edgeValidationFor(result,
                 "REGION.C");
         assertEquals("ENDPOINTS_OBSERVED",
-                validation.get("status"));
-        assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
-        assertEquals(0, validation.get("concreteDemandPrunedPairCount"));
-        assertEquals(1, result.summary.get(
-                "consumerInputResolutionCacheMissCount"));
+                validation.get("state"));
+        assertTrue(((List<?>) validation.get("bindings")).isEmpty());
     }
 
     @Test
@@ -3434,12 +3389,8 @@ public class RuntimeRegionPlannerTest {
             Map<String, Object> validation = edgeValidationFor(result,
                     "REGION.C");
             assertEquals("PRUNED_BY_CONCRETE_DEMAND_SLICE",
-                    validation.get("status"));
-            assertEquals(1, validation.get(
-                    "concreteDemandPrunedPairCount"));
-            assertEquals(0, validation.get(
-                    "confirmedValueEqualityPairCount"));
-            assertEquals(false, validation.get("composable"));
+                    validation.get("state"));
+            assertTrue(((List<?>) validation.get("bindings")).isEmpty());
         }
     }
 
@@ -3459,10 +3410,8 @@ public class RuntimeRegionPlannerTest {
 
         Map<String, Object> validation = edgeValidationFor(result,
                 "REGION.C");
-        assertEquals("ENDPOINTS_OBSERVED", validation.get("status"));
-        assertEquals(false, validation.get("composable"));
-        assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
-        assertEquals(0, validation.get("validatedBindingCount"));
+        assertEquals("ENDPOINTS_OBSERVED", validation.get("state"));
+        assertTrue(((List<?>) validation.get("bindings")).isEmpty());
     }
 
     @Test
@@ -3481,10 +3430,8 @@ public class RuntimeRegionPlannerTest {
 
         Map<String, Object> validation = edgeValidationFor(result,
                 "REGION.C");
-        assertEquals("ENDPOINTS_OBSERVED", validation.get("status"));
-        assertEquals(false, validation.get("composable"));
-        assertEquals(0, validation.get("confirmedValueEqualityPairCount"));
-        assertEquals(0, validation.get("validatedBindingCount"));
+        assertEquals("ENDPOINTS_OBSERVED", validation.get("state"));
+        assertTrue(((List<?>) validation.get("bindings")).isEmpty());
     }
 
     @Test
@@ -3526,13 +3473,9 @@ public class RuntimeRegionPlannerTest {
                     Collections.singletonList(callSite), Collections.emptyList());
 
             assertEquals("PORT_MAPPING_OBSERVED_VALUE_EQUALITY_UNPROVEN",
-                    result.edgeValidations.get(0).get("status"));
-            assertEquals("",
-                    result.edgeValidations.get(0).get("validatedRelation"));
-            assertEquals(false,
-                    result.edgeValidations.get(0).get("composable"));
-            assertEquals(false, result.edgeValidations.get(0)
-                    .get("eligibleForAutomaticDerivation"));
+                    result.edgeValidations.get(0).get("state"));
+            assertTrue(((List<?>) result.edgeValidations.get(0)
+                    .get("bindings")).isEmpty());
         } finally {
             folder.delete();
         }
@@ -3589,15 +3532,8 @@ public class RuntimeRegionPlannerTest {
 
             Map<String, Object> validation = result.edgeValidations.get(0);
             assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
-                    validation.get("status"));
-            assertEquals("EQUALITY", validation.get("validatedRelation"));
-            assertEquals(true, validation.get("composable"));
-            assertEquals(true,
-                    validation.get("eligibleForAutomaticDerivation"));
-            assertEquals("RUNTIME_COMPLETE_VALUE_FINGERPRINT",
-                    validation.get("valueEqualityAuthority"));
-            assertEquals(1, validation.get(
-                    "confirmedValueEqualityPairCount"));
+                    validation.get("state"));
+            assertEquals(1, ((List<?>) validation.get("bindings")).size());
         } finally {
             folder.delete();
         }
@@ -3679,15 +3615,13 @@ public class RuntimeRegionPlannerTest {
 
             Map<String, Object> validation = result.edgeValidations.get(0);
             assertEquals("CONFIRMED_RUNTIME_VALUE_EQUALITY",
-                    validation.get("status"));
+                    validation.get("state"));
             assertEquals(rawSource, validation.get("fromPort"));
             assertEquals(rawTarget, validation.get("toPort"));
             assertEquals(canonical, validation.get("fromOutputCell"));
-            assertEquals(1,
-                    validation.get("confirmedValueEqualityPairCount"));
             @SuppressWarnings("unchecked")
             Map<String, Object> binding = ((List<Map<String, Object>>)
-                    validation.get("validatedBindings")).get(0);
+                    validation.get("bindings")).get(0);
             assertEquals("FIELD_VALUE",
                     binding.get("fromFingerprintSource"));
             assertEquals("MAPPED_CALL_RETURN_SITE",
@@ -3703,10 +3637,10 @@ public class RuntimeRegionPlannerTest {
                     Arrays.asList(send, receive),
                     Collections.singletonList(received),
                     Collections.singletonList(capturedOutput));
-            assertEquals(0, rejected.edgeValidations.get(0).get(
-                    "confirmedValueEqualityPairCount"));
-            assertFalse(Boolean.TRUE.equals(rejected.edgeValidations.get(0)
-                    .get("composable")));
+            assertFalse("CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
+                    rejected.edgeValidations.get(0).get("state")));
+            assertTrue(((List<?>) rejected.edgeValidations.get(0)
+                    .get("bindings")).isEmpty());
         } finally {
             folder.delete();
         }
@@ -3748,9 +3682,9 @@ public class RuntimeRegionPlannerTest {
                     Collections.emptyList(), Collections.emptyList());
 
             assertEquals("UNOBSERVED",
-                    result.edgeValidations.get(0).get("status"));
-            assertEquals(0,
-                    result.edgeValidations.get(0).get("endpointPairCount"));
+                    result.edgeValidations.get(0).get("state"));
+            assertTrue(((List<?>) result.edgeValidations.get(0)
+                    .get("bindings")).isEmpty());
         } finally {
             folder.delete();
         }
@@ -4272,8 +4206,8 @@ public class RuntimeRegionPlannerTest {
     public void liftsSelectedArrayElementDemandToMapOutputProjectionCatalog() {
         RuntimeRegionPlanner.Result result =
                 mapValueProjectionActivationResult(true);
-        assertEquals(1, RuntimeRegionPlanner
-                .refineMapValueElementProjectionActivationsForTests(result));
+        RuntimeRegionPlanner
+                .refineMapValueElementProjectionActivationsForTests(result);
 
         Map<String, Object> producer = result.activations.get(0);
         assertEquals(Boolean.TRUE, producer.get("symbolicReady"));
@@ -4317,8 +4251,8 @@ public class RuntimeRegionPlannerTest {
     public void controlOrOpaqueEdgesCannotProveMapOutputProjection() {
         RuntimeRegionPlanner.Result result =
                 mapValueProjectionActivationResult(false);
-        assertEquals(0, RuntimeRegionPlanner
-                .refineMapValueElementProjectionActivationsForTests(result));
+        RuntimeRegionPlanner
+                .refineMapValueElementProjectionActivationsForTests(result);
         Map<String, Object> producer = result.activations.get(0);
         assertEquals(Boolean.FALSE,
                 producer.get("mapValueElementProjectionCaptureReady"));
@@ -5979,6 +5913,18 @@ public class RuntimeRegionPlannerTest {
 
     private static Path companionStaticGraph(Path regions) {
         return regions.resolveSibling("static_dataflow_edges.jsonl");
+    }
+
+    private static int derivedActivationCount(
+            RuntimeRegionPlanner.Result result) {
+        int count = 0;
+        for (Map<String, Object> activation : result.activations) {
+            if (String.valueOf(activation.get("activationId"))
+                    .startsWith("ACT.UPSTREAM.")) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String region(String id, String method) {

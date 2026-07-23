@@ -113,12 +113,6 @@ final class RuntimeRegionPlanner {
     private static final int STATIC_REGION_SCHEMA_VERSION = 1;
     private static final String STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION =
             "backward_provenance";
-    static final String EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY =
-            "FROZEN_REGION_CATALOG_EXACT_OUTPUT_PORT_OR_CELL_V1";
-    static final String UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY =
-            "RUNTIME_COMPLETE_VALUE_FINGERPRINT_AND_ORDER_UNIQUE_AMONG_"
-                    + "EXACT_OUTPUT_PRODUCER_REGIONS_V1";
-
     private RuntimeRegionPlanner() {
     }
 
@@ -144,13 +138,11 @@ final class RuntimeRegionPlanner {
         List<StaticRegion> regions = readRegions(regionFile, result.warnings);
         List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile,
                 result.warnings);
-        int staticRegionEdgeCatalogCount = regionEdges.size();
         regionEdges = expandMappingOnlyProtocolProducerRegions(regions,
                 regionEdges);
-        int frozenStaticAccessorInputBindingCount =
-                applyFrozenStaticAccessorInputBindings(regions,
-                        readFrozenStaticAccessorEvidence(staticGraphFile,
-                                result.warnings));
+        applyFrozenStaticAccessorInputBindings(regions,
+                readFrozenStaticAccessorEvidence(staticGraphFile,
+                        result.warnings));
         StaticProjectionIndex staticProjections =
                 readStaticProjectionIndex(staticGraphFile,
                         result.warnings);
@@ -173,20 +165,10 @@ final class RuntimeRegionPlanner {
 
         int instanceIndex = 0;
         int activationIndex = 0;
-        int partialCount = 0;
-        int fullyObservedCount = 0;
-        int replayableCount = 0;
-        int demandResliceAppliedCount = 0;
-        int demandReslicePrunedInputCount = 0;
-        int truncatedCallTreeInstanceCount = 0;
-        int truncatedPathSignatureInstanceCount = 0;
-        long skippedContainedCallCount = 0L;
-        long skippedPathSignatureEventCount = 0L;
         Map<String, List<InstanceEvidence>> evidenceByRegion = new LinkedHashMap<>();
         Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion =
                 new LinkedHashMap<>();
         List<InstanceEvidence> allInstanceEvidence = new ArrayList<>();
-        Map<String, Integer> validationCounts = new LinkedHashMap<>();
 
         outer:
         for (StaticRegion region : regions) {
@@ -207,8 +189,6 @@ final class RuntimeRegionPlanner {
                 Set<Long> containedCalls = callSelection.calls;
                 if (callSelection.truncated) {
                     result.truncated = true;
-                    truncatedCallTreeInstanceCount++;
-                    skippedContainedCallCount += callSelection.skipped;
                 }
                 Set<String> observedMethods = new LinkedHashSet<>();
                 List<MethodEvent> containedMethodEvents = new ArrayList<>();
@@ -223,11 +203,6 @@ final class RuntimeRegionPlanner {
                 Set<String> runtimeAdmittedMethods = new LinkedHashSet<>(
                         observedMethods);
                 runtimeAdmittedMethods.removeAll(region.methods);
-                if (fullyObserved) {
-                    fullyObservedCount++;
-                } else {
-                    partialCount++;
-                }
 
                 int ordinal = invocationOrdinal(root, methodEvents);
                 int ordinalWithinContext = invocationOrdinalWithinContext(
@@ -247,8 +222,6 @@ final class RuntimeRegionPlanner {
                 List<String> pathSignature = pathSelection.signature;
                 if (pathSelection.truncated) {
                     result.truncated = true;
-                    truncatedPathSignatureInstanceCount++;
-                    skippedPathSignatureEventCount += pathSelection.skipped;
                 }
                 boolean runtimePathEvidenceComplete = !callSelection.truncated
                         && !pathSelection.truncated;
@@ -266,11 +239,6 @@ final class RuntimeRegionPlanner {
                         observedMethods, root.method, root, containedCalls,
                         runtimeFieldAccesses);
                 List<StaticPort> concreteInputs = demandSlice.inputs(region);
-                if (demandSlice.applied) {
-                    demandResliceAppliedCount++;
-                    demandReslicePrunedInputCount += Math.max(0,
-                            region.inputs.size() - concreteInputs.size());
-                }
                 List<Map<String, Object>> inputObjects = inputObservations(
                         region, concreteInputs, root, containedCalls,
                         containedRuntime,
@@ -306,10 +274,6 @@ final class RuntimeRegionPlanner {
                 if (!demandHasSymbolicPotential) {
                     symbolicReady = false;
                 }
-                if (replayable) {
-                    replayableCount++;
-                }
-                increment(validationCounts, validationStatus);
 
                 boolean finalRootIsStatic = root.method.equals(region.rootMethod);
                 String rootSelection = finalRootIsStatic
@@ -485,90 +449,17 @@ final class RuntimeRegionPlanner {
 
         RuntimeRelationEvidenceCache relationEvidence =
                 new RuntimeRelationEvidenceCache();
-        int externalInputPromotionCount =
-                collectConfirmedExternalInputPromotions(regionEdges,
-                        evidenceByRegion, sharedStateEvidenceByRegion,
-                        staticProjections, relationEvidence);
+        collectConfirmedExternalInputPromotions(regionEdges,
+                evidenceByRegion, sharedStateEvidenceByRegion,
+                staticProjections, relationEvidence);
         refreshPromotedConcreteInputRows(allInstanceEvidence, result);
-        demandReslicePrunedInputCount = countConcretePrunedInputs(
-                allInstanceEvidence);
 
         List<UpstreamEdgeBinding> edgeBindings = new ArrayList<>();
         validateRegionEdges(regionEdges, evidenceByRegion,
                 sharedStateEvidenceByRegion, staticProjections, result,
                 edgeBindings, relationEvidence);
-        int upstreamActivationCount = deriveUpstreamActivations(
-                edgeBindings, staticProjections, result);
-        int mapValueElementProjectionCount =
-                refineMapValueElementProjectionActivations(result);
-
-        result.summary.put("staticRegionCount", regions.size());
-        result.summary.put("staticRegionEdgeCatalogCount",
-                staticRegionEdgeCatalogCount);
-        result.summary.put("staticRegionEdgeCount", regionEdges.size());
-        result.summary.put("frozenStaticAccessorInputBindingCount",
-                frozenStaticAccessorInputBindingCount);
-        result.summary.put("frozenStaticAccessorInputBindingAuthority",
-                FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY);
-        result.summary.put("runtimeRegionInstanceCount", result.instances.size());
-        result.summary.put("activationCount", result.activations.size());
-        result.summary.put("upstreamActivationCount", upstreamActivationCount);
-        result.summary.put("concreteDemandResliceAppliedCount",
-                demandResliceAppliedCount);
-        result.summary.put("concreteDemandReslicePrunedInputCount",
-                demandReslicePrunedInputCount);
-        result.summary.put("runtimeConfirmedExternalInputPromotionCount",
-                externalInputPromotionCount);
-        result.summary.put("runtimeConfirmedExternalInputPromotionAuthority",
-                "RUNTIME_CONFIRMED_EDGE_ENDPOINT_OR_REQUESTED_OUTPUT_SLICE_V1");
-        result.summary.put("concreteDemandResliceAuthority",
-                ConcreteDemandSlice.AUTHORITY);
-        result.summary.put("mapValueElementProjectionCount",
-                mapValueElementProjectionCount);
-        result.summary.put("fullyObservedCount", fullyObservedCount);
-        result.summary.put("partialCount", partialCount);
-        result.summary.put("replayableCount", replayableCount);
-        result.summary.put("truncatedCallTreeInstanceCount",
-                truncatedCallTreeInstanceCount);
-        result.summary.put("truncatedPathSignatureInstanceCount",
-                truncatedPathSignatureInstanceCount);
-        result.summary.put("skippedContainedCallCount",
-                skippedContainedCallCount);
-        result.summary.put("skippedPathSignatureEventCount",
-                skippedPathSignatureEventCount);
-        result.summary.put("regionValidationCounts", validationCounts);
-        result.summary.put("runtimeRegionEdgeValidationCount",
-                result.edgeValidations.size());
-        result.summary.put("confirmedReadFromRegionEdgeCount",
-                countStatus(result.edgeValidations, "CONFIRMED_READ_FROM"));
-        result.summary.put("orderedProtocolEndpointRegionEdgeCount",
-                countStatus(result.edgeValidations, "ORDERED_ENDPOINTS"));
-        result.summary.put("confirmedRuntimeValueEqualityEdgeCount",
-                countStatus(result.edgeValidations,
-                        "CONFIRMED_RUNTIME_VALUE_EQUALITY"));
-        result.summary.put("unprovenPortMappingEdgeCount",
-                countStatus(result.edgeValidations,
-                        "PORT_MAPPING_OBSERVED_VALUE_EQUALITY_UNPROVEN"));
-        result.summary.put("endpointObservedRegionEdgeCount",
-                countStatus(result.edgeValidations, "ENDPOINTS_OBSERVED"));
-        result.summary.put("unconfirmedReadFromRegionEdgeCount",
-                countStatus(result.edgeValidations, "UNCONFIRMED_READ_FROM"));
-        result.summary.put("concreteDemandPrunedRegionEdgeCount",
-                countStatus(result.edgeValidations,
-                        "PRUNED_BY_CONCRETE_DEMAND_SLICE"));
-        result.summary.put("consumerInputResolutionRequestCount",
-                staticProjections.consumerInputResolutionRequestCount);
-        result.summary.put("consumerInputResolutionCacheHitCount",
-                staticProjections.consumerInputResolutionCacheHitCount);
-        result.summary.put("consumerInputResolutionCacheMissCount",
-                staticProjections.consumerInputResolutionCacheMissCount);
-        result.summary.put("unobservedRegionEdgeCount",
-                countStatus(result.edgeValidations, "UNOBSERVED"));
-        result.summary.put("unobservedRegionIds", result.unobservedRegionIds);
-        result.summary.put("warningCount", result.warnings.size());
-        result.summary.put("warnings", result.warnings);
-        result.summary.put("truncated", result.truncated);
-        result.summary.put("precision", "STATIC_REGION_PLUS_RUNTIME_CALL_TREE");
+        deriveUpstreamActivations(edgeBindings, staticProjections, result);
+        refineMapValueElementProjectionActivations(result);
         return result;
     }
 
@@ -2350,29 +2241,15 @@ final class RuntimeRegionPlanner {
                     selectedEvidence.get(edge.toRegion));
             int endpointPairs = 0;
             int orderedPairs = 0;
-            int siteObservedPairs = 0;
             int readFromPairs = 0;
             int valueEqualityPairs = 0;
             int demandPrunedPairCount = 0;
-            int projectionIdentityRejectedPairCount = 0;
-            Set<String> readFromAuthorities = new LinkedHashSet<>();
-            Set<String> readFromAssociationAuthorities =
-                    new LinkedHashSet<>();
-            Set<String> readFromAssumptions = new LinkedHashSet<>();
-            List<Map<String, Object>> evidence = new ArrayList<>();
             List<Map<String, Object>> validatedBindings = new ArrayList<>();
             String endpointCorrelationAuthority =
                     endpointCorrelationAuthority(edge);
             Map<String, List<FingerprintMatch>> selectedValueMatches =
                     nearestEndpointFingerprintMatches(edge,
                             upstreamInstances, downstreamInstances);
-            boolean producerOutputResolvable = false;
-            for (InstanceEvidence upstream : upstreamInstances) {
-                if (edge.producerOutputFor(upstream.region) != null) {
-                    producerOutputResolvable = true;
-                    break;
-                }
-            }
             for (InstanceEvidence upstream : upstreamInstances) {
                 for (InstanceEvidence downstream : downstreamInstances) {
                     if (!upstream.root.test.equals(downstream.root.test)) {
@@ -2408,9 +2285,6 @@ final class RuntimeRegionPlanner {
                     endpointPairs++;
                     boolean sameProcess = upstream.root.process.equals(
                             downstream.root.process);
-                    if (siteObserved) {
-                        siteObservedPairs++;
-                    }
                     List<FingerprintMatch> valueMatches = values(
                             selectedValueMatches.get(endpointInstancePairKey(
                                     upstream, downstream)));
@@ -2422,7 +2296,6 @@ final class RuntimeRegionPlanner {
                     if (readFrom != null
                             && !projectionReadFromIdentityConfirmed(
                             retainedInputResolution, readFrom)) {
-                        projectionIdentityRejectedPairCount++;
                         readFrom = null;
                     }
                     // A complete endpoint match and a confirmed read-from
@@ -2440,14 +2313,6 @@ final class RuntimeRegionPlanner {
                     }
                     if (readFrom != null) {
                         readFromPairs++;
-                        addNonBlank(readFromAuthorities,
-                                readFrom.writeEvidence.authority);
-                        addNonBlank(readFromAssociationAuthorities,
-                                readFrom.writeEvidence.associationAuthority);
-                        addNonBlank(readFromAssumptions,
-                                readFrom.writeEvidence.semanticAssumption);
-                        addNonBlank(readFromAssumptions,
-                                readFrom.pathSignatureAssumption());
                         if (edge.producerOutputFor(upstream.region) != null) {
                             edgeBindings.add(new UpstreamEdgeBinding(edge,
                                     upstream, downstream, readFrom));
@@ -2567,120 +2432,54 @@ final class RuntimeRegionPlanner {
                                 additional.from.digest);
                         validatedBindings.add(additionalRow);
                     }
-                    if (evidence.size() < 16) {
-                        evidence.add(row);
-                    }
                 }
             }
 
-            String status;
-            String validation;
+            String state;
             if ("SHARED_STATE".equals(edge.kind)) {
                 if (readFromPairs > 0) {
-                    status = "CONFIRMED_READ_FROM";
-                    validation = "FIELD_RECEIVER_IDENTITY_AND_WRITE_BEFORE_READ";
+                    state = "CONFIRMED_READ_FROM";
                 } else if (demandPrunedPairCount > 0
                         && endpointPairs == 0) {
-                    status = "PRUNED_BY_CONCRETE_DEMAND_SLICE";
-                    validation = "DOWNSTREAM_INPUT_NOT_RETAINED_BY_RUNTIME_"
-                            + "DEMAND_SLICE";
+                    state = "PRUNED_BY_CONCRETE_DEMAND_SLICE";
                 } else if (endpointPairs > 0) {
-                    status = "UNCONFIRMED_READ_FROM";
-                    validation = "ENDPOINTS_OBSERVED_BUT_NO_MATCHING_RUNTIME_WRITE_READ";
+                    state = "UNCONFIRMED_READ_FROM";
                 } else {
-                    status = "UNOBSERVED";
-                    validation = "NO_REGION_INSTANCE_PAIR";
+                    state = "UNOBSERVED";
                 }
             } else if (demandPrunedPairCount > 0
                     && endpointPairs == 0) {
-                status = "PRUNED_BY_CONCRETE_DEMAND_SLICE";
-                validation = "DOWNSTREAM_INPUT_NOT_RETAINED_BY_RUNTIME_"
-                        + "DEMAND_SLICE";
+                state = "PRUNED_BY_CONCRETE_DEMAND_SLICE";
             } else if (endpointPairs == 0) {
-                status = "UNOBSERVED";
-                validation = "NO_REGION_INSTANCE_PAIR";
+                state = "UNOBSERVED";
             } else if (valueEqualityPairs > 0) {
-                status = "CONFIRMED_RUNTIME_VALUE_EQUALITY";
-                validation = "COMPLETE_ENDPOINT_VALUE_FINGERPRINT_EQUALITY";
+                state = "CONFIRMED_RUNTIME_VALUE_EQUALITY";
             } else if (orderedPairs > 0) {
-                status = "PORT_MAPPING_OBSERVED_VALUE_EQUALITY_UNPROVEN";
-                validation = "ORDERED_ENDPOINTS_WITHOUT_COMPLETE_MATCHING_"
-                        + "VALUE_FINGERPRINT";
+                state = "PORT_MAPPING_OBSERVED_VALUE_EQUALITY_UNPROVEN";
             } else {
-                status = "ENDPOINTS_OBSERVED";
-                validation = "PORT_ORDER_AND_VALUE_EQUALITY_UNPROVEN";
+                state = "ENDPOINTS_OBSERVED";
             }
 
-            boolean readFromComposable = "CONFIRMED_READ_FROM".equals(status);
-            boolean equalityComposable =
-                    "CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(status);
-            boolean composable = readFromComposable || equalityComposable;
-
             Map<String, Object> validationRow = object(
+                    "schemaVersion", 2,
+                    "kind", "RUNTIME_REGION_EDGE_EVIDENCE",
                     "edgeId", edge.edgeId,
                     "fromRegion", edge.fromRegion,
                     "toRegion", edge.toRegion,
-                    "kind", edge.kind,
-                    "relation", composable
-                            ? readFromComposable ? "READ_FROM" : "EQUALITY"
-                            : "",
-                    "candidateRelation", firstNonBlank(
-                            edge.candidateRelation, edge.relation),
+                    "transportKind", edge.kind,
                     "fromPort", edge.fromPort,
                     "toPort", edge.toPort,
                     "requiresOrder", edge.requiresOrder,
                     "requiresObjectIdentity", edge.requiresObjectIdentity,
-                    "mappingKind", edge.mappingKind,
-                    "mappingAuthority", "SHARED_STATE".equals(edge.kind)
-                            ? "" : "STATIC_FORMAT_AND_PORT_MAPPING",
-                    "sourceMappingAuthority", edge.mappingAuthority,
-                    "payloadEqualityCheckRequired",
-                    edge.payloadEqualityCheckRequired,
-                    "siteId", edge.siteId,
-                    "status", status,
-                    "validation", validation,
-                    "producerOutputResolvable", producerOutputResolvable,
-                    "automaticOutputClosureDerivable",
-                    readFromComposable && producerOutputResolvable,
-                    "validatedRelation", readFromComposable ? "READ_FROM"
-                            : equalityComposable ? "EQUALITY" : "",
-                    "composable", composable,
-                    "eligibleForRecursiveDiscovery", endpointPairs > 0
-                            && (!edge.requiresOrder || orderedPairs > 0),
-                    "eligibleForAutomaticDerivation", composable,
-                    "eligibleForAutomaticSmt", composable,
-                    "mappingOnly", !composable,
-                    "semanticAssertionsAllowed", composable,
-                    "exclusionReason", composable ? ""
-                            : "PRUNED_BY_CONCRETE_DEMAND_SLICE".equals(status)
-                            ? "DOWNSTREAM_INPUT_PRUNED_BY_CONCRETE_DEMAND_"
-                            + "SLICE"
-                            : "NO_RUNTIME_VALIDATED_VALUE_RELATION",
-                    "endpointPairCount", endpointPairs,
-                    "orderedPairCount", orderedPairs,
-                    "siteObservedPairCount", siteObservedPairs,
-                    "concreteDemandPrunedPairCount", demandPrunedPairCount,
-                    "projectionIdentityRejectedPairCount",
-                    projectionIdentityRejectedPairCount,
-                    "confirmedReadFromPairCount", readFromPairs,
-                    "readFromAuthorities",
-                    new ArrayList<>(readFromAuthorities),
-                    "readFromAssociationAuthorities",
-                    new ArrayList<>(readFromAssociationAuthorities),
-                    "readFromAssumptions",
-                    new ArrayList<>(readFromAssumptions),
-                    "confirmedValueEqualityPairCount", valueEqualityPairs,
-                    "valueEqualityObserved", valueEqualityPairs > 0,
-                    "valueEqualityAuthority", valueEqualityPairs > 0
-                            ? "RUNTIME_COMPLETE_VALUE_FINGERPRINT" : "",
-                    "endpointOrderAuthority", valueEqualityPairs > 0
-                            ? "GLOBAL_TRACE_ENDPOINT_SEQUENCE" : "",
-                    "endpointCorrelationAuthority", valueEqualityPairs > 0
-                            ? endpointCorrelationAuthority
-                            : "",
-                    "validatedBindingCount", validatedBindings.size(),
-                    "validatedBindings", validatedBindings,
-                    "evidence", evidence);
+                    "state", state,
+                    "bindings", validatedBindings);
+            if (!edge.mappingKind.isEmpty()) {
+                validationRow.put("mappingKind", edge.mappingKind);
+            }
+            if (!"SHARED_STATE".equals(edge.kind)) {
+                validationRow.put("mappingAuthority",
+                        "STATIC_FORMAT_AND_PORT_MAPPING");
+            }
             if (edge.canonicalMetadataPresent) {
                 validationRow.put("fromOutputPort", edge.fromOutputPort);
                 validationRow.put("fromOutputCell", edge.fromOutputCell);
@@ -2692,18 +2491,8 @@ final class RuntimeRegionPlanner {
                         edge.aliasProofComplete);
             }
             if (!edge.producerCandidateGroup.isEmpty()) {
-                validationRow.put("catalogFromRegion",
-                        edge.catalogFromRegion);
-                validationRow.put("producerRegionCandidateGroup",
+                validationRow.put("_producerRegionCandidateGroup",
                         edge.producerCandidateGroup);
-                validationRow.put("producerRegionCandidateCount",
-                        edge.producerCandidateCount);
-                validationRow.put("producerRegionExpansionAuthority",
-                        edge.producerExpansionAuthority);
-            }
-            if (!edge.staticEvidence.isEmpty()) {
-                validationRow.put("staticEdgeEvidence",
-                        new ArrayList<>(edge.staticEvidence));
             }
             result.edgeValidations.add(validationRow);
         }
@@ -2716,13 +2505,12 @@ final class RuntimeRegionPlanner {
      * relation is the evidence that authorizes the promotion.  Rendering then
      * runs once against the final, monotonic input sets.
      */
-    private static int collectConfirmedExternalInputPromotions(
+    private static void collectConfirmedExternalInputPromotions(
             List<StaticRegionEdge> staticEdges,
             Map<String, List<InstanceEvidence>> evidenceByRegion,
             Map<String, List<InstanceEvidence>> sharedStateEvidenceByRegion,
             StaticProjectionIndex staticProjections,
             RuntimeRelationEvidenceCache relationEvidence) {
-        int promoted = 0;
         for (StaticRegionEdge edge : staticEdges) {
             Map<String, List<InstanceEvidence>> selectedEvidence =
                     "SHARED_STATE".equals(edge.kind)
@@ -2795,10 +2583,8 @@ final class RuntimeRegionPlanner {
                             "runtimeWitnessAuthority", readFrom == null
                                     ? "RUNTIME_COMPLETE_VALUE_FINGERPRINT"
                                     : readFrom.writeEvidence.authority);
-                    if (downstream.promoteExternalInput(resolution.port,
-                            endpointPromotion)) {
-                        promoted++;
-                    }
+                    downstream.promoteExternalInput(resolution.port,
+                            endpointPromotion);
 
                     if (readFrom == null) {
                         continue;
@@ -2829,31 +2615,16 @@ final class RuntimeRegionPlanner {
                                 "requestedOutputPort", output.portId,
                                 "runtimeWitnessAuthority",
                                 readFrom.writeEvidence.authority);
-                        if (upstream.promoteExternalInput(input,
-                                outputPromotion)) {
-                            promoted++;
-                        }
+                        upstream.promoteExternalInput(input,
+                                outputPromotion);
                     }
                 }
             }
         }
-        return promoted;
     }
 
     private static <T> T first(List<T> values) {
         return values == null || values.isEmpty() ? null : values.get(0);
-    }
-
-    private static int countConcretePrunedInputs(
-            List<InstanceEvidence> evidence) {
-        int result = 0;
-        for (InstanceEvidence instance : evidence) {
-            if (instance.concreteDemandSliceApplied) {
-                result += Math.max(0, instance.region.inputs.size()
-                        - instance.concreteInputPortIds.size());
-            }
-        }
-        return result;
     }
 
     /** Rebuilds both maintained row views from the same promoted set. */
@@ -2980,7 +2751,8 @@ final class RuntimeRegionPlanner {
         Map<String, List<Map<String, Object>>> byGroup =
                 new LinkedHashMap<>();
         for (Map<String, Object> row : validations) {
-            String group = string(row.get("producerRegionCandidateGroup"));
+            String group = string(row.get(
+                    "_producerRegionCandidateGroup"));
             if (!group.isEmpty()) {
                 add(byGroup, group, row);
             }
@@ -2988,54 +2760,20 @@ final class RuntimeRegionPlanner {
         for (List<Map<String, Object>> candidates : byGroup.values()) {
             List<Map<String, Object>> confirmed = new ArrayList<>();
             for (Map<String, Object> candidate : candidates) {
-                if (Boolean.TRUE.equals(candidate.get("composable"))
-                        && "CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
-                        string(candidate.get("status")))) {
+                if ("CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(
+                        string(candidate.get("state")))) {
                     confirmed.add(candidate);
                 }
             }
-            if (confirmed.size() == 1) {
-                for (Map<String, Object> candidate : candidates) {
-                    boolean selected = candidate == confirmed.get(0);
-                    candidate.put("producerRegionUniquelyConfirmed",
-                            selected);
-                    candidate.put("producerRegionConfirmationAuthority",
-                            selected
-                                    ? UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY
-                                    : "");
+            if (confirmed.size() > 1) {
+                for (Map<String, Object> ambiguous : confirmed) {
+                    ambiguous.put("state",
+                            "AMBIGUOUS_RUNTIME_PRODUCER_REGION");
                 }
-                continue;
             }
-            for (Map<String, Object> candidate : candidates) {
-                candidate.put("producerRegionUniquelyConfirmed", false);
-                candidate.put("producerRegionConfirmationAuthority", "");
-            }
-            if (confirmed.size() < 2) {
-                continue;
-            }
-            for (Map<String, Object> ambiguous : confirmed) {
-                ambiguous.put("candidateValueEqualityObserved", true);
-                ambiguous.put("candidateValueEqualityAuthority",
-                        ambiguous.get("valueEqualityAuthority"));
-                ambiguous.put("status",
-                        "AMBIGUOUS_RUNTIME_PRODUCER_REGION");
-                ambiguous.put("validation",
-                        "MULTIPLE_EXACT_OUTPUT_PRODUCER_REGIONS_HAVE_"
-                                + "COMPLETE_RUNTIME_VALUE_WITNESSES");
-                ambiguous.put("relation", "");
-                ambiguous.put("validatedRelation", "");
-                ambiguous.put("composable", false);
-                ambiguous.put("eligibleForAutomaticDerivation", false);
-                ambiguous.put("eligibleForAutomaticSmt", false);
-                ambiguous.put("mappingOnly", true);
-                ambiguous.put("semanticAssertionsAllowed", false);
-                ambiguous.put("exclusionReason",
-                        "RUNTIME_PRODUCER_REGION_NOT_UNIQUE");
-                ambiguous.put("valueEqualityObserved", false);
-                ambiguous.put("valueEqualityAuthority", "");
-                ambiguous.put("endpointOrderAuthority", "");
-                ambiguous.put("endpointCorrelationAuthority", "");
-            }
+        }
+        for (Map<String, Object> validation : validations) {
+            validation.remove("_producerRegionCandidateGroup");
         }
     }
 
@@ -3045,7 +2783,7 @@ final class RuntimeRegionPlanner {
      * region may simultaneously contain the target and provide an output for
      * another region query.
      */
-    private static int deriveUpstreamActivations(
+    private static void deriveUpstreamActivations(
             List<UpstreamEdgeBinding> bindings,
             StaticProjectionIndex staticProjections, Result result) {
         Map<String, Map<String, Object>> baseByInstance = new LinkedHashMap<>();
@@ -3274,7 +3012,6 @@ final class RuntimeRegionPlanner {
             }
             result.activations.add(activation);
         }
-        return activationIndex;
     }
 
     /** A projected consumer input may only inherit a shared-state relation
@@ -3773,7 +3510,7 @@ final class RuntimeRegionPlanner {
      * object identity.  Import remains independently fail-closed until those
      * same-execution observations are complete.</p>
      */
-    private static int refineMapValueElementProjectionActivations(
+    private static void refineMapValueElementProjectionActivations(
             Result result) {
         Map<String, List<Map<String, Object>>> selectedByInstance =
                 new LinkedHashMap<>();
@@ -3788,7 +3525,6 @@ final class RuntimeRegionPlanner {
             }
         }
 
-        int emitted = 0;
         for (Map<String, Object> activation : result.activations) {
             Map<String, Object> producerSlice = mapValue(
                     activation.get("requestedOutputSlice"));
@@ -3933,14 +3669,12 @@ final class RuntimeRegionPlanner {
                         + "failed closed for " + string(activation.get(
                         "activationId")) + ": " + issues);
             }
-            emitted += declarations.size();
         }
-        return emitted;
     }
 
-    static int refineMapValueElementProjectionActivationsForTests(
+    static void refineMapValueElementProjectionActivationsForTests(
             Result result) {
-        return refineMapValueElementProjectionActivations(result);
+        refineMapValueElementProjectionActivations(result);
     }
 
     static String uniqueExactInputPortForTests(String regionJson,
@@ -4765,26 +4499,11 @@ final class RuntimeRegionPlanner {
                 || value.contains(" set(");
     }
 
-    private static int countStatus(List<Map<String, Object>> rows, String status) {
-        int count = 0;
-        for (Map<String, Object> row : rows) {
-            if (status.equals(string(row.get("status")))) {
-                count++;
-            }
-        }
-        return count;
-    }
-
     private static void addNonBlank(Set<String> values, String value) {
         String normalized = safe(value);
         if (!normalized.isEmpty()) {
             values.add(normalized);
         }
-    }
-
-    private static void increment(Map<String, Integer> counts, String key) {
-        Integer previous = counts.get(key);
-        counts.put(key, previous == null ? 1 : previous + 1);
     }
 
     /**
@@ -4793,7 +4512,7 @@ final class RuntimeRegionPlanner {
      * in-memory StaticPort used by this aggregation. Zero or multiple exact
      * graph rows deliberately leave the input unchanged.
      */
-    private static int applyFrozenStaticAccessorInputBindings(
+    private static void applyFrozenStaticAccessorInputBindings(
             List<StaticRegion> regions,
             List<FrozenStaticAccessorEvidence> evidenceRows) {
         Map<String, List<FrozenStaticAccessorEvidence>> byField =
@@ -4801,7 +4520,6 @@ final class RuntimeRegionPlanner {
         for (FrozenStaticAccessorEvidence evidence : evidenceRows) {
             add(byField, evidence.fromCell, evidence);
         }
-        int count = 0;
         for (StaticRegion region : regions) {
             for (StaticPort port : region.inputs) {
                 if (hasAnyAccessorMetadata(port)) {
@@ -4821,10 +4539,8 @@ final class RuntimeRegionPlanner {
                     continue;
                 }
                 selected.applyTo(port);
-                count++;
             }
         }
-        return count;
     }
 
     private static boolean hasAnyAccessorMetadata(StaticPort port) {
@@ -5050,8 +4766,7 @@ final class RuntimeRegionPlanner {
             String group = "REGION_EDGE_PRODUCER_CANDIDATES."
                     + catalogOrdinal;
             for (String producerRegion : producerRegions) {
-                result.add(edge.forProducerRegion(producerRegion, group,
-                        producerRegions.size()));
+                result.add(edge.forProducerRegion(producerRegion, group));
             }
             catalogOrdinal++;
         }
@@ -5062,14 +4777,9 @@ final class RuntimeRegionPlanner {
         final List<Map<String, Object>> instances = new ArrayList<>();
         final List<Map<String, Object>> activations = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
-        final Map<String, Object> summary = new LinkedHashMap<>();
         final List<String> warnings = new ArrayList<>();
         final Set<String> unobservedRegionIds = new LinkedHashSet<>();
         boolean truncated;
-
-        String instancesJsonl() {
-            return jsonl(instances);
-        }
 
         String activationsJsonl() {
             return jsonl(activations);
@@ -7006,20 +6716,12 @@ final class RuntimeRegionPlanner {
         private boolean canonicalMetadataPresent;
         private String toPort = "";
         private String kind = "";
-        private String relation = "";
-        private String candidateRelation = "";
         private String siteId = "";
         private boolean requiresOrder;
         private boolean requiresObjectIdentity;
         private String mappingKind = "";
-        private String mappingAuthority = "";
         private boolean mappingOnly;
-        private boolean payloadEqualityCheckRequired;
-        private final List<String> staticEvidence = new ArrayList<>();
-        private String catalogFromRegion = "";
         private String producerCandidateGroup = "";
-        private int producerCandidateCount;
-        private String producerExpansionAuthority = "";
         private FieldCell fromField = FieldCell.unresolved();
         private FieldCell toField = FieldCell.unresolved();
 
@@ -7047,21 +6749,12 @@ final class RuntimeRegionPlanner {
             edge.fromField = fieldCell(edge.fromPort);
             edge.toField = fieldCell(edge.toPort);
             edge.kind = jsonString(json, "kind");
-            edge.relation = jsonString(json, "relation");
-            edge.candidateRelation = firstNonBlank(jsonString(json,
-                    "candidateRelation"), edge.relation);
             edge.siteId = jsonString(json, "siteId");
             edge.requiresOrder = jsonBoolean(json, "requiresOrder", false);
             edge.requiresObjectIdentity = jsonBoolean(json,
                     "requiresObjectIdentity", false);
             edge.mappingKind = jsonString(json, "mappingKind");
-            edge.mappingAuthority = jsonString(json, "mappingAuthority");
             edge.mappingOnly = jsonBoolean(json, "mappingOnly", false);
-            edge.payloadEqualityCheckRequired = jsonBoolean(json,
-                    "payloadEqualityCheckRequired",
-                    "EQUALITY".equals(edge.candidateRelation));
-            edge.staticEvidence.addAll(jsonStringArray(json, "evidence"));
-            edge.catalogFromRegion = edge.fromRegion;
             return edge;
         }
 
@@ -7092,8 +6785,7 @@ final class RuntimeRegionPlanner {
         }
 
         private StaticRegionEdge forProducerRegion(String producerRegion,
-                                                   String candidateGroup,
-                                                   int candidateCount) {
+                                                   String candidateGroup) {
             StaticRegionEdge copy = new StaticRegionEdge();
             copy.edgeId = edgeId;
             copy.fromRegion = safe(producerRegion);
@@ -7107,21 +6799,12 @@ final class RuntimeRegionPlanner {
             copy.canonicalMetadataPresent = canonicalMetadataPresent;
             copy.toPort = toPort;
             copy.kind = kind;
-            copy.relation = relation;
-            copy.candidateRelation = candidateRelation;
             copy.siteId = siteId;
             copy.requiresOrder = requiresOrder;
             copy.requiresObjectIdentity = requiresObjectIdentity;
             copy.mappingKind = mappingKind;
-            copy.mappingAuthority = mappingAuthority;
             copy.mappingOnly = mappingOnly;
-            copy.payloadEqualityCheckRequired = payloadEqualityCheckRequired;
-            copy.staticEvidence.addAll(staticEvidence);
-            copy.catalogFromRegion = catalogFromRegion;
             copy.producerCandidateGroup = safe(candidateGroup);
-            copy.producerCandidateCount = candidateCount;
-            copy.producerExpansionAuthority =
-                    EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY;
             copy.fromField = fromField;
             copy.toField = toField;
             return copy;

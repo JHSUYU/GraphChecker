@@ -13,6 +13,9 @@ import com.google.gson.JsonObject;
  * endpoint order, and domain-specific mapping names never satisfy this gate.</p>
  */
 public final class AutomaticRegionEdge {
+    static final int RUNTIME_EDGE_SCHEMA_VERSION = 2;
+    static final String RUNTIME_EDGE_KIND =
+            "RUNTIME_REGION_EDGE_EVIDENCE";
     static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
             "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
                     + "COMPLETED_MUTATION_BEFORE_READ_V1";
@@ -27,22 +30,16 @@ public final class AutomaticRegionEdge {
     }
 
     public static boolean composable(JsonObject edge) {
-        if (edge == null || !bool(edge, "composable", false)
-                || !bool(edge, "eligibleForAutomaticDerivation", false)
-                || !bool(edge, "eligibleForAutomaticSmt", false)) {
+        if (!canonicalRuntimeEdge(edge)) {
             return false;
         }
-        String relation = string(edge, "validatedRelation");
+        String relation = relation(edge);
+        JsonElement bindings = edge.get("bindings");
+        if (bindings == null || !bindings.isJsonArray()
+                || bindings.getAsJsonArray().size() == 0) {
+            return false;
+        }
         if ("READ_FROM".equals(relation)) {
-            if (!"CONFIRMED_READ_FROM".equals(string(edge, "status"))
-                    || integer(edge, "confirmedReadFromPairCount", 0) <= 0) {
-                return false;
-            }
-            JsonElement bindings = edge.get("validatedBindings");
-            if (bindings == null || !bindings.isJsonArray()
-                    || bindings.getAsJsonArray().size() == 0) {
-                return false;
-            }
             for (JsonElement element : bindings.getAsJsonArray()) {
                 if (!element.isJsonObject()
                         || !trustedReadFromEvidence(
@@ -53,12 +50,6 @@ public final class AutomaticRegionEdge {
             return true;
         }
         if ("EQUALITY".equals(relation)) {
-            String authority = string(edge, "valueEqualityAuthority");
-            JsonElement bindings = edge.get("validatedBindings");
-            if (bindings == null || !bindings.isJsonArray()
-                    || bindings.getAsJsonArray().size() == 0) {
-                return false;
-            }
             for (JsonElement element : bindings.getAsJsonArray()) {
                 if (!element.isJsonObject()
                         || !trustedRuntimeValueEqualityEvidence(
@@ -66,11 +57,33 @@ public final class AutomaticRegionEdge {
                     return false;
                 }
             }
-            return bool(edge, "valueEqualityObserved", false)
-                    && integer(edge, "confirmedValueEqualityPairCount", 0) > 0
-                    && "RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(authority);
+            return true;
         }
         return false;
+    }
+
+    static String relation(JsonObject edge) {
+        String state = string(edge, "state");
+        if ("CONFIRMED_READ_FROM".equals(state)) {
+            return "READ_FROM";
+        }
+        if ("CONFIRMED_RUNTIME_VALUE_EQUALITY".equals(state)) {
+            return "EQUALITY";
+        }
+        return "";
+    }
+
+    private static boolean canonicalRuntimeEdge(JsonObject edge) {
+        return edge != null
+                && integer(edge, "schemaVersion", -1)
+                == RUNTIME_EDGE_SCHEMA_VERSION
+                && RUNTIME_EDGE_KIND.equals(string(edge, "kind"))
+                && !string(edge, "edgeId").isEmpty()
+                && !string(edge, "fromRegion").isEmpty()
+                && !string(edge, "toRegion").isEmpty()
+                && !string(edge, "transportKind").isEmpty()
+                && !string(edge, "fromPort").isEmpty()
+                && !string(edge, "toPort").isEmpty();
     }
 
     /**

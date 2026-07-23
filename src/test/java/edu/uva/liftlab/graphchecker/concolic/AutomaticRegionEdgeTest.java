@@ -11,7 +11,7 @@ public class AutomaticRegionEdgeTest {
     @Test
     public void staticContractAndEndpointOrderCannotDeclareEquality() {
         JsonObject edge = baseEquality();
-        edge.addProperty("status", "CONFIRMED_PROTOCOL_MAPPING");
+        edge.addProperty("state", "CONFIRMED_PROTOCOL_MAPPING");
         edge.addProperty("mappingAuthority", "STATIC_DOMAIN_CONTRACT");
         edge.addProperty("endpointPairCount", 1);
         edge.addProperty("orderedPairCount", 1);
@@ -22,13 +22,7 @@ public class AutomaticRegionEdgeTest {
     @Test
     public void completeRuntimeFingerprintCanPromoteMappedPorts() {
         JsonObject edge = baseEquality();
-        edge.addProperty("status", "CONFIRMED_RUNTIME_VALUE_EQUALITY");
-        edge.addProperty("valueEqualityObserved", true);
-        edge.addProperty("confirmedValueEqualityPairCount", 1);
-        edge.addProperty("valueEqualityAuthority",
-                "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
-        edge.addProperty("eligibleForAutomaticDerivation", true);
-        edge.addProperty("eligibleForAutomaticSmt", true);
+        edge.addProperty("state", "CONFIRMED_RUNTIME_VALUE_EQUALITY");
         JsonArray diagnostic = new JsonArray();
         diagnostic.add(new JsonObject());
         edge.add("evidence", diagnostic);
@@ -38,7 +32,7 @@ public class AutomaticRegionEdgeTest {
 
         JsonArray bindings = new JsonArray();
         bindings.add(new JsonObject());
-        edge.add("validatedBindings", bindings);
+        edge.add("bindings", bindings);
 
         assertFalse("an empty canonical binding must fail closed",
                 AutomaticRegionEdge.composable(edge));
@@ -47,11 +41,13 @@ public class AutomaticRegionEdgeTest {
 
         assertTrue(AutomaticRegionEdge.composable(edge));
 
-        edge.remove("eligibleForAutomaticSmt");
+        edge.remove("schemaVersion");
         assertFalse(AutomaticRegionEdge.composable(edge));
 
-        edge.addProperty("eligibleForAutomaticSmt", true);
-        edge.addProperty("valueEqualityAuthority", "RUNTIME_UNTRUSTED_ALIAS");
+        edge.addProperty("schemaVersion",
+                AutomaticRegionEdge.RUNTIME_EDGE_SCHEMA_VERSION);
+        bindings.get(0).getAsJsonObject().addProperty(
+                "valueEqualityAuthority", "RUNTIME_UNTRUSTED_ALIAS");
         assertFalse(AutomaticRegionEdge.composable(edge));
     }
 
@@ -96,27 +92,15 @@ public class AutomaticRegionEdgeTest {
 
     @Test
     public void confirmedReadFromRequiresValidatedRuntimeBinding() {
-        JsonObject edge = new JsonObject();
-        edge.addProperty("fromRegion", "REGION.WRITER");
-        edge.addProperty("fromPort", "REGION.WRITER.out.0");
-        edge.addProperty("toRegion", "REGION.READER");
-        edge.addProperty("toPort", "REGION.READER.in.0");
-        edge.addProperty("validatedRelation", "READ_FROM");
-        edge.addProperty("status", "CONFIRMED_READ_FROM");
-        edge.addProperty("composable", true);
-        edge.addProperty("confirmedReadFromPairCount", 1);
-        edge.addProperty("eligibleForAutomaticDerivation", true);
-        edge.addProperty("eligibleForAutomaticSmt", true);
-        edge.addProperty("eligibleForRecursiveDiscovery", false);
+        JsonObject edge = baseRuntimeEdge("READ_FROM");
+        edge.addProperty("state", "CONFIRMED_READ_FROM");
         edge.addProperty("requiresOrder", true);
-        edge.addProperty("endpointPairCount", 1);
-        edge.addProperty("orderedPairCount", 0);
 
         assertFalse(AutomaticRegionEdge.composable(edge));
 
         JsonArray bindings = new JsonArray();
         bindings.add(fieldAssignmentBinding());
-        edge.add("validatedBindings", bindings);
+        edge.add("bindings", bindings);
         assertTrue(AutomaticRegionEdge.composable(edge));
     }
 
@@ -141,16 +125,11 @@ public class AutomaticRegionEdgeTest {
         assertFalse(AutomaticRegionEdge
                 .trustedRuntimeReadFromBinding(readBeforeCompletion));
 
-        JsonObject edge = new JsonObject();
-        edge.addProperty("validatedRelation", "READ_FROM");
-        edge.addProperty("status", "CONFIRMED_READ_FROM");
-        edge.addProperty("composable", true);
-        edge.addProperty("confirmedReadFromPairCount", 1);
-        edge.addProperty("eligibleForAutomaticDerivation", true);
-        edge.addProperty("eligibleForAutomaticSmt", true);
+        JsonObject edge = baseRuntimeEdge("READ_FROM");
+        edge.addProperty("state", "CONFIRMED_READ_FROM");
         JsonArray bindings = new JsonArray();
         bindings.add(differentContainer);
-        edge.add("validatedBindings", bindings);
+        edge.add("bindings", bindings);
         assertFalse(AutomaticRegionEdge.composable(edge));
 
         bindings.set(0, complete);
@@ -183,13 +162,21 @@ public class AutomaticRegionEdgeTest {
     }
 
     private static JsonObject baseEquality() {
+        return baseRuntimeEdge("EQUALITY");
+    }
+
+    private static JsonObject baseRuntimeEdge(String relation) {
         JsonObject edge = new JsonObject();
+        edge.addProperty("schemaVersion",
+                AutomaticRegionEdge.RUNTIME_EDGE_SCHEMA_VERSION);
+        edge.addProperty("kind", AutomaticRegionEdge.RUNTIME_EDGE_KIND);
+        edge.addProperty("edgeId", "EDGE.0");
         edge.addProperty("fromRegion", "REGION.UP");
         edge.addProperty("fromPort", "REGION.UP.out.0");
         edge.addProperty("toRegion", "REGION.DOWN");
         edge.addProperty("toPort", "REGION.DOWN.in.0");
-        edge.addProperty("validatedRelation", "EQUALITY");
-        edge.addProperty("composable", true);
+        edge.addProperty("transportKind", "READ_FROM".equals(relation)
+                ? "SHARED_STATE" : "RPC_TRANSFER");
         return edge;
     }
 

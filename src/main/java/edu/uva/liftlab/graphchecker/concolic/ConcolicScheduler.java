@@ -1924,9 +1924,7 @@ public final class ConcolicScheduler {
             if (!AutomaticRegionEdge.composable(edge)) {
                 continue;
             }
-            String relation = firstNonBlank(
-                    string(edge, "validatedRelation"),
-                    string(edge, "relation"));
+            String relation = AutomaticRegionEdge.relation(edge);
             String fromRegion = string(edge, "fromRegion");
             String toRegion = string(edge, "toRegion");
             String fromCell = producerOutputCell(edge,
@@ -1958,7 +1956,7 @@ public final class ConcolicScheduler {
                 state.addProperty("requiresObjectIdentity",
                         bool(edge, "requiresObjectIdentity", true));
                 state.addProperty("confirmedReadFromPairCount",
-                        integer(edge, "confirmedReadFromPairCount", 0));
+                        runtimeBindings(edge).size());
                 stateMerges.add(state);
             }
         }
@@ -2057,7 +2055,7 @@ public final class ConcolicScheduler {
         JsonObject result = new JsonObject();
         result.addProperty("edgeId", string(edge, "edgeId"));
         result.addProperty("kind", kind);
-        result.addProperty("transportKind", string(edge, "kind"));
+        result.addProperty("transportKind", string(edge, "transportKind"));
         result.addProperty("fromRegion", string(edge, "fromRegion"));
         result.addProperty("toRegion", string(edge, "toRegion"));
         result.addProperty("fromEndpoint", from.id);
@@ -2067,15 +2065,7 @@ public final class ConcolicScheduler {
         result.addProperty("mappingKind", string(edge, "mappingKind"));
         result.addProperty("mappingAuthority",
                 string(edge, "mappingAuthority"));
-        result.addProperty("runtimeStatus", string(edge, "status"));
-        result.addProperty("endpointOrderAuthority",
-                string(edge, "endpointOrderAuthority"));
-        result.addProperty("endpointCorrelationAuthority",
-                string(edge, "endpointCorrelationAuthority"));
-        result.addProperty("discoveredExecutionId",
-                string(edge, "discoveredExecutionId"));
-        result.add("discoveredExecutionIds", array(edge,
-                "discoveredExecutionIds").deepCopy());
+        result.addProperty("runtimeState", string(edge, "state"));
         result.add("runtimeBindings", runtimeBindings(edge).deepCopy());
         return result;
     }
@@ -2272,7 +2262,7 @@ public final class ConcolicScheduler {
     }
 
     private static JsonArray runtimeBindings(JsonObject edge) {
-        return array(edge, "validatedBindings");
+        return array(edge, "bindings");
     }
 
     /**
