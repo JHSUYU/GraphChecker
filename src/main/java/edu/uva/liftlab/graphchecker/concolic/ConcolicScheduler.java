@@ -169,7 +169,6 @@ public final class ConcolicScheduler {
             scheduledActivation.remove("summaryMode");
             scheduledActivation.addProperty("scheduleId", scheduleId);
             scheduledActivation.addProperty("executionPhase", executionPhase);
-            scheduledActivation.addProperty("targetReplayRequired", false);
             scheduledActivation.addProperty("branchOverrideProhibited",
                     !arguments.forceBranchValidation);
             scheduledActivation.addProperty("schedulerReady",
@@ -179,10 +178,6 @@ public final class ConcolicScheduler {
             scheduledActivation.add("concreteFallbacks",
                     materialization.concreteFallbacks.deepCopy());
             compactScheduledActivation(scheduledActivation);
-            if (!candidate.outputClosure) {
-                scheduledActivation.add("branchCaptureSelector",
-                        candidate.target.captureSelector().toJson());
-            }
 
             if (arguments.forceBranchValidation
                     && !candidate.outputClosure) {
@@ -215,10 +210,7 @@ public final class ConcolicScheduler {
             job.addProperty("captureReady", materialization.ready);
             job.addProperty("forceValidationEnabled",
                     arguments.forceBranchValidation);
-            if (!candidate.outputClosure) {
-                job.add("branchCaptureSelector",
-                        candidate.target.captureSelector().toJson());
-            } else {
+            if (candidate.outputClosure) {
                 upstreamCaptureJobCount++;
                 JsonElement requestedOutput = candidate.activation.get(
                         "requestedOutput");
@@ -445,7 +437,6 @@ public final class ConcolicScheduler {
             RegionCaptureGoal.outputClosure().writeTo(result);
         }
         result.remove("summaryMode");
-        result.remove("branchCaptureSelector");
         result.remove("forcedBranches");
         result.remove("modelAssignments");
         boolean outputCaptureReady = outputCaptureReady(result);
@@ -2929,10 +2920,6 @@ public final class ConcolicScheduler {
                     "OUTPUT_CLOSURE_CAPTURE");
         }
 
-        private BranchCaptureSelector captureSelector() {
-            return BranchCaptureSelector.of(siteId, selectedOccurrence,
-                    desiredOutcome);
-        }
     }
 
     private static final class Candidate {

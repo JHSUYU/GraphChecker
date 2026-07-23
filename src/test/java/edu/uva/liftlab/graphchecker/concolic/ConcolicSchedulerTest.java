@@ -30,7 +30,8 @@ public class ConcolicSchedulerTest {
             "<example.Manager: example.BlockKey currentKey>#field:keyId";
 
     @Test
-    public void schedulesDirectedFlipAndBuildsTypedMergePlan() throws Exception {
+    public void schedulesTargetCaptureAndBuildsTypedMergePlan()
+            throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
@@ -54,10 +55,6 @@ public class ConcolicSchedulerTest {
             assertEquals("LOCAL_UNIT_TEST",
                     job.get("workloadKind").getAsString());
             assertTrue(job.get("captureReady").getAsBoolean());
-            JsonObject target = job.getAsJsonObject(
-                    "branchCaptureSelector");
-            assertFalse(target.get("desiredOutcome").getAsBoolean());
-            assertEquals(1, target.get("occurrence").getAsInt());
 
             JsonObject scheduled = result.scheduledActivations.get(0);
             assertEquals("example.Server", scheduled.get(
@@ -95,9 +92,12 @@ public class ConcolicSchedulerTest {
                     projected.get("leafOwnerClass").getAsString());
             assertEquals("keyId", projected.get("leafField").getAsString());
             assertEquals(2, projected.getAsJsonArray("fieldPath").size());
-            assertEquals("SOOT_BRANCH_OVERRIDE_VALIDATION", scheduled
-                    .getAsJsonArray("forcedBranches").get(0)
-                    .getAsJsonObject().get("mode").getAsString());
+            JsonObject forced = scheduled.getAsJsonArray("forcedBranches")
+                    .get(0).getAsJsonObject();
+            assertEquals("SOOT_BRANCH_OVERRIDE_VALIDATION",
+                    forced.get("mode").getAsString());
+            assertFalse(forced.get("desiredOutcome").getAsBoolean());
+            assertEquals(1, forced.get("occurrence").getAsInt());
 
             assertEquals(1, result.mergePlan
                     .getAsJsonArray("equalityClasses").size());
@@ -544,10 +544,6 @@ public class ConcolicSchedulerTest {
                     "engineArrayInputBindings"));
             assertFalse(result.scheduledActivations.get(0)
                     .has("replayContract"));
-            assertTrue(result.scheduledActivations.get(0)
-                    .has("branchCaptureSelector"));
-            assertFalse(result.scheduledActivations.get(0)
-                    .get("targetReplayRequired").getAsBoolean());
         } finally {
             folder.delete();
         }
@@ -583,8 +579,6 @@ public class ConcolicSchedulerTest {
                     .get("phase").getAsString());
             assertFalse(result.scheduledActivations.get(0)
                     .has("replayContract"));
-            assertFalse(result.scheduledActivations.get(0)
-                    .get("targetReplayRequired").getAsBoolean());
         } finally {
             folder.delete();
         }
@@ -671,12 +665,6 @@ public class ConcolicSchedulerTest {
             assertEquals("OUTPUT_CLOSURE", result.jobs.get(0)
                     .getAsJsonObject("captureGoal").get("kind")
                     .getAsString());
-            assertFalse(result.jobs.get(0).has("targetBranch"));
-            assertFalse(result.jobs.get(0).has("branchCaptureSelector"));
-            assertFalse(result.scheduledActivations.get(0)
-                    .has("targetBranch"));
-            assertFalse(result.scheduledActivations.get(0)
-                    .has("branchCaptureSelector"));
             assertEquals(0, result.queries.size());
             assertEquals(1, result.summary.get("upstreamCaptureJobCount")
                     .getAsInt());

@@ -72,8 +72,6 @@ public class ConcolicPathFlipPlannerTest {
                 replay.getAsJsonObject("replayContract"));
         assertEquals("u14", contract.source().siteId());
         assertFalse(contract.requiredTakenOutcome());
-        assertFalse(replay.has("targetBranch"));
-        assertFalse(replay.has("expectedBranchPrefix"));
         assertFalse(replay.has("forcedBranches"));
         assertTrue(Files.size(output.resolve("path_flip_query.smt2")) > 0L);
         assertTrue(Files.size(output.resolve(

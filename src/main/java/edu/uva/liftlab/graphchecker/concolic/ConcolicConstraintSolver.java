@@ -54,7 +54,7 @@ public final class ConcolicConstraintSolver {
         Encoder encoder = new Encoder();
         BranchReplayContract replayContract = replayContract(task);
         SolverPathContext solverPathContext = solverPathContext(task);
-        rejectRetiredReplayAliases(task);
+        requireCanonicalPathTaskSchema(task);
         JsonArray contextConstraints = solverPathContext.expressions();
         for (int index = 0; index < contextConstraints.size(); index++) {
             encoder.addConstraint(contextConstraints.get(index),
@@ -1573,24 +1573,12 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static void rejectRetiredReplayAliases(JsonObject task)
+    private static void requireCanonicalPathTaskSchema(JsonObject task)
             throws IOException {
         if (integer(task, "schemaVersion", -1) != 3
                 || !"REGION_PATH_FLIP".equals(string(task, "kind"))) {
             throw new IOException(
                     "canonical path task requires REGION_PATH_FLIP schema 3");
-        }
-        String[] retired = new String[]{"constraints", "prefix",
-                "negatedCondition", "flipSite", "flipOccurrence",
-                "conditionIndex", "desiredOutcome",
-                "expectedBranchPrefix", "pathReplayConstraints",
-                "pathReplayNegatedCondition",
-                "pathReplayTargetConditionIndex"};
-        for (String field : retired) {
-            if (task != null && task.has(field)) {
-                throw new IOException("canonical path task rejects retired "
-                        + "branch field: " + field);
-            }
         }
     }
 

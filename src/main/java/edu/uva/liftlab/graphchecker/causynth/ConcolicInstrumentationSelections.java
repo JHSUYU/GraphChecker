@@ -218,8 +218,6 @@ final class ConcolicInstrumentationSelections {
                 || !strictJsonBooleanEquals(row,
                 "requestedOutputCaptureComplete", true)
                 || !strictJsonBooleanEquals(row,
-                "targetReplayRequired", false)
-                || !strictJsonBooleanEquals(row,
                 "pathSignatureTruncated", false)
                 || !strictJsonBooleanEquals(row,
                 "containedCallTreeTruncated", false)
@@ -356,15 +354,7 @@ final class ConcolicInstrumentationSelections {
             return false;
         }
 
-        // The immutable contract is the only binary-branch replay plan.
-        // Reject old aliases instead of comparing another representation of
-        // the same prefix and target.
-        if (row.has("targetBranch")
-                || row.has("expectedBranchPrefix")
-                || row.has("pathReplayConstraints")
-                || row.has("pathReplayNegatedCondition")
-                || row.has("pathReplayTargetConditionIndex")
-                || row.has("branchOverrideAllowed")
+        if (row.has("branchOverrideAllowed")
                 || row.has("branchOverrideProhibited")) {
             return false;
         }

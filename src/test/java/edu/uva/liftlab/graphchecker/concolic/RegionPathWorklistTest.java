@@ -123,10 +123,6 @@ public class RegionPathWorklistTest {
         assertEquals(1, contract.orderedPrefix().size());
         assertEquals(">=", contract.requiredSatisfiedPredicate()
                 .getAsJsonObject().get("_op").getAsString());
-        assertFalse(latest.has("constraints"));
-        assertFalse(latest.has("flipSite"));
-        assertFalse(latest.has("desiredOutcome"));
-        assertFalse(latest.has("negatedCondition"));
     }
 
     @Test

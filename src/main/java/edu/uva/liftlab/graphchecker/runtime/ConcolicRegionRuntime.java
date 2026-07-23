@@ -11309,24 +11309,15 @@ public final class ConcolicRegionRuntime {
             this.outputCaptures = new ArrayList<>();
             String executionPhase = string(json, "executionPhase");
             boolean branchReplay = "REPLAY_OUTPUT_PATH_FLIP".equals(
-                    executionPhase) || "REPLAY_DIRECTED_TARGET".equals(
                     executionPhase);
             JsonElement encodedReplayContract = json.get("replayContract");
             if (branchReplay && encodedReplayContract == null) {
                 throw new IllegalArgumentException(
                         executionPhase + " requires replayContract");
             }
-            if (branchReplay && (json.has("targetBranch")
-                    || json.has("branchCaptureSelector")
-                    || json.has("directedTargetQuery")
-                    || json.has("expectedBranchPrefix")
-                    || json.has("pathReplayConstraints")
-                    || json.has("pathReplayNegatedCondition")
-                    || json.has("pathReplayTargetConditionIndex")
-                    || json.has("branchOverrideProhibited"))) {
+            if (branchReplay && json.has("branchOverrideProhibited")) {
                 throw new IllegalArgumentException(
-                        executionPhase + " rejects retired branch "
-                                + "replay aliases");
+                        executionPhase + " rejects a branch override policy");
             }
             this.replayContract = encodedReplayContract == null ? null
                     : BranchReplayContract.fromJson(

@@ -8635,11 +8635,7 @@ public final class ConcolicSummaryImporter {
         JsonArray appliedAssignments = array(raw,
                 "modelAssignmentsApplied");
         boolean outputPathFlip = "REPLAY_OUTPUT_PATH_FLIP".equals(phase);
-        boolean targetBranchReplay = "REPLAY_DIRECTED_TARGET".equals(phase);
-        boolean branchReplay = outputPathFlip || targetBranchReplay;
-        boolean required = Boolean.TRUE.equals(strictBoolean(activation,
-                "targetReplayRequired"))
-                || branchReplay
+        boolean required = outputPathFlip
                 || expectedAssignments.size() > 0
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
@@ -8669,7 +8665,7 @@ public final class ConcolicSummaryImporter {
             failures.add("BRANCH_OVERRIDE_ATTESTATION_MISSING_OR_MALFORMED");
         }
 
-        if (branchReplay) {
+        if (outputPathFlip) {
             JsonElement replayContract = activation.get("replayContract");
             if (replayContract == null) {
                 failures.add("BRANCH_REPLAY_CONTRACT_MISSING");
@@ -8704,9 +8700,7 @@ public final class ConcolicSummaryImporter {
         // target/fatal replay promises to observe that exception; an output
         // closure is validated by its requested output and exact path replay
         // evidence instead.
-        boolean exceptionObservationRequired = goal.isTargetBranch()
-                || Boolean.TRUE.equals(strictBoolean(activation,
-                "targetReplayRequired"));
+        boolean exceptionObservationRequired = goal.isTargetBranch();
         Set<String> expectedExceptions = exceptionObservationRequired
                 ? failureExceptions(region) : Collections.<String>emptySet();
         if (!expectedExceptions.isEmpty()) {
@@ -8723,9 +8717,7 @@ public final class ConcolicSummaryImporter {
 
     /**
      * Revalidates the immutable witness stream once at the importer trust
-     * boundary.  The replay contract derives the target polarity itself, so
-     * no targetBranch/expectedPrefix/negatedCondition aliases participate in
-     * admission.
+     * boundary. The replay contract derives the target polarity itself.
      */
     private static JsonObject validateReplayContractObservation(
             JsonObject raw, JsonElement encodedContract,

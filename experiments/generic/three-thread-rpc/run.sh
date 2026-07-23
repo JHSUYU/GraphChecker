@@ -951,9 +951,6 @@ do_explore_producer() {
         and (.replayContract | has("contractId") | not)
         and (.replayContract | has("required") | not)
         and (.replayContract.source | has("witnessId") | not)
-        and (has("targetBranch") | not)
-        and (has("expectedBranchPrefix") | not)
-        and (has("pathReplayConstraints") | not)
         and (has("branchOverrideProhibited") | not)
         and ((.modelAssignments // []) | length) > 0
         and ((.forcedBranches // []) | length) == 0
@@ -1216,7 +1213,6 @@ do_seed_target() {
       and .[0].activationId == $activation
       and .[0].relationallyComplete == true
       and .[0].executionKind == "UNFORCED_SEED"
-      and (.[0] | has("targetReplayValidated") | not)
     ' "${summary}" >/dev/null; then
     die "target seed import is not one valid unforced observation"
   fi
@@ -1233,9 +1229,6 @@ do_seed_target() {
       and .[0].readyForSolver == true
       and .[0].replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
       and .[0].solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
-      and (.[0] | has("targetReplayValidated") | not)
-      and (.[0] | has("targetBranch") | not)
-      and (.[0] | has("directedTargetQuery") | not)
     ' "${target_schedule}/branch_queries.jsonl" >/dev/null; then
     die "target seed scheduler did not emit one solver-ready candidate query"
   fi

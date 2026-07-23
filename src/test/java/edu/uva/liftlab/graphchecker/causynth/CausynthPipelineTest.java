@@ -996,16 +996,6 @@ public class CausynthPipelineTest {
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
-            JsonObject targetOverride = readySolverOutputPathFlip();
-            JsonObject retiredTarget = new JsonObject();
-            retiredTarget.addProperty("siteId",
-                    "<example.Manager: void add()>#u14");
-            targetOverride.add("targetBranch", retiredTarget);
-            writePlanRow(plan, targetOverride);
-            assertFalse(ConcolicInstrumentationSelections
-                    .selectedBoundedOutputClosureCoverageReady(plan,
-                            activation));
-
             JsonObject topLevelOverride = readySolverOutputPathFlip();
             topLevelOverride.addProperty("branchOverrideAllowed", true);
             writePlanRow(plan, topLevelOverride);
@@ -1179,7 +1169,6 @@ public class CausynthPipelineTest {
         row.addProperty("runtimePathEvidenceComplete", true);
         row.addProperty("requestedOutputCaptureComplete", true);
         row.addProperty("branchOverrideProhibited", true);
-        row.addProperty("targetReplayRequired", false);
         row.addProperty("pathSignatureTruncated", false);
         row.addProperty("containedCallTreeTruncated", false);
         row.addProperty("replayMode",
