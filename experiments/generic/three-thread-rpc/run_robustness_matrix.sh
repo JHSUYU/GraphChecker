@@ -836,8 +836,10 @@ validate_semantic_profile() {
         (.resolvedProducerKeys | length) == 2
         and (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) == 4
-        and ([.caseProjectionCatalog[].bindings[]
-          | select(has("bridgeAssertionName"))] | length) == 2
+        and all(.caseProjectionCatalog[];
+          (.bindings | length) == 1
+          and (.bindings[0].bridgeAssertionName
+            | type == "string" and length > 0))
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "unreachable-parity lost guarded container composition evidence"
       validate_unreachable_parity_producer_artifacts "${work_root}"
