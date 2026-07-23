@@ -352,9 +352,8 @@ public class ConcolicSmtComposerTest {
             for (JsonElement element : cases) {
                 assertEquals(1, element.getAsJsonObject().getAsJsonArray(
                         "vmIntrinsicPlaceholderBindings").size());
-                assertTrue(element.getAsJsonObject().getAsJsonObject(
-                        "vmIntrinsicPlaceholderBindingAdmission")
-                        .get("complete").getAsBoolean());
+                assertEquals(1, element.getAsJsonObject().getAsJsonArray(
+                        "unforcedEnvironmentValidationRequirements").size());
             }
             writeSummary(fixture, merged.summaries.get(0));
 
@@ -377,7 +376,7 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
-    public void rejectsTamperedVmPlaceholderAdmissionCertificate()
+    public void rejectsTamperedVmPlaceholderBinding()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -390,9 +389,9 @@ public class ConcolicSmtComposerTest {
                     placeholderExpression("currentTimeMills", 3), ">",
                     constant("J", "Y_J_0")));
             addVmPlaceholderCertificate(summary, "REGION.P.in.6", 3);
-            summary.getAsJsonObject(
-                    "vmIntrinsicPlaceholderBindingAdmission")
-                    .addProperty("bindingCount", 2);
+            summary.getAsJsonArray("vmIntrinsicPlaceholderBindings")
+                    .get(0).getAsJsonObject()
+                    .addProperty("placeholderCount", 2);
             writeSummary(fixture, summary);
 
             ConcolicSmtComposer.Result result =
@@ -401,7 +400,7 @@ public class ConcolicSmtComposerTest {
             assertFalse(result.manifest.get("complete").getAsBoolean());
             assertTrue(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString().contains(
-                    "BINDING_ADMISSION_CERTIFICATE_INVALID"));
+                    "BINDING_INVALID"));
             assertTrue(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString().contains(
                     "PlaceholderExpression:currentTimeMills#3"));
@@ -3120,7 +3119,7 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
-    public void incompleteHeapModelIsAnExplicitCompositionGap()
+    public void incompleteRelationalSummaryIsAnExplicitCompositionGap()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -3135,9 +3134,6 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.manifest.getAsJsonArray(
                     "incompleteSummaryRegions").toString()
                     .contains("REGION.P"));
-            assertTrue(result.manifest.getAsJsonArray(
-                    "unsupportedExpressions").toString()
-                    .contains("IncompleteHeapEffectModel@REGION.P"));
             assertTrue(result.manifest.getAsJsonArray(
                     "unsupportedExpressions").toString()
                     .contains("IncompleteRelationalSummary@REGION.P"));
@@ -3155,12 +3151,6 @@ public class ConcolicSmtComposerTest {
             slice.addProperty("complete", false);
             slice.addProperty("structuralComplete", true);
             outputOnly.add("requestedOutputSlice", slice);
-            JsonObject outputAdmission = new JsonObject();
-            outputAdmission.addProperty("complete", true);
-            outputAdmission.addProperty("authority",
-                    "EXACT_REQUESTED_OUTPUT_EXPRESSION");
-            outputAdmission.add("issues", new JsonArray());
-            outputOnly.add("outputExpressionAdmission", outputAdmission);
             JsonObject capture = new JsonObject();
             capture.addProperty("outputPort", "REGION.P.out.0");
             JsonArray captures = new JsonArray();
@@ -4913,24 +4903,11 @@ public class ConcolicSmtComposerTest {
         summary.addProperty("regionId", "REGION.P");
         summary.addProperty("regionInstanceId",
                 "REGION.P@fixture#call1");
-        summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", complete);
         summary.add("pathCondition", new JsonArray());
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapStateInitializers", initializers);
         summary.add("heapEffects", effects);
-        JsonObject model = new JsonObject();
-        model.addProperty("policy", "RAW_SEMANTIC_PATH_ORDER_MAP_STATE_SSA");
-        model.addProperty("candidateMutationCount",
-                effects.size() + (complete ? 0 : 1));
-        model.addProperty("effectCount", effects.size());
-        model.addProperty("mapStateFamilyCount", effects.size() == 0 ? 0 : 1);
-        model.addProperty("unsupportedMutationCount", complete ? 0 : 1);
-        model.addProperty("malformedMutationCount", 0);
-        model.addProperty("initializedInputCount", initializers.size());
-        model.addProperty("initializerCount", initializers.size());
-        model.addProperty("complete", complete);
-        summary.add("heapEffectModel", model);
         return summary;
     }
 
@@ -5400,22 +5377,6 @@ public class ConcolicSmtComposerTest {
         JsonArray requirements = new JsonArray();
         requirements.add(requirement);
 
-        JsonObject inputAdmission = new JsonObject();
-        inputAdmission.addProperty("complete", true);
-        inputAdmission.add("globalSliceInputs", singletonString(inputPort));
-        inputAdmission.add("requiredSliceInputs", singletonString(inputPort));
-        inputAdmission.add("admittedVmIntrinsicPlaceholderInputs",
-                singletonString(inputPort));
-        inputAdmission.add("unforcedEnvironmentValidationRequirements",
-                requirements.deepCopy());
-        inputAdmission.add("failures", new JsonArray());
-        inputAdmission.addProperty("authority",
-                "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
-                        + "TRANSFORMER_RUNTIME_PATH_PROOFS");
-        inputAdmission.addProperty("vmIntrinsicPlaceholderAuthority",
-                "EXACT_SCHEDULER_BINDING_PLUS_CUSTOM_JDK_STRUCTURED_"
-                        + "PLACEHOLDER_EVIDENCE");
-        container.add("inputMaterializationAdmission", inputAdmission);
         container.add("unforcedEnvironmentValidationRequirements",
                 requirements);
 
@@ -5445,17 +5406,6 @@ public class ConcolicSmtComposerTest {
         bindings.add(binding);
         container.add("vmIntrinsicPlaceholderBindings", bindings);
 
-        JsonObject admission = new JsonObject();
-        admission.addProperty("schemaVersion", 1);
-        admission.addProperty("kind",
-                "VM_INTRINSIC_PLACEHOLDER_BINDING_ADMISSION");
-        admission.addProperty("complete", true);
-        admission.addProperty("bindingCount", 1);
-        admission.add("bindings", bindings.deepCopy());
-        admission.add("failures", new JsonArray());
-        admission.addProperty("authority",
-                "OWNER_EXACT_UNIQUE_USED_CUSTOM_JDK_PLACEHOLDER_V1");
-        container.add("vmIntrinsicPlaceholderBindingAdmission", admission);
     }
 
     private static JsonObject arrayLoad(String array, String value) {

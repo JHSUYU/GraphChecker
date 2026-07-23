@@ -117,21 +117,23 @@ public class RegionSummaryMergerTest {
     }
 
     @Test
-    public void noValidOutputClosureCannotReportACompleteMerge() {
+    public void incompleteOutputClosureCannotReportACompleteMerge() {
         JsonObject invalid = summary("INVALID", ">");
-        invalid.addProperty("valid", false);
+        invalid.addProperty("relationallyComplete", false);
 
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
                 Arrays.asList(invalid), closedManifest());
 
-        assertTrue(result.summaries.isEmpty());
+        assertEquals(1, result.summaries.size());
+        assertFalse(result.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
         assertFalse(result.manifest.get("complete").getAsBoolean());
         assertEquals("REGION_RELATIONS_WITH_EXPLICIT_GAPS",
                 result.manifest.get("status").getAsString());
         assertEquals(1, result.manifest.get("diagnosticCount").getAsInt());
-        assertEquals("NO_VALID_OUTPUT_CLOSURE_RELATIONS",
-                result.manifest.getAsJsonArray("diagnostics").get(0)
-                        .getAsJsonObject().get("reason").getAsString());
+        assertTrue(result.manifest.getAsJsonArray("diagnostics").get(0)
+                .getAsJsonObject().get("reason").getAsString().startsWith(
+                "INCOMPLETE_PATH_TRANSFORMER:"));
     }
 
     @Test
@@ -175,10 +177,9 @@ public class RegionSummaryMergerTest {
                 "heapObservations"));
         assertEquals(dynamicBindings, pathCase.getAsJsonArray(
                 "dynamicFieldBindings"));
-        assertEquals(0, result.summaries.get(0).getAsJsonArray(
-                "heapObservations").size());
-        assertEquals(0, result.summaries.get(0).getAsJsonArray(
-                "dynamicFieldBindings").size());
+        assertFalse(result.summaries.get(0).has("heapObservations"));
+        assertFalse(result.summaries.get(0).has(
+                "dynamicFieldBindings"));
     }
 
     @Test
@@ -208,8 +209,8 @@ public class RegionSummaryMergerTest {
         }
         assertTrue(observed.toString().contains("VM_ARRAY_1"));
         assertTrue(observed.toString().contains("VM_ARRAY_99"));
-        assertEquals(0, result.summaries.get(0).getAsJsonArray(
-                "engineArrayInputBindings").size());
+        assertFalse(result.summaries.get(0).has(
+                "engineArrayInputBindings"));
     }
 
     @Test
@@ -226,14 +227,6 @@ public class RegionSummaryMergerTest {
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
         summary.add("vmIntrinsicPlaceholderBindings", bindings);
-        JsonObject bindingAdmission = new JsonObject();
-        bindingAdmission.addProperty("complete", true);
-        bindingAdmission.add("bindings", bindings.deepCopy());
-        summary.add("vmIntrinsicPlaceholderBindingAdmission",
-                bindingAdmission);
-        JsonObject inputAdmission = new JsonObject();
-        inputAdmission.addProperty("complete", true);
-        summary.add("inputMaterializationAdmission", inputAdmission);
         JsonObject requirement = new JsonObject();
         requirement.addProperty("inputPort", "REGION.4.in.0");
         JsonArray requirements = new JsonArray();
@@ -251,15 +244,13 @@ public class RegionSummaryMergerTest {
                 "finiteMapSnapshots"));
         assertEquals(bindings, pathCase.getAsJsonArray(
                 "vmIntrinsicPlaceholderBindings"));
-        assertEquals(bindingAdmission, pathCase.getAsJsonObject(
-                "vmIntrinsicPlaceholderBindingAdmission"));
-        assertEquals(inputAdmission, pathCase.getAsJsonObject(
-                "inputMaterializationAdmission"));
         assertEquals(requirements, pathCase.getAsJsonArray(
                 "unforcedEnvironmentValidationRequirements"));
-        assertEquals(0, merged.getAsJsonArray("finiteMapSnapshots").size());
-        assertEquals(0, merged.getAsJsonArray(
-                "vmIntrinsicPlaceholderBindings").size());
+        assertFalse(pathCase.has(
+                "vmIntrinsicPlaceholderBindingAdmission"));
+        assertFalse(pathCase.has("inputMaterializationAdmission"));
+        assertFalse(merged.has("finiteMapSnapshots"));
+        assertFalse(merged.has("vmIntrinsicPlaceholderBindings"));
     }
 
     private static void setLocalSymbol(JsonObject summary, String raw) {
@@ -304,13 +295,6 @@ public class RegionSummaryMergerTest {
         summary.add("outputExpressions", outputs);
         summary.add("heapStateInitializers", new JsonArray());
         summary.add("heapEffects", new JsonArray());
-        JsonObject heapModel = new JsonObject();
-        heapModel.addProperty("complete", true);
-        heapModel.addProperty("effectCount", 0);
-        heapModel.addProperty("initializerCount", 0);
-        heapModel.addProperty("initializedInputCount", 0);
-        heapModel.addProperty("mapStateFamilyCount", 0);
-        summary.add("heapEffectModel", heapModel);
         return summary;
     }
 

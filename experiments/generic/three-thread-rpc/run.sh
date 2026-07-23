@@ -1019,7 +1019,6 @@ do_explore_producer() {
   jq -e -s --arg region "${region}" '
     length == 1
     and .[0].regionId == $region
-    and .[0].valid == true
     and .[0].relationallyComplete == true
     and .[0].regionRelation.complete == true
   ' "${campaign}/merged_region_summaries.jsonl" >/dev/null \
@@ -1110,7 +1109,6 @@ do_candidate_compose() {
       length == 1
       and .[0].regionId == $region
       and (.[0].summaryId | type == "string" and length > 0)
-      and .[0].valid == true
       and .[0].relationallyComplete == true
       and .[0].regionRelation.complete == true
     ' "${producer_summary}" >/dev/null \
@@ -1223,11 +1221,8 @@ do_seed_target() {
       length == 1
       and .[0].regionId == $region
       and .[0].activationId == $activation
-      and .[0].valid == true
-      and .[0].branchOverrideUsed == false
-      and .[0].executionAdmission.required == false
-      and .[0].executionAdmission.authority
-        == "OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY"
+      and .[0].relationallyComplete == true
+      and .[0].executionKind == "UNFORCED_SEED"
       and (.[0] | has("targetReplayValidated") | not)
     ' "${summary}" >/dev/null; then
     die "target seed import is not one valid unforced observation"

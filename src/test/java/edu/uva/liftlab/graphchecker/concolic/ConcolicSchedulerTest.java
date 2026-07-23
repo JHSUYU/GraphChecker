@@ -2076,15 +2076,9 @@ public class ConcolicSchedulerTest {
                     "REGION.0@testMiniDfs#call7");
             summary.add("captureGoal",
                     RegionCaptureGoal.targetBranch().toJson());
-            summary.addProperty("valid", true);
+            summary.addProperty("relationallyComplete", true);
+            summary.addProperty("executionKind", "UNFORCED_SEED");
             summary.addProperty("branchOverrideUsed", false);
-            JsonObject admission = new JsonObject();
-            admission.addProperty("required", false);
-            admission.addProperty("valid", true);
-            admission.addProperty("branchOverrideAccepted", false);
-            admission.addProperty("authority",
-                    "OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY");
-            summary.add("executionAdmission", admission);
 
             JsonObject prefixCondition = JsonParser.parseString(
                     "{\"_type\":\"BinaryExpression\",\"_op\":\">\"}")

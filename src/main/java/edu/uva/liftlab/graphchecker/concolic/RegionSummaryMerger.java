@@ -60,8 +60,7 @@ public final class RegionSummaryMerger {
         Map<String, List<JsonObject>> groups = new LinkedHashMap<>();
         List<JsonObject> diagnostics = new ArrayList<>();
         for (JsonObject summary : safe(summaries)) {
-            if (!bool(summary, "valid", true)
-                    || !RegionCaptureGoal.from(summary).isOutputClosure()) {
+            if (!RegionCaptureGoal.from(summary).isOutputClosure()) {
                 continue;
             }
             String region = string(summary, "regionId");
@@ -167,14 +166,8 @@ public final class RegionSummaryMerger {
                     array(summary,
                             "unforcedEnvironmentValidationRequirements")
                             .deepCopy());
-            copyIfPresent(summary, item,
-                    "inputMaterializationAdmission");
-            copyIfPresent(summary, item,
-                    "vmIntrinsicPlaceholderBindingAdmission");
             item.add("heapEffects", array(summary,
                     "heapEffects").deepCopy());
-            item.add("heapEffectModel", object(summary,
-                    "heapEffectModel").deepCopy());
             item.addProperty("relationallyComplete", bool(summary,
                     "relationallyComplete", false));
             item.addProperty("normalExit", bool(summary,
@@ -185,8 +178,6 @@ public final class RegionSummaryMerger {
                     "summaryId"));
             item.addProperty("sourceActivationId", string(summary,
                     "activationId"));
-            item.addProperty("admissionAuthority",
-                    "VALIDATED_UNFORCED_CONCOLIC_REPLAY_OR_SEED_PATH");
             cases.add(item);
             if (!bool(summary, "relationallyComplete", false)) {
                 casesComplete = false;
@@ -258,8 +249,7 @@ public final class RegionSummaryMerger {
         merged.addProperty("schemaVersion", 1);
         merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
         merged.addProperty("summaryId", "SUMMARY." + region
-                + ".MERGED." + relationHash.substring(0, 12));
-        merged.addProperty("cacheKey", relationHash);
+                + ".MERGED." + relationHash);
         merged.addProperty("activationId", "MERGED_PATHS");
         merged.addProperty("regionId", region);
         merged.add("sourceRegionInstanceIds",
@@ -270,30 +260,9 @@ public final class RegionSummaryMerger {
         merged.add("requestedOutputSlice", object(first,
                 "requestedOutputSlice").deepCopy());
         merged.add("edgeBindings", mergedBindings);
-        merged.add("pathCondition", new JsonArray());
-        merged.add("outputExpressions", new JsonObject());
-        merged.add("heapStateInitializers", new JsonArray());
-        merged.add("heapObservations", new JsonArray());
-        merged.add("finiteMapSnapshots", new JsonArray());
-        merged.add("dynamicFieldBindings", new JsonArray());
-        merged.add("engineArrayInputBindings", new JsonArray());
-        merged.add("vmIntrinsicPlaceholderBindings", new JsonArray());
-        merged.add("unforcedEnvironmentValidationRequirements",
-                new JsonArray());
-        merged.add("heapEffects", new JsonArray());
         merged.add("regionRelation", relation);
         merged.addProperty("relationallyComplete", complete);
-        merged.addProperty("valid", cases.size() > 0);
-        merged.addProperty("confidence", "RUNTIME_CONCOLIC_MERGED");
         return merged;
-    }
-
-    private static void copyIfPresent(JsonObject source, JsonObject target,
-                                      String field) {
-        JsonElement value = source == null ? null : source.get(field);
-        if (value != null && !value.isJsonNull()) {
-            target.add(field, value.deepCopy());
-        }
     }
 
     private static JsonObject gap(String region, String reason) {

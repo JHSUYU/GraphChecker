@@ -564,7 +564,6 @@ public final class ConcolicSmtComposer {
         // merge plan, an exact summary binding names both runtime instances
         // and is therefore safe to use as an additional first-hop seed.
         for (JsonObject summary : summaries) {
-            if (!bool(summary, "valid", true)) continue;
             for (JsonElement element : edgeBindings(summary)) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
@@ -595,7 +594,6 @@ public final class ConcolicSmtComposer {
             if (demandedInputs.isEmpty()) continue;
 
             for (JsonObject candidate : summaries) {
-                if (!bool(candidate, "valid", true)) continue;
                 for (JsonElement element : edgeBindings(candidate)) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
@@ -727,7 +725,6 @@ public final class ConcolicSmtComposer {
         Map<String, JsonObject> unique = new LinkedHashMap<>();
         for (JsonObject summary : summaries) {
             if (!region.equals(string(summary, "regionId"))
-                    || !bool(summary, "valid", true)
                     || !summaryProvidesOutput(summary, output)) {
                 continue;
             }
@@ -744,8 +741,8 @@ public final class ConcolicSmtComposer {
             } else if (instances.size() != 1) {
                 continue;
             }
-            String identity = firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "cacheKey"), GSON.toJson(summary));
+            String identity = string(summary, "summaryId");
+            if (identity.isEmpty()) continue;
             unique.put(identity, summary);
         }
         if (unique.isEmpty()) {
@@ -761,8 +758,7 @@ public final class ConcolicSmtComposer {
         candidates.sort(Comparator
                 .comparingInt((JsonObject value) -> summaryRank(value, fatal))
                 .reversed()
-                .thenComparing(value -> firstNonBlank(string(value,
-                        "summaryId"), string(value, "cacheKey"))));
+                .thenComparing(value -> string(value, "summaryId")));
         JsonObject selected = candidates.get(0);
         int selectedRank = summaryRank(selected, fatal);
         if (candidates.size() > 1
@@ -798,12 +794,9 @@ public final class ConcolicSmtComposer {
     }
 
     private static boolean sameSummary(JsonObject left, JsonObject right) {
-        String leftId = firstNonBlank(string(left, "summaryId"),
-                string(left, "cacheKey"));
-        String rightId = firstNonBlank(string(right, "summaryId"),
-                string(right, "cacheKey"));
-        return !leftId.isEmpty() && leftId.equals(rightId)
-                || GSON.toJson(left).equals(GSON.toJson(right));
+        String leftId = string(left, "summaryId");
+        String rightId = string(right, "summaryId");
+        return !leftId.isEmpty() && leftId.equals(rightId);
     }
 
     private static String producerLabel(String region, String instance,
@@ -1193,8 +1186,7 @@ public final class ConcolicSmtComposer {
         private String expansionIdentity(ProducerKey key,
                                          JsonObject summary) {
             return key.regionId + "@" + key.instanceId + ":"
-                    + firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "cacheKey"), GSON.toJson(summary));
+                    + string(summary, "summaryId");
         }
 
         private void addDirectBindingIfPresent(ProducerKey source,
@@ -3305,26 +3297,20 @@ public final class ConcolicSmtComposer {
                 JsonObject container, String origin) {
             JsonElement declared = container.get(
                     "vmIntrinsicPlaceholderBindings");
-            JsonElement admissionElement = container.get(
-                    "vmIntrinsicPlaceholderBindingAdmission");
+            JsonElement requirementsElement = container.get(
+                    "unforcedEnvironmentValidationRequirements");
             if ((declared == null || declared.isJsonNull())
-                    && (admissionElement == null
-                    || admissionElement.isJsonNull())) {
-                return;
-            }
-            if (declared != null && declared.isJsonArray()
-                    && declared.getAsJsonArray().size() == 0
-                    && (admissionElement == null
-                    || admissionElement.isJsonNull())) {
+                    && (requirementsElement == null
+                    || requirementsElement.isJsonNull())) {
                 return;
             }
             List<String> issues = new ArrayList<>();
             if (declared == null || !declared.isJsonArray()) {
                 issues.add("BINDING_CATALOG_MISSING_OR_MALFORMED");
             }
-            if (admissionElement == null
-                    || !admissionElement.isJsonObject()) {
-                issues.add("BINDING_ADMISSION_MISSING_OR_MALFORMED");
+            if (requirementsElement == null
+                    || !requirementsElement.isJsonArray()) {
+                issues.add("OWNER_REQUIREMENTS_MISSING_OR_MALFORMED");
             }
             if (!issues.isEmpty()) {
                 addVmIntrinsicPlaceholderIssues(origin, issues);
@@ -3332,52 +3318,12 @@ public final class ConcolicSmtComposer {
             }
 
             JsonArray rows = declared.getAsJsonArray();
-            JsonObject admission = admissionElement.getAsJsonObject();
-            if (integer(admission, "schemaVersion", -1) != 1
-                    || !"VM_INTRINSIC_PLACEHOLDER_BINDING_ADMISSION".equals(
-                    string(admission, "kind"))
-                    || !bool(admission, "complete", false)
-                    || integer(admission, "bindingCount", -1) != rows.size()
-                    || admission.get("bindings") == null
-                    || !admission.get("bindings").isJsonArray()
-                    || !rows.equals(admission.getAsJsonArray("bindings"))
-                    || admission.get("failures") == null
-                    || !admission.get("failures").isJsonArray()
-                    || admission.getAsJsonArray("failures").size() != 0
-                    || !"OWNER_EXACT_UNIQUE_USED_CUSTOM_JDK_PLACEHOLDER_V1"
-                    .equals(string(admission, "authority"))) {
-                issues.add("BINDING_ADMISSION_CERTIFICATE_INVALID");
+            JsonArray requirements = requirementsElement.getAsJsonArray();
+            if (rows.size() != requirements.size()) {
+                issues.add("OWNER_REQUIREMENT_COUNT_MISMATCH");
             }
-
-            JsonElement inputAdmissionElement = container.get(
-                    "inputMaterializationAdmission");
-            JsonElement requirementsElement = container.get(
-                    "unforcedEnvironmentValidationRequirements");
-            JsonObject inputAdmission = inputAdmissionElement != null
-                    && inputAdmissionElement.isJsonObject()
-                    ? inputAdmissionElement.getAsJsonObject() : null;
-            JsonArray requirements = requirementsElement != null
-                    && requirementsElement.isJsonArray()
-                    ? requirementsElement.getAsJsonArray() : null;
-            if (rows.size() > 0 && (inputAdmission == null
-                    || requirements == null)) {
-                issues.add("OWNER_INPUT_ADMISSION_MISSING_OR_MALFORMED");
-            }
-            if (inputAdmission != null
-                    && (!bool(inputAdmission, "complete", false)
-                    || !exactInputMaterializationAuthority(
-                    string(inputAdmission, "authority"))
-                    || !"EXACT_SCHEDULER_BINDING_PLUS_CUSTOM_JDK_STRUCTURED_"
-                    .concat("PLACEHOLDER_EVIDENCE").equals(string(
-                            inputAdmission,
-                            "vmIntrinsicPlaceholderAuthority"))
-                    || inputAdmission.get("failures") == null
-                    || !inputAdmission.get("failures").isJsonArray()
-                    || array(inputAdmission, "failures").size() != 0
-                    || requirements == null
-                    || !requirements.equals(array(inputAdmission,
-                    "unforcedEnvironmentValidationRequirements")))) {
-                issues.add("OWNER_INPUT_ADMISSION_CERTIFICATE_INVALID");
+            if (rows.size() == 0 && issues.isEmpty()) {
+                return;
             }
 
             Map<String, String> validated = new LinkedHashMap<>();
@@ -3425,8 +3371,8 @@ public final class ConcolicSmtComposer {
                         && cell.equals(schema.cell)
                         && "J".equals(javaTypeDescriptor(schema.javaType))
                         && uniqueIdentity && uniquePort
-                        && inputAdmissionOwnsVmPlaceholder(inputAdmission,
-                        requirements, port, identity, function, cell);
+                        && requirementOwnsVmPlaceholder(requirements, port,
+                        identity, function, cell);
                 if (!valid) {
                     issues.add("BINDING_INVALID:" + ordinal + ":"
                             + firstNonBlank(identity, port, "unnamed"));
@@ -3437,15 +3383,6 @@ public final class ConcolicSmtComposer {
             }
             if (validated.size() != rows.size()) {
                 issues.add("VALIDATED_BINDING_COUNT_MISMATCH");
-            }
-            Set<String> admittedPorts = inputAdmission == null ? null
-                    : strictStringSet(array(inputAdmission,
-                    "admittedVmIntrinsicPlaceholderInputs"));
-            if (rows.size() > 0 && (requirements == null
-                    || requirements.size() != rows.size()
-                    || admittedPorts == null
-                    || !admittedPorts.equals(portsSeen))) {
-                issues.add("OWNER_REQUIREMENT_OR_PORT_CATALOG_MISMATCH");
             }
             String scope = currentSymbolScope;
             if (vmIntrinsicPlaceholderBindingsByScope.containsKey(scope)) {
@@ -3458,26 +3395,9 @@ public final class ConcolicSmtComposer {
             vmIntrinsicPlaceholderBindingsByScope.put(scope, validated);
         }
 
-        private boolean exactInputMaterializationAuthority(
-                String authority) {
-            String base = "STATIC_GLOBAL_SLICE_DEMAND_REFINED_BY_EXACT_"
-                    + "TRANSFORMER_RUNTIME_PATH_PROOFS";
-            return base.equals(authority)
-                    || (base + "_AND_EXPLICIT_CONCRETE_FALLBACKS").equals(
-                    authority);
-        }
-        private boolean inputAdmissionOwnsVmPlaceholder(
-                JsonObject admission, JsonArray requirements, String port,
+        private boolean requirementOwnsVmPlaceholder(
+                JsonArray requirements, String port,
                 String identity, String function, String cell) {
-            if (admission == null || requirements == null
-                    || !containsString(array(admission,
-                    "globalSliceInputs"), port)
-                    || !containsString(array(admission,
-                    "requiredSliceInputs"), port)
-                    || !containsString(array(admission,
-                    "admittedVmIntrinsicPlaceholderInputs"), port)) {
-                return false;
-            }
             int matches = 0;
             for (JsonElement element : requirements) {
                 if (!element.isJsonObject()) return false;
@@ -3652,7 +3572,6 @@ public final class ConcolicSmtComposer {
             String region = string(summary, "regionId");
             String previousScope = enterSymbolScope("summary:"
                     + firstNonBlank(string(summary, "summaryId"),
-                    string(summary, "cacheKey"),
                     string(summary, "activationId"), region, "selected"));
             try {
                 registerEngineArrayInputBindings(summary,
@@ -4531,39 +4450,8 @@ public final class ConcolicSmtComposer {
                                                JsonObject summary,
                                                JsonArray initializers,
                                                JsonArray effects) {
-            if (summary.has("relationallyComplete")
-                    && !bool(summary, "relationallyComplete", false)) {
+            if (!bool(summary, "relationallyComplete", false)) {
                 heapGap(region, "IncompleteRelationalSummary@" + region);
-            }
-            boolean modelDeclared = summary.has("heapEffectModel")
-                    && summary.get("heapEffectModel").isJsonObject();
-            JsonObject model = object(summary, "heapEffectModel");
-            if (effects.size() > 0 && !modelDeclared) {
-                heapGap(region, "MissingHeapEffectModel@" + region);
-            }
-            if (modelDeclared) {
-                if (!bool(model, "complete", false)) {
-                    heapGap(region, "IncompleteHeapEffectModel@" + region);
-                }
-                int declaredEffects = integer(model, "effectCount", -1);
-                if (declaredEffects != effects.size()) {
-                    heapGap(region, "HeapEffectCountMismatch@" + region
-                            + ":" + declaredEffects + "!=" + effects.size());
-                }
-                int declaredInitializers = integer(model,
-                        "initializerCount", 0);
-                if (declaredInitializers != initializers.size()) {
-                    heapGap(region, "HeapInitializerCountMismatch@" + region
-                            + ":" + declaredInitializers + "!="
-                            + initializers.size());
-                }
-                int initializedInputs = integer(model,
-                        "initializedInputCount", 0);
-                if (initializedInputs != initializers.size()) {
-                    heapGap(region, "HeapInitializedInputCountMismatch@"
-                            + region + ":" + initializedInputs + "!="
-                            + initializers.size());
-                }
             }
 
             Map<String, JsonObject> initializersByFamily =
@@ -4657,14 +4545,6 @@ public final class ConcolicSmtComposer {
                         || !requestedOutput.equals(cursor.outputPort)) {
                     heapGap(region, "FreshMapInitializerOutputMismatch@"
                             + region + ":" + entry.getKey());
-                }
-            }
-            if (modelDeclared) {
-                int declaredFamilies = integer(model,
-                        "mapStateFamilyCount", -1);
-                if (declaredFamilies != cursors.size()) {
-                    heapGap(region, "HeapStateFamilyCountMismatch@" + region
-                            + ":" + declaredFamilies + "!=" + cursors.size());
                 }
             }
         }

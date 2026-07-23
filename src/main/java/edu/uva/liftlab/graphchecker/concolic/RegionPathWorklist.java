@@ -143,7 +143,6 @@ public final class RegionPathWorklist {
             Set<String> seenPaths = new LinkedHashSet<>();
             Set<String> observedRegions = new TreeSet<>();
             for (JsonObject summary : summaries) {
-                if (!bool(summary, "valid", true)) continue;
                 String region = string(summary, "regionId");
                 if (region.isEmpty()) continue;
                 JsonObject activation = activations.get(string(summary,
@@ -409,8 +408,7 @@ public final class RegionPathWorklist {
          */
         private void indexWitnessedBranchPositions() {
             for (JsonObject summary : summaries) {
-                if (!bool(summary, "valid", true)
-                        || !bool(summary, "relationallyComplete", false)) {
+                if (!bool(summary, "relationallyComplete", false)) {
                     continue;
                 }
                 JsonArray conditions = array(summary, "pathCondition");
@@ -507,8 +505,7 @@ public final class RegionPathWorklist {
          */
         private void indexObservedFlipCoverage() {
             for (JsonObject summary : summaries) {
-                if (!bool(summary, "valid", true)
-                        || !bool(summary, "relationallyComplete", false)) {
+                if (!bool(summary, "relationallyComplete", false)) {
                     continue;
                 }
                 String region = string(summary, "regionId");

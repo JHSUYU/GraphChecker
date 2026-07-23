@@ -2303,19 +2303,10 @@ public final class ConcolicScheduler {
                     || !expectedInstance.equals(string(summary,
                     "regionInstanceId"))
                     || !RegionCaptureGoal.from(summary).isTargetBranch()
-                    || !bool(summary, "valid", false)
-                    || bool(summary, "branchOverrideUsed", true)
+                    || !bool(summary, "relationallyComplete", false)
+                    || !"UNFORCED_SEED".equals(string(summary,
+                    "executionKind"))
                     || string(summary, "summaryId").isEmpty()) {
-                continue;
-            }
-            JsonObject admission = object(summary, "executionAdmission");
-            if (!bool(admission, "valid", false)
-                    || bool(admission, "branchOverrideAccepted", true)) {
-                continue;
-            }
-            if (bool(admission, "required", true)
-                    || !"OBSERVED_UNFORCED_TARGET_SEED_PATH_ONLY".equals(
-                    string(admission, "authority"))) {
                 continue;
             }
             if (selected == null) {

@@ -158,8 +158,7 @@ validate_multitype_producer_artifacts() {
   jq -e -s '
     length == 2
     and all(.[];
-      .valid == true
-      and .relationallyComplete == true
+      .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
@@ -299,8 +298,7 @@ validate_dependent_scalar_artifacts() {
     and ([.[].requestedOutputSlice.outputCell] | sort)
       == ([$arithmetic, $text] | sort)
     and all(.[];
-      .valid == true
-      and .relationallyComplete == true
+      .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
@@ -404,8 +402,7 @@ validate_container_producer_artifacts() {
     || die "container custom-JDK replay evidence is incomplete"
 
   jq -e '
-    .valid == true
-    and .relationallyComplete == true
+    .relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
@@ -459,8 +456,7 @@ validate_container_producer_artifacts() {
     || die "array producer lost exact index-1 nested field semantics"
 
   jq -e '
-    .valid == true
-    and .relationallyComplete == true
+    .relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
@@ -568,8 +564,7 @@ validate_unreachable_parity_producer_artifacts() {
   jq -e -s '
     length == 2
     and all(.[];
-      .valid == true
-      and .relationallyComplete == true
+      .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"

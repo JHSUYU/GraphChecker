@@ -227,7 +227,6 @@ public class ConcolicPathReplayVerifierTest {
         summary.addProperty("activationId", string(activation,
                 "activationId"));
         summary.addProperty("regionId", "REGION.15");
-        summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
         summary.addProperty("normalExit", true);
         summary.addProperty("exceptionType", "");
@@ -242,9 +241,6 @@ public class ConcolicPathReplayVerifierTest {
         JsonObject expressions = new JsonObject();
         expressions.add("REGION.15.out.122", expression);
         summary.add("outputExpressions", expressions);
-        JsonObject admission = new JsonObject();
-        admission.addProperty("complete", true);
-        summary.add("outputExpressionAdmission", admission);
         summary.add("dynamicFieldBindings", new JsonArray());
         return summary;
     }
