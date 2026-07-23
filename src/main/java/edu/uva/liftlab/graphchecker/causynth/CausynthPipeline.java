@@ -112,10 +112,17 @@ public final class CausynthPipeline {
         instrumentConcolicRegions(result);
         boolean boundedOutputClosureCoverageReady =
                 recordSymbolicCoverageAuthority(result);
-        new CausynthArtifactWriter(target.outputDir, result).writeAll();
+        if (!concolicInstrumentationEnabled()) {
+            new CausynthArtifactWriter(target.outputDir, result).writeAll();
+        }
         enforceSymbolicCoverage(result, boundedOutputClosureCoverageReady);
-        LOG.info("Seed backward analysis wrote {} edges to {}",
-                result.edges.size(), target.outputDir);
+        if (concolicInstrumentationEnabled()) {
+            LOG.info("Seed backward analysis completed for concolic "
+                    + "instrumentation without duplicating static artifacts");
+        } else {
+            LOG.info("Seed backward analysis wrote {} edges to {}",
+                    result.edges.size(), target.outputDir);
+        }
     }
 
     private boolean recordSymbolicCoverageAuthority(
@@ -159,11 +166,9 @@ public final class CausynthPipeline {
         SootMethodRef recordRef = traceRecorderMethodRef();
         SootMethodRef recordFieldRef = traceRecorderFieldMethodRef();
         RichTraceRefs richRefs = RichTraceRefs.create();
-        ConcolicRegionRefs observationIsolation = Boolean.parseBoolean(
-                firstNonBlank(
-                        System.getProperty("causynth.instrument.concolic"),
-                        System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
-                        "false")) ? ConcolicRegionRefs.create() : null;
+        ConcolicRegionRefs observationIsolation =
+                concolicInstrumentationEnabled()
+                        ? ConcolicRegionRefs.create() : null;
         TraceFieldSelection traceFields = traceFieldSelection(result);
         TraceSiteSelection traceSites = traceSiteSelection(result);
         int count = 0;
@@ -237,10 +242,7 @@ public final class CausynthPipeline {
      * transformation inserts hooks at the runtime-selected roots.
      */
     private void instrumentConcolicRegions(CausynthAnalysisResult result) {
-        if (!Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.concolic"),
-                System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
-                "false"))) {
+        if (!concolicInstrumentationEnabled()) {
             return;
         }
         ConcolicRegionRefs refs = ConcolicRegionRefs.create();
@@ -492,10 +494,7 @@ public final class CausynthPipeline {
 
     private boolean selectedBoundedOutputClosureCoverageReady(
             CausynthAnalysisResult result) {
-        if (!Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.concolic"),
-                System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
-                "false"))) {
+        if (!concolicInstrumentationEnabled()) {
             return false;
         }
         String planValue = stringValue(firstNonBlank(
@@ -2868,6 +2867,13 @@ public final class CausynthPipeline {
             }
         }
         return null;
+    }
+
+    private static boolean concolicInstrumentationEnabled() {
+        return Boolean.parseBoolean(firstNonBlank(
+                System.getProperty("causynth.instrument.concolic"),
+                System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
+                "false"));
     }
 
     private static Map<String, Object> object(Object... keyValues) {

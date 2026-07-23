@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -35,25 +36,27 @@ public class CausynthModuleSupportTest {
     }
 
     @Test
-    public void artifactWriterPreservesStableArtifactNames()
+    public void artifactWriterWritesOnlyConsumedStaticArtifacts()
             throws Exception {
         Path output = temporaryFolder.newFolder("artifacts").toPath();
         CausynthAnalysisResult result = new CausynthAnalysisResult();
-        Map<String, Object> seed = new LinkedHashMap<>();
-        seed.put("id", "SEED.0");
-        result.seeds.add(seed);
         Map<String, Object> edge = new LinkedHashMap<>();
         edge.put("id", "DF.0");
         result.edges.add(edge);
 
         new CausynthArtifactWriter(output, result).writeAll();
 
-        assertEquals("{\"seeds\":[{\"id\":\"SEED.0\"}]}",
-                read(output.resolve("seeds.json")));
+        assertEquals("{}",
+                read(output.resolve("target_resolved.json")));
         assertEquals("{\"id\":\"DF.0\"}\n",
                 read(output.resolve("static_dataflow_edges.jsonl")));
-        assertTrue(Files.isRegularFile(output.resolve(
-                "automatic_derivation_boundary.json")));
+        assertEquals("", read(output.resolve("symbolic_regions.jsonl")));
+        assertEquals("", read(output.resolve("symbolic_region_edges.jsonl")));
+        try (Stream<Path> artifacts = Files.list(output)) {
+            assertEquals(4, artifacts.count());
+        }
+        assertFalse(Files.exists(output.resolve("seeds.json")));
+        assertFalse(Files.exists(output.resolve("static_slices.json")));
     }
 
     @Test

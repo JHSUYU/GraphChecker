@@ -442,23 +442,20 @@ do_schedule_producer() {
 
 do_instrument() {
   local requested=$1
-  local channel schedule classes activation static_output channel_slug
+  local channel schedule classes activation
   validate_discovery_inputs
   channel=$(discovered_channel "${requested}") || return $?
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
   activation=$(scheduled_activation "${channel}") || return $?
-  channel_slug=$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')
-  static_output="${work_root}/concolic-${channel_slug}-static"
   instrument_plan "${schedule}/scheduled_activation_plan.jsonl" \
-    "${activation}" "${classes}" "${static_output}"
+    "${activation}" "${classes}"
 }
 
 instrument_plan() {
   local plan=$1
   local selection=$2
   local classes=$3
-  local static_output=$4
   local selected="${selection}"
   local select_all=false
   require_file "concolic activation plan" "${plan}"
@@ -475,14 +472,12 @@ instrument_plan() {
     (cd "${graphchecker_dir}" && \
       env -u CAUSYNTH_CONCOLIC_ACTIVATION_ID \
       CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${classes}" \
-      CAUSYNTH_OUTPUT_DIR="${static_output}" \
       CAUSYNTH_INSTRUMENT_CONCOLIC=true \
       CAUSYNTH_CONCOLIC_ACTIVATION_PLAN="${plan}" \
       "${runner}" --config "${config}" analyze)
   else
     (cd "${graphchecker_dir}" && \
       CAUSYNTH_INSTRUMENTED_CLASSES_DIR="${classes}" \
-      CAUSYNTH_OUTPUT_DIR="${static_output}" \
       CAUSYNTH_INSTRUMENT_CONCOLIC=true \
       CAUSYNTH_CONCOLIC_ACTIVATION_PLAN="${plan}" \
       CAUSYNTH_CONCOLIC_ACTIVATION_ID="${selected}" \
@@ -658,7 +653,6 @@ import_plan() {
     CAUSYNTH_IMPORT_ACTIVATION_PLAN="${plan}" \
     CAUSYNTH_IMPORTED_SUMMARIES="${summaries}" \
     CAUSYNTH_IMPORT_DIAGNOSTICS="${output_dir}/concolic_import_diagnostics.jsonl" \
-    CAUSYNTH_SUMMARY_CACHE_DIR="${output_dir}/concolic-summary-cache" \
     "${runner}" --config "${config}" import)
 }
 
@@ -1169,8 +1163,7 @@ do_seed_target() {
   binding=$(target_binding) || return $?
   IFS=$'\t' read -r region _ <<< "${binding}"
   instrument_plan "${target_schedule}/scheduled_activation_plan.jsonl" \
-    "${activation}" "${target_classes}" \
-    "${work_root}/concolic-target-static"
+    "${activation}" "${target_classes}"
   run_custom_plan "${target_schedule}/scheduled_activation_plan.jsonl" \
     "${activation}" "${target_classes}" \
     "${target_schedule}/concolic_region_results.jsonl" false false false

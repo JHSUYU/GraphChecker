@@ -110,9 +110,6 @@ public final class ConcolicScheduler {
         List<JsonObject> staticGraph = arguments.staticGraph == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.staticGraph);
-        List<JsonObject> pathRecords = arguments.pathRecords == null
-                ? Collections.<JsonObject>emptyList()
-                : readJsonl(arguments.pathRecords);
         List<JsonObject> runtimeRegionInstances =
                 arguments.runtimeRegionInstances == null
                         ? Collections.<JsonObject>emptyList()
@@ -138,27 +135,6 @@ public final class ConcolicScheduler {
 
         Result result = new Result();
         result.mergePlan = mergePlan.json;
-        List<JsonObject> worklistRoots = new ArrayList<>();
-        Set<String> rootActivations = new LinkedHashSet<>();
-        for (Candidate candidate : candidates) {
-            String rootKey = candidate.region.regionId + "\n"
-                    + candidate.activationId;
-            if (rootActivations.add(rootKey)) {
-                worklistRoots.add(candidate.activation.deepCopy());
-            }
-        }
-        RecursiveRegionWorklist.Result recursive =
-                RecursiveRegionWorklist.explore(regions, activations, edges,
-                        summaries, worklistRoots, arguments.regionBounds);
-        result.regionWorkItems.addAll(recursive.workItems);
-        result.upstreamRequests.addAll(recursive.upstreamRequests);
-        result.alternativeWriterGroups.addAll(
-                recursive.alternativeWriterGroups);
-        result.regionManifest = recursive.manifest;
-        RegionPathWorklist.Result pathWork = RegionPathWorklist.plan(
-                summaries, activations, pathRecords, arguments.pathBounds);
-        result.pathTasks.addAll(pathWork.tasks);
-        result.pathManifest = pathWork.manifest;
         Set<String> selectedRegions = new LinkedHashSet<>();
         Map<String, JsonObject> emittedActivationDefinitions =
                 new LinkedHashMap<>();
@@ -341,51 +317,27 @@ public final class ConcolicScheduler {
         result.summary.addProperty("forceBranchValidation",
                 arguments.forceBranchValidation);
         result.summary.addProperty("captureOnly", arguments.captureOnly);
-        result.summary.addProperty("recursiveRegionQueryCount",
-                result.regionWorkItems.size());
-        result.summary.addProperty("recursiveUpstreamRequestCount",
-                result.upstreamRequests.size());
-        result.summary.addProperty("alternativeWriterGroupCount",
-                result.alternativeWriterGroups.size());
-        result.summary.addProperty("recursiveRegionComplete",
-                bool(result.regionManifest, "complete", false));
-        result.summary.addProperty("regionPathTaskCount",
-                result.pathTasks.size());
-        result.summary.addProperty("regionPathClosureComplete",
-                bool(result.pathManifest, "complete", false));
         result.summary.addProperty("definitionSiteAuthority",
                 definitions.authoritative
                         ? "STATIC_DATAFLOW_DEF_SITE" : "LOCAL_NAME_FALLBACK");
         result.summary.addProperty("precision",
                 "STATIC_REGION_PLUS_RUNTIME_ACTIVATION_AND_EDGE_VALIDATION");
 
-        writeJsonl(arguments.outputDirectory.resolve("concolic_schedule.jsonl"),
-                result.jobs);
         writeJsonl(arguments.outputDirectory.resolve(
                         "scheduled_activation_plan.jsonl"),
                 result.scheduledActivations);
-        writeJsonl(arguments.outputDirectory.resolve("branch_queries.jsonl"),
-                result.queries);
-        writeJson(arguments.outputDirectory.resolve("symbolic_merge_plan.json"),
-                result.mergePlan);
-        writeJson(arguments.outputDirectory.resolve(
-                "concolic_scheduler_summary.json"), result.summary);
-        writeJsonl(arguments.outputDirectory.resolve(
-                        "recursive_region_worklist.jsonl"),
-                result.regionWorkItems);
-        writeJsonl(arguments.outputDirectory.resolve(
-                        "recursive_upstream_requests.jsonl"),
-                result.upstreamRequests);
-        writeJsonl(arguments.outputDirectory.resolve(
-                        "alternative_writer_groups.jsonl"),
-                result.alternativeWriterGroups);
-        writeJson(arguments.outputDirectory.resolve(
-                        "recursive_region_manifest.json"),
-                result.regionManifest);
-        writeJsonl(arguments.outputDirectory.resolve(
-                        "region_path_worklist.jsonl"), result.pathTasks);
-        writeJson(arguments.outputDirectory.resolve(
-                        "region_path_manifest.json"), result.pathManifest);
+        if (!arguments.captureOnly) {
+            writeJsonl(arguments.outputDirectory.resolve(
+                            "branch_queries.jsonl"),
+                    result.queries);
+        }
+        // Forced branch validation is a focused diagnostic mode outside the
+        // recommended workflow. Its regression still inspects the merge
+        // projection; normal target and producer schedules do not persist it.
+        if (arguments.forceBranchValidation) {
+            writeJson(arguments.outputDirectory.resolve(
+                    "symbolic_merge_plan.json"), result.mergePlan);
+        }
         return result;
     }
 
@@ -3331,15 +3283,8 @@ public final class ConcolicScheduler {
         public final List<JsonObject> jobs = new ArrayList<>();
         public final List<JsonObject> scheduledActivations = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
-        public final List<JsonObject> regionWorkItems = new ArrayList<>();
-        public final List<JsonObject> upstreamRequests = new ArrayList<>();
-        public final List<JsonObject> alternativeWriterGroups =
-                new ArrayList<>();
-        public final List<JsonObject> pathTasks = new ArrayList<>();
         public final JsonObject summary = new JsonObject();
         public JsonObject mergePlan = new JsonObject();
-        public JsonObject regionManifest = new JsonObject();
-        public JsonObject pathManifest = new JsonObject();
     }
 
     public static final class Arguments {
@@ -3348,7 +3293,6 @@ public final class ConcolicScheduler {
         public final Path edgeValidations;
         public final Path staticGraph;
         public final Path summaries;
-        public final Path pathRecords;
         public final Path runtimeRegionInstances;
         public final Path outputDirectory;
         public final String regionId;
@@ -3361,13 +3305,10 @@ public final class ConcolicScheduler {
         public final boolean allowMultipleJobsPerRegion;
         public final boolean forceBranchValidation;
         public final boolean captureOnly;
-        public final RecursiveRegionWorklist.Bounds regionBounds;
-        public final RegionPathWorklist.Bounds pathBounds;
 
         private Arguments(Path regions, Path activations,
                           Path edgeValidations, Path staticGraph,
-                          Path summaries, Path pathRecords,
-                          Path runtimeRegionInstances,
+                          Path summaries, Path runtimeRegionInstances,
                           Path outputDirectory, String regionId,
                           String activationId, String targetSite,
                           String requestedOutputCell,
@@ -3376,15 +3317,12 @@ public final class ConcolicScheduler {
                           int maxJobs,
                           boolean allowMultipleJobsPerRegion,
                           boolean forceBranchValidation,
-                          boolean captureOnly,
-                          RecursiveRegionWorklist.Bounds regionBounds,
-                          RegionPathWorklist.Bounds pathBounds) {
+                          boolean captureOnly) {
             this.regions = regions;
             this.activations = activations;
             this.edgeValidations = edgeValidations;
             this.staticGraph = staticGraph;
             this.summaries = summaries;
-            this.pathRecords = pathRecords;
             this.runtimeRegionInstances = runtimeRegionInstances;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
@@ -3399,8 +3337,6 @@ public final class ConcolicScheduler {
             this.allowMultipleJobsPerRegion = allowMultipleJobsPerRegion;
             this.forceBranchValidation = forceBranchValidation;
             this.captureOnly = captureOnly;
-            this.regionBounds = regionBounds;
-            this.pathBounds = pathBounds;
         }
 
         public static Arguments parse(String[] args) {
@@ -3408,9 +3344,14 @@ public final class ConcolicScheduler {
             for (int index = 0; args != null && index < args.length; index++) {
                 String value = args[index];
                 if (!value.startsWith("--")) {
-                    continue;
+                    throw new IllegalArgumentException(
+                            "Unexpected scheduler argument: " + value);
                 }
                 String key = value.substring(2);
+                if (!knownOption(key)) {
+                    throw new IllegalArgumentException(
+                            "Unknown scheduler option --" + key);
+                }
                 boolean hasNext = index + 1 < args.length;
                 String next = hasNext ? args[index + 1] : "";
                 if (hasNext && !next.startsWith("--")) {
@@ -3427,11 +3368,10 @@ public final class ConcolicScheduler {
                     sibling(activations, "concolic-schedule").toString()));
             Path staticGraph = optionalPath(values.get("static-graph"));
             Path summaries = optionalPath(values.get("summaries"));
-            Path pathRecords = optionalPath(values.get("path-records"));
             Path runtimeRegionInstances = optionalPath(values.get(
                     "runtime-region-instances"));
             return new Arguments(regions, activations, edges, staticGraph,
-                    summaries, pathRecords, runtimeRegionInstances, output,
+                    summaries, runtimeRegionInstances, output,
                     firstNonBlank(values.get("region-id")),
                     firstNonBlank(values.get("activation-id")),
                     firstNonBlank(values.get("target-site")),
@@ -3443,33 +3383,27 @@ public final class ConcolicScheduler {
                     parseInt(values.get("max-jobs"), 1),
                     Boolean.parseBoolean(values.get("multiple-per-region")),
                     Boolean.parseBoolean(values.get("force-branch-validation")),
-                    Boolean.parseBoolean(values.get("capture-only")),
-                    new RecursiveRegionWorklist.Bounds(
-                            parseInt(firstNonBlank(values.get(
-                                    "max-region-depth"), values.get(
-                                    "max-producer-depth")), 8),
-                            parseInt(firstNonBlank(values.get(
-                                    "max-recursive-regions"), values.get(
-                                    "max-producer-regions")), 64),
-                            parseInt(values.get(
-                                    "max-activations-per-region"), 8),
-                            parseInt(values.get(
-                                    "max-alternative-writers"), 8),
-                            parseInt(firstNonBlank(values.get(
-                                    "max-region-queries"), values.get(
-                                    "max-producer-queries")), 256),
-                            parseInt(firstNonBlank(values.get(
-                                    "max-graph-alternatives"), values.get(
-                                    "max-producer-paths")), 512),
-                            parseLong(firstNonBlank(values.get(
-                                    "max-region-wall-clock-ms"), values.get(
-                                    "max-producer-wall-clock-ms")), 30000L)),
-                    new RegionPathWorklist.Bounds(
-                            parseInt(values.get("max-region-paths"), 64),
-                            parseInt(values.get("max-flips-per-path"), 32),
-                            parseInt(values.get("max-path-tasks"), 256),
-                            parseLong(values.get(
-                                    "max-path-wall-clock-ms"), 30000L)));
+                    Boolean.parseBoolean(values.get("capture-only")));
+        }
+
+        private static boolean knownOption(String key) {
+            return "regions".equals(key)
+                    || "activation-plan".equals(key)
+                    || "edge-validations".equals(key)
+                    || "static-graph".equals(key)
+                    || "summaries".equals(key)
+                    || "runtime-region-instances".equals(key)
+                    || "output-dir".equals(key)
+                    || "region-id".equals(key)
+                    || "activation-id".equals(key)
+                    || "target-site".equals(key)
+                    || "requested-output-cell".equals(key)
+                    || "requested-output-capture-site".equals(key)
+                    || "requested-output-capture-occurrence".equals(key)
+                    || "max-jobs".equals(key)
+                    || "multiple-per-region".equals(key)
+                    || "force-branch-validation".equals(key)
+                    || "capture-only".equals(key);
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -3499,12 +3433,5 @@ public final class ConcolicScheduler {
             }
         }
 
-        private static long parseLong(String value, long fallback) {
-            try {
-                return value == null ? fallback : Long.parseLong(value);
-            } catch (RuntimeException ignored) {
-                return fallback;
-            }
-        }
     }
 }

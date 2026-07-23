@@ -6,7 +6,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -23,20 +22,9 @@ final class CausynthArtifactWriter {
     void writeAll() throws IOException {
         Files.createDirectories(outputDir);
         writeJson("target_resolved.json", result.targetResolved);
-        Map<String, Object> seeds = new LinkedHashMap<>();
-        seeds.put("seeds", result.seeds);
-        writeJson("seeds.json", seeds);
-        writeJsonl("static_cells.jsonl", result.cells);
         writeJsonl("static_dataflow_edges.jsonl", result.edges);
-        writeJsonl("static_trace_methods.jsonl", result.traceMethods);
-        writeJsonl("symbolic_execution_plan.jsonl", result.symbolicPlan);
         writeJsonl("symbolic_regions.jsonl", result.symbolicRegions);
         writeJsonl("symbolic_region_edges.jsonl", result.symbolicRegionEdges);
-        writeJsonl("symbolic_models.jsonl", result.symbolicModels);
-        writeJson("symbolic_coverage.json", result.symbolicCoverage);
-        writeJson("automatic_derivation_boundary.json",
-                result.automaticDerivationBoundary);
-        writeJson("static_slices.json", result.slices);
     }
 
     private void writeJson(String fileName, Object value) throws IOException {

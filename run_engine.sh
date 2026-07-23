@@ -55,7 +55,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_path_records|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|summary_cache_dir|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -93,7 +93,6 @@ reset_config() {
   runtime_edge_validations=""
   schedule_output_dir=""
   schedule_summaries=""
-  schedule_path_records=""
   schedule_region_id=""
   schedule_activation_id=""
   schedule_target_site=""
@@ -101,7 +100,6 @@ reset_config() {
   import_activation_plan=""
   imported_summaries=""
   import_diagnostics=""
-  summary_cache_dir=""
   merge_summary_inputs=""
   path_manifest=""
   merged_summaries=""
@@ -180,7 +178,6 @@ apply_environment_overrides() {
   apply_env_override runtime_edge_validations CAUSYNTH_EDGE_VALIDATIONS
   apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
   apply_env_override schedule_summaries CAUSYNTH_SCHEDULE_SUMMARIES
-  apply_env_override schedule_path_records CAUSYNTH_SCHEDULE_PATH_RECORDS
   apply_env_override schedule_region_id CAUSYNTH_SCHEDULE_REGION_ID
   apply_env_override schedule_activation_id CAUSYNTH_SCHEDULE_ACTIVATION_ID
   apply_env_override schedule_target_site CAUSYNTH_SCHEDULE_TARGET_SITE
@@ -188,7 +185,6 @@ apply_environment_overrides() {
   apply_env_override import_activation_plan CAUSYNTH_IMPORT_ACTIVATION_PLAN
   apply_env_override imported_summaries CAUSYNTH_IMPORTED_SUMMARIES
   apply_env_override import_diagnostics CAUSYNTH_IMPORT_DIAGNOSTICS
-  apply_env_override summary_cache_dir CAUSYNTH_SUMMARY_CACHE_DIR
   apply_env_override merge_summary_inputs CAUSYNTH_MERGE_SUMMARIES
   apply_env_override path_manifest CAUSYNTH_PATH_MANIFEST
   apply_env_override merged_summaries CAUSYNTH_MERGED_SUMMARIES
@@ -349,7 +345,6 @@ initialize_config() {
   import_activation_plan=${import_activation_plan:-${schedule_output_dir}/scheduled_activation_plan.jsonl}
   imported_summaries=${imported_summaries:-${schedule_output_dir}/concolic_region_summaries.jsonl}
   import_diagnostics=${import_diagnostics:-${schedule_output_dir}/concolic_import_diagnostics.jsonl}
-  summary_cache_dir=${summary_cache_dir:-${schedule_output_dir}/concolic-summary-cache}
   merge_summary_inputs=${merge_summary_inputs:-${imported_summaries}}
   path_manifest=${path_manifest:-${schedule_output_dir}/region_path_manifest.json}
   merged_summaries=${merged_summaries:-${schedule_output_dir}/merged_region_summaries.jsonl}
@@ -371,7 +366,6 @@ initialize_config() {
   import_activation_plan=$(resolve_path "${import_activation_plan}")
   imported_summaries=$(resolve_path "${imported_summaries}")
   import_diagnostics=$(resolve_path "${import_diagnostics}")
-  summary_cache_dir=$(resolve_path "${summary_cache_dir}")
   merge_summary_inputs=$(resolve_path_list "${merge_summary_inputs}")
   path_manifest=$(resolve_path "${path_manifest}")
   merged_summaries=$(resolve_path "${merged_summaries}")
@@ -384,9 +378,6 @@ initialize_config() {
   reach_report=$(resolve_path "${reach_report}")
   if [[ -n "${schedule_summaries}" ]]; then
     schedule_summaries=$(resolve_path "${schedule_summaries}")
-  fi
-  if [[ -n "${schedule_path_records}" ]]; then
-    schedule_path_records=$(resolve_path "${schedule_path_records}")
   fi
 }
 
@@ -533,10 +524,6 @@ do_schedule() {
     require_file "scheduler summaries" "${schedule_summaries}"
     args+=(--summaries "${schedule_summaries}")
   fi
-  if [[ -n "${schedule_path_records}" ]]; then
-    require_file "scheduler path records" "${schedule_path_records}"
-    args+=(--path-records "${schedule_path_records}")
-  fi
   [[ -z "${schedule_region_id}" ]] || args+=(--region-id "${schedule_region_id}")
   [[ -z "${schedule_activation_id}" ]] || args+=(--activation-id "${schedule_activation_id}")
   [[ -z "${schedule_target_site}" ]] || args+=(--target-site "${schedule_target_site}")
@@ -549,14 +536,12 @@ do_import() {
   require_file "import activation plan" "${import_activation_plan}"
   require_file "symbolic regions" "${static_regions}"
   ensure_output_directory "$(dirname "${imported_summaries}")"
-  ensure_output_directory "${summary_cache_dir}"
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
     --results "${raw_concolic_results}" \
     --activation-plan "${import_activation_plan}" \
     --regions "${static_regions}" \
     --output "${imported_summaries}" \
-    --diagnostics "${import_diagnostics}" \
-    --cache-dir "${summary_cache_dir}" "$@"
+    --diagnostics "${import_diagnostics}" "$@"
 }
 
 append_path_list_arguments() {

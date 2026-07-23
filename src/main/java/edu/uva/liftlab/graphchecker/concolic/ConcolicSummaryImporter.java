@@ -31,8 +31,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Validates raw VM region results, normalizes them into composable summaries,
- * and maintains a content-addressed summary cache.
+ * Validates raw VM region results and normalizes them into composable
+ * summaries.
  */
 public final class ConcolicSummaryImporter {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
@@ -97,10 +97,17 @@ public final class ConcolicSummaryImporter {
                 sibling(results, "concolic_region_summaries.jsonl").toString()));
         Path diagnostics = Paths.get(firstNonBlank(options.get("diagnostics"),
                 sibling(results, "concolic_import_diagnostics.jsonl").toString()));
-        Path cache = Paths.get(firstNonBlank(options.get("cache-dir"),
-                sibling(results, "concolic-summary-cache").toString()));
         ImportResult imported = importSummaries(results, activations, regions,
-                output, diagnostics, cache);
+                output, diagnostics);
+        if (imported.diagnosticCount > 0) {
+            try (BufferedReader reader = Files.newBufferedReader(diagnostics,
+                    StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.err.println("[concolic-import] " + line);
+                }
+            }
+        }
         System.out.println(GSON.toJson(imported.summary));
         if (imported.validSummaryCount == 0 && imported.rawResultCount > 0) {
             System.exit(2);
@@ -109,7 +116,7 @@ public final class ConcolicSummaryImporter {
 
     public static ImportResult importSummaries(
             Path resultsFile, Path activationFile, Path regionFile,
-            Path outputFile, Path diagnosticFile, Path cacheDirectory)
+            Path outputFile, Path diagnosticFile)
             throws IOException {
         Map<String, JsonObject> activations = index(readJsonl(activationFile),
                 "activationId");
@@ -391,7 +398,6 @@ public final class ConcolicSummaryImporter {
             summary.add("unresolvedInputs", copy(raw.get("unresolvedInputs"),
                     new JsonArray()));
             summaries.add(summary);
-            writeCacheEntry(cacheDirectory, cacheKey, summary);
             for (HeapEffectIssue issue : heapEffects.issues) {
                 diagnostics.add(diagnostic(raw, issue.code, issue.detail()));
             }
@@ -422,7 +428,7 @@ public final class ConcolicSummaryImporter {
         }
 
         writeJsonlAtomic(outputFile, summaries);
-        writeJsonlAtomic(diagnosticFile, diagnostics);
+        writeDiagnostics(diagnosticFile, diagnostics);
         ImportResult result = new ImportResult(rawResults.size(), summaries.size(),
                 diagnostics.size(), skippedEvents);
         result.summary.addProperty("rawResultCount", result.rawResultCount);
@@ -430,8 +436,12 @@ public final class ConcolicSummaryImporter {
         result.summary.addProperty("diagnosticCount", result.diagnosticCount);
         result.summary.addProperty("skippedEventCount", result.skippedEventCount);
         result.summary.addProperty("output", outputFile.toAbsolutePath().toString());
-        result.summary.addProperty("cacheDirectory",
-                cacheDirectory.toAbsolutePath().toString());
+        result.summary.addProperty("diagnosticsPersisted",
+                !diagnostics.isEmpty());
+        if (!diagnostics.isEmpty()) {
+            result.summary.addProperty("diagnosticsOutput",
+                    diagnosticFile.toAbsolutePath().toString());
+        }
         return result;
     }
 
@@ -9730,15 +9740,16 @@ public final class ConcolicSummaryImporter {
         return false;
     }
 
-    private static void writeCacheEntry(Path directory, String key,
-                                        JsonObject summary) throws IOException {
-        Files.createDirectories(directory);
-        Path target = directory.resolve(key + ".json");
-        if (Files.isRegularFile(target)) {
+    private static void writeDiagnostics(Path target,
+                                         List<JsonObject> rows)
+            throws IOException {
+        if (rows.isEmpty()) {
+            // Absence means the importer explicitly reported zero diagnostics;
+            // the structured ImportResult carries the authoritative count.
+            Files.deleteIfExists(target);
             return;
         }
-        writeAtomic(target, (GSON.toJson(summary) + System.lineSeparator())
-                .getBytes(StandardCharsets.UTF_8));
+        writeJsonlAtomic(target, rows);
     }
 
     private static void writeJsonlAtomic(Path target, List<JsonObject> rows)

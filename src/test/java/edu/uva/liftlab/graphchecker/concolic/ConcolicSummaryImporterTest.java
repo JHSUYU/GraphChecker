@@ -70,7 +70,7 @@ public class ConcolicSummaryImporterTest {
                 ConcolicSummaryImporter.ImportResult imported =
                         ConcolicSummaryImporter.importSummaries(
                                 results, activations, regions, output,
-                                diagnostics, caseRoot.resolve("cache"));
+                                diagnostics);
 
                 assertEquals(0, imported.validSummaryCount);
                 JsonObject diagnostic = JsonParser.parseString(new String(
@@ -230,7 +230,7 @@ public class ConcolicSummaryImporterTest {
                 ConcolicSummaryImporter.ImportResult imported =
                         ConcolicSummaryImporter.importSummaries(
                                 results, activations, regions, output,
-                                diagnostics, caseRoot.resolve("cache"));
+                                diagnostics);
                 assertEquals(0, imported.validSummaryCount);
                 assertEquals(1, imported.diagnosticCount);
                 String diagnostic = new String(Files.readAllBytes(
@@ -427,9 +427,9 @@ public class ConcolicSummaryImporterTest {
 
             ConcolicSummaryImporter.ImportResult accepted =
                     ConcolicSummaryImporter.importSummaries(results,
-                            activations, regions, output, diagnostics,
-                            root.resolve("cache-ok"));
+                            activations, regions, output, diagnostics);
             assertEquals(1, accepted.validSummaryCount);
+            assertFalse(Files.exists(diagnostics));
             JsonObject acceptedSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                     .getAsJsonObject();
@@ -456,7 +456,7 @@ public class ConcolicSummaryImporterTest {
             ConcolicSummaryImporter.ImportResult rejected =
                     ConcolicSummaryImporter.importSummaries(results,
                             activations, regions, rejectedOutput,
-                            rejectedDiagnostics, root.resolve("cache-bad"));
+                            rejectedDiagnostics);
             assertEquals(0, rejected.validSummaryCount);
             assertTrue(new String(Files.readAllBytes(rejectedDiagnostics),
                     StandardCharsets.UTF_8).contains(
@@ -503,8 +503,7 @@ public class ConcolicSummaryImporterTest {
                 ConcolicSummaryImporter.ImportResult rejectedSeed =
                         ConcolicSummaryImporter.importSummaries(results,
                                 activations, regions, seedOutput,
-                                seedDiagnostics, root.resolve(
-                                        "cache-rejected-seed-" + mode));
+                                seedDiagnostics);
                 assertEquals(0, rejectedSeed.validSummaryCount);
                 assertTrue(new String(Files.readAllBytes(seedDiagnostics),
                         StandardCharsets.UTF_8).contains(expectedFailure));
@@ -526,7 +525,6 @@ public class ConcolicSummaryImporterTest {
             Path results = root.resolve("results.jsonl");
             Path output = root.resolve("summaries.jsonl");
             Path diagnostics = root.resolve("diagnostics.jsonl");
-            Path cache = root.resolve("cache");
             String method = "<example.Handler: void handle()>";
             write(activations, "{\"activationId\":\"ACT.0\","
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
@@ -559,7 +557,7 @@ public class ConcolicSummaryImporterTest {
 
             ConcolicSummaryImporter.ImportResult imported =
                     ConcolicSummaryImporter.importSummaries(results, activations,
-                            regions, output, diagnostics, cache);
+                            regions, output, diagnostics);
 
             assertEquals(1, imported.rawResultCount);
             assertEquals(1, imported.validSummaryCount);
@@ -571,7 +569,6 @@ public class ConcolicSummaryImporterTest {
                     summary.trim()).getAsJsonObject();
             assertEquals(0, importedSummary.getAsJsonArray(
                     "symbolicInputs").size());
-            assertEquals(1, Files.list(cache).count());
         } finally {
             folder.delete();
         }
@@ -589,7 +586,6 @@ public class ConcolicSummaryImporterTest {
             Path results = root.resolve("results.jsonl");
             Path output = root.resolve("summaries.jsonl");
             Path diagnostics = root.resolve("diagnostics.jsonl");
-            Path cache = root.resolve("cache");
             String method = "<example.Handler: void handle()>";
             write(activations, "{\"activationId\":\"ACT.0\","
                     + "\"regionId\":\"REGION.0\",\"rootMethod\":\""
@@ -634,13 +630,12 @@ public class ConcolicSummaryImporterTest {
 
             ConcolicSummaryImporter.ImportResult imported =
                     ConcolicSummaryImporter.importSummaries(results,
-                            activations, regions, output, diagnostics, cache);
+                            activations, regions, output, diagnostics);
 
             assertEquals(1, imported.rawResultCount);
             assertEquals(0, imported.validSummaryCount);
             assertEquals("", new String(Files.readAllBytes(output),
                     StandardCharsets.UTF_8));
-            assertFalse(Files.exists(cache));
             JsonObject diagnostic = JsonParser.parseString(new String(
                     Files.readAllBytes(diagnostics), StandardCharsets.UTF_8)
                     .trim()).getAsJsonObject();
@@ -704,7 +699,7 @@ public class ConcolicSummaryImporterTest {
                     + condition + "," + condition + "]}}\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
-                    regions, output, diagnostics, root.resolve("cache"));
+                    regions, output, diagnostics);
 
             JsonObject summary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
@@ -785,7 +780,7 @@ public class ConcolicSummaryImporterTest {
             write(results, result + "\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
-                    regions, output, diagnostics, root.resolve("cache"));
+                    regions, output, diagnostics);
 
             JsonObject summary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
@@ -852,7 +847,7 @@ public class ConcolicSummaryImporterTest {
 
             ConcolicSummaryImporter.ImportResult imported =
                     ConcolicSummaryImporter.importSummaries(results, activations,
-                            regions, output, diagnostics, root.resolve("cache"));
+                            regions, output, diagnostics);
 
             assertEquals(1, imported.validSummaryCount);
             JsonObject summary = JsonParser.parseString(new String(
@@ -923,7 +918,7 @@ public class ConcolicSummaryImporterTest {
                     + unmapped + "," + mapped + "]}}\n");
 
             ConcolicSummaryImporter.importSummaries(results, activations,
-                    regions, output, diagnostics, root.resolve("cache"));
+                    regions, output, diagnostics);
 
             JsonObject summary = JsonParser.parseString(new String(
                     Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
@@ -1112,7 +1107,7 @@ public class ConcolicSummaryImporterTest {
                     root.resolve("results.jsonl"),
                     root.resolve("activation.jsonl"), root.resolve(
                             "regions.jsonl"), incompleteOutput,
-                    incompleteDiagnostics, root.resolve("incomplete-cache"));
+                    incompleteDiagnostics);
             JsonObject incompleteSummary = JsonParser.parseString(new String(
                     Files.readAllBytes(incompleteOutput),
                     StandardCharsets.UTF_8).trim()).getAsJsonObject();
@@ -1132,8 +1127,7 @@ public class ConcolicSummaryImporterTest {
                     root.resolve("results.jsonl"),
                     root.resolve("activation.jsonl"), root.resolve(
                             "regions.jsonl"), missingSliceOutput,
-                    root.resolve("missing-slice-diagnostics.jsonl"),
-                    root.resolve("missing-slice-cache"));
+                    root.resolve("missing-slice-diagnostics.jsonl"));
             JsonObject missingSliceSummary = JsonParser.parseString(
                     new String(Files.readAllBytes(missingSliceOutput),
                             StandardCharsets.UTF_8).trim()).getAsJsonObject();
@@ -3724,12 +3718,11 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations,
-                regions, output, diagnostics, root.resolve("cache"));
+                regions, output, diagnostics);
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
-        return new PlaceholderFixture(summary, new String(
-                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+        return new PlaceholderFixture(summary, readOptional(diagnostics));
     }
 
     private static JsonObject exactCurrentTimePlaceholderMaterialization() {
@@ -4921,13 +4914,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw.toString() + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String summaryRows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = summaryRows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(summaryRows).getAsJsonObject();
-        String diagnosticRows = new String(Files.readAllBytes(diagnostics),
-                StandardCharsets.UTF_8);
+        String diagnosticRows = readOptional(diagnostics);
         return new MapFixture(summary, diagnosticRows);
     }
 
@@ -5065,12 +5057,11 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations,
-                regions, output, diagnostics, root.resolve("cache"));
+                regions, output, diagnostics);
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
-        return new MapFixture(summary, new String(
-                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static MapFixture importObservedMapMutationFixture(
@@ -5106,13 +5097,11 @@ public class ConcolicSummaryImporterTest {
         Path output = root.resolve("mutation-summaries.jsonl");
         Path diagnostics = root.resolve("mutation-diagnostics.jsonl");
         ConcolicSummaryImporter.importSummaries(results, activations,
-                root.resolve("regions.jsonl"), output, diagnostics,
-                root.resolve("mutation-cache"));
+                root.resolve("regions.jsonl"), output, diagnostics);
         JsonObject summary = JsonParser.parseString(new String(
                 Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
                 .getAsJsonObject();
-        return new MapFixture(summary, new String(
-                Files.readAllBytes(diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static JsonObject observedContainerAction(
@@ -5931,7 +5920,7 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         return JsonParser.parseString(new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim()).getAsJsonObject();
     }
@@ -6306,13 +6295,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String rows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = rows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(rows).getAsJsonObject();
-        String diagnosticRows = new String(Files.readAllBytes(diagnostics),
-                StandardCharsets.UTF_8);
+        String diagnosticRows = readOptional(diagnostics);
         return new MapFixture(summary, diagnosticRows);
     }
 
@@ -6418,13 +6406,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String rows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = rows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(rows).getAsJsonObject();
-        return new MapFixture(summary, new String(Files.readAllBytes(
-                diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static MapFixture importMapProjectionFixture(
@@ -6730,13 +6717,12 @@ public class ConcolicSummaryImporterTest {
         write(results, raw + "\n");
 
         ConcolicSummaryImporter.importSummaries(results, activations, regions,
-                output, diagnostics, root.resolve("cache"));
+                output, diagnostics);
         String rows = new String(Files.readAllBytes(output),
                 StandardCharsets.UTF_8).trim();
         JsonObject summary = rows.isEmpty() ? new JsonObject()
                 : JsonParser.parseString(rows).getAsJsonObject();
-        return new MapFixture(summary, new String(Files.readAllBytes(
-                diagnostics), StandardCharsets.UTF_8));
+        return new MapFixture(summary, readOptional(diagnostics));
     }
 
     private static JsonObject mapProjectionObservation(
@@ -6995,6 +6981,12 @@ public class ConcolicSummaryImporterTest {
             this.summary = summary;
             this.diagnostics = diagnostics;
         }
+    }
+
+    private static String readOptional(Path path) throws Exception {
+        return Files.exists(path)
+                ? new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
+                : "";
     }
 
     private static void write(Path path, String value) throws Exception {
