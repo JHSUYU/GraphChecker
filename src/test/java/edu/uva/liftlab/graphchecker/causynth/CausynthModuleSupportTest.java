@@ -131,6 +131,11 @@ public class CausynthModuleSupportTest {
         branch.put("explorationReason", "RETIRED_SELF_CLAIM");
         branch.put("role", "REACHABILITY");
         region.put("branchPolicies", Collections.singletonList(branch));
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("portId", "REGION.0.in.0");
+        input.put("cell", "input");
+        input.put("promotionAuthority", "RETIRED_SELF_CLAIM");
+        region.put("symbolicInputs", Collections.singletonList(input));
         region.put("outputSlices", Collections.singletonList(slice));
         result.symbolicRegions.add(region);
 

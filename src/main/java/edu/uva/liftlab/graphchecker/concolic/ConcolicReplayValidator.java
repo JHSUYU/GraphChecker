@@ -5,13 +5,11 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * Admits a solver-generated execution only after ordinary Java branches,
@@ -567,8 +565,9 @@ public final class ConcolicReplayValidator {
                     && same(candidate, expected, "materializationSiteId")
                     && integer(candidate, "materializationOccurrence", -1)
                     == integer(expected, "materializationOccurrence", -2)
-                    && canonical(array(candidate, "materializationPath"))
-                    .equals(canonical(array(expected,
+                    && CanonicalJson.render(array(candidate,
+                    "materializationPath"))
+                    .equals(CanonicalJson.render(array(expected,
                             "materializationPath")))) {
                 result.add(candidate);
             }
@@ -598,8 +597,9 @@ public final class ConcolicReplayValidator {
                     || !same(binding, applied, "materializationSiteId")
                     || integer(binding, "materializationOccurrence", -1)
                     != integer(applied, "materializationOccurrence", -2)
-                    || !canonical(array(binding, "fieldPath")).equals(
-                    canonical(array(applied, "materializationPath")))
+                    || !CanonicalJson.render(array(binding,
+                    "fieldPath")).equals(CanonicalJson.render(array(applied,
+                    "materializationPath")))
                     || !same(binding, applied, "entryReadObservationId")
                     || !same(binding, applied, "keyExpressionAuthority")
                     || binding.get("keyExpression") == null
@@ -739,8 +739,9 @@ public final class ConcolicReplayValidator {
                     "materializationSiteId")
                     && integer(candidate, "materializationOccurrence", -1)
                     == integer(expected, "materializationOccurrence", -2)
-                    && canonical(array(candidate, "materializationPath"))
-                    .equals(canonical(array(expected,
+                    && CanonicalJson.render(array(candidate,
+                    "materializationPath"))
+                    .equals(CanonicalJson.render(array(expected,
                             "materializationPath")))
                     && sameStableContainerSelector(object(candidate,
                     "containerSelector"), object(expected,
@@ -804,8 +805,9 @@ public final class ConcolicReplayValidator {
                     || !same(binding, applied, "materializationSiteId")
                     || integer(binding, "materializationOccurrence", -1)
                     != integer(applied, "materializationOccurrence", -2)
-                    || !canonical(array(binding, "fieldPath")).equals(
-                    canonical(array(applied, "materializationPath")))
+                    || !CanonicalJson.render(array(binding,
+                    "fieldPath")).equals(CanonicalJson.render(array(applied,
+                    "materializationPath")))
                     || !selector.equals(expectedSelector)
                     || replayActivationId.isEmpty()
                     || !replayActivationId.equals(scope)
@@ -1298,7 +1300,7 @@ public final class ConcolicReplayValidator {
         identityComponent(value, string(assignment, "value"));
         identityComponent(value, string(assignment, "authority"));
         identityComponent(value, string(assignment, "modelOperation"));
-        identityComponent(value, canonical(array(assignment,
+        identityComponent(value, CanonicalJson.render(array(assignment,
                 "materializationPath")));
         identityComponent(value, string(assignment, "dynamicBindingId"));
         identityComponent(value, string(assignment, "dynamicFieldSymbol"));
@@ -1311,15 +1313,15 @@ public final class ConcolicReplayValidator {
                 "mapProjectionSelector");
         if (mapProjection.size() > 0) {
             identityComponent(value, "MAP_OUTPUT_ARRAY_INDEX");
-            identityComponent(value, canonical(mapProjection));
+            identityComponent(value, CanonicalJson.render(mapProjection));
         } else if (container.size() > 0) {
             identityComponent(value, "ARRAY_INDEX");
             // Runtime object tokens and their scope are replay-local.  The
             // stable selector is the cross-execution identity; a separate
             // join validates the applied selector against the fresh raw
             // binding before admission.
-            identityComponent(value, canonical(stableContainerSelector(
-                    container)));
+            identityComponent(value, CanonicalJson.render(
+                    stableContainerSelector(container)));
             identityComponent(value, string(assignment,
                     "containerReplayRebindingAuthority"));
         } else {
@@ -1334,7 +1336,8 @@ public final class ConcolicReplayValidator {
                         FRESH_MAP_ENTRY_REBINDING_AUTHORITY);
             } else {
                 identityComponent(value, "MAP_ENTRY_KEY");
-                identityComponent(value, canonical(selectorKey(assignment)));
+                identityComponent(value, CanonicalJson.render(
+                        selectorKey(assignment)));
                 identityComponent(value, selectorAuthority(assignment));
             }
         }
@@ -1393,34 +1396,6 @@ public final class ConcolicReplayValidator {
         result.append(safe.length()).append(':').append(safe).append('|');
     }
 
-    private static String canonical(JsonElement value) {
-        if (value == null || value.isJsonNull()) return "null";
-        if (value.isJsonPrimitive()) {
-            JsonPrimitive primitive = value.getAsJsonPrimitive();
-            return GSON.toJson(primitive);
-        }
-        if (value.isJsonArray()) {
-            StringBuilder result = new StringBuilder("[");
-            boolean first = true;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (!first) result.append(',');
-                first = false;
-                result.append(canonical(element));
-            }
-            return result.append(']').toString();
-        }
-        JsonObject object = value.getAsJsonObject();
-        StringBuilder result = new StringBuilder("{");
-        boolean first = true;
-        for (String key : new TreeSet<>(object.keySet())) {
-            if (!first) result.append(',');
-            first = false;
-            result.append(GSON.toJson(key)).append(':')
-                    .append(canonical(object.get(key)));
-        }
-        return result.append('}').toString();
-    }
-
     private static void require(JsonArray failures, String code,
                                 boolean condition) {
         if (!condition) failures.add(code);
@@ -1476,7 +1451,8 @@ public final class ConcolicReplayValidator {
         JsonObject expected = object(task, "requestedOutput");
         JsonObject imported = object(summary, "requestedOutput");
         if (expected.size() == 0 || imported.size() == 0) return false;
-        return canonical(expected).equals(canonical(imported));
+        return CanonicalJson.render(expected).equals(
+                CanonicalJson.render(imported));
     }
 
     private static boolean exactRequestedOutputExpression(

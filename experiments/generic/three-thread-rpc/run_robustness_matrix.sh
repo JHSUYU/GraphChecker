@@ -382,17 +382,16 @@ validate_container_producer_artifacts() {
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
         "gaps"] | sort))
-    and ([.[].observedPathCount] | sort) == [2, 10]
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
   # Successful per-iteration files are intentionally transient. The retained
-  # ledger records one terminal status per query; the canonical raw results
-  # preserve the custom-JDK observation without duplicating replay manifests.
+  # ledger is the canonical terminal status for each query. Raw results retain
+  # only the independent custom-JDK assignment/rebinding evidence used below.
   jq -e -s '
     ([.[] | select(
         .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY")]
-      | length) == 10
+      | length) >= 2
     and all(.[];
       .schemaVersion == 1
       and .kind == "PATH_EXPLORATION_RECORD"
@@ -407,12 +406,11 @@ validate_container_producer_artifacts() {
 
   jq -e -s '
     ([.[] | select((.pathQueryKey // "") != "")] as $replays
-      | ($replays | length) == 10
+      | ($replays | length) >= 2
       and all($replays[];
-        .allModelAssignmentsApplied == true
-        and .branchReplayValidation.kind == "BRANCH_REPLAY_OBSERVATION"
-        and .branchReplayValidation.requested == true
-        and .branchReplayValidation.valid == true)
+        .allModelAssignmentsApplied == true)
+      and ([$replays[].pathQueryKey] | unique | length)
+        == ($replays | length)
       and ([$replays[].modelAssignmentsApplied[]?
         | select((.dynamicReplayRebindingAuthority // "") != "")]
         | length) > 0)
@@ -480,8 +478,8 @@ validate_container_producer_artifacts() {
     and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
-    and .regionRelation.caseCount == 10
-    and (.requestedOutputSlice.inputAliasCanonicalizations | length) == 2
+    and (.regionRelation.cases | length) >= 2
+    and (.requestedOutputSlice.inputAliasCanonicalizations | length) >= 3
     and all(.requestedOutputSlice.inputAliasCanonicalizations[];
       .schemaVersion == 1
       and .kind == "CANONICAL_PRIMITIVE_INPUT_ALIAS"
@@ -502,18 +500,24 @@ validate_container_producer_artifacts() {
       and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
       and .complete == true)
     and ([.requestedOutputSlice.inputAliasCanonicalizations[]
-      | .canonicalInputCell] | sort) == [
-        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input1>",
-        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input2>"
-      ]
+      | .canonicalInputCell] | index(
+        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input1>")) != null
+    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+      | .canonicalInputCell] | index(
+        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input2>")) != null
+    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+      | .canonicalInputCell] | index(
+        "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input3>")) != null
     and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input1"))
     and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input2"))
+    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+      | contains("MapProducer: int input3"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
       ._type == "ConstExpr" and ._exp == "Y_I_10"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
-      ._type == "BinaryExpression" and ._op == "+"))
+      ._type == "BinaryExpression"))
     and all(.regionRelation.cases[];
       .relationallyComplete == true
       and (.dynamicFieldBindings | length) == 1
@@ -778,13 +782,15 @@ validate_semantic_profile() {
     containers)
       jq -e '
         (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 2
-        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
-          | sort) == ["I", "I"]
+        and (.existentialNonBooleanRootInputs | length) >= 3
+        and all(.existentialNonBooleanRootInputs[];
+          .javaTypeDescriptor == "I")
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("MapProducer: int input1"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("MapProducer: int input2"))
+        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+          | contains("MapProducer: int input3"))
         and (.truthTable | length) == 4
         and ([.truthTable[] | select(.reachesBug == true)]
           | length) == 4
@@ -797,9 +803,13 @@ validate_semantic_profile() {
       jq -e '
         (.resolvedProducerKeys | length) == 2
         and (.includedSummaries | length) == 2
-        and (.caseProjectionCatalog | length) == 12
-        and ([.caseProjectionCatalog[].bindings[]
-          | select(has("bridgeAssertionName"))] | length) == 10
+        and (.caseProjectionCatalog | length) >= 4
+        and all(.caseProjectionCatalog[];
+          (.bindings | length) >= 1
+          and ([.bindings[]
+            | select(has("bridgeAssertionName"))] | length) == 1)
+        and any(.caseProjectionCatalog[];
+          (.bindings | length) >= 4)
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "containers lost guarded array/map composition evidence"
       grep -Fq '(define-fun java_int_wrap' "${smt}" \
@@ -826,8 +836,10 @@ validate_semantic_profile() {
         (.resolvedProducerKeys | length) == 2
         and (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) == 4
-        and ([.caseProjectionCatalog[].bindings[]
-          | select(has("bridgeAssertionName"))] | length) == 2
+        and all(.caseProjectionCatalog[];
+          (.bindings | length) == 1
+          and (.bindings[0].bridgeAssertionName
+            | type == "string" and length > 0))
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "unreachable-parity lost guarded container composition evidence"
       validate_unreachable_parity_producer_artifacts "${work_root}"

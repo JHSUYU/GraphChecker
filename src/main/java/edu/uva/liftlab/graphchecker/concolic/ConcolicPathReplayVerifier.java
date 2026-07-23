@@ -20,7 +20,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
 
 /**
  * Standalone, fail-closed admission gate for one solver path-flip replay.
@@ -224,8 +223,8 @@ public final class ConcolicPathReplayVerifier {
         require(failures, "EMPTY_REPLAY_MODEL_ASSIGNMENT_PLAN",
                 taskAssignments.size() > 0);
         require(failures, "REPLAY_MODEL_ASSIGNMENT_PLAN_MISMATCH",
-                canonical(taskAssignments).equals(canonical(
-                        activationAssignments)));
+                CanonicalJson.render(taskAssignments).equals(
+                        CanonicalJson.render(activationAssignments)));
         BranchReplayContract activationContract;
         try {
             activationContract = replayContract(activation,
@@ -417,32 +416,6 @@ public final class ConcolicPathReplayVerifier {
         } catch (RuntimeException ignored) {
             return fallback;
         }
-    }
-
-    private static String canonical(JsonElement value) {
-        if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
-            return GSON.toJson(value);
-        }
-        if (value.isJsonArray()) {
-            StringBuilder result = new StringBuilder("[");
-            boolean first = true;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (!first) result.append(',');
-                first = false;
-                result.append(canonical(element));
-            }
-            return result.append(']').toString();
-        }
-        JsonObject object = value.getAsJsonObject();
-        StringBuilder result = new StringBuilder("{");
-        boolean first = true;
-        for (String key : new TreeSet<>(object.keySet())) {
-            if (!first) result.append(',');
-            first = false;
-            result.append(GSON.toJson(key)).append(':')
-                    .append(canonical(object.get(key)));
-        }
-        return result.append('}').toString();
     }
 
     static final class Arguments {

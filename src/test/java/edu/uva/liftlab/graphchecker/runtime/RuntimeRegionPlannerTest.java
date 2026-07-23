@@ -477,8 +477,6 @@ public class RuntimeRegionPlannerTest {
 
             assertEquals(true, result.activations.get(0).get("replayable"));
             assertEquals(false, result.activations.get(0).get("symbolicReady"));
-            assertEquals(false, result.activations.get(0).get(
-                    "staticInputSelectionComplete"));
             assertTrue(String.valueOf(result.activations.get(0).get(
                     "staticUnresolvedInputs")).contains("opaque local result"));
         } finally {
@@ -1216,10 +1214,13 @@ public class RuntimeRegionPlannerTest {
             for (Map<String, Object> activation : result.activations) {
                 assertActivationInputContract(activation);
                 if ("REGION.R".equals(activation.get("regionId"))) {
-                    assertEquals(1,
-                            activation.get("concreteInputPortCount"));
-                    assertTrue(String.valueOf(activation.get(
-                            "concreteInputSelectionAuthority")).contains(
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> demand = (Map<String, Object>)
+                            activation.get("concreteDemandSlice");
+                    assertEquals(1, ((List<?>) demand.get(
+                            "inputPorts")).size());
+                    assertTrue(String.valueOf(demand.get(
+                            "authority")).contains(
                             "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
                     readerPromoted = true;
                 }
@@ -1310,7 +1311,6 @@ public class RuntimeRegionPlannerTest {
         }
         assertTrue(derived != null);
         assertEquals(Boolean.FALSE, derived.get("replayable"));
-        assertEquals(Boolean.TRUE, derived.get("readFromWitnessOnly"));
         assertEquals("RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED",
                 derived.get("replayMode"));
         assertEquals(Boolean.FALSE, derived.get("symbolicReady"));
@@ -1676,14 +1676,11 @@ public class RuntimeRegionPlannerTest {
             Map<String, Object> captureGoal = (Map<String, Object>)
                     upstream.get("captureGoal");
             assertEquals("OUTPUT_CLOSURE", captureGoal.get("kind"));
-            assertEquals("FIELD_RECEIVER_IDENTITY_AND_WRITE_BEFORE_READ",
-                    upstream.get("upstreamSelectionAuthority"));
-            assertEquals(false, upstream.get("anchorRequired"));
             assertEquals(true, upstream.get("replayable"));
             assertEquals(true, upstream.get("symbolicReady"));
             assertFalse(upstream.containsKey("requestedOutputSliceComplete"));
             assertEquals(11L, upstream.get("rootCallId"));
-            assertEquals(1, upstream.get("edgeBindingCount"));
+            assertEquals(1, ((List<?>) upstream.get("edgeBindings")).size());
             assertEquals(1, ((java.util.List<?>) upstream.get("outputs")).size());
             assertEquals(1, ((java.util.List<?>) upstream.get(
                     "heapStateBindings")).size());
@@ -3355,7 +3352,6 @@ public class RuntimeRegionPlannerTest {
             }
         }
         assertTrue(serverActivation != null);
-        assertEquals(1, serverActivation.get("concreteInputPortCount"));
         @SuppressWarnings("unchecked")
         Map<String, Object> demand = (Map<String, Object>) serverActivation
                 .get("concreteDemandSlice");
@@ -3364,8 +3360,7 @@ public class RuntimeRegionPlannerTest {
         assertTrue(String.valueOf(demand.get("edgeIds"))
                 .contains("DF.DIRECT.DEFAULT"));
         assertEquals(0, demand.get("externalInputPromotionCount"));
-        assertFalse(String.valueOf(serverActivation.get(
-                "concreteInputSelectionAuthority")).contains(
+        assertFalse(String.valueOf(demand.get("authority")).contains(
                 "RUNTIME_CONFIRMED_EXTERNAL_INPUT"));
 
         Map<String, Object> validation = edgeValidationFor(result,
@@ -3716,8 +3711,6 @@ public class RuntimeRegionPlannerTest {
                     result.instances.get(0).get("finalRootMethod"));
             assertEquals(RETRIEVE,
                     result.activations.get(0).get("rootMethod"));
-            assertEquals(HANDLE,
-                    result.activations.get(0).get("staticRootMethod"));
             assertTrue((Boolean) result.activations.get(0).get("replayable"));
             assertEquals("RUNTIME_SELECTED_ROOT_REPLAY",
                     result.activations.get(0).get("replayMode"));
@@ -4370,14 +4363,12 @@ public class RuntimeRegionPlannerTest {
 
             assertEquals(1, result.activations.size());
             Map<String, Object> activation = result.activations.get(0);
-            assertEquals(7, activation.get("staticInputPortCount"));
-            assertEquals(2, activation.get("concreteInputPortCount"));
-            assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
-                            + "STATIC_DEMAND_SLICE_V2",
-                    activation.get("concreteInputSelectionAuthority"));
             @SuppressWarnings("unchecked")
             Map<String, Object> demand = (Map<String, Object>) activation.get(
                     "concreteDemandSlice");
+            assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
+                            + "STATIC_DEMAND_SLICE_V2",
+                    demand.get("authority"));
             assertEquals(Boolean.TRUE, demand.get("applied"));
             assertEquals(Boolean.TRUE, demand.get("complete"));
             assertEquals(Boolean.TRUE, demand.get("staticProvenanceComplete"));
@@ -4407,8 +4398,6 @@ public class RuntimeRegionPlannerTest {
                 true, true, 77, true);
 
         Map<String, Object> activation = result.activations.get(0);
-        assertEquals(3, activation.get("staticInputPortCount"));
-        assertEquals(1, activation.get("concreteInputPortCount"));
         @SuppressWarnings("unchecked")
         Map<String, Object> demand = (Map<String, Object>) activation.get(
                 "concreteDemandSlice");
@@ -4444,7 +4433,6 @@ public class RuntimeRegionPlannerTest {
                 false, true, 88, true);
 
         Map<String, Object> activation = result.activations.get(0);
-        assertEquals(1, activation.get("concreteInputPortCount"));
         @SuppressWarnings("unchecked")
         Map<String, Object> demand = (Map<String, Object>) activation.get(
                 "concreteDemandSlice");
@@ -4465,7 +4453,6 @@ public class RuntimeRegionPlannerTest {
                 false, true, 77, true, false);
 
         Map<String, Object> activation = result.activations.get(0);
-        assertEquals(1, activation.get("concreteInputPortCount"));
         @SuppressWarnings("unchecked")
         Map<String, Object> demand = (Map<String, Object>) activation.get(
                 "concreteDemandSlice");
@@ -4488,9 +4475,7 @@ public class RuntimeRegionPlannerTest {
                 false, true, 77, false);
 
         Map<String, Object> activation = result.activations.get(0);
-        assertEquals(0, activation.get("concreteInputPortCount"));
-        assertEquals(Boolean.FALSE,
-                activation.get("concreteDemandSymbolicPotential"));
+        assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
         @SuppressWarnings("unchecked")
         Map<String, Object> demand = (Map<String, Object>) activation.get(
                 "concreteDemandSlice");
@@ -4548,12 +4533,8 @@ public class RuntimeRegionPlannerTest {
                     Collections.emptyList());
 
             Map<String, Object> activation = result.activations.get(0);
-            assertEquals(1, activation.get("staticInputPortCount"));
-            assertEquals(0, activation.get("concreteInputPortCount"));
             assertEquals(Collections.singletonList("REGION.C.in.0"),
                     activation.get("runtimePrunedInputPorts"));
-            assertEquals(Boolean.FALSE,
-                    activation.get("concreteDemandSymbolicPotential"));
             assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
             @SuppressWarnings("unchecked")
             Map<String, Object> demand = (Map<String, Object>) activation.get(
@@ -4629,13 +4610,12 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.Result result, String input,
             String expectedGap) {
         Map<String, Object> activation = result.activations.get(0);
-        assertEquals(0, activation.get("concreteInputPortCount"));
         assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
-        assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
-                        + "STATIC_DEMAND_SLICE_V2",
-                activation.get("concreteInputSelectionAuthority"));
         Map<String, Object> demand = (Map<String, Object>) activation.get(
                 "concreteDemandSlice");
+        assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
+                        + "STATIC_DEMAND_SLICE_V2",
+                demand.get("authority"));
         assertEquals(Boolean.TRUE, demand.get("applied"));
         assertEquals(Collections.singletonList(input),
                 demand.get("concreteBoundCells"));
@@ -5752,16 +5732,13 @@ public class RuntimeRegionPlannerTest {
             Map<String, Object> activation) {
         List<Map<String, Object>> symbolize =
                 (List<Map<String, Object>>) activation.get("symbolize");
-        List<String> inputPorts = (List<String>) activation.get(
-                "activationInputPorts");
-        assertEquals(symbolize.size(), activation.get(
-                "activationInputPortCount"));
-        assertEquals(symbolize.size(), inputPorts.size());
+        List<String> inputPorts = new ArrayList<>();
         for (Map<String, Object> action : symbolize) {
-            assertTrue(inputPorts.contains(action.get("symbol")));
+            String symbol = String.valueOf(action.get("symbol"));
+            assertFalse(symbol.isEmpty());
+            assertFalse(inputPorts.contains(symbol));
+            inputPorts.add(symbol);
         }
-        assertEquals(activation.get("concreteInputPortCount"),
-                activation.get("materializedInputPoolCount"));
     }
 
     private static String regionWithOutput(String id, String method,

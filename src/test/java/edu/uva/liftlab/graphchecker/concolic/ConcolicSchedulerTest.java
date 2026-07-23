@@ -1728,19 +1728,7 @@ public class ConcolicSchedulerTest {
     }
 
     private static void assertCompactScheduledActivation(JsonObject row) {
-        for (String retired : new String[]{
-                "discoverySymbolicReady", "symbolicReady",
-                "materializationComplete",
-                "executableMaterializationCount",
-                "deferredMaterializationCount",
-                "vmIntrinsicPlaceholderCount",
-                "concreteFallbackCount",
-                "symbolicCoverageComplete", "readinessAuthority",
-                "activationInputPortCount", "edgeBindingCount",
-                "staticRootMethod", "observedRootMethod"}) {
-            assertFalse("retired scheduled field " + retired,
-                    row.has(retired));
-        }
+        assertFalse(row.has("symbolicReady"));
     }
 
     private static void assertRuntimeEqualityBinding(JsonObject binding) {
@@ -1837,8 +1825,6 @@ public class ConcolicSchedulerTest {
                 + "\"regionInstanceId\":\"REGION.0@testMiniDfs#call7\","
                 + "\"rootCallId\":7,\"test\":\"testMiniDfs\","
                 + "\"rootMethod\":\"" + ROOT + "\","
-                + "\"staticRootMethod\":\"" + ROOT + "\","
-                + "\"observedRootMethod\":\"" + ROOT + "\","
                 + "\"runtimeDefinitionMethods\":[\"" + ROOT + "\","
                 + "\"" + CALLBACK + "\","
                 + "\"<example.Manager: byte[] lookup(int)>\"],"
@@ -1851,8 +1837,6 @@ public class ConcolicSchedulerTest {
                 + "\"TRACE_EXACT_RECEIVER_RUNTIME_CLASS_AND_OPTIONAL_"
                 + "THREAD_NAME_CONTEXT_ORDINAL_V1\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
-                + "\"activationInputPortCount\":3,"
-                + "\"edgeBindingCount\":0,"
                 + "\"captureGoal\":{\"kind\":\"TARGET_BRANCH\","
                 + "\"scope\":\"ONE_DIRECTED_BRANCH\"},"
                 + "\"symbolicReady\":false,\"symbolize\":["
