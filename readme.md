@@ -1,4 +1,4 @@
-# GraphChecker：region concolic execution 与递归 SMT composition
+# GraphChecker：region concolic execution 与 SMT composition
 
 GraphChecker 从静态数据流、运行时跨 region 证据和逐 region concolic execution 中构造
 `region.in -> region.out` 关系，再沿 region graph 递归组合成一个可直接交给 Z3 的 SMT。
@@ -20,9 +20,10 @@ registry 已退出维护并从仓库删除；通用 RPC、container、Java 语�
 
 generic 三线程流程当前自动完成 annotation 定位、静态切片、runtime discovery、逐 producer
 路径闭合、candidate SMT composition、Z3 求解和有限 Boolean-root 枚举（其余 scalar root
-保持 existential）。终态 manifest 明确写为
-`COMPLETE_Z3_CHECKED_CANDIDATE / CANDIDATE_ONLY`；它绑定 SMT、composition manifest、
-reach model 和 relationship candidates 的路径、大小及 SHA-256，但不会声称已经得到可信最终
+保持 existential）。终态 artifact 使用统一的
+`state=CANDIDATE_READY`、`trustState=CANDIDATE_ONLY`，并将求解结论写成
+`reachability=REACHABLE|UNREACHABLE`。result manifest 绑定 SMT、composition manifest、
+relationship catalog 和 Boolean model 的路径、大小及 SHA-256，但不会声称已经得到可信最终
 结果。`run.sh all` 是 `candidate` 的别名。
 
 旧的半成品 trusted/natural-replay 发布路径已经删除。将候选输入在完整 workload 中自然
@@ -108,18 +109,20 @@ Producer B: base = ite(b2, 0, 10)
   从生成的 root-input catalog 自动枚举，不由 fixture 提供公式
 ```
 
-对应的 candidate SMT、composition manifest 和布尔模型由代码自动写入：
+完整的终态 candidate artifact 集合由代码自动写入：
 
 ```text
 target/three-thread-rpc/candidate/candidate.smt2
 target/three-thread-rpc/candidate/candidate_composition_manifest.json
+target/three-thread-rpc/candidate/symbolic_relationship_candidates.json
 target/three-thread-rpc/candidate/candidate_boolean_model.json
+target/three-thread-rpc/candidate/candidate_result_manifest.json
 ```
 
-这些 artifact 只表示 candidate composition 已完成且 Z3 已检查，不能冒充经过最终自然回放
-验证的用户报告。`run.sh all` 最终生成
-`target/three-thread-rpc/candidate/candidate_result_manifest.json`，其中
-`naturalReplayPromotionImplemented=false`。
+这些 schema-2 JSON 使用 `state`、`trustState` 和（求解完成后）
+`reachability` 表达结果；不再保留旧的状态、完整性、eligibility 或自然回放能力镜像字段。
+它们只表示 candidate composition 已完成且 Z3 已检查，不能冒充经过最终自然回放验证的用户
+报告。
 
 ## 核心抽象
 
@@ -177,8 +180,10 @@ R_region(in, out) =
  || ...
 ```
 
-每个 case 都保留其原始 summary、activation、branch trace 和 concrete observation。Merger
-只能合并已执行并通过严格 importer 的 case；不能把未探索路径当作不存在。
+每个 merge case 保存求解所需的 guard、output/state transformer，以及来源 summary 和
+activation 的稳定 id；raw runtime result、完整 activation 和重复 branch trace 不会复制进
+merged relation。Merger 只能合并已执行并通过 importer 的 canonical summary；不能把未探索
+路径当作不存在。
 
 ## 自动分析流程
 
@@ -195,8 +200,8 @@ Scheduler
   -> seed -> pending path flip -> Z3 input -> custom-JDK replay -> strict import
 Guarded merge
   -> 每个 producer 的 R_region(in, out)
-Recursive composer
-  -> 上游 out 绑定下游 in，递归生成 candidate composition
+Upstream composer
+  -> 沿受证 region edge 将上游 out 绑定到下游 in
 Z3
   -> candidate SMT、Boolean truth table、候选 reach condition
 Candidate manifest
@@ -210,7 +215,7 @@ TODO: 自然传播可信升级
 | Goal | 用途 | 闭合条件 |
 | --- | --- | --- |
 | `OUTPUT_CLOSURE` | 学习 producer 的输入到输出关系 | 所有 output-relevant 可行路径已执行，worklist 无 pending |
-| `TARGET_BRANCH` | 记录 bug region 的目标 branch | 获得候选 target condition；可信升级留待自然 replay TODO |
+| `TARGET_BRANCH` | 记录 bug region 的目标 branch | 从一次 unforced observation 得到 solver-ready candidate query；当前不执行 target replay |
 
 Producer campaign 不需要一次让 custom JDK 同时符号执行三个线程。系统一次选择一个
 region activation，多跑若干次 workload，分别学出每个 `R_region`；跨 region 关系在
@@ -241,21 +246,24 @@ Scheduler 为每次 capture 选择一个 region activation。GraphChecker runtim
 engine-backed owner，避免其他应用线程或 GraphChecker 自身 bookkeeping 污染当前 path
 condition。
 
-每个可求解的二元 branch 只产生一个不可变、内容哈希的 `BranchWitness`。它包含稳定的
+每个可求解的二元 branch 只产生一个不可变的 typed `BranchWitness`。它包含稳定的
 `site + occurrence`、源 execution 实际满足的 outcome/predicate，以及唯一允许的 `VM_PC`
-evidence。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的位置：它保留有序
-prefix、翻转一个 source witness，并丢弃旧 suffix。worklist、solver、activation、静态插桩、
-runtime、importer 和 verifier 都传递或解析同一个 contract，不再各自重建 `targetBranch`、
-`expectedBranchPrefix`、negated condition 或 scheduled-target 副本。精确 VM event 若没有
-对应 PC，只能作为 observation 和诊断信息，不能制造 predicate、witness 或 flip；`switch`
-也仍是独立的 successor-aware observation，不伪装成二元 branch。
+evidence。wire value 本身没有 self-hash；需要稳定去重时，worklist 对 canonical value
+计算 key。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的位置：它保留有序
+prefix、翻转一个 source witness，并丢弃旧 suffix。producer worklist、solver、activation、
+静态插桩、runtime、importer 和 verifier 都传递或解析同一个 contract；target 侧只把同一
+contract 用作 candidate query，当前 workflow 不执行 target replay。各阶段不再重建旧式
+target、prefix、negated-condition 或 scheduled-target 副本。精确 VM event 若没有对应 PC，
+只能作为 observation 和诊断信息，不能制造 predicate、witness 或 flip；`switch` 也仍是
+独立的 successor-aware observation，不伪装成二元 branch。
 
 源 path condition 中夹在 branch 之间的 array-load 或 method-relation 节点不是 branch
-evidence。schema-3 worklist 把它们放入另一个不可变、内容哈希的 `SolverPathContext`，并保留
+evidence。schema-3 worklist 把它们放入另一个不可变的 typed `SolverPathContext`，并保留
 原始 `summaryPcIndex`；该对象只接受 `_array_expr` 和 `MethodExpression`，遇到没有 witness
 的 Boolean predicate 会直接拒绝。solver 分别断言 context 与 contract，runtime replay 只
-消费 contract。这样既不会丢掉求解所需的非 branch 关系，也不会再把同一个 branch witness
-复制成多套 path-condition/target/prefix JSON 来相互确认。
+消费 contract。它同样没有 self-hash；stable key 由使用方从 canonical 内容计算。这样既不会
+丢掉求解所需的非 branch 关系，也不会再把同一个 branch witness 复制成多套
+path-condition/target/prefix JSON 来相互确认。
 
 invocation ordinal 只表示同一 receiver-class/thread context 中的第几次调用，用于定位动态
 activation，不代表程序语义，也不进入稳定 worklist key。
@@ -274,8 +282,8 @@ Map 变异只通过 VM `MethodExpression` 导入通用的 `MAP_PUT` / `MAP_REMOV
 contract 刻意不支持 `Iterator.remove()` 变异：精确 static causal-edge `invoke` 可以识别该
 调用，但 VM `HashMap.removeNode` 证据无法证明对应的 application call 与 current entry。
 importer 因此报告 `INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE`，并令
-`heapEffectModel.complete=false`、`relationallyComplete=false`，而不是通过 side channel
-猜测 backing map/key 或生成不可信 SMT。iterator `next()`、entry/key/value 读取、有限 Map
+`relationallyComplete=false`，而不是通过 side channel 猜测 backing map/key 或生成不可信
+SMT。旧的子模型完整性镜像字段已删除。iterator `next()`、entry/key/value 读取、有限 Map
 snapshot 和深层字段绑定不受影响。
 
 ## 递归 SMT composition
@@ -314,17 +322,18 @@ candidate；当前流程没有 final/trusted 发布状态。
 | guarded merge | 已验证路径集合上的完整 `R_region(in,out)` |
 | composer + Z3 | 在上述关系和声明 bounds 下的跨 region reach condition |
 
-Manifest 中的来源检查不是密码学“证书系统”，而是防止把不同 execution、旧 summary 或
-merged relation 内部的错误 case 拼在一起。核心规则是：选中的 case 必须唯一属于本次
-composer 实际使用的 merged summary，同时其原始 summary 和 activation 必须唯一存在且
-身份一致。branch 层的检查以 `BranchWitness`/`BranchReplayContract` 的 canonical JSON 与
-content hash 为准；下游只解析并消费该权威对象，不再逐字段重建一份“等价证书”。
+Manifest 中的来源检查不是密码学“证书系统”，而是防止把本次 composition 的输入、输出和
+其他 run 的 artifact 混用。Importer 在生成 canonical summary 前验证 raw execution；
+Merger 只接受 closed path worklist 中的 admitted summaries。Composer 消费 merged relation
+及其 source ids，但不会重新加载 raw result、原始 activation，再做一套重复的外部认证。
+branch 层只解析并消费 `BranchWitness`、`BranchReplayContract` 和 `SolverPathContext` 的
+canonical typed value；这些对象不带 self-hash。
 
 Composition manifest 是跨文件绑定的唯一 authority：它对本次 CLI 实际读取的 regions、
-fatal query、summary、生成的 SMT 和 relationship catalog 做精确路径、长度和 SHA-256
-绑定。relationship catalog 只保存 schema、候选关系数组和当前 verification eligibility，
-不再复制 fatal identity、stage、artifact hash 或第二个 `compositionBindingId` 来与 manifest
-逐字段互证。
+fatal query、summary 和生成的 SMT 记录路径、长度和 SHA-256；写出 relationship catalog
+后，再把该 artifact 绑定回 manifest。schema-2 relationship catalog 只保存
+`schemaVersion`、`kind`、`trustState` 和 `relationships`，不再复制 fatal identity、stage、
+artifact hash、eligibility 布尔值或第二个 `compositionBindingId` 来与 manifest 逐字段互证。
 
 自动 topology discovery 不能把程序没有执行出来的 equality、cache、expiry、membership
 或 codec 语义冒充 runtime fact。自动 composition 只接受静态、runtime 和 concolic 阶段
@@ -377,7 +386,7 @@ producer campaigns、candidate composition、Z3 solve 和 candidate manifest。�
 | `ConcolicScheduler` | 为 target 或 producer 选择 activation 并生成 capture/materialization plan |
 | `ConcolicPathFlipPlanner` / `RegionPathWorklist` | pending flip、稳定去重、Z3 输入和 closure |
 | `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
-| `SolverPathContext` | 与 branch authority 分离的、有位置且内容哈希的非 branch solver constraints |
+| `SolverPathContext` | 与 branch authority 分离的、有位置的 typed 非 branch solver constraints |
 | `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
 | `ConcolicSummaryImporter` | 将 raw custom-JDK 结果严格导入 `R(in,out)` path summary |
 | `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |

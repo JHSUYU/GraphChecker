@@ -95,7 +95,8 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    concrete call closure; unresolved dependencies stay concrete rather than
    becoming free symbols. No generated `REGION.*` identity is assumed.
 3. Capture an unforced target seed and schedule its solver-ready target query.
-   The seed schedule contains no forced branch.
+   The seed schedule contains no forced branch. The query is an input to
+   candidate composition; this workflow does not execute a target replay.
 4. Capture every producer seed. For each producer,
    `ConcolicPathFlipPlanner` repeatedly selects one pending path, Z3 derives
    its input model, the custom JDK executes that model naturally, and the
@@ -106,24 +107,29 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    structurally complete candidate SMT model.
 6. Solve that candidate model by enumerating its discovered Boolean roots while
    leaving other scalar roots existential, invoke Z3 independently on the
-   emitted SMT, and hash-bind the SMT, composition manifest, Boolean model, and
-   relationship candidates into one `CANDIDATE_ONLY` result manifest.
+   emitted SMT, and hash-bind the SMT, composition manifest, relationship
+   catalog, and Boolean model into one `CANDIDATE_ONLY` result manifest.
 
 The terminal candidate artifact set implemented by this workflow is:
 
 ```text
 target/three-thread-rpc/candidate/candidate.smt2
 target/three-thread-rpc/candidate/candidate_composition_manifest.json
+target/three-thread-rpc/candidate/symbolic_relationship_candidates.json
 target/three-thread-rpc/candidate/candidate_boolean_model.json
 target/three-thread-rpc/candidate/candidate_result_manifest.json
 ```
 
-It binds the generated root-input catalog, complete candidate truth table,
-canonical condition, relationship candidates, and SMT by path, byte size, and
-SHA-256. A discovered root may legitimately be non-influential when other
-scalar inputs remain existential, so the workflow reports exact rows rather
-than requiring every Boolean bit to change the result. The
-manifest explicitly records `naturalReplayPromotionImplemented=false`.
+The schema-2 manifests use `state=CANDIDATE_READY` and
+`trustState=CANDIDATE_ONLY`; the Boolean and result artifacts additionally
+record `reachability=REACHABLE|UNREACHABLE`. The result manifest binds its four
+supporting artifacts by path, byte size, and SHA-256. The schema-2 relationship
+catalog contains only `schemaVersion`, `kind`, `trustState`, and
+`relationships`. A discovered root may legitimately be non-influential when
+other scalar inputs remain existential, so the workflow reports exact rows
+rather than requiring every Boolean bit to change the result. No natural-replay
+capability mirror is persisted: absence of a trusted state is the boundary,
+and natural replay remains the explicit TODO.
 
 ## Inspecting or resuming stages
 
@@ -231,19 +237,22 @@ only `BranchReplayContract.flip()` may derive the required opposite
 outcome/predicate. A zero-PC branch event stays observation-only; it cannot be
 turned into a synthetic witness by a parallel proof protocol.
 
-The worklist emits a schema-3 task containing that contract. A separate
+The producer worklist emits a schema-3 task containing that contract. A separate
 immutable typed `SolverPathContext` retains positioned non-branch
 `_array_expr`/`MethodExpression` nodes needed by the solver; it rejects an
 unwitnessed Boolean predicate and is never consumed as runtime branch evidence.
-The solver, activation builder, static instrumentation gate, runtime, importer,
-scheduler, and replay verifier consume the same replay contract; they no longer
-reconstruct or cross-compare `targetBranch`, `expectedBranchPrefix`, replay
-constraints, or a scheduled-target envelope. Runtime observations carry new
-witnesses, and one validator checks the ordered prefix followed by the exact
-required target. The required target is derived from the source witness rather
-than serialized a second time. Malformed witnesses and duplicate branch-event
-identities fail closed. Multiway `switch` remains a separate successor-aware
-observation.
+For producer exploration, the solver, activation builder, static
+instrumentation gate, runtime, importer, scheduler, and replay verifier consume
+the same replay contract. The target seed uses the same typed contract/context
+only as a candidate query and is not replayed. Neither value carries a
+self-hash; worklist identity is computed from canonical content. The stages no
+longer reconstruct or cross-compare legacy target/prefix/negated-condition
+copies or a scheduled-target envelope. Runtime observations carry new
+witnesses, and one producer replay validator checks the ordered prefix followed
+by the exact required target. The required target is derived from the source
+witness rather than serialized a second time. Malformed witnesses and duplicate
+branch-event identities fail closed. Multiway `switch` remains a separate
+successor-aware observation.
 
 All six matrix profiles pass this protocol through candidate SMT generation,
 independent Z3 checking, and their exact expected reach profiles; one profile
