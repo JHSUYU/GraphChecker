@@ -906,7 +906,7 @@ do_explore_producer() {
         and .selectedTaskCount == 0
       ' "${planner_dir}/path_flip_plan_manifest.json" >/dev/null \
         || die "producer planner stopped without closing its selection"
-      jq -e '.complete == true' \
+      jq -e '.state == "CLOSED"' \
         "${planner_dir}/region_path_manifest.json" >/dev/null \
         || die "producer path worklist is not closed"
       [[ ! -s "${planner_dir}/activation_plan.jsonl" ]] \

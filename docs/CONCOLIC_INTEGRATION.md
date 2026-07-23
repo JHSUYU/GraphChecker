@@ -298,15 +298,20 @@ instrumentation, runs its configured local workload on the custom JDK, and
 lets the importer normalize the result. The former all-purpose Java campaign
 runner and its compatibility state machine are not part of this workflow.
 
-Persisted resume files are:
+After a successful non-debug producer campaign, the retained evidence is:
 
 ```text
-campaign_activations.jsonl
-campaign_summaries.jsonl
-region_path_records.jsonl
+observed_path_summaries.jsonl
+raw_results.jsonl
+path_exploration_records.jsonl
+region_path_closure.json
 merged_region_summaries.jsonl
-concolic_campaign_manifest.json
 ```
+
+Intermediate planner/runtime output lives in a single `current` scratch
+directory and is deleted after each accepted step. Numbered
+`iteration-NNNN` directories are retained only when
+`GRAPH_CHECKER_DEBUG=true`; they are diagnostic history, not workflow inputs.
 
 ## 11. SMT composition
 

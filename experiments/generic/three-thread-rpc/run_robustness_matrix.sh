@@ -144,15 +144,14 @@ validate_multitype_producer_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
-      and .complete == true
-      and .wallClockBoundReached == false
-      and .gapCount == 0
-      and ((.gaps // []) | length) == 0
+      and (.regionId | type == "string" and length > 0)
+      and .state == "CLOSED"
+      and (.gaps | length) == 0
       and .pendingTaskCount == 0
       and .observedPathCount > 1
-      and .candidateFlipCount > 0
-      and ([.pathCountByRegion[]] | add) == .observedPathCount)
+      and (keys | sort) == (["schemaVersion", "kind", "regionId",
+        "state", "bounds", "observedPathCount", "pendingTaskCount",
+        "gaps"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
 
@@ -163,8 +162,7 @@ validate_multitype_producer_artifacts() {
       and .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
-      and .regionRelation.pathClosureStatus
-        == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .regionRelation.pathClosureState == "CLOSED"
       and .regionRelation.guardSemantics
         == "EXACT_NORMALIZED_PATH_CONDITION"
       and .regionRelation.caseCount > 1
@@ -280,15 +278,14 @@ validate_dependent_scalar_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
-      and .complete == true
-      and .wallClockBoundReached == false
-      and .gapCount == 0
-      and ((.gaps // []) | length) == 0
+      and (.regionId | type == "string" and length > 0)
+      and .state == "CLOSED"
+      and (.gaps | length) == 0
       and .pendingTaskCount == 0
       and .observedPathCount > 1
-      and .candidateFlipCount > 0
-      and ([.pathCountByRegion[]] | add) == .observedPathCount)
+      and (keys | sort) == (["schemaVersion", "kind", "regionId",
+        "state", "bounds", "observedPathCount", "pendingTaskCount",
+        "gaps"] | sort))
     and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
@@ -306,8 +303,7 @@ validate_dependent_scalar_artifacts() {
       and .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
-      and .regionRelation.pathClosureStatus
-        == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .regionRelation.pathClosureState == "CLOSED"
       and .regionRelation.guardSemantics
         == "EXACT_NORMALIZED_PATH_CONDITION"
       and .regionRelation.caseCount == (.regionRelation.cases | length)
@@ -361,15 +357,14 @@ validate_container_producer_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
-      and .complete == true
-      and .wallClockBoundReached == false
-      and .gapCount == 0
-      and ((.gaps // []) | length) == 0
+      and (.regionId | type == "string" and length > 0)
+      and .state == "CLOSED"
+      and (.gaps | length) == 0
       and .pendingTaskCount == 0
       and .observedPathCount >= 2
-      and .candidateFlipCount > 0
-      and ([.pathCountByRegion[]] | add) == .observedPathCount)
+      and (keys | sort) == (["schemaVersion", "kind", "regionId",
+        "state", "bounds", "observedPathCount", "pendingTaskCount",
+        "gaps"] | sort))
     and ([.[].observedPathCount] | sort) == [2, 10]
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
@@ -413,8 +408,7 @@ validate_container_producer_artifacts() {
     and .relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
-    and .regionRelation.pathClosureStatus
-      == "COMPLETE_BOUNDED_PATH_CLOSURE"
+    and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
     and .regionRelation.caseCount == 2
@@ -469,8 +463,7 @@ validate_container_producer_artifacts() {
     and .relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
-    and .regionRelation.pathClosureStatus
-      == "COMPLETE_BOUNDED_PATH_CLOSURE"
+    and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
     and .regionRelation.caseCount == 10
@@ -561,15 +554,14 @@ validate_unreachable_parity_producer_artifacts() {
     and all(.[];
       .schemaVersion == 1
       and .kind == "REGION_PATH_WORKLIST"
-      and .status == "COMPLETE_BOUNDED_PATH_CLOSURE"
-      and .complete == true
-      and .wallClockBoundReached == false
-      and .gapCount == 0
-      and ((.gaps // []) | length) == 0
+      and (.regionId | type == "string" and length > 0)
+      and .state == "CLOSED"
+      and (.gaps | length) == 0
       and .pendingTaskCount == 0
       and .observedPathCount == 2
-      and .candidateFlipCount > 0
-      and ([.pathCountByRegion[]] | add) == 2)
+      and (keys | sort) == (["schemaVersion", "kind", "regionId",
+        "state", "bounds", "observedPathCount", "pendingTaskCount",
+        "gaps"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
@@ -580,8 +572,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
-      and .regionRelation.pathClosureStatus
-        == "COMPLETE_BOUNDED_PATH_CLOSURE"
+      and .regionRelation.pathClosureState == "CLOSED"
       and .regionRelation.guardSemantics
         == "EXACT_NORMALIZED_PATH_CONDITION"
       and .regionRelation.caseCount == 2

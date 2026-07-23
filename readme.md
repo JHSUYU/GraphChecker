@@ -227,11 +227,12 @@ frontier，该任务直接视为 covered；否则 planner 才让 Z3 求一个新
 prefix 下的同一 branch 仍是不同任务。campaign 重复这个过程，直到：
 
 ```text
-pending = 0  ->  COMPLETE_BOUNDED_PATH_CLOSURE
+observed paths > 0 && pending = 0 && gaps = []  ->  state = CLOSED
 ```
 
-随后才允许生成 guarded relation。这样不会在已经观察到 branch 两侧后再产生无意义的
-反向 replay。
+没有 output-closure seed 时 manifest 显式报告 `state = NOT_STARTED` 和 gap；不能把
+零条 observed path 或缺失 manifest 当成 closed。只有 `CLOSED` 才允许生成 guarded
+relation。这样不会在已经观察到 branch 两侧后再产生无意义的反向 replay。
 
 ## Runtime 与 custom JDK
 

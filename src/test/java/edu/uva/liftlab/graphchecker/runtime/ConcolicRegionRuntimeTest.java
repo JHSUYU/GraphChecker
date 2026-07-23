@@ -2897,7 +2897,6 @@ public class ConcolicRegionRuntimeTest {
                 + "\"regionId\":\"REGION.0\","
                 + "\"test\":\"bridge-test\","
                 + "\"rootMethod\":\"" + root + "\","
-                + "\"observedRootMethod\":\"" + root + "\","
                 + "\"invocationOrdinal\":1,\"replayable\":true,"
                 + "\"materializations\":[{\"symbol\":\"REGION.0.in.0\","
                 + "\"cell\":\"arg0\",\"location\":\"ARGUMENT\","

@@ -1591,12 +1591,9 @@ public class ConcolicSmtComposerTest {
             nonPositive.add("pathCondition", new JsonArray());
             nonPositive.getAsJsonArray("pathCondition").add(
                     integerCondition("<=", 0));
-            JsonObject closed = new JsonObject();
-            closed.addProperty("complete", true);
-            closed.addProperty("status",
-                    "COMPLETE_BOUNDED_PATH_CLOSURE");
             RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
-                    java.util.Arrays.asList(positive, nonPositive), closed);
+                    java.util.Arrays.asList(positive, nonPositive),
+                    closedPathManifest());
             writeSummary(fixture, merged.summaries.get(0));
 
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
@@ -5905,8 +5902,19 @@ public class ConcolicSmtComposerTest {
 
     private static JsonObject closedPathManifest() {
         JsonObject result = new JsonObject();
-        result.addProperty("complete", true);
-        result.addProperty("status", "COMPLETE_BOUNDED_PATH_CLOSURE");
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("kind", "REGION_PATH_WORKLIST");
+        result.addProperty("regionId", "REGION.P");
+        result.addProperty("state", RegionPathWorklist.State.CLOSED.name());
+        JsonObject bounds = new JsonObject();
+        bounds.addProperty("maxPathsPerRegion", 64);
+        bounds.addProperty("maxFlipsPerPath", 32);
+        bounds.addProperty("maxTasks", 256);
+        bounds.addProperty("maxWallClockMillis", 30_000L);
+        result.add("bounds", bounds);
+        result.addProperty("observedPathCount", 1);
+        result.addProperty("pendingTaskCount", 0);
+        result.add("gaps", new JsonArray());
         return result;
     }
 

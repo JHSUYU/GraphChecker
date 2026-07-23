@@ -29,9 +29,20 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
-        assertTrue(result.manifest.get("complete").getAsBoolean());
-        assertEquals("ONE_DIRECTED_TARGET_BRANCH_OUTSIDE_THIS_WORKLIST",
-                result.manifest.get("targetRegionPolicy").getAsString());
+        assertEquals(8, result.manifest.size());
+        assertEquals("REGION.3",
+                result.manifest.get("regionId").getAsString());
+        assertEquals(RegionPathWorklist.State.NOT_STARTED.name(),
+                result.manifest.get("state").getAsString());
+        assertEquals(0, result.manifest.get(
+                "observedPathCount").getAsInt());
+        assertEquals(0, result.manifest.get(
+                "pendingTaskCount").getAsInt());
+        assertEquals("NO_OBSERVED_PATH_SEED", result.manifest
+                .getAsJsonArray("gaps").get(0).getAsJsonObject()
+                .get("kind").getAsString());
+        assertFalse(result.manifest.has("complete"));
+        assertFalse(result.manifest.has("status"));
     }
 
     @Test
@@ -58,7 +69,8 @@ public class RegionPathWorklistTest {
         assertEquals(BranchReplayContract.DROP_SOURCE_SUFFIX,
                 latest.getAsJsonObject("replayContract")
                         .get("suffixPolicy").getAsString());
-        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                result.manifest.get("state").getAsString());
     }
 
     @Test
@@ -229,9 +241,9 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
-        assertEquals(0, result.manifest.get("candidateFlipCount").getAsInt());
-        assertFalse(result.manifest.get("complete").getAsBoolean());
-        assertEquals(2, result.manifest.get("gapCount").getAsInt());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertEquals(2, result.manifest.getAsJsonArray("gaps").size());
         assertTrue(result.manifest.getAsJsonArray("gaps").toString()
                 .contains("MISSING_BRANCH_POLICY"));
         assertTrue(result.manifest.getAsJsonArray("gaps").toString()
@@ -268,8 +280,12 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(closed.tasks.isEmpty());
-        assertTrue(closed.manifest.get("complete").getAsBoolean());
-        assertEquals(2, closed.manifest.get("terminalFlipCount").getAsInt());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+        assertEquals(1, closed.manifest.get(
+                "observedPathCount").getAsInt());
+        assertEquals(0, closed.manifest.get(
+                "pendingTaskCount").getAsInt());
     }
 
     @Test
@@ -290,14 +306,12 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.toString(), result.tasks.isEmpty());
-        assertTrue(result.manifest.toString(), result.manifest.get(
-                "complete").getAsBoolean());
+        assertEquals(result.manifest.toString(),
+                RegionPathWorklist.State.CLOSED.name(),
+                result.manifest.get("state").getAsString());
         assertEquals(2, result.manifest.get(
-                "candidateFlipCount").getAsInt());
-        assertEquals(2, result.manifest.get(
-                "terminalFlipCount").getAsInt());
-        assertEquals(2, result.manifest.get(
-                "observedCoveredFlipCount").getAsInt());
+                "observedPathCount").getAsInt());
+        assertTrue(result.manifest.getAsJsonArray("gaps").isEmpty());
     }
 
     @Test
@@ -326,9 +340,8 @@ public class RegionPathWorklistTest {
         assertEquals(result.manifest.toString(), 2, result.tasks.size());
         assertTrue(result.tasks.stream().allMatch(task -> "SITE.1".equals(
                 sourceSite(task))));
-        assertEquals(2, result.manifest.get(
-                "observedCoveredFlipCount").getAsInt());
-        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                result.manifest.get("state").getAsString());
     }
 
     @Test
@@ -359,9 +372,10 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(replanned.tasks.isEmpty());
-        assertEquals(initial.tasks.size(), replanned.manifest.get(
-                "terminalFlipCount").getAsInt());
-        assertFalse(replanned.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                replanned.manifest.get("state").getAsString());
+        assertEquals(0, replanned.manifest.get(
+                "pendingTaskCount").getAsInt());
         assertTrue(replanned.manifest.getAsJsonArray("gaps").toString()
                 .contains("EXPLORATION_GAP"));
         assertTrue(replanned.manifest.getAsJsonArray("gaps").toString()
@@ -382,7 +396,8 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
-        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
         assertEquals("INCOMPLETE_REGION_SUMMARY", result.manifest
                 .getAsJsonArray("gaps").get(0).getAsJsonObject()
                 .get("kind").getAsString());
@@ -424,8 +439,8 @@ public class RegionPathWorklistTest {
         assertTrue(RegionCaptureGoal.from(task).isTransitionDiscovery());
         assertEquals("QUARANTINED", task.get(
                 "summaryCacheAdmission").getAsString());
-        assertEquals(1, result.manifest.get(
-                "transitionDiscoveryTaskCount").getAsInt());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                result.manifest.get("state").getAsString());
 
         JsonObject anotherExecution = summary.deepCopy();
         anotherExecution.getAsJsonObject("transitionDiscovery").addProperty(
@@ -665,7 +680,8 @@ public class RegionPathWorklistTest {
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
         assertTrue(rejected.tasks.isEmpty());
-        assertFalse(rejected.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                rejected.manifest.get("state").getAsString());
         JsonObject gap = rejected.manifest.getAsJsonArray("gaps").get(0)
                 .getAsJsonObject();
         assertEquals("UNMAPPED_BRANCH", gap.get("kind").getAsString());
@@ -690,15 +706,10 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(initial.tasks.toString(), initial.tasks.isEmpty());
-        assertTrue(initial.manifest.toString(), initial.manifest.get(
-                "complete").getAsBoolean());
-        assertEquals(1, initial.manifest.get(
-                "coveredConcreteObservationCount").getAsInt());
-        assertEquals("EXACT_VM_CONCRETE_EVENT_COVERED_BY_IMMUTABLE_"
-                        + "WITNESS_AT_SAME_STATIC_POSITION_V1",
-                initial.manifest.get(
-                        "coveredConcreteObservationAuthority").getAsString());
-        assertEquals(0, initial.manifest.get("gapCount").getAsInt());
+        assertEquals(initial.manifest.toString(),
+                RegionPathWorklist.State.CLOSED.name(),
+                initial.manifest.get("state").getAsString());
+        assertTrue(initial.manifest.getAsJsonArray("gaps").isEmpty());
     }
 
     @Test
@@ -726,7 +737,8 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
-        assertFalse(result.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
         assertTrue(result.manifest.getAsJsonArray("gaps").toString()
                 .contains("NO_NORMALIZED_CONDITION"));
     }

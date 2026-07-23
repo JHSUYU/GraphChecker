@@ -11254,7 +11254,6 @@ public final class ConcolicRegionRuntime {
         private final String regionId;
         private final String test;
         private final String rootMethod;
-        private final String observedRootMethod;
         private final String pathQueryKey;
         private final int invocationOrdinal;
         private final RootContextSelector rootContextSelector;
@@ -11283,7 +11282,6 @@ public final class ConcolicRegionRuntime {
             this.regionId = string(json, "regionId");
             this.test = string(json, "test");
             this.rootMethod = string(json, "rootMethod");
-            this.observedRootMethod = string(json, "observedRootMethod");
             this.pathQueryKey = string(json, "pathQueryKey");
             this.invocationOrdinal = integer(json, "invocationOrdinal", 1);
             this.rootContextSelector = RootContextSelector.from(json);
@@ -11601,9 +11599,7 @@ public final class ConcolicRegionRuntime {
                         && !selectedActivation.equals(activation.activationId)) {
                     continue;
                 }
-                String expectedRoot = firstNonBlank(activation.rootMethod,
-                        activation.observedRootMethod);
-                if (!rootMethod.equals(expectedRoot)) {
+                if (!rootMethod.equals(activation.rootMethod)) {
                     continue;
                 }
                 if (!activation.test.isEmpty()
@@ -11771,8 +11767,7 @@ public final class ConcolicRegionRuntime {
                             + "activationId " + activation.activationId
                             + " in " + plan);
                 }
-                String root = firstNonBlank(activation.rootMethod,
-                        activation.observedRootMethod);
+                String root = activation.rootMethod;
                 RootContextSelector contextSelector =
                         activation.rootContextSelector;
                 RootArgumentSelector selector =

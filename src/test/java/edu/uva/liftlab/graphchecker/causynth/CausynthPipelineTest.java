@@ -221,6 +221,7 @@ public class CausynthPipelineTest {
         JsonObject activation = new JsonObject();
         activation.addProperty("activationId", activationId);
         activation.addProperty("replayable", true);
+        activation.addProperty("schedulerReady", true);
         activation.add("symbolize",
                 singletonJsonArray(declaration.deepCopy()));
         return activation;
@@ -300,6 +301,7 @@ public class CausynthPipelineTest {
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.ARRAY.FIELD");
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             JsonObject action = new JsonObject();
             action.addProperty("symbol", "REGION.ARRAY.in.0");
             action.addProperty("bindingMode", "ROOT_ENTRY");
@@ -458,6 +460,7 @@ public class CausynthPipelineTest {
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.STATIC.ARRAY");
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             JsonObject action = new JsonObject();
             action.addProperty("symbol", "REGION.STATIC.in.0");
             action.addProperty("bindingMode", "FIELD_ACCESS");
@@ -548,6 +551,7 @@ public class CausynthPipelineTest {
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.STATIC.INT");
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             JsonObject action = new JsonObject();
             action.addProperty("symbol", "REGION.STATIC.in.0");
             action.addProperty("bindingMode", "FIELD_ACCESS");
@@ -657,6 +661,7 @@ public class CausynthPipelineTest {
                 String activationId = "ACT.ROOT." + index;
                 activation.addProperty("activationId", activationId);
                 activation.addProperty("replayable", true);
+                activation.addProperty("schedulerReady", true);
                 JsonArray actions = new JsonArray();
                 actions.add(accepted.get(index));
                 activation.add("materializations", actions);
@@ -721,6 +726,7 @@ public class CausynthPipelineTest {
                 String activationId = "ACT.WRONG.ROOT." + index;
                 activation.addProperty("activationId", activationId);
                 activation.addProperty("replayable", true);
+                activation.addProperty("schedulerReady", true);
                 JsonArray actions = new JsonArray();
                 actions.add(rejected.get(index));
                 activation.add("materializations", actions);
@@ -782,6 +788,7 @@ public class CausynthPipelineTest {
                 JsonObject activation = new JsonObject();
                 activation.addProperty("activationId", activationId);
                 activation.addProperty("replayable", true);
+                activation.addProperty("schedulerReady", true);
                 JsonArray actions = new JsonArray();
                 actions.add(rejected.get(index));
                 activation.add("materializations", actions);
@@ -812,6 +819,7 @@ public class CausynthPipelineTest {
             activation.addProperty("activationId",
                     "ACT.OBSERVE.REPEATED.ARRAY");
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             JsonArray actions = new JsonArray();
             actions.add(observation);
             activation.add("materializations", actions);
@@ -853,6 +861,7 @@ public class CausynthPipelineTest {
             activation.addProperty("activationId",
                     "ACT.OBSERVE.REPEATED.MAP");
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             actions = new JsonArray();
             actions.add(mapObservation);
             activation.add("materializations", actions);
@@ -877,13 +886,13 @@ public class CausynthPipelineTest {
             String selectedRoot = "<example.RuntimeRoot: void handle()>";
             String rows = "{\"activationId\":\"ACT.0\","
                     + "\"rootMethod\":\"" + selectedRoot + "\","
-                    + "\"replayable\":true,\"symbolicReady\":true}\n"
+                    + "\"replayable\":true,\"schedulerReady\":true}\n"
                     + "{\"activationId\":\"ACT.1\","
                     + "\"rootMethod\":\"<example.NotReady: void run()>\","
-                    + "\"replayable\":true,\"symbolicReady\":false}\n"
+                    + "\"replayable\":true,\"schedulerReady\":false}\n"
                     + "{\"activationId\":\"ACT.2\","
                     + "\"rootMethod\":\"<example.NotReplayable: void run()>\","
-                    + "\"replayable\":false,\"symbolicReady\":true}\n";
+                    + "\"replayable\":false,\"schedulerReady\":true}\n";
             Files.write(plan, rows.getBytes(StandardCharsets.UTF_8));
 
             Set<String> roots = ConcolicInstrumentationSelections.readRuntimeSelectedRoots(plan, "");
@@ -907,7 +916,7 @@ public class CausynthPipelineTest {
             Path plan = folder.getRoot().toPath().resolve("bundle.jsonl");
             String row = "{\"activationId\":\"ACT.BUNDLE\","
                     + "\"rootMethod\":\"<example.Root: void run()>\","
-                    + "\"replayable\":true,\"symbolicReady\":true,"
+                    + "\"replayable\":true,\"schedulerReady\":true,"
                     + "\"activationSelectionRequired\":\"ALL\"}\n";
             Files.write(plan, row.getBytes(StandardCharsets.UTF_8));
             ConcolicInstrumentationSelections.readRuntimeSelectedRoots(plan, "ACT.BUNDLE");
@@ -1166,9 +1175,7 @@ public class CausynthPipelineTest {
         row.addProperty("activationBundleMemberRole", "PRIMARY");
         row.addProperty("replayable", true);
         row.addProperty("boundaryReady", true);
-        row.addProperty("symbolicReady", true);
         row.addProperty("schedulerReady", true);
-        row.addProperty("materializationComplete", true);
         row.addProperty("runtimePathEvidenceComplete", true);
         row.addProperty("requestedOutputCaptureComplete", true);
         row.addProperty("branchOverrideProhibited", true);
@@ -1178,7 +1185,6 @@ public class CausynthPipelineTest {
         row.addProperty("replayMode",
                 "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
         row.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
-        row.addProperty("deferredMaterializationCount", 0);
         row.add("runtimeGaps", new JsonArray());
 
         JsonObject goal = new JsonObject();
@@ -1392,7 +1398,7 @@ public class CausynthPipelineTest {
             activation.addProperty("activationId", "ACT.CAPTURE");
             activation.addProperty("rootMethod", root.getSignature());
             activation.addProperty("replayable", true);
-            activation.addProperty("symbolicReady", true);
+            activation.addProperty("schedulerReady", true);
             JsonObject capture = new JsonObject();
             capture.addProperty("captureBindingId", "REGION.0.out.0.capture.0");
             capture.addProperty("outputPort", "REGION.0.out.0");
@@ -1501,6 +1507,7 @@ public class CausynthPipelineTest {
             activation.addProperty("activationId", "ACT.FIELD.CAPTURE");
             activation.addProperty("rootMethod", root.getSignature());
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             JsonObject capture = new JsonObject();
             capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
             capture.addProperty("captureBindingId",
@@ -1630,6 +1637,7 @@ public class CausynthPipelineTest {
             JsonObject activation = new JsonObject();
             activation.addProperty("activationId", "ACT.ACCESSOR");
             activation.addProperty("replayable", true);
+            activation.addProperty("schedulerReady", true);
             JsonObject action = new JsonObject();
             action.addProperty("symbol", "REGION.TEST.in.expiry");
             action.addProperty("cell", expiry.getSignature());
@@ -2840,11 +2848,12 @@ public class CausynthPipelineTest {
                 method + "::blockedFrom#field:value",
                 method + "::blockedTo#field:value", method,
                 smtBlockedBase);
-        assertEquals(Boolean.FALSE, smtBlocked.get("mappingOnly"));
-        assertEquals(Boolean.TRUE,
-                smtBlocked.get("semanticAssertionsAllowed"));
-        assertEquals(Boolean.TRUE,
-                smtBlocked.get("eligibleForAutomaticDerivation"));
+        assertEquals(StaticDataflowEdgeSchema.VERSION,
+                smtBlocked.get("schemaVersion"));
+        assertFalse(smtBlocked.containsKey("mappingOnly"));
+        assertFalse(smtBlocked.containsKey("semanticAssertionsAllowed"));
+        assertFalse(smtBlocked.containsKey(
+                "eligibleForAutomaticDerivation"));
         assertEquals(Boolean.FALSE,
                 smtBlocked.get("eligibleForAutomaticSmt"));
 
@@ -3090,13 +3099,15 @@ public class CausynthPipelineTest {
         assertEquals(base.get("id"), projected.get("baseValueFlowEdgeId"));
         assertEquals("SOOT_EXACT_LOCAL_DIRECT_COPY_V1",
                 projected.get("baseValueFlowAuthority"));
-        assertEquals(Boolean.FALSE, projected.get("mappingOnly"));
-        assertEquals(Boolean.TRUE,
-                projected.get("semanticAssertionsAllowed"));
-        assertEquals(Boolean.TRUE,
-                projected.get("eligibleForAutomaticDerivation"));
-        assertEquals(Boolean.TRUE,
-                projected.get("eligibleForAutomaticSmt"));
+        assertEquals(StaticDataflowEdgeSchema.VERSION,
+                projected.get("schemaVersion"));
+        assertFalse(projected.containsKey("mappingOnly"));
+        assertFalse(projected.containsKey("semanticAssertionsAllowed"));
+        assertFalse(projected.containsKey(
+                "eligibleForAutomaticDerivation"));
+        assertFalse(projected.containsKey("eligibleForAutomaticSmt"));
+        assertFalse(projected.containsKey("direction"));
+        assertFalse(projected.containsKey("mappingAuthority"));
         assertEquals(base.get("id"),
                 projected.get("projectionBaseEdgeId"));
         assertEquals("PROJECTED_EDGE_CANNOT_EXCEED_BASE_EDGE_V1",
@@ -3876,8 +3887,10 @@ public class CausynthPipelineTest {
                 direct.get("constructorBindingAuthority"));
         assertEquals(Boolean.FALSE,
                 direct.get("objectReferenceIsSymbolicScalar"));
-        assertEquals(Boolean.FALSE, direct.get("mappingOnly"));
-        assertEquals(Boolean.TRUE, direct.get("eligibleForAutomaticSmt"));
+        assertEquals(StaticDataflowEdgeSchema.VERSION,
+                direct.get("schemaVersion"));
+        assertFalse(direct.containsKey("mappingOnly"));
+        assertFalse(direct.containsKey("eligibleForAutomaticSmt"));
 
         Map<String, Object> nested = edges.stream().filter(edge ->
                 "constructor_field_initialization".equals(edge.get("kind"))

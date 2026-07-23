@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
 
 import java.io.BufferedReader;
@@ -106,6 +109,10 @@ final class RuntimeRegionPlanner {
             "CONCRETE_DEMAND_SLICE_SELECTED_FROZEN_DIRECT_DEFINITION_V1";
     static final String STATIC_INPUT_FIELD_PROJECTION_DECLARATION_AUTHORITY =
             "SOOT_RESOLVED_DECLARATION_HIERARCHY";
+    private static final int STATIC_DATAFLOW_EDGE_SCHEMA_VERSION = 1;
+    private static final int STATIC_REGION_SCHEMA_VERSION = 1;
+    private static final String STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION =
+            "backward_provenance";
     static final String EXACT_OUTPUT_PRODUCER_EXPANSION_AUTHORITY =
             "FROZEN_REGION_CATALOG_EXACT_OUTPUT_PORT_OR_CELL_V1";
     static final String UNIQUE_RUNTIME_PRODUCER_CONFIRMATION_AUTHORITY =
@@ -147,6 +154,8 @@ final class RuntimeRegionPlanner {
         StaticProjectionIndex staticProjections =
                 readStaticProjectionIndex(staticGraphFile,
                         result.warnings);
+        resolveStaticCausalEdgeReferences(regions, staticProjections,
+                result.warnings);
         List<MethodEvent> methodEvents = sortedMethods(methods);
         List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
         List<FieldAccessEvent> fields = sortedFields(fieldEvents);
@@ -4894,7 +4903,8 @@ final class RuntimeRegionPlanner {
                     result.catalogInvalidRowCount++;
                     continue;
                 }
-                result.add(edge);
+                result.add(edge,
+                        StaticOutputSlice.causalEdgeReference(line));
             }
         } catch (IOException exception) {
             result.catalogReadComplete = false;
@@ -4916,6 +4926,27 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
+    private static void resolveStaticCausalEdgeReferences(
+            List<StaticRegion> regions, StaticProjectionIndex projections,
+            List<String> warnings) {
+        for (StaticRegion region : regions) {
+            for (StaticOutputSlice slice : region.outputSlices.values()) {
+                String failure = projections.resolveCausalEdges(slice);
+                if (failure.isEmpty()) {
+                    continue;
+                }
+                slice.structuralComplete = false;
+                slice.complete = false;
+                if (!slice.structuralIssues.contains(failure)) {
+                    slice.structuralIssues.add(failure);
+                }
+                warnings.add("region " + region.regionId + " output "
+                        + slice.outputPort + " rejected canonical causal "
+                        + "edge references: " + failure);
+            }
+        }
+    }
+
     private static List<StaticRegion> readRegions(File file,
                                                    List<String> warnings) {
         List<StaticRegion> result = new ArrayList<>();
@@ -4930,6 +4961,12 @@ final class RuntimeRegionPlanner {
             while ((line = reader.readLine()) != null) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty()) {
+                    continue;
+                }
+                if (jsonTopLevelInt(trimmed, "schemaVersion", -1)
+                        != STATIC_REGION_SCHEMA_VERSION) {
+                    warnings.add("ignored symbolic region row with missing "
+                            + "or unsupported schemaVersion");
                     continue;
                 }
                 StaticRegion region = StaticRegion.fromJson(trimmed);
@@ -5935,18 +5972,24 @@ final class RuntimeRegionPlanner {
         }
 
         private static FrozenStaticAccessorEvidence fromJson(String json) {
+            if (jsonTopLevelInt(json, "schemaVersion", -1)
+                    != STATIC_DATAFLOW_EDGE_SCHEMA_VERSION) {
+                return null;
+            }
             boolean exact = "accessor_field_return".equals(jsonString(json,
                     "kind"))
                     && "HEAP_READ".equals(jsonString(json,
                     "transferKind"))
                     && "value_flow".equals(jsonString(json, "relation"))
-                    && "backward_provenance".equals(jsonString(json,
-                    "direction"))
-                    && !jsonBoolean(json, "mappingOnly", false)
-                    && jsonBoolean(json, "semanticAssertionsAllowed", false)
-                    && jsonBoolean(json, "eligibleForAutomaticDerivation",
-                    false)
-                    && jsonBoolean(json, "eligibleForAutomaticSmt", false)
+                    && STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION.equals(
+                    staticDataflowDirection(json))
+                    && !staticDataflowMappingOnly(json)
+                    && staticDataflowFlag(json,
+                    "semanticAssertionsAllowed")
+                    && staticDataflowFlag(json,
+                    "eligibleForAutomaticDerivation")
+                    && staticDataflowFlag(json,
+                    "eligibleForAutomaticSmt")
                     && "SOOT_RESOLVED_DECLARATION_HIERARCHY".equals(
                     jsonString(json, "declaredFieldAuthority"))
                     && "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY".equals(
@@ -6115,6 +6158,8 @@ final class RuntimeRegionPlanner {
         private String catalogFailure = "";
         private final Map<String, StaticDataflowProjectionEdge> byId =
                 new LinkedHashMap<>();
+        private final Map<String, Map<String, Object>> causalReferencesById =
+                new LinkedHashMap<>();
         private final Map<String, List<StaticDataflowProjectionEdge>>
                 projectedByObjectCell = new LinkedHashMap<>();
         private final Map<String, List<StaticDataflowProjectionEdge>>
@@ -6128,10 +6173,19 @@ final class RuntimeRegionPlanner {
         private int consumerInputResolutionCacheMissCount;
 
         private void add(StaticDataflowProjectionEdge edge) {
+            add(edge, null);
+        }
+
+        private void add(StaticDataflowProjectionEdge edge,
+                         Map<String, Object> causalReference) {
             if (edge == null || edge.edgeId.isEmpty()) {
                 return;
             }
             byId.put(edge.edgeId, edge);
+            if (causalReference != null) {
+                causalReferencesById.put(edge.edgeId,
+                        new LinkedHashMap<>(causalReference));
+            }
             if (!edge.toCell.isEmpty()) {
                 RuntimeRegionPlanner.add(incomingByCell, edge.toCell, edge);
             }
@@ -6154,6 +6208,28 @@ final class RuntimeRegionPlanner {
                 RuntimeRegionPlanner.add(declarationsByProjectedCell,
                         edge.fromCell, edge);
             }
+        }
+
+        private String resolveCausalEdges(StaticOutputSlice slice) {
+            slice.causalEdges.clear();
+            if (slice.causalEdgeIds.isEmpty()) {
+                return "";
+            }
+            if (!catalogSupplied || !catalogReadComplete
+                    || catalogRowCount == 0 || catalogInvalidRowCount > 0) {
+                return firstNonBlank(catalogFailure,
+                        "STATIC_DATAFLOW_CATALOG_NOT_AUTHORITATIVE");
+            }
+            Set<String> seen = new LinkedHashSet<>();
+            for (String id : slice.causalEdgeIds) {
+                Map<String, Object> reference = causalReferencesById.get(id);
+                if (id.isEmpty() || !seen.add(id) || reference == null) {
+                    slice.causalEdges.clear();
+                    return "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:" + id;
+                }
+                slice.causalEdges.add(new LinkedHashMap<>(reference));
+            }
+            return "";
         }
 
         private StaticProjectionProof uniqueProof(String baseCell,
@@ -6698,6 +6774,10 @@ final class RuntimeRegionPlanner {
         }
 
         private static StaticDataflowProjectionEdge fromJson(String json) {
+            if (jsonTopLevelInt(json, "schemaVersion", -1)
+                    != STATIC_DATAFLOW_EDGE_SCHEMA_VERSION) {
+                return null;
+            }
             String id = jsonString(json, "id");
             if (id.isEmpty()) {
                 return null;
@@ -6706,18 +6786,20 @@ final class RuntimeRegionPlanner {
                     jsonString(json, "kind"),
                     jsonString(json, "transferKind"),
                     jsonString(json, "relation"),
-                    jsonString(json, "direction"),
+                    staticDataflowDirection(json),
                     jsonString(json, "fromCell"),
                     jsonString(json, "toCell"),
                     jsonString(json, "objectFromCell"),
                     jsonString(json, "objectToCell"),
                     jsonString(json, "projectionBaseEdgeId"),
                     exactFieldPath(jsonString(json, "fieldPath")),
-                    jsonBoolean(json, "mappingOnly", false),
-                    jsonBoolean(json, "semanticAssertionsAllowed", false),
-                    jsonBoolean(json, "eligibleForAutomaticDerivation",
-                            false),
-                    jsonBoolean(json, "eligibleForAutomaticSmt", false),
+                    staticDataflowMappingOnly(json),
+                    staticDataflowFlag(json,
+                            "semanticAssertionsAllowed"),
+                    staticDataflowFlag(json,
+                            "eligibleForAutomaticDerivation"),
+                    staticDataflowFlag(json,
+                            "eligibleForAutomaticSmt"),
                     jsonBoolean(json, "fieldSensitive", false),
                     jsonString(json, "declaredFieldSignature"),
                     jsonString(json, "declaredFieldOwner"),
@@ -8148,7 +8230,8 @@ final class RuntimeRegionPlanner {
                         "authority", jsonString(obligation, "authority")));
             }
             slice.requestedStateTransformerObligationCount = jsonInt(json,
-                    "requestedStateTransformerObligationCount", -1);
+                    "requestedStateTransformerObligationCount",
+                    slice.requestedStateTransformerObligations.size());
             slice.requestedStateTransformerContractIssues.addAll(
                     jsonStringArray(json,
                             "requestedStateTransformerContractIssues"));
@@ -8464,7 +8547,8 @@ final class RuntimeRegionPlanner {
 
         private static Map<String, Object> causalEdgeReference(String json) {
             Map<String, Object> result = object(
-                    "edgeId", jsonString(json, "edgeId"),
+                    "edgeId", firstNonBlank(jsonString(json, "edgeId"),
+                            jsonString(json, "id")),
                     "method", jsonString(json, "method"),
                     "siteId", jsonString(json, "siteId"),
                     "fromCell", jsonString(json, "fromCell"),
@@ -10065,6 +10149,47 @@ final class RuntimeRegionPlanner {
     private static boolean jsonHasField(String json, String field) {
         return Pattern.compile("\\\"" + Pattern.quote(field)
                 + "\\\"\\s*:").matcher(safe(json)).find();
+    }
+
+    private static boolean staticDataflowFlag(String json, String field) {
+        return jsonHasField(json, field)
+                ? jsonBoolean(json, field, false)
+                : staticDataflowSchemaDefaults(json);
+    }
+
+    private static boolean staticDataflowMappingOnly(String json) {
+        return jsonHasField(json, "mappingOnly")
+                ? jsonBoolean(json, "mappingOnly", true)
+                : !staticDataflowSchemaDefaults(json);
+    }
+
+    private static String staticDataflowDirection(String json) {
+        return jsonHasField(json, "direction")
+                ? jsonString(json, "direction")
+                : staticDataflowSchemaDefaults(json)
+                ? STATIC_DATAFLOW_EDGE_DEFAULT_DIRECTION : "";
+    }
+
+    private static boolean staticDataflowSchemaDefaults(String json) {
+        return jsonTopLevelInt(json, "schemaVersion", -1)
+                == STATIC_DATAFLOW_EDGE_SCHEMA_VERSION;
+    }
+
+    private static int jsonTopLevelInt(String json, String field,
+                                       int fallback) {
+        try {
+            JsonElement parsed = JsonParser.parseString(json);
+            if (!parsed.isJsonObject()) {
+                return fallback;
+            }
+            JsonObject object = parsed.getAsJsonObject();
+            JsonElement value = object.get(field);
+            return value == null || !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isNumber()
+                    ? fallback : value.getAsInt();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private static boolean jsonBoolean(String json, String field,

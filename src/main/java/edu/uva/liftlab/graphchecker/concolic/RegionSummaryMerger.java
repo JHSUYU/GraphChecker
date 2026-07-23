@@ -96,17 +96,15 @@ public final class RegionSummaryMerger {
         manifest.addProperty("inputSummaryCount", safe(summaries).size());
         manifest.addProperty("mergedRelationCount", merged.size());
         int caseCount = 0;
-        boolean complete = bool(pathManifest, "complete", false)
-                && diagnostics.isEmpty()
-                && !merged.isEmpty();
+        boolean complete = diagnostics.isEmpty() && !merged.isEmpty();
         for (JsonObject summary : merged) {
             JsonObject relation = object(summary, "regionRelation");
             caseCount += integer(relation, "caseCount", 0);
             complete &= bool(relation, "complete", false);
         }
         manifest.addProperty("guardedCaseCount", caseCount);
-        manifest.addProperty("pathWorklistStatus", string(pathManifest,
-                "status"));
+        manifest.addProperty("pathWorklistState", string(pathManifest,
+                "state"));
         manifest.addProperty("diagnosticCount", diagnostics.size());
         manifest.add("diagnostics", GSON.toJsonTree(diagnostics));
         manifest.addProperty("complete", complete);
@@ -197,10 +195,22 @@ public final class RegionSummaryMerger {
             }
         }
 
-        boolean pathClosed = bool(pathManifest, "complete", false);
-        if (!pathClosed) diagnostics.add(gap(region,
-                "PATH_WORKLIST_NOT_CLOSED:" + string(pathManifest,
-                        "status")));
+        String pathState = string(pathManifest, "state");
+        String pathRegion = string(pathManifest, "regionId");
+        boolean hasObservedPath = integer(pathManifest,
+                "observedPathCount", 0) > 0;
+        boolean pathClosed = RegionPathWorklist.State.CLOSED.name().equals(
+                pathState) && hasObservedPath && region.equals(pathRegion);
+        if (!region.equals(pathRegion)) {
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_REGION_MISMATCH:" + pathRegion));
+        } else if (!hasObservedPath) {
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_HAS_NO_OBSERVED_PATH"));
+        } else if (!pathClosed) {
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_NOT_CLOSED:" + pathState));
+        }
         boolean complete = pathClosed && casesComplete && cases.size() > 0;
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
@@ -213,8 +223,7 @@ public final class RegionSummaryMerger {
                 "GUARDED_OUTPUT_AND_STATE_TRANSFORMERS");
         relation.addProperty("coverageSemantics",
                 "SOLVER_CLOSED_RELEVANT_BRANCH_FLIPS_WITHIN_BOUNDS");
-        relation.addProperty("pathClosureStatus", string(pathManifest,
-                "status"));
+        relation.addProperty("pathClosureState", pathState);
         relation.addProperty("complete", complete);
         relation.addProperty("authority",
                 "RUNTIME_CONCOLIC_MULTI_PATH_SUMMARIES");

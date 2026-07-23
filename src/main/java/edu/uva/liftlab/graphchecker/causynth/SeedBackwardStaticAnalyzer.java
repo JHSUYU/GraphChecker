@@ -4623,18 +4623,18 @@ final class SeedBackwardStaticAnalyzer {
             // authority than that base. Require an explicit false/true tuple
             // on the base so incomplete rows fail closed.
             boolean baseMappingOnly = hasProjectionBase
-                    && !Boolean.FALSE.equals(
-                    projectionBaseEdge.get("mappingOnly"));
+                    && StaticDataflowEdgeSchema.mappingOnly(
+                    projectionBaseEdge);
             boolean mappingOnly = baseMappingOnly;
             boolean baseSemanticAssertionsAllowed = !hasProjectionBase
-                    || Boolean.TRUE.equals(projectionBaseEdge.get(
-                    "semanticAssertionsAllowed"));
+                    || StaticDataflowEdgeSchema.semanticAssertionsAllowed(
+                    projectionBaseEdge);
             boolean baseAutomaticDerivationAllowed = !hasProjectionBase
-                    || Boolean.TRUE.equals(projectionBaseEdge.get(
-                    "eligibleForAutomaticDerivation"));
+                    || StaticDataflowEdgeSchema
+                    .eligibleForAutomaticDerivation(projectionBaseEdge);
             boolean baseAutomaticSmtAllowed = !hasProjectionBase
-                    || Boolean.TRUE.equals(projectionBaseEdge.get(
-                    "eligibleForAutomaticSmt"));
+                    || StaticDataflowEdgeSchema.eligibleForAutomaticSmt(
+                    projectionBaseEdge);
             boolean semanticAssertionsAllowed = !mappingOnly
                     && baseSemanticAssertionsAllowed;
             boolean eligibleForAutomaticDerivation =
@@ -4643,8 +4643,8 @@ final class SeedBackwardStaticAnalyzer {
             boolean eligibleForAutomaticSmt = semanticAssertionsAllowed
                     && baseAutomaticSmtAllowed;
             String mappingAuthority = mappingOnly
-                    ? stringValue(projectionBaseEdge.get(
-                    "mappingAuthority")) : "";
+                    ? StaticDataflowEdgeSchema.mappingAuthority(
+                    projectionBaseEdge) : "";
             String edgeTransferKind = SymbolicPlanningStage.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -4659,25 +4659,33 @@ final class SeedBackwardStaticAnalyzer {
             String relation = exactDirectCopy || projectedDirectCopy
                     ? "value_flow" : relationForKind(kind);
             edge = object(
+                    "schemaVersion", StaticDataflowEdgeSchema.VERSION,
                     "id", edgeId,
                     "kind", kind,
                     "transferKind", edgeTransferKind,
                     "relation", mappingOnly ? "" : relation,
                     "candidateRelation", relation,
-                    "mappingOnly", mappingOnly,
-                    "mappingAuthority", mappingAuthority,
-                    "semanticAssertionsAllowed",
-                    semanticAssertionsAllowed,
-                    "eligibleForAutomaticDerivation",
-                    eligibleForAutomaticDerivation,
-                    "eligibleForAutomaticSmt", eligibleForAutomaticSmt,
-                    "direction", "backward_provenance",
                     "fromCell", fromText,
                     "toCell", toText,
                     "method", method,
                     "siteId", stableSiteId(method,
                             fact == null ? -1 : fact.unitIndex, kind),
                     "evidence", evidence);
+            if (mappingOnly) {
+                edge.put("mappingOnly", true);
+                if (!mappingAuthority.isEmpty()) {
+                    edge.put("mappingAuthority", mappingAuthority);
+                }
+            }
+            if (!semanticAssertionsAllowed) {
+                edge.put("semanticAssertionsAllowed", false);
+            }
+            if (!eligibleForAutomaticDerivation) {
+                edge.put("eligibleForAutomaticDerivation", false);
+            }
+            if (!eligibleForAutomaticSmt) {
+                edge.put("eligibleForAutomaticSmt", false);
+            }
             if (hasProjectionBase) {
                 edge.put("projectionBaseEdgeId", stringValue(
                         projectionBaseEdge.get("id")));
@@ -4804,15 +4812,7 @@ final class SeedBackwardStaticAnalyzer {
                 baseEdge.get("relation")))
                 || !"VALUE_PASS".equals(stringValue(
                 baseEdge.get("transferKind")))
-                || Boolean.TRUE.equals(baseEdge.get("mappingOnly"))
-                || !Boolean.TRUE.equals(baseEdge.get(
-                "semanticAssertionsAllowed"))
-                || !Boolean.TRUE.equals(baseEdge.get(
-                "eligibleForAutomaticDerivation"))
-                || !Boolean.TRUE.equals(baseEdge.get(
-                "eligibleForAutomaticSmt"))
-                || !"backward_provenance".equals(stringValue(
-                baseEdge.get("direction")))) {
+                || !StaticDataflowEdgeSchema.automaticSemantics(baseEdge)) {
             return false;
         }
         String authority = stringValue(baseEdge.get("valueFlowAuthority"));

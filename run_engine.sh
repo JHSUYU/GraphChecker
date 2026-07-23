@@ -22,11 +22,10 @@ Config-driven commands:
   analyze     Run GraphCheckerMain over the configured target classes
   schedule    Create concolic jobs and the instance-scoped merge plan
   import      Strictly import raw concolic runtime results
-  merge       Merge imported output paths into guarded region relations
   compose     Compose the fatal query and upstream summaries into SMT-LIB
   reach       Project the composed bug path onto finite Boolean root inputs
   workload    Run the configured target workload command
-  debug-stage Print an already-produced analyze/workload/schedule/merge/compose artifact
+  debug-stage Print an already-produced analyze/workload/merge/compose artifact
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -36,7 +35,7 @@ entry point. Environment variables documented in experiments/generic/README.md
 override values loaded from FILE.
 
 --debug prints deterministic, bounded workflow artifacts to stderr after
-analyze, workload, schedule, merge, and compose. GRAPH_CHECKER_DEBUG=true is
+analyze, workload, merge, and compose. GRAPH_CHECKER_DEBUG=true is
 the environment equivalent; *_MAX_ITEMS and *_MAX_BYTES adjust its caps.
 EOF
 }
@@ -55,7 +54,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|merge_summary_inputs|path_manifest|merged_summaries|merge_manifest|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
+    workflow_path_base|graphchecker_jar|graphchecker_pom|java_bin|maven_bin|graphchecker_work_dir|build_maven_args|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|static_regions|static_graph|runtime_activation_plan|runtime_region_instances|runtime_edge_validations|schedule_output_dir|schedule_summaries|schedule_region_id|schedule_activation_id|schedule_target_site|raw_concolic_results|import_activation_plan|imported_summaries|import_diagnostics|merged_summaries|fatal_queries|compose_summary_inputs|composed_smt|composition_manifest|relationship_candidates|reach_report|fatal_region|fatal_activation_id|solver_timeout_ms|reach_max_inputs|reach_max_valuations)
       return 0
       ;;
     *)
@@ -100,10 +99,7 @@ reset_config() {
   import_activation_plan=""
   imported_summaries=""
   import_diagnostics=""
-  merge_summary_inputs=""
-  path_manifest=""
   merged_summaries=""
-  merge_manifest=""
   fatal_queries=""
   compose_summary_inputs=""
   composed_smt=""
@@ -185,10 +181,7 @@ apply_environment_overrides() {
   apply_env_override import_activation_plan CAUSYNTH_IMPORT_ACTIVATION_PLAN
   apply_env_override imported_summaries CAUSYNTH_IMPORTED_SUMMARIES
   apply_env_override import_diagnostics CAUSYNTH_IMPORT_DIAGNOSTICS
-  apply_env_override merge_summary_inputs CAUSYNTH_MERGE_SUMMARIES
-  apply_env_override path_manifest CAUSYNTH_PATH_MANIFEST
   apply_env_override merged_summaries CAUSYNTH_MERGED_SUMMARIES
-  apply_env_override merge_manifest CAUSYNTH_MERGE_MANIFEST
   apply_env_override fatal_queries CAUSYNTH_FATAL_QUERIES
   apply_env_override compose_summary_inputs CAUSYNTH_COMPOSE_SUMMARIES
   apply_env_override composed_smt CAUSYNTH_COMPOSED_SMT
@@ -345,10 +338,7 @@ initialize_config() {
   import_activation_plan=${import_activation_plan:-${schedule_output_dir}/scheduled_activation_plan.jsonl}
   imported_summaries=${imported_summaries:-${schedule_output_dir}/concolic_region_summaries.jsonl}
   import_diagnostics=${import_diagnostics:-${schedule_output_dir}/concolic_import_diagnostics.jsonl}
-  merge_summary_inputs=${merge_summary_inputs:-${imported_summaries}}
-  path_manifest=${path_manifest:-${schedule_output_dir}/region_path_manifest.json}
   merged_summaries=${merged_summaries:-${schedule_output_dir}/merged_region_summaries.jsonl}
-  merge_manifest=${merge_manifest:-${schedule_output_dir}/region_relation_merge_manifest.json}
   fatal_queries=${fatal_queries:-${schedule_output_dir}/branch_queries.jsonl}
   compose_summary_inputs=${compose_summary_inputs:-${merged_summaries}}
   composed_smt=${composed_smt:-${schedule_output_dir}/composed_fatal.smt2}
@@ -366,10 +356,7 @@ initialize_config() {
   import_activation_plan=$(resolve_path "${import_activation_plan}")
   imported_summaries=$(resolve_path "${imported_summaries}")
   import_diagnostics=$(resolve_path "${import_diagnostics}")
-  merge_summary_inputs=$(resolve_path_list "${merge_summary_inputs}")
-  path_manifest=$(resolve_path "${path_manifest}")
   merged_summaries=$(resolve_path "${merged_summaries}")
-  merge_manifest=$(resolve_path "${merge_manifest}")
   fatal_queries=$(resolve_path "${fatal_queries}")
   compose_summary_inputs=$(resolve_path_list "${compose_summary_inputs}")
   composed_smt=$(resolve_path "${composed_smt}")
@@ -429,7 +416,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries path_manifest merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in config_file workflow_path_base graphchecker_jar graphchecker_pom java_bin maven_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs custom_jdk_home z3_bin workload_work_dir workload_command static_regions static_graph runtime_activation_plan runtime_region_instances runtime_edge_validations schedule_output_dir raw_concolic_results import_activation_plan imported_summaries merged_summaries fatal_queries composed_smt composition_manifest relationship_candidates reach_report solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -555,19 +542,6 @@ append_path_list_arguments() {
     require_file "${option#--}" "${entry}"
     PATH_LIST_ARGUMENTS+=("${option}" "${entry}")
   done
-}
-
-do_merge() {
-  require_file "region path manifest" "${path_manifest}"
-  ensure_output_directory "$(dirname "${merged_summaries}")"
-  PATH_LIST_ARGUMENTS=()
-  append_path_list_arguments --summaries "${merge_summary_inputs}"
-  [[ ${#PATH_LIST_ARGUMENTS[@]} -gt 0 ]] || die "merge_summary_inputs is empty"
-  run_java_main edu.uva.liftlab.graphchecker.concolic.RegionSummaryMerger \
-    "${PATH_LIST_ARGUMENTS[@]}" \
-    --path-manifest "${path_manifest}" \
-    --output "${merged_summaries}" \
-    --manifest "${merge_manifest}" "$@"
 }
 
 do_compose() {
@@ -755,42 +729,6 @@ debug_runtime_artifacts() {
        activationInputPortCount, branchCount}'
 }
 
-debug_schedule_artifacts() {
-  local scheduler_plan="${schedule_output_dir}/symbolic_merge_plan.json"
-  debug_json_projection symbolic_merge_plan "${scheduler_plan}" '
-    def relation:
-      {edgeId, kind, transportKind, fromRegion, toRegion, fromEndpoint,
-       toEndpoint, runtimeStatus,
-       runtimeBindingCount: ((.runtimeBindings // []) | length),
-       requiresOrder, requiresObjectIdentity, confirmedReadFromPairCount};
-    (.equalityClasses // []) as $classes
-    | (.equalityRelations // []) as $equalities
-    | (.versionedStateMerges // []) as $states
-    | (.alternativeWriterGroups // []) as $groups
-    | {counts: {equalityClasses: ($classes | length),
-                equalityRelations: ($equalities | length),
-                versionedStateMerges: ($states | length),
-                alternativeWriterGroups: ($groups | length)},
-       equalityClasses: ($classes
-         | map({canonicalSymbol, members: ((.members // []) | sort)})
-         | sort_by([(.members | join("\u0000")), .canonicalSymbol]) | .[:$max]),
-       equalityRelations: ($equalities | map(relation)
-         | sort_by([.fromEndpoint, .toEndpoint, .edgeId]) | .[:$max]),
-       versionedStateMerges: ($states | map(relation)
-         | sort_by([.fromEndpoint, .toEndpoint, .edgeId]) | .[:$max]),
-       alternativeWriterGroups: ($groups | map(. as $group
-         | {groupId: $group.groupId, kind: $group.kind,
-            downstreamEndpoint: $group.downstreamEndpoint,
-            selectionSemantics: $group.selectionSemantics,
-            alternativeCount: (($group.alternatives // []) | length),
-            alternatives: (($group.alternatives // [])
-              | map(. as $alternative
-                | ($alternative | relation)
-                  + {guardSymbol: ($alternative.guardSymbol // "")})
-              | sort_by([.fromEndpoint, .toEndpoint, .edgeId]) | .[:$max])})
-         | sort_by([.downstreamEndpoint, .groupId]) | .[:$max])}'
-}
-
 debug_merge_artifacts() {
   debug_jsonl_projection guarded_merge "${merged_summaries}" '
     def capped_object:
@@ -869,7 +807,6 @@ debug_workflow_stage() {
   case "${stage}" in
     analyze) debug_static_artifacts ;;
     workload) debug_runtime_artifacts ;;
-    schedule) debug_schedule_artifacts ;;
     merge) debug_merge_artifacts ;;
     compose) debug_compose_artifacts ;;
   esac
@@ -915,14 +852,13 @@ case "${command_name}" in
     initialize_config "${config_file}"
     do_build "$@"
     ;;
-  analyze|schedule|import|merge|compose|reach|workload|config|validate)
+  analyze|schedule|import|compose|reach|workload|config|validate)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
       analyze) do_analyze "$@"; debug_after_stage analyze ;;
-      schedule) do_schedule "$@"; debug_after_stage schedule ;;
+      schedule) do_schedule "$@" ;;
       import) do_import "$@" ;;
-      merge) do_merge "$@"; debug_after_stage merge ;;
       compose) do_compose "$@"; debug_after_stage compose ;;
       reach) do_reach "$@" ;;
       workload) do_workload "$@"; debug_after_stage workload ;;
@@ -934,7 +870,7 @@ case "${command_name}" in
     [[ -n "${config_file}" ]] || die "debug-stage requires --config FILE"
     [[ $# -eq 1 ]] || die "debug-stage requires exactly one stage"
     case "$1" in
-      analyze|workload|schedule|merge|compose) ;;
+      analyze|workload|merge|compose) ;;
       *) die "unsupported debug stage '$1'" ;;
     esac
     initialize_config "${config_file}"

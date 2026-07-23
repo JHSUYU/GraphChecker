@@ -114,20 +114,27 @@ public final class ConcolicScheduler {
                 arguments.runtimeRegionInstances == null
                         ? Collections.<JsonObject>emptyList()
                         : readJsonl(arguments.runtimeRegionInstances);
-        DefinitionIndex definitions = arguments.staticGraph == null
+        CanonicalStaticEdgeCatalog causalEdgeCatalog =
+                CanonicalStaticEdgeCatalog.from(staticGraph,
+                        arguments.staticGraph != null);
+        List<JsonObject> authoritativeStaticGraph =
+                causalEdgeCatalog.authoritative
+                        ? staticGraph
+                        : Collections.<JsonObject>emptyList();
+        DefinitionIndex definitions = authoritativeStaticGraph.isEmpty()
                 ? DefinitionIndex.fallback()
-                : DefinitionIndex.from(staticGraph);
+                : DefinitionIndex.from(authoritativeStaticGraph);
 
         Map<String, Region> regionIndex = new LinkedHashMap<>();
         for (JsonObject row : regions) {
-            Region region = new Region(row);
+            Region region = new Region(row, causalEdgeCatalog);
             if (!region.regionId.isEmpty()) {
                 regionIndex.put(region.regionId, region);
             }
         }
 
         MergePlan mergePlan = buildMergePlan(regionIndex, edges,
-                staticGraph);
+                authoritativeStaticGraph);
         List<Candidate> candidates = candidates(arguments, activations,
                 regionIndex, definitions,
                 CaptureEvidence.from(runtimeRegionInstances));
@@ -171,30 +178,13 @@ public final class ConcolicScheduler {
             scheduledActivation.addProperty("targetReplayRequired", false);
             scheduledActivation.addProperty("branchOverrideProhibited",
                     !arguments.forceBranchValidation);
-            scheduledActivation.addProperty("discoverySymbolicReady",
-                    bool(candidate.activation, "symbolicReady", false));
             scheduledActivation.addProperty("schedulerReady",
                     materialization.ready);
-            scheduledActivation.addProperty("materializationComplete",
-                    materialization.complete);
-            scheduledActivation.addProperty("executableMaterializationCount",
-                    materialization.executableCount);
-            scheduledActivation.addProperty("deferredMaterializationCount",
-                    materialization.deferredCount);
-            scheduledActivation.addProperty("vmIntrinsicPlaceholderCount",
-                    materialization.vmIntrinsicPlaceholderCount);
-            scheduledActivation.addProperty("concreteFallbackCount",
-                    materialization.concreteFallbacks.size());
-            scheduledActivation.addProperty("symbolicCoverageComplete",
-                    materialization.concreteFallbacks.size() == 0);
-            scheduledActivation.addProperty("symbolicReady",
-                    materialization.ready);
-            scheduledActivation.addProperty("readinessAuthority",
-                    "SCHEDULER_MATERIALIZATION_PLAN");
             scheduledActivation.add("materializations",
                     materialization.actions.deepCopy());
             scheduledActivation.add("concreteFallbacks",
                     materialization.concreteFallbacks.deepCopy());
+            compactScheduledActivation(scheduledActivation);
             if (!candidate.outputClosure) {
                 scheduledActivation.add("branchCaptureSelector",
                         candidate.target.captureSelector().toJson());
@@ -229,18 +219,6 @@ public final class ConcolicScheduler {
             job.addProperty("selectionReason", candidate.reason);
             job.add("captureGoal", goal.toJson());
             job.addProperty("captureReady", materialization.ready);
-            job.addProperty("materializationComplete",
-                    materialization.complete);
-            job.addProperty("executableMaterializationCount",
-                    materialization.executableCount);
-            job.addProperty("deferredMaterializationCount",
-                    materialization.deferredCount);
-            job.addProperty("vmIntrinsicPlaceholderCount",
-                    materialization.vmIntrinsicPlaceholderCount);
-            job.addProperty("concreteFallbackCount",
-                    materialization.concreteFallbacks.size());
-            job.addProperty("symbolicCoverageComplete",
-                    materialization.concreteFallbacks.size() == 0);
             job.addProperty("forceValidationEnabled",
                     arguments.forceBranchValidation);
             if (!candidate.outputClosure) {
@@ -400,6 +378,7 @@ public final class ConcolicScheduler {
 
         JsonObject normalized = activation.deepCopy();
         normalized.remove("reachabilitySupportActivations");
+        compactScheduledActivation(normalized);
         JsonObject previous = definitions.get(activationId);
         if (previous != null) {
             if (!previous.equals(normalized)) {
@@ -480,27 +459,46 @@ public final class ConcolicScheduler {
                 && outputCaptureReady;
         result.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
         result.addProperty("schedulerReady", schedulerReady);
-        result.addProperty("materializationComplete",
-                materialization.complete);
         result.addProperty("outputCaptureReady", outputCaptureReady);
-        result.addProperty("executableMaterializationCount",
-                materialization.executableCount);
-        result.addProperty("deferredMaterializationCount",
-                materialization.deferredCount);
-        result.addProperty("vmIntrinsicPlaceholderCount",
-                materialization.vmIntrinsicPlaceholderCount);
-        result.addProperty("concreteFallbackCount",
-                materialization.concreteFallbacks.size());
-        result.addProperty("symbolicCoverageComplete",
-                materialization.concreteFallbacks.size() == 0);
         result.add("concreteFallbacks",
                 materialization.concreteFallbacks.deepCopy());
-        result.addProperty("symbolicReady", schedulerReady);
-        result.addProperty("readinessAuthority",
-                "SCHEDULER_MATERIALIZATION_PLAN");
         result.addProperty("branchOverrideProhibited", true);
         result.add("materializations", materialization.actions.deepCopy());
+        compactScheduledActivation(result);
         return result;
+    }
+
+    /**
+     * Converts either a scheduler row or a nested runtime-discovery support
+     * row to the compact executable activation schema.  A support row may
+     * carry only the discovery-time {@code symbolicReady}; that exact boolean
+     * is promoted once and then retired.  Missing or malformed readiness is
+     * deliberately fail-closed.
+     */
+    private static void compactScheduledActivation(JsonObject activation) {
+        JsonElement scheduled = activation.get("schedulerReady");
+        JsonElement discovered = activation.get("symbolicReady");
+        boolean ready = activation.has("schedulerReady")
+                ? strictBoolean(scheduled) && scheduled.getAsBoolean()
+                : strictBoolean(discovered) && discovered.getAsBoolean();
+        activation.addProperty("schedulerReady", ready);
+        for (String retired : new String[]{
+                "discoverySymbolicReady", "symbolicReady",
+                "materializationComplete",
+                "executableMaterializationCount",
+                "deferredMaterializationCount",
+                "vmIntrinsicPlaceholderCount",
+                "concreteFallbackCount",
+                "symbolicCoverageComplete", "readinessAuthority",
+                "activationInputPortCount", "edgeBindingCount",
+                "staticRootMethod", "observedRootMethod"}) {
+            activation.remove(retired);
+        }
+    }
+
+    private static boolean strictBoolean(JsonElement value) {
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean();
     }
 
     private static List<Candidate> candidates(Arguments arguments,
@@ -541,7 +539,6 @@ public final class ConcolicScheduler {
                 MaterializationPlan upstreamPlan = materializationPlan(
                         activation, definitions, definitionMethods);
                 if (!nestedOutputSliceComplete(activation)
-                        || !upstreamPlan.complete
                         || !outputCaptureReady(activation)) {
                     upstreamPlan = upstreamPlan.notReady();
                 }
@@ -895,7 +892,6 @@ public final class ConcolicScheduler {
                 activation, "containerInputPort");
         int sourceActionCount = 0;
         int executableCount = 0;
-        int deferredCount = 0;
         int vmIntrinsicPlaceholderCount = 0;
         JsonArray sourceActions = array(activation, "symbolize");
         for (JsonElement element : sourceActions) {
@@ -1176,9 +1172,7 @@ public final class ConcolicScheduler {
         boolean ready = sourceActionCount == 0 || executableCount > 0
                 || vmIntrinsicPlaceholderCount > 0
                 || concreteFallbacks.size() > 0;
-        return new MaterializationPlan(result, concreteFallbacks, ready, true,
-                executableCount, deferredCount,
-                vmIntrinsicPlaceholderCount);
+        return new MaterializationPlan(result, concreteFallbacks, ready);
     }
 
     private static Set<String> containerBindingSymbols(
@@ -2642,6 +2636,7 @@ public final class ConcolicScheduler {
     }
 
     private static final class Region {
+        private static final int STATIC_REGION_SCHEMA_VERSION = 1;
         private final String regionId;
         private final Set<String> methods = new LinkedHashSet<>();
         private final Map<String, String> portByCell = new LinkedHashMap<>();
@@ -2652,7 +2647,14 @@ public final class ConcolicScheduler {
         private final Map<String, JsonObject> outputSliceByPort =
                 new LinkedHashMap<>();
 
-        private Region(JsonObject row) {
+        private Region(JsonObject row,
+                       CanonicalStaticEdgeCatalog causalEdgeCatalog) {
+            int schemaVersion = integer(row, "schemaVersion", -1);
+            if (schemaVersion != STATIC_REGION_SCHEMA_VERSION) {
+                throw new IllegalArgumentException(
+                        "symbolic region requires schemaVersion "
+                                + STATIC_REGION_SCHEMA_VERSION);
+            }
             this.regionId = string(row, "regionId");
             this.methods.addAll(stringSet(row, "methods"));
             collectInputs(array(row, "symbolicInputs"));
@@ -2661,12 +2663,33 @@ public final class ConcolicScheduler {
                 if (!element.isJsonObject()) {
                     continue;
                 }
-                JsonObject slice = element.getAsJsonObject();
+                JsonObject slice = element.getAsJsonObject().deepCopy();
+                String failure = causalEdgeCatalog.resolve(slice);
+                if (!failure.isEmpty()) {
+                    rejectUnresolvedCausalEdges(slice, failure);
+                }
                 String outputPort = string(slice, "outputPort");
                 if (!outputPort.isEmpty()) {
-                    outputSliceByPort.put(outputPort, slice.deepCopy());
+                    outputSliceByPort.put(outputPort, slice);
                 }
             }
+        }
+
+        private static void rejectUnresolvedCausalEdges(JsonObject slice,
+                                                        String failure) {
+            slice.addProperty("structuralComplete", false);
+            slice.addProperty("complete", false);
+            JsonArray issues = array(slice, "truncationReasons").deepCopy();
+            boolean present = false;
+            for (JsonElement issue : issues) {
+                present |= issue.isJsonPrimitive()
+                        && failure.equals(issue.getAsString());
+            }
+            if (!present) {
+                issues.add(failure);
+            }
+            slice.add("truncationReasons", issues);
+            slice.remove("causalEdges");
         }
 
         private void collectInputs(JsonArray inputs) {
@@ -2721,6 +2744,66 @@ public final class ConcolicScheduler {
                     portByCell.put(cell, id);
                 }
             }
+        }
+    }
+
+    /**
+     * Resolves compact output-slice edge ids through the one canonical static
+     * graph supplied to the scheduler.  Duplicate or malformed catalog rows
+     * make the whole catalog non-authoritative instead of allowing a
+     * last-writer-wins lookup.
+     */
+    private static final class CanonicalStaticEdgeCatalog {
+        private final Map<String, JsonObject> byId = new LinkedHashMap<>();
+        private boolean authoritative;
+
+        private static CanonicalStaticEdgeCatalog from(
+                List<JsonObject> rows, boolean supplied) {
+            CanonicalStaticEdgeCatalog result =
+                    new CanonicalStaticEdgeCatalog();
+            result.authoritative = supplied && !rows.isEmpty();
+            for (JsonObject row : rows) {
+                String id = string(row, "id");
+                if (integer(row, "schemaVersion", -1) != 1
+                        || id.isEmpty() || result.byId.containsKey(id)) {
+                    result.authoritative = false;
+                    continue;
+                }
+                result.byId.put(id, row.deepCopy());
+            }
+            return result;
+        }
+
+        private String resolve(JsonObject slice) {
+            JsonArray ids = array(slice, "causalEdgeIds");
+            JsonArray references = new JsonArray();
+            if (ids.size() == 0) {
+                slice.add("causalEdges", references);
+                return "";
+            }
+            if (!authoritative) {
+                return "STATIC_DATAFLOW_CATALOG_NOT_AUTHORITATIVE";
+            }
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonElement element : ids) {
+                String id;
+                try {
+                    id = element.isJsonPrimitive()
+                            ? element.getAsString() : "";
+                } catch (RuntimeException ignored) {
+                    id = "";
+                }
+                JsonObject canonical = byId.get(id);
+                if (id.isEmpty() || !seen.add(id) || canonical == null) {
+                    return "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:" + id;
+                }
+                JsonObject reference = canonical.deepCopy();
+                reference.remove("id");
+                reference.addProperty("edgeId", id);
+                references.add(reference);
+            }
+            slice.add("causalEdges", references);
+            return "";
         }
     }
 
@@ -2796,30 +2879,17 @@ public final class ConcolicScheduler {
         private final JsonArray actions;
         private final JsonArray concreteFallbacks;
         private final boolean ready;
-        private final boolean complete;
-        private final int executableCount;
-        private final int deferredCount;
-        private final int vmIntrinsicPlaceholderCount;
 
         private MaterializationPlan(JsonArray actions,
-                                    JsonArray concreteFallbacks, boolean ready,
-                                    boolean complete, int executableCount,
-                                    int deferredCount,
-                                    int vmIntrinsicPlaceholderCount) {
+                                    JsonArray concreteFallbacks,
+                                    boolean ready) {
             this.actions = actions;
             this.concreteFallbacks = concreteFallbacks;
             this.ready = ready;
-            this.complete = complete;
-            this.executableCount = executableCount;
-            this.deferredCount = deferredCount;
-            this.vmIntrinsicPlaceholderCount = vmIntrinsicPlaceholderCount;
         }
 
         private MaterializationPlan notReady() {
-            return new MaterializationPlan(actions, concreteFallbacks, false,
-                    complete,
-                    executableCount, deferredCount,
-                    vmIntrinsicPlaceholderCount);
+            return new MaterializationPlan(actions, concreteFallbacks, false);
         }
     }
 

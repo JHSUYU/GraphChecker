@@ -4760,11 +4760,7 @@ public class SymbolicRegionPlannerTest {
         edge.put("siteId", CONTAINER_ADD + "#u" + unit);
         edge.put("unit", jimple);
         edge.put("relation", "value_flow");
-        edge.put("mappingOnly", false);
-        edge.put("semanticAssertionsAllowed", true);
-        edge.put("eligibleForAutomaticDerivation", true);
-        edge.put("eligibleForAutomaticSmt", true);
-        edge.put("direction", "backward_provenance");
+        edge.put("schemaVersion", StaticDataflowEdgeSchema.VERSION);
         return edge;
     }
 
@@ -5483,11 +5479,7 @@ public class SymbolicRegionPlannerTest {
         row.put("id", id);
         row.put("relation", "value_flow");
         row.put("candidateRelation", "value_flow");
-        row.put("mappingOnly", false);
-        row.put("semanticAssertionsAllowed", true);
-        row.put("eligibleForAutomaticDerivation", true);
-        row.put("eligibleForAutomaticSmt", true);
-        row.put("direction", "backward_provenance");
+        row.put("schemaVersion", StaticDataflowEdgeSchema.VERSION);
         row.put("fieldSensitive", true);
         row.put("objectFromCell", returnedBase);
         row.put("objectToCell", localBase);
@@ -5536,17 +5528,14 @@ public class SymbolicRegionPlannerTest {
     private static void authoritativeValueFlow(Map<String, Object> edge) {
         edge.put("relation", "value_flow");
         edge.put("candidateRelation", "value_flow");
-        edge.put("mappingOnly", false);
-        edge.put("semanticAssertionsAllowed", true);
-        edge.put("eligibleForAutomaticDerivation", true);
-        edge.put("eligibleForAutomaticSmt", true);
-        edge.put("direction", "backward_provenance");
+        edge.put("schemaVersion", StaticDataflowEdgeSchema.VERSION);
     }
 
     private static Map<String, Object> edge(String method, String transfer,
                                             String kind, String from, String to,
                                             int unit) {
         Map<String, Object> row = new LinkedHashMap<>();
+        row.put("schemaVersion", StaticDataflowEdgeSchema.VERSION);
         row.put("method", method);
         row.put("transferKind", transfer);
         row.put("kind", kind);

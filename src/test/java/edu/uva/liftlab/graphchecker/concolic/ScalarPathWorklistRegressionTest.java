@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** End-to-end unit boundary from normalized branch paths to Z3 models. */
@@ -159,7 +158,8 @@ public class ScalarPathWorklistRegressionTest {
                 Collections.<JsonObject>emptyList(),
                 new RegionPathWorklist.Bounds(64, 2, 256, 30_000L));
         assertEquals(2, bounded.tasks.size());
-        assertFalse(bounded.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                bounded.manifest.get("state").getAsString());
         assertTrue(bounded.manifest.getAsJsonArray("gaps").toString()
                 .contains("MAX_FLIPS_PER_PATH"));
     }
@@ -191,7 +191,8 @@ public class ScalarPathWorklistRegressionTest {
                 Collections.singletonList(solve.record),
                 RegionPathWorklist.Bounds.defaults());
         assertTrue(replanned.tasks.isEmpty());
-        assertFalse(replanned.manifest.get("complete").getAsBoolean());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                replanned.manifest.get("state").getAsString());
         assertTrue(replanned.manifest.getAsJsonArray("gaps").toString()
                 .contains("UNSUPPORTED_EXPRESSION_IR"));
     }

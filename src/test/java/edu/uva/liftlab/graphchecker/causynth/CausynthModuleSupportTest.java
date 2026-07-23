@@ -60,6 +60,109 @@ public class CausynthModuleSupportTest {
     }
 
     @Test
+    public void automaticStaticSemanticsRequireTheCurrentSchema() {
+        Map<String, Object> oldTuple = new LinkedHashMap<>();
+        oldTuple.put("mappingOnly", false);
+        oldTuple.put("semanticAssertionsAllowed", true);
+        oldTuple.put("eligibleForAutomaticDerivation", true);
+        oldTuple.put("eligibleForAutomaticSmt", true);
+        oldTuple.put("direction",
+                StaticDataflowEdgeSchema.DEFAULT_DIRECTION);
+
+        assertFalse(StaticDataflowEdgeSchema.automaticSemantics(oldTuple));
+        oldTuple.put("schemaVersion", StaticDataflowEdgeSchema.VERSION);
+        assertTrue(StaticDataflowEdgeSchema.automaticSemantics(oldTuple));
+        oldTuple.put("schemaVersion", 2);
+        assertFalse(StaticDataflowEdgeSchema.automaticSemantics(oldTuple));
+    }
+
+    @Test
+    public void artifactWriterPersistsCanonicalRegionEdgeReferences()
+            throws Exception {
+        Path output = temporaryFolder.newFolder("compact-regions").toPath();
+        CausynthAnalysisResult result = new CausynthAnalysisResult();
+        Map<String, Object> edge = new LinkedHashMap<>();
+        edge.put("id", "DF.7");
+        edge.put("kind", "local_def_use");
+        edge.put("method", "<example.Owner: int compute()>");
+        edge.put("siteId", "<example.Owner: int compute()>#u1");
+        edge.put("fromCell", "input");
+        edge.put("toCell", "output");
+        edge.put("transferKind", "COMPUTE");
+        result.edges.add(edge);
+
+        Map<String, Object> reference = new LinkedHashMap<>();
+        reference.put("edgeId", "DF.7");
+        reference.put("kind", "local_def_use");
+        Map<String, Object> slice = new LinkedHashMap<>();
+        slice.put("outputPort", "REGION.0.out.0");
+        slice.put("causalEdgeIds", Collections.singletonList("DF.7"));
+        slice.put("causalEdges", Collections.singletonList(reference));
+        slice.put("causalEdgeCount", 1);
+        slice.put("methods", Collections.singletonList(
+                "<example.Owner: int compute()>"));
+        slice.put("methodCount", 1);
+        slice.put("promotionAuthority", "RETIRED_ALIAS");
+
+        Map<String, Object> region = new LinkedHashMap<>();
+        region.put("regionId", "REGION.0");
+        region.put("rootMethod", "<example.Owner: int compute()>");
+        region.put("staticRootCandidate",
+                "<example.Owner: int compute()>");
+        region.put("rootValidation", "RUNTIME_REQUIRED");
+        region.put("methods", Collections.singletonList(
+                "<example.Owner: int compute()>"));
+        region.put("methodCount", 1);
+        region.put("outputSlices", Collections.singletonList(slice));
+        result.symbolicRegions.add(region);
+
+        Map<String, Object> regionEdge = new LinkedHashMap<>();
+        regionEdge.put("edgeId", "REGION_EDGE.0");
+        regionEdge.put("fromRegion", "REGION.0");
+        regionEdge.put("toRegion", "REGION.1");
+        regionEdge.put("rootValidation", "RUNTIME_REQUIRED");
+        result.symbolicRegionEdges.add(regionEdge);
+
+        new CausynthArtifactWriter(output, result).writeAll();
+
+        String persistedRegion = read(output.resolve(
+                "symbolic_regions.jsonl"));
+        assertTrue(persistedRegion.contains("\"schemaVersion\":1"));
+        assertTrue(persistedRegion.contains(
+                "\"causalEdgeIds\":[\"DF.7\"]"));
+        assertFalse(persistedRegion.contains("\"causalEdges\""));
+        assertFalse(persistedRegion.contains("\"causalEdgeCount\""));
+        assertFalse(persistedRegion.contains("\"methodCount\""));
+        assertFalse(persistedRegion.contains("\"staticRootCandidate\""));
+        assertFalse(persistedRegion.contains("\"rootValidation\""));
+        assertFalse(persistedRegion.contains("\"promotionAuthority\""));
+        assertTrue(read(output.resolve("symbolic_region_edges.jsonl"))
+                .contains("\"schemaVersion\":1"));
+        assertFalse(read(output.resolve("symbolic_region_edges.jsonl"))
+                .contains("\"rootValidation\""));
+
+        // Persistence is a projection; planner-owned rows remain available to
+        // in-memory validation and diagnostics.
+        assertTrue(slice.containsKey("causalEdges"));
+        assertTrue(region.containsKey("staticRootCandidate"));
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void compactRegionSchemaRejectsUnknownCausalEdgeIds() {
+        Map<String, Object> slice = new LinkedHashMap<>();
+        slice.put("causalEdgeIds", Collections.singletonList("DF.missing"));
+        slice.put("causalEdges", Collections.singletonList(
+                Collections.<String, Object>singletonMap(
+                        "edgeId", "DF.missing")));
+        Map<String, Object> region = new LinkedHashMap<>();
+        region.put("outputSlices", Collections.singletonList(slice));
+
+        StaticRegionArtifactSchema.regions(
+                Collections.singletonList(region),
+                Collections.<Map<String, Object>>emptyList());
+    }
+
+    @Test
     public void controlDependenceMetadataRetainsExactSchema() {
         String method = "<example.Owner: int compute(int)>";
         assertTrue(ControlDependenceEdgeSupport.permitsSameCellEdge(
@@ -247,7 +350,7 @@ public class CausynthModuleSupportTest {
         Path plan = temporaryFolder.newFile("activation-plan.jsonl").toPath();
         String first = "{\"activationId\":\"ACT.0\","
                 + "\"rootMethod\":\"<example.First: void run()>\","
-                + "\"replayable\":true,\"symbolicReady\":true}";
+                + "\"replayable\":true,\"schedulerReady\":true}";
         String second = "{\"activationId\":\"ACT.1\","
                 + "\"rootMethod\":\"<example.Second: void run()>\","
                 + "\"replayable\":true,\"schedulerReady\":true,"
@@ -261,7 +364,10 @@ public class CausynthModuleSupportTest {
                 + "\"calleeMethod\":\"<example.Sink: void take(int)>\","
                 + "\"argumentIndex\":0,\"occurrence\":1},"
                 + "{\"captureBindingId\":\"CAP.INVALID\"}]}";
-        Files.write(plan, Arrays.asList(first, second),
+        String retired = "{\"activationId\":\"ACT.OLD\","
+                + "\"rootMethod\":\"<example.Retired: void run()>\","
+                + "\"replayable\":true,\"symbolicReady\":true}";
+        Files.write(plan, Arrays.asList(first, second, retired),
                 StandardCharsets.UTF_8);
 
         assertEquals(Arrays.asList("<example.First: void run()>",

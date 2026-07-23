@@ -33,6 +33,14 @@ import java.util.TreeSet;
 public final class RegionPathWorklist {
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
+
+    public enum State {
+        NOT_STARTED,
+        PENDING,
+        CLOSED,
+        GAPPED
+    }
+
     private RegionPathWorklist() {
     }
 
@@ -109,14 +117,6 @@ public final class RegionPathWorklist {
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
-        private int candidateFlipCount;
-        private int terminalFlipCount;
-        private int observedCoveredFlipCount;
-        private int duplicateTaskCount;
-        private int transitionDiscoverySeedCount;
-        private int transitionDiscoveryTaskCount;
-        private int coveredConcreteObservationCount;
-        private boolean wallClockReached;
 
         private Planner(List<JsonObject> summaries,
                         List<JsonObject> activations,
@@ -141,6 +141,7 @@ public final class RegionPathWorklist {
             indexWitnessedBranchPositions();
             indexObservedFlipCoverage();
             Set<String> seenPaths = new LinkedHashSet<>();
+            Set<String> observedRegions = new TreeSet<>();
             for (JsonObject summary : summaries) {
                 if (!bool(summary, "valid", true)) continue;
                 String region = string(summary, "regionId");
@@ -153,9 +154,9 @@ public final class RegionPathWorklist {
 
                 String pathKey = stablePathKey(summary);
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
+                observedRegions.add(region);
                 increment(pathCountByRegion, region);
                 boolean transitionDiscovery = goal.isTransitionDiscovery();
-                if (transitionDiscovery) transitionDiscoverySeedCount++;
                 if (!bool(summary, "relationallyComplete", false)
                         && !(transitionDiscovery
                         && admissibleTransitionDiscoverySeed(summary))) {
@@ -170,7 +171,6 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (wallClockExceeded()) {
-                    wallClockReached = true;
                     gap("BOUND_REACHED", "MAX_WALL_CLOCK", region,
                             pathKey, "", -1);
                     break;
@@ -179,7 +179,8 @@ public final class RegionPathWorklist {
                 if (tasks.size() >= bounds.maxTasks) break;
             }
 
-            JsonObject manifest = manifest(seenPaths.size());
+            JsonObject manifest = manifest(seenPaths.size(),
+                    observedRegions);
             return new Result(tasks, manifest);
         }
 
@@ -216,7 +217,6 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (coveredConcreteObservation(mapping)) {
-                    coveredConcreteObservationCount++;
                     continue;
                 }
                 if (policyAware && !validBranchPolicy(mapping)) {
@@ -333,11 +333,9 @@ public final class RegionPathWorklist {
             String key = stableFlipKey(region, output, site,
                     occurrence, desired, alphaCanonical(prefix, alpha),
                     stableRuntimeBindings(summary, alpha), purpose);
-            candidateFlipCount++;
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
-                terminalFlipCount++;
                 if (gapStatus(previous)) {
                     gap("EXPLORATION_GAP", firstNonBlank(string(previous,
                                     "reason"), string(previous, "status")),
@@ -353,12 +351,9 @@ public final class RegionPathWorklist {
                 // therefore direct evidence that this exact flip frontier
                 // has already been executed.  Later suffix decisions remain
                 // independently enumerable from that observed summary.
-                terminalFlipCount++;
-                observedCoveredFlipCount++;
                 return;
             }
             if (!emitted.add(key)) {
-                duplicateTaskCount++;
                 return;
             }
 
@@ -375,7 +370,6 @@ public final class RegionPathWorklist {
                 task.addProperty("summaryCacheAdmission", "QUARANTINED");
                 task.add("transitionDiscovery", object(summary,
                         "transitionDiscovery").deepCopy());
-                transitionDiscoveryTaskCount++;
             }
             task.addProperty("sourceSummaryId", string(summary, "summaryId"));
             task.addProperty("sourcePathKey", pathKey);
@@ -582,49 +576,54 @@ public final class RegionPathWorklist {
             return canonical(stable);
         }
 
-        private JsonObject manifest(int observedPathCount) {
+        private JsonObject manifest(int observedPathCount,
+                                    Set<String> observedRegions) {
+            String regionId = manifestRegionId(observedRegions);
+            if (observedRegions.size() > 1) {
+                gap("MULTIPLE_REGION_SCOPE",
+                        "REGION_PATH_WORKLIST_REQUIRES_ONE_REGION",
+                        "", "", "", -1);
+            }
+            if (observedPathCount == 0) {
+                gap("NO_OBSERVED_PATH_SEED",
+                        "OUTPUT_CLOSURE_SEED_REQUIRED",
+                        regionId, "", "", -1);
+            }
+
+            State state = observedPathCount == 0
+                    ? State.NOT_STARTED
+                    : !gaps.isEmpty()
+                    ? State.GAPPED
+                    : tasks.isEmpty() ? State.CLOSED : State.PENDING;
             JsonObject result = new JsonObject();
             result.addProperty("schemaVersion", 1);
             result.addProperty("kind", "REGION_PATH_WORKLIST");
-            result.addProperty("captureScope",
-                    "OUTPUT_RELEVANT_BOUNDED_PATH_CLOSURE");
-            result.addProperty("targetRegionPolicy",
-                    "ONE_DIRECTED_TARGET_BRANCH_OUTSIDE_THIS_WORKLIST");
-            result.addProperty("stableKeyAlgorithm",
-                    "SHA-256_CANONICAL_FLIP_QUERY_V1");
-            result.addProperty("dynamicIdsExcludedFromStableKey", true);
+            result.addProperty("regionId", regionId);
+            result.addProperty("state", state.name());
             result.add("bounds", bounds.toJson());
             result.addProperty("observedPathCount", observedPathCount);
-            result.addProperty("candidateFlipCount", candidateFlipCount);
-            result.addProperty("terminalFlipCount", terminalFlipCount);
-            result.addProperty("observedCoveredFlipCount",
-                    observedCoveredFlipCount);
             result.addProperty("pendingTaskCount", tasks.size());
-            result.addProperty("duplicateTaskCount", duplicateTaskCount);
-            result.addProperty("transitionDiscoverySeedCount",
-                    transitionDiscoverySeedCount);
-            result.addProperty("transitionDiscoveryTaskCount",
-                    transitionDiscoveryTaskCount);
-            result.addProperty("coveredConcreteObservationCount",
-                    coveredConcreteObservationCount);
-            result.addProperty("coveredConcreteObservationAuthority",
-                    "EXACT_VM_CONCRETE_EVENT_COVERED_BY_IMMUTABLE_"
-                            + "WITNESS_AT_SAME_STATIC_POSITION_V1");
-            result.addProperty("wallClockBoundReached", wallClockReached);
-            result.add("pathCountByRegion", GSON.toJsonTree(
-                    pathCountByRegion));
-            result.addProperty("gapCount", gaps.size());
             result.add("gaps", GSON.toJsonTree(gaps));
-            boolean closed = tasks.isEmpty() && gaps.isEmpty();
-            result.addProperty("complete", closed);
-            result.addProperty("status", closed
-                    ? "COMPLETE_BOUNDED_PATH_CLOSURE"
-                    : gaps.isEmpty()
-                    ? "PATH_CLOSURE_HAS_PENDING_WORK"
-                    : "PATH_CLOSURE_WITH_EXPLICIT_GAPS");
-            result.addProperty("soundnessScope",
-                    "OBSERVED_AND_SOLVER_CLOSED_OUTPUT_RELEVANT_PATHS_WITHIN_BOUNDS");
             return result;
+        }
+
+        private String manifestRegionId(Set<String> observedRegions) {
+            if (observedRegions.size() == 1) {
+                return observedRegions.iterator().next();
+            }
+            if (!observedRegions.isEmpty()) return "";
+
+            Set<String> inputRegions = new TreeSet<>();
+            for (JsonObject summary : summaries) {
+                String region = string(summary, "regionId");
+                if (!region.isEmpty()) inputRegions.add(region);
+            }
+            for (JsonObject activation : activations.values()) {
+                String region = string(activation, "regionId");
+                if (!region.isEmpty()) inputRegions.add(region);
+            }
+            return inputRegions.size() == 1
+                    ? inputRegions.iterator().next() : "";
         }
 
         private boolean admissibleTransitionDiscoverySeed(

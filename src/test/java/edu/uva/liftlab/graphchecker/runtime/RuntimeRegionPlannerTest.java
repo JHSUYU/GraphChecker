@@ -1,9 +1,14 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,6 +34,38 @@ public class RuntimeRegionPlannerTest {
             "<example.SaslServerCallbackHandler: void handle(java.lang.Object[])>";
     private static final String NAME_CALLBACK_DEFAULT =
             "<javax.security.auth.callback.NameCallback: java.lang.String getDefaultName()>";
+
+    @Test
+    public void rejectsMissingAndUnknownPersistedRegionSchemas()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Path regions = folder.getRoot().toPath().resolve(
+                    "symbolic_regions.jsonl");
+            String missing = "{\"regionId\":\"REGION.MISSING\","
+                    + "\"rootMethod\":\"" + HANDLE + "\"}\n";
+            String unknown = "{\"schemaVersion\":2,"
+                    + "\"regionId\":\"REGION.UNKNOWN\","
+                    + "\"rootMethod\":\"" + HANDLE + "\"}\n";
+            Files.write(regions, (missing + unknown).getBytes(
+                    StandardCharsets.UTF_8));
+
+            RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                    regions.toFile(), Collections.singletonList(
+                            method(1, HANDLE, 1, 0, 0)),
+                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
+                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                            emptyList());
+
+            assertEquals(0, result.instances.size());
+            assertEquals(2, Collections.frequency(result.warnings,
+                    "ignored symbolic region row with missing or "
+                            + "unsupported schemaVersion"));
+        } finally {
+            folder.delete();
+        }
+    }
 
     @Test
     public void hotPathRegexesArePrecompiledAndPreserveCellParsing()
@@ -91,7 +128,7 @@ public class RuntimeRegionPlannerTest {
             String root = "<example.WorkerThread: void run()>";
             Path regions = folder.getRoot().toPath().resolve(
                     "symbolic_regions.jsonl");
-            Files.write(regions, region("REGION.WORKER", root).getBytes(
+            writeRegions(regions, region("REGION.WORKER", root).getBytes(
                     StandardCharsets.UTF_8));
             List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
                     rootContextMethod(1, root, 1, "producer-a",
@@ -148,7 +185,7 @@ public class RuntimeRegionPlannerTest {
             String root = "<example.Actor: void process(int,example.Command)>";
             Path regions = folder.getRoot().toPath().resolve(
                     "symbolic_regions.jsonl");
-            Files.write(regions, region("REGION.PARAMETERS", root).getBytes(
+            writeRegions(regions, region("REGION.PARAMETERS", root).getBytes(
                     StandardCharsets.UTF_8));
             RuntimeRegionPlanner.MethodEvent method = methodWithReceiver(
                     1, root, 1, 101);
@@ -242,7 +279,7 @@ public class RuntimeRegionPlannerTest {
             String root = "<example.WorkerThread: void run(java.lang.Object)>";
             Path regions = folder.getRoot().toPath().resolve(
                     "symbolic_regions.jsonl");
-            Files.write(regions, region("REGION.WORKER.ARG", root).getBytes(
+            writeRegions(regions, region("REGION.WORKER.ARG", root).getBytes(
                     StandardCharsets.UTF_8));
             List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
                     rootContextMethod(1, root, 1, "producer",
@@ -287,7 +324,7 @@ public class RuntimeRegionPlannerTest {
                     + "example.Service,int)>";
             Path regions = folder.getRoot().toPath().resolve(
                     "symbolic_regions.jsonl");
-            Files.write(regions, region("REGION.SELECTOR", root).getBytes(
+            writeRegions(regions, region("REGION.SELECTOR", root).getBytes(
                     StandardCharsets.UTF_8));
 
             List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
@@ -374,7 +411,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],"
                     + "\"models\":[\"symbolic_map\"]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent handle = method(1, HANDLE, 1, 0, 0);
             RuntimeRegionPlanner.MethodEvent identifier = method(3, IDENTIFIER, 2, 1, 2);
@@ -431,7 +468,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"inputSelectionComplete\":false,"
                     + "\"unresolvedInputs\":[\"opaque local result\"],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), Collections.singletonList(
@@ -480,7 +517,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"sourceKind\":\"ENVIRONMENT\","
                     + "\"projection\":\"value\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), Collections.singletonList(
                             method(1, HANDLE, 1, 0, 0)),
@@ -565,7 +602,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"sourceKind\":\"" + sourceKind
                     + "\",\"projection\":\"value\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), Collections.singletonList(
                             method(1, HANDLE, 1, 0, 0)),
@@ -664,7 +701,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"fieldPath\":[\"values\"]}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), Collections.singletonList(
                             methodContext(1, method, 1, "PROCESS", "reader",
@@ -714,7 +751,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:map\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent rootCall = methodContext(1,
                     root, 1, "DATANODE", "DataXceiver", 55L);
@@ -778,7 +815,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:map\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             RuntimeRegionPlanner.MethodEvent rootCall = methodContext(1,
                     root, 1, "DATANODE", "DataXceiver", 55L);
             RuntimeRegionPlanner.MethodEvent decoderCall =
@@ -826,7 +863,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"value\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             int receiver = receiverIsRoot ? 42 : 91;
             List<RuntimeRegionPlanner.FieldAccessEvent> fields =
                     new ArrayList<>();
@@ -872,7 +909,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"policy\":\"PATH_ASSUMPTION\","
                     + "\"guard\":\"loop exit\",\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE, 1, 0, 0);
             RuntimeRegionPlanner.RuntimeEvent body =
@@ -912,7 +949,7 @@ public class RuntimeRegionPlannerTest {
                     + IDENTIFIER + "\"],\"symbolicInputs\":[],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
             methods.add(method(1, HANDLE, 1, 0, 0));
@@ -953,7 +990,7 @@ public class RuntimeRegionPlannerTest {
         try {
             Path regions = folder.getRoot().toPath().resolve(
                     "symbolic_regions.jsonl");
-            Files.write(regions, region("REGION.0", HANDLE).getBytes(
+            writeRegions(regions, region("REGION.0", HANDLE).getBytes(
                     StandardCharsets.UTF_8));
             List<RuntimeRegionPlanner.RuntimeEvent> branches = new ArrayList<>();
             for (int index = 0; index < 513; index++) {
@@ -998,7 +1035,7 @@ public class RuntimeRegionPlannerTest {
             String updater = "<example.Updater: void run()>";
             String reader = "<example.Reader: void handle()>";
             String field = "<example.State: int currentKey>";
-            Files.write(regions, (region("REGION.W", updater)
+            writeRegions(regions, (region("REGION.W", updater)
                     + region("REGION.R", reader)).getBytes(StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.0\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -1118,7 +1155,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"guard\":\"value == 0\","
                     + "\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion + wrongRegion)
+            writeRegions(regions, (writerRegion + readerRegion + wrongRegion)
                     .getBytes(
                     StandardCharsets.UTF_8));
             String confirmedEdge = "{\"edgeId\":\"E.PRUNED\","
@@ -1136,7 +1173,7 @@ public class RuntimeRegionPlannerTest {
                     .replace("REGION.R", "REGION.WRONG");
             Files.write(edges, (confirmedEdge + overlappingCandidateEdge)
                     .getBytes(StandardCharsets.UTF_8));
-            Files.write(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
+            writeStaticGraph(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
                     "value_flow", "<example.Other: int x>",
                     "<example.Other: int y>", "<example.Other: void f()>",
                     "<example.Other: void f()>#u1", 1).getBytes(
@@ -1366,7 +1403,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"REQUESTED_OUTPUT_BACKWARD_DEPENDENCY_CLOSURE\"}],"
                     + "\"branchPolicies\":[],\"models\":[]}"
                     + System.lineSeparator();
-            Files.write(regions, (writerRegion
+            writeRegions(regions, (writerRegion
                     + region("REGION.R", reader)).getBytes(
                     StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.CANONICAL\","
@@ -1467,6 +1504,8 @@ public class RuntimeRegionPlannerTest {
                     "symbolic_regions.jsonl");
             Path edges = folder.getRoot().toPath().resolve(
                     "symbolic_region_edges.jsonl");
+            Path graph = folder.getRoot().toPath().resolve(
+                    "static_dataflow_edges.jsonl");
             String updater = "<example.Updater: void run()>";
             String reader = "<example.Reader: void handle()>";
             String absentAnchor = "<example.Updater: void fatalAnchor()>";
@@ -1602,8 +1641,27 @@ public class RuntimeRegionPlannerTest {
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}"
                     + System.lineSeparator();
-            Files.write(regions, (writerRegion + readerRegion)
+            JsonObject compactWriter = JsonParser.parseString(writerRegion)
+                    .getAsJsonObject();
+            compactWriter.addProperty("schemaVersion", 1);
+            JsonObject compactSlice = compactWriter
+                    .getAsJsonArray("outputSlices").get(0)
+                    .getAsJsonObject();
+            JsonArray embedded = compactSlice.getAsJsonArray("causalEdges");
+            StringBuilder canonicalGraph = new StringBuilder();
+            for (JsonElement element : embedded) {
+                JsonObject canonical = element.getAsJsonObject().deepCopy();
+                String id = canonical.remove("edgeId").getAsString();
+                canonical.addProperty("id", id);
+                canonical.addProperty("canonicalCatalogMarker", true);
+                canonicalGraph.append(canonical).append('\n');
+            }
+            compactSlice.remove("causalEdges");
+            writerRegion = compactWriter + System.lineSeparator();
+            writeRegions(regions, (writerRegion + readerRegion)
                     .getBytes(StandardCharsets.UTF_8));
+            writeStaticGraph(graph, canonicalGraph.toString().getBytes(
+                    StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.PRODUCER\","
                     + "\"fromRegion\":\"REGION.W\","
                     + "\"toRegion\":\"REGION.R\","
@@ -1627,7 +1685,7 @@ public class RuntimeRegionPlannerTest {
                     new RuntimeRegionPlanner.FieldAccessEvent(5, "FIELD_READ",
                             reader, 22, field, 77, 88, "");
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
-                    regions.toFile(), edges.toFile(),
+                    regions.toFile(), edges.toFile(), graph.toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(write, read));
@@ -1720,6 +1778,29 @@ public class RuntimeRegionPlannerTest {
             assertTrue(result.activationsJsonl().contains(
                     "\"writerEventSeq\":2"));
             assertEquals(1, result.summary.get("upstreamActivationCount"));
+
+            // The same compact row must fail closed when even one referenced
+            // canonical edge is absent.
+            String firstCanonicalRow = canonicalGraph.toString()
+                    .split("\\n")[0] + "\n";
+            writeStaticGraph(graph, firstCanonicalRow.getBytes(
+                    StandardCharsets.UTF_8));
+            RuntimeRegionPlanner.Result missingEdge =
+                    RuntimeRegionPlanner.plan(regions.toFile(),
+                            edges.toFile(), graph.toFile(),
+                            Arrays.asList(writeRoot, readRoot),
+                            Collections.<RuntimeRegionPlanner.RuntimeEvent>
+                                    emptyList(),
+                            Arrays.asList(write, read));
+            assertEquals(Boolean.FALSE, missingEdge.activations.get(2)
+                    .get("symbolicReady"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> rejectedSlice =
+                    (Map<String, Object>) missingEdge.activations.get(2)
+                            .get("requestedOutputSlice");
+            assertEquals(Boolean.FALSE, rejectedSlice.get("complete"));
+            assertTrue(String.valueOf(missingEdge.warnings).contains(
+                    "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:DF.WRITE"));
         } finally {
             folder.delete();
         }
@@ -1755,7 +1836,7 @@ public class RuntimeRegionPlannerTest {
         String region = "{\"regionId\":\"REGION.R\","
                 + "\"symbolicInputs\":[{\"portId\":\"REGION.R.in.0\","
                 + "\"cell\":\"" + projected + "\"}],\"outputs\":[]}";
-        String baseEdge = "{\"id\":\"DF.BASE\","
+        String baseEdge = "{\"schemaVersion\":1,\"id\":\"DF.BASE\","
                 + "\"kind\":\"field_read\",\"transferKind\":\"HEAP_READ\","
                 + "\"relation\":\"value_flow\","
                 + "\"direction\":\"backward_provenance\","
@@ -1765,7 +1846,8 @@ public class RuntimeRegionPlannerTest {
                 + "\"eligibleForAutomaticSmt\":true,"
                 + "\"fromCell\":\"" + base + "\","
                 + "\"toCell\":\"" + local + "\"}";
-        String projectionEdge = "{\"id\":\"DF.PROJECTION\","
+        String projectionEdge = "{\"schemaVersion\":1,"
+                + "\"id\":\"DF.PROJECTION\","
                 + "\"kind\":\"projected_field_read\","
                 + "\"transferKind\":\"HEAP_READ\","
                 + "\"relation\":\"value_flow\","
@@ -1780,7 +1862,8 @@ public class RuntimeRegionPlannerTest {
                 + "\"objectToCell\":\"" + local + "\","
                 + "\"fieldPath\":\"#field:keyId\","
                 + "\"projectionBaseEdgeId\":\"DF.BASE\"}";
-        String declarationEdge = "{\"id\":\"DF.DECLARATION\","
+        String declarationEdge = "{\"schemaVersion\":1,"
+                + "\"id\":\"DF.DECLARATION\","
                 + "\"kind\":\"accessor_field_return\","
                 + "\"transferKind\":\"PROJECTION\","
                 + "\"relation\":\"value_flow\","
@@ -1983,7 +2066,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.RUNTIME.PATH\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -2026,6 +2109,7 @@ public class RuntimeRegionPlannerTest {
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(updateRoot, readRoot),
                     Arrays.asList(mutation, mutationReturn, branch),
                     Arrays.asList(payloadRead, stateRead, downstreamRead));
@@ -2184,7 +2268,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.RUNTIME.HELPER\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -2225,6 +2309,7 @@ public class RuntimeRegionPlannerTest {
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(updateRoot, helperCall, readRoot),
                     Arrays.asList(callSite, helperBranch),
                     Arrays.asList(write, read));
@@ -2310,7 +2395,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}"
                     + System.lineSeparator();
-            Files.write(regions, (writerRegion + readerRegion)
+            writeRegions(regions, (writerRegion + readerRegion)
                     .getBytes(StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.PRODUCER\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -2342,6 +2427,7 @@ public class RuntimeRegionPlannerTest {
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Collections.singletonList(rootArgument),
                     Arrays.asList(write, read));
@@ -2422,7 +2508,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"value\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.ARRAY\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -2457,6 +2543,7 @@ public class RuntimeRegionPlannerTest {
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Collections.singletonList(rootArgument),
                     Arrays.asList(payloadRead, leafRead, write, read));
@@ -2495,7 +2582,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"sourceKind\":\"RECEIVER_FIELD\","
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE, 1, 0, 0);
             RuntimeRegionPlanner.FieldAccessEvent read =
@@ -2536,7 +2623,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.FieldAccessEvent unrelated =
                     new RuntimeRegionPlanner.FieldAccessEvent(2,
@@ -2603,7 +2690,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1\""
                     + "}],\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.FieldAccessEvent observed =
                     exactFieldRead(2, method, 1, 8, rootField, 41, 42);
@@ -2671,7 +2758,7 @@ public class RuntimeRegionPlannerTest {
                     + "ACCESSOR_CALLSITE_V1\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE, 1,
                     0, 0);
@@ -2741,7 +2828,7 @@ public class RuntimeRegionPlannerTest {
             String field = "<example.Command: int action>";
             String getter = "<example.Command: int getAction()>";
             String site = HANDLE + "#u11";
-            Files.write(regions, accessorFieldRegion(field, getter, site)
+            writeRegions(regions, accessorFieldRegion(field, getter, site)
                     .getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.RuntimeEvent enter =
@@ -2816,7 +2903,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
                     + "ACCESSOR_CALLSITE_V1\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.RuntimeEvent enter =
                     new RuntimeRegionPlanner.RuntimeEvent(2,
@@ -2874,10 +2961,10 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"sourceKind\":\"PROTOCOL_INPUT\","
                     + "\"projection\":\"value\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
             String exactEdge = frozenAccessorEdge("DF.ACCESS.1", field,
                     getter, site);
-            Files.write(graph, Collections.singletonList(exactEdge),
+            writeStaticGraph(graph, Collections.singletonList(exactEdge),
                     StandardCharsets.UTF_8);
 
             RuntimeRegionPlanner.RuntimeEvent enter =
@@ -2914,7 +3001,7 @@ public class RuntimeRegionPlannerTest {
             assertEquals(1, selected.summary.get(
                     "frozenStaticAccessorInputBindingCount"));
 
-            Files.write(graph, Arrays.asList(exactEdge,
+            writeStaticGraph(graph, Arrays.asList(exactEdge,
                     frozenAccessorEdge("DF.ACCESS.2", field, getter, site)),
                     StandardCharsets.UTF_8);
             RuntimeRegionPlanner.Result ambiguous =
@@ -2944,7 +3031,7 @@ public class RuntimeRegionPlannerTest {
             String field = "<example.Command: int action>";
             String getter = "<example.Command: int getAction()>";
             String site = HANDLE + "#u11";
-            Files.write(regions, accessorFieldRegion(field, getter, site)
+            writeRegions(regions, accessorFieldRegion(field, getter, site)
                     .getBytes(StandardCharsets.UTF_8));
 
             List<RuntimeRegionPlanner.RuntimeEvent> calls = Arrays.asList(
@@ -2999,7 +3086,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:expiryDate\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), Collections.singletonList(
@@ -3043,7 +3130,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"argument[0].entries\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent root = method(1, HANDLE,
                     1, 0, 0);
@@ -3098,7 +3185,7 @@ public class RuntimeRegionPlannerTest {
                     + "#u8\",\"policy\":\"EXPLORE\","
                     + "\"guard\":\"if r25 != null goto return\"}],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent root = method(1, RETRIEVE, 1, 0, 0);
             RuntimeRegionPlanner.RuntimeEvent argument =
@@ -3156,7 +3243,7 @@ public class RuntimeRegionPlannerTest {
                     + "#u8\",\"policy\":\"PATH_ASSUMPTION\","
                     + "\"guard\":\"if r25 != null goto return\"}],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent root = method(1, RETRIEVE, 1, 0, 0);
             RuntimeRegionPlanner.RuntimeEvent argument =
@@ -3192,7 +3279,7 @@ public class RuntimeRegionPlannerTest {
                     "symbolic_region_edges.jsonl");
             String sender = "<example.Client: void send()>";
             String receiver = "<example.Server: void handle()>";
-            Files.write(regions, (region("REGION.S", sender)
+            writeRegions(regions, (region("REGION.S", sender)
                     + region("REGION.D", receiver)).getBytes(StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.1\","
                     + "\"fromRegion\":\"REGION.S\","
@@ -3241,7 +3328,7 @@ public class RuntimeRegionPlannerTest {
                     "symbolic_region_edges.jsonl");
             String sender = "<example.HdfsSaslClient: void handshake()>";
             String receiver = "<example.HdfsSaslServer: void handle()>";
-            Files.write(regions, (region("REGION.C", sender)
+            writeRegions(regions, (region("REGION.C", sender)
                     + region("REGION.S", receiver)).getBytes(
                     StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.SASL\","
@@ -3411,7 +3498,7 @@ public class RuntimeRegionPlannerTest {
                     "symbolic_region_edges.jsonl");
             String server = "<example.NameNode: example.Keys getBlockKeys()>";
             String updater = "<example.KeyUpdater: void run()>";
-            Files.write(regions, (region("REGION.NN", server)
+            writeRegions(regions, (region("REGION.NN", server)
                     + region("REGION.B", updater)).getBytes(StandardCharsets.UTF_8));
             String site = updater + "#u4";
             String edge = "{\"edgeId\":\"E.RPC\","
@@ -3464,7 +3551,7 @@ public class RuntimeRegionPlannerTest {
             String server = "<example.NameNode: example.Keys getKeys()>";
             String updater = "<example.Updater: void run()>";
             String site = updater + "#u4";
-            Files.write(regions, (region("REGION.NN", server)
+            writeRegions(regions, (region("REGION.NN", server)
                     + region("REGION.UP", updater)).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.RUNTIME\","
@@ -3546,7 +3633,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"cell\":\"" + canonical + "\","
                     + "\"kind\":\"HEAP_STATE\"}],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, (producerRegion
+            writeRegions(regions, (producerRegion
                     + region("REGION.DN", consumer)).getBytes(
                     StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.HEARTBEAT.KEYS\","
@@ -3644,7 +3731,7 @@ public class RuntimeRegionPlannerTest {
                     + expectedReceiver + "\",\"" + sharedLowerMethod
                     + "\"],\"symbolicInputs\":[],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, rows.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, rows.getBytes(StandardCharsets.UTF_8));
             String edge = "{\"edgeId\":\"E.2\","
                     + "\"fromRegion\":\"REGION.S\","
                     + "\"toRegion\":\"REGION.R\","
@@ -3680,7 +3767,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"methods\":[\"" + HANDLE + "\",\"" + RETRIEVE
                     + "\"],\"symbolicInputs\":[],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), Collections.singletonList(
@@ -3718,7 +3805,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"" + RETRIEVE
                     + "\"],\"symbolicInputs\":[],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent middle =
                     method(1, PASSWORD, 10, 0, 0);
@@ -3753,7 +3840,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"methods\":[\"" + HANDLE + "\",\""
                     + RETRIEVE + "\"],\"symbolicInputs\":[],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent unrelatedStaticRoot =
                     method(1, HANDLE, 1, 0, 0);
@@ -3794,7 +3881,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"policy\":\"EXPLORE\",\"guard\":\"late\","
                     + "\"requiredOutcome\":false,\"role\":\"REACHABILITY\"}],"
                     + "\"models\":[]}\n";
-            Files.write(regions, row.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, row.getBytes(StandardCharsets.UTF_8));
 
             List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
             String noise = "<example.Noise: void run()>";
@@ -3852,7 +3939,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"methods\":[\"" + PASSWORD + "\",\"" + RETRIEVE
                     + "\"],\"symbolicInputs\":[],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, (heartbeat + registration)
+            writeRegions(regions, (heartbeat + registration)
                     .getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.MethodEvent unrelatedHeartbeat =
@@ -3899,7 +3986,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"methods\":[\"" + PASSWORD + "\",\""
                     + RETRIEVE + "\"],\"symbolicInputs\":[],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, (first + second)
+            writeRegions(regions, (first + second)
                     .getBytes(StandardCharsets.UTF_8));
 
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
@@ -4293,7 +4380,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"policy\":\"PATH_ASSUMPTION\","
                     + "\"guard\":\"a <= b\",\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, region.getBytes(StandardCharsets.UTF_8));
 
             String frozen = frozenDemandEdge("DF.GA", "GUARD",
                     "control_depends_on", localA, failure, anchor,
@@ -4321,7 +4408,7 @@ public class RuntimeRegionPlannerTest {
                     fieldB, getterLocalB, getB, getB + "#u8", 8)
                     + frozenDemandEdge("DF.AB", "HEAP_READ", "value_flow",
                     aliasB, getterLocalB, getB, getB + "#u8", 8);
-            Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
+            writeStaticGraph(graph, frozen.getBytes(StandardCharsets.UTF_8));
 
             List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
                     method(1, root, 1, 0, 0),
@@ -4511,8 +4598,8 @@ public class RuntimeRegionPlannerTest {
                     + "\"policy\":\"PATH_ASSUMPTION\","
                     + "\"guard\":\"x == 0\",\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
-            Files.write(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
+            writeRegions(regions, region.getBytes(StandardCharsets.UTF_8));
+            writeStaticGraph(graph, frozenDemandEdge("DF.UNRELATED", "VALUE_PASS",
                     "value_flow", "<example.Other: int x>",
                     "<example.Other: int y>", "<example.Other: void f()>",
                     "<example.Other: void f()>#u1", 1).getBytes(
@@ -4575,7 +4662,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"policy\":\"PATH_ASSUMPTION\","
                     + "\"guard\":\"x == 0\",\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, region.getBytes(StandardCharsets.UTF_8));
             Files.write(emptyGraph, new byte[0]);
             RuntimeRegionPlanner.RuntimeEvent branch =
                     new RuntimeRegionPlanner.RuntimeEvent(2, "BRANCH", root,
@@ -4633,13 +4720,9 @@ public class RuntimeRegionPlannerTest {
             String fromCell, String toCell, String method,
             String siteId, int unitIndex) {
         return "{\"id\":\"" + id + "\",\"kind\":\"test_edge\","
+                + "\"schemaVersion\":1,"
                 + "\"transferKind\":\"" + transferKind + "\","
                 + "\"relation\":\"" + relation + "\","
-                + "\"mappingOnly\":false,"
-                + "\"semanticAssertionsAllowed\":true,"
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"direction\":\"backward_provenance\","
                 + "\"fromCell\":\"" + fromCell + "\","
                 + "\"toCell\":\"" + toCell + "\","
                 + "\"method\":\"" + method + "\","
@@ -4693,7 +4776,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"guard\":\"observed == 0\","
                     + "\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, region.getBytes(StandardCharsets.UTF_8));
+            writeRegions(regions, region.getBytes(StandardCharsets.UTF_8));
 
             String newWriteSite = exactNewWriteSite
                     ? root + "#u4" : root + "#u40";
@@ -4716,7 +4799,7 @@ public class RuntimeRegionPlannerTest {
                     + frozenDemandEdge("DF.NEW.RHS", "VALUE_PASS",
                     "value_flow", newInput, newRhs, root,
                     root + "#u3", 3);
-            Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
+            writeStaticGraph(graph, frozen.getBytes(StandardCharsets.UTF_8));
 
             List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
                     new RuntimeRegionPlanner.RuntimeEvent(2,
@@ -4954,7 +5037,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"value\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.STATE\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -4983,6 +5066,7 @@ public class RuntimeRegionPlannerTest {
                     new RuntimeRegionPlanner.FieldAccessEvent(11,
                             "FIELD_READ", reader, 22, state, 42, 88, "");
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(keyRead, keysRead, write, read));
@@ -5094,7 +5178,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"value\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.STATE\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -5125,6 +5209,7 @@ public class RuntimeRegionPlannerTest {
                     new RuntimeRegionPlanner.FieldAccessEvent(11,
                             "FIELD_READ", reader, 22, state, 42, 88, "");
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     Arrays.asList(carrierRead, exactArrayRead, keyRead,
@@ -5190,7 +5275,7 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"sourceKind\":\"SHARED_HEAP\","
                     + "\"projection\":\"value\"}],\"outputs\":[],"
                     + "\"branchPolicies\":[],\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.STATE\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -5236,6 +5321,7 @@ public class RuntimeRegionPlannerTest {
             fieldEvents.add(write);
             fieldEvents.add(read);
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                     fieldEvents);
@@ -5356,7 +5442,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.STATE\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -5390,6 +5476,7 @@ public class RuntimeRegionPlannerTest {
                     new RuntimeRegionPlanner.FieldAccessEvent(11,
                             "FIELD_READ", reader, 22, state, 42, 88, "");
             return RuntimeRegionPlanner.plan(regions.toFile(), edges.toFile(),
+                    companionStaticGraph(regions).toFile(),
                     Arrays.asList(writeRoot, readRoot),
                     Arrays.asList(mutation, mutationReturn),
                     Arrays.asList(stateRead, downstreamRead));
@@ -5431,7 +5518,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"projection\":\"field:allKeys\"}],"
                     + "\"outputs\":[],\"branchPolicies\":[],"
                     + "\"models\":[]}\n";
-            Files.write(regions, (writerRegion + readerRegion).getBytes(
+            writeRegions(regions, (writerRegion + readerRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.ALL_KEYS\","
                     + "\"fromRegion\":\"REGION.W\","
@@ -5567,14 +5654,10 @@ public class RuntimeRegionPlannerTest {
     private static String frozenAccessorEdge(String id, String field,
                                              String getter, String site) {
         return "{\"id\":\"" + id
-                + "\",\"kind\":\"accessor_field_return\","
+                + "\",\"schemaVersion\":1"
+                + ",\"kind\":\"accessor_field_return\","
                 + "\"transferKind\":\"HEAP_READ\","
                 + "\"relation\":\"value_flow\","
-                + "\"mappingOnly\":false,"
-                + "\"semanticAssertionsAllowed\":true,"
-                + "\"eligibleForAutomaticDerivation\":true,"
-                + "\"eligibleForAutomaticSmt\":true,"
-                + "\"direction\":\"backward_provenance\","
                 + "\"fromCell\":\"" + field + "\","
                 + "\"toCell\":\"" + HANDLE + "::$r4\","
                 + "\"method\":\"" + HANDLE + "\","
@@ -5602,7 +5685,7 @@ public class RuntimeRegionPlannerTest {
             Path edges = folder.getRoot().toPath().resolve(
                     "symbolic_region_edges.jsonl");
             String fromPort = SASL_CLIENT + ".param3:java.lang.String";
-            Files.write(regions, (regionWithOutput("REGION.LEGACY.FIRST",
+            writeRegions(regions, (regionWithOutput("REGION.LEGACY.FIRST",
                     "<example.UnobservedProducer: void run()>", fromPort)
                     + regionWithOutput("REGION.C", SASL_CLIENT, fromPort)
                     + region("REGION.S", SASL_SERVER)).getBytes(
@@ -5670,7 +5753,7 @@ public class RuntimeRegionPlannerTest {
                     + "\"guard\":\"name == null\","
                     + "\"requiredOutcome\":false,"
                     + "\"role\":\"REACHABILITY\"}],\"models\":[]}\n";
-            Files.write(regions, (regionWithOutput("REGION.C", SASL_CLIENT,
+            writeRegions(regions, (regionWithOutput("REGION.C", SASL_CLIENT,
                     fromPort) + serverRegion).getBytes(
                     StandardCharsets.UTF_8));
             Files.write(edges, ("{\"edgeId\":\"E.SASL.DEMAND\","
@@ -5698,7 +5781,7 @@ public class RuntimeRegionPlannerTest {
                     "DF.DIRECT.DUPLICATE", directTransferKind,
                     directRelation, defaultField, rawEndpoint, SASL_SERVER,
                     SASL_SERVER + "#u5", 5) : "");
-            Files.write(graph, frozen.getBytes(StandardCharsets.UTF_8));
+            writeStaticGraph(graph, frozen.getBytes(StandardCharsets.UTF_8));
 
             String fingerprint = "sha256:same-sasl-user";
             RuntimeRegionPlanner.RuntimeEvent branch =
@@ -5814,6 +5897,88 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle", process,
                 threadName, tid, method, 42, "example.State", callId,
                 0, 0, seq * 100L);
+    }
+
+    private static void writeRegions(Path path, byte[] rows)
+            throws IOException {
+        StringBuilder regions = new StringBuilder();
+        Map<String, JsonObject> canonicalEdges = new LinkedHashMap<>();
+        String input = new String(rows, StandardCharsets.UTF_8);
+        for (String line : input.split("\\r?\\n")) {
+            if (line.trim().isEmpty()) {
+                continue;
+            }
+            JsonObject region = JsonParser.parseString(line)
+                    .getAsJsonObject();
+            region.addProperty("schemaVersion", 1);
+            for (JsonElement sliceElement
+                    : region.has("outputSlices")
+                    ? region.getAsJsonArray("outputSlices")
+                    : new JsonArray()) {
+                JsonObject slice = sliceElement.getAsJsonObject();
+                JsonArray embedded = slice.has("causalEdges")
+                        ? slice.getAsJsonArray("causalEdges")
+                        : new JsonArray();
+                for (JsonElement edgeElement : embedded) {
+                    JsonObject edge = edgeElement.getAsJsonObject().deepCopy();
+                    JsonElement edgeId = edge.remove("edgeId");
+                    String id = edgeId == null ? "" : edgeId.getAsString();
+                    if (id.isEmpty()) {
+                        throw new IOException("embedded test edge lacks id");
+                    }
+                    edge.addProperty("schemaVersion", 1);
+                    edge.addProperty("id", id);
+                    JsonObject previous = canonicalEdges.put(id, edge);
+                    if (previous != null && !previous.equals(edge)) {
+                        throw new IOException(
+                                "conflicting embedded test edge " + id);
+                    }
+                }
+                slice.remove("causalEdges");
+                slice.remove("causalEdgeCount");
+            }
+            regions.append(region).append('\n');
+        }
+        Files.write(path, regions.toString().getBytes(
+                StandardCharsets.UTF_8));
+        StringBuilder graph = new StringBuilder();
+        for (JsonObject edge : canonicalEdges.values()) {
+            graph.append(edge).append('\n');
+        }
+        Files.write(companionStaticGraph(path), graph.toString().getBytes(
+                StandardCharsets.UTF_8));
+    }
+
+    private static void writeStaticGraph(Path path, byte[] rows)
+            throws IOException {
+        writeVersionedRows(path, rows);
+    }
+
+    private static void writeStaticGraph(Path path, List<String> rows,
+                                         java.nio.charset.Charset charset)
+            throws IOException {
+        writeVersionedRows(path, String.join("\n", rows).getBytes(charset));
+    }
+
+    private static void writeVersionedRows(Path path, byte[] rows)
+            throws IOException {
+        StringBuilder result = new StringBuilder();
+        String input = new String(rows, StandardCharsets.UTF_8);
+        for (String line : input.split("\\r?\\n")) {
+            if (line.trim().isEmpty()) {
+                continue;
+            }
+            JsonObject object = JsonParser.parseString(line)
+                    .getAsJsonObject();
+            object.addProperty("schemaVersion", 1);
+            result.append(object).append('\n');
+        }
+        Files.write(path, result.toString().getBytes(
+                StandardCharsets.UTF_8));
+    }
+
+    private static Path companionStaticGraph(Path regions) {
+        return regions.resolveSibling("static_dataflow_edges.jsonl");
     }
 
     private static String region(String id, String method) {
