@@ -290,8 +290,6 @@ public final class ConcolicConstraintSolver {
                 unforcedPrefixSymbols.size());
         record.add("materializedPrefixControlledSymbols",
                 GSON.toJsonTree(unforcedPrefixSymbols));
-        record.addProperty("modelUsedOnlyForReplay", true);
-        record.addProperty("branchOverrideAllowed", false);
         if (targetControlledSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");

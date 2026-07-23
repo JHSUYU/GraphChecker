@@ -70,8 +70,6 @@ public class ConcolicConstraintSolverTest {
                 assignment.get("inputSymbol").getAsString());
         assertEquals("Z3_PATH_FLIP_MODEL",
                 assignment.get("authority").getAsString());
-        assertFalse(result.record.get("branchOverrideAllowed")
-                .getAsBoolean());
     }
 
     @Test

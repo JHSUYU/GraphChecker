@@ -1237,7 +1237,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void exactGuardCoverageFailsClosedWhenMissingOrOverridden()
+    public void exactGuardCoverageFailsClosedWhenMissing()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1264,27 +1264,6 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertTrue(missingGuard.diagnostics.contains(
                     "UNOBSERVED_DECLARED_HEAP_WRITE"));
-
-            ExactTransformerFixture overridden = exactTransformerFixture(
-                    new JsonArray());
-            JsonObject overriddenBinding = transformerInputBinding(
-                    "REGION.P.in.0", overridden.outputCell,
-                    strings(overridden.updateSite, overridden.pruneSite),
-                    new JsonArray());
-            overriddenBinding.addProperty(
-                    "requestedStateTransformerSinkExclusive", false);
-            overridden.sliceMetadata.add("inputBindings",
-                    stringsAsObjects(overriddenBinding));
-            overridden.branchMappings.get(0).getAsJsonObject().addProperty(
-                    "overrideApplied", true);
-            MapFixture forced = importMapFixture(
-                    folder.getRoot().toPath().resolve("overridden"),
-                    overridden.path, true, new JsonArray(),
-                    overridden.methods, overridden.causalEdges, null,
-                    new JsonArray(), overridden.branchMappings, null, null,
-                    overridden.sliceMetadata, new JsonArray());
-            assertEquals(0, forced.summary.size());
-            assertTrue(forced.diagnostics.contains("BRANCH_OVERRIDE_USED"));
         } finally {
             folder.delete();
         }
@@ -3535,7 +3514,6 @@ public class ConcolicSummaryImporterTest {
         mapping.addProperty("vmThreadContextId", 2);
         mapping.addProperty("vmOwnerJavaThreadId", 3);
         mapping.addProperty("vmOwnerOsThreadId", 4);
-        mapping.addProperty("overrideMode", "NONE");
         mapping.add("vmConditionIndices", singletonInteger(0));
         mapping.add("rawCondition", condition.deepCopy());
         mapping.add("condition", condition.deepCopy());
@@ -3685,8 +3663,6 @@ public class ConcolicSummaryImporterTest {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", true);
         mapping.addProperty("observedOutcome", true);
-        mapping.addProperty("effectiveOutcome", true);
-        mapping.addProperty("overrideApplied", false);
         mapping.addProperty("conditionIndex", -1);
         mapping.addProperty("rawConditionIndex", -1);
         mapping.addProperty("rawPathConditionBaseline", baseline);
@@ -5280,8 +5256,6 @@ public class ConcolicSummaryImporterTest {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("effectiveOutcome", observedOutcome);
-        mapping.addProperty("overrideApplied", false);
         mapping.addProperty("conditionIndex", -1);
         mapping.addProperty("rawConditionIndex", -1);
         mapping.add("condition", condition.deepCopy());
@@ -5854,9 +5828,6 @@ public class ConcolicSummaryImporterTest {
             mapping.addProperty("vmOccurrence", 1);
             mapping.addProperty("outcome", true);
             mapping.addProperty("observedOutcome", true);
-            mapping.addProperty("effectiveOutcome", true);
-            mapping.addProperty("overrideApplied", false);
-            mapping.addProperty("overrideMode", "NONE");
             mapping.addProperty("conditionIndex", 0);
             mapping.addProperty("rawConditionIndex", 0);
             mapping.addProperty("rawPathConditionBaseline", 0);

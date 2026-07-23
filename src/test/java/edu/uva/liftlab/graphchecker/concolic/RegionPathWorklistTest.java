@@ -769,9 +769,6 @@ public class RegionPathWorklistTest {
         mapping.addProperty("expression", "i3 <= 4");
         mapping.addProperty("outcome", outcome);
         mapping.addProperty("observedOutcome", outcome);
-        mapping.addProperty("effectiveOutcome", outcome);
-        mapping.addProperty("overrideApplied", false);
-        mapping.addProperty("overrideMode", "NONE");
         mapping.addProperty("mappingPolicy",
                 "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
         mapping.addProperty("vmBranchEventExpected", true);

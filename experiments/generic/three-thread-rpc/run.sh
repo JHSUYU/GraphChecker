@@ -416,12 +416,9 @@ do_schedule_target() {
   IFS=$'\t' read -r region activation <<< "${binding}"
   (cd "${graphchecker_dir}" && "${runner}" --config "${config}" schedule \
     --region-id "${region}" --activation-id "${activation}")
-  jq -e -s '
-    length == 1
-    and ((.[0].forcedBranches // []) | length) == 0
-    and .[0].branchOverrideProhibited == true
-  ' "${target_schedule}/scheduled_activation_plan.jsonl" >/dev/null \
-    || die "target seed schedule permits a branch override"
+  jq -e -s 'length == 1' \
+    "${target_schedule}/scheduled_activation_plan.jsonl" >/dev/null \
+    || die "target scheduler did not emit exactly one activation"
 }
 
 do_schedule_producer() {
@@ -921,8 +918,6 @@ do_explore_producer() {
       .complete == true
       and .status == "PATH_FLIP_REPLAY_READY"
       and .selectedTaskCount == 1
-      and .branchOverrideAllowed == false
-      and .runtimeValidationRequired == true
     ' "${planner_dir}/path_flip_plan_manifest.json" >/dev/null \
       || die "producer path flip is not one solver-backed replay"
     query_key=$(jq -er '.queryKey' \
@@ -951,9 +946,7 @@ do_explore_producer() {
         and (.replayContract | has("contractId") | not)
         and (.replayContract | has("required") | not)
         and (.replayContract.source | has("witnessId") | not)
-        and (has("branchOverrideProhibited") | not)
         and ((.modelAssignments // []) | length) > 0
-        and ((.forcedBranches // []) | length) == 0
       )
       | .activationId
     ' "${planner_dir}/activation_plan.jsonl")

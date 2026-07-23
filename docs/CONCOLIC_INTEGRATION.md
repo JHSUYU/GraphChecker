@@ -21,13 +21,13 @@ there is no domain-specific composition adapter.
 
 1. Every analyzed unit is a `REGION.*`; no domain-specific region types exist.
 2. A region has one of two capture goals: `TARGET_BRANCH` or `OUTPUT_CLOSURE`.
-3. The target goal captures one unforced exact branch observation and derives
+3. The target goal captures one exact branch observation and derives
    one immutable `BranchReplayContract` plus `SolverPathContext` for candidate
    composition. The maintained workflow does not replay the target.
 4. An output goal is admitted only through real record/solve/replay/import
    evidence and is merged only after its bounded path worklist closes.
-5. Input models may change real program inputs. Branch overrides never count as
-   automatic concolic evidence.
+5. Input models may change real program inputs. Branch outcomes remain
+   read-only runtime observations.
 6. Static dataflow discovers work but does not establish runtime value
    semantics.
 7. Cross-region equality requires a complete, invocation-matched runtime value
@@ -236,7 +236,7 @@ A representative witnessed branch row is:
 added no path-condition entry. It does not duplicate site, outcome, condition,
 override, or runtime-event aliases at the mapping root. Completeness details
 remain importer diagnostics; the canonical summary persists the one aggregate
-`relationallyComplete` gate instead of parallel validity, branch-override,
+`relationallyComplete` gate instead of parallel validity,
 materialization-admission, and heap-model completeness mirrors.
 
 Map mutations are ordered state transitions such as `MAP_PUT`, `MAP_REMOVE`,
@@ -295,14 +295,13 @@ returns materializable assignments. The important result is the selected path
 and symbolic relation, not a displayed concrete model.
 
 For producer output closure, the replay activation carries assignments and the
-same immutable replay contract. It must not contain `forcedBranches`,
-target-branch aliases, or branch overrides. The runtime reports applied
-assignment count and actual branch witnesses.
+same immutable replay contract. The runtime reports applied assignment count
+and actual branch witnesses; branch outcomes are observations, not replay
+inputs.
 
 `ConcolicReplayValidator` checks:
 
 ```text
-no branch override
 all assignments applied
 expected branch prefix observed naturally
 selected site/occurrence has the desired outcome

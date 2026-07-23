@@ -222,7 +222,6 @@ final class ConcolicInstrumentationSelections {
                 || !strictJsonBooleanEquals(row,
                 "containedCallTreeTruncated", false)
                 || !emptyJsonArray(row, "runtimeGaps")
-                || !absentOrEmptyJsonArray(row, "forcedBranches")
                 || row.has("transitionDiscovery")
                 || row.has("transitionOutputRefinement")) {
             return false;
@@ -230,9 +229,7 @@ final class ConcolicInstrumentationSelections {
         boolean seedReplay = "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
                 .equals(jsonString(row, "replayMode"))
                 && "CAPTURE_OUTPUT_PATH".equals(jsonString(row,
-                "executionPhase"))
-                && strictJsonBooleanEquals(row,
-                "branchOverrideProhibited", true)
+                        "executionPhase"))
                 && absentOrEmptyJsonArray(row, "modelAssignments");
         boolean solverFlipReplay = solverOutputPathFlipReady(row, selected);
         if (!seedReplay && !solverFlipReplay) {
@@ -351,11 +348,6 @@ final class ConcolicInstrumentationSelections {
                 strictJsonString(row, "replayMode"))
                 || !"REPLAY_OUTPUT_PATH_FLIP".equals(
                 strictJsonString(row, "executionPhase"))) {
-            return false;
-        }
-
-        if (row.has("branchOverrideAllowed")
-                || row.has("branchOverrideProhibited")) {
             return false;
         }
 

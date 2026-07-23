@@ -76,10 +76,6 @@ public final class ConcolicReplayValidator {
                 "CONCOLIC_REGION_RESULT".equals(string(rawResult, "event")));
         require(failures, "REGION_ID_MISMATCH", string(task, "regionId")
                 .equals(string(rawResult, "regionId")));
-        require(failures, "BRANCH_OVERRIDE_USED",
-                !bool(rawResult, "branchOverrideUsed", false)
-                        && !hasOverride(array(rawResult,
-                        "branchMappings")));
         String plannedActivationId = string(task, "activationId");
         // Runtime-local identity evidence must name the replay activation
         // itself; a task/source activation is never a valid fallback.
@@ -268,8 +264,6 @@ public final class ConcolicReplayValidator {
                 && branchObservation.valid());
         result.addProperty("flippedBranchValidated",
                 branchObservation != null && branchObservation.valid());
-        result.addProperty("inputModelOnly", !contains(failures,
-                "BRANCH_OVERRIDE_USED"));
         result.addProperty("dynamicAssignmentIdentityValidated",
                 !dynamicPlan || !contains(failures,
                         "DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH")
@@ -1425,14 +1419,6 @@ public final class ConcolicReplayValidator {
                     .append(canonical(object.get(key)));
         }
         return result.append('}').toString();
-    }
-
-    private static boolean hasOverride(JsonArray mappings) {
-        for (JsonElement element : mappings) {
-            if (element.isJsonObject() && bool(element.getAsJsonObject(),
-                    "overrideApplied", false)) return true;
-        }
-        return false;
     }
 
     private static void require(JsonArray failures, String code,

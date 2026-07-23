@@ -409,8 +409,7 @@ validate_container_producer_artifacts() {
     ([.[] | select((.pathQueryKey // "") != "")] as $replays
       | ($replays | length) == 10
       and all($replays[];
-        .branchOverrideUsed == false
-        and .allModelAssignmentsApplied == true
+        .allModelAssignmentsApplied == true
         and .branchReplayValidation.kind == "BRANCH_REPLAY_OBSERVATION"
         and .branchReplayValidation.requested == true
         and .branchReplayValidation.valid == true)

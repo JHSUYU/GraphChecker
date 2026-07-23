@@ -3352,12 +3352,8 @@ public final class ConcolicRegionRuntime {
                 expected.defaultSuccessorIndex());
         mapping.addProperty("observedSuccessorIndex",
                 expected.observedSuccessorIndex);
-        mapping.addProperty("effectiveSuccessorIndex",
-                expected.observedSuccessorIndex);
         mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("observedOutcome", expected.caseArm());
-        mapping.addProperty("effectiveOutcome", expected.caseArm());
-        mapping.addProperty("overrideApplied", false);
         mapping.addProperty("conditionIndex", -1);
         mapping.add("conditionIndices", new JsonArray());
         mapping.addProperty("mappingPolicy",
@@ -3387,9 +3383,6 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("effectiveOutcome", observedOutcome);
-        mapping.addProperty("overrideApplied", false);
-        mapping.addProperty("overrideMode", "NONE");
         mapping.addProperty("pathConditionSize", 0);
         mapping.addProperty("rawPathConditionSize", 0);
         mapping.addProperty("pathConditionBaseline", 0);
@@ -3433,9 +3426,6 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("effectiveOutcome", observedOutcome);
-        mapping.addProperty("overrideApplied", false);
-        mapping.addProperty("overrideMode", "NONE");
         mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
         mapping.addProperty("pathConditionBaseline", baseline);
@@ -3573,13 +3563,8 @@ public final class ConcolicRegionRuntime {
                 expected.defaultSuccessorIndex());
         mapping.addProperty("observedSuccessorIndex",
                 expected.observedSuccessorIndex);
-        mapping.addProperty("effectiveSuccessorIndex",
-                expected.observedSuccessorIndex);
         mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("observedOutcome", expected.caseArm());
-        mapping.addProperty("effectiveOutcome", expected.caseArm());
-        mapping.addProperty("overrideApplied", false);
-        mapping.addProperty("overrideMode", "NONE");
         mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
         mapping.addProperty("pathConditionBaseline", baseline);
@@ -4053,8 +4038,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("allModelAssignmentsApplied",
                     active.activation.modelAssignments.size()
                             == active.modelAssignmentsApplied.size());
-            result.addProperty("branchOverrideUsed",
-                    branchOverrideUsed(active.branchMappings));
             try {
                 String expression = api.expression(output);
                 result.add("rootOutputExpression", parseJson(expression));
@@ -4173,7 +4156,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("allModelAssignmentsApplied",
                     active.activation.modelAssignments.size()
                             == active.modelAssignmentsApplied.size());
-            result.addProperty("branchOverrideUsed", false);
             JsonObject summary = new JsonObject();
             summary.addProperty("schemaVersion", 1);
             summary.addProperty("engine", "CONCRETE_REPLAY_ONLY");
@@ -4219,13 +4201,6 @@ public final class ConcolicRegionRuntime {
         if (!activation.pathQueryKey.isEmpty()) {
             result.addProperty("pathQueryKey", activation.pathQueryKey);
         }
-    }
-
-    private static boolean branchOverrideUsed(List<JsonObject> mappings) {
-        for (JsonObject mapping : mappings) {
-            if (bool(mapping, "overrideApplied", false)) return true;
-        }
-        return false;
     }
 
     private static void symbolizeReceiverFields(ActiveRegion active, EngineApi api) {
@@ -8178,8 +8153,6 @@ public final class ConcolicRegionRuntime {
                 Boolean modelIsNull = strictBoolean(row, "modelIsNull");
                 Boolean realDefinition = strictBoolean(row,
                         "materializeAtRealDefinition");
-                Boolean branchOverride = strictBoolean(row,
-                        "branchOverride");
                 if (assignment.key.equals(strictString(row,
                         "modelAssignmentKey"))
                         && assignment.engineSymbol.equals(strictString(row,
@@ -8194,7 +8167,6 @@ public final class ConcolicRegionRuntime {
                         "authority"))
                         && Boolean.TRUE.equals(modelIsNull)
                         && Boolean.TRUE.equals(realDefinition)
-                        && Boolean.FALSE.equals(branchOverride)
                         && "null".equals(strictString(row,
                         "concreteValueClass"))
                         && assignment.target.toString().equals(
@@ -8470,7 +8442,6 @@ public final class ConcolicRegionRuntime {
             appliedModelAssignments.add(assignment.key);
             row.addProperty("modelAssignmentKey", assignment.key);
             row.addProperty("appliedAt", location);
-            row.addProperty("branchOverride", false);
             row.addProperty("concreteValueClass", concreteValue == null
                     ? "null" : concreteValue.getClass().getName());
             if (path != null && !path.isEmpty()) {
@@ -11315,10 +11286,6 @@ public final class ConcolicRegionRuntime {
                 throw new IllegalArgumentException(
                         executionPhase + " requires replayContract");
             }
-            if (branchReplay && json.has("branchOverrideProhibited")) {
-                throw new IllegalArgumentException(
-                        executionPhase + " rejects a branch override policy");
-            }
             this.replayContract = encodedReplayContract == null ? null
                     : BranchReplayContract.fromJson(
                     requireObject(encodedReplayContract,
@@ -11343,11 +11310,6 @@ public final class ConcolicRegionRuntime {
                     branchPolicies.put(string(branch, "siteId"),
                             string(branch, "policy"));
                 }
-            }
-            if (array(json, "forcedBranches").size() > 0) {
-                throw new IllegalArgumentException(
-                        "forcedBranches was removed; binary replay is "
-                                + "natural and contract-driven");
             }
             for (JsonElement element : array(json, "modelAssignments")) {
                 if (element.isJsonObject()) {

@@ -1921,7 +1921,6 @@ public class ConcolicRegionRuntimeTest {
             mapping.addProperty("siteId", "SITE.FLIP");
             mapping.addProperty("occurrence", 1);
             mapping.addProperty("observedOutcome", true);
-            mapping.addProperty("overrideApplied", false);
             mapping.add("witness", BranchWitness.vmPc("SITE.FLIP",
                     "<test.Runtime: void run()>", 1, 1, true,
                     desiredPredicate, 0, event).toJson());
@@ -5248,7 +5247,6 @@ public class ConcolicRegionRuntimeTest {
         activation.add("symbolize", new JsonArray());
         activation.add("materializations", new JsonArray());
         activation.add("modelAssignments", new JsonArray());
-        activation.add("forcedBranches", new JsonArray());
         return activation;
     }
 

@@ -235,8 +235,6 @@ public final class ConcolicPathReplayVerifier {
         }
         require(failures, "REPLAY_CONTRACT_MISSING_OR_MISMATCHED",
                 contract.sameContent(activationContract));
-        require(failures, "REPLAY_PLAN_CONTAINS_FORCED_BRANCH",
-                array(activation, "forcedBranches").size() == 0);
     }
 
     private static BranchReplayContract replayContract(

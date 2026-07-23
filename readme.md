@@ -274,8 +274,9 @@ canonical port、exact region instance、完整 value fingerprint 和 writer-bef
 composer 按 edge、kind、instance 和 runtime witness 精确选择，二者不能互相替代。
 
 Producer 的模型只能 materialize 到静态分析找到并由 instrumentation 确认的真实定义位置。
-`forcedBranches` 不能作为关系证据。当前输出到候选模型为止；未来的可信升级必须让 target
-保持 observation-only，不得给 consumer 注入 model、返回值或 branch outcome。
+路径翻转只通过输入模型和不可变 replay contract 表达，runtime 记录实际观察到的 branch
+witness。当前输出到候选模型为止；未来的可信升级必须让 target 保持 observation-only，
+不得给 consumer 注入 model、返回值或 branch outcome。
 
 Map 变异只通过 VM `MethodExpression` 导入通用的 `MAP_PUT` / `MAP_REMOVE` /
 `MAP_CLEAR` / `MAP_PUT_ALL` heap transformer。直接 `Map.remove(key)` 受支持；maintained

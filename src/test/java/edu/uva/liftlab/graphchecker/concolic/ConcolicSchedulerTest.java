@@ -43,8 +43,7 @@ public class ConcolicSchedulerTest {
                             "--edge-validations", fixture.edges.toString(),
                             "--static-graph", fixture.staticGraph.toString(),
                             "--output-dir", fixture.output.toString(),
-                            "--region-id", "REGION.0",
-                            "--force-branch-validation", "true"});
+                            "--region-id", "REGION.0"});
 
             ConcolicScheduler.Result result =
                     ConcolicScheduler.schedule(arguments);
@@ -92,21 +91,12 @@ public class ConcolicSchedulerTest {
                     projected.get("leafOwnerClass").getAsString());
             assertEquals("keyId", projected.get("leafField").getAsString());
             assertEquals(2, projected.getAsJsonArray("fieldPath").size());
-            JsonObject forced = scheduled.getAsJsonArray("forcedBranches")
-                    .get(0).getAsJsonObject();
-            assertEquals("SOOT_BRANCH_OVERRIDE_VALIDATION",
-                    forced.get("mode").getAsString());
-            assertFalse(forced.get("desiredOutcome").getAsBoolean());
-            assertEquals(1, forced.get("occurrence").getAsInt());
-
             assertEquals(1, result.mergePlan
                     .getAsJsonArray("equalityClasses").size());
             assertEquals(1, result.mergePlan
                     .getAsJsonArray("versionedStateMerges").size());
             assertTrue(Files.isRegularFile(fixture.output.resolve(
                     "scheduled_activation_plan.jsonl")));
-            assertTrue(Files.isRegularFile(fixture.output.resolve(
-                    "symbolic_merge_plan.json")));
         } finally {
             folder.delete();
         }
@@ -353,8 +343,7 @@ public class ConcolicSchedulerTest {
                             "--edge-validations", fixture.edges.toString(),
                             "--static-graph", fixture.staticGraph.toString(),
                             "--output-dir", fixture.output.toString(),
-                            "--region-id", "REGION.0",
-                            "--force-branch-validation", "true"}));
+                            "--region-id", "REGION.0"}));
 
             JsonObject equality = result.mergePlan.getAsJsonArray(
                     "equalityRelations").get(0).getAsJsonObject();
@@ -386,8 +375,7 @@ public class ConcolicSchedulerTest {
                             "--static-graph", fixture.staticGraph.toString(),
                             "--output-dir", folder.getRoot().toPath()
                             .resolve("ambiguous-consumer").toString(),
-                            "--region-id", "REGION.0",
-                            "--force-branch-validation", "true"}));
+                            "--region-id", "REGION.0"}));
             JsonObject raw = ambiguous.mergePlan.getAsJsonArray(
                     "equalityRelations").get(0).getAsJsonObject();
             assertEquals("REGION.0::" + USERNAME,
@@ -410,8 +398,7 @@ public class ConcolicSchedulerTest {
                             "--static-graph", fixture.staticGraph.toString(),
                             "--output-dir", folder.getRoot().toPath()
                             .resolve("invalid-canonical").toString(),
-                            "--region-id", "REGION.0",
-                            "--force-branch-validation", "true"}));
+                            "--region-id", "REGION.0"}));
             assertEquals(0, invalid.mergePlan.getAsJsonArray(
                     "equalityRelations").size());
         } finally {
@@ -471,8 +458,7 @@ public class ConcolicSchedulerTest {
                             "--edge-validations", fixture.edges.toString(),
                             "--static-graph", fixture.staticGraph.toString(),
                             "--output-dir", fixture.output.toString(),
-                            "--region-id", "REGION.0",
-                            "--force-branch-validation", "true"});
+                            "--region-id", "REGION.0"});
 
             ConcolicScheduler.Result result =
                     ConcolicScheduler.schedule(arguments);
@@ -1962,7 +1948,6 @@ public class ConcolicSchedulerTest {
                     RegionCaptureGoal.targetBranch().toJson());
             summary.addProperty("relationallyComplete", true);
             summary.addProperty("executionKind", "UNFORCED_SEED");
-            summary.addProperty("branchOverrideUsed", false);
 
             JsonObject prefixCondition = JsonParser.parseString(
                     "{\"_type\":\"BinaryExpression\",\"_op\":\">\"}")

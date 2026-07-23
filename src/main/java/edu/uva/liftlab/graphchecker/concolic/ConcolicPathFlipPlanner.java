@@ -140,10 +140,6 @@ public final class ConcolicPathFlipPlanner {
                 "scheduleId"));
         manifest.addProperty("modelAssignmentCount",
                 solve.modelAssignments.size());
-        manifest.addProperty("staticReinstrumentationRequired", false);
-        manifest.addProperty("replayClassReuseRequired", true);
-        manifest.addProperty("branchOverrideAllowed", false);
-        manifest.addProperty("runtimeValidationRequired", true);
         return new Result(worklist.tasks, worklist.manifest, candidates,
                 task, solve, replay, manifest);
     }
@@ -224,10 +220,6 @@ public final class ConcolicPathFlipPlanner {
         result.addProperty("queryKeySelector", arguments.queryKey);
         result.addProperty("solverTimeoutMillis",
                 arguments.solverTimeoutMillis);
-        result.addProperty("inputModelOnly", true);
-        result.addProperty("branchOverrideAllowed", false);
-        result.addProperty("referenceResultInjectionAllowed", false);
-        result.addProperty("staticReinstrumentationRequired", false);
         result.addProperty("complete", false);
         return result;
     }
