@@ -3358,7 +3358,6 @@ public final class ConcolicRegionRuntime {
         mapping.add("conditionIndices", new JsonArray());
         mapping.addProperty("mappingPolicy",
                 "CONCRETE_SWITCH_OBSERVATION_WITHOUT_SYMBOLIC_PC");
-        addBranchPolicyResolution(active, mapping, siteId);
         active.branchMappings.add(mapping);
     }
 
@@ -3395,7 +3394,6 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("rawConditionIndex", -1);
         mapping.addProperty("mappingPolicy",
                 "CONCRETE_OBSERVATION_WITHOUT_SYMBOLIC_PC");
-        addBranchPolicyResolution(active, mapping, siteId);
         active.branchMappings.add(mapping);
     }
 
@@ -3463,7 +3461,6 @@ public final class ConcolicRegionRuntime {
             mapping.add("vmConditionIndices",
                     array(vmAttestation.event, "conditionIndices"));
         }
-        addBranchPolicyResolution(active, mapping, siteId);
         if (conditionIndex >= 0) {
             // Gson 2.2.x exposes its native tree-copy method only at package
             // scope.
@@ -3618,7 +3615,6 @@ public final class ConcolicRegionRuntime {
             mapping.addProperty("vmConditionCount", integer(
                     attestation.event, "conditionCount", -1));
         }
-        addBranchPolicyResolution(active, mapping, siteId);
         if (!attestation.valid) {
             mapping.addProperty("mappingWarning",
                     "VM exact switch event rejected: "
@@ -3652,34 +3648,6 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = conditions.size();
         active.branchMappings.add(mapping);
-    }
-
-    /**
-     * Resolves the policy for one branch that was selected for concolic
-     * instrumentation.  Missing or malformed activation metadata must not
-     * silently turn such a branch into a path assumption: doing so can hide
-     * an output-affecting alternative from the worklist.  Conservatively
-     * expose it as EXPLORE and make the activation incomplete so downstream
-     * summary import fails closed until the planner supplies an exact policy.
-     */
-    private static void addBranchPolicyResolution(
-            ActiveRegion active, JsonObject mapping, String siteId) {
-        String policy = active.activation.policy(siteId);
-        mapping.addProperty("policy", policy);
-        if (active.activation.hasValidPolicy(siteId)) {
-            mapping.addProperty("policyResolutionComplete", true);
-            mapping.addProperty("policyAuthority",
-                    "ACTIVATION_PLAN_EXACT_BRANCH_POLICY_V1");
-            return;
-        }
-        String problem = active.activation.policyProblem(siteId);
-        mapping.addProperty("policyResolutionComplete", false);
-        mapping.addProperty("policyAuthority",
-                "RUNTIME_INSTRUMENTED_BRANCH_FAIL_CLOSED_TO_EXPLORE_V1");
-        mapping.addProperty("policyGap", problem);
-        active.addUnresolvedOnce(safe(siteId)
-                + ": branch policy resolution failed closed to EXPLORE: "
-                + problem);
     }
 
     private static VmBranchEventAttestation attestVmBranchEvent(
@@ -11478,18 +11446,6 @@ public final class ConcolicRegionRuntime {
         private String policy(String siteId) {
             String policy = branchPolicies.get(siteId);
             return validBranchPolicy(policy) ? policy : "EXPLORE";
-        }
-
-        private boolean hasValidPolicy(String siteId) {
-            return validBranchPolicy(branchPolicies.get(siteId));
-        }
-
-        private String policyProblem(String siteId) {
-            String policy = branchPolicies.get(siteId);
-            if (policy == null || policy.isEmpty()) {
-                return "activation has no policy for the instrumented site";
-            }
-            return "activation policy is unsupported: " + policy;
         }
 
         private static boolean validBranchPolicy(String policy) {
