@@ -472,7 +472,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void preservesMappedDuplicateConditionOccurrence()
+    public void usesStaticPolicyForMappedReplaySuffixOccurrences()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -489,10 +489,14 @@ public class ConcolicSummaryImporterTest {
                     + "\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson() + ","
                     + "\"branches\":[{\"siteId\":"
-                    + "\"example.Handler#u1\",\"policy\":\"EXPLORE\"}],"
+                    + "\"example.Handler#u0\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"<example.Handler: void handle()>\"]}\n");
+                    + "\"methods\":[\"<example.Handler: void handle()>\"],"
+                    + "\"branchPolicies\":[{\"siteId\":"
+                    + "\"example.Handler#u0\",\"policy\":\"EXPLORE\"},"
+                    + "{\"siteId\":\"example.Handler#u1\","
+                    + "\"policy\":\"EXPLORE\"}]}\n");
             String condition = "{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"!=\",\"_code_position\":"
                     + "\"virtual void example.Handler.handle():12\"}";
@@ -571,7 +575,9 @@ public class ConcolicSummaryImporterTest {
                     + "#u4\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"" + method + "\"]}\n");
+                    + "\"methods\":[\"" + method + "\"],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + method
+                    + "#u4\",\"policy\":\"EXPLORE\"}]}\n");
 
             JsonObject rawCondition = JsonParser.parseString("{"
                     + "\"_type\":\"BinaryExpression\","
@@ -667,7 +673,9 @@ public class ConcolicSummaryImporterTest {
                     + "#u7\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"" + method + "\"]}\n");
+                    + "\"methods\":[\"" + method + "\"],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + method
+                    + "#u7\",\"policy\":\"EXPLORE\"}]}\n");
             String semanticEvent = "{\"_type\":\"MethodExpression\","
                     + "\"_code_position\":\"virtual jobject "
                     + "example.Target.lookup(jint):40\"}";
@@ -3164,6 +3172,9 @@ public class ConcolicSummaryImporterTest {
         region.addProperty("regionId", "REGION.TIME");
         region.addProperty("rootMethod", method);
         region.add("methods", singletonString(method));
+        region.add("branchPolicies", activation.has("branches")
+                ? activation.getAsJsonArray("branches").deepCopy()
+                : new JsonArray());
         write(regions, region + "\n");
 
         JsonObject raw = new JsonObject();
@@ -4348,6 +4359,8 @@ public class ConcolicSummaryImporterTest {
         methods.add(method);
         methods.add("<example.Unrelated: void touch()>");
         region.add("methods", methods);
+        region.add("branchPolicies", branchPoliciesForTest(
+                authorizedBranchMappings));
         write(regions, region.toString() + "\n");
 
         JsonObject raw = new JsonObject();
@@ -5698,6 +5711,12 @@ public class ConcolicSummaryImporterTest {
         region.addProperty("regionId", "REGION.FIELD");
         region.addProperty("rootMethod", method);
         region.add("methods", singletonString(method));
+        if (exactVmGuard) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", method + "#u2");
+            branch.addProperty("policy", "EXPLORE");
+            region.add("branchPolicies", singletonObject(branch));
+        }
         write(regions, region + "\n");
 
         JsonObject observed = new JsonObject();

@@ -221,7 +221,7 @@ public final class ConcolicSummaryImporter {
             final JsonArray canonicalBranchMappings;
             try {
                 canonicalBranchMappings = normalizeBranchMappings(
-                        rawBranchMappings, normalization, activation);
+                        rawBranchMappings, normalization, region);
             } catch (IllegalArgumentException malformedBranchMapping) {
                 diagnostics.add(diagnostic(raw,
                         "REJECTED_CANONICAL_BRANCH_MAPPING",
@@ -2884,7 +2884,7 @@ public final class ConcolicSummaryImporter {
 
     private static JsonArray normalizeBranchMappings(
             JsonArray rawMappings, PathNormalization normalization,
-            JsonObject activation) {
+            JsonObject region) {
         JsonArray result = new JsonArray();
         Set<Integer> summaryPositions = new LinkedHashSet<>();
         Set<String> events = new LinkedHashSet<>();
@@ -2934,7 +2934,7 @@ public final class ConcolicSummaryImporter {
                             + ": duplicate summary PC " + normalizedIndex);
                 }
                 canonical = SummaryBranchMapping.witnessed(witness,
-                        normalizedIndex, branchPolicy(activation,
+                        normalizedIndex, branchPolicy(region,
                                 witness.siteId()));
             } else {
                 JsonElement encoded = raw.get("concreteObservation");
@@ -2952,7 +2952,7 @@ public final class ConcolicSummaryImporter {
                             + ": " + malformed.getMessage(), malformed);
                 }
                 canonical = SummaryBranchMapping.concrete(observation,
-                        branchPolicy(activation, observation.siteId()));
+                        branchPolicy(region, observation.siteId()));
             }
             String event = canonical.siteId() + "\u0000"
                     + canonical.occurrence();
@@ -2969,10 +2969,10 @@ public final class ConcolicSummaryImporter {
     }
 
     private static SummaryBranchMapping.Policy branchPolicy(
-            JsonObject activation, String siteId) {
+            JsonObject region, String siteId) {
         String selected = "";
         int matches = 0;
-        for (JsonElement element : array(activation, "branches")) {
+        for (JsonElement element : array(region, "branchPolicies")) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
             if (!siteId.equals(string(branch, "siteId"))) continue;
@@ -2981,7 +2981,7 @@ public final class ConcolicSummaryImporter {
         }
         if (matches != 1) {
             throw new IllegalArgumentException("branch " + siteId
-                    + " must have exactly one activation policy");
+                    + " must have exactly one static region policy");
         }
         return SummaryBranchMapping.Policy.fromWire(selected);
     }
