@@ -70,6 +70,10 @@ final class StaticRegionArtifactSchema {
             Map<String, Object> region = copyMap(original);
             region.put("schemaVersion", VERSION);
             remove(region, REGION_RETIRED_FIELDS);
+            for (Map<String, Object> input : maps(
+                    region.get("symbolicInputs"))) {
+                input.remove("promotionAuthority");
+            }
             for (Map<String, Object> branch : maps(
                     region.get("branchPolicies"))) {
                 remove(branch, BRANCH_RETIRED_FIELDS);

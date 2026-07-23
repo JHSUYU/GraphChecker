@@ -437,18 +437,7 @@ public final class ConcolicScheduler {
                 ? strictBoolean(scheduled) && scheduled.getAsBoolean()
                 : strictBoolean(discovered) && discovered.getAsBoolean();
         activation.addProperty("schedulerReady", ready);
-        for (String retired : new String[]{
-                "discoverySymbolicReady", "symbolicReady",
-                "materializationComplete",
-                "executableMaterializationCount",
-                "deferredMaterializationCount",
-                "vmIntrinsicPlaceholderCount",
-                "concreteFallbackCount",
-                "symbolicCoverageComplete", "readinessAuthority",
-                "activationInputPortCount", "edgeBindingCount",
-                "staticRootMethod", "observedRootMethod"}) {
-            activation.remove(retired);
-        }
+        activation.remove("symbolicReady");
     }
 
     private static boolean strictBoolean(JsonElement value) {

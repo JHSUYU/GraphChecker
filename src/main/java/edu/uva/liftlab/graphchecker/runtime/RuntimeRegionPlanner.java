@@ -381,10 +381,6 @@ final class RuntimeRegionPlanner {
                         "regionId", region.regionId,
                         "test", root.test,
                         "rootMethod", root.method,
-                        "staticRootMethod", region.rootMethod,
-                        "observedRootMethod", root.method,
-                        "rootAuthority", "RUNTIME_CALL_TREE",
-                        "rootSelection", rootSelection,
                         "receiverType", root.receiverType,
                         "invocationOrdinal", ordinal,
                         "rootCallId", root.callId,
@@ -394,14 +390,8 @@ final class RuntimeRegionPlanner {
                         "captureGoal", object(
                                 "kind", "TARGET_BRANCH",
                                 "scope", "ONE_DIRECTED_BRANCH"),
-                        "anchorRequired", true,
-                        "anchorObserved", anchorObserved,
                         "boundaryReady", boundaryReady,
-                        "pathSignatureEventCount", pathSelection.total,
-                        "pathSignatureLimit", MAX_PATH_SIGNATURE_EVENTS,
                         "pathSignatureTruncated", pathSelection.truncated,
-                        "containedCallCount", containedCalls.size(),
-                        "containedCallLimit", MAX_CALLS_PER_INSTANCE,
                         "containedCallTreeTruncated", callSelection.truncated,
                         "runtimePathEvidenceComplete",
                         runtimePathEvidenceComplete,
@@ -410,32 +400,15 @@ final class RuntimeRegionPlanner {
                         "branches", branchPlan,
                         "outputs", outputs,
                         "requiredModels", region.models,
-                        "staticInputSelectionComplete",
-                        region.inputSelectionComplete,
-                        "staticInputPortCount", region.inputs.size(),
-                        "concreteInputPortCount", concreteInputs.size(),
-                        "materializedInputPoolCount", concreteInputs.size(),
-                        "activationInputPortCount", symbolize.size(),
-                        "activationInputPorts", actionSymbols(symbolize),
-                        "activationInputSelectionAuthority",
-                        demandSlice.selectionAuthority(),
-                        "activationInputSelectionComplete",
-                        actionSymbols(symbolize).containsAll(
-                                portIds(concreteInputs)),
                         "runtimePrunedInputPorts",
                         region.excludedInputPorts(concreteInputs),
-                        "concreteInputSelectionAuthority",
-                        demandSlice.selectionAuthority(),
-                        "concreteDemandSymbolicPotential",
-                        demandHasSymbolicPotential,
                         "concreteDemandSlice", demandSlice.toMap(),
                         "staticUnresolvedInputs", region.unresolvedInputs,
                         "replayable", replayable,
                         "symbolicReady", symbolicReady,
                         "replayMode", replayable
                                 ? "RUNTIME_SELECTED_ROOT_REPLAY"
-                                : "NO_VALIDATED_RUNTIME_PATH",
-                        "engine", "openjdk8-zero-concolic");
+                                : "NO_VALIDATED_RUNTIME_PATH");
                 addRootContextSelector(activation, root,
                         ordinalWithinContext);
                 if (!rootArgumentSelector.isEmpty()) {
@@ -2696,27 +2669,11 @@ final class RuntimeRegionPlanner {
 
             if (activation != null) {
                 activation.put("symbolize", symbolize);
-                activation.put("materializedInputPoolCount",
-                        concreteInputs.size());
-                activation.put("activationInputPortCount", symbolize.size());
-                activation.put("activationInputPorts",
-                        actionSymbols(symbolize));
-                activation.put("activationInputSelectionAuthority",
-                        authority);
-                activation.put("activationInputSelectionComplete",
-                        actionSymbols(symbolize).containsAll(
-                                portIds(concreteInputs)));
                 activation.put("branches", branches);
                 activation.put("runtimeDefinitionMethods",
                         instance.concreteDemandSlice.definitionMethods(
                                 instance.observedMethods));
-                activation.put("concreteInputPortCount",
-                        concreteInputs.size());
                 activation.put("runtimePrunedInputPorts", pruned);
-                activation.put("concreteInputSelectionAuthority",
-                        authority);
-                activation.put("concreteDemandSymbolicPotential",
-                        symbolicPotential);
                 activation.put("concreteDemandSlice", demand);
                 activation.put("boundaryReady", boundaryReady);
                 activation.put("symbolicReady", symbolicReady);
@@ -2856,26 +2813,10 @@ final class RuntimeRegionPlanner {
             boolean writerPathReplayable =
                     first.upstream.runtimePathEvidenceComplete;
             activation.put("activationId", derivedId);
-            activation.put("derivedFromActivationId",
-                    string(base.get("activationId")));
             activation.remove("summaryMode");
             activation.put("captureGoal", object(
                     "kind", "OUTPUT_CLOSURE",
-                    "scope", "BOUNDED_OUTPUT_RELEVANT_PATHS",
-                    "authority", "RUNTIME_CONFIRMED_READ_FROM"));
-            activation.put("upstreamSelectionAuthority",
-                    "FIELD_RECEIVER_IDENTITY_AND_WRITE_BEFORE_READ");
-            activation.put("readFromWitnessAuthority",
-                    first.readFrom.writeEvidence.authority);
-            activation.put("writerAssociationAuthority",
-                    first.readFrom.writeEvidence.associationAuthority);
-            activation.put("containerMutationSemanticAssumption",
-                    first.readFrom.writeEvidence.semanticAssumption);
-            activation.put("pathSignatureTruncationAssumption",
-                    first.readFrom.pathSignatureAssumption());
-            activation.put("anchorRequired", false);
-            activation.put("upstreamEventRequired", true);
-            activation.put("upstreamEventObserved", true);
+                    "scope", "BOUNDED_OUTPUT_RELEVANT_PATHS"));
             activation.put("replayable", writerPathReplayable);
             activation.put("replayMode",
                     writerPathReplayable
@@ -2896,9 +2837,6 @@ final class RuntimeRegionPlanner {
             StaticOutputSlice outputSlice = staticOutputSlice == null
                     ? null : staticOutputSlice.runtimeRefined(first.upstream);
             if (outputSlice == null) {
-                activation.put("activationInputSelectionAuthority",
-                        "NO_REQUESTED_OUTPUT_SLICE_FULL_MATERIALIZED_POOL");
-                activation.put("activationInputSelectionComplete", false);
                 activation.put("symbolicReady", false);
                 activation.put("boundaryReady", false);
                 result.warnings.add("upstream output has no static backward "
@@ -2948,16 +2886,6 @@ final class RuntimeRegionPlanner {
                         && symbolizeActionsReady(selectedInputs)
                         && branchActionsReady(selectedBranches);
                 activation.put("symbolize", selectedInputs);
-                activation.put("materializedInputPoolCount",
-                        base.get("concreteInputPortCount"));
-                activation.put("activationInputPortCount",
-                        selectedInputs.size());
-                activation.put("activationInputPorts",
-                        actionSymbols(selectedInputs));
-                activation.put("activationInputSelectionAuthority",
-                        "RUNTIME_REFINED_REQUESTED_OUTPUT_SLICE_V1");
-                activation.put("activationInputSelectionComplete",
-                        inputSelectionComplete);
                 activation.put("branches", selectedBranches);
                 activation.put("requestedOutputMethods",
                         new ArrayList<>(outputSlice.methods));
@@ -2983,16 +2911,13 @@ final class RuntimeRegionPlanner {
                 // derived activation to symbolic execution readiness.
                 activation.put("boundaryReady", false);
                 activation.put("symbolicReady", false);
-                activation.put("readFromWitnessOnly", true);
             }
 
             List<Map<String, Object>> bindingRows = new ArrayList<>();
             for (UpstreamEdgeBinding binding : group) {
                 bindingRows.add(binding.toMap());
             }
-            activation.put("edgeBindingCount", bindingRows.size());
             activation.put("edgeBindings", bindingRows);
-            activation.put("selectedUpstreamEvent", first.eventMap());
 
             StaticPort input = first.upstream.region.exactInputFor(
                     first.output.cell);
