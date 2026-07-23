@@ -17,9 +17,6 @@ public class AutomaticRegionEdgeTest {
         edge.addProperty("orderedPairCount", 1);
 
         assertFalse(AutomaticRegionEdge.composable(edge));
-        assertTrue(AutomaticRegionEdge.discoverable(edge));
-        assertTrue(AutomaticRegionEdge.exclusionReason(edge).contains(
-                "RUNTIME_VALUE_EQUALITY"));
     }
 
     @Test
@@ -49,7 +46,6 @@ public class AutomaticRegionEdgeTest {
         bindings.set(0, runtimeEqualityEvidence());
 
         assertTrue(AutomaticRegionEdge.composable(edge));
-        assertTrue(AutomaticRegionEdge.discoverable(edge));
 
         edge.remove("eligibleForAutomaticSmt");
         assertFalse(AutomaticRegionEdge.composable(edge));
@@ -122,36 +118,6 @@ public class AutomaticRegionEdgeTest {
         bindings.add(fieldAssignmentBinding());
         edge.add("validatedBindings", bindings);
         assertTrue(AutomaticRegionEdge.composable(edge));
-        assertTrue(AutomaticRegionEdge.discoverable(edge));
-    }
-
-    @Test
-    public void staticMappedTransitionIsExecutionCandidateButNeverComposable() {
-        JsonObject edge = baseEquality();
-        edge.addProperty("validatedRelation", "");
-        edge.addProperty("candidateRelation", "EQUALITY");
-        edge.addProperty("composable", false);
-        edge.addProperty("eligibleForAutomaticDerivation", false);
-        edge.addProperty("eligibleForAutomaticSmt", false);
-        edge.addProperty("mappingOnly", true);
-        edge.addProperty("payloadEqualityCheckRequired", true);
-        edge.addProperty("mappingAuthority",
-                "STATIC_FORMAT_AND_PORT_MAPPING");
-
-        assertTrue(AutomaticRegionEdge.transitionDiscoveryCandidate(edge));
-        assertFalse(AutomaticRegionEdge.composable(edge));
-        assertFalse(AutomaticRegionEdge.discoverable(edge));
-    }
-
-    @Test
-    public void arbitraryUnobservedStaticEdgeCannotTriggerTransitionRun() {
-        JsonObject edge = baseEquality();
-        edge.addProperty("validatedRelation", "");
-        edge.addProperty("composable", false);
-        edge.addProperty("eligibleForAutomaticDerivation", false);
-        edge.addProperty("eligibleForAutomaticSmt", false);
-
-        assertFalse(AutomaticRegionEdge.transitionDiscoveryCandidate(edge));
     }
 
     @Test

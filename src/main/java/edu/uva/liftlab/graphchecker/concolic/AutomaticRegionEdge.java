@@ -200,68 +200,6 @@ public final class AutomaticRegionEdge {
                 && writerContainer == readerContainer;
     }
 
-    public static boolean discoverable(JsonObject edge) {
-        if (composable(edge)) return true;
-        if (edge == null) return false;
-        if (bool(edge, "eligibleForRecursiveDiscovery", false)) return true;
-        int endpoints = integer(edge, "endpointPairCount", 0);
-        int ordered = integer(edge, "orderedPairCount", 0);
-        return endpoints > 0
-                && (!bool(edge, "requiresOrder", false) || ordered > 0)
-                && !string(edge, "fromRegion").isEmpty()
-                && !string(edge, "toRegion").isEmpty();
-    }
-
-    /**
-     * A static protocol-port mapping may justify spending a bounded execution
-     * to look for a transition, but it never proves the mapped values equal.
-     * This predicate is intentionally disjoint from {@link #composable} and
-     * does not relax {@link #discoverable}; callers must keep its products in
-     * a discovery-only quarantine until a fresh runtime edge passes
-     * {@code composable} in that same execution.
-     */
-    public static boolean transitionDiscoveryCandidate(JsonObject edge) {
-        if (edge == null || composable(edge)
-                || string(edge, "fromRegion").isEmpty()
-                || string(edge, "fromPort").isEmpty()
-                || string(edge, "toRegion").isEmpty()
-                || string(edge, "toPort").isEmpty()
-                || bool(edge, "eligibleForAutomaticDerivation", false)
-                || bool(edge, "eligibleForAutomaticSmt", false)) {
-            return false;
-        }
-        String candidate = firstNonBlank(string(edge,
-                "candidateRelation"), string(edge, "relation"));
-        String authority = firstNonBlank(string(edge,
-                "transitionDiscoveryAuthority"), string(edge,
-                "mappingAuthority"), string(edge,
-                "sourceMappingAuthority"));
-        boolean explicit = bool(edge, "eligibleForTransitionDiscovery",
-                false) && authority.startsWith("STATIC_");
-        boolean mappedEquality = "EQUALITY".equals(candidate)
-                && bool(edge, "mappingOnly", false)
-                && bool(edge, "payloadEqualityCheckRequired", false)
-                && authority.startsWith("STATIC_");
-        return explicit || mappedEquality;
-    }
-
-    public static String exclusionReason(JsonObject edge) {
-        if (composable(edge)) return "";
-        String explicit = string(edge, "exclusionReason");
-        if (!explicit.isEmpty()) return explicit;
-        String relation = firstNonBlank(string(edge, "validatedRelation"),
-                string(edge, "candidateRelation"),
-                string(edge, "relation"));
-        if ("EQUALITY".equals(relation)) {
-            return "RUNTIME_VALUE_EQUALITY_NOT_PROVEN";
-        }
-        if ("READ_FROM".equals(relation)
-                || "READ_FROM_CANDIDATE".equals(relation)) {
-            return "RUNTIME_WRITE_READ_PAIR_NOT_PROVEN";
-        }
-        return "NO_AUTOMATICALLY_VALIDATED_RELATION";
-    }
-
     private static String string(JsonObject object, String name) {
         if (object == null) return "";
         JsonElement value = object.get(name);
@@ -317,10 +255,4 @@ public final class AutomaticRegionEdge {
         return -1L;
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) return value;
-        }
-        return "";
-    }
 }
