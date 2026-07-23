@@ -16,6 +16,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -1985,7 +1987,7 @@ public final class ConcolicScheduler {
                 directStateMerges.add(alternatives.get(0));
                 continue;
             }
-            String stable = RecursiveRegionWorklist.stableQueryKey(
+            String stable = stableQueryKey(
                     regionOfEndpoint(entry.getKey()), entry.getKey(),
                     "READ_FROM", "LATEST_BEFORE_READ", "MERGE_PLAN",
                     "ALTERNATIVE_WRITERS");
@@ -1998,7 +2000,7 @@ public final class ConcolicScheduler {
             JsonArray guarded = new JsonArray();
             for (JsonObject alternative : alternatives) {
                 JsonObject copy = alternative.deepCopy();
-                String guardKey = RecursiveRegionWorklist.stableQueryKey(
+                String guardKey = stableQueryKey(
                         regionOfEndpoint(string(copy, "fromEndpoint")),
                         string(copy, "fromEndpoint"), "WRITER_GUARD",
                         firstNonBlank(string(copy, "transportKind"),
@@ -2805,6 +2807,43 @@ public final class ConcolicScheduler {
             slice.add("causalEdges", references);
             return "";
         }
+    }
+
+    private static String stableQueryKey(String consumerRegion,
+                                         String inputPort,
+                                         String relationKind,
+                                         String requiredStateVersion,
+                                         String pathPrefixHash,
+                                         String boundedContextHash) {
+        String canonical = keyComponent(consumerRegion)
+                + keyComponent(canonicalQueryPort(inputPort))
+                + keyComponent(firstNonBlank(relationKind, "UNKNOWN"))
+                + keyComponent(firstNonBlank(requiredStateVersion,
+                "UNVERSIONED"))
+                + keyComponent(firstNonBlank(pathPrefixHash, "NO_PATH"))
+                + keyComponent(firstNonBlank(boundedContextHash,
+                "NO_CONTEXT"));
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(firstNonBlank(canonical)
+                    .getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : bytes) {
+                result.append(String.format("%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private static String canonicalQueryPort(String value) {
+        return firstNonBlank(value).replaceAll("\\s+", " ").trim();
+    }
+
+    private static String keyComponent(String value) {
+        String safe = value == null ? "" : value;
+        return safe.length() + ":" + safe;
     }
 
     private static final class Endpoint {
