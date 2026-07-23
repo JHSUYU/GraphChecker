@@ -313,6 +313,10 @@ public class CausynthTraceRecorderTest {
                 Collections.<String>emptyList(), StandardCharsets.UTF_8);
         Files.write(output.resolve("symbolic_region_edges.jsonl"),
                 Collections.<String>emptyList(), StandardCharsets.UTF_8);
+        Files.write(output.resolve("runtime_region_instances.jsonl"),
+                Collections.singletonList("stale"), StandardCharsets.UTF_8);
+        Files.write(output.resolve("runtime_region_summary.json"),
+                Collections.singletonList("stale"), StandardCharsets.UTF_8);
 
         try {
             aggregateExistingTrace(output, graph);
@@ -321,14 +325,14 @@ public class CausynthTraceRecorderTest {
             assertEquals(java.util.Arrays.asList(3L, 5L, 6L),
                     retainedEventSequences("FIELD_EVENTS"));
             for (String maintained : new String[]{
-                    "runtime_region_instances.jsonl",
                     "runtime_region_edge_validation.jsonl",
-                    "concolic_activation_plan.jsonl",
-                    "runtime_region_summary.json"}) {
+                    "concolic_activation_plan.jsonl"}) {
                 assertTrue(maintained, Files.isRegularFile(
                         output.resolve(maintained)));
             }
             for (String retired : new String[]{
+                    "runtime_region_instances.jsonl",
+                    "runtime_region_summary.json",
                     "unit_test_instantiated_graph.json",
                     "unit_test_role_merged_graph.json",
                     "symbolic_guidance_dag.json",

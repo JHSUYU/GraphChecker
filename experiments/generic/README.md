@@ -110,12 +110,10 @@ The principal environment overrides are:
 | `reach_report` | `CAUSYNTH_REACH_REPORT` |
 | `reach_max_inputs` | `CAUSYNTH_REACH_MAX_INPUTS` |
 | `reach_max_valuations` | `CAUSYNTH_REACH_MAX_VALUATIONS` |
-| `runtime_region_instances` | `CAUSYNTH_RUNTIME_REGION_INSTANCES` |
 | `workload_command` | `CAUSYNTH_WORKLOAD_COMMAND` |
 
 Artifact-specific overrides use the same names shown by `config`, including
-`CAUSYNTH_ACTIVATION_PLAN`, `CAUSYNTH_RUNTIME_REGION_INSTANCES`,
-`CAUSYNTH_EDGE_VALIDATIONS`,
+`CAUSYNTH_ACTIVATION_PLAN`, `CAUSYNTH_EDGE_VALIDATIONS`,
 `CAUSYNTH_RAW_RESULTS`, `CAUSYNTH_COMPOSE_SUMMARIES`,
 `CAUSYNTH_COMPOSED_SMT`, and
 `CAUSYNTH_RELATIONSHIP_CANDIDATES`. The reachability output can be relocated
@@ -125,8 +123,8 @@ with `CAUSYNTH_REACH_REPORT`; solver timeout is configured through
 Use `--dry-run` or `GRAPH_CHECKER_DRY_RUN=true` to inspect constructed commands.
 For small fixtures, `--debug` (or `GRAPH_CHECKER_DEBUG=true`) prints bounded
 stage artifacts on stderr: analyze shows the static graph, symbolic regions,
-and symbolic region edges; workload shows `runtime_region_instances.jsonl`,
-`runtime_region_edge_validation.jsonl`, and `concolic_activation_plan.jsonl`;
+and symbolic region edges; workload shows
+`runtime_region_edge_validation.jsonl` and `concolic_activation_plan.jsonl`;
 `debug-stage merge` projects an existing guarded relation, and compose shows
 the generated SMT. The item and byte caps are configurable through
 `GRAPH_CHECKER_DEBUG_MAX_ITEMS` and `GRAPH_CHECKER_DEBUG_MAX_BYTES`.

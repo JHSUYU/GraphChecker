@@ -96,10 +96,6 @@ public final class ConcolicScheduler {
         requireFile(arguments.regions, "symbolic regions");
         requireFile(arguments.activations, "activation plan");
         requireFile(arguments.edgeValidations, "runtime edge validation");
-        if (arguments.runtimeRegionInstances != null) {
-            requireFile(arguments.runtimeRegionInstances,
-                    "runtime region instances");
-        }
         Files.createDirectories(arguments.outputDirectory);
 
         List<JsonObject> regions = readJsonl(arguments.regions);
@@ -112,10 +108,6 @@ public final class ConcolicScheduler {
         List<JsonObject> staticGraph = arguments.staticGraph == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.staticGraph);
-        List<JsonObject> runtimeRegionInstances =
-                arguments.runtimeRegionInstances == null
-                        ? Collections.<JsonObject>emptyList()
-                        : readJsonl(arguments.runtimeRegionInstances);
         CanonicalStaticEdgeCatalog causalEdgeCatalog =
                 CanonicalStaticEdgeCatalog.from(staticGraph,
                         arguments.staticGraph != null);
@@ -139,7 +131,7 @@ public final class ConcolicScheduler {
                 authoritativeStaticGraph);
         List<Candidate> candidates = candidates(arguments, activations,
                 regionIndex, definitions,
-                CaptureEvidence.from(runtimeRegionInstances));
+                CaptureEvidence.from(activations));
         Collections.sort(candidates, Candidate.ORDER);
 
         Result result = new Result();
@@ -3393,7 +3385,6 @@ public final class ConcolicScheduler {
         public final Path edgeValidations;
         public final Path staticGraph;
         public final Path summaries;
-        public final Path runtimeRegionInstances;
         public final Path outputDirectory;
         public final String regionId;
         public final String activationId;
@@ -3408,8 +3399,7 @@ public final class ConcolicScheduler {
 
         private Arguments(Path regions, Path activations,
                           Path edgeValidations, Path staticGraph,
-                          Path summaries, Path runtimeRegionInstances,
-                          Path outputDirectory, String regionId,
+                          Path summaries, Path outputDirectory, String regionId,
                           String activationId, String targetSite,
                           String requestedOutputCell,
                           String requestedOutputCaptureSite,
@@ -3423,7 +3413,6 @@ public final class ConcolicScheduler {
             this.edgeValidations = edgeValidations;
             this.staticGraph = staticGraph;
             this.summaries = summaries;
-            this.runtimeRegionInstances = runtimeRegionInstances;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
             this.activationId = safe(activationId);
@@ -3468,10 +3457,8 @@ public final class ConcolicScheduler {
                     sibling(activations, "concolic-schedule").toString()));
             Path staticGraph = optionalPath(values.get("static-graph"));
             Path summaries = optionalPath(values.get("summaries"));
-            Path runtimeRegionInstances = optionalPath(values.get(
-                    "runtime-region-instances"));
             return new Arguments(regions, activations, edges, staticGraph,
-                    summaries, runtimeRegionInstances, output,
+                    summaries, output,
                     firstNonBlank(values.get("region-id")),
                     firstNonBlank(values.get("activation-id")),
                     firstNonBlank(values.get("target-site")),
@@ -3492,7 +3479,6 @@ public final class ConcolicScheduler {
                     || "edge-validations".equals(key)
                     || "static-graph".equals(key)
                     || "summaries".equals(key)
-                    || "runtime-region-instances".equals(key)
                     || "output-dir".equals(key)
                     || "region-id".equals(key)
                     || "activation-id".equals(key)

@@ -757,14 +757,11 @@ public class ConcolicSchedulerTest {
             plainCapture.addProperty("occurrence", 0);
             captureTemplates.add(plainCapture);
             autoCapture.add("requestedOutputCapture", captureTemplates);
+            JsonArray observedMethods = new JsonArray();
+            observedMethods.add("<example.Client: void encrypted()>");
+            autoCapture.add("observedMethods", observedMethods);
             Files.write(fixture.activations,
                     (autoCapture + "\n").getBytes(StandardCharsets.UTF_8));
-            Files.write(fixture.runtimeInstances,
-                    ("{\"regionInstanceId\":"
-                            + "\"REGION.11@test#call7\","
-                            + "\"observedMethods\":["
-                            + "\"<example.Client: void encrypted()>\"]}\n")
-                            .getBytes(StandardCharsets.UTF_8));
             ConcolicScheduler.Arguments autoCaptureArguments =
                     ConcolicScheduler.Arguments.parse(new String[]{
                             "--regions", fixture.regions.toString(),
@@ -772,8 +769,6 @@ public class ConcolicSchedulerTest {
                             fixture.activations.toString(),
                             "--edge-validations", fixture.edges.toString(),
                             "--static-graph", fixture.staticGraph.toString(),
-                            "--runtime-region-instances",
-                            fixture.runtimeInstances.toString(),
                             "--output-dir", fixture.output.toString(),
                             "--activation-id", "ACT.PRODUCER.0",
                             "--capture-only"});
@@ -2142,7 +2137,6 @@ public class ConcolicSchedulerTest {
         private final Path edges;
         private final Path staticGraph;
         private final Path summaries;
-        private final Path runtimeInstances;
         private final Path output;
 
         private Fixture(Path root) {
@@ -2151,8 +2145,6 @@ public class ConcolicSchedulerTest {
             this.edges = root.resolve("edges.jsonl");
             this.staticGraph = root.resolve("static.jsonl");
             this.summaries = root.resolve("summaries.jsonl");
-            this.runtimeInstances = root.resolve(
-                    "runtime-region-instances.jsonl");
             this.output = root.resolve("schedule");
         }
     }

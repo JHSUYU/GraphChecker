@@ -5079,9 +5079,6 @@ final class RuntimeRegionPlanner {
             return jsonl(edgeValidations);
         }
 
-        String summaryJson() {
-            return json(summary);
-        }
     }
 
     /**
