@@ -19,26 +19,43 @@ import java.util.Set;
 final class StaticRegionArtifactSchema {
     static final int VERSION = 1;
 
-    private static final String[][] REGION_DERIVED_COUNTS = {
-            {"mandatorySeedGuardInputCount", "mandatorySeedGuardInputs"},
-            {"seedGuardInputDerivationGapCount",
-                    "seedGuardInputDerivationGaps"},
-            {"symbolicInputPortCount", "symbolicInputs"},
-            {"methodCount", "methods"}
-    };
-    private static final String[][] SLICE_DERIVED_COUNTS = {
-            {"accessorImplementationAdmissionCount",
-                    "accessorImplementationAdmissions"},
-            {"causalEdgeCount", "causalEdgeIds"},
-            {"methodCount", "methods"},
-            {"requestedStateTransformerObligationCount",
-                    "requestedStateTransformerObligations"}
-    };
-    private static final String[] REGION_RETIRED_ALIASES = {
+    private static final String[] REGION_RETIRED_FIELDS = {
+            "mandatorySeedGuardInputCount",
+            "seedGuardInputDerivationGapCount",
+            "symbolicInputPortCount",
+            "methodCount",
+            "rawSymbolicInputCount",
+            "selectedExternalInputCount",
+            "broadInputPortCount",
+            "outputSlicePromotedInputCount",
+            "derivedInputCount",
+            "unresolvedInputCount",
+            "causalCellCount",
             "staticRootCandidate", "rootAuthority", "rootReason",
             "rootValidation", "sinkMethods", "symbolicInputPolicy",
             "inputPortSelectionAuthority",
-            "mandatorySeedGuardInputAuthority", "precision"
+            "mandatorySeedGuardInputAuthority", "precision",
+            "broadInputPortLimit", "outputSliceInputPortLimit",
+            "causalCellLimit", "methodLimit",
+            "pathAssumptionSites", "exploreBranchSites"
+    };
+    private static final String[] SLICE_RETIRED_FIELDS = {
+            "accessorImplementationAdmissionCount",
+            "causalEdgeCount", "methodCount",
+            "requestedStateTransformerObligationCount",
+            "causalCellCount", "inputPortCountBeforeSlice",
+            "promotedInputPortCount",
+            "promotionCapacityOmittedInputCount",
+            "promotionAuthority", "inputPortPromotionLimit",
+            "causalCellLimit", "methodLimit", "derivedInputs"
+    };
+    private static final String[] BRANCH_RETIRED_FIELDS = {
+            "sourceEdgeId", "sourceEdgeKind", "sourceEdgeKinds",
+            "controlDependenceAuthority",
+            "controlDependenceAuthorities", "policyAuthority",
+            "pathAssumptionProof", "explorationReason",
+            "successorIndexAuthority", "switchArmIdentityAuthority",
+            "role"
     };
 
     private StaticRegionArtifactSchema() {
@@ -52,9 +69,11 @@ final class StaticRegionArtifactSchema {
         for (Map<String, Object> original : values(regions)) {
             Map<String, Object> region = copyMap(original);
             region.put("schemaVersion", VERSION);
-            remove(region, REGION_RETIRED_ALIASES);
-            removeDerivedCounts(region, REGION_DERIVED_COUNTS,
-                    "symbolic region");
+            remove(region, REGION_RETIRED_FIELDS);
+            for (Map<String, Object> branch : maps(
+                    region.get("branchPolicies"))) {
+                remove(branch, BRANCH_RETIRED_FIELDS);
+            }
             for (Map<String, Object> slice : maps(
                     region.get("outputSlices"))) {
                 compactOutputSlice(slice, canonicalEdgeIds);
@@ -78,8 +97,7 @@ final class StaticRegionArtifactSchema {
 
     private static void compactOutputSlice(Map<String, Object> slice,
                                            Set<String> canonicalEdgeIds) {
-        removeDerivedCounts(slice, SLICE_DERIVED_COUNTS, "output slice");
-        slice.remove("promotionAuthority");
+        remove(slice, SLICE_RETIRED_FIELDS);
 
         List<String> ids = strings(slice.get("causalEdgeIds"));
         Set<String> uniqueIds = new LinkedHashSet<>();
@@ -139,27 +157,6 @@ final class StaticRegionArtifactSchema {
             }
         }
         return result;
-    }
-
-    private static void removeDerivedCounts(Map<String, Object> row,
-                                            String[][] fields,
-                                            String context) {
-        for (String[] pair : fields) {
-            String countField = pair[0];
-            if (!row.containsKey(countField)) {
-                continue;
-            }
-            Object values = row.get(pair[1]);
-            Object count = row.get(countField);
-            if (!(values instanceof Collection<?>)
-                    || !(count instanceof Number)
-                    || ((Number) count).intValue()
-                    != ((Collection<?>) values).size()) {
-                throw new IllegalStateException(context + " "
-                        + countField + " disagrees with " + pair[1]);
-            }
-            row.remove(countField);
-        }
     }
 
     private static void remove(Map<String, Object> row, String[] fields) {

@@ -446,7 +446,7 @@ public class RuntimeRegionPlannerTest {
             assertTrue(activations.contains("\"requiredOutcome\":false"));
             assertTrue(activations.contains(
                     "\"matchesRequiredOutcome\":false"));
-            assertTrue(activations.contains("\"role\":\"REACHABILITY\""));
+            assertFalse(activations.contains("\"role\""));
             assertTrue(activations.contains("\"requiredModels\":[\"symbolic_map\"]"));
         } finally {
             folder.delete();

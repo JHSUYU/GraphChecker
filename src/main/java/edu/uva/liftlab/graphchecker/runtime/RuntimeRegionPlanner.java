@@ -2147,9 +2147,6 @@ final class RuntimeRegionPlanner {
                     "defaultSuccessorIndex",
                     policy.defaultSuccessorIndex,
                     "successorCount", policy.successorCount,
-                    "successorIndexAuthority",
-                    policy.successorIndexAuthority,
-                    "role", policy.role,
                     "observed", event != null,
                     "observedOutcome", observedOutcome,
                     "matchesRequiredOutcome", matchesRequired,
@@ -5617,9 +5614,7 @@ final class RuntimeRegionPlanner {
                         jsonString(object, "branchKind"),
                         jsonIntArray(object, "switchCaseKeys"),
                         jsonInt(object, "defaultSuccessorIndex", -1),
-                        jsonInt(object, "successorCount", -1),
-                        jsonString(object, "successorIndexAuthority"),
-                        jsonString(object, "role")));
+                        jsonInt(object, "successorCount", -1)));
             }
             for (String object : jsonObjectArray(json, "argumentPathFields")) {
                 String method = jsonString(object, "method");
@@ -9402,8 +9397,6 @@ final class RuntimeRegionPlanner {
         private final List<Integer> switchCaseKeys;
         private final int defaultSuccessorIndex;
         private final int successorCount;
-        private final String successorIndexAuthority;
-        private final String role;
 
         private BranchPolicy(String siteId, String policy, String guard,
                              Boolean requiredOutcome,
@@ -9411,9 +9404,7 @@ final class RuntimeRegionPlanner {
                              String branchKind,
                              List<Integer> switchCaseKeys,
                              int defaultSuccessorIndex,
-                             int successorCount,
-                             String successorIndexAuthority,
-                             String role) {
+                             int successorCount) {
             this.siteId = safe(siteId);
             this.policy = safe(policy);
             this.guard = safe(guard);
@@ -9425,8 +9416,6 @@ final class RuntimeRegionPlanner {
                     new ArrayList<>(switchCaseKeys));
             this.defaultSuccessorIndex = defaultSuccessorIndex;
             this.successorCount = successorCount;
-            this.successorIndexAuthority = safe(successorIndexAuthority);
-            this.role = safe(role);
         }
 
         private boolean isSwitch() {
