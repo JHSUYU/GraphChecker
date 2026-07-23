@@ -1,8 +1,11 @@
 # Generic config-driven workflow
 
 `run_engine.sh` is a thin, application-independent orchestrator over the Java
-entry points. Project layout, test names, exception targets, and artifact
-locations come only from the selected workflow configuration.
+entry points. Project layout, workload command, and artifact locations come
+from the selected workflow configuration. The exception target itself comes
+from the application classfile's `@CausynthExceptionTarget` marker; the
+configuration may select its marker id but does not describe or search for a
+throw site.
 
 Start from `conf/workflow.example.properties` and invoke commands from the
 GraphChecker checkout:
@@ -29,9 +32,10 @@ inputs. It writes a machine-readable truth table and canonical DNF, then checks
 that the composed SMT plus the Java Boolean domain implies that DNF. It does
 not accept handwritten SMT or a caller-provided reachability condition.
 
-The `reach` stage consumes four authenticated composition artifacts:
+The `reach` stage consumes four composition inputs:
 `composed_smt`, `composition_manifest`, `static_regions`, and
-`relationship_candidates`. Its output defaults to
+`relationship_candidates`. It verifies their path/size/SHA-256 bindings from
+the composition manifest before extraction. Its output defaults to
 `schedule/boolean_reach_condition.json`. `reach_max_inputs` (default `12`) and
 `reach_max_valuations` (default `4096`) bound exhaustive enumeration; exceeding
 either limit produces an incomplete report instead of silently sampling.
@@ -66,9 +70,22 @@ event is observation-only and cannot be promoted through an alternate
 certificate. Retired target/prefix/negated-condition aliases are rejected.
 Multiway switches use their own successor-aware records.
 
-The three-thread reference runner stops at a hash-bound, independently
-Z3-checked `CANDIDATE_ONLY` result. Promoting that candidate to a trusted result
-by an injection-free natural replay is intentionally the remaining TODO.
+Producer path exploration executes that contract with input-only
+materialization. The target stage derives the same typed contract and a
+`SolverPathContext` as a candidate fatal query, but does not execute a target
+replay. The three-thread reference runner stops at a hash-bound, independently
+Z3-checked result with `state=CANDIDATE_READY`,
+`trustState=CANDIDATE_ONLY`, and exact
+`reachability=REACHABLE|UNREACHABLE`. Promoting that candidate to a trusted
+result by an injection-free natural replay is intentionally the remaining
+TODO.
+
+The compact relationship catalog is schema 2 and has only
+`schemaVersion`, `kind`, `trustState`, and `relationships`. The terminal
+candidate result binds exactly five files: the SMT, composition manifest,
+relationship catalog, Boolean model, and result manifest. No bootstrap result,
+recursive worklist, summary cache, eligibility mirror, or
+natural-replay-implemented flag is part of the maintained protocol.
 
 ## Paths and configuration
 

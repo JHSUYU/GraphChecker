@@ -329,194 +329,6 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    @org.junit.Ignore("retired directed-target bootstrap summary protocol")
-    public void admitsOnlyObservedUnforcedDirectedTargetReplay()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path root = folder.getRoot().toPath();
-            Path activations = root.resolve("activation.jsonl");
-            Path regions = root.resolve("regions.jsonl");
-            Path results = root.resolve("results.jsonl");
-            Path output = root.resolve("summaries.jsonl");
-            Path diagnostics = root.resolve("diagnostics.jsonl");
-
-            JsonObject activation = new JsonObject();
-            activation.addProperty("activationId", "ACT.T");
-            activation.addProperty("regionId", "REGION.T");
-            activation.addProperty("regionInstanceId",
-                    "REGION.T@test#call7");
-            activation.addProperty("rootCallId", 7);
-            activation.addProperty("targetReplayRequired", true);
-            activation.addProperty("executionPhase",
-                    "REPLAY_DIRECTED_TARGET");
-            activation.add("captureGoal",
-                    RegionCaptureGoal.targetBranch().toJson());
-            JsonObject originalCondition = new JsonObject();
-            originalCondition.addProperty("_type", "BinaryExpression");
-            originalCondition.addProperty("_op", "!=");
-            JsonObject left = new JsonObject();
-            left.addProperty("_type", "SymbolExpression");
-            left.addProperty("_java_type", "I");
-            left.addProperty("_exp", "M_I_field_REGION.T.in.0_example/Target");
-            JsonObject right = new JsonObject();
-            right.addProperty("_type", "ConstExpr");
-            right.addProperty("_java_type", "I");
-            right.addProperty("_exp", "Y_I_0");
-            originalCondition.add("_left", left);
-            originalCondition.add("_right", right);
-            JsonObject sourceEvent = new JsonObject();
-            sourceEvent.addProperty("eventId", 1);
-            sourceEvent.addProperty("contextId", 7);
-            BranchWitness sourceWitness = BranchWitness.vmPc(
-                    "example.Target#u8", "example.Target", 8, 1, true,
-                    originalCondition, 0, sourceEvent);
-            BranchReplayContract targetContract = BranchReplayContract.flip(
-                    Collections.<BranchWitness>emptyList(), sourceWitness);
-            activation.add("replayContract", targetContract.toJson());
-            JsonObject targetPolicy = new JsonObject();
-            targetPolicy.addProperty("siteId", "example.Target#u8");
-            targetPolicy.addProperty("policy", "EXPLORE");
-            activation.add("branches", singletonObject(targetPolicy));
-            write(activations, activation + "\n");
-
-            JsonObject region = new JsonObject();
-            region.addProperty("regionId", "REGION.T");
-            JsonObject failure = new JsonObject();
-            failure.addProperty("kind", "FAILURE_PREDICATE");
-            failure.addProperty("cell",
-                    "example.Target#u9#exception:example.Fatal");
-            JsonArray outputs = new JsonArray();
-            outputs.add(failure);
-            region.add("outputs", outputs);
-            write(regions, region + "\n");
-
-            JsonObject raw = new JsonObject();
-            raw.addProperty("event", "CONCOLIC_REGION_RESULT");
-            raw.addProperty("activationId", "ACT.T");
-            raw.addProperty("regionId", "REGION.T");
-            raw.addProperty("exitKind", "THROW");
-            raw.addProperty("exceptionType", "example.Wrapper");
-            raw.addProperty("branchOverrideUsed", false);
-            JsonObject branch = new JsonObject();
-            branch.addProperty("siteId", "example.Target#u8");
-            branch.addProperty("occurrence", 1);
-            branch.addProperty("outcome", false);
-            branch.addProperty("observedOutcome", false);
-            branch.addProperty("effectiveOutcome", false);
-            branch.addProperty("overrideApplied", false);
-            JsonObject replayEvent = new JsonObject();
-            replayEvent.addProperty("eventId", 2);
-            replayEvent.addProperty("contextId", 7);
-            BranchWitness replayWitness = BranchWitness.vmPc(
-                    "example.Target#u8", "example.Target", 8, 1, false,
-                    targetContract.requiredSatisfiedPredicate(), 0,
-                    replayEvent);
-            branch.add("witness", replayWitness.toJson());
-            JsonArray branches = new JsonArray();
-            branches.add(branch);
-            raw.add("branchMappings", branches);
-            JsonObject cause = new JsonObject();
-            cause.addProperty("type", "example.Fatal");
-            JsonArray exceptionChain = new JsonArray();
-            exceptionChain.add(cause);
-            raw.add("exceptionChain", exceptionChain);
-            JsonObject engine = new JsonObject();
-            engine.addProperty("active", true);
-            engine.addProperty("regionId", "REGION.T");
-            engine.addProperty("activationId", "ACT.T");
-            JsonArray targetPath = new JsonArray();
-            targetPath.add(targetContract.requiredSatisfiedPredicate());
-            engine.add("pathCondition", targetPath);
-            raw.add("engineSummary", engine);
-            write(results, raw + "\n");
-
-            ConcolicSummaryImporter.ImportResult accepted =
-                    ConcolicSummaryImporter.importSummaries(results,
-                            activations, regions, output, diagnostics);
-            assertEquals(readOptional(diagnostics), 1,
-                    accepted.validSummaryCount);
-            assertFalse(Files.exists(diagnostics));
-            JsonObject acceptedSummary = JsonParser.parseString(new String(
-                    Files.readAllBytes(output), StandardCharsets.UTF_8).trim())
-                    .getAsJsonObject();
-            assertFalse(acceptedSummary.has("targetReplayValidated"));
-            assertEquals("INPUT_MODEL_REPLAY",
-                    acceptedSummary.get("executionKind").getAsString());
-            assertFalse(acceptedSummary.has("directedTargetQuery"));
-            assertFalse(acceptedSummary.has("executionAdmission"));
-
-            branch.addProperty("observedOutcome", true);
-            BranchWitness wrongWitness = BranchWitness.vmPc(
-                    "example.Target#u8", "example.Target", 8, 1, true,
-                    originalCondition, 0, replayEvent);
-            branch.add("witness", wrongWitness.toJson());
-            write(results, raw + "\n");
-            Path rejectedOutput = root.resolve("rejected.jsonl");
-            Path rejectedDiagnostics = root.resolve("rejected-diagnostics.jsonl");
-            ConcolicSummaryImporter.ImportResult rejected =
-                    ConcolicSummaryImporter.importSummaries(results,
-                            activations, regions, rejectedOutput,
-                            rejectedDiagnostics);
-            assertEquals(0, rejected.validSummaryCount);
-            assertTrue(new String(Files.readAllBytes(rejectedDiagnostics),
-                    StandardCharsets.UTF_8).contains(
-                    "REJECTED_CANONICAL_BRANCH_MAPPING"));
-
-            JsonObject seedActivation = activation.deepCopy();
-            seedActivation.addProperty("targetReplayRequired", false);
-            seedActivation.addProperty("executionPhase",
-                    "CAPTURE_THEN_NEGATE");
-            seedActivation.remove("replayContract");
-            branch.addProperty("observedOutcome", false);
-            branch.addProperty("overrideApplied", false);
-            branch.add("witness", replayWitness.toJson());
-            raw.addProperty("branchOverrideUsed", false);
-            for (int mode = 0; mode < 3; mode++) {
-                JsonObject candidateActivation = seedActivation.deepCopy();
-                JsonObject candidateRaw = raw.deepCopy();
-                String expectedFailure;
-                if (mode == 0) {
-                    candidateRaw.addProperty("branchOverrideUsed", true);
-                    expectedFailure = "BRANCH_OVERRIDE_USED";
-                } else if (mode == 1) {
-                    candidateRaw.getAsJsonArray("branchMappings").get(0)
-                            .getAsJsonObject().addProperty(
-                                    "overrideApplied", true);
-                    expectedFailure = "BRANCH_OVERRIDE_USED";
-                } else {
-                    JsonObject forced = new JsonObject();
-                    forced.addProperty("siteId", "example.Target#u8");
-                    forced.addProperty("occurrence", 1);
-                    forced.addProperty("desiredOutcome", false);
-                    JsonArray forcedBranches = new JsonArray();
-                    forcedBranches.add(forced);
-                    candidateActivation.add("forcedBranches",
-                            forcedBranches);
-                    expectedFailure =
-                            "FORCED_BRANCH_PLAN_OR_RESULT_PRESENT";
-                }
-                write(activations, candidateActivation + "\n");
-                write(results, candidateRaw + "\n");
-                Path seedOutput = root.resolve("rejected-seed-" + mode
-                        + ".jsonl");
-                Path seedDiagnostics = root.resolve(
-                        "rejected-seed-diagnostics-" + mode + ".jsonl");
-                ConcolicSummaryImporter.ImportResult rejectedSeed =
-                        ConcolicSummaryImporter.importSummaries(results,
-                                activations, regions, seedOutput,
-                                seedDiagnostics);
-                assertEquals(0, rejectedSeed.validSummaryCount);
-                assertTrue(new String(Files.readAllBytes(seedDiagnostics),
-                        StandardCharsets.UTF_8).contains(expectedFailure));
-            }
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
     public void validatesRegionSummaryWithNestedPathConditionPause()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
@@ -660,7 +472,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void preservesMappedDuplicateConditionOccurrence()
+    public void usesStaticPolicyForMappedReplaySuffixOccurrences()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -677,10 +489,14 @@ public class ConcolicSummaryImporterTest {
                     + "\"captureGoal\":"
                     + RegionCaptureGoal.outputClosure().toJson() + ","
                     + "\"branches\":[{\"siteId\":"
-                    + "\"example.Handler#u1\",\"policy\":\"EXPLORE\"}],"
+                    + "\"example.Handler#u0\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"<example.Handler: void handle()>\"]}\n");
+                    + "\"methods\":[\"<example.Handler: void handle()>\"],"
+                    + "\"branchPolicies\":[{\"siteId\":"
+                    + "\"example.Handler#u0\",\"policy\":\"EXPLORE\"},"
+                    + "{\"siteId\":\"example.Handler#u1\","
+                    + "\"policy\":\"EXPLORE\"}]}\n");
             String condition = "{\"_type\":\"BinaryExpression\","
                     + "\"_op\":\"!=\",\"_code_position\":"
                     + "\"virtual void example.Handler.handle():12\"}";
@@ -759,7 +575,9 @@ public class ConcolicSummaryImporterTest {
                     + "#u4\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"" + method + "\"]}\n");
+                    + "\"methods\":[\"" + method + "\"],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + method
+                    + "#u4\",\"policy\":\"EXPLORE\"}]}\n");
 
             JsonObject rawCondition = JsonParser.parseString("{"
                     + "\"_type\":\"BinaryExpression\","
@@ -855,7 +673,9 @@ public class ConcolicSummaryImporterTest {
                     + "#u7\",\"policy\":\"EXPLORE\"}],"
                     + "\"symbolize\":[]}\n");
             write(regions, "{\"regionId\":\"REGION.0\","
-                    + "\"methods\":[\"" + method + "\"]}\n");
+                    + "\"methods\":[\"" + method + "\"],"
+                    + "\"branchPolicies\":[{\"siteId\":\"" + method
+                    + "#u7\",\"policy\":\"EXPLORE\"}]}\n");
             String semanticEvent = "{\"_type\":\"MethodExpression\","
                     + "\"_code_position\":\"virtual jobject "
                     + "example.Target.lookup(jint):40\"}";
@@ -1425,7 +1245,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void exactGuardCoverageFailsClosedWhenMissingOrOverridden()
+    public void exactGuardCoverageFailsClosedWhenMissing()
             throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
@@ -1452,27 +1272,6 @@ public class ConcolicSummaryImporterTest {
                     .getAsBoolean());
             assertTrue(missingGuard.diagnostics.contains(
                     "UNOBSERVED_DECLARED_HEAP_WRITE"));
-
-            ExactTransformerFixture overridden = exactTransformerFixture(
-                    new JsonArray());
-            JsonObject overriddenBinding = transformerInputBinding(
-                    "REGION.P.in.0", overridden.outputCell,
-                    strings(overridden.updateSite, overridden.pruneSite),
-                    new JsonArray());
-            overriddenBinding.addProperty(
-                    "requestedStateTransformerSinkExclusive", false);
-            overridden.sliceMetadata.add("inputBindings",
-                    stringsAsObjects(overriddenBinding));
-            overridden.branchMappings.get(0).getAsJsonObject().addProperty(
-                    "overrideApplied", true);
-            MapFixture forced = importMapFixture(
-                    folder.getRoot().toPath().resolve("overridden"),
-                    overridden.path, true, new JsonArray(),
-                    overridden.methods, overridden.causalEdges, null,
-                    new JsonArray(), overridden.branchMappings, null, null,
-                    overridden.sliceMetadata, new JsonArray());
-            assertEquals(0, forced.summary.size());
-            assertTrue(forced.diagnostics.contains("BRANCH_OVERRIDE_USED"));
         } finally {
             folder.delete();
         }
@@ -3373,6 +3172,9 @@ public class ConcolicSummaryImporterTest {
         region.addProperty("regionId", "REGION.TIME");
         region.addProperty("rootMethod", method);
         region.add("methods", singletonString(method));
+        region.add("branchPolicies", activation.has("branches")
+                ? activation.getAsJsonArray("branches").deepCopy()
+                : new JsonArray());
         write(regions, region + "\n");
 
         JsonObject raw = new JsonObject();
@@ -3723,7 +3525,6 @@ public class ConcolicSummaryImporterTest {
         mapping.addProperty("vmThreadContextId", 2);
         mapping.addProperty("vmOwnerJavaThreadId", 3);
         mapping.addProperty("vmOwnerOsThreadId", 4);
-        mapping.addProperty("overrideMode", "NONE");
         mapping.add("vmConditionIndices", singletonInteger(0));
         mapping.add("rawCondition", condition.deepCopy());
         mapping.add("condition", condition.deepCopy());
@@ -3873,8 +3674,6 @@ public class ConcolicSummaryImporterTest {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", true);
         mapping.addProperty("observedOutcome", true);
-        mapping.addProperty("effectiveOutcome", true);
-        mapping.addProperty("overrideApplied", false);
         mapping.addProperty("conditionIndex", -1);
         mapping.addProperty("rawConditionIndex", -1);
         mapping.addProperty("rawPathConditionBaseline", baseline);
@@ -4560,6 +4359,8 @@ public class ConcolicSummaryImporterTest {
         methods.add(method);
         methods.add("<example.Unrelated: void touch()>");
         region.add("methods", methods);
+        region.add("branchPolicies", branchPoliciesForTest(
+                authorizedBranchMappings));
         write(regions, region.toString() + "\n");
 
         JsonObject raw = new JsonObject();
@@ -5468,8 +5269,6 @@ public class ConcolicSummaryImporterTest {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("effectiveOutcome", observedOutcome);
-        mapping.addProperty("overrideApplied", false);
         mapping.addProperty("conditionIndex", -1);
         mapping.addProperty("rawConditionIndex", -1);
         mapping.add("condition", condition.deepCopy());
@@ -5912,6 +5711,12 @@ public class ConcolicSummaryImporterTest {
         region.addProperty("regionId", "REGION.FIELD");
         region.addProperty("rootMethod", method);
         region.add("methods", singletonString(method));
+        if (exactVmGuard) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", method + "#u2");
+            branch.addProperty("policy", "EXPLORE");
+            region.add("branchPolicies", singletonObject(branch));
+        }
         write(regions, region + "\n");
 
         JsonObject observed = new JsonObject();
@@ -6042,9 +5847,6 @@ public class ConcolicSummaryImporterTest {
             mapping.addProperty("vmOccurrence", 1);
             mapping.addProperty("outcome", true);
             mapping.addProperty("observedOutcome", true);
-            mapping.addProperty("effectiveOutcome", true);
-            mapping.addProperty("overrideApplied", false);
-            mapping.addProperty("overrideMode", "NONE");
             mapping.addProperty("conditionIndex", 0);
             mapping.addProperty("rawConditionIndex", 0);
             mapping.addProperty("rawPathConditionBaseline", 0);

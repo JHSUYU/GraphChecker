@@ -149,7 +149,7 @@ public final class ConcolicSmtComposer {
                     + arguments.fatalRegion + " activation="
                     + arguments.activationId);
         }
-        rejectRetiredFatalReplayAliases(fatal);
+        requireCanonicalFatalQuerySchema(fatal);
         BranchReplayContract fatalReplayContract = replayContract(fatal);
         SolverPathContext fatalSolverPathContext = solverPathContext(fatal);
         JsonArray fatalConstraints = fatalConstraints(fatalReplayContract,
@@ -317,26 +317,8 @@ public final class ConcolicSmtComposer {
         return new Result(composedSmt, manifest, relationships);
     }
 
-    private static void rejectRetiredFatalReplayAliases(JsonObject fatal)
+    private static void requireCanonicalFatalQuerySchema(JsonObject fatal)
             throws IOException {
-        for (String retired : new String[]{
-                "targetBranch", "directedTargetQuery",
-                "targetReplayValidated", "replayAlreadyValidated",
-                "validatedSummaryId", "validatedTargetSummary",
-                "replayValidationAuthority", "formulaAuthority",
-                "freshObservedTargetQuery", "targetRebaseProvenance",
-                "freshQueryRebuildProvenance", "branchMappings",
-                "pathCondition", "executionAdmission",
-                "branchOverrideUsed", "siteId", "occurrence",
-                "observedOutcome", "desiredOutcome", "conditionIndex",
-                "constraints", "originalTargetCondition",
-                "negatedTargetCondition", "freshObservedTargetCondition",
-                "prefixPolicy", "targetPolicy", "suffixPolicy"}) {
-            if (fatal.has(retired)) {
-                throw new IOException("Canonical fatal query rejects retired "
-                        + "branch alias: " + retired);
-            }
-        }
         if (integer(fatal, "schemaVersion", -1) != 1
                 || !"TARGET_BRANCH_SOLVER_QUERY".equals(string(fatal, "kind"))) {
             throw new IOException("Unsupported canonical fatal query schema");

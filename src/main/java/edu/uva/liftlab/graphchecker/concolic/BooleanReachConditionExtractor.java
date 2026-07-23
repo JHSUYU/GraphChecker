@@ -285,7 +285,7 @@ public final class BooleanReachConditionExtractor {
             String solverTerm = encoding.solverTerm(port.id);
             String portTerm = "port__" + smtName(port.id);
             List<JsonObject> evidence = scalarEvidence(
-                    mappingsByPort.get(port.id));
+                    mappingsByPort.get(port.id), port.id);
             String nullnessSolverTerm = encoding == ScalarEncoding.STRING
                     ? exactCanonicalStringNullnessTerm(evidence, port,
                     gaps) : "";
@@ -397,11 +397,22 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static List<JsonObject> scalarEvidence(
-            List<JsonObject> evidence) {
+            List<JsonObject> evidence, String port) {
         if (evidence == null || evidence.isEmpty()) {
             return Collections.emptyList();
         }
-        return new ArrayList<>(evidence);
+        // A nullable short-circuit can expose only the same port's auxiliary
+        // reference view; it is not evidence for the scalar term.
+        String referenceTerm = "sym__port__" + smtName(port) + "__ref";
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonObject mapping : evidence) {
+            String term = string(mapping, "term");
+            if (!referenceTerm.equals(term)
+                    || safeSmtAtom(string(mapping, "bridgeAssertionName"))) {
+                result.add(mapping);
+            }
+        }
+        return result;
     }
 
     /**

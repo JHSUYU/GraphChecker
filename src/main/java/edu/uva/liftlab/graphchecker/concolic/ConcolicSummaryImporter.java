@@ -221,7 +221,7 @@ public final class ConcolicSummaryImporter {
             final JsonArray canonicalBranchMappings;
             try {
                 canonicalBranchMappings = normalizeBranchMappings(
-                        rawBranchMappings, normalization, activation);
+                        rawBranchMappings, normalization, region);
             } catch (IllegalArgumentException malformedBranchMapping) {
                 diagnostics.add(diagnostic(raw,
                         "REJECTED_CANONICAL_BRANCH_MAPPING",
@@ -1507,18 +1507,13 @@ public final class ConcolicSummaryImporter {
     /**
      * A per-path constant is a relational output when the path guard itself
      * carries the input dependency.  Accept that case only from the exact VM
-     * thread-context event contract; a textual branch mapping, an overridden
-     * outcome, or an unowned PC index cannot turn a concrete value into a
-     * summary relation.
+     * thread-context event contract; a textual branch mapping or an unowned
+     * PC index cannot turn a concrete value into a summary relation.
      */
     private static ExactPathGuardDependency exactVmPathGuardDependency(
             JsonObject raw, JsonObject activation, Set<String> sliceInputs,
             PathNormalization normalization) {
         List<String> issues = new ArrayList<>();
-        if (bool(raw, "branchOverrideUsed", false)) {
-            issues.add("CONSTANT_OUTPUT_PATH_GUARD_USED_BRANCH_OVERRIDE");
-            return new ExactPathGuardDependency(false, issues);
-        }
         JsonArray enginePath = array(object(raw, "engineSummary"),
                 "pathCondition");
         Set<String> sliceMethods = new LinkedHashSet<>();
@@ -1562,13 +1557,8 @@ public final class ConcolicSummaryImporter {
                     && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
                     && bool(mapping, "vmBranchEventExpected", false)
                     && bool(mapping, "vmBranchEventValidated", false)
-                    && !bool(mapping, "overrideApplied", false)
-                    && "NONE".equals(string(mapping, "overrideMode"))
                     && bool(mapping, "outcome", false)
                     == bool(mapping, "observedOutcome", !bool(mapping,
-                    "outcome", false))
-                    && bool(mapping, "outcome", false)
-                    == bool(mapping, "effectiveOutcome", !bool(mapping,
                     "outcome", false))
                     && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
                     string(mapping, "vmBranchEventAuthority"))
@@ -2894,7 +2884,7 @@ public final class ConcolicSummaryImporter {
 
     private static JsonArray normalizeBranchMappings(
             JsonArray rawMappings, PathNormalization normalization,
-            JsonObject activation) {
+            JsonObject region) {
         JsonArray result = new JsonArray();
         Set<Integer> summaryPositions = new LinkedHashSet<>();
         Set<String> events = new LinkedHashSet<>();
@@ -2944,7 +2934,7 @@ public final class ConcolicSummaryImporter {
                             + ": duplicate summary PC " + normalizedIndex);
                 }
                 canonical = SummaryBranchMapping.witnessed(witness,
-                        normalizedIndex, branchPolicy(activation,
+                        normalizedIndex, branchPolicy(region,
                                 witness.siteId()));
             } else {
                 JsonElement encoded = raw.get("concreteObservation");
@@ -2962,7 +2952,7 @@ public final class ConcolicSummaryImporter {
                             + ": " + malformed.getMessage(), malformed);
                 }
                 canonical = SummaryBranchMapping.concrete(observation,
-                        branchPolicy(activation, observation.siteId()));
+                        branchPolicy(region, observation.siteId()));
             }
             String event = canonical.siteId() + "\u0000"
                     + canonical.occurrence();
@@ -2979,10 +2969,10 @@ public final class ConcolicSummaryImporter {
     }
 
     private static SummaryBranchMapping.Policy branchPolicy(
-            JsonObject activation, String siteId) {
+            JsonObject region, String siteId) {
         String selected = "";
         int matches = 0;
-        for (JsonElement element : array(activation, "branches")) {
+        for (JsonElement element : array(region, "branchPolicies")) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
             if (!siteId.equals(string(branch, "siteId"))) continue;
@@ -2991,7 +2981,7 @@ public final class ConcolicSummaryImporter {
         }
         if (matches != 1) {
             throw new IllegalArgumentException("branch " + siteId
-                    + " must have exactly one activation policy");
+                    + " must have exactly one static region policy");
         }
         return SummaryBranchMapping.Policy.fromWire(selected);
     }
@@ -5974,7 +5964,6 @@ public final class ConcolicSummaryImporter {
                     && occurrence > 0
                     && conditionIndex >= 0
                     && conditionIndex == rawConditionIndex
-                    && !bool(mapping, "overrideApplied", true)
                     && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_"
                     .concat("PC_INDEX").equals(string(mapping,
                             "mappingPolicy"))
@@ -8353,12 +8342,7 @@ public final class ConcolicSummaryImporter {
                 if (occurrence < 1 || !occurrences.add(occurrence)
                         || !proof.method.equals(string(mapping, "method"))
                         || !hasBoolean(mapping, "observedOutcome")
-                        || !hasBoolean(mapping, "effectiveOutcome")
                         || !hasBoolean(mapping, "outcome")
-                        || !hasBoolean(mapping, "overrideApplied")
-                        || mapping.get("overrideApplied").getAsBoolean()
-                        || mapping.get("observedOutcome").getAsBoolean()
-                        != mapping.get("effectiveOutcome").getAsBoolean()
                         || mapping.get("observedOutcome").getAsBoolean()
                         != mapping.get("outcome").getAsBoolean()) {
                     complete = false;
@@ -8635,41 +8619,15 @@ public final class ConcolicSummaryImporter {
         JsonArray appliedAssignments = array(raw,
                 "modelAssignmentsApplied");
         boolean outputPathFlip = "REPLAY_OUTPUT_PATH_FLIP".equals(phase);
-        boolean targetBranchReplay = "REPLAY_DIRECTED_TARGET".equals(phase);
-        boolean branchReplay = outputPathFlip || targetBranchReplay;
-        boolean required = Boolean.TRUE.equals(strictBoolean(activation,
-                "targetReplayRequired"))
-                || branchReplay
+        boolean required = outputPathFlip
                 || expectedAssignments.size() > 0
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
-        // A target seed is solver provenance, not merely a diagnostic trace.
-        // Its observed path condition is therefore subject to the same
-        // no-override rule as the later directed replay.  In particular, a
-        // --force-branch-validation plan must never become a seed summary.
-        if (bool(raw, "branchOverrideUsed", false)
-                || hasAppliedBranchOverride(array(raw, "branchMappings"))) {
-            failures.add("BRANCH_OVERRIDE_USED");
-        }
-        if (array(activation, "forcedBranches").size() > 0
-                || array(raw, "forcedBranches").size() > 0
-                || bool(raw, "forcedBranchUsed", false)
-                || integer(raw, "forcedBranchCount", 0) > 0) {
-            failures.add("FORCED_BRANCH_PLAN_OR_RESULT_PRESENT");
-        }
-        if (failures.size() > 0) {
-            return new ReplayAdmission(required, false, failures);
-        }
         if (!required) {
             return new ReplayAdmission(false, true, failures);
         }
 
-        if (!Boolean.FALSE.equals(strictBoolean(raw,
-                "branchOverrideUsed"))) {
-            failures.add("BRANCH_OVERRIDE_ATTESTATION_MISSING_OR_MALFORMED");
-        }
-
-        if (branchReplay) {
+        if (outputPathFlip) {
             JsonElement replayContract = activation.get("replayContract");
             if (replayContract == null) {
                 failures.add("BRANCH_REPLAY_CONTRACT_MISSING");
@@ -8704,9 +8662,7 @@ public final class ConcolicSummaryImporter {
         // target/fatal replay promises to observe that exception; an output
         // closure is validated by its requested output and exact path replay
         // evidence instead.
-        boolean exceptionObservationRequired = goal.isTargetBranch()
-                || Boolean.TRUE.equals(strictBoolean(activation,
-                "targetReplayRequired"));
+        boolean exceptionObservationRequired = goal.isTargetBranch();
         Set<String> expectedExceptions = exceptionObservationRequired
                 ? failureExceptions(region) : Collections.<String>emptySet();
         if (!expectedExceptions.isEmpty()) {
@@ -8723,9 +8679,7 @@ public final class ConcolicSummaryImporter {
 
     /**
      * Revalidates the immutable witness stream once at the importer trust
-     * boundary.  The replay contract derives the target polarity itself, so
-     * no targetBranch/expectedPrefix/negatedCondition aliases participate in
-     * admission.
+     * boundary. The replay contract derives the target polarity itself.
      */
     private static JsonObject validateReplayContractObservation(
             JsonObject raw, JsonElement encodedContract,
@@ -9531,14 +9485,6 @@ public final class ConcolicSummaryImporter {
             if (value.isJsonPrimitive()) result.add(value.getAsString());
         }
         return result;
-    }
-
-    private static boolean hasAppliedBranchOverride(JsonArray mappings) {
-        for (JsonElement element : mappings) {
-            if (element.isJsonObject() && bool(element.getAsJsonObject(),
-                    "overrideApplied", false)) return true;
-        }
-        return false;
     }
 
     private static boolean exactAppliedModelAssignments(

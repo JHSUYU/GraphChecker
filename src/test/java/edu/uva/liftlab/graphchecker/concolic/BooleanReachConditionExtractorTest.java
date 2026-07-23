@@ -227,6 +227,79 @@ public class BooleanReachConditionExtractorTest {
     }
 
     @Test
+    public void ignoresReferenceOnlyShortCircuitScalarRepresentations()
+            throws Exception {
+        Fixture fixture = fixture();
+        String boxedBoolean = "ROOT.A.in.4";
+        String text = "ROOT.A.in.5";
+        JsonArray inputs = fixture.regions.get(0).getAsJsonArray(
+                "symbolicInputs");
+        inputs.add(input(boxedBoolean, "java.lang.Boolean"));
+        inputs.add(input(text, "java.lang.String"));
+
+        JsonArray bindings = fixture.manifest.getAsJsonArray(
+                "caseProjectionCatalog").get(0).getAsJsonObject()
+                .getAsJsonArray("bindings");
+        JsonObject boxedReference = new JsonObject();
+        boxedReference.addProperty("portId", boxedBoolean);
+        boxedReference.addProperty("term", "sym__port__"
+                + smtName(boxedBoolean) + "__ref");
+        bindings.add(boxedReference);
+        bindings.add(scalarMapping(text, "STRING", "String", "string"));
+
+        JsonObject nullCase = new JsonObject();
+        nullCase.addProperty("caseId", "CASE.NULL.SHORT_CIRCUIT");
+        nullCase.addProperty("selectorTerm", "case_null_short_circuit");
+        JsonObject textReference = new JsonObject();
+        textReference.addProperty("portId", text);
+        textReference.addProperty("term", "sym__port__"
+                + smtName(text) + "__ref");
+        JsonArray nullBindings = new JsonArray();
+        nullBindings.add(textReference);
+        nullCase.add("bindings", nullBindings);
+        fixture.manifest.getAsJsonArray("caseProjectionCatalog").add(
+                nullCase);
+
+        StringBuilder extra = new StringBuilder();
+        appendScalarPort(extra, text, "String", "string", "VString");
+        extra.append("(declare-const port__").append(smtName(boxedBoolean))
+                .append(" Value)\n")
+                .append("(declare-const sym__port__")
+                .append(smtName(boxedBoolean)).append("__ref Ref)\n")
+                .append("(assert (= port__").append(smtName(boxedBoolean))
+                .append(" (VRef sym__port__")
+                .append(smtName(boxedBoolean)).append("__ref)))\n");
+        String smt = fixture.smt.replace(
+                "(declare-datatypes () ((Value (VInt (v Int)))))",
+                "(declare-sort Ref 0)\n"
+                        + "(declare-datatypes () ((Value (VInt (v Int)) "
+                        + "(VString (s String)) (VRef (r Ref)))))\n"
+                        + "(declare-const nullRef Ref)")
+                .replace("(check-sat)\n",
+                        extra + "(check-sat)\n");
+
+        BooleanReachConditionExtractor.Extraction extraction =
+                BooleanReachConditionExtractor.extract(smt,
+                        fixture.manifest, fixture.regions,
+                        fixture.relationships, query ->
+                                new BooleanReachConditionExtractor
+                                        .SolverResult(query.contains(
+                                        "(assert (not true))")
+                                        ? "unsat" : "sat", ""),
+                        8, 256);
+
+        JsonObject report = extraction.report;
+        assertEquals("CANDIDATE_READY",
+                report.get("state").getAsString());
+        assertEquals(0, report.getAsJsonArray("discoveryGaps").size());
+        assertFalse(report.getAsJsonArray("rootBooleanInputs").toString()
+                .contains(boxedBoolean));
+        assertTrue(report.getAsJsonArray(
+                "existentialNonBooleanRootInputs").toString()
+                .contains(text));
+    }
+
+    @Test
     public void incompleteCompositionFailsBeforeAnySolverInvocation()
             throws Exception {
         Fixture fixture = fixture();

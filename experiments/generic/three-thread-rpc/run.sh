@@ -416,12 +416,9 @@ do_schedule_target() {
   IFS=$'\t' read -r region activation <<< "${binding}"
   (cd "${graphchecker_dir}" && "${runner}" --config "${config}" schedule \
     --region-id "${region}" --activation-id "${activation}")
-  jq -e -s '
-    length == 1
-    and ((.[0].forcedBranches // []) | length) == 0
-    and .[0].branchOverrideProhibited == true
-  ' "${target_schedule}/scheduled_activation_plan.jsonl" >/dev/null \
-    || die "target seed schedule permits a branch override"
+  jq -e -s 'length == 1' \
+    "${target_schedule}/scheduled_activation_plan.jsonl" >/dev/null \
+    || die "target scheduler did not emit exactly one activation"
 }
 
 do_schedule_producer() {
@@ -921,8 +918,6 @@ do_explore_producer() {
       .complete == true
       and .status == "PATH_FLIP_REPLAY_READY"
       and .selectedTaskCount == 1
-      and .branchOverrideAllowed == false
-      and .runtimeValidationRequired == true
     ' "${planner_dir}/path_flip_plan_manifest.json" >/dev/null \
       || die "producer path flip is not one solver-backed replay"
     query_key=$(jq -er '.queryKey' \
@@ -951,12 +946,7 @@ do_explore_producer() {
         and (.replayContract | has("contractId") | not)
         and (.replayContract | has("required") | not)
         and (.replayContract.source | has("witnessId") | not)
-        and (has("targetBranch") | not)
-        and (has("expectedBranchPrefix") | not)
-        and (has("pathReplayConstraints") | not)
-        and (has("branchOverrideProhibited") | not)
         and ((.modelAssignments // []) | length) > 0
-        and ((.forcedBranches // []) | length) == 0
       )
       | .activationId
     ' "${planner_dir}/activation_plan.jsonl")
@@ -1216,7 +1206,6 @@ do_seed_target() {
       and .[0].activationId == $activation
       and .[0].relationallyComplete == true
       and .[0].executionKind == "UNFORCED_SEED"
-      and (.[0] | has("targetReplayValidated") | not)
     ' "${summary}" >/dev/null; then
     die "target seed import is not one valid unforced observation"
   fi
@@ -1233,9 +1222,6 @@ do_seed_target() {
       and .[0].readyForSolver == true
       and .[0].replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
       and .[0].solverPathContext.kind == "NON_BRANCH_SOLVER_PATH_CONTEXT"
-      and (.[0] | has("targetReplayValidated") | not)
-      and (.[0] | has("targetBranch") | not)
-      and (.[0] | has("directedTargetQuery") | not)
     ' "${target_schedule}/branch_queries.jsonl" >/dev/null; then
     die "target seed scheduler did not emit one solver-ready candidate query"
   fi

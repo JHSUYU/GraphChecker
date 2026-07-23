@@ -1404,36 +1404,6 @@ public class ConcolicSmtComposerTest {
                     "fatalOccurrence").getAsInt());
             assertTrue(result.manifest.get(
                     "fatalDesiredOutcome").getAsBoolean());
-            assertFalse(result.manifest.has("validatedSummaryId"));
-            assertFalse(result.manifest.has(
-                    "validatedFatalReplaySummary"));
-        } finally {
-            folder.delete();
-        }
-    }
-
-    @Test
-    public void rejectsRetiredFatalReplayAliases() throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            for (String alias : new String[]{"targetReplayValidated",
-                    "replayAlreadyValidated", "validatedTargetSummary"}) {
-                Fixture fixture = fixture(folder.newFolder(alias).toPath(),
-                        true);
-                JsonObject fatal = JsonParser.parseString(new String(
-                        Files.readAllBytes(fixture.fatal),
-                        StandardCharsets.UTF_8).trim()).getAsJsonObject();
-                if ("validatedTargetSummary".equals(alias)) {
-                    fatal.add(alias, new JsonObject());
-                } else {
-                    fatal.addProperty(alias, true);
-                }
-                Files.write(fixture.fatal, (fatal + "\n").getBytes(
-                        StandardCharsets.UTF_8));
-                assertFatalQueryRejected(fixture,
-                        "rejects retired branch alias: " + alias);
-            }
         } finally {
             folder.delete();
         }

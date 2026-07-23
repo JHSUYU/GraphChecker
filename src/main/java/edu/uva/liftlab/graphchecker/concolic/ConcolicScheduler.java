@@ -169,9 +169,6 @@ public final class ConcolicScheduler {
             scheduledActivation.remove("summaryMode");
             scheduledActivation.addProperty("scheduleId", scheduleId);
             scheduledActivation.addProperty("executionPhase", executionPhase);
-            scheduledActivation.addProperty("targetReplayRequired", false);
-            scheduledActivation.addProperty("branchOverrideProhibited",
-                    !arguments.forceBranchValidation);
             scheduledActivation.addProperty("schedulerReady",
                     materialization.ready);
             scheduledActivation.add("materializations",
@@ -179,25 +176,6 @@ public final class ConcolicScheduler {
             scheduledActivation.add("concreteFallbacks",
                     materialization.concreteFallbacks.deepCopy());
             compactScheduledActivation(scheduledActivation);
-            if (!candidate.outputClosure) {
-                scheduledActivation.add("branchCaptureSelector",
-                        candidate.target.captureSelector().toJson());
-            }
-
-            if (arguments.forceBranchValidation
-                    && !candidate.outputClosure) {
-                JsonArray forced = new JsonArray();
-                JsonObject force = new JsonObject();
-                force.addProperty("siteId", candidate.target.siteId);
-                force.addProperty("occurrence",
-                        candidate.target.selectedOccurrence);
-                force.addProperty("desiredOutcome",
-                        candidate.target.desiredOutcome);
-                force.addProperty("mode", "SOOT_BRANCH_OVERRIDE_VALIDATION");
-                force.addProperty("solverDerived", false);
-                forced.add(force);
-                scheduledActivation.add("forcedBranches", forced);
-            }
 
             JsonObject job = new JsonObject();
             job.addProperty("scheduleId", scheduleId);
@@ -213,12 +191,7 @@ public final class ConcolicScheduler {
             job.addProperty("selectionReason", candidate.reason);
             job.add("captureGoal", goal.toJson());
             job.addProperty("captureReady", materialization.ready);
-            job.addProperty("forceValidationEnabled",
-                    arguments.forceBranchValidation);
-            if (!candidate.outputClosure) {
-                job.add("branchCaptureSelector",
-                        candidate.target.captureSelector().toJson());
-            } else {
+            if (candidate.outputClosure) {
                 upstreamCaptureJobCount++;
                 JsonElement requestedOutput = candidate.activation.get(
                         "requestedOutput");
@@ -286,8 +259,6 @@ public final class ConcolicScheduler {
         result.summary.addProperty("versionedStateMergeCount",
                 mergePlan.stateMerges.size());
         result.summary.addProperty("branchQueryCount", result.queries.size());
-        result.summary.addProperty("forceBranchValidation",
-                arguments.forceBranchValidation);
         result.summary.addProperty("captureOnly", arguments.captureOnly);
         result.summary.addProperty("definitionSiteAuthority",
                 definitions.authoritative
@@ -302,13 +273,6 @@ public final class ConcolicScheduler {
             writeJsonl(arguments.outputDirectory.resolve(
                             "branch_queries.jsonl"),
                     result.queries);
-        }
-        // Forced branch validation is a focused diagnostic mode outside the
-        // recommended workflow. Its regression still inspects the merge
-        // projection; normal target and producer schedules do not persist it.
-        if (arguments.forceBranchValidation) {
-            writeJson(arguments.outputDirectory.resolve(
-                    "symbolic_merge_plan.json"), result.mergePlan);
         }
         return result;
     }
@@ -445,8 +409,6 @@ public final class ConcolicScheduler {
             RegionCaptureGoal.outputClosure().writeTo(result);
         }
         result.remove("summaryMode");
-        result.remove("branchCaptureSelector");
-        result.remove("forcedBranches");
         result.remove("modelAssignments");
         boolean outputCaptureReady = outputCaptureReady(result);
         boolean schedulerReady = materialization.ready
@@ -456,7 +418,6 @@ public final class ConcolicScheduler {
         result.addProperty("outputCaptureReady", outputCaptureReady);
         result.add("concreteFallbacks",
                 materialization.concreteFallbacks.deepCopy());
-        result.addProperty("branchOverrideProhibited", true);
         result.add("materializations", materialization.actions.deepCopy());
         compactScheduledActivation(result);
         return result;
@@ -2329,11 +2290,6 @@ public final class ConcolicScheduler {
         writeAtomic(path, builder.toString());
     }
 
-    private static void writeJson(Path path, JsonObject value)
-            throws IOException {
-        writeAtomic(path, GSON.toJson(value) + System.lineSeparator());
-    }
-
     private static void writeAtomic(Path path, String value) throws IOException {
         Path parent = path.toAbsolutePath().getParent();
         if (parent != null) {
@@ -2929,10 +2885,6 @@ public final class ConcolicScheduler {
                     "OUTPUT_CLOSURE_CAPTURE");
         }
 
-        private BranchCaptureSelector captureSelector() {
-            return BranchCaptureSelector.of(siteId, selectedOccurrence,
-                    desiredOutcome);
-        }
     }
 
     private static final class Candidate {
@@ -3384,7 +3336,6 @@ public final class ConcolicScheduler {
         public final int requestedOutputCaptureOccurrence;
         public final int maxJobs;
         public final boolean allowMultipleJobsPerRegion;
-        public final boolean forceBranchValidation;
         public final boolean captureOnly;
 
         private Arguments(Path regions, Path activations,
@@ -3396,7 +3347,6 @@ public final class ConcolicScheduler {
                           int requestedOutputCaptureOccurrence,
                           int maxJobs,
                           boolean allowMultipleJobsPerRegion,
-                          boolean forceBranchValidation,
                           boolean captureOnly) {
             this.regions = regions;
             this.activations = activations;
@@ -3414,7 +3364,6 @@ public final class ConcolicScheduler {
                     requestedOutputCaptureOccurrence);
             this.maxJobs = Math.max(1, maxJobs);
             this.allowMultipleJobsPerRegion = allowMultipleJobsPerRegion;
-            this.forceBranchValidation = forceBranchValidation;
             this.captureOnly = captureOnly;
         }
 
@@ -3459,7 +3408,6 @@ public final class ConcolicScheduler {
                             "requested-output-capture-occurrence"), 0),
                     parseInt(values.get("max-jobs"), 1),
                     Boolean.parseBoolean(values.get("multiple-per-region")),
-                    Boolean.parseBoolean(values.get("force-branch-validation")),
                     Boolean.parseBoolean(values.get("capture-only")));
         }
 
@@ -3478,7 +3426,6 @@ public final class ConcolicScheduler {
                     || "requested-output-capture-occurrence".equals(key)
                     || "max-jobs".equals(key)
                     || "multiple-per-region".equals(key)
-                    || "force-branch-validation".equals(key)
                     || "capture-only".equals(key);
         }
 

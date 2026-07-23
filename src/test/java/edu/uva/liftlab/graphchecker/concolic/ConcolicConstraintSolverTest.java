@@ -70,8 +70,6 @@ public class ConcolicConstraintSolverTest {
                 assignment.get("inputSymbol").getAsString());
         assertEquals("Z3_PATH_FLIP_MODEL",
                 assignment.get("authority").getAsString());
-        assertFalse(result.record.get("branchOverrideAllowed")
-                .getAsBoolean());
     }
 
     @Test
@@ -211,7 +209,6 @@ public class ConcolicConstraintSolverTest {
         JsonObject isNull = binaryExpression(referenceSymbol(raw,
                         "Ljava/lang/Boolean;"), "==", nullReference());
         JsonObject query = task(isNull);
-        query.add("negatedCondition", isNull.deepCopy());
 
         ConcolicConstraintSolver.Result result =
                 solveForTest(query, activation(),
@@ -244,7 +241,6 @@ public class ConcolicConstraintSolverTest {
         JsonObject isNull = binaryExpression(referenceSymbol(raw,
                         "Lexample/StringHolder;"), "==", nullReference());
         JsonObject query = task(isNull);
-        query.add("negatedCondition", isNull.deepCopy());
 
         ConcolicConstraintSolver.Result result =
                 solveForTest(query, activation(),
@@ -273,7 +269,6 @@ public class ConcolicConstraintSolverTest {
         JsonObject nonNull = binaryExpression(referenceSymbol(raw,
                         "Ljava/lang/Boolean;"), "!=", nullReference());
         JsonObject query = task(nonNull);
-        query.add("negatedCondition", nonNull.deepCopy());
 
         ConcolicConstraintSolver.Result result =
                 solveForTest(query, activation(),
@@ -303,7 +298,6 @@ public class ConcolicConstraintSolverTest {
         constraints.add(prefix);
         constraints.add(target);
         query.add("constraints", constraints);
-        query.add("negatedCondition", target.deepCopy());
 
         JsonObject replay = new JsonObject();
         JsonArray materializations = new JsonArray();
@@ -343,7 +337,6 @@ public class ConcolicConstraintSolverTest {
         constraints.add(prefix);
         constraints.add(target);
         query.add("constraints", constraints);
-        query.add("negatedCondition", target.deepCopy());
 
         JsonObject replay = new JsonObject();
         JsonArray materializations = new JsonArray();
@@ -1048,7 +1041,6 @@ public class ConcolicConstraintSolverTest {
         constraints.add(prefix);
         constraints.add(target);
         task.add("constraints", constraints);
-        task.add("negatedCondition", target.deepCopy());
 
         JsonObject activation = new JsonObject();
         JsonArray materializations = new JsonArray();
@@ -1513,13 +1505,7 @@ public class ConcolicConstraintSolverTest {
         task.addProperty("schemaVersion", 3);
         task.addProperty("kind", "REGION_PATH_FLIP");
         task.add("solverPathContext", SolverPathContext.empty().toJson());
-        String[] retired = new String[]{"constraints", "prefix",
-                "negatedCondition", "flipSite", "flipOccurrence",
-                "conditionIndex", "desiredOutcome",
-                "expectedBranchPrefix", "pathReplayConstraints",
-                "pathReplayNegatedCondition",
-                "pathReplayTargetConditionIndex"};
-        for (String field : retired) task.remove(field);
+        task.remove("constraints");
         return ConcolicConstraintSolver.solve(task, activation, z3,
                 timeoutMillis);
     }

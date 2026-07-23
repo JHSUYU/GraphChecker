@@ -996,32 +996,6 @@ public class CausynthPipelineTest {
                     .selectedBoundedOutputClosureCoverageReady(plan,
                             activation));
 
-            JsonObject targetOverride = readySolverOutputPathFlip();
-            JsonObject retiredTarget = new JsonObject();
-            retiredTarget.addProperty("siteId",
-                    "<example.Manager: void add()>#u14");
-            targetOverride.add("targetBranch", retiredTarget);
-            writePlanRow(plan, targetOverride);
-            assertFalse(ConcolicInstrumentationSelections
-                    .selectedBoundedOutputClosureCoverageReady(plan,
-                            activation));
-
-            JsonObject topLevelOverride = readySolverOutputPathFlip();
-            topLevelOverride.addProperty("branchOverrideAllowed", true);
-            writePlanRow(plan, topLevelOverride);
-            assertFalse(ConcolicInstrumentationSelections
-                    .selectedBoundedOutputClosureCoverageReady(plan,
-                            activation));
-
-            JsonObject forcedOverride = readySolverOutputPathFlip();
-            JsonObject forced = new JsonObject();
-            forced.addProperty("siteId", "<example.Manager: void add()>#u14");
-            forcedOverride.add("forcedBranches", singletonJsonArray(forced));
-            writePlanRow(plan, forcedOverride);
-            assertFalse(ConcolicInstrumentationSelections
-                    .selectedBoundedOutputClosureCoverageReady(plan,
-                            activation));
-
             JsonObject bundleMismatch = readySolverOutputPathFlip();
             bundleMismatch.addProperty("activationBundleRootActivationId",
                     "ACT.PATH.other");
@@ -1178,8 +1152,6 @@ public class CausynthPipelineTest {
         row.addProperty("schedulerReady", true);
         row.addProperty("runtimePathEvidenceComplete", true);
         row.addProperty("requestedOutputCaptureComplete", true);
-        row.addProperty("branchOverrideProhibited", true);
-        row.addProperty("targetReplayRequired", false);
         row.addProperty("pathSignatureTruncated", false);
         row.addProperty("containedCallTreeTruncated", false);
         row.addProperty("replayMode",
@@ -1272,7 +1244,6 @@ public class CausynthPipelineTest {
         row.addProperty("activationBundleScheduleId",
                 "SCHEDULE.PATH.3a35b5ac15765178");
         row.addProperty("executionPhase", "REPLAY_OUTPUT_PATH_FLIP");
-        row.remove("branchOverrideProhibited");
         row.addProperty("pathQueryKey",
                 "c3577f7f5002a09920e54b51105590f1093a902d0fcf8bdee74ce4516109f7b3");
 

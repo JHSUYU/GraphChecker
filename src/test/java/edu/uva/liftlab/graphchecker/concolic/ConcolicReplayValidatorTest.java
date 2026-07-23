@@ -12,25 +12,15 @@ public class ConcolicReplayValidatorTest {
     @Test
     public void admitsOnlyInputDrivenUnforcedBranchFlip() {
         JsonObject validation = ConcolicReplayValidator.validate(task(),
-                result(false, true));
+                result(true));
 
         assertTrue(validation.get("valid").getAsBoolean());
-        assertTrue(validation.get("inputModelOnly").getAsBoolean());
-    }
-
-    @Test
-    public void rejectsSootBranchOverrideEvenWhenOutcomeMatches() {
-        JsonObject validation = ConcolicReplayValidator.validate(task(),
-                result(true, true));
-
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertFalse(validation.get("inputModelOnly").getAsBoolean());
     }
 
     @Test
     public void rejectsAReplayThatDoesNotTakeTheSolvedFlip() {
         JsonObject validation = ConcolicReplayValidator.validate(task(),
-                result(false, false));
+                result(false));
 
         assertFalse(validation.get("valid").getAsBoolean());
         assertFalse(validation.get("flippedBranchValidated").getAsBoolean());
@@ -39,7 +29,7 @@ public class ConcolicReplayValidatorTest {
     @Test
     public void admitsNormalExactOutputClosureReplay() {
         JsonObject task = outputTask();
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
 
@@ -58,7 +48,7 @@ public class ConcolicReplayValidatorTest {
     @Test
     public void rejectsExceptionalOutputClosureAfterObservedFlip() {
         JsonObject task = outputTask();
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("exitKind", "EXCEPTION");
         raw.addProperty("exceptionType",
                 "java.util.NoSuchElementException");
@@ -83,7 +73,7 @@ public class ConcolicReplayValidatorTest {
     @Test
     public void rejectsOutputClosureWithoutExactRequestedExpression() {
         JsonObject task = outputTask();
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
         JsonObject summary = outputSummary(task);
@@ -104,7 +94,7 @@ public class ConcolicReplayValidatorTest {
         JsonObject task = task();
         JsonArray planned = dynamicAssignments();
         task.add("modelAssignments", planned.deepCopy());
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", planned.size());
         raw.add("modelAssignmentsApplied", planned.deepCopy());
 
@@ -129,7 +119,7 @@ public class ConcolicReplayValidatorTest {
         JsonObject appliedRow = freshRebindingApplied(plannedRow, 99);
         JsonArray applied = new JsonArray();
         applied.add(appliedRow);
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", 1);
         raw.add("modelAssignmentsApplied", applied);
         JsonArray freshBindings = new JsonArray();
@@ -183,7 +173,7 @@ public class ConcolicReplayValidatorTest {
                 rawBinding.addProperty("materializationSiteId",
                         "SITE.OTHER.GETTER");
             }
-            JsonObject raw = result(false, true);
+            JsonObject raw = result(true);
             raw.addProperty("modelAssignmentAppliedCount", 1);
             raw.add("modelAssignmentsApplied", applied);
             JsonArray bindings = new JsonArray();
@@ -211,7 +201,7 @@ public class ConcolicReplayValidatorTest {
         JsonObject appliedRow = freshRebindingApplied(plannedRow, 99);
         JsonArray applied = new JsonArray();
         applied.add(appliedRow);
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", 1);
         raw.add("modelAssignmentsApplied", applied);
         JsonArray rawBindings = new JsonArray();
@@ -247,7 +237,7 @@ public class ConcolicReplayValidatorTest {
         JsonArray planned = new JsonArray();
         planned.add(containerAssignment(2, 3));
         task.add("modelAssignments", planned.deepCopy());
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", 1);
         JsonObject applied = appliedContainerAssignment(
                 planned.get(0).getAsJsonObject(), "ACT.REPLAY");
@@ -292,7 +282,7 @@ public class ConcolicReplayValidatorTest {
                         "materializationSiteBridgeElementObjectToken",
                         999L);
             }
-            JsonObject raw = result(false, true);
+            JsonObject raw = result(true);
             raw.addProperty("modelAssignmentAppliedCount", 1);
             JsonArray appliedRows = new JsonArray();
             appliedRows.add(applied);
@@ -334,7 +324,7 @@ public class ConcolicReplayValidatorTest {
             JsonArray planned = new JsonArray();
             planned.add(invalid);
             task.add("modelAssignments", planned.deepCopy());
-            JsonObject raw = result(false, true);
+            JsonObject raw = result(true);
             raw.add("modelAssignmentsApplied", planned.deepCopy());
             JsonObject validation = ConcolicReplayValidator.validate(
                     task, raw);
@@ -351,7 +341,7 @@ public class ConcolicReplayValidatorTest {
         applied.add(appliedContainerAssignment(exact, "ACT.REPLAY"));
         applied.get(0).getAsJsonObject().getAsJsonObject(
                 "containerSelector").addProperty("elementIndex", 1);
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.add("modelAssignmentsApplied", applied);
         JsonArray rawBindings = new JsonArray();
         rawBindings.add(rawContainerBinding(
@@ -374,7 +364,7 @@ public class ConcolicReplayValidatorTest {
                     + "_org/apache/hadoop/hdfs/security/token/block/BlockKey");
         }
         task.add("modelAssignments", planned.deepCopy());
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", planned.size());
         raw.add("modelAssignmentsApplied", planned.deepCopy());
 
@@ -393,7 +383,7 @@ public class ConcolicReplayValidatorTest {
                 + first.get("dynamicFieldSymbol").getAsString()
                 + "_java.lang.Long");
         task.add("modelAssignments", malformed.deepCopy());
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", malformed.size());
         raw.add("modelAssignmentsApplied", malformed.deepCopy());
 
@@ -409,7 +399,7 @@ public class ConcolicReplayValidatorTest {
                 "M_J_field_" + otherDynamic + "_java/lang/Long");
         JsonObject crossedTask = task();
         crossedTask.add("modelAssignments", crossed.deepCopy());
-        JsonObject crossedRaw = result(false, true);
+        JsonObject crossedRaw = result(true);
         crossedRaw.addProperty("modelAssignmentAppliedCount",
                 crossed.size());
         crossedRaw.add("modelAssignmentsApplied", crossed.deepCopy());
@@ -429,7 +419,7 @@ public class ConcolicReplayValidatorTest {
         JsonArray applied = planned.deepCopy();
         applied.get(1).getAsJsonObject().getAsJsonObject(
                 "expectedEntryKey").addProperty("_exp", "wrong-key");
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", applied.size());
         raw.add("modelAssignmentsApplied", applied);
 
@@ -450,7 +440,7 @@ public class ConcolicReplayValidatorTest {
         JsonArray applied = planned.deepCopy();
         applied.get(1).getAsJsonObject().addProperty("inputSymbol",
                 "REGION.3.in.99");
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", applied.size());
         raw.add("modelAssignmentsApplied", applied);
 
@@ -470,7 +460,7 @@ public class ConcolicReplayValidatorTest {
         applied.add(planned.get(0).deepCopy());
         applied.add(dynamicAssignment("REGION.3.in.0.field.extra.occ.3",
                 3, "key-three"));
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", applied.size());
         raw.add("modelAssignmentsApplied", applied);
 
@@ -491,7 +481,7 @@ public class ConcolicReplayValidatorTest {
         JsonArray assignments = new JsonArray();
         assignments.add(exact);
         task.add("modelAssignments", assignments.deepCopy());
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("activationId", "ACT.REPLAY");
         raw.addProperty("modelAssignmentAppliedCount", 1);
         raw.add("modelAssignmentsApplied", assignments.deepCopy());
@@ -523,7 +513,7 @@ public class ConcolicReplayValidatorTest {
             JsonArray invalidRows = new JsonArray();
             invalidRows.add(invalidAssignment);
             invalidTask.add("modelAssignments", invalidRows.deepCopy());
-            JsonObject invalidRaw = result(false, true);
+            JsonObject invalidRaw = result(true);
             invalidRaw.addProperty("activationId", "ACT.REPLAY");
             invalidRaw.add("modelAssignmentsApplied",
                     invalidRows.deepCopy());
@@ -555,7 +545,7 @@ public class ConcolicReplayValidatorTest {
         JsonObject duplicateTask = task();
         duplicateTask.addProperty("activationId", "ACT.REPLAY");
         duplicateTask.add("modelAssignments", duplicatePlan.deepCopy());
-        JsonObject duplicateRaw = result(false, true);
+        JsonObject duplicateRaw = result(true);
         duplicateRaw.addProperty("activationId", "ACT.REPLAY");
         duplicateRaw.add("modelAssignmentsApplied", duplicatePlan.deepCopy());
         JsonObject duplicateRejected = ConcolicReplayValidator.validate(
@@ -581,7 +571,7 @@ public class ConcolicReplayValidatorTest {
             } else {
                 first.addProperty(member, "UNTRUSTED_MODEL");
             }
-            JsonObject raw = result(false, true);
+            JsonObject raw = result(true);
             raw.addProperty("modelAssignmentAppliedCount", applied.size());
             raw.add("modelAssignmentsApplied", applied);
 
@@ -604,7 +594,7 @@ public class ConcolicReplayValidatorTest {
         task.add("modelAssignments", planned.deepCopy());
         JsonArray applied = planned.deepCopy();
         applied.add(directAssignment("REGION.3.in.1", "8"));
-        JsonObject raw = result(false, true);
+        JsonObject raw = result(true);
         raw.addProperty("modelAssignmentAppliedCount", applied.size());
         raw.add("modelAssignmentsApplied", applied);
 
@@ -664,8 +654,7 @@ public class ConcolicReplayValidatorTest {
         return summary;
     }
 
-    private static JsonObject result(boolean override,
-                                     boolean flippedOutcome) {
+    private static JsonObject result(boolean flippedOutcome) {
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
         raw.addProperty("regionId", "REGION.3");
@@ -673,26 +662,23 @@ public class ConcolicReplayValidatorTest {
         raw.addProperty("allModelAssignmentsApplied", true);
         raw.addProperty("modelAssignmentAppliedCount", 0);
         raw.add("modelAssignmentsApplied", new JsonArray());
-        raw.addProperty("branchOverrideUsed", override);
         JsonArray mappings = new JsonArray();
         mappings.add(mapping(branchWitness("SITE.0", true,
-                branchPredicate("REGION.3.in.0", ">"), 0), false));
+                branchPredicate("REGION.3.in.0", ">"), 0)));
         boolean targetOutcome = flippedOutcome ? false : true;
         mappings.add(mapping(branchWitness("SITE.1", targetOutcome,
                 branchPredicate("REGION.3.in.1",
-                        targetOutcome ? ">" : "<="), 1), override));
+                        targetOutcome ? ">" : "<="), 1)));
         raw.add("branchMappings", mappings);
         return raw;
     }
 
-    private static JsonObject mapping(BranchWitness witness,
-                                      boolean override) {
+    private static JsonObject mapping(BranchWitness witness) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", witness.siteId());
         mapping.addProperty("occurrence", witness.occurrence());
         mapping.addProperty("observedOutcome",
                 witness.sourceTakenOutcome());
-        mapping.addProperty("overrideApplied", override);
         mapping.add("witness", witness.toJson());
         return mapping;
     }

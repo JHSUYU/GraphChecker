@@ -99,6 +99,11 @@ public class CausynthModuleSupportTest {
         slice.put("causalEdgeIds", Collections.singletonList("DF.7"));
         slice.put("causalEdges", Collections.singletonList(reference));
         slice.put("causalEdgeCount", 1);
+        slice.put("causalCellCount", 1);
+        slice.put("causalCellLimit", 20000);
+        slice.put("derivedInputs", Collections.singletonList("input"));
+        slice.put("inputPortCountBeforeSlice", 1);
+        slice.put("inputPortPromotionLimit", 128);
         slice.put("methods", Collections.singletonList(
                 "<example.Owner: int compute()>"));
         slice.put("methodCount", 1);
@@ -113,6 +118,19 @@ public class CausynthModuleSupportTest {
         region.put("methods", Collections.singletonList(
                 "<example.Owner: int compute()>"));
         region.put("methodCount", 1);
+        region.put("broadInputPortCount", 1);
+        region.put("broadInputPortLimit", 128);
+        region.put("pathAssumptionSites",
+                Collections.singletonList("<example.Owner: int compute()>#u1"));
+        Map<String, Object> branch = new LinkedHashMap<>();
+        branch.put("siteId", "<example.Owner: int compute()>#u1");
+        branch.put("policy", "EXPLORE");
+        branch.put("sourceEdgeId", "DF.7");
+        branch.put("sourceEdgeIds", Collections.singletonList("DF.7"));
+        branch.put("policyAuthority", "RETIRED_SELF_CLAIM");
+        branch.put("explorationReason", "RETIRED_SELF_CLAIM");
+        branch.put("role", "REACHABILITY");
+        region.put("branchPolicies", Collections.singletonList(branch));
         region.put("outputSlices", Collections.singletonList(slice));
         result.symbolicRegions.add(region);
 
@@ -133,6 +151,20 @@ public class CausynthModuleSupportTest {
         assertFalse(persistedRegion.contains("\"causalEdges\""));
         assertFalse(persistedRegion.contains("\"causalEdgeCount\""));
         assertFalse(persistedRegion.contains("\"methodCount\""));
+        assertFalse(persistedRegion.contains("\"broadInputPortCount\""));
+        assertFalse(persistedRegion.contains("\"broadInputPortLimit\""));
+        assertFalse(persistedRegion.contains("\"pathAssumptionSites\""));
+        assertFalse(persistedRegion.contains("\"sourceEdgeId\""));
+        assertTrue(persistedRegion.contains(
+                "\"sourceEdgeIds\":[\"DF.7\"]"));
+        assertFalse(persistedRegion.contains("\"policyAuthority\""));
+        assertFalse(persistedRegion.contains("\"explorationReason\""));
+        assertFalse(persistedRegion.contains("\"role\""));
+        assertFalse(persistedRegion.contains("\"causalCellCount\""));
+        assertFalse(persistedRegion.contains("\"causalCellLimit\""));
+        assertFalse(persistedRegion.contains("\"derivedInputs\""));
+        assertFalse(persistedRegion.contains("\"inputPortCountBeforeSlice\""));
+        assertFalse(persistedRegion.contains("\"inputPortPromotionLimit\""));
         assertFalse(persistedRegion.contains("\"staticRootCandidate\""));
         assertFalse(persistedRegion.contains("\"rootValidation\""));
         assertFalse(persistedRegion.contains("\"promotionAuthority\""));

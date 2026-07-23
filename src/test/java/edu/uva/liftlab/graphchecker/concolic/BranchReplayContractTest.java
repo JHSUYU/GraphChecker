@@ -114,13 +114,6 @@ public class BranchReplayContractTest {
                 .siteId());
 
         JsonObject encoded = contract.toJson();
-        assertFalse(encoded.has("prefix"));
-        assertFalse(encoded.has("suffix"));
-        assertFalse(encoded.has("observedOutcome"));
-        assertFalse(encoded.has("desiredOutcome"));
-        assertFalse(encoded.has("negatedCondition"));
-        assertFalse(encoded.has("required"));
-        assertFalse(encoded.has("contractId"));
         assertTrue(contract.sameContent(
                 BranchReplayContract.fromJson(encoded)));
     }

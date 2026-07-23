@@ -6,7 +6,7 @@ promotion remains the explicit final TODO.
 
 This document defines the project-independent contract between GraphChecker's
 static/runtime analysis, Soot instrumentation, the custom OpenJDK concolic
-engine, recursive scheduling, guarded merging, and SMT verification. The
+engine, producer scheduling, guarded merging, and SMT verification. The
 top-level `readme.md` is the authoritative handoff and experiment-status file.
 
 ## 1. Research scope
@@ -21,12 +21,13 @@ there is no domain-specific composition adapter.
 
 1. Every analyzed unit is a `REGION.*`; no domain-specific region types exist.
 2. A region has one of two capture goals: `TARGET_BRANCH` or `OUTPUT_CLOSURE`.
-3. The target goal captures one exact branch, then replays a single immutable
-   `BranchReplayContract`; it does not need comprehensive path enumeration.
+3. The target goal captures one exact branch observation and derives
+   one immutable `BranchReplayContract` plus `SolverPathContext` for candidate
+   composition. The maintained workflow does not replay the target.
 4. An output goal is admitted only through real record/solve/replay/import
    evidence and is merged only after its bounded path worklist closes.
-5. Input models may change real program inputs. Branch overrides never count as
-   automatic concolic evidence.
+5. Input models may change real program inputs. Branch outcomes remain
+   read-only runtime observations.
 6. Static dataflow discovers work but does not establish runtime value
    semantics.
 7. Cross-region equality requires a complete, invocation-matched runtime value
@@ -46,6 +47,7 @@ representative row is:
 
 ```json
 {
+  "schemaVersion": 1,
   "regionId": "REGION.17",
   "rootMethod": "<owner.Type: Ret method(Arg)>",
   "methods": ["<owner.Type: Ret method(Arg)>"],
@@ -68,14 +70,18 @@ representative row is:
       "inputPorts": ["REGION.17.in.0"],
       "methods": ["..."],
       "sites": ["<owner.Type: Ret method(Arg)>#u12"],
+      "causalEdgeIds": ["EDGE.42"],
       "complete": true
     }
   ]
 }
 ```
 
-An output slice is a static over-approximation. Runtime import still has to
-prove that every required input was actually symbolized.
+An output slice is a static over-approximation. `causalEdgeIds` refer to the
+single canonical edge table in `static_dataflow_edges.jsonl`; a slice does not
+embed another copy of those rows or persist derived edge/count aliases.
+Runtime import still has to prove that every required input was actually
+symbolized.
 
 ## 4. Runtime activation and value evidence
 
@@ -89,17 +95,45 @@ fingerprint-bound or reflection failure makes an equality non-composable. The
 soundness assumption for digest equality is SHA-256 collision resistance.
 
 `runtime_region_edge_validation.jsonl` schema 2 stores one runtime `state`
-and one `bindings` array per edge. Static endpoint identity is retained, but
-derived admission booleans, duplicate relation fields, counts, and diagnostic
-pair copies are not persisted. The two composable states are:
+and one `bindings` array per canonical static endpoint:
+
+```json
+{
+  "schemaVersion": 2,
+  "kind": "RUNTIME_REGION_EDGE_EVIDENCE",
+  "edgeId": "REGION_EDGE.4",
+  "fromRegion": "REGION.17",
+  "toRegion": "REGION.2",
+  "transportKind": "SHARED_STATE",
+  "fromPort": "REGION.17.out.0",
+  "toPort": "REGION.2.in.1",
+  "requiresOrder": true,
+  "requiresObjectIdentity": true,
+  "state": "CONFIRMED_READ_FROM",
+  "bindings": [{
+    "writeEvidenceKind": "FIELD_ASSIGNMENT",
+    "writeEvidenceAuthority": "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1",
+    "orderAuthority": "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1",
+    "orderConfirmed": true,
+    "fieldReceiverIdentityConfirmed": true,
+    "receiverObjectId": 41,
+    "writerEventSeq": 120,
+    "readerEventSeq": 137
+  }]
+}
+```
+
+Conditional static mapping/projection metadata may be retained when needed to
+resolve a canonical output. Derived admission booleans, duplicate relation
+fields, counts, and diagnostic copies of the same endpoint pair are not
+persisted. The two composable states are:
 
 ```text
 CONFIRMED_RUNTIME_VALUE_EQUALITY:
   matching concrete region instances
   complete endpoint fingerprints
   equal digest
-  valueEqualityObserved = true
-  valueEqualityAuthority = RUNTIME_COMPLETE_VALUE_FINGERPRINT
+  ordered endpoint evidence in each binding
 
 CONFIRMED_READ_FROM:
   concrete field/container mutation
@@ -120,28 +154,22 @@ global static equality class is never reused blindly for another invocation.
 
 ### 5.1 `TARGET_BRANCH`
 
-The scheduler selects an observed fatal branch and creates one
-`BranchReplayContract`:
+The target activation is executed once without assignments or branch
+overrides. The importer records that unforced observation, and the scheduler
+derives one candidate query from its typed `BranchWitness`:
 
 ```text
 ordered source BranchWitness prefix
 AND the flipped source witness predicate
+AND positioned SolverPathContext constraints
 ```
 
-The solver output is converted to concrete materialization actions. A replay is
-admitted only if:
-
-```text
-all expected actions were applied
-no branch override was used
-the concrete target site/occurrence reached the desired outcome
-the expected exception appears in the exception chain
-```
-
-Only `VM_PC` witnesses are replayable. An exact VM branch event with no path
-condition remains observation-only and cannot be converted into a synthetic
-condition or alternate certificate. This goal deliberately stops after the
-contract is validated.
+Only `VM_PC` witnesses may form a flip contract. An exact VM branch event with
+no path condition remains observation-only and cannot be converted into a
+synthetic condition or alternate certificate. In the maintained workflow the target
+contract is consumed as the fatal candidate condition; it is not turned into
+a target input model and is not replayed. Observing the annotated exception
+naturally under a selected full-workload model remains the final TODO.
 
 ### 5.2 `OUTPUT_CLOSURE`
 
@@ -164,7 +192,8 @@ symbols cannot.
 
 ## 6. Summary IR
 
-An admitted path summary contains:
+An admitted path summary keeps the canonical relation data used downstream.
+A representative witnessed branch row is:
 
 ```json
 {
@@ -176,23 +205,39 @@ An admitted path summary contains:
   "pathCondition": [{"_type": "BinaryExpression"}],
   "branchMappings": [
     {
-      "siteId": "<owner.Type: Ret method(Arg)>#u12",
-      "occurrence": 1,
-      "conditionIndex": 0,
-      "outcome": true,
-      "overrideApplied": false
+      "witness": {
+        "schemaVersion": 1,
+        "kind": "BINARY_BRANCH_WITNESS",
+        "site": {
+          "siteId": "<owner.Type: Ret method(Arg)>#u12",
+          "method": "<owner.Type: Ret method(Arg)>",
+          "unitIndex": 12,
+          "occurrence": 1
+        },
+        "sourceTakenOutcome": true,
+        "sourceSatisfiedPredicate": {"_type": "BinaryExpression"},
+        "vmPcIndex": 0,
+        "predicateNormalization": "IDENTITY"
+      },
+      "summaryPcIndex": 0,
+      "policy": "EXPLORE"
     }
   ],
   "outputExpressions": {},
   "heapStateInitializers": [],
   "heapEffects": [],
-  "inputMaterializationAdmission": {"complete": true},
-  "heapEffectModel": {"complete": true},
-  "relationallyComplete": true,
-  "branchOverrideUsed": false,
-  "valid": true
+  "relationallyComplete": true
 }
 ```
+
+`SummaryBranchMapping` has exactly one authority: either
+`{witness, summaryPcIndex, policy}` or
+`{concreteObservation, policy}` for an exact VM-attested binary event that
+added no path-condition entry. It does not duplicate site, outcome, condition,
+override, or runtime-event aliases at the mapping root. Completeness details
+remain importer diagnostics; the canonical summary persists the one aggregate
+`relationallyComplete` gate instead of parallel validity,
+materialization-admission, and heap-model completeness mirrors.
 
 Map mutations are ordered state transitions such as `MAP_PUT`, `MAP_REMOVE`,
 `MAP_CLEAR`, or `MAP_PUT_ALL`. Each effect has pre/post state IDs, ordinals,
@@ -205,67 +250,66 @@ Direct `Map.remove(key)` is normalized through its ordinary VM
 `Iterator.remove()` mutation. Its exact static causal-edge `invoke` is
 recognized, but the VM `HashMap.removeNode` evidence cannot prove the
 corresponding application call and current entry. The importer reports
-`INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE`, sets
-`heapEffectModel.complete=false` and `relationallyComplete=false`, and never
-reconstructs the mutation from an iterator side channel. Non-mutating iterator
-entry reads, finite map snapshots, and nested value-field bindings remain
-supported.
+`INCOMPLETE_ITERATOR_REMOVE_APPLICATION_PROVENANCE`, emits no admitted
+transformer, sets `relationallyComplete=false`, and never reconstructs the
+mutation from an iterator side channel. Non-mutating iterator entry reads,
+finite map snapshots, and nested value-field bindings remain supported.
 
 ## 7. Worklists
 
-### 7.1 Recursive region worklist
+### 7.1 Upstream topology resolution
 
-The graph worklist starts at the fatal query's input ports and walks only
-runtime-validated equality/read-from relations for automatic composition.
-Mapping-only or otherwise unobserved transitions produce terminal gaps and
-stop recursive expansion. `RegionTransitionDiscoveryWorklist` has been
-deleted: no discovery capture is synthesized for such a transition, and no
-static transition template fallback exists.
+There is no persisted recursive region worklist and no summary cache.
+Runtime-confirmed `READ_FROM`/`EQUALITY` bindings identify the bounded upstream
+regions required by the fatal query. The composer resolves that graph directly
+from static regions, runtime bindings, and complete merged producer summaries.
+Missing, ambiguous, unobserved, cyclic, or out-of-bound dependencies become
+composition gaps; no discovery activation or static fallback is synthesized.
+Multiple confirmed writes to one read form guarded alternatives rather than an
+arbitrary choice.
 
-Its stable query key includes semantic region/output/relation context and
-excludes activation IDs. Cache lookup is output-specific. Multiple confirmed
-writes to one read form a guarded alternative group rather than an arbitrary
-choice.
-
-Bounds include depth, regions, activations per region, alternatives per read,
-queries, paths, and wall-clock. Cycles and every bound event are manifest rows.
-
-### 7.2 Region path worklist
+### 7.2 Producer path worklist
 
 Only `relationallyComplete=true` output summaries are eligible. For each
-output-relevant branch, latest first:
+output-relevant witnessed branch, latest first,
+`BranchReplayContract.flip()` constructs:
 
 ```text
-prefix := conditions before the selected branch
-query  := prefix AND negate(selected condition)
-suffix := dropped
+orderedPrefix := earlier BranchWitness values
+source        := selected BranchWitness
+required      := complement(source.sourceSatisfiedPredicate)
+suffixPolicy  := DROP_SOURCE_SUFFIX
 ```
 
-The stable flip key includes the semantic prefix, output, site, occurrence, and
-desired outcome, but excludes activation IDs. Terminal SAT/UNSAT/materialization
-records prevent duplicate work after resume. Unmapped conditions are gaps.
+`SolverPathContext` separately retains positioned `_array_expr` and
+`MethodExpression` constraints before the selected branch. Both values are
+immutable typed JSON without a self-hash. The stable task key is computed from
+their canonical content, requested output, and semantic branch identity; it
+excludes activation IDs. Terminal SAT/UNSAT/materialization records prevent
+duplicate work. Unwitnessed Boolean conditions are gaps.
 
-## 8. Constraint solve and replay
+## 8. Producer constraint solve and replay
 
 `ConcolicConstraintSolver` lowers the expression IR to SMT-LIB, invokes Z3, and
 returns materializable assignments. The important result is the selected path
 and symbolic relation, not a displayed concrete model.
 
-The replay activation carries assignments and the same immutable replay
-contract. It must not contain `forcedBranches`, target-branch aliases, or replay
-branch overrides. The runtime reports applied assignment count and actual
-branch witnesses.
+For producer output closure, the replay activation carries assignments and the
+same immutable replay contract. The runtime reports applied assignment count
+and actual branch witnesses; branch outcomes are observations, not replay
+inputs.
 
 `ConcolicReplayValidator` checks:
 
 ```text
-no branch override
 all assignments applied
 expected branch prefix observed naturally
 selected site/occurrence has the desired outcome
 ```
 
-Only then may the imported summary update the cache.
+Only then may the importer append the canonical summary and let the path
+worklist mark the task covered. This validation is not run for the target
+candidate query because the maintained workflow performs no target replay.
 
 ## 9. Guarded merging
 
@@ -282,17 +326,17 @@ merge may be emitted for diagnostics, but the composer marks it incomplete.
 The generic workload driver implements:
 
 ```text
-load graph, summaries, path records, and resume activations
-repeat within bounds:
-  plan graph and region paths
-  if a complete cached summary has a pending flip:
-    solve, execute, validate, import, update path record
-  else if an automatically eligible output is missing:
-    prepare output capture with scheduler
-    execute fixed test, import, update output-specific cache
-  else:
-    merge and evaluate closure
-persist all state and manifest
+resolve annotation target and static slice
+collect runtime activations and edge evidence
+capture one unforced target observation and candidate query
+for each producer, in isolated processes:
+  capture an unforced output seed
+  repeat plan -> solve -> input-only replay -> import within bounds
+  stop only at CLOSED with no gaps
+  merge admitted paths into one guarded relation
+compose producer relations with the target query
+run Z3 and Boolean-root projection
+write the five terminal candidate artifacts
 ```
 
 The execution backend receives file locations and environment variables only.
@@ -315,6 +359,7 @@ Intermediate planner/runtime output lives in a single `current` scratch
 directory and is deleted after each accepted step. Numbered
 `iteration-NNNN` directories are retained only when
 `GRAPH_CHECKER_DEBUG=true`; they are diagnostic history, not workflow inputs.
+No cache directory or recursive-worklist artifact is produced.
 
 ## 11. SMT composition
 
@@ -338,16 +383,54 @@ still `CANDIDATE_ONLY`: promotion by a natural, injection-free target replay is
 the explicit remaining TODO.
 
 The composition manifest is the single cross-file artifact authority. It
-fingerprints the actual CLI inputs, emitted SMT, and the complete relationship
-catalog. The catalog itself contains only its schema, candidate array, and
-verification eligibility; it does not mirror the manifest's target identity,
-stage, artifact fingerprints, or a second derived binding id.
+fingerprints the actual CLI inputs and emitted SMT; after the relationship
+catalog is written, the same manifest binds that artifact as well. It does not
+require a second derived binding id or reciprocal field-by-field certificate.
 
-Relationship catalogs are deliberately candidate-only and always carry
-`eligibleForAutomaticVerification=false`. No solver result promotes a
+Each `caseProjectionCatalog` row is also compact:
+
+```json
+{
+  "caseId": "CASE.0123",
+  "selectorTerm": "case_selector__...",
+  "bindings": [
+    {
+      "portId": "REGION.17.in.0",
+      "term": "sym__port__REGION_17_in_0__int",
+      "bridgeAssertionName": "bridge__..."
+    }
+  ]
+}
+```
+
+String bindings additionally carry `nullnessTerm`. Static port schemas recover
+the sort; the row does not copy the full guard formula, assertion text/hash,
+runtime binding object, source summary, or dynamic metadata.
+
+The schema-2 relationship catalog has exactly four top-level fields:
+`schemaVersion`, `kind`, `trustState=CANDIDATE_ONLY`, and `relationships`.
+Each relationship is a candidate projection; there is no parallel eligibility
+flag or duplicated composition binding. No solver result promotes a
 relationship to trusted evidence. A future natural, injection-free target
-replay may upgrade a candidate only after observing the target under the
-candidate model; that trust-promotion stage remains an explicit TODO.
+replay may upgrade a candidate only after observing the annotated target under
+the candidate model; that trust-promotion stage remains an explicit TODO.
+
+The terminal workflow output is exactly:
+
+```text
+candidate.smt2
+candidate_composition_manifest.json
+symbolic_relationship_candidates.json
+candidate_boolean_model.json
+candidate_result_manifest.json
+```
+
+The three schema-2 reports use `state=CANDIDATE_READY` (or
+`CANDIDATE_WITH_GAPS` before terminal admission),
+`trustState=CANDIDATE_ONLY`, and the Boolean/result reports use
+`reachability=REACHABLE|UNREACHABLE`. Old `status`, `complete`,
+verification-eligibility, and natural-replay-implemented flags are not part of
+the compact protocol.
 
 ## 12. Verification
 

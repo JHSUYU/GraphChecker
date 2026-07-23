@@ -196,7 +196,6 @@ public class ConcolicPathReplayVerifierTest {
         raw.addProperty("regionId", "REGION.15");
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
-        raw.addProperty("branchOverrideUsed", false);
         raw.addProperty("modelAssignmentCount", 1);
         raw.addProperty("modelAssignmentAppliedCount", 1);
         raw.addProperty("allModelAssignmentsApplied", true);
@@ -263,7 +262,6 @@ public class ConcolicPathReplayVerifierTest {
         mapping.addProperty("occurrence", witness.occurrence());
         mapping.addProperty("observedOutcome",
                 witness.sourceTakenOutcome());
-        mapping.addProperty("overrideApplied", false);
         mapping.add("witness", witness.toJson());
         return mapping;
     }

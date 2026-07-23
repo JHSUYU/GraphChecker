@@ -218,13 +218,10 @@ final class ConcolicInstrumentationSelections {
                 || !strictJsonBooleanEquals(row,
                 "requestedOutputCaptureComplete", true)
                 || !strictJsonBooleanEquals(row,
-                "targetReplayRequired", false)
-                || !strictJsonBooleanEquals(row,
                 "pathSignatureTruncated", false)
                 || !strictJsonBooleanEquals(row,
                 "containedCallTreeTruncated", false)
                 || !emptyJsonArray(row, "runtimeGaps")
-                || !absentOrEmptyJsonArray(row, "forcedBranches")
                 || row.has("transitionDiscovery")
                 || row.has("transitionOutputRefinement")) {
             return false;
@@ -232,9 +229,7 @@ final class ConcolicInstrumentationSelections {
         boolean seedReplay = "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
                 .equals(jsonString(row, "replayMode"))
                 && "CAPTURE_OUTPUT_PATH".equals(jsonString(row,
-                "executionPhase"))
-                && strictJsonBooleanEquals(row,
-                "branchOverrideProhibited", true)
+                        "executionPhase"))
                 && absentOrEmptyJsonArray(row, "modelAssignments");
         boolean solverFlipReplay = solverOutputPathFlipReady(row, selected);
         if (!seedReplay && !solverFlipReplay) {
@@ -353,19 +348,6 @@ final class ConcolicInstrumentationSelections {
                 strictJsonString(row, "replayMode"))
                 || !"REPLAY_OUTPUT_PATH_FLIP".equals(
                 strictJsonString(row, "executionPhase"))) {
-            return false;
-        }
-
-        // The immutable contract is the only binary-branch replay plan.
-        // Reject old aliases instead of comparing another representation of
-        // the same prefix and target.
-        if (row.has("targetBranch")
-                || row.has("expectedBranchPrefix")
-                || row.has("pathReplayConstraints")
-                || row.has("pathReplayNegatedCondition")
-                || row.has("pathReplayTargetConditionIndex")
-                || row.has("branchOverrideAllowed")
-                || row.has("branchOverrideProhibited")) {
             return false;
         }
 

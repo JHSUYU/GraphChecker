@@ -100,15 +100,17 @@ semantics exists.
 | Arbitrary `MethodExpression` | Both encoders may declare a sort-qualified diagnostic uninterpreted function and always add `MODEL_SEMANTICS_MISSING` | Fail-closed. The diagnostic UF keeps the SMT inspectable, but can no longer make branch-flip or candidate composition claim exact completeness. |
 | Unknown expression `_type` | Composer creates a fresh term and adds `unsupported`; solver adds `unsupported` and returns no model | Fail-closed. |
 | Unknown binary/String operator, invalid numeric literal, unbound placeholder | Composer may create a fresh well-sorted term, but also adds `unsupported`; solver does likewise or stops before Z3 | Fail-closed. The fresh term is diagnostic scaffolding, not admitted semantics. |
-| Missing upstream region summary | Uninterpreted region relation plus `incompleteSummaries` | Fail-closed for candidate structural completeness. |
+| Missing upstream region summary | Uninterpreted region relation plus `incompleteSummaryRegions` | Fail-closed: the composition manifest state is `CANDIDATE_WITH_GAPS`. |
 | Unknown/malformed Java scalar type | Usually falls back to reference sort | Correct for actual references, but a malformed primitive descriptor can be silently misclassified. Static port schema checks reduce this risk; the encoders should nevertheless reject unknown non-reference descriptors explicitly. |
 
 ### Answer to the free-variable audit
 
 Most unknown-expression fallbacks are safe in the admission sense: although
 the composer declares a fresh SMT term so that it can still render a diagnostic
-query, it also appends an `unsupported` reason. `structurallyComplete` requires
-that set to be empty.
+query, it also appends an `unsupportedExpressions` reason. A nonempty gap set
+forces the compact composition manifest to
+`state=CANDIDATE_WITH_GAPS`; only an empty set together with the other
+structural gates produces `state=CANDIDATE_READY`.
 
 The first three audited exceptions have been closed: arbitrary methods carry
 an unsupported marker, casts use an explicit exact Java conversion table, and
@@ -218,7 +220,8 @@ A robust scalar campaign should retain, at minimum:
 6. lookup/table switch selected and default observations, plus an assertion
    that alternative forcing reports the explicit multiway-worklist gap;
 7. one deliberately unsupported String operation and one arbitrary method
-   call, verifying that neither can yield a `complete=true` exact report.
+   call, verifying that neither can yield a
+   `state=CANDIDATE_READY` report.
 
 Every workload should inspect both the branch-flip record and candidate composition
 manifest. A Z3 `sat` result alone is not semantic admission.
@@ -233,13 +236,13 @@ macro is the stable anchor.
 | Shared Java numeric semantics | Opcode expression construction in `bytecodeInterpreter.cpp` | `JavaPrimitiveSmtSemantics`; both encoders' `binary`/`typeCast` methods | Retain width metadata, wrap functions, SMT FP formats, RNE operations, and fail-closed unsupported operators in one shared semantic authority. |
 | Cast capture and category-2 slots | `bytecodeInterpreter.cpp`, `CONCOLIC_CONVERT_TYPE`, value-width shadow helpers, and conversion opcode stack offsets | `JavaPrimitiveSmtSemantics` and both encoders' `TypeCastExpression` lowering | Preserve typed source/target metadata for all 15 opcodes and whole-value one/two-word replacement. Keep VM lifecycle smoke coverage alongside encoder tests. |
 | Generic method UF | VM `MethodExpression::serialize_internal`; call sites include `symbolicPrimitive.cpp` (`parseInt`/`parseLong`) | Solver `Encoder.methodTerm` near line 582; composer `Emitter.methodTerm` near line 4308 and `methodConstraint` near line 3639 | Exact whitelist/adapters first; otherwise mark `MODEL_SEMANTICS_MISSING`. Track UF count/identities in the manifest and exclude them from exact completeness. |
-| Candidate composition completeness gate | N/A | `ConcolicSmtComposer.compose`, `structurallyComplete` near line 505 | Include any semantic-abstraction registry in the completeness predicate, not merely syntax/type gaps. |
+| Candidate composition completeness gate | N/A | `ConcolicSmtComposer.compose`, construction of manifest `state` | Include every semantic-abstraction registry in the `CANDIDATE_READY` predicate, not merely syntax/type gaps. Do not restore a parallel persisted `complete` flag. |
 | Divide/remainder spelling and semantics | `SymbolicOpStr` maps divide to `@`; `bytecodeInterpreter.cpp` binary arithmetic macros | Both encoders' `binary` methods | Floating `/` is SMT FP; keep integral `/` and all `%` fail-closed until exact Java lowering exists. |
 | Exact switch observation vs exploration | `bytecodeInterpreter.cpp`, `_tableswitch`/`_lookupswitch`; `threadContext.cpp`, `record_branch_conditions` | `ConcolicRegionRuntime` exact switch-event validation; `RegionPathWorklist` | Preserve complete ordered arm predicates. Implement successor-aware forcing separately; never coerce a multiway event into one Boolean flip. |
 | Compare trichotomy | `bytecodeInterpreter.cpp`, `CONCOLIC_OPC_TRICHOTOMY`; branch recording in `threadContext.cpp` | `JavaPrimitiveSmtSemantics.integralCompareResult` / `floatingCompareResult` and both `binary` methods | Preserve the symbolic result (`--`, `--l`, `--g`) on the shadow stack until its consuming `if*`; never reintroduce a concrete compare witness. |
 | FP model materialization | N/A | `ConcolicConstraintSolver` FP bit/NaN queries; `SmtModelValueCodec` | Retain the separate NaN discriminator and exact bit decoding. Extend the producer-path replay matrix for special values without weakening the already-tested category-2 lifecycle. |
 | String capture surface | `symbolicString.cpp`, `init_handle_method_names` near line 18 and `finish_method_helper` near line 178 | Solver `stringOperation` near line 458; composer `stringOperation` near line 3231 | Keep the explicit exact-operation whitelist. Add overload/signature and character-domain metadata before extending it. |
-| Diagnostic fresh terms | N/A | Composer `unknownConstraint` near line 9088 and the unknown branches of `term`, `binary`, `codecGap` | Preserve fresh terms only for rendering, always paired with `unsupported`; add a regression asserting manifest `structurallyComplete=false`. |
+| Diagnostic fresh terms | N/A | Composer `unknownConstraint` and the unknown branches of `term`, `binary`, `codecGap` | Preserve fresh terms only for rendering, always paired with `unsupportedExpressions`; add a regression asserting manifest `state=CANDIDATE_WITH_GAPS`. |
 | Signed `iinc` | `bytecodeInterpreter.cpp`, `_iinc` near line 1572 | Ordinary `+` lowering | Retain the explicit `(jint)(jbyte)pc[2]` constructor selection; smoke-test both positive and negative increments. |
 
 The remaining implementation order is therefore:

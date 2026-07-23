@@ -51,14 +51,7 @@ final class ReplayActivationFactory {
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);
-        result.remove("forcedBranches");
         result.remove("summaryMode");
-        result.remove("targetBranch");
-        result.remove("expectedBranchPrefix");
-        result.remove("pathReplayConstraints");
-        result.remove("pathReplayNegatedCondition");
-        result.remove("pathReplayTargetConditionIndex");
-        result.remove("branchOverrideProhibited");
         return result;
     }
 
