@@ -1031,6 +1031,58 @@ wait_for_path_wave() {
   [[ "${failed}" == "false" ]]
 }
 
+report_path_worklist_failure() {
+  local planner_dir=$1
+  local manifest="${planner_dir}/region_path_manifest.json"
+  local worklist="${planner_dir}/region_path_worklist.jsonl"
+  echo "[three-thread-rpc] path planner debug artifacts:" >&2
+  echo "  manifest: ${manifest}" >&2
+  echo "  worklist: ${worklist}" >&2
+  jq -r '
+    "  state=\(.state) observedPaths=\(.observedPathCount) pendingTasks=\(.pendingTaskCount)",
+    (.gaps[]?
+      | "  blocking-gap kind=\(.kind) reason=\(.reason) site=\(.siteId) occurrence=\(.occurrence) path=\(.pathKey)"),
+    (.deferredObservations[]?
+      | "  deferred-observation kind=\(.kind) reason=\(.reason) site=\(.siteId) occurrence=\(.occurrence) path=\(.pathKey)")
+  ' "${manifest}" >&2 || true
+}
+
+report_path_wave_failure() {
+  local wave_dir=$1
+  local task_dir query
+  local -a task_dirs=()
+  echo "[three-thread-rpc] failed path wave artifacts: ${wave_dir}" >&2
+  echo "  planner manifest: ${wave_dir}/region_path_manifest.json" >&2
+  echo "  planner worklist: ${wave_dir}/region_path_worklist.jsonl" >&2
+  mapfile -t task_dirs < <(find "${wave_dir}" -mindepth 1 -maxdepth 1 \
+    -type d -name 'task-*' | LC_ALL=C sort)
+  for task_dir in "${task_dirs[@]}"; do
+    [[ ! -s "${task_dir}/exploration_record.jsonl" ]] || continue
+    query=${task_dir##*/task-}
+    echo "  failed query: ${query}" >&2
+    echo "    stderr: ${task_dir}/stderr.log" >&2
+    echo "    solver: ${task_dir}/path_flip_solver_result.json" >&2
+    echo "    raw result: ${task_dir}/concolic_region_results.jsonl" >&2
+    echo "    import diagnostics: ${task_dir}/concolic_import_diagnostics.jsonl" >&2
+    echo "    replay verification: ${task_dir}/path_replay_verification.json" >&2
+    if [[ -s "${task_dir}/path_flip_solver_result.json" ]]; then
+      jq -r '
+        "    solver-status=\(.status // "missing") solver=\(.solverStatus // "missing") reason=\(.reason // "")"
+      ' "${task_dir}/path_flip_solver_result.json" >&2 || true
+    fi
+    if [[ -s "${task_dir}/path_replay_verification.json" ]]; then
+      jq -r '
+        "    verifier-status=\(.status // "missing") valid=\(.valid // false) failures=\((.failures // []) | join(","))"
+      ' "${task_dir}/path_replay_verification.json" >&2 || true
+    fi
+    if [[ -s "${task_dir}/stderr.log" ]]; then
+      echo "    stderr tail:" >&2
+      tail -n 40 "${task_dir}/stderr.log" \
+        | sed 's/^/      /' >&2
+    fi
+  done
+}
+
 publish_path_wave() {
   local wave_dir=$1
   local state_dir=$2
@@ -1153,7 +1205,8 @@ do_explore_producer() {
       jq -e '.state == "GAPPED" or .state == "NOT_STARTED"' \
         "${planner_dir}/region_path_manifest.json" >/dev/null \
         || die "producer path planner failed with exit ${planner_status}"
-      die "producer path worklist is not executable"
+      report_path_worklist_failure "${planner_dir}"
+      die "producer path worklist is not executable; inspect ${planner_dir}/region_path_manifest.json"
     fi
     [[ "${planner_status}" -eq 0 ]] \
       || die "producer path planner failed with exit ${planner_status}"
@@ -1173,8 +1226,10 @@ do_explore_producer() {
     max_paths=$(jq -er '.bounds.maxPathsPerRegion' \
       "${planner_dir}/region_path_manifest.json")
     remaining_paths=$((max_paths - observed_paths))
-    (( remaining_paths > 0 )) \
-      || die "producer path bound reached with pending work"
+    if (( remaining_paths <= 0 )); then
+      report_path_worklist_failure "${planner_dir}"
+      die "producer path bound reached with pending work; inspect ${planner_dir}/region_path_manifest.json"
+    fi
     wave_limit=${jobs}
     if (( wave_limit > remaining_paths )); then
       wave_limit=${remaining_paths}
@@ -1200,8 +1255,10 @@ do_explore_producer() {
       ) >"${task_dir}/stdout.log" 2>"${task_dir}/stderr.log" &
       worker_pids+=("$!")
     done
-    wait_for_path_wave "${worker_pids[@]}" \
-      || die "producer ${channel} path wave ${iteration} failed; inspect ${planner_dir}"
+    if ! wait_for_path_wave "${worker_pids[@]}"; then
+      report_path_wave_failure "${planner_dir}"
+      die "producer ${channel} path wave ${iteration} failed; inspect ${planner_dir}"
+    fi
     publish_path_wave "${planner_dir}" "${state_dir}" "${summaries}" \
       "${activations}" "${raw_results}" "${records}"
     discard_successful_iteration "${campaign}"

@@ -160,6 +160,13 @@ maintained `containers` workload 还要求 `MapProducer.input1`、`input2` 成�
 array producer 2 cases、map producer 10 cases；两个 Boolean root 的四行 candidate truth table
 均为 `sat`，因为两个 `int` root 在每一行仍按 existential 求解。
 
+`unreachable-parity` 是复杂 container-field 回归：array 与 Map producer 都读取
+`state.guard.enabled`、`state.metrics.left`、`state.metrics.right`，包含 clamp、短路条件和
+后置分支。RPC 拓扑不变，每个 producer 只向自己的 shared field publish 一次，consumer
+也只读取各 field 一次。完整关系的输出域分别是奇数 `{-1,1,3}` 与偶数 `{0,2,4}`；两个
+Boolean root 之外的四个 `int` field root 保持 existential，因此四行 Boolean truth table
+必须全部由真实组合 SMT/Z3 证明 `unsat`，不能靠 fixture 常量或测试脚本直接判定。
+
 ### `region.out`
 
 `region.out` 不是“方法返回值列表”，也不是 region 中所有被写过的变量。它只包含会流入
@@ -238,6 +245,31 @@ observed paths > 0 && pending = 0 && gaps = []  ->  state = CLOSED
 没有 output-closure seed 时 manifest 显式报告 `state = NOT_STARTED` 和 gap；不能把
 零条 observed path 或缺失 manifest 当成 closed。只有 `CLOSED` 才允许生成 guarded
 relation。这样不会在已经观察到 branch 两侧后再产生无意义的反向 replay。
+
+一条路径上的 output-relevant branch 可能因为更早的约束而被 VM concretize。此时它没有
+可翻转 predicate，但也不能在仍有 pending bridge task 时立刻终止 campaign。worklist 先把
+它记为 `deferredObservations`；后续只有相同 output closure、相同 site 且相同 occurrence
+出现精确 symbolic witness 时才覆盖它。若所有 task 都已终止而仍没有该 witness，observation
+才升级为 blocking gap，状态为 `GAPPED`。不同 loop occurrence 不能互相冒充证据。
+
+### Producer path 失败时看哪里
+
+`run.sh` 失败时会直接打印负责下一步定位的 artifact，不需要从完整 JSON stdout 猜原因：
+
+```text
+producer-campaign/<channel>/current/region_path_manifest.json
+producer-campaign/<channel>/current/region_path_worklist.jsonl
+producer-campaign/<channel>/current/task-<queryKey>/stderr.log
+producer-campaign/<channel>/current/task-<queryKey>/path_flip_solver_result.json
+producer-campaign/<channel>/current/task-<queryKey>/concolic_region_results.jsonl
+producer-campaign/<channel>/current/task-<queryKey>/concolic_import_diagnostics.jsonl
+producer-campaign/<channel>/current/task-<queryKey>/path_replay_verification.json
+```
+
+先看 manifest 的 `state`、`gaps` 与 `deferredObservations`。单 worker 失败时，脚本还会打印
+对应 queryKey、solver/verifier 状态和 `stderr.log` 尾部；custom JDK 在写出 JSON 前崩溃时，
+`stderr.log`、task 目录中的 `hs_err_pid*.log` 和 replay activation 仍足以定位执行阶段。
+成功 wave 会按既有 policy 清理，失败 wave 始终保留。
 
 ## Runtime 与 custom JDK
 
@@ -773,6 +805,13 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
   净减 2,650 行，也比 81,594 行冻结基线少 78 行。除上述 authority cutover 外，已删除
   Replay 派生布尔/计数镜像、Composer 三个零消费者 catalog、Importer 纯 dead helper，
   同时保留原始 failure codes、SMT assertion 和 summary hash。
+- 并行后的 robustness follow-up `COMPLETED`：增强后的 `unreachable-parity` 在不改变
+  single-publish/single-read shared-field RPC 的前提下加入两个 nested int leaf、clamp、
+  short-circuit 与后置分支；修复 static binding-id collision、Boolean-only snapshot
+  import 和 read-only Map 单字段假设。serial/40-worker 分别闭合相同的 12/14 条 producer
+  paths，四个 Boolean valuation 均由 Z3 判定 `unsat`。concrete observation 现在只由相同
+  `closure + site + occurrence` 的 symbolic EXPLORE witness 覆盖，失败 wave 会打印并保留
+  exact task artifact。
 - 最终源码已从构建、静态分析、runtime planning、完整 producer campaign、
   merge/composition 一直执行到真实 Z3；六个隔离 workload 全并行完成，结果为五个
   `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或增量
@@ -880,7 +919,7 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
 普通单测用于快速定位，但重构的 release gate 是实际 workload 和真实 Z3：
 
 ```bash
-# 精简后的 56 个 boundary regression（包含真实 Z3）
+# 精简后的 57 个 boundary regression（包含真实 Z3）
 mvn -q test
 
 # 三个核心三线程 workload
@@ -911,7 +950,7 @@ fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT ga
 
 2026-07-23 的普通 JUnit 基线是 39 个 `*Test` 类、724 个可执行测试方法；其中六个巨型
 测试类占 479 项。这个规模主要在重复锁定 JSON 字段、private helper 和同一路径的类型排列，
-并没有形成 724 个独立的语义保证。当前已经压缩为 13 类、56 个可执行测试，`mvn -q test`
+并没有形成 724 个独立的语义保证。当前已经压缩为 13 类、57 个可执行测试，`mvn -q test`
 全部通过。
 
 普通 suite 固定维持约 40–60 个高价值测试，按 boundary 组织而不是按实现分支堆叠：

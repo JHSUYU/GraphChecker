@@ -105,10 +105,14 @@ public final class RegionPathWorklist {
         private final List<JsonObject> summaries = new ArrayList<>();
         private final List<JsonObject> tasks = new ArrayList<>();
         private final List<JsonObject> gaps = new ArrayList<>();
+        private final List<JsonObject> deferredObservations =
+                new ArrayList<>();
         private final Set<String> gapKeys = new LinkedHashSet<>();
+        private final Set<String> deferredObservationKeys =
+                new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
-        private final Set<String> witnessedBranchSites =
+        private final Set<String> witnessedBranchPositions =
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
@@ -223,7 +227,8 @@ public final class RegionPathWorklist {
                             outputScope, mapping)) {
                         continue;
                     }
-                    gap("UNMAPPED_BRANCH", "NO_NORMALIZED_CONDITION",
+                    deferObservation("UNMAPPED_BRANCH",
+                            "NO_NORMALIZED_CONDITION",
                             string(summary, "regionId"), pathKey, site,
                             mapping.occurrence());
                     continue;
@@ -366,8 +371,10 @@ public final class RegionPathWorklist {
                         branchMappings.get(summary);
                 if (mappings == null) continue;
                 for (SummaryBranchMapping mapping : mappings) {
-                    if (!mapping.isWitnessed()) continue;
-                    witnessedBranchSites.add(branchSite(
+                    if (!mapping.isWitnessed() || !mapping.isExplore()) {
+                        continue;
+                    }
+                    witnessedBranchPositions.add(branchPosition(
                             outputScope, mapping));
                 }
             }
@@ -376,23 +383,22 @@ public final class RegionPathWorklist {
         /**
          * A concrete VM branch has no solver predicate and therefore is not
          * itself flippable.  It is safe to omit from the worklist only when
-         * the same static binary branch site has an immutable witnessed
-         * predicate on another admitted path. This matters for a bounded
-         * loop's final guard: after the bound is reached the VM may simplify
-         * a later occurrence to concrete even though earlier occurrences
-         * retain the complete symbolic frontier. No predicate is copied or
-         * synthesized; a site with no witnessed predicate remains a gap.
+         * the same dynamic branch position has an immutable witnessed
+         * predicate on another admitted path. A witness from another loop
+         * occurrence is not interchangeable: the data reaching the same
+         * static instruction may differ between iterations.
          */
         private boolean coveredConcreteObservation(
                 OutputScope outputScope, SummaryBranchMapping mapping) {
             if (!mapping.isConcreteObservation()) return false;
-            return witnessedBranchSites.contains(branchSite(
+            return witnessedBranchPositions.contains(branchPosition(
                     outputScope, mapping));
         }
 
-        private String branchSite(OutputScope outputScope,
-                                  SummaryBranchMapping mapping) {
-            return outputScope.identity + "\n" + mapping.siteId();
+        private String branchPosition(OutputScope outputScope,
+                                      SummaryBranchMapping mapping) {
+            return outputScope.identity + "\n" + mapping.siteId()
+                    + "\n" + mapping.occurrence();
         }
 
         /**
@@ -463,6 +469,16 @@ public final class RegionPathWorklist {
                         "REGION_PATH_WORKLIST_REQUIRES_ONE_OUTPUT_CLOSURE",
                         regionId, "", "", -1);
             }
+            if (tasks.isEmpty()) {
+                for (JsonObject observation : deferredObservations) {
+                    gap(string(observation, "kind"),
+                            string(observation, "reason"),
+                            string(observation, "regionId"),
+                            string(observation, "pathKey"),
+                            string(observation, "siteId"),
+                            integer(observation, "occurrence", -1));
+                }
+            }
 
             State state = observedPathCount == 0
                     ? State.NOT_STARTED
@@ -484,6 +500,10 @@ public final class RegionPathWorklist {
                         scope.fingerprint);
             }
             result.add("gaps", GSON.toJsonTree(gaps));
+            if (!tasks.isEmpty() && !deferredObservations.isEmpty()) {
+                result.add("deferredObservations",
+                        GSON.toJsonTree(deferredObservations));
+            }
             return result;
         }
 
@@ -508,9 +528,23 @@ public final class RegionPathWorklist {
 
         private void gap(String kind, String reason, String region,
                          String pathKey, String site, int occurrence) {
+            addIssue(gaps, gapKeys, kind, reason, region, pathKey, site,
+                    occurrence);
+        }
+
+        private void deferObservation(String kind, String reason,
+                                      String region, String pathKey,
+                                      String site, int occurrence) {
+            addIssue(deferredObservations, deferredObservationKeys, kind,
+                    reason, region, pathKey, site, occurrence);
+        }
+
+        private void addIssue(List<JsonObject> destination, Set<String> keys,
+                              String kind, String reason, String region,
+                              String pathKey, String site, int occurrence) {
             String key = kind + "\n" + reason + "\n" + region + "\n"
                     + pathKey + "\n" + site + "\n" + occurrence;
-            if (!gapKeys.add(key)) return;
+            if (!keys.add(key)) return;
             JsonObject gap = new JsonObject();
             gap.addProperty("kind", kind);
             gap.addProperty("reason", reason);
@@ -518,7 +552,7 @@ public final class RegionPathWorklist {
             gap.addProperty("pathKey", pathKey);
             gap.addProperty("siteId", site);
             gap.addProperty("occurrence", occurrence);
-            gaps.add(gap);
+            destination.add(gap);
         }
 
     }

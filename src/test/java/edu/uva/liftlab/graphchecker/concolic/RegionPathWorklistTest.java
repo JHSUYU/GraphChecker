@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -123,6 +124,8 @@ public class RegionPathWorklistTest {
                 RegionPathWorklist.State.PENDING.name(),
                 loopResult.manifest.get("state").getAsString());
         assertTrue(loopResult.manifest.getAsJsonArray("gaps").isEmpty());
+        assertEquals(1, loopResult.manifest.getAsJsonArray(
+                "deferredObservations").size());
 
         JsonObject legacySummary = summary("ACT.CLOSURE",
                 RegionCaptureGoal.outputClosure());
@@ -204,6 +207,93 @@ public class RegionPathWorklistTest {
                 third.tasks.get(0).get("outputDemandKey"));
         assertNotEquals(first.tasks.get(0).get("queryKey"),
                 third.tasks.get(0).get("queryKey"));
+    }
+
+    @Test
+    public void concreteBranchWaitsForBridgeAndRequiresExactOccurrence() {
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int result>", "PROOF.DEFERRED",
+                "SITE.0", "SITE.1", "SITE.LATE");
+        JsonObject concrete = summary("ACT.CONCRETE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject concreteActivation = activation("ACT.CONCRETE",
+                RegionCaptureGoal.outputClosure());
+        attachClosure(concrete, closure);
+        attachClosure(concreteActivation, closure);
+        concrete.getAsJsonArray("branchMappings").add(
+                SummaryBranchMapping.concrete(
+                        ExactConcreteBranchObservation.attested(
+                                "SITE.LATE", "<test.Region: void run()>", 9,
+                                2, true),
+                        SummaryBranchMapping.Policy.EXPLORE).toJson());
+
+        RegionPathWorklist.Result bridgePending = RegionPathWorklist.plan(
+                Collections.singletonList(concrete),
+                Collections.singletonList(concreteActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                bridgePending.manifest.get("state").getAsString());
+        assertFalse(bridgePending.tasks.isEmpty());
+        assertTrue(bridgePending.manifest.getAsJsonArray("gaps").isEmpty());
+        assertEquals(1, bridgePending.manifest.getAsJsonArray(
+                "deferredObservations").size());
+
+        List<JsonObject> exhaustedRecords = new ArrayList<>();
+        for (JsonObject task : bridgePending.tasks) {
+            JsonObject record = new JsonObject();
+            record.addProperty("queryKey",
+                    task.get("queryKey").getAsString());
+            record.addProperty("status", "UNSAT");
+            exhaustedRecords.add(record);
+        }
+        RegionPathWorklist.Result exhausted = RegionPathWorklist.plan(
+                Collections.singletonList(concrete),
+                Collections.singletonList(concreteActivation),
+                exhaustedRecords, RegionPathWorklist.Bounds.defaults());
+        assertTrue(exhausted.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                exhausted.manifest.get("state").getAsString());
+        assertTrue(exhausted.manifest.getAsJsonArray("gaps").toString()
+                .contains("SITE.LATE"));
+        assertFalse(exhausted.manifest.has("deferredObservations"));
+
+        JsonObject wrongOccurrence = summary("ACT.WRONG.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject wrongActivation = activation("ACT.WRONG.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        attachClosure(wrongOccurrence, closure);
+        attachClosure(wrongActivation, closure);
+        addWitness(wrongOccurrence, "SITE.LATE", 1,
+                nestedFieldPredicate(99));
+        RegionPathWorklist.Result stillDeferred = RegionPathWorklist.plan(
+                Arrays.asList(concrete, wrongOccurrence),
+                Arrays.asList(concreteActivation, wrongActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                stillDeferred.manifest.get("state").getAsString());
+        assertEquals(1, stillDeferred.manifest.getAsJsonArray(
+                "deferredObservations").size());
+
+        JsonObject exactOccurrence = summary("ACT.EXACT.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject exactActivation = activation("ACT.EXACT.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        attachClosure(exactOccurrence, closure);
+        attachClosure(exactActivation, closure);
+        addWitness(exactOccurrence, "SITE.LATE", 2,
+                nestedFieldPredicate(100));
+        RegionPathWorklist.Result witnessed = RegionPathWorklist.plan(
+                Arrays.asList(concrete, wrongOccurrence, exactOccurrence),
+                Arrays.asList(concreteActivation, wrongActivation,
+                        exactActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                witnessed.manifest.get("state").getAsString());
+        assertTrue(witnessed.manifest.getAsJsonArray("gaps").isEmpty());
+        assertFalse(witnessed.manifest.has("deferredObservations"));
     }
 
     private static JsonObject outputClosure(
@@ -354,6 +444,31 @@ public class RegionPathWorklistTest {
         mapping.addProperty("occurrence", occurrence);
         mapping.addProperty("outcome", true);
         return mapping;
+    }
+
+    private static void addWitness(JsonObject summary, String site,
+                                   int occurrence, JsonObject predicate) {
+        JsonArray conditions = summary.getAsJsonArray("pathCondition");
+        int conditionIndex = conditions.size();
+        conditions.add(predicate);
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", conditionIndex + 1L);
+        event.addProperty("contextId", 7L);
+        event.addProperty("predicateNormalization", "IDENTITY");
+        BranchWitness witness = BranchWitness.vmPc(
+                site, "<test.Region: void run()>", 9, occurrence, true,
+                predicate, conditionIndex, event);
+        summary.getAsJsonArray("branchMappings").add(
+                SummaryBranchMapping.witnessed(witness, conditionIndex,
+                        SummaryBranchMapping.Policy.EXPLORE).toJson());
+    }
+
+    private static JsonObject nestedFieldPredicate(int constant) {
+        JsonObject expression = binary("<=", constant);
+        expression.getAsJsonObject("_left").addProperty("_exp",
+                "M_I_field_REGION.3.in.1.field.payload.value.occ.2_"
+                        + "example/NestedState");
+        return expression;
     }
 
     private static JsonObject binary(String operator, int constant) {

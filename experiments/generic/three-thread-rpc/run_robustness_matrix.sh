@@ -689,11 +689,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .state == "CLOSED"
       and (.gaps | length) == 0
       and .pendingTaskCount == 0
-      and .observedPathCount == 2
-      and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputDemandKey",
-        "outputClosureFingerprint"] | sort))
+      and .observedPathCount > 2)
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
@@ -706,29 +702,46 @@ validate_unreachable_parity_producer_artifacts() {
       and .regionRelation.pathClosureState == "CLOSED"
       and .regionRelation.guardSemantics
         == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount == 2
+      and .regionRelation.caseCount
+        == (.regionRelation.cases | length)
+      and .regionRelation.caseCount > 2
       and all(.regionRelation.cases[];
         .relationallyComplete == true
-        and (.guard.conditions | length) > 0))
-    # The complete producer image is {-1, 3} union {0, 4}.  No target-side
-    # constant says UNSAT; equality becomes impossible only after both
-    # guarded relations are composed.
+        and (.guard.conditions | length) > 0
+        and (.dynamicFieldBindings | length) == 3
+        and ([.dynamicFieldBindings[].fieldPath] | sort)
+          == ([["state", "guard", "enabled"],
+               ["state", "metrics", "left"],
+               ["state", "metrics", "right"]] | sort)
+        and all(.dynamicFieldBindings[];
+          .complete == true
+          and (.kind == "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING"
+            or (.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
+              and .keyExpression._java_type == "I"
+              and .keyExpression._exp == "Y_I_7")))))
+    # The two complete producer images remain disjoint by parity.  No
+    # target-side constant says UNSAT; composition must prove the mismatch.
     and ([.[] | .regionRelation.cases[].outputExpressions[]?._exp]
-      | sort) == ["Y_I_-1", "Y_I_0", "Y_I_3", "Y_I_4"]
+      | unique | sort)
+        == ["Y_I_-1", "Y_I_0", "Y_I_1", "Y_I_2", "Y_I_3", "Y_I_4"]
     and ([.[]
       | singleton_output_member
       | .slice.containerElementFieldBindings[]?
       | select(.kind == "ARRAY_ELEMENT_FIELD"
         and .selectorAuthority == "EXACT_ARRAY_INDEX"
         and .elementIndex == 1
-        and .fieldPath == ["state", "guard", "enabled"]
-        and .complete == true)] | length) == 1
-    and ([.[] | .regionRelation.cases[].dynamicFieldBindings[]?
-      | select(.kind == "DYNAMIC_MAP_ENTRY_FIELD_BINDING"
-        and .keyExpression._java_type == "I"
-        and .keyExpression._exp == "Y_I_7"
-        and .fieldPath == ["state", "guard", "enabled"]
-        and .complete == true)] | length) == 2
+        and .complete == true)] | length) == 3
+    and ([.[]
+      | singleton_output_member
+      | .slice.containerElementFieldBindings[]?
+      | select(.kind == "ARRAY_ELEMENT_FIELD"
+        and .selectorAuthority == "EXACT_ARRAY_INDEX"
+        and .elementIndex == 1
+        and .complete == true)
+      | .fieldPath] | sort)
+        == ([["state", "guard", "enabled"],
+             ["state", "metrics", "left"],
+             ["state", "metrics", "right"]] | sort)
   ' "${merged_summaries[@]}" >/dev/null \
     || die "unreachable-parity lost its exact odd/even container relations"
 }
@@ -931,24 +944,29 @@ validate_semantic_profile() {
         and .trustState == "CANDIDATE_ONLY"
         and .reachability == "UNREACHABLE"
         and (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 0
+        and (.existentialNonBooleanRootInputs | length) == 4
+        and all(.existentialNonBooleanRootInputs[];
+          .javaTypeDescriptor == "I"
+          and (.cell | contains("#field:metrics#field:")))
         and (.truthTable | length) == 4
         and ([.truthTable[] | select(.reachesBug == true)]
           | length) == 0
         and ([.truthTable[] | select(.reachesBug == false)]
           | length) == 4
         and .reachConditionSmtLib == "false"
-        and all(.truthTable[]; .reachesBug == false)
+        and all(.truthTable[];
+          .solverStatus == "unsat" and .reachesBug == false)
       ' "${reach_report}" >/dev/null \
         || die "unreachable-parity was not proved unreachable for all roots"
       jq -e '
         (.resolvedProducerKeys | length) == 2
         and (.includedSummaries | length) == 2
-        and (.caseProjectionCatalog | length) == 4
+        and (.caseProjectionCatalog | length) > 4
         and all(.caseProjectionCatalog[];
-          (.bindings | length) == 1
-          and (.bindings[0].bridgeAssertionName
-            | type == "string" and length > 0))
+          (.bindings | length) == 3
+          and all(.bindings[];
+            (.bridgeAssertionName
+              | type == "string" and length > 0)))
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "unreachable-parity lost guarded container composition evidence"
       validate_unreachable_parity_producer_artifacts "${work_root}"

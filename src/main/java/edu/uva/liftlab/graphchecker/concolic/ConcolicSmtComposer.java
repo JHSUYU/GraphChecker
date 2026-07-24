@@ -4837,9 +4837,17 @@ public final class ConcolicSmtComposer {
             String expectedStatePort = heapObservationStatePort(region,
                     observationId, baseInputSymbol, dynamicBindingId);
             JsonArray bindings = array(observation, "entryFieldBindings");
-            JsonObject binding = bindings.size() == 1
-                    && bindings.get(0).isJsonObject()
-                    ? bindings.get(0).getAsJsonObject() : null;
+            JsonObject binding = null;
+            int matchingBindingCount = 0;
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()
+                        || !dynamicBindingId.equals(string(
+                        element.getAsJsonObject(), "dynamicBindingId"))) {
+                    continue;
+                }
+                binding = element.getAsJsonObject();
+                matchingBindingCount++;
+            }
             long backingMapToken = jsonLong(observation.get(
                     "backingMapObjectToken"), 0L);
             String objectTokenScope = string(observation,
@@ -4911,7 +4919,7 @@ public final class ConcolicSmtComposer {
                     && countIsOne(proofDynamicBindingCounts,
                     dynamicBindingId)
                     && !dynamicFieldSymbol.isEmpty()
-                    && binding != null
+                    && matchingBindingCount == 1
                     && dynamicBindingId.equals(string(binding,
                     "dynamicBindingId"))
                     && baseInputSymbol.equals(string(binding,
