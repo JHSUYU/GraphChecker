@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -8777,39 +8779,6 @@ public final class ConcolicSmtComposer {
                 || "java/lang/String".equals(className)) return Sort.STRING;
         if (type.isEmpty()) return Sort.VALUE;
         return Sort.REF;
-    }
-
-    /** Normalizes source names and VM names to one JVM descriptor. */
-    private static String javaTypeDescriptor(String type) {
-        String value = firstNonBlank(type).trim().replace('.', '/');
-        if (value.isEmpty()) return "";
-        if (value.startsWith("[")) return value;
-        int dimensions = 0;
-        while (value.endsWith("[]")) {
-            dimensions++;
-            value = value.substring(0, value.length() - 2);
-        }
-        String descriptor;
-        if (value.length() == 1 && "ZBCSIJFDV".contains(value)) {
-            descriptor = value;
-        } else if ("boolean".equals(value)) descriptor = "Z";
-        else if ("byte".equals(value)) descriptor = "B";
-        else if ("char".equals(value)) descriptor = "C";
-        else if ("short".equals(value)) descriptor = "S";
-        else if ("int".equals(value)) descriptor = "I";
-        else if ("long".equals(value)) descriptor = "J";
-        else if ("float".equals(value)) descriptor = "F";
-        else if ("double".equals(value)) descriptor = "D";
-        else if ("void".equals(value)) descriptor = "V";
-        else if (value.startsWith("L") && value.endsWith(";")) {
-            descriptor = value;
-        } else {
-            descriptor = "L" + value + ";";
-        }
-        StringBuilder result = new StringBuilder(dimensions
-                + descriptor.length());
-        for (int index = 0; index < dimensions; index++) result.append('[');
-        return result.append(descriptor).toString();
     }
 
     private static boolean primitiveDescriptor(String descriptor) {

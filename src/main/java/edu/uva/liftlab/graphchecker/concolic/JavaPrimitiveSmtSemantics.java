@@ -59,6 +59,39 @@ final class JavaPrimitiveSmtSemantics {
     private JavaPrimitiveSmtSemantics() {
     }
 
+    /** Normalizes a source type or VM name to one JVM descriptor. */
+    static String javaTypeDescriptor(String javaType) {
+        String value = javaType == null ? ""
+                : javaType.trim().replace('.', '/');
+        if (value.isEmpty() || value.startsWith("[")) return value;
+        int dimensions = 0;
+        while (value.endsWith("[]")) {
+            dimensions++;
+            value = value.substring(0, value.length() - 2);
+        }
+        String descriptor;
+        if (value.length() == 1 && "ZBCSIJFDV".contains(value)) {
+            descriptor = value;
+        } else if ("boolean".equals(value)) descriptor = "Z";
+        else if ("byte".equals(value)) descriptor = "B";
+        else if ("char".equals(value)) descriptor = "C";
+        else if ("short".equals(value)) descriptor = "S";
+        else if ("int".equals(value)) descriptor = "I";
+        else if ("long".equals(value)) descriptor = "J";
+        else if ("float".equals(value)) descriptor = "F";
+        else if ("double".equals(value)) descriptor = "D";
+        else if ("void".equals(value)) descriptor = "V";
+        else if (value.startsWith("L") && value.endsWith(";")) {
+            descriptor = value;
+        } else {
+            descriptor = "L" + value + ";";
+        }
+        StringBuilder result = new StringBuilder(dimensions
+                + descriptor.length());
+        for (int index = 0; index < dimensions; index++) result.append('[');
+        return result.append(descriptor).toString();
+    }
+
     static IntegralWidth widthOfJavaType(String javaType) {
         IntegralDomain domain = domainOfJavaType(javaType);
         return domain == null ? IntegralWidth.NONE : domain.width;

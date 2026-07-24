@@ -4949,8 +4949,6 @@ final class RuntimeRegionPlanner {
      * RHS.  Missing or ambiguous joins remain concrete.
      */
     private static final class RuntimeFieldAccessIndex {
-        private static final String AUTHORITY =
-                "RUNTIME_EXACT_HEAP_READ_LATEST_WRITE_AND_FROZEN_RHS_V1";
         private final Map<String, List<FieldAccessEvent>> readsBySite =
                 new LinkedHashMap<>();
         private final Map<String, List<FieldAccessEvent>> writesByContext =

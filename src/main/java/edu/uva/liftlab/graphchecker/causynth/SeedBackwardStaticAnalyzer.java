@@ -5073,15 +5073,6 @@ final class SeedBackwardStaticAnalyzer {
         return "seed";
     }
 
-    @SafeVarargs
-    private static <T> List<T> concat(Collection<T>... lists) {
-        List<T> result = new ArrayList<>();
-        for (Collection<T> list : lists) {
-            result.addAll(list);
-        }
-        return result;
-    }
-
     private static String firstNonBlank(String... values) {
         for (String value : values) {
             if (value != null && !value.trim().isEmpty()) {

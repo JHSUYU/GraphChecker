@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -1232,38 +1234,6 @@ public final class BooleanReachConditionExtractor {
         return returned.matches() ? returned.group(1).trim() : "";
     }
 
-    private static String javaTypeDescriptor(String type) {
-        String value = firstNonBlank(type).trim().replace('.', '/');
-        if (value.isEmpty()) return "";
-        if (value.startsWith("[")) return value;
-        int dimensions = 0;
-        while (value.endsWith("[]")) {
-            dimensions++;
-            value = value.substring(0, value.length() - 2);
-        }
-        String descriptor;
-        if (value.length() == 1 && "ZBCSIJFDV".contains(value)) {
-            descriptor = value;
-        } else if ("boolean".equals(value)) descriptor = "Z";
-        else if ("byte".equals(value)) descriptor = "B";
-        else if ("char".equals(value)) descriptor = "C";
-        else if ("short".equals(value)) descriptor = "S";
-        else if ("int".equals(value)) descriptor = "I";
-        else if ("long".equals(value)) descriptor = "J";
-        else if ("float".equals(value)) descriptor = "F";
-        else if ("double".equals(value)) descriptor = "D";
-        else if ("void".equals(value)) descriptor = "V";
-        else if (value.startsWith("L") && value.endsWith(";")) {
-            descriptor = value;
-        } else {
-            descriptor = "L" + value + ";";
-        }
-        StringBuilder result = new StringBuilder(dimensions
-                + descriptor.length());
-        for (int index = 0; index < dimensions; index++) result.append('[');
-        return result.append(descriptor).toString();
-    }
-
     private static String smtName(String value) {
         String normalized = firstNonBlank(value, "anonymous")
                 .replaceAll("[^A-Za-z0-9_]", "_");
@@ -1332,17 +1302,6 @@ public final class BooleanReachConditionExtractor {
             JsonElement value = object == null ? null : object.get(key);
             return value != null && value.isJsonPrimitive()
                     ? value.getAsLong() : fallback;
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static boolean bool(JsonObject object, String key,
-                                boolean fallback) {
-        try {
-            JsonElement value = object == null ? null : object.get(key);
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsBoolean() : fallback;
         } catch (RuntimeException ignored) {
             return fallback;
         }

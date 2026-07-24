@@ -53,8 +53,6 @@ public final class ConcolicScheduler {
             .disableHtmlEscaping().create();
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
-    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
-            "<([^:]+):\\s+[^()<>]+\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_DETAIL = Pattern.compile(
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
@@ -658,12 +656,6 @@ public final class ConcolicScheduler {
                             ? "" : string(row, alternateIdentity));
             if (selected.contains(identity)) result.add(row.deepCopy());
         }
-        return result;
-    }
-
-    private static JsonArray strings(Iterable<String> values) {
-        JsonArray result = new JsonArray();
-        for (String value : values) result.add(value);
         return result;
     }
 

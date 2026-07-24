@@ -65,7 +65,6 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -540,45 +539,6 @@ public final class CausynthPipeline {
                 && rootCount == 1
                 && instrumentedCount == rootCount
                 && skippedCount == 0;
-    }
-
-    private static String jsonString(JsonObject object, String field) {
-        if (object == null) return "";
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static JsonObject jsonObject(JsonObject object, String field) {
-        if (object == null) return new JsonObject();
-        JsonElement value = object.get(field);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static boolean jsonBoolean(JsonObject object, String field,
-                                       boolean fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int jsonInt(JsonObject object, String field, int fallback) {
-        JsonElement value = object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
     }
 
     /**
@@ -1347,51 +1307,8 @@ public final class CausynthPipeline {
         Local vmOccurrence = newTraceLocal(body, IntType.v(),
                 "$causynthVmBranchOccurrence");
 
-        // Prepare Java-side occurrence state while observation is paused, but
-        // invoke the native marker directly from the transformed method.  On
-        // the exact path that native call is the final invocation before the
-        // original IfStmt, so runtime bookkeeping bytecodes cannot consume
-        // its pending VM event.  A zero handle means no symbolic activation
-        // is active, or the required exact-event API was rejected; in either
-        // case the runtime records concrete replay or fails closed.
-        Unit noMarkerPath = Jimple.v().newNopStmt();
-        List<Unit> beforeBranch = new ArrayList<>();
-        // This must be a direct native call.  A long/double/float compare is
-        // lowered by Soot before this prefix and leaves an exact VM witness
-        // for the following IfStmt.  Entering a Java helper before pausing
-        // would execute helper branches that could consume that witness.
-        beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.pauseVmPathCondition)));
-        beforeBranch.add(Jimple.v().newAssignStmt(prepared,
-                Jimple.v().newStaticInvokeExpr(refs.prepareBranch,
-                        StringConstant.v(method.getSignature()),
-                        IntConstant.v(unitIndex),
-                        StringConstant.v(expression))));
-        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
-                LongConstant.v(0L)));
-        beforeBranch.add(Jimple.v().newIfStmt(
-                Jimple.v().newLeExpr(prepared, LongConstant.v(0L)),
-                noMarkerPath));
-        beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
-        beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
-                Jimple.v().newCastExpr(prepared, IntType.v())));
-        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
-                Jimple.v().newStaticInvokeExpr(refs.markConcolicBranch,
-                                StringConstant.v(method.getSignature() + "#u"
-                                + unitIndex),
-                        vmOccurrence)));
-        Unit exactTransfer = Jimple.v().newGotoStmt(branch);
-        beforeBranch.add(exactTransfer);
-        beforeBranch.add(noMarkerPath);
-        beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
-        insertBeforeSequence(body, branch, beforeBranch);
-        // UnitPatchingChain redirects pre-existing targets whenever another
-        // unit is inserted before their anchor.  Restore this internal edge
-        // after the full prefix exists; otherwise the exact path jumps back
-        // to prepareBranch and can never execute the original condition.
-        ((soot.jimple.GotoStmt) exactTransfer).setTarget(branch);
+        insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
+                expression, prepared, vmEvent, vmOccurrence, refs);
 
         List<Unit> falsePath = new ArrayList<>();
         falsePath.add(Jimple.v().newInvokeStmt(
@@ -1450,35 +1367,8 @@ public final class CausynthPipeline {
         Local effectiveSuccessor = newTraceLocal(body, IntType.v(),
                 "$causynthSwitchSuccessor");
 
-        Unit noMarkerPath = Jimple.v().newNopStmt();
-        List<Unit> beforeBranch = new ArrayList<>();
-        beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.pauseVmPathCondition)));
-        beforeBranch.add(Jimple.v().newAssignStmt(prepared,
-                Jimple.v().newStaticInvokeExpr(refs.prepareBranch,
-                        StringConstant.v(method.getSignature()),
-                        IntConstant.v(unitIndex),
-                        StringConstant.v(expression))));
-        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
-                LongConstant.v(0L)));
-        beforeBranch.add(Jimple.v().newIfStmt(
-                Jimple.v().newLeExpr(prepared, LongConstant.v(0L)),
-                noMarkerPath));
-        beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
-        beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
-                Jimple.v().newCastExpr(prepared, IntType.v())));
-        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
-                Jimple.v().newStaticInvokeExpr(refs.markConcolicBranch,
-                        StringConstant.v(method.getSignature() + "#u"
-                                + unitIndex), vmOccurrence)));
-        Unit exactTransfer = Jimple.v().newGotoStmt(branch);
-        beforeBranch.add(exactTransfer);
-        beforeBranch.add(noMarkerPath);
-        beforeBranch.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
-        insertBeforeSequence(body, branch, beforeBranch);
-        ((soot.jimple.GotoStmt) exactTransfer).setTarget(branch);
+        insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
+                expression, prepared, vmEvent, vmOccurrence, refs);
 
         List<Unit> entries = new ArrayList<>();
         for (int observed = 0; observed < shape.successorCount(); observed++) {
@@ -1520,6 +1410,46 @@ public final class CausynthPipeline {
             }
         }
         return true;
+    }
+
+    private void insertExactBranchMarkerPrefix(
+            Body body, SootMethod method, Unit branch, int unitIndex,
+            String expression, Local prepared, Local vmEvent,
+            Local vmOccurrence, ConcolicRegionRefs refs) {
+        // Keep the native marker as the final invocation before the original
+        // branch. Runtime bookkeeping could otherwise consume its pending VM
+        // event. A zero handle follows the concrete replay path.
+        Unit noMarkerPath = Jimple.v().newNopStmt();
+        List<Unit> beforeBranch = new ArrayList<>();
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.pauseVmPathCondition)));
+        beforeBranch.add(Jimple.v().newAssignStmt(prepared,
+                Jimple.v().newStaticInvokeExpr(refs.prepareBranch,
+                        StringConstant.v(method.getSignature()),
+                        IntConstant.v(unitIndex),
+                        StringConstant.v(expression))));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
+                LongConstant.v(0L)));
+        beforeBranch.add(Jimple.v().newIfStmt(
+                Jimple.v().newLeExpr(prepared, LongConstant.v(0L)),
+                noMarkerPath));
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
+                Jimple.v().newCastExpr(prepared, IntType.v())));
+        beforeBranch.add(Jimple.v().newAssignStmt(vmEvent,
+                Jimple.v().newStaticInvokeExpr(refs.markConcolicBranch,
+                        StringConstant.v(method.getSignature() + "#u"
+                                + unitIndex), vmOccurrence)));
+        Unit exactTransfer = Jimple.v().newGotoStmt(branch);
+        beforeBranch.add(exactTransfer);
+        beforeBranch.add(noMarkerPath);
+        beforeBranch.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(refs.resumeVmPathCondition)));
+        insertBeforeSequence(body, branch, beforeBranch);
+        // Insertion redirects old targets to the prefix. Restore this helper's
+        // internal transfer so it reaches the original branch exactly once.
+        ((soot.jimple.GotoStmt) exactTransfer).setTarget(branch);
     }
 
     private static Unit originalUnit(Body body, int requestedIndex) {
@@ -2753,13 +2683,6 @@ public final class CausynthPipeline {
         result.slices.put("automaticDerivationBoundary", boundary);
     }
 
-    private static String stableSiteId(String method, int unitIndex, String kind) {
-        if (unitIndex >= 0) {
-            return method + "#u" + unitIndex;
-        }
-        return method + "#synthetic:" + firstNonBlank(kind, "edge");
-    }
-
     private static String stringValue(Object value) {
         return value == null || "null".equals(String.valueOf(value))
                 ? "" : String.valueOf(value);
@@ -2774,73 +2697,6 @@ public final class CausynthPipeline {
         } catch (RuntimeException ignored) {
             return fallback;
         }
-    }
-
-    private static String lower(String value) {
-        return value == null ? "" : value.toLowerCase(Locale.ROOT);
-    }
-
-    private static List<String> sortedLimited(Set<String> values, int limit) {
-        List<String> sorted = new ArrayList<>(values);
-        Collections.sort(sorted);
-        if (sorted.size() <= limit) {
-            return sorted;
-        }
-        return new ArrayList<>(sorted.subList(0, limit));
-    }
-
-    private static Map<String, Object> summarizeEdgeKinds(List<Map<String, Object>> edges) {
-        Map<String, Object> counts = object();
-        for (Map<String, Object> edge : edges) {
-            String kind = String.valueOf(edge.get("kind"));
-            Object previous = counts.get(kind);
-            counts.put(kind, previous instanceof Number
-                    ? ((Number) previous).intValue() + 1 : 1);
-        }
-        return counts;
-    }
-
-    private static String cellKind(String cell) {
-        if (cell.contains("#exception:")) {
-            return "exception";
-        }
-        if (cell.contains(".param")) {
-            return "parameter";
-        }
-        if (cell.endsWith(".return")) {
-            return "return";
-        }
-        if (cell.contains("#u")) {
-            return "unit";
-        }
-        if (cell.startsWith("<") && cell.contains(":")) {
-            return cell.contains(" ") ? "field_or_method" : "signature";
-        }
-        if (cell.contains("::")) {
-            return "local";
-        }
-        return "seed";
-    }
-
-    @SafeVarargs
-    private static <T> List<T> concat(Collection<T>... lists) {
-        List<T> result = new ArrayList<>();
-        for (Collection<T> list : lists) {
-            result.addAll(list);
-        }
-        return result;
-    }
-
-    private static boolean containsAll(String value, Collection<String> needles) {
-        if (value == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isEmpty() && !value.contains(needle)) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static String firstNonBlank(String... values) {
