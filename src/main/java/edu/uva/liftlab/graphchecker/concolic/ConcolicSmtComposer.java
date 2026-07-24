@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -137,9 +139,14 @@ public final class ConcolicSmtComposer {
                     + arguments.activationId);
         }
         requireCanonicalFatalQuerySchema(fatal);
-        BranchReplayContract fatalReplayContract = replayContract(fatal);
-        SolverPathContext fatalSolverPathContext = solverPathContext(fatal);
-        JsonArray fatalConstraints = fatalConstraints(fatalReplayContract,
+        boolean targetPathSet = "TARGET_REACH_PATH_SET_QUERY".equals(
+                string(fatal, "kind"));
+        BranchReplayContract fatalReplayContract = targetPathSet
+                ? seedReplayContract(fatal) : replayContract(fatal);
+        SolverPathContext fatalSolverPathContext = targetPathSet
+                ? null : solverPathContext(fatal);
+        JsonArray fatalConstraints = targetPathSet ? new JsonArray()
+                : fatalConstraints(fatalReplayContract,
                 fatalSolverPathContext);
         BranchWitness fatalSource = fatalReplayContract.source();
         String fatalSite = fatalSource.siteId();
@@ -194,17 +201,36 @@ public final class ConcolicSmtComposer {
                 string(fatal, "queryId"), fatalSite,
                 string(fatal, "regionId"), "selected"));
         try {
-            emitter.registerEngineArrayInputBindings(fatal, "fatal query");
             emitter.registerVmIntrinsicPlaceholderBindings(fatal,
                     "fatal query");
-            for (JsonElement constraint : fatalConstraints) {
-                fatalTerms.add(emitter.constraint(constraint,
-                        "fatal query"));
+            if (targetPathSet) {
+                int pathOrdinal = 0;
+                for (JsonElement element : array(fatal, "paths")) {
+                    JsonObject path = element.getAsJsonObject();
+                    String label = "fatal target path " + pathOrdinal++;
+                    emitter.registerEngineArrayInputBindings(path, label);
+                    emitter.registerVmIntrinsicPlaceholderBindings(path,
+                            label);
+                    List<String> pathTerms = new ArrayList<>();
+                    for (JsonElement constraint
+                            : array(path, "constraints")) {
+                        pathTerms.add(emitter.constraint(constraint, label));
+                    }
+                    fatalTerms.add(and(pathTerms));
+                }
+            } else {
+                emitter.registerEngineArrayInputBindings(fatal,
+                        "fatal query");
+                for (JsonElement constraint : fatalConstraints) {
+                    fatalTerms.add(emitter.constraint(constraint,
+                            "fatal query"));
+                }
             }
         } finally {
             emitter.restoreSymbolScope(previousFatalScope);
         }
-        emitter.assertNamed("fatal_path", and(fatalTerms));
+        emitter.assertNamed("fatal_path", targetPathSet
+                ? or(fatalTerms) : and(fatalTerms));
 
         Set<String> missingSummaries = new LinkedHashSet<>(
                 resolved.missingSummaryRegions);
@@ -251,6 +277,11 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("fatalOccurrence", fatalOccurrence);
         manifest.addProperty("fatalDesiredOutcome", fatalDesiredOutcome);
         manifest.addProperty("fatalSite", fatalSite);
+        manifest.addProperty("fatalConstraintAuthority", targetPathSet
+                ? "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
+                : "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
+        manifest.addProperty("fatalPathCount", targetPathSet
+                ? array(fatal, "paths").size() : 1);
         manifest.add("boundedUpstreamRegions", GSON.toJsonTree(
                 arguments.boundedUpstreamRegions));
         manifest.add("relevantRegions", GSON.toJsonTree(relevantRegions));
@@ -300,9 +331,30 @@ public final class ConcolicSmtComposer {
 
     private static void requireCanonicalFatalQuerySchema(JsonObject fatal)
             throws IOException {
+        String kind = string(fatal, "kind");
         if (integer(fatal, "schemaVersion", -1) != 1
-                || !"TARGET_BRANCH_SOLVER_QUERY".equals(string(fatal, "kind"))) {
+                || !"TARGET_BRANCH_SOLVER_QUERY".equals(kind)
+                && !"TARGET_REACH_PATH_SET_QUERY".equals(kind)) {
             throw new IOException("Unsupported canonical fatal query schema");
+        }
+        if ("TARGET_REACH_PATH_SET_QUERY".equals(kind)) {
+            if (!"CLOSED".equals(string(fatal, "pathClosureState"))
+                    || !"CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1".equals(
+                    string(fatal, "constraintAuthority"))
+                    || integer(fatal, "reachedPathCount", -1)
+                    != array(fatal, "paths").size()) {
+                throw new IOException(
+                        "Incomplete closed target reach path query");
+            }
+            for (JsonElement element : array(fatal, "paths")) {
+                if (!element.isJsonObject()
+                        || !element.getAsJsonObject().has("constraints")
+                        || !element.getAsJsonObject().get("constraints")
+                        .isJsonArray()) {
+                    throw new IOException(
+                            "Malformed target reach path query member");
+                }
+            }
         }
     }
 
@@ -317,6 +369,22 @@ public final class ConcolicSmtComposer {
             return BranchReplayContract.fromJson(encoded.getAsJsonObject());
         } catch (IllegalArgumentException malformed) {
             throw new IOException("Malformed fatal replayContract: "
+                    + malformed.getMessage(), malformed);
+        }
+    }
+
+    private static BranchReplayContract seedReplayContract(JsonObject fatal)
+            throws IOException {
+        JsonElement encoded = fatal.get("seedReplayContract");
+        if (encoded == null || !encoded.isJsonObject()) {
+            throw new IOException(
+                    "Target path set requires seedReplayContract");
+        }
+        try {
+            return BranchReplayContract.fromJson(
+                    encoded.getAsJsonObject());
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed seed replayContract: "
                     + malformed.getMessage(), malformed);
         }
     }
@@ -1541,6 +1609,23 @@ public final class ConcolicSmtComposer {
         if (filtered.isEmpty()) return "true";
         if (filtered.size() == 1) return filtered.get(0);
         StringBuilder result = new StringBuilder("(and");
+        for (String term : filtered) result.append(' ').append(term);
+        return result.append(')').toString();
+    }
+
+    private static String or(List<String> terms) {
+        List<String> filtered = new ArrayList<>();
+        for (String term : terms) {
+            if (term == null || term.trim().isEmpty()
+                    || "false".equals(term.trim())) {
+                continue;
+            }
+            if ("true".equals(term.trim())) return "true";
+            filtered.add(term);
+        }
+        if (filtered.isEmpty()) return "false";
+        if (filtered.size() == 1) return filtered.get(0);
+        StringBuilder result = new StringBuilder("(or");
         for (String term : filtered) result.append(' ').append(term);
         return result.append(')').toString();
     }
@@ -4837,9 +4922,17 @@ public final class ConcolicSmtComposer {
             String expectedStatePort = heapObservationStatePort(region,
                     observationId, baseInputSymbol, dynamicBindingId);
             JsonArray bindings = array(observation, "entryFieldBindings");
-            JsonObject binding = bindings.size() == 1
-                    && bindings.get(0).isJsonObject()
-                    ? bindings.get(0).getAsJsonObject() : null;
+            JsonObject binding = null;
+            int matchingBindingCount = 0;
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()
+                        || !dynamicBindingId.equals(string(
+                        element.getAsJsonObject(), "dynamicBindingId"))) {
+                    continue;
+                }
+                binding = element.getAsJsonObject();
+                matchingBindingCount++;
+            }
             long backingMapToken = jsonLong(observation.get(
                     "backingMapObjectToken"), 0L);
             String objectTokenScope = string(observation,
@@ -4911,7 +5004,7 @@ public final class ConcolicSmtComposer {
                     && countIsOne(proofDynamicBindingCounts,
                     dynamicBindingId)
                     && !dynamicFieldSymbol.isEmpty()
-                    && binding != null
+                    && matchingBindingCount == 1
                     && dynamicBindingId.equals(string(binding,
                     "dynamicBindingId"))
                     && baseInputSymbol.equals(string(binding,
@@ -8769,39 +8862,6 @@ public final class ConcolicSmtComposer {
                 || "java/lang/String".equals(className)) return Sort.STRING;
         if (type.isEmpty()) return Sort.VALUE;
         return Sort.REF;
-    }
-
-    /** Normalizes source names and VM names to one JVM descriptor. */
-    private static String javaTypeDescriptor(String type) {
-        String value = firstNonBlank(type).trim().replace('.', '/');
-        if (value.isEmpty()) return "";
-        if (value.startsWith("[")) return value;
-        int dimensions = 0;
-        while (value.endsWith("[]")) {
-            dimensions++;
-            value = value.substring(0, value.length() - 2);
-        }
-        String descriptor;
-        if (value.length() == 1 && "ZBCSIJFDV".contains(value)) {
-            descriptor = value;
-        } else if ("boolean".equals(value)) descriptor = "Z";
-        else if ("byte".equals(value)) descriptor = "B";
-        else if ("char".equals(value)) descriptor = "C";
-        else if ("short".equals(value)) descriptor = "S";
-        else if ("int".equals(value)) descriptor = "I";
-        else if ("long".equals(value)) descriptor = "J";
-        else if ("float".equals(value)) descriptor = "F";
-        else if ("double".equals(value)) descriptor = "D";
-        else if ("void".equals(value)) descriptor = "V";
-        else if (value.startsWith("L") && value.endsWith(";")) {
-            descriptor = value;
-        } else {
-            descriptor = "L" + value + ";";
-        }
-        StringBuilder result = new StringBuilder(dimensions
-                + descriptor.length());
-        for (int index = 0; index < dimensions; index++) result.append('[');
-        return result.append(descriptor).toString();
     }
 
     private static boolean primitiveDescriptor(String descriptor) {

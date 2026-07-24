@@ -40,17 +40,29 @@ public final class UnreachableParityContainerThreeThreadWorkload {
 
     static final class GuardNode {
         BooleanLeaf guard;
+        NumericLeaf metrics;
 
-        GuardNode(Boolean enabled) {
+        GuardNode(Boolean enabled, int left, int right) {
             guard = new BooleanLeaf(enabled);
+            metrics = new NumericLeaf(left, right);
+        }
+    }
+
+    static final class NumericLeaf {
+        int left;
+        int right;
+
+        NumericLeaf(int left, int right) {
+            this.left = left;
+            this.right = right;
         }
     }
 
     static final class StateNode {
         GuardNode state;
 
-        StateNode(Boolean enabled) {
-            state = new GuardNode(enabled);
+        StateNode(Boolean enabled, int left, int right) {
+            state = new GuardNode(enabled, left, right);
         }
     }
 
@@ -60,21 +72,30 @@ public final class UnreachableParityContainerThreeThreadWorkload {
 
         OddArrayProducer(Boolean enabled) {
             payloads = new StateNode[]{
-                    new StateNode(Boolean.valueOf(!enabled.booleanValue())),
-                    new StateNode(enabled)
+                    new StateNode(Boolean.valueOf(!enabled.booleanValue()),
+                            99, 99),
+                    new StateNode(enabled, -1, -1)
             };
         }
 
         public int compute() {
             StateNode selected = payloads[1];
             boolean enabled = selected.state.guard.enabled;
-            int sign;
-            if (enabled) {
-                sign = 1;
-            } else {
-                sign = -1;
+            int left = selected.state.metrics.left;
+            int right = selected.state.metrics.right;
+            if (left < 0) {
+                left = 0;
             }
-            return sign * 2 + 1;
+            if (right < 0) {
+                right = 0;
+            }
+            if (enabled || left + right > 10) {
+                if (left > 5) {
+                    return 3;
+                }
+                return 1;
+            }
+            return -1;
         }
     }
 
@@ -84,7 +105,8 @@ public final class UnreachableParityContainerThreeThreadWorkload {
 
         EvenMapProducer(Boolean enabled) {
             values = new LinkedHashMap<>();
-            values.put(Integer.valueOf(7), new StateNode(enabled));
+            values.put(Integer.valueOf(7),
+                    new StateNode(enabled, -1, -1));
         }
 
         public int compute() {
@@ -93,13 +115,21 @@ public final class UnreachableParityContainerThreeThreadWorkload {
             Map.Entry<Integer, StateNode> entry = iterator.next();
             StateNode selected = entry.getValue();
             boolean enabled = selected.state.guard.enabled;
-            int magnitude;
-            if (enabled) {
-                magnitude = 2;
-            } else {
-                magnitude = 0;
+            int left = selected.state.metrics.left;
+            int right = selected.state.metrics.right;
+            if (left < 0) {
+                left = 0;
             }
-            return magnitude * 2;
+            if (right < 0) {
+                right = 0;
+            }
+            if (enabled && left <= right) {
+                if (right > 5) {
+                    return 4;
+                }
+                return 2;
+            }
+            return 0;
         }
     }
 

@@ -2552,10 +2552,11 @@ final class SymbolicRegionPlanner {
                                 + string(candidate.arrayLoad.get("id"))
                                 + (candidate.materializeFromContainerSnapshot
                                 ? candidate.mapPutValue == null
-                                ? ".direct-field-path."
+                                ? ".direct-field-path"
                                 : ".map-put-value."
                                 + string(candidate.projectedAccessor.get(
-                                "id")) : ""),
+                                "id")) : "")
+                                + ".input." + basePort,
                         "baseInputSymbol", basePort,
                         "containerInputPort", containerPort,
                         "containerInputCell",

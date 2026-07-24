@@ -524,7 +524,8 @@ final class SeedBackwardStaticAnalyzer {
                             "exception constructor payload contributes to thrown value");
                 }
 
-                for (ExceptionGuard guard : controllingGuards(method, throwFact)) {
+                for (ExceptionGuard guard : targetPathBranches(method,
+                        throwFact)) {
                     for (String use : causalGuardUses(guard.fact)) {
                         String node = canonical(method, use);
                         if (ignoreNode(node)) {
@@ -691,6 +692,27 @@ final class SeedBackwardStaticAnalyzer {
         if (cached != null) {
             return cached;
         }
+        List<ExceptionGuard> result = branchGuards(method, targetFact,
+                true);
+        requiredPathGuardsByFact.put(cacheKey, result);
+        return result;
+    }
+
+    /**
+     * Returns every branch in the annotated exception method which lies on
+     * at least one path to the exact throw.  This is intentionally broader
+     * than control dependence: javac lowers {@code a || b} to two branches,
+     * and both successors of the first branch can reach the throw even
+     * though that branch is still one alternative target-path decision.
+     */
+    private List<ExceptionGuard> targetPathBranches(String method,
+                                                    Fact targetFact) {
+        return branchGuards(method, targetFact, false);
+    }
+
+    private List<ExceptionGuard> branchGuards(String method,
+                                              Fact targetFact,
+                                              boolean controllingOnly) {
         SootMethod sootMethod = methodsBySignature.get(method);
         if (sootMethod == null || targetFact.unit == null) {
             return Collections.emptyList();
@@ -707,13 +729,16 @@ final class SeedBackwardStaticAnalyzer {
         } catch (RuntimeException ignored) {
             return Collections.emptyList();
         }
-        Set<Unit> dominators = Collections.newSetFromMap(
-                new IdentityHashMap<Unit, Boolean>());
-        try {
-            dominators.addAll(new MHGDominatorsFinder<Unit>(graph)
-                    .getDominators(targetFact.unit));
-        } catch (RuntimeException ignored) {
-            return Collections.emptyList();
+        Set<Unit> dominators = Collections.emptySet();
+        if (controllingOnly) {
+            dominators = Collections.newSetFromMap(
+                    new IdentityHashMap<Unit, Boolean>());
+            try {
+                dominators.addAll(new MHGDominatorsFinder<Unit>(graph)
+                        .getDominators(targetFact.unit));
+            } catch (RuntimeException ignored) {
+                return Collections.emptyList();
+            }
         }
         Map<Unit, Fact> factsByUnit = new IdentityHashMap<>();
         for (Fact fact : factsByMethod.getOrDefault(method,
@@ -723,7 +748,9 @@ final class SeedBackwardStaticAnalyzer {
         List<ExceptionGuard> guards = new ArrayList<>();
         for (Fact candidate : factsByMethod.getOrDefault(method,
                 Collections.emptyList())) {
-            if (!candidate.isBranch || !dominators.contains(candidate.unit)) {
+            if (!candidate.isBranch
+                    || controllingOnly
+                    && !dominators.contains(candidate.unit)) {
                 continue;
             }
             CausynthBranchShape branchShape =
@@ -744,8 +771,10 @@ final class SeedBackwardStaticAnalyzer {
                     reachingIndices.add(successorIndex);
                 }
             }
-            if (reachingSuccessors > 0
-                    && reachingSuccessors < successors.size()) {
+            boolean relevant = reachingSuccessors > 0
+                    && (!controllingOnly
+                    || reachingSuccessors < successors.size());
+            if (relevant) {
                 Fact guard = factsByUnit.get(candidate.unit);
                 if (guard != null) {
                     Boolean requiredOutcome = null;
@@ -772,9 +801,7 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         guards.sort(Comparator.comparingInt(guard -> guard.fact.unitIndex));
-        List<ExceptionGuard> result = Collections.unmodifiableList(guards);
-        requiredPathGuardsByFact.put(cacheKey, result);
-        return result;
+        return Collections.unmodifiableList(guards);
     }
 
     /**
@@ -5071,15 +5098,6 @@ final class SeedBackwardStaticAnalyzer {
             return "local";
         }
         return "seed";
-    }
-
-    @SafeVarargs
-    private static <T> List<T> concat(Collection<T>... lists) {
-        List<T> result = new ArrayList<>();
-        for (Collection<T> list : lists) {
-            result.addAll(list);
-        }
-        return result;
     }
 
     private static String firstNonBlank(String... values) {

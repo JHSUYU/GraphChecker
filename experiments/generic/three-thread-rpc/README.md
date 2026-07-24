@@ -73,10 +73,11 @@ fixture metadata when supplying a custom configuration.
 Producer exploration remains explicitly bounded.  A workload with a larger
 finite path product can raise any of
 `producer_max_paths_per_region`, `producer_max_flips_per_path`,
-`producer_max_path_tasks`, or `producer_max_path_wall_clock_ms` in its
-properties file.  The runner passes those values to every planning round and
-still fails closed if the resulting worklist reports a bound gap; it never
-treats exhaustion of a configured budget as closure.
+or `producer_max_path_tasks` in its properties file. The runner passes those
+values to every planning round and still fails closed if the resulting
+worklist reports a bound gap; it never treats exhaustion of a configured
+budget as closure. Solver time remains bounded separately by
+`solver_timeout_ms`.
 
 `clean` is guarded to remove only the configured fixture work root below the
 project's `target` directory (`target/three-thread-rpc` by default). It does
@@ -94,17 +95,22 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    shared-field read-from bindings. Re-slice the frozen graph inside the
    concrete call closure; unresolved dependencies stay concrete rather than
    becoming free symbols. No generated `REGION.*` identity is assumed.
-3. Capture an unforced target seed and schedule its solver-ready target query.
-   The seed schedule contains no forced branch. The query is an input to
-   candidate composition; this workflow does not execute a target replay.
+3. Capture an unforced target seed, then close the target function's feasible
+   binary-branch paths with the same independent-worker worklist used for
+   producer exploration. Normal exits and exact-exception exits are both valid
+   replay evidence. After closure, retain only full path conditions which
+   threw the configured exact exception type.
 4. Capture every producer seed. For each producer,
-   `ConcolicPathFlipPlanner` repeatedly selects one pending path, Z3 derives
-   its input model, the custom JDK executes that model naturally, and the
-   strict importer validates the result. Exploration stops only when the
-   worklist manifest is closed, then `RegionSummaryMerger` builds the guarded
-   producer relation.
-5. Compose the closed producer relations with the target seed into one
-   structurally complete candidate SMT model.
+   `ConcolicPathFlipPlanner` computes one immutable frontier per wave, then up
+   to `CAUSYNTH_CONCOLIC_JOBS` independent workers solve and naturally execute
+   exact path tasks in private directories. The coordinator publishes a wave
+   only after every importer/verifier succeeds. Exploration stops only when
+   the worklist manifest is closed, then `RegionSummaryMerger` builds the
+   guarded producer relation. The default worker count is `nproc`; set it to
+   `1` for serial debugging.
+5. Compose the closed producer relations with the OR of all exact target
+   exception path conditions into one structurally complete candidate SMT
+   model.
 6. Solve that candidate model by enumerating its discovered Boolean roots while
    leaving other scalar roots existential, invoke Z3 independently on the
    emitted SMT, and hash-bind the SMT, composition manifest, relationship
@@ -185,6 +191,53 @@ values to be equal. None of the four Boolean root valuations can reach it, so
 the generated candidate SMT and independently invoked Z3 must both report
 `UNREACHABLE`/`unsat`; the fixture and scripts contain no handwritten
 reachability formula or expected-SMT shortcut.
+
+Five scalar shared-field UNSAT profiles cover object propagation without
+introducing a second RPC model:
+
+- `unreachable-correlated-fields/` publishes correlated `left` and `right`
+  fields in one producer call. They must remain one joint output closure and
+  share every relation-case selector; an independent producer publishes
+  `limit`.
+- `unreachable-nested-object/` carries Boolean and integer roots through
+  `Envelope -> Payload -> leaf` fields and helper parameters before publishing
+  disjoint odd/even scalar outputs.
+- `unreachable-inherited-alias/` resolves the same derived object through two
+  helper aliases, then combines an inherited field with a derived field before
+  publishing a bounded value below an independent floor.
+- `unreachable-mutated-object/` snapshots a nested object field, computes a
+  bounded scalar output, and then overwrites the object. The later heap writes
+  are deliberately irrelevant and must not pollute the requested output slice.
+- `unreachable-long-fields/` carries nested `long` base/adjustment fields and
+  Boolean leaves through helpers; its two complete output images remain
+  disjoint by odd/even parity.
+
+Two compound-target profiles exercise the consumer side itself:
+
+- `compound-target/` has a preceding early-return guard followed by
+  `(a > b && c > d) || x > y`; its exact Boolean truth table is
+  `00=unsat, 01/10/11=sat`.
+- `unreachable-compound-target/` adds a contradictory inner guard below the
+  same short-circuit expression, so all four Boolean valuations are `unsat`.
+
+Both use nested-object Boolean producer inputs and publish six primitive
+fields. Every field is written once and read once in one deterministic
+three-thread run.
+
+These workloads use the same deterministic protocol as the maintained RPC
+fixtures. Both producers rendezvous, the first publisher signals the second,
+the harness waits for both producers to terminate, and only then starts the
+consumer. Every shared field is written once and read once in a fixed order.
+Synchronization uses unconditional latch waits so timeout-control branches do
+not become part of a producer's symbolic output slice; timeout protection
+remains at the harness `join` boundary.
+
+Publishing a direct object reference is deliberately not an UNSAT gate yet.
+The current scalar composer safely leaves unproved fields of such a reference
+existential, which can yield `sat`; the object-internal tests above instead
+prove deep field propagation inside a producer and cross the RPC boundary only
+through exact primitive shared fields.
+
 ## Core end-to-end robustness gate
 
 The normal robustness gate is deliberately limited to these three concrete
@@ -222,11 +275,13 @@ catalog and truth-table profile. `containers` additionally checks exact
 a 10-case map relation, Java `int` wrap, schema-3 witness/context separation,
 and input-only unforced producer-path replay. Its two Boolean roots produce four
 `sat` rows because `input1` and `input2` remain existential in each row.
-`unreachable-parity` additionally requires two closed
-two-case producer relations, the exact odd/even output images, zero satisfying
-rows, four unsatisfying rows, and direct Z3 `unsat`. Run all six maintained
-profiles with `run_robustness_matrix.sh all`. Unit tests are not run by this
-command.
+`unreachable-parity` additionally requires two closed multi-case producer
+relations, the exact odd/even output images, zero satisfying rows, four
+unsatisfying rows, and direct Z3 `unsat`. The five scalar object-field UNSAT
+profiles require the same four unsatisfying rows; the correlated-fields profile
+also checks that its two outputs remain one atomic relation. Run all thirteen
+maintained profiles with `run_robustness_matrix.sh all`. Unit tests are not run
+by this command.
 
 ## Completed: one binary-branch replay authority
 
@@ -256,9 +311,9 @@ witness rather than serialized a second time. Malformed witnesses and duplicate
 branch-event identities fail closed. Multiway `switch` remains a separate
 successor-aware observation.
 
-All six matrix profiles pass this protocol through candidate SMT generation,
-independent Z3 checking, and their exact expected reach profiles; one profile
-is intentionally unreachable and therefore expects Z3 `unsat`.
+All eleven matrix profiles pass this protocol through candidate SMT generation,
+independent Z3 checking, and their expected semantic reach profiles; six
+profiles are intentionally unreachable and therefore expect Z3 `unsat`.
 
 ## TODO: promote a candidate with natural replay
 

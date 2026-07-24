@@ -3891,74 +3891,9 @@ public final class ConcolicRegionRuntime {
             // recording before any null checks, Gson work, or string building
             // can reuse a symbolic value and manufacture a false condition.
             api.pausePathCondition();
-            active.verifyRootMapProjectionOutputs(output, exitKind);
-            result.addProperty("event", "CONCOLIC_REGION_RESULT");
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("executionMode", "SYMBOLIC_CONCOLIC");
-            result.addProperty("pathConditionIsolationPolicy",
-                    "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1");
-            result.addProperty("activationId", active.activation.activationId);
-            result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("rootMethod", active.activation.rootMethod);
-            result.addProperty("test", active.activation.test);
-            addActivationReplayEvidence(result, active.activation);
-            result.addProperty("invocationOrdinal",
-                    active.activation.invocationOrdinal);
-            result.addProperty("runtimeThread", active.thread.getName());
-            result.addProperty("runtimeThreadId", active.thread.getId());
-            result.addProperty("exitKind", exitKind);
-            result.addProperty("exceptionType", safe(exceptionType));
-            if (output instanceof Throwable) {
-                result.add("exceptionChain", exceptionChain((Throwable) output));
-            }
-            result.addProperty("concretePrimitiveOutput", safe(primitiveValue));
-            result.addProperty("durationNanos",
-                    System.nanoTime() - active.startNanos);
-            if (active.pendingArrayFieldMaterialization != null) {
-                active.addUnresolvedOnce(
-                        active.pendingArrayFieldMaterialization.siteId
-                                + ": ARRAY_VALUE_PREPARED_NOT_CONSUMED");
-                active.pendingArrayFieldMaterialization = null;
-            }
-            active.validateContainerElementFieldCoverage();
-            BranchReplayObservationValidator.Result replayValidation =
-                    active.validateBranchReplayContract();
-            result.add("branchReplayValidation",
-                    replayValidation.toJson());
-            result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
-            result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
-            result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
-            result.add("runtimeHeapObservations",
-                    active.runtimeHeapObservationsJson());
-            result.add("modelAssignmentsApplied",
-                    GSON.toJsonTree(active.modelAssignmentsApplied));
-            result.add("fieldObservations",
-                    GSON.toJsonTree(active.fieldObservations));
-            result.add("dynamicFieldBindings",
-                    active.dynamicFieldBindingsJson());
-            result.add("mapValueElementProjectionObservations",
-                    GSON.toJsonTree(active.mapProjectionObservations));
-            result.add("engineArrayInputBindings",
-                    active.engineArrayInputBindingsJson());
-            result.add("outputCaptures",
-                    GSON.toJsonTree(active.outputCaptures));
-            result.add("runtimeApproximations",
-                    GSON.toJsonTree(active.runtimeApproximations));
-            JsonArray finalFields = new JsonArray();
-            for (FieldObservationTarget target
-                    : active.fieldTargets.values()) {
-                finalFields.add(fieldObservation(active, target.symbol,
-                        target.owner, target.path, "AT_REGION_EXIT",
-                        target.binding));
-            }
-            result.add("finalFieldObservations", finalFields);
-            result.addProperty("modelAssignmentCount",
-                    active.activation.modelAssignments.size());
-            result.addProperty("modelAssignmentAppliedCount",
-                    active.modelAssignmentsApplied.size());
-            result.addProperty("allModelAssignmentsApplied",
-                    active.activation.modelAssignments.size()
-                            == active.modelAssignmentsApplied.size());
+            populateCompletedResult(result, active, "SYMBOLIC_CONCOLIC",
+                    "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1", exitKind,
+                    exceptionType, output, primitiveValue, true);
             try {
                 String expression = api.expression(output);
                 result.add("rootOutputExpression", parseJson(expression));
@@ -3999,84 +3934,85 @@ public final class ConcolicRegionRuntime {
         appendResult(result);
     }
 
+    private static void populateCompletedResult(
+            JsonObject result, ActiveRegion active, String executionMode,
+            String isolationPolicy, String exitKind, String exceptionType,
+            Object output, String primitiveValue, boolean symbolicInputs) {
+        active.verifyRootMapProjectionOutputs(output, exitKind);
+        result.addProperty("event", "CONCOLIC_REGION_RESULT");
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("executionMode", executionMode);
+        result.addProperty("pathConditionIsolationPolicy", isolationPolicy);
+        result.addProperty("activationId", active.activation.activationId);
+        result.addProperty("regionId", active.activation.regionId);
+        result.addProperty("rootMethod", active.activation.rootMethod);
+        result.addProperty("test", active.activation.test);
+        addActivationReplayEvidence(result, active.activation);
+        result.addProperty("invocationOrdinal",
+                active.activation.invocationOrdinal);
+        result.addProperty("runtimeThread", active.thread.getName());
+        result.addProperty("runtimeThreadId", active.thread.getId());
+        result.addProperty("exitKind", exitKind);
+        result.addProperty("exceptionType", safe(exceptionType));
+        if (output instanceof Throwable) {
+            result.add("exceptionChain", exceptionChain((Throwable) output));
+        }
+        result.addProperty("concretePrimitiveOutput", safe(primitiveValue));
+        result.addProperty("durationNanos",
+                System.nanoTime() - active.startNanos);
+        if (active.pendingArrayFieldMaterialization != null) {
+            active.addUnresolvedOnce(
+                    active.pendingArrayFieldMaterialization.siteId
+                            + ": ARRAY_VALUE_PREPARED_NOT_CONSUMED");
+            active.pendingArrayFieldMaterialization = null;
+        }
+        active.validateContainerElementFieldCoverage();
+        BranchReplayObservationValidator.Result replayValidation =
+                active.validateBranchReplayContract();
+        result.add("branchReplayValidation", replayValidation.toJson());
+        result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
+        result.add("symbolizedInputs", symbolicInputs
+                ? GSON.toJsonTree(active.symbolized) : new JsonArray());
+        result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
+        result.add("runtimeHeapObservations",
+                active.runtimeHeapObservationsJson());
+        result.add("modelAssignmentsApplied",
+                GSON.toJsonTree(active.modelAssignmentsApplied));
+        result.add("fieldObservations",
+                GSON.toJsonTree(active.fieldObservations));
+        result.add("dynamicFieldBindings",
+                active.dynamicFieldBindingsJson());
+        result.add("mapValueElementProjectionObservations",
+                GSON.toJsonTree(active.mapProjectionObservations));
+        result.add("engineArrayInputBindings",
+                active.engineArrayInputBindingsJson());
+        result.add("outputCaptures", GSON.toJsonTree(active.outputCaptures));
+        result.add("runtimeApproximations",
+                GSON.toJsonTree(active.runtimeApproximations));
+        JsonArray finalFields = new JsonArray();
+        for (FieldObservationTarget target : active.fieldTargets.values()) {
+            finalFields.add(fieldObservation(active, target.symbol,
+                    target.owner, target.path, "AT_REGION_EXIT",
+                    target.binding));
+        }
+        result.add("finalFieldObservations", finalFields);
+        result.addProperty("modelAssignmentCount",
+                active.activation.modelAssignments.size());
+        result.addProperty("modelAssignmentAppliedCount",
+                active.modelAssignmentsApplied.size());
+        result.addProperty("allModelAssignmentsApplied",
+                active.activation.modelAssignments.size()
+                        == active.modelAssignmentsApplied.size());
+    }
+
     private static void finishConcreteReplay(
             ActiveRegion active, long token, String exitKind,
             String exceptionType, Object output, String primitiveValue) {
         JsonObject result = new JsonObject();
         try {
-            active.verifyRootMapProjectionOutputs(output, exitKind);
-            result.addProperty("event", "CONCOLIC_REGION_RESULT");
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("executionMode", "CONCRETE_REPLAY_ONLY");
-            result.addProperty("pathConditionIsolationPolicy",
-                    "CONCRETE_REPLAY_NO_SYMBOLIC_ENGINE_V1");
-            result.addProperty("activationId",
-                    active.activation.activationId);
-            result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("rootMethod", active.activation.rootMethod);
-            result.addProperty("test", active.activation.test);
-            addActivationReplayEvidence(result, active.activation);
-            result.addProperty("invocationOrdinal",
-                    active.activation.invocationOrdinal);
-            result.addProperty("runtimeThread", active.thread.getName());
-            result.addProperty("runtimeThreadId", active.thread.getId());
-            result.addProperty("exitKind", exitKind);
-            result.addProperty("exceptionType", safe(exceptionType));
-            if (output instanceof Throwable) {
-                result.add("exceptionChain",
-                        exceptionChain((Throwable) output));
-            }
-            result.addProperty("concretePrimitiveOutput",
-                    safe(primitiveValue));
-            result.addProperty("durationNanos",
-                    System.nanoTime() - active.startNanos);
-            if (active.pendingArrayFieldMaterialization != null) {
-                active.addUnresolvedOnce(
-                        active.pendingArrayFieldMaterialization.siteId
-                                + ": ARRAY_VALUE_PREPARED_NOT_CONSUMED");
-                active.pendingArrayFieldMaterialization = null;
-            }
-            active.validateContainerElementFieldCoverage();
-            BranchReplayObservationValidator.Result replayValidation =
-                    active.validateBranchReplayContract();
-            result.add("branchReplayValidation",
-                    replayValidation.toJson());
-            result.add("unresolvedInputs",
-                    GSON.toJsonTree(active.unresolved));
-            result.add("symbolizedInputs", new JsonArray());
-            result.add("branchMappings",
-                    GSON.toJsonTree(active.branchMappings));
-            result.add("runtimeHeapObservations",
-                    active.runtimeHeapObservationsJson());
-            result.add("modelAssignmentsApplied",
-                    GSON.toJsonTree(active.modelAssignmentsApplied));
-            result.add("fieldObservations",
-                    GSON.toJsonTree(active.fieldObservations));
-            result.add("dynamicFieldBindings",
-                    active.dynamicFieldBindingsJson());
-            result.add("mapValueElementProjectionObservations",
-                    GSON.toJsonTree(active.mapProjectionObservations));
-            result.add("engineArrayInputBindings",
-                    active.engineArrayInputBindingsJson());
-            result.add("outputCaptures",
-                    GSON.toJsonTree(active.outputCaptures));
-            result.add("runtimeApproximations",
-                    GSON.toJsonTree(active.runtimeApproximations));
-            JsonArray finalFields = new JsonArray();
-            for (FieldObservationTarget target
-                    : active.fieldTargets.values()) {
-                finalFields.add(fieldObservation(active, target.symbol,
-                        target.owner, target.path, "AT_REGION_EXIT",
-                        target.binding));
-            }
-            result.add("finalFieldObservations", finalFields);
-            result.addProperty("modelAssignmentCount",
-                    active.activation.modelAssignments.size());
-            result.addProperty("modelAssignmentAppliedCount",
-                    active.modelAssignmentsApplied.size());
-            result.addProperty("allModelAssignmentsApplied",
-                    active.activation.modelAssignments.size()
-                            == active.modelAssignmentsApplied.size());
+            populateCompletedResult(result, active, "CONCRETE_REPLAY_ONLY",
+                    "CONCRETE_REPLAY_NO_SYMBOLIC_ENGINE_V1", exitKind,
+                    exceptionType, output, primitiveValue, false);
             JsonObject summary = new JsonObject();
             summary.addProperty("schemaVersion", 1);
             summary.addProperty("engine", "CONCRETE_REPLAY_ONLY");

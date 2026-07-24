@@ -3,8 +3,8 @@
 GraphChecker 从静态数据流、运行时跨 region 证据和逐 region concolic execution 中构造
 `region.in -> region.out` 关系，再沿 region graph 递归组合成一个可直接交给 Z3 的 SMT。
 当前维护的验证矩阵是通用三线程 RPC fixture 及其 cross-method、multitype、
-dependent-scalar、container、unreachable-parity 变体。最后一组要求完整流程生成的
-SMT 由 Z3 判定为 `unsat`。
+dependent-scalar、container，以及四个互补的 `UNREACHABLE` 变体。后者要求完整流程
+生成的 SMT 由 Z3 判定为 `unsat`。
 
 ## 项目定位
 
@@ -160,6 +160,39 @@ maintained `containers` workload 还要求 `MapProducer.input1`、`input2` 成�
 array producer 2 cases、map producer 10 cases；两个 Boolean root 的四行 candidate truth table
 均为 `sat`，因为两个 `int` root 在每一行仍按 existential 求解。
 
+`unreachable-parity` 是复杂 container-field 回归：array 与 Map producer 都读取
+`state.guard.enabled`、`state.metrics.left`、`state.metrics.right`，包含 clamp、短路条件和
+后置分支。RPC 拓扑不变，每个 producer 只向自己的 shared field publish 一次，consumer
+也只读取各 field 一次。完整关系的输出域分别是奇数 `{-1,1,3}` 与偶数 `{0,2,4}`；两个
+Boolean root 之外的四个 `int` field root 保持 existential，因此四行 Boolean truth table
+必须全部由真实组合 SMT/Z3 证明 `unsat`，不能靠 fixture 常量或测试脚本直接判定。
+
+另外五个 `UNREACHABLE` workload 保持相同的 shared-field RPC 边界，只把 producer
+内部的数据传播做深：
+
+- `unreachable-correlated-fields` 从 nested `seed/delta` 计算值，并在一次 publish 中写
+  correlated `left/right`；联合 output closure 必须让两个字段共享同一 relation case，
+  再与独立 `limit` producer 组合。
+- `unreachable-nested-object` 让 Boolean 与两个整数穿过
+  `Envelope -> Payload -> leaf` 和 helper 参数，最终两个 producer 的输出域分别保持
+  odd/even。
+- `unreachable-inherited-alias` 让同一 derived object 经两层 alias helper 传播，同时读取
+  inherited `base` 与 derived `delta`，其 bounded value 永远低于另一个 producer 的 floor。
+- `unreachable-mutated-object` 先从 nested object 读取并保存 scalar snapshot，再计算 bounded
+  output，随后覆写对象字段；这些后续 heap write 与 requested output 无关，不能污染 closure。
+- `unreachable-long-fields` 让 nested `long base/adjustment` 和 Boolean leaf 穿过 helper，
+  两个 producer 的完整输出域分别保持 odd/even。
+
+五个 workload 都先让 producer rendezvous，再用 latch 固定 publish 先后；两个 producer
+终止后才启动 consumer。每个 shared field 只写一次、只读一次，consumer 的读取顺序固定。
+同步等待本身不带 timeout branch，避免把测试协调逻辑误切入 output closure；超时仍由
+harness 的 `join` 负责。
+
+当前没有把“直接通过 shared field 传递对象引用”列为 UNSAT 门禁。对未证明 heap relation
+的对象字段，Composer 会安全地保留 existential over-approximation，因此可能得到 `sat`。
+上述对象测试只在 producer 内验证深字段/alias 传播，RPC 边界仍使用可精确证明的 primitive
+shared field。
+
 ### `region.out`
 
 `region.out` 不是“方法返回值列表”，也不是 region 中所有被写过的变量。它只包含会流入
@@ -215,7 +248,7 @@ TODO: 自然传播可信升级
 | Goal | 用途 | 闭合条件 |
 | --- | --- | --- |
 | `OUTPUT_CLOSURE` | 学习 producer 的输入到输出关系 | 所有 output-relevant 可行路径已执行，worklist 无 pending |
-| `TARGET_BRANCH` | 记录 bug region 的目标 branch | 从一次 unforced observation 得到 solver-ready candidate query；当前不执行 target replay |
+| `TARGET_BRANCH` | 学习目标异常所在 consumer function 的到达条件 | 所有 target-function branch 的可行路径已执行，worklist 无 pending |
 
 Producer campaign 不需要一次让 custom JDK 同时符号执行三个线程。系统一次选择一个
 region activation，多跑若干次 workload，分别学出每个 `R_region`；跨 region 关系在
@@ -239,6 +272,76 @@ observed paths > 0 && pending = 0 && gaps = []  ->  state = CLOSED
 零条 observed path 或缺失 manifest 当成 closed。只有 `CLOSED` 才允许生成 guarded
 relation。这样不会在已经观察到 branch 两侧后再产生无意义的反向 replay。
 
+一条路径上的 output-relevant branch 可能因为更早的约束而被 VM concretize。此时它没有
+可翻转 predicate，但也不能在仍有 pending bridge task 时立刻终止 campaign。worklist 先把
+它记为 `deferredObservations`；后续只有相同 output closure、相同 site 且相同 occurrence
+出现精确 symbolic witness 时才覆盖它。若所有 task 都已终止而仍没有该 witness，observation
+才升级为 blocking gap，状态为 `GAPPED`。不同 loop occurrence 不能互相冒充证据。
+
+### 复合 target guard
+
+Java 的 `if ((a > b && c > d) || x > y)` 不会在 bytecode/Jimple 中保留为一个原子
+branch；短路求值会产生多个二元 branch。仅使用传统 control dependence 中“恰好一个
+successor 能到 throw”的规则会漏掉 OR 左侧这种两个 successor 都仍可能到达 throw 的
+决策。target exception 的静态 seed 因此使用一个直接的 bounded rule：
+
+```text
+branch 位于精确 target method
+&& branch 至少一个 successor 能到精确 annotated throw
+```
+
+这个规则只用于 `TARGET_BRANCH`。producer output slice 仍使用原有控制依赖规则，避免扩大
+output closure。运行时从一次未强制 seed 开始，只翻转 target activation 中实际出现的
+symbolic branch witness；普通退出和抛异常的 replay 都是合法路径证据。worklist 闭合后，
+`TargetReachPathQueryBuilder` 只保留 `normalExit=false` 且 exception type 精确相同的 imported
+summary，最终异常条件为：
+
+```text
+fatal =
+    OR(
+      AND(path_0 的完整 PC),
+      AND(path_1 的完整 PC),
+      ...
+    )
+```
+
+因此前置 `if`、AND/OR 的每个短路 operand 以及到达 throw 前的完整 prefix 都进入 SMT；
+不会再把一次 branch flip 的局部条件误当成完整异常条件。若闭合路径中没有一条抛出精确
+目标异常，`fatal=false`，后续 composer/Z3 仍正常运行并给出 UNSAT。该算法复用现有
+custom JDK 的单路径 PC capture，不需要在 custom JDK 内实现并行或新 guard lowering。
+
+新增的 `compound-target` 与 `unreachable-compound-target` fixture 使用三个确定顺序的线程、
+两个 nested-object Boolean producer、六个 primitive shared fields，并保证每个字段只写一次、
+只读一次。前者固定真值表为 `00=unsat, 01/10/11=sat`；后者在同一复合外层 guard 中加入
+矛盾内层 guard，四组 Boolean valuation 全部必须由真实 Z3 判定 `unsat`。
+
+### Path campaign 失败时看哪里
+
+`run.sh` 失败时会直接打印负责下一步定位的 artifact，不需要从完整 JSON stdout 猜原因：
+
+```text
+target-campaign/region_path_closure.json
+target-campaign/observed_path_summaries.jsonl
+schedule/branch_queries.jsonl
+target-campaign/current/task-<queryKey>/stderr.log
+target-campaign/current/task-<queryKey>/path_flip_solver_result.json
+target-campaign/current/task-<queryKey>/concolic_region_results.jsonl
+target-campaign/current/task-<queryKey>/concolic_import_diagnostics.jsonl
+target-campaign/current/task-<queryKey>/path_replay_verification.json
+producer-campaign/<channel>/current/region_path_manifest.json
+producer-campaign/<channel>/current/region_path_worklist.jsonl
+producer-campaign/<channel>/current/task-<queryKey>/stderr.log
+producer-campaign/<channel>/current/task-<queryKey>/path_flip_solver_result.json
+producer-campaign/<channel>/current/task-<queryKey>/concolic_region_results.jsonl
+producer-campaign/<channel>/current/task-<queryKey>/concolic_import_diagnostics.jsonl
+producer-campaign/<channel>/current/task-<queryKey>/path_replay_verification.json
+```
+
+先看 manifest 的 `state`、`gaps` 与 `deferredObservations`。单 worker 失败时，脚本还会打印
+对应 queryKey、solver/verifier 状态和 `stderr.log` 尾部；custom JDK 在写出 JSON 前崩溃时，
+`stderr.log`、task 目录中的 `hs_err_pid*.log` 和 replay activation 仍足以定位执行阶段。
+成功 wave 会按既有 policy 清理，失败 wave 始终保留。
+
 ## Runtime 与 custom JDK
 
 Scheduler 为每次 capture 选择一个 region activation。GraphChecker runtime 维护 token 化
@@ -250,9 +353,9 @@ condition。
 `site + occurrence`、源 execution 实际满足的 outcome/predicate，以及唯一允许的 `VM_PC`
 evidence。wire value 本身没有 self-hash；需要稳定去重时，worklist 对 canonical value
 计算 key。`BranchReplayContract.flip()` 是唯一可以推导相反 polarity 的位置：它保留有序
-prefix、翻转一个 source witness，并丢弃旧 suffix。producer worklist、solver、activation、
-静态插桩、runtime、importer 和 verifier 都传递或解析同一个 contract；target 侧只把同一
-contract 用作 candidate query，当前 workflow 不执行 target replay。各阶段不再重建旧式
+prefix、翻转一个 source witness，并丢弃旧 suffix。producer/target worklist、solver、
+activation、静态插桩、runtime、importer 和 verifier 都传递或解析同一个 contract；target
+replay 允许普通退出与精确异常退出，闭合后再按异常类型筛选完整 PC。各阶段不再重建旧式
 target、prefix、negated-condition 或 scheduled-target 副本。精确 VM event 若没有对应 PC，
 只能作为 observation 和诊断信息，不能制造 predicate、witness 或 flip；`switch` 也仍是
 独立的 successor-aware observation，不伪装成二元 branch。
@@ -378,6 +481,22 @@ experiments/generic/three-thread-rpc/run.sh all
 producer campaigns、candidate composition、Z3 solve 和 candidate manifest。成功时会生成
 `candidate/candidate_result_manifest.json`；它不是 trusted result。
 
+producer path exploration 默认使用 `nproc` 个独立 custom-JDK worker。每个 worker
+拥有私有 result、tmp 和日志目录；同一 wave 全部成功后才由单一 coordinator 发布。
+串行 debug 或显式高并发可以分别使用：
+
+```bash
+CAUSYNTH_CONCOLIC_JOBS=1 experiments/generic/three-thread-rpc/run.sh all
+CAUSYNTH_CONCOLIC_JOBS=64 experiments/generic/three-thread-rpc/run.sh all
+```
+
+2026-07-24 的 container 实测中，jobs=1/8/40/64 都闭合相同的 48 条路径并得到
+相同语义投影与最终 `sat`；耗时分别约为 870、233.56、203.35 和 202.77 秒。
+单 wave 最多只有 16 个 pending task，因此 64 没有优于 40，默认值保持 `nproc`。
+六个 maintained fixture 的并行矩阵耗时 231.77 秒，五个预期 `sat` 与一个预期
+`unsat` 全部通过。完整设计、正确性边界和测量口径见
+`docs/parallel_concolic_execution_plan.txt`。
+
 ## 关键实现
 
 | 组件 | 职责 |
@@ -385,7 +504,8 @@ producer campaigns、candidate composition、Z3 solve 和 candidate manifest。�
 | `SymbolicRegionPlanner` | 静态 region、live-in/live-out、output slice 和候选 edge |
 | `RuntimeRegionPlanner` / `ConcolicRegionRuntime` | 动态 activation、thread context、精确事件与运行时绑定 |
 | `ConcolicScheduler` | 为 target 或 producer 选择 activation 并生成 capture/materialization plan |
-| `ConcolicPathFlipPlanner` / `RegionPathWorklist` | pending flip、稳定去重、Z3 输入和 closure |
+| `ConcolicPathFlipPlanner` / `RegionPathWorklist` | 纯 frontier planning、pending flip、稳定去重和 closure |
+| `ConcolicPathFlipSolver` | 精确求解一个 query，生成 singleton replay activation |
 | `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
 | `SolverPathContext` | 与 branch authority 分离的、有位置的 typed 非 branch solver constraints |
 | `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
@@ -708,9 +828,9 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
 
 当前实施状态（2026-07-24）：
 
-- Phase 0 `COMPLETED`：配置指定的 custom JDK 已完整构建；六个 maintained workload
-  已经执行真实 concolic campaign 和真实 Z3，结果为五个 `sat`、一个 `unsat`，没有 skip。
-  矩阵使用一次 Maven 构建和六个隔离 workdir 并行执行，shared JAR 在执行前后由 SHA-256
+- Phase 0 `COMPLETED`：配置指定的 custom JDK 已完整构建；十三个 maintained workload
+  已经执行真实 concolic campaign 和真实 Z3，结果为六个 `sat`、七个 `unsat`，没有 skip。
+  矩阵使用一次 Maven 构建和十三个隔离 workdir 并行执行，shared JAR 在执行前后由 SHA-256
   校验为未改变。
 - joint-output vertical slice `COMPLETED`：`OutputClosureContract` 已成为唯一 writer；
   Planner 按 producer invocation 与 downstream demand 生成 canonical member set，
@@ -752,24 +872,49 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
   一次明确授权的 `cross-method-fields` 重构把 Producer A 从 110 cases / 109 replays 缩成
   4 cases / 3 replays，并新增同一 invocation 的 `a/aWitness` 联合输出、完整 case keyset 和
   shared-selector 真正端到端门禁；最终 truth table 不变且真实 Z3 为 `sat`，本机完整耗时由
-  约 61 分钟降到 2 分 49 秒。生产 Java 当前为 81,516 行；相对 84,166 行阶段起点累计
-  净减 2,650 行，也比 81,594 行冻结基线少 78 行。除上述 authority cutover 外，已删除
+  约 61 分钟降到 2 分 49 秒。生产 Java 当前为 81,084 行；相对 84,166 行阶段起点累计
+  净减 3,082 行，也比 81,594 行冻结基线少 510 行。除上述 authority cutover 外，已删除
   Replay 派生布尔/计数镜像、Composer 三个零消费者 catalog、Importer 纯 dead helper，
   同时保留原始 failure codes、SMT assertion 和 summary hash。
-- 最终源码已从构建、静态分析、runtime planning、完整 producer campaign、
-  merge/composition 一直执行到真实 Z3；六个隔离 workload 全并行完成，结果为五个
-  `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或增量
-  re-compose 代替门禁。最终日志位于
-  `target/robustness-matrix-logs/20260724T062900Z.1366357`。custom JDK/`third_party`
-  未修改。
+- 并行后的 robustness follow-up `COMPLETED`：增强后的 `unreachable-parity` 在不改变
+  single-publish/single-read shared-field RPC 的前提下加入两个 nested int leaf、clamp、
+  short-circuit 与后置分支；修复 static binding-id collision、Boolean-only snapshot
+  import 和 read-only Map 单字段假设。serial/40-worker 分别闭合相同的 12/14 条 producer
+  paths，四个 Boolean valuation 均由 Z3 判定 `unsat`。concrete observation 现在只由相同
+  `closure + site + occurrence` 的 symbolic EXPLORE witness 覆盖，失败 wave 会打印并保留
+  exact task artifact。
+- scalar/object UNSAT follow-up `COMPLETED`：新增 correlated joint fields、nested plain
+  object fields 和 inherited same-object alias 三个 fixture。三者都保持 deterministic
+  single-write/single-read shared-field RPC，四个 Boolean valuation 均由真实 Z3 判定
+  `unsat`。其中 correlated producer 的两个 output 在一次 activation 和每个 merged case
+  中共同出现，直接覆盖 multi-output 相关性；runtime shell 先排除
+  `symbolicReady=false` activation 再解析其 closure，避免一个明确不可执行的重复候选阻断
+  同 region 的有效 producer demand。
+- additional field-root follow-up `COMPLETED`：新增 irrelevant post-snapshot object
+  mutation 与 nested long-field parity 两个 fixture。前者证明后续无关 heap write 不进入
+  requested output closure，后者把 `J` descriptor、跨 helper field propagation 和 disjoint
+  long output images 纳入真实 Z3 `unsat` 门禁；两者仍保持确定性 single-write/single-read RPC。
+- compound target follow-up `COMPLETED`：target exception 不再只消费一个 directed
+  branch query；静态 seed 纳入 target method 中任一 successor 可到精确 throw 的 branch，
+  target worklist 闭合普通/异常路径，Composer 对精确异常 summary 的完整 PC 取 OR。新增
+  reachable/unreachable 两个 deterministic shared-field fixture 覆盖前置 guard、
+  nested object/多变量传播以及 AND/OR 短路。
+- correctness follow-up 后的低风险清理 `COMPLETED`：删除零引用 private helper/constant，
+  将三份相同的 JVM descriptor 规范化收敛到既有 primitive semantics authority，并合并
+  if/switch 的 exact marker prefix 与 symbolic/concrete 的公共 runtime result 构造。没有
+  新增兼容层、schema 或 custom-JDK 分支；边界校验仍留在原 trust boundary。
+- 最终源码已从构建、静态分析、runtime planning、完整 target/producer campaign、
+  merge/composition 一直执行到真实 Z3；十三个隔离 workload 全并行完成，结果为六个
+  `sat/reachable`、七个 `unsat/unreachable`，0 failure，没有用旧 artifact 或增量
+  re-compose 代替门禁。custom JDK/`third_party` 未修改。
 - 全量 typed internal pipeline、`ArtifactStore`/inspect CLI、planner 大拆类以及
   45,000–55,000 行宏观目标统一标记为长期 `DEFERRED`，不是本轮正确性里程碑。实测没有
   净简化收益的重写不会为了“完成阶段”而强行加入；若未来重新启动，仍须遵守本节的
-  trust-boundary 与六-fixture 门禁。
+  trust-boundary 与十三-fixture 门禁。
 
 #### Phase 0：冻结行为与端到端基线
 
-- 记录六个 maintained workload 的 candidate reachability 和直接 Z3 结果。
+- 记录十三个 maintained workload 的 candidate reachability 和直接 Z3 结果。
 - 保存 normalized root-input catalog、truth table、relation case counts 和 terminal manifest。
 - 建立 semantic diff：比较 SAT/UNSAT、root sorts、producer bindings 和 relation cases，
   不要求 JSON 字节、summary id 或非语义字段完全相同。
@@ -851,7 +996,7 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
 #### Phase 7：切换与删除
 
 - `REJECTED`：长期保留新旧 writer 做 shadow-run；这会违反唯一 authority。改用冻结
-  semantic baseline、boundary regression 和六-fixture 真实 Z3 matrix。
+  semantic baseline、boundary regression 和十三-fixture 真实 Z3 matrix。
 - `COMPLETED`：每个 authority 切换后运行 full maintained matrix，再删除旧 schema、
   fallback、mirror、private parser 和兼容 shell reader。
 - `COMPLETED`：所有 operational reader 已切换到 schema-v1 `outputClosure`，旧 artifact
@@ -869,10 +1014,10 @@ mvn -q test
 # 三个核心三线程 workload
 experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
 
-# 全部六个 maintained workload
+# 全部十三个 maintained workload
 experiments/generic/three-thread-rpc/run_robustness_matrix.sh all
 
-# 推荐：只构建一次，六个 workload 使用隔离目录和日志全部并行
+# 推荐：只构建一次，十三个 workload 使用隔离目录和日志全部并行
 experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 ```
 
@@ -886,6 +1031,13 @@ experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 | `dependent-scalar` | `REACHABLE` | `sat` |
 | `containers` | `REACHABLE` | `sat` |
 | `unreachable-parity` | `UNREACHABLE` | `unsat` |
+| `unreachable-correlated-fields` | `UNREACHABLE` | `unsat` |
+| `unreachable-nested-object` | `UNREACHABLE` | `unsat` |
+| `unreachable-inherited-alias` | `UNREACHABLE` | `unsat` |
+| `unreachable-mutated-object` | `UNREACHABLE` | `unsat` |
+| `unreachable-long-fields` | `UNREACHABLE` | `unsat` |
+| `compound-target` | `REACHABLE` | `sat` |
+| `unreachable-compound-target` | `UNREACHABLE` | `unsat` |
 
 fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT gate；
 `experiments/generic/test_workflow.sh` 使用 dry-run/fake Z3，也不能替代上述矩阵。
@@ -905,9 +1057,9 @@ fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT ga
   completeness/empty 和 joint atomicity；
 - 两处 Java/SMT lowering 各自使用少量表驱动测试覆盖 integral、String/null、FP 和
   unsupported fail-closed；
-- 删除七个仅重复执行 workload main 的 fixture JUnit，但绝不删除或改动六个 maintained
+- 删除七个仅重复执行 workload main 的 fixture JUnit，但绝不删除或改动十三个 maintained
   workload main、配置和实际 Z3 matrix；
-- 每批合并或删测前后都运行六 fixture，一直保持五个 `sat`、一个 `unsat`。
+- 每批合并或删测前后都运行十三个 fixture，一直保持六个 `sat`、七个 `unsat`。
 
 普通测试的可复现计数命令是：
 
@@ -933,14 +1085,14 @@ rg -g '*.java' '@Test\b' src/test | wc -l
 - identity/hash 改动必须先有 golden semantic identity 测试，再触及 worklist、summary id 或
   composition binding。
 - canonical cleanup 不改变 custom JDK、SMT emitter 或 terminal manifest；identity 的变化
-  只允许来自 canonical output demand，并由 worklist/merge/composition boundary test 与六
+  只允许来自 canonical output demand，并由 worklist/merge/composition boundary test 与十一
   fixture 的真实 Z3 结果共同证明。
 
 ### 完成定义
 
 本轮 joint-output authority cutover 与 correctness-preserving cleanup 完成必须同时满足：
 
-- 六个 maintained workload 保持上述五个 `sat` 和一个 `unsat`；
+- 十三个 maintained workload 保持上述六个 `sat` 和七个 `unsat`；
 - single-output 是 multi-output contract 的单 member 情况，不再有独立运行路径；
 - Java 与 shell operational path 只读写 canonical `outputClosure`，旧 singular 字段只能在
   codec 的拒绝列表和迁移说明中出现；
@@ -953,7 +1105,7 @@ rg -g '*.java' '@Test\b' src/test | wc -l
 
 全量 typed internal pipeline、JSON 只在 artifact 边界、统一 `ArtifactStore` CLI 和
 45,000–55,000 行目标属于长期架构方向，不再伪装成本轮完成条件。它们只有在能替换现有
-代码、关闭具体正确性缺口并通过同一六-fixture 门禁时才重新进入实施计划；单纯拆文件、
+代码、关闭具体正确性缺口并通过同一十三-fixture 门禁时才重新进入实施计划；单纯拆文件、
 搬 JSON 或增加 wrapper 不算进展。
 
 ## TODO：用自然 replay 将候选升级为可信结果

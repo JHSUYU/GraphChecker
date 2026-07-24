@@ -29,8 +29,8 @@ public class RegionPathWorklistTest {
         targetActivation.remove("outputClosure");
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Arrays.asList(summary, targetSummary),
-                Arrays.asList(activation, targetActivation),
+                Collections.singletonList(summary),
+                Collections.singletonList(activation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -47,6 +47,28 @@ public class RegionPathWorklistTest {
                         .get("suffixPolicy").getAsString());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
                 result.manifest.get("state").getAsString());
+
+        JsonArray targetBranches = new JsonArray();
+        for (String site : Arrays.asList("SITE.0", "SITE.1")) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", site);
+            branch.addProperty("policy", "EXPLORE");
+            targetBranches.add(branch);
+        }
+        targetActivation.add("branches", targetBranches);
+        RegionPathWorklist.Result targetResult = RegionPathWorklist.plan(
+                Collections.singletonList(targetSummary),
+                Collections.singletonList(targetActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(2, targetResult.tasks.size());
+        for (JsonObject task : targetResult.tasks) {
+            assertEquals("TARGET_BRANCH", task.getAsJsonObject(
+                    "captureGoal").get("kind").getAsString());
+            assertFalse(task.has("outputClosure"));
+        }
+        assertEquals("TARGET_BRANCH", targetResult.manifest.get(
+                "captureGoal").getAsString());
     }
 
     @Test
@@ -100,6 +122,32 @@ public class RegionPathWorklistTest {
                 result.manifest.get("outputDemandKey"));
         assertEquals(task.get("outputClosureFingerprint"),
                 result.manifest.get("outputClosureFingerprint"));
+
+        JsonObject boundedLoop = summary("ACT.LOOP",
+                RegionCaptureGoal.outputClosure());
+        JsonObject boundedLoopActivation = activation("ACT.LOOP",
+                RegionCaptureGoal.outputClosure());
+        JsonObject loopClosure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.LOOP", "SITE.1");
+        attachClosure(boundedLoop, loopClosure);
+        attachClosure(boundedLoopActivation, loopClosure);
+        boundedLoop.getAsJsonArray("branchMappings").add(
+                SummaryBranchMapping.concrete(
+                        ExactConcreteBranchObservation.attested(
+                                "SITE.1", "<test.Region: void run()>", 1,
+                                4, true),
+                        SummaryBranchMapping.Policy.EXPLORE).toJson());
+        RegionPathWorklist.Result loopResult = RegionPathWorklist.plan(
+                Collections.singletonList(boundedLoop),
+                Collections.singletonList(boundedLoopActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(loopResult.manifest.toString(),
+                RegionPathWorklist.State.PENDING.name(),
+                loopResult.manifest.get("state").getAsString());
+        assertTrue(loopResult.manifest.getAsJsonArray("gaps").isEmpty());
+        assertEquals(1, loopResult.manifest.getAsJsonArray(
+                "deferredObservations").size());
 
         JsonObject legacySummary = summary("ACT.CLOSURE",
                 RegionCaptureGoal.outputClosure());
@@ -184,231 +232,90 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void materializationGapIsTerminalAndSurfacesExplorationGap() {
-        JsonObject summary = summary("ACT.GAP",
+    public void concreteBranchWaitsForBridgeAndRequiresExactOccurrence() {
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int result>", "PROOF.DEFERRED",
+                "SITE.0", "SITE.1", "SITE.LATE");
+        JsonObject concrete = summary("ACT.CONCRETE",
                 RegionCaptureGoal.outputClosure());
-        JsonObject activation = activation("ACT.GAP",
+        JsonObject concreteActivation = activation("ACT.CONCRETE",
                 RegionCaptureGoal.outputClosure());
-        RegionPathWorklist.Result initial = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation),
+        attachClosure(concrete, closure);
+        attachClosure(concreteActivation, closure);
+        concrete.getAsJsonArray("branchMappings").add(
+                SummaryBranchMapping.concrete(
+                        ExactConcreteBranchObservation.attested(
+                                "SITE.LATE", "<test.Region: void run()>", 9,
+                                2, true),
+                        SummaryBranchMapping.Policy.EXPLORE).toJson());
+
+        RegionPathWorklist.Result bridgePending = RegionPathWorklist.plan(
+                Collections.singletonList(concrete),
+                Collections.singletonList(concreteActivation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
-        List<JsonObject> records = new ArrayList<>();
-        for (JsonObject task : initial.tasks) {
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                bridgePending.manifest.get("state").getAsString());
+        assertFalse(bridgePending.tasks.isEmpty());
+        assertTrue(bridgePending.manifest.getAsJsonArray("gaps").isEmpty());
+        assertEquals(1, bridgePending.manifest.getAsJsonArray(
+                "deferredObservations").size());
+
+        List<JsonObject> exhaustedRecords = new ArrayList<>();
+        for (JsonObject task : bridgePending.tasks) {
             JsonObject record = new JsonObject();
             record.addProperty("queryKey",
                     task.get("queryKey").getAsString());
-            record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason",
-                    "OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT");
-            records.add(record);
+            record.addProperty("status", "UNSAT");
+            exhaustedRecords.add(record);
         }
-
-        RegionPathWorklist.Result replanned = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation), records,
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(replanned.tasks.isEmpty());
+        RegionPathWorklist.Result exhausted = RegionPathWorklist.plan(
+                Collections.singletonList(concrete),
+                Collections.singletonList(concreteActivation),
+                exhaustedRecords, RegionPathWorklist.Bounds.defaults());
+        assertTrue(exhausted.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                replanned.manifest.get("state").getAsString());
-        assertEquals(0, replanned.manifest.get(
-                "pendingTaskCount").getAsInt());
-        assertTrue(replanned.manifest.getAsJsonArray("gaps").toString()
-                .contains("EXPLORATION_GAP"));
-        assertTrue(replanned.manifest.getAsJsonArray("gaps").toString()
-                .contains("OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT"));
-    }
+                exhausted.manifest.get("state").getAsString());
+        assertTrue(exhausted.manifest.getAsJsonArray("gaps").toString()
+                .contains("SITE.LATE"));
+        assertFalse(exhausted.manifest.has("deferredObservations"));
 
-    private static JsonObject exactBranchTemplateSummary(
-            String activationId, boolean concreteUpperGuard) {
-        JsonObject result = summary(activationId,
+        JsonObject wrongOccurrence = summary("ACT.WRONG.OCCURRENCE",
                 RegionCaptureGoal.outputClosure());
-        result.add("symbolicInputs", strings("REGION.3.in.0"));
-        JsonArray conditions = new JsonArray();
-        conditions.add(binary("<", 0));
-        if (!concreteUpperGuard) conditions.add(binary("<=", 4));
-        result.add("pathCondition", conditions);
+        JsonObject wrongActivation = activation("ACT.WRONG.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        attachClosure(wrongOccurrence, closure);
+        attachClosure(wrongActivation, closure);
+        addWitness(wrongOccurrence, "SITE.LATE", 1,
+                nestedFieldPredicate(99));
+        RegionPathWorklist.Result stillDeferred = RegionPathWorklist.plan(
+                Arrays.asList(concrete, wrongOccurrence),
+                Arrays.asList(concreteActivation, wrongActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                stillDeferred.manifest.get("state").getAsString());
+        assertEquals(1, stillDeferred.manifest.getAsJsonArray(
+                "deferredObservations").size());
 
-        JsonArray mappings = new JsonArray();
-        JsonObject lower = mapping("SITE.CLAMP.LOWER", 0);
-        lower.addProperty("policy", "PATH_ASSUMPTION");
-        mappings.add(lower);
-        JsonObject upper = exactVmIfMapping("SITE.CLAMP.UPPER",
-                concreteUpperGuard ? -1 : 1, true,
-                concreteUpperGuard ? 0 : 1);
-        upper.addProperty("policy", concreteUpperGuard
-                ? "EXPLORE" : "PATH_ASSUMPTION");
-        upper.addProperty("pathConditionBaseline", 1);
-        if (!concreteUpperGuard) {
-            upper.add("condition", conditions.get(1).deepCopy());
-        }
-        mappings.add(upper);
-        result.add("branchMappings", mappings);
-        authorizeVmPcMappings(result);
-        return result;
-    }
-
-    private static JsonObject exactVmIfMapping(String site,
-                                               int conditionIndex,
-                                               boolean outcome,
-                                               int conditionCount) {
-        JsonObject mapping = mapping(site, conditionIndex);
-        mapping.addProperty("branchKind", "IF");
-        mapping.addProperty("method", "<example.Producer: int compute(int)>");
-        mapping.addProperty("unitIndex", 6);
-        mapping.addProperty("expression", "i3 <= 4");
-        mapping.addProperty("outcome", outcome);
-        mapping.addProperty("observedOutcome", outcome);
-        mapping.addProperty("mappingPolicy",
-                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
-        mapping.addProperty("vmBranchEventExpected", true);
-        mapping.addProperty("vmBranchEventId", 17);
-        mapping.addProperty("vmOccurrence", 1);
-        mapping.addProperty("vmBranchEventValidated", true);
-        mapping.addProperty("vmBranchEventAuthority",
-                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
-        mapping.addProperty("vmThreadContextId", 7L);
-        mapping.addProperty("vmOwnerJavaThreadId", 11L);
-        mapping.addProperty("vmOwnerOsThreadId", 13L);
-        JsonArray indices = new JsonArray();
-        if (conditionCount == 1) indices.add(1);
-        mapping.add("vmConditionIndices", indices);
-        mapping.addProperty("conditionAuthority", conditionCount == 0
-                ? "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT"
-                : "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
-        return mapping;
-    }
-
-    private static void replaceConditionSymbol(JsonObject summary,
-                                               String symbol) {
-        for (com.google.gson.JsonElement element : summary.getAsJsonArray(
-                "pathCondition")) {
-            element.getAsJsonObject().getAsJsonObject("_left")
-                    .addProperty("_exp", symbol);
-        }
-    }
-
-    private static JsonObject localSymbol(String raw) {
-        JsonObject symbol = new JsonObject();
-        symbol.addProperty("_type", "SymbolExpression");
-        symbol.addProperty("_java_type", "I");
-        symbol.addProperty("_exp", raw);
-        return symbol;
-    }
-
-    private static JsonArray strings(String value) {
-        JsonArray result = new JsonArray();
-        result.add(value);
-        return result;
-    }
-
-    private static JsonArray dynamicBindings(String objectToken,
-                                             int occurrence, String key) {
-        JsonArray result = new JsonArray();
-        JsonObject binding = new JsonObject();
-        binding.addProperty("kind", "DYNAMIC_MAP_ENTRY_FIELD_BINDING");
-        binding.addProperty("baseInputSymbol", "REGION.3.in.0");
-        binding.addProperty("dynamicFieldSymbol",
-                "REGION.3.in.0.field.stable.occ." + occurrence);
-        binding.addProperty("materializationSiteId", "SITE.FIELD");
-        binding.addProperty("materializationOccurrence", occurrence);
-        binding.addProperty("leafOwnerObjectToken", objectToken);
-        JsonObject selector = new JsonObject();
-        selector.addProperty("_type", "ConstExpr");
-        selector.addProperty("_exp", key);
-        binding.add("keyExpression", selector);
-        binding.addProperty("keyExpressionAuthority", "RUNTIME_KEY");
-        binding.addProperty("complete", true);
-        result.add(binding);
-        return result;
-    }
-
-    private static JsonArray mapProjectionBindings(
-            String scope, long mapToken, long elementToken,
-            long outputToken, int index, String operation) {
-        JsonObject binding = new JsonObject();
-        binding.addProperty("kind",
-                "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING");
-        binding.addProperty("baseInputSymbol", "REGION.3.in.0");
-        binding.addProperty("dynamicFieldSymbol",
-                "REGION.3.in.0.field.mapstable.occ." + (index + 1));
-        binding.addProperty("materializationSiteId", "SITE.MAP");
-        binding.addProperty("materializationOccurrence", index + 1);
-        binding.addProperty("fieldSignature", "<example.Value: long expiry>");
-        binding.add("fieldPath", strings("expiry"));
-        binding.addProperty("leafOwnerObjectToken", elementToken);
-        binding.addProperty("objectTokenScope", scope);
-        binding.addProperty("entrySnapshotElementCount", 2);
-        binding.addProperty("outputElementCount", 2);
-        JsonObject selector = new JsonObject();
-        selector.addProperty("kind", "MAP_OUTPUT_ARRAY_INDEX");
-        selector.addProperty("bindingId", "BIND.MAP");
-        selector.addProperty("mapInputPort", "REGION.3.in.0");
-        selector.addProperty("mapInputCell", "<Producer: Map values>");
-        selector.addProperty("outputPort", "REGION.3.out.1");
-        selector.addProperty("outputCell", "<Payload: Value[] values>");
-        selector.addProperty("mapProjectionOperation", operation);
-        selector.addProperty("outputIndex", index);
-        selector.addProperty("elementOccurrence", index + 1);
-        selector.addProperty("declaredFieldOwnerClass", "example.Value");
-        selector.addProperty("declaredFieldType", "long");
-        selector.addProperty("declaredFieldSignature",
-                "<example.Value: long expiry>");
-        selector.addProperty("mapObjectToken", mapToken);
-        selector.addProperty("elementObjectToken", elementToken);
-        selector.addProperty("outputArrayObjectToken", outputToken);
-        selector.addProperty("objectTokenScope", scope);
-        selector.addProperty("complete", true);
-        binding.add("mapProjectionSelector", selector);
-        binding.addProperty("complete", true);
-        JsonArray result = new JsonArray();
-        result.add(binding);
-        return result;
-    }
-
-    private static JsonObject arrayLoad(String arrayId) {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "_array_expr");
-        result.addProperty("_is_load", true);
-        result.addProperty("_arr_str", arrayId);
-        result.add("_index_exp", localSymbol("M_I_INDEX"));
-        result.add("_value_exp", localSymbol("M_I_VALUE"));
-        return result;
-    }
-
-    private static JsonArray engineArrayBindings(String port, String id,
-                                                 long token) {
-        JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 1);
-        binding.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
-        binding.addProperty("inputPort", port);
-        binding.addProperty("inputCell",
-                "<example.Handler: void run(java.lang.Object[])>"
-                        + ".param0:java.lang.Object[]");
-        binding.addProperty("inputJavaType", "java.lang.Object[]");
-        binding.addProperty("inputJavaTypeDescriptor",
-                "[Ljava/lang/Object;");
-        binding.addProperty("symbolizationPrefix", port);
-        binding.addProperty("symbolizationMode",
-                "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX");
-        binding.addProperty("engineArrayId", id);
-        binding.addProperty("engineArrayIdAuthority",
-                "VM_ACTIVE_SYM_ARRAY_ID_V1");
-        binding.addProperty("arrayObjectToken", token);
-        binding.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        binding.addProperty("symbolizationIdentityAuthority",
-                "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        + "EXPRESSION_CAPTURE");
-        binding.addProperty("sameArrayObjectTokenVerified", true);
-        binding.addProperty("captureAuthority",
-                "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION");
-        binding.addProperty("complete", true);
-        JsonArray result = new JsonArray();
-        result.add(binding);
-        return result;
+        JsonObject exactOccurrence = summary("ACT.EXACT.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject exactActivation = activation("ACT.EXACT.OCCURRENCE",
+                RegionCaptureGoal.outputClosure());
+        attachClosure(exactOccurrence, closure);
+        attachClosure(exactActivation, closure);
+        addWitness(exactOccurrence, "SITE.LATE", 2,
+                nestedFieldPredicate(100));
+        RegionPathWorklist.Result witnessed = RegionPathWorklist.plan(
+                Arrays.asList(concrete, wrongOccurrence, exactOccurrence),
+                Arrays.asList(concreteActivation, wrongActivation,
+                        exactActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                witnessed.manifest.get("state").getAsString());
+        assertTrue(witnessed.manifest.getAsJsonArray("gaps").isEmpty());
+        assertFalse(witnessed.manifest.has("deferredObservations"));
     }
 
     private static JsonObject outputClosure(
@@ -500,31 +407,6 @@ public class RegionPathWorklistTest {
         return summary;
     }
 
-    private static JsonObject oneBranchSummary(String activationId,
-                                               String operator,
-                                               boolean outcome,
-                                               int outputValue) {
-        JsonObject result = summary(activationId,
-                RegionCaptureGoal.outputClosure());
-        JsonArray conditions = new JsonArray();
-        conditions.add(binary(operator, 0));
-        result.add("pathCondition", conditions);
-        JsonArray mappings = new JsonArray();
-        JsonObject mapping = mapping("SITE.0", 0);
-        mapping.addProperty("outcome", outcome);
-        mappings.add(mapping);
-        result.add("branchMappings", mappings);
-        authorizeVmPcMappings(result);
-        JsonObject outputs = new JsonObject();
-        JsonObject value = new JsonObject();
-        value.addProperty("_type", "ConstExpr");
-        value.addProperty("_java_type", "I");
-        value.addProperty("_exp", "Y_I_" + outputValue);
-        outputs.add("REGION.3.out.0", value);
-        result.add("outputExpressions", outputs);
-        return result;
-    }
-
     private static void authorizeVmPcMappings(JsonObject summary) {
         JsonArray conditions = summary.getAsJsonArray("pathCondition");
         JsonArray canonical = new JsonArray();
@@ -563,29 +445,6 @@ public class RegionPathWorklistTest {
         summary.add("branchMappings", canonical);
     }
 
-    private static void replaceWitnessOutcomes(
-            JsonObject summary, boolean outcome) {
-        JsonArray replacements = new JsonArray();
-        for (com.google.gson.JsonElement element
-                : summary.getAsJsonArray("branchMappings")) {
-            SummaryBranchMapping mapping = SummaryBranchMapping.fromJson(
-                    element.getAsJsonObject());
-            BranchWitness source = mapping.witness();
-            JsonObject metadata = new JsonObject();
-            metadata.addProperty("predicateNormalization",
-                    source.predicateNormalization());
-            BranchWitness replacement = BranchWitness.vmPc(
-                    source.siteId(), source.method(), source.unitIndex(),
-                    source.occurrence(), outcome,
-                    summary.getAsJsonArray("pathCondition")
-                            .get(mapping.summaryPcIndex()),
-                    source.vmPcIndex(), metadata);
-            replacements.add(SummaryBranchMapping.witnessed(replacement,
-                    mapping.summaryPcIndex(), mapping.policy()).toJson());
-        }
-        summary.add("branchMappings", replacements);
-    }
-
     private static BranchReplayContract replayContract(JsonObject task) {
         return BranchReplayContract.fromJson(task.getAsJsonObject(
                 "replayContract"));
@@ -609,17 +468,28 @@ public class RegionPathWorklistTest {
         return mapping;
     }
 
-    private static JsonObject typedBinary(String operator, String javaType,
-                                          int constant) {
-        JsonObject expression = binary(operator, constant);
-        expression.getAsJsonObject("_left").addProperty("_java_type",
-                javaType);
+    private static void addWitness(JsonObject summary, String site,
+                                   int occurrence, JsonObject predicate) {
+        JsonArray conditions = summary.getAsJsonArray("pathCondition");
+        int conditionIndex = conditions.size();
+        conditions.add(predicate);
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", conditionIndex + 1L);
+        event.addProperty("contextId", 7L);
+        event.addProperty("predicateNormalization", "IDENTITY");
+        BranchWitness witness = BranchWitness.vmPc(
+                site, "<test.Region: void run()>", 9, occurrence, true,
+                predicate, conditionIndex, event);
+        summary.getAsJsonArray("branchMappings").add(
+                SummaryBranchMapping.witnessed(witness, conditionIndex,
+                        SummaryBranchMapping.Policy.EXPLORE).toJson());
+    }
+
+    private static JsonObject nestedFieldPredicate(int constant) {
+        JsonObject expression = binary("<=", constant);
         expression.getAsJsonObject("_left").addProperty("_exp",
-                "M_" + javaType + "_field_REGION.3.in.0");
-        expression.getAsJsonObject("_right").addProperty("_java_type",
-                javaType);
-        expression.getAsJsonObject("_right").addProperty("_exp",
-                "Y_" + javaType + "_" + constant);
+                "M_I_field_REGION.3.in.1.field.payload.value.occ.2_"
+                        + "example/NestedState");
         return expression;
     }
 

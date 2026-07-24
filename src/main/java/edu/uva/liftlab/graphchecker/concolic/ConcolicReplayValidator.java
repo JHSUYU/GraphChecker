@@ -31,10 +31,6 @@ public final class ConcolicReplayValidator {
     private ConcolicReplayValidator() {
     }
 
-    public static JsonObject validate(JsonObject task, JsonObject rawResult) {
-        return validate(task, rawResult, null);
-    }
-
     /**
      * Validates an unforced branch replay and, for an output-closure task,
      * also validates that the replay actually materialized the exact output
@@ -1055,97 +1051,6 @@ public final class ConcolicReplayValidator {
                         "replayScopeRebindingAuthority"))) {
             result.add("INVALID_MAP_PROJECTION_REPLAY_SCOPE_REBINDING");
         }
-    }
-
-    /** Shared admission boundary used by natural-propagation validation. */
-    static List<String> validateDynamicAssignmentsForReplay(
-            JsonArray plannedAssignments, JsonArray appliedAssignments,
-            String activationId) {
-        List<String> result = new ArrayList<>();
-        DynamicAssignmentSet planned = DynamicAssignmentSet.from(
-                plannedAssignments, "PLANNED", activationId);
-        DynamicAssignmentSet applied = DynamicAssignmentSet.from(
-                appliedAssignments, "APPLIED", activationId);
-        result.addAll(planned.problems);
-        result.addAll(applied.problems);
-        Set<String> missing = new LinkedHashSet<>(planned.identities);
-        missing.removeAll(applied.identities);
-        Set<String> extra = new LinkedHashSet<>(applied.identities);
-        extra.removeAll(planned.identities);
-        if (!missing.isEmpty() || !extra.isEmpty()
-                || planned.dynamicCount != applied.dynamicCount) {
-            result.add("DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH:missing="
-                    + missing + ":extra=" + extra);
-        }
-        return result;
-    }
-
-    /**
-     * Compares a projection-manifest model definition with one activation's
-     * replay plan. Candidate replay rewrites activation-local map token scope;
-     * normalize that authorized rebind back to sourceObjectTokenScope while
-     * retaining solver symbol, value, type, authority, and every selector.
-     */
-    static List<String> validateProjectedAssignmentDefinitions(
-            JsonArray manifestAssignments, JsonArray plannedAssignments) {
-        List<String> result = new ArrayList<>();
-        Set<String> manifest = assignmentDefinitionSet(
-                manifestAssignments, "MANIFEST", result);
-        Set<String> planned = assignmentDefinitionSet(
-                plannedAssignments, "PLAN", result);
-        Set<String> missing = new LinkedHashSet<>(manifest);
-        missing.removeAll(planned);
-        Set<String> extra = new LinkedHashSet<>(planned);
-        extra.removeAll(manifest);
-        if (manifestAssignments.size() != plannedAssignments.size()
-                || !missing.isEmpty() || !extra.isEmpty()) {
-            result.add("PROJECTED_MODEL_ASSIGNMENT_DEFINITION_MISMATCH:"
-                    + "missing=" + missing + ":extra=" + extra);
-        }
-        return result;
-    }
-
-    private static Set<String> assignmentDefinitionSet(
-            JsonArray assignments, String source, List<String> problems) {
-        Set<String> result = new LinkedHashSet<>();
-        for (int index = 0; index < assignments.size(); index++) {
-            JsonElement element = assignments.get(index);
-            if (!element.isJsonObject()) {
-                problems.add(source + "_" + index
-                        + ":NON_OBJECT_MODEL_ASSIGNMENT");
-                continue;
-            }
-            JsonObject assignment = element.getAsJsonObject();
-            for (String problem : validateModelAssignment(assignment,
-                    "PLANNED")) {
-                problems.add(source + "_" + index + ":" + problem);
-            }
-            String identity = modelDefinitionIdentity(assignment);
-            if (!result.add(identity)) {
-                problems.add(source + "_" + index
-                        + ":DUPLICATE_MODEL_ASSIGNMENT_DEFINITION");
-            }
-        }
-        return result;
-    }
-
-    private static String modelDefinitionIdentity(JsonObject assignment) {
-        JsonObject normalized = assignment.deepCopy();
-        JsonObject selector = object(normalized,
-                "mapProjectionSelector");
-        if (selector.size() > 0) {
-            String sourceScope = string(selector,
-                    "sourceObjectTokenScope");
-            if (!sourceScope.isEmpty()) {
-                selector.addProperty("objectTokenScope", sourceScope);
-            }
-            selector.remove("sourceObjectTokenScope");
-            selector.remove("replayScopeRebindingAuthority");
-        }
-        StringBuilder result = new StringBuilder();
-        identityComponent(result, string(normalized, "solverSymbol"));
-        identityComponent(result, assignmentIdentity(normalized));
-        return result.toString();
     }
 
     private static boolean exactImmutableMapKey(JsonElement element) {

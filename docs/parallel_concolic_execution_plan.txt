@@ -1,7 +1,7 @@
 GraphChecker 内部 Concolic Path 并行执行设计
 ================================================
 
-状态：实现规格，尚未编码
+状态：已实现；第 24、25 节记录验证与后续健壮性修复
 日期：2026-07-24
 实现对象：后续 xhigh 编码任务
 
@@ -725,6 +725,35 @@ importer 后再删。不能为了行数直接丢掉。
 该收敛预计可以净删约 1,200-1,800 行生产代码，但它必须是并行功能之后的独立
 milestone/commit。
 
+16.1 实现时的 invariant mapping
+
+并行 wave 稳定后逐项核对的结果如下：
+
+    raw schema / activation / region
+        -> ConcolicSummaryImporter.canonicalRuntimeResultSchemaIssue
+           与 activation/region join
+
+    pathQueryKey 与 applied model assignment core
+        -> ConcolicSummaryImporter.replayAdmission
+
+    immutable BranchReplayContract witness prefix/flip
+        -> ConcolicSummaryImporter.validateReplayContractObservation
+
+    normal exit、requested output、relational completeness
+        -> importer 的 output extraction 与 summary completeness
+
+    singleton task/activation/raw/summary artifact identity
+        -> ConcolicPathReplayVerifier，仍是唯一职责
+
+    完整 dynamic selector schema、fresh Map.Entry rebinding、
+    container replay rebinding
+        -> ConcolicReplayValidator，仍是唯一职责
+
+因此本轮不删除 verifier/validator。直接删除会丢掉 Map/array/container replay
+的唯一语义检查，违反“功能正确性优先于行数”。实现只删除无人调用的 validator
+API、scratch artifact hash，以及 shell 对 verifier 结果的字段级重复判断；
+shell 以 verifier 的进程退出状态为准。
+
 
 17. 不在本任务范围内
 --------------------
@@ -932,3 +961,96 @@ Milestone 4：并行度调优与文档
 custom JDK、output closure、heap/Map/array 语义和 SMT composition 都不是这次
 并行化的修改对象。并行只是改变“独立 path task 何时执行”，不能改变“一个 task
 代表什么、如何验证、如何合并”。
+
+
+24. 实施结果（2026-07-24）
+-------------------------
+
+设计及三个代码 milestone 已按独立 commit 完成并推送：
+
+    cdb8b05a  design parallel path workers
+    6f7a55b3  separate frontier planning from solving
+    f8e77c77  explore path frontiers in parallel waves
+    91e2b7c9  remove serial exploration residue
+
+container workload 的 map producer 固定闭合为 48 条路径。不同并行度得到完全相同的
+排序后语义投影
+`[pathCondition, outputExpressions, normalExit, exceptionType]`，SHA-256 均为：
+
+    528a898e933d5d2eab49ed4367ed1b2ae33b6022c4f22d3432cf1b1e2a7652e3
+
+实测结果：
+
+    jobs    container elapsed    final result
+       1    约 870 秒            SAT
+       8    233.56 秒            SAT
+      40    203.35 秒            SAT
+      64    202.77 秒            SAT
+
+jobs=40 与 jobs=64 几乎相同，因为该 workload 单个 wave 最多只有 16 个 pending
+task。默认值因此保持 `nproc`（当前服务器为 40），不硬编码 64。只有一个 pending
+task 的 unreachable-parity 在 jobs=1 与 jobs=40 下均为 92.79 秒，符合 wave
+dependency 的预期；两者均闭合两个 producer 的各 2 条路径并得到 UNSAT。
+
+最后一次 maintained matrix 使用 6 个外层 fixture job、每个 fixture 8 个内部
+concolic worker，在 231.77 秒内全部通过：
+
+    baseline                SAT
+    cross-method-fields     SAT
+    multitype               SAT
+    dependent-scalar        SAT
+    containers              SAT
+    unreachable-parity      UNSAT
+
+multitype 暴露并修复了一处原有过度校验：有界循环的最后一次 guard 可能被 VM
+concretize；当同一 output closure、同一静态 branch site 已存在 immutable symbolic
+witness 时，不再要求最后一次动态 occurrence 自己也生成 predicate。query/flip
+identity 仍包含 occurrence 与 prefix，因此该修复不合并不同 path task。
+
+最终 `mvn -q test` 的 56 个精简 boundary regression 全部通过。custom JDK 没有
+代码 diff；fixture/testworkload 没有被本任务提交。worker 只写私有目录，coordinator
+仍是 aggregate ledger 的唯一 writer，任一 wave 失败时不发布部分结果。
+
+
+25. 复杂字段传播健壮性跟进（2026-07-24）
+----------------------------------------
+
+后续将 `unreachable-parity` 明确增强为复杂控制流、多变量和嵌套
+`object.field` 回归；这是新的 correctness 任务，不改变第 24 节所记录的初始并行
+milestone。RPC 仍只通过两个 shared int field 传播，每个 producer publish 一次，
+consumer 对每个 field read 一次。两个 producer 都读取：
+
+    state.guard.enabled
+    state.metrics.left
+    state.metrics.right
+
+并执行 clamp、短路条件与后置分支。最终 odd output 域是 `{-1,1,3}`，even output
+域是 `{0,2,4}`。
+
+该回归发现并修复三个原有单字段假设：
+
+1. 多个 snapshot leaf 的 static binding id 未包含 base input，发生覆盖。
+2. snapshot importer 只接受 Boolean `M_Z_*`，错误拒绝同一证据链上的 primitive int。
+3. read-only Map entry importer 与 state-base proof 要求一个 observation 恰好只有一个
+   dynamic field，错误地把同一 entry 的三个 exact leaf 判成 ambiguity。
+
+修复后按 `(entryReadObservationId, baseInputSymbol)` 分别闭合每个 leaf；synthetic Map
+state proof 只选择一个稳定 anchor binding，Composer 再在 observation 的完整 binding
+集合中按 dynamicBindingId 精确匹配该 anchor。没有新增 output-closure 版本、worker
+protocol 或 custom-JDK API。
+
+同时修正了 concrete branch bridge 的终态语义：只要仍有 pending task，暂时没有
+normalized predicate 的 output-relevant observation 先进入 `deferredObservations`；
+只有 task 全部终止仍找不到相同 closure、site、occurrence 的 symbolic EXPLORE witness
+时才升级为 blocking gap。不同 occurrence 不再互相覆盖。
+
+实测增强后的 workload：
+
+    jobs    even paths / waves    odd paths / waves    final result
+       1    12 / 12               14 / 14               UNSAT
+      40    12 / 4                14 / 4                UNSAT
+
+四个 existential int roots 与两个 Boolean roots 都进入 composition；四行 Boolean truth
+table 均由 Z3 返回 `unsat`。失败时 coordinator 会打印 manifest/worklist、queryKey 以及
+task-private solver、raw result、import diagnostics、verifier 和 stderr 路径。custom JDK
+仍没有代码修改。
