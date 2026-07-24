@@ -3,8 +3,8 @@
 GraphChecker 从静态数据流、运行时跨 region 证据和逐 region concolic execution 中构造
 `region.in -> region.out` 关系，再沿 region graph 递归组合成一个可直接交给 Z3 的 SMT。
 当前维护的验证矩阵是通用三线程 RPC fixture 及其 cross-method、multitype、
-dependent-scalar、container、unreachable-parity 变体。最后一组要求完整流程生成的
-SMT 由 Z3 判定为 `unsat`。
+dependent-scalar、container，以及四个互补的 `UNREACHABLE` 变体。后者要求完整流程
+生成的 SMT 由 Z3 判定为 `unsat`。
 
 ## 项目定位
 
@@ -166,6 +166,28 @@ array producer 2 cases、map producer 10 cases；两个 Boolean root 的四行 c
 也只读取各 field 一次。完整关系的输出域分别是奇数 `{-1,1,3}` 与偶数 `{0,2,4}`；两个
 Boolean root 之外的四个 `int` field root 保持 existential，因此四行 Boolean truth table
 必须全部由真实组合 SMT/Z3 证明 `unsat`，不能靠 fixture 常量或测试脚本直接判定。
+
+另外三个 `UNREACHABLE` workload 保持相同的 shared-field RPC 边界，只把 producer
+内部的数据传播做深：
+
+- `unreachable-correlated-fields` 从 nested `seed/delta` 计算值，并在一次 publish 中写
+  correlated `left/right`；联合 output closure 必须让两个字段共享同一 relation case，
+  再与独立 `limit` producer 组合。
+- `unreachable-nested-object` 让 Boolean 与两个整数穿过
+  `Envelope -> Payload -> leaf` 和 helper 参数，最终两个 producer 的输出域分别保持
+  odd/even。
+- `unreachable-inherited-alias` 让同一 derived object 经两层 alias helper 传播，同时读取
+  inherited `base` 与 derived `delta`，其 bounded value 永远低于另一个 producer 的 floor。
+
+三个 workload 都先让 producer rendezvous，再用 latch 固定 publish 先后；两个 producer
+终止后才启动 consumer。每个 shared field 只写一次、只读一次，consumer 的读取顺序固定。
+同步等待本身不带 timeout branch，避免把测试协调逻辑误切入 output closure；超时仍由
+harness 的 `join` 负责。
+
+当前没有把“直接通过 shared field 传递对象引用”列为 UNSAT 门禁。对未证明 heap relation
+的对象字段，Composer 会安全地保留 existential over-approximation，因此可能得到 `sat`。
+上述对象测试只在 producer 内验证深字段/alias 传播，RPC 边界仍使用可精确证明的 primitive
+shared field。
 
 ### `region.out`
 
@@ -757,9 +779,9 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
 
 当前实施状态（2026-07-24）：
 
-- Phase 0 `COMPLETED`：配置指定的 custom JDK 已完整构建；六个 maintained workload
-  已经执行真实 concolic campaign 和真实 Z3，结果为五个 `sat`、一个 `unsat`，没有 skip。
-  矩阵使用一次 Maven 构建和六个隔离 workdir 并行执行，shared JAR 在执行前后由 SHA-256
+- Phase 0 `COMPLETED`：配置指定的 custom JDK 已完整构建；九个 maintained workload
+  已经执行真实 concolic campaign 和真实 Z3，结果为五个 `sat`、四个 `unsat`，没有 skip。
+  矩阵使用一次 Maven 构建和九个隔离 workdir 并行执行，shared JAR 在执行前后由 SHA-256
   校验为未改变。
 - joint-output vertical slice `COMPLETED`：`OutputClosureContract` 已成为唯一 writer；
   Planner 按 producer invocation 与 downstream demand 生成 canonical member set，
@@ -812,24 +834,29 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
   paths，四个 Boolean valuation 均由 Z3 判定 `unsat`。concrete observation 现在只由相同
   `closure + site + occurrence` 的 symbolic EXPLORE witness 覆盖，失败 wave 会打印并保留
   exact task artifact。
+- scalar/object UNSAT follow-up `COMPLETED`：新增 correlated joint fields、nested plain
+  object fields 和 inherited same-object alias 三个 fixture。三者都保持 deterministic
+  single-write/single-read shared-field RPC，四个 Boolean valuation 均由真实 Z3 判定
+  `unsat`。其中 correlated producer 的两个 output 在一次 activation 和每个 merged case
+  中共同出现，直接覆盖 multi-output 相关性；runtime shell 先排除
+  `symbolicReady=false` activation 再解析其 closure，避免一个明确不可执行的重复候选阻断
+  同 region 的有效 producer demand。
 - correctness follow-up 后的低风险清理 `COMPLETED`：删除零引用 private helper/constant，
   将三份相同的 JVM descriptor 规范化收敛到既有 primitive semantics authority，并合并
   if/switch 的 exact marker prefix 与 symbolic/concrete 的公共 runtime result 构造。没有
   新增兼容层、schema 或 custom-JDK 分支；边界校验仍留在原 trust boundary。
 - 最终源码已从构建、静态分析、runtime planning、完整 producer campaign、
-  merge/composition 一直执行到真实 Z3；六个隔离 workload 全并行完成，结果为五个
-  `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或增量
-  re-compose 代替门禁。最终日志位于
-  `target/robustness-matrix-logs/20260724T210031Z.2143687`。custom JDK/`third_party`
-  未修改。
+  merge/composition 一直执行到真实 Z3；九个隔离 workload 全并行完成，结果为五个
+  `sat/reachable`、四个 `unsat/unreachable`，0 failure，没有用旧 artifact 或增量
+  re-compose 代替门禁。custom JDK/`third_party` 未修改。
 - 全量 typed internal pipeline、`ArtifactStore`/inspect CLI、planner 大拆类以及
   45,000–55,000 行宏观目标统一标记为长期 `DEFERRED`，不是本轮正确性里程碑。实测没有
   净简化收益的重写不会为了“完成阶段”而强行加入；若未来重新启动，仍须遵守本节的
-  trust-boundary 与六-fixture 门禁。
+  trust-boundary 与九-fixture 门禁。
 
 #### Phase 0：冻结行为与端到端基线
 
-- 记录六个 maintained workload 的 candidate reachability 和直接 Z3 结果。
+- 记录九个 maintained workload 的 candidate reachability 和直接 Z3 结果。
 - 保存 normalized root-input catalog、truth table、relation case counts 和 terminal manifest。
 - 建立 semantic diff：比较 SAT/UNSAT、root sorts、producer bindings 和 relation cases，
   不要求 JSON 字节、summary id 或非语义字段完全相同。
@@ -911,7 +938,7 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
 #### Phase 7：切换与删除
 
 - `REJECTED`：长期保留新旧 writer 做 shadow-run；这会违反唯一 authority。改用冻结
-  semantic baseline、boundary regression 和六-fixture 真实 Z3 matrix。
+  semantic baseline、boundary regression 和九-fixture 真实 Z3 matrix。
 - `COMPLETED`：每个 authority 切换后运行 full maintained matrix，再删除旧 schema、
   fallback、mirror、private parser 和兼容 shell reader。
 - `COMPLETED`：所有 operational reader 已切换到 schema-v1 `outputClosure`，旧 artifact
@@ -929,10 +956,10 @@ mvn -q test
 # 三个核心三线程 workload
 experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
 
-# 全部六个 maintained workload
+# 全部九个 maintained workload
 experiments/generic/three-thread-rpc/run_robustness_matrix.sh all
 
-# 推荐：只构建一次，六个 workload 使用隔离目录和日志全部并行
+# 推荐：只构建一次，九个 workload 使用隔离目录和日志全部并行
 experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 ```
 
@@ -946,6 +973,9 @@ experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 | `dependent-scalar` | `REACHABLE` | `sat` |
 | `containers` | `REACHABLE` | `sat` |
 | `unreachable-parity` | `UNREACHABLE` | `unsat` |
+| `unreachable-correlated-fields` | `UNREACHABLE` | `unsat` |
+| `unreachable-nested-object` | `UNREACHABLE` | `unsat` |
+| `unreachable-inherited-alias` | `UNREACHABLE` | `unsat` |
 
 fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT gate；
 `experiments/generic/test_workflow.sh` 使用 dry-run/fake Z3，也不能替代上述矩阵。
@@ -965,9 +995,9 @@ fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT ga
   completeness/empty 和 joint atomicity；
 - 两处 Java/SMT lowering 各自使用少量表驱动测试覆盖 integral、String/null、FP 和
   unsupported fail-closed；
-- 删除七个仅重复执行 workload main 的 fixture JUnit，但绝不删除或改动六个 maintained
+- 删除七个仅重复执行 workload main 的 fixture JUnit，但绝不删除或改动九个 maintained
   workload main、配置和实际 Z3 matrix；
-- 每批合并或删测前后都运行六 fixture，一直保持五个 `sat`、一个 `unsat`。
+- 每批合并或删测前后都运行九 fixture，一直保持五个 `sat`、四个 `unsat`。
 
 普通测试的可复现计数命令是：
 
@@ -993,14 +1023,14 @@ rg -g '*.java' '@Test\b' src/test | wc -l
 - identity/hash 改动必须先有 golden semantic identity 测试，再触及 worklist、summary id 或
   composition binding。
 - canonical cleanup 不改变 custom JDK、SMT emitter 或 terminal manifest；identity 的变化
-  只允许来自 canonical output demand，并由 worklist/merge/composition boundary test 与六
+  只允许来自 canonical output demand，并由 worklist/merge/composition boundary test 与九
   fixture 的真实 Z3 结果共同证明。
 
 ### 完成定义
 
 本轮 joint-output authority cutover 与 correctness-preserving cleanup 完成必须同时满足：
 
-- 六个 maintained workload 保持上述五个 `sat` 和一个 `unsat`；
+- 九个 maintained workload 保持上述五个 `sat` 和四个 `unsat`；
 - single-output 是 multi-output contract 的单 member 情况，不再有独立运行路径；
 - Java 与 shell operational path 只读写 canonical `outputClosure`，旧 singular 字段只能在
   codec 的拒绝列表和迁移说明中出现；
@@ -1013,7 +1043,7 @@ rg -g '*.java' '@Test\b' src/test | wc -l
 
 全量 typed internal pipeline、JSON 只在 artifact 边界、统一 `ArtifactStore` CLI 和
 45,000–55,000 行目标属于长期架构方向，不再伪装成本轮完成条件。它们只有在能替换现有
-代码、关闭具体正确性缺口并通过同一六-fixture 门禁时才重新进入实施计划；单纯拆文件、
+代码、关闭具体正确性缺口并通过同一九-fixture 门禁时才重新进入实施计划；单纯拆文件、
 搬 JSON 或增加 wrapper 不算进展。
 
 ## TODO：用自然 replay 将候选升级为可信结果

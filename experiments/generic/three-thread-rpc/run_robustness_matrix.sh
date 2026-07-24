@@ -17,9 +17,10 @@ usage() {
 Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [MODE]
 
   core  Run baseline, cross-method-fields, and multitype (default).
-  all   Also run dependent-scalar, containers, and unreachable-parity.
+  all   Also run dependent-scalar, containers, and all UNSAT workloads.
   baseline | cross-method-fields | multitype | dependent-scalar | containers |
-  unreachable-parity
+  unreachable-parity | unreachable-correlated-fields |
+  unreachable-nested-object | unreachable-inherited-alias
         Run one named workload. This is useful for an exact post-fix gate.
 
 Each entry runs the fixture runner's clean and candidate commands, invokes Z3
@@ -746,6 +747,108 @@ validate_unreachable_parity_producer_artifacts() {
     || die "unreachable-parity lost its exact odd/even container relations"
 }
 
+validate_two_boolean_unsat_report() {
+  local label=$1
+  local reach_report=$2
+  local integer_roots=$3
+
+  jq -e --argjson integerRoots "${integer_roots}" '
+    .state == "CANDIDATE_READY"
+    and .trustState == "CANDIDATE_ONLY"
+    and .reachability == "UNREACHABLE"
+    and (.rootBooleanInputs | length) == 2
+    and all(.rootBooleanInputs[]; .javaTypeDescriptor == "Z")
+    and (.existentialNonBooleanRootInputs | length) == $integerRoots
+    and all(.existentialNonBooleanRootInputs[];
+      .javaTypeDescriptor == "I")
+    and (.truthTable | length) == 4
+    and all(.truthTable[];
+      .solverStatus == "unsat" and .reachesBug == false)
+    and .reachConditionSmtLib == "false"
+  ' "${reach_report}" >/dev/null \
+    || die "${label} was not proved unreachable for all Boolean roots"
+}
+
+validate_scalar_unsat_producer_artifacts() {
+  local label=$1
+  local work_root=$2
+  local campaign_root="${work_root}/producer-campaign"
+  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local composition="${work_root}/candidate/candidate_composition_manifest.json"
+  local expected_bindings=2
+  local -a path_closures merged_summaries
+
+  [[ "${label}" == "unreachable-correlated-fields" ]] \
+    && expected_bindings=3
+  [[ -d "${campaign_root}" ]] \
+    || die "${label} producer campaign not found: ${campaign_root}"
+  require_file "${label} activation plan" "${activation_plan}"
+  require_file "${label} composition manifest" "${composition}"
+  mapfile -t path_closures < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_closure.json | sort)
+  mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
+  [[ ${#path_closures[@]} -eq 2 ]] \
+    || die "${label} expected two producer path closures"
+  [[ ${#merged_summaries[@]} -eq 2 ]] \
+    || die "${label} expected two producer guarded merges"
+
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .state == "CLOSED"
+      and .pendingTaskCount == 0
+      and (.gaps | length) == 0
+      and .observedPathCount > 1)
+  ' "${path_closures[@]}" >/dev/null \
+    || die "${label} producer path closure is incomplete"
+
+  jq -e -s "${output_closure_helpers}"'
+    length == 2
+    and all(.[];
+      .relationallyComplete == true
+      and .regionRelation.kind == "GUARDED_PATH_MERGE"
+      and .regionRelation.complete == true
+      and .regionRelation.pathClosureState == "CLOSED"
+      and .regionRelation.caseCount > 1
+      and .regionRelation.caseCount == (.regionRelation.cases | length)
+      and (output_members | map(.output.portId) | sort) as $ports
+      | all(.regionRelation.cases[];
+          (.outputExpressions | keys | sort) == $ports))
+  ' "${merged_summaries[@]}" >/dev/null \
+    || die "${label} producer relations are not complete guarded merges"
+
+  jq -e --argjson expected "${expected_bindings}" '
+    (.includedSummaries | length) == 2
+    and (.resolvedEdgeBindings | length) == $expected
+    and all(.resolvedEdgeBindings[];
+      .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+      and .binding.fromOutputCell == .binding.toInputCell
+      and .binding.objectIdentityConfirmed == true
+      and .binding.orderConfirmed == true
+      and .binding.writerOccurrence == 1)
+  ' "${composition}" >/dev/null \
+    || die "${label} lost its one-write shared-field producer bindings"
+
+  if [[ "${label}" == "unreachable-correlated-fields" ]]; then
+    jq -e -s "${output_closure_helpers}"'
+      [.[] | select(
+        .captureGoal.kind == "OUTPUT_CLOSURE"
+        and .replayable == true
+        and .symbolicReady == true)] as $producers
+      | ($producers | length) == 2
+      and ([$producers[] | output_members | length] | sort) == [1, 2]
+      and any($producers[];
+        ([output_members[].output.cell] | sort)
+          == ([
+            "<edu.uva.liftlab.graphchecker.fixtures.CorrelatedFieldsUnreachableThreeThreadWorkload$RpcBus: int left>",
+            "<edu.uva.liftlab.graphchecker.fixtures.CorrelatedFieldsUnreachableThreeThreadWorkload$RpcBus: int right>"
+          ] | sort))
+    ' "${activation_plan}" >/dev/null \
+      || die "${label} did not preserve the joint left/right output demand"
+  fi
+}
+
 validate_semantic_profile() {
   local label=$1
   local smt=$2
@@ -971,6 +1074,42 @@ validate_semantic_profile() {
         || die "unreachable-parity lost guarded container composition evidence"
       validate_unreachable_parity_producer_artifacts "${work_root}"
       ;;
+    unreachable-correlated-fields)
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 2
+      jq -e '
+        ([.existentialNonBooleanRootInputs[].cell] | sort) as $cells
+        | ($cells | length) == 2
+        and any($cells[]; endswith("#field:numeric#field:seed"))
+        and any($cells[]; endswith("#field:numeric#field:delta"))
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its nested seed/delta roots"
+      validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
+      ;;
+    unreachable-nested-object)
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 4
+      jq -e '
+        ([.rootBooleanInputs[].cell] | length) == 2
+        and all(.rootBooleanInputs[];
+          .cell | endswith("#field:enabled"))
+        and ([.existentialNonBooleanRootInputs[].cell
+          | select(endswith("#field:base"))] | length) == 2
+        and ([.existentialNonBooleanRootInputs[].cell
+          | select(endswith("#field:adjustment"))] | length) == 2
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its nested object-field roots"
+      validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
+      ;;
+    unreachable-inherited-alias)
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 2
+      jq -e '
+        ([.existentialNonBooleanRootInputs[].cell] | sort) as $cells
+        | ($cells | length) == 2
+        and any($cells[]; endswith(" int base>"))
+        and any($cells[]; endswith(" int delta>"))
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its inherited same-object field roots"
+      validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
+      ;;
     *) die "no semantic profile for matrix label: ${label}" ;;
   esac
 }
@@ -1106,7 +1245,7 @@ run_case() {
 mode=${1:-core}
 [[ $# -le 1 ]] || die "expected at most one mode argument"
 case "${mode}" in
-  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity) ;;
+  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias) ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; die "unknown matrix mode: ${mode}" ;;
 esac
@@ -1131,10 +1270,14 @@ case "${mode}" in
     ;;
   all)
     labels=(baseline cross-method-fields multitype dependent-scalar containers \
-      unreachable-parity)
+      unreachable-parity unreachable-correlated-fields \
+      unreachable-nested-object unreachable-inherited-alias)
     configs=(workflow.properties cross-method-fields/workflow.properties \
       multitype/workflow.properties dependent-scalar/workflow.properties \
-      containers/workflow.properties unreachable-parity/workflow.properties)
+      containers/workflow.properties unreachable-parity/workflow.properties \
+      unreachable-correlated-fields/workflow.properties \
+      unreachable-nested-object/workflow.properties \
+      unreachable-inherited-alias/workflow.properties)
     ;;
   baseline)
     labels=(baseline)
@@ -1159,6 +1302,18 @@ case "${mode}" in
   unreachable-parity)
     labels=(unreachable-parity)
     configs=(unreachable-parity/workflow.properties)
+    ;;
+  unreachable-correlated-fields)
+    labels=(unreachable-correlated-fields)
+    configs=(unreachable-correlated-fields/workflow.properties)
+    ;;
+  unreachable-nested-object)
+    labels=(unreachable-nested-object)
+    configs=(unreachable-nested-object/workflow.properties)
+    ;;
+  unreachable-inherited-alias)
+    labels=(unreachable-inherited-alias)
+    configs=(unreachable-inherited-alias/workflow.properties)
     ;;
 esac
 

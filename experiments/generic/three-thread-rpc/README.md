@@ -188,6 +188,35 @@ values to be equal. None of the four Boolean root valuations can reach it, so
 the generated candidate SMT and independently invoked Z3 must both report
 `UNREACHABLE`/`unsat`; the fixture and scripts contain no handwritten
 reachability formula or expected-SMT shortcut.
+
+Three scalar shared-field UNSAT profiles cover object propagation without
+introducing a second RPC model:
+
+- `unreachable-correlated-fields/` publishes correlated `left` and `right`
+  fields in one producer call. They must remain one joint output closure and
+  share every relation-case selector; an independent producer publishes
+  `limit`.
+- `unreachable-nested-object/` carries Boolean and integer roots through
+  `Envelope -> Payload -> leaf` fields and helper parameters before publishing
+  disjoint odd/even scalar outputs.
+- `unreachable-inherited-alias/` resolves the same derived object through two
+  helper aliases, then combines an inherited field with a derived field before
+  publishing a bounded value below an independent floor.
+
+These workloads use the same deterministic protocol as the maintained RPC
+fixtures. Both producers rendezvous, the first publisher signals the second,
+the harness waits for both producers to terminate, and only then starts the
+consumer. Every shared field is written once and read once in a fixed order.
+Synchronization uses unconditional latch waits so timeout-control branches do
+not become part of a producer's symbolic output slice; timeout protection
+remains at the harness `join` boundary.
+
+Publishing a direct object reference is deliberately not an UNSAT gate yet.
+The current scalar composer safely leaves unproved fields of such a reference
+existential, which can yield `sat`; the object-internal tests above instead
+prove deep field propagation inside a producer and cross the RPC boundary only
+through exact primitive shared fields.
+
 ## Core end-to-end robustness gate
 
 The normal robustness gate is deliberately limited to these three concrete
@@ -225,11 +254,13 @@ catalog and truth-table profile. `containers` additionally checks exact
 a 10-case map relation, Java `int` wrap, schema-3 witness/context separation,
 and input-only unforced producer-path replay. Its two Boolean roots produce four
 `sat` rows because `input1` and `input2` remain existential in each row.
-`unreachable-parity` additionally requires two closed
-two-case producer relations, the exact odd/even output images, zero satisfying
-rows, four unsatisfying rows, and direct Z3 `unsat`. Run all six maintained
-profiles with `run_robustness_matrix.sh all`. Unit tests are not run by this
-command.
+`unreachable-parity` additionally requires two closed multi-case producer
+relations, the exact odd/even output images, zero satisfying rows, four
+unsatisfying rows, and direct Z3 `unsat`. The three scalar object-field UNSAT
+profiles require the same four unsatisfying rows; the correlated-fields profile
+also checks that its two outputs remain one atomic relation. Run all nine
+maintained profiles with `run_robustness_matrix.sh all`. Unit tests are not run
+by this command.
 
 ## Completed: one binary-branch replay authority
 
@@ -259,9 +290,9 @@ witness rather than serialized a second time. Malformed witnesses and duplicate
 branch-event identities fail closed. Multiway `switch` remains a separate
 successor-aware observation.
 
-All six matrix profiles pass this protocol through candidate SMT generation,
-independent Z3 checking, and their exact expected reach profiles; one profile
-is intentionally unreachable and therefore expects Z3 `unsat`.
+All nine matrix profiles pass this protocol through candidate SMT generation,
+independent Z3 checking, and their expected semantic reach profiles; four
+profiles are intentionally unreachable and therefore expect Z3 `unsat`.
 
 ## TODO: promote a candidate with natural replay
 

@@ -211,14 +211,15 @@ runtime_channel_rows() {
       else $terminalRegions[0] end) as $terminalRegion
     | $activations[] as $activation
     | select($activation.captureGoal.kind == "OUTPUT_CLOSURE")
+    | select(
+        $activation.replayable == true
+        and $activation.symbolicReady == true)
     | ($activation | output_demand_key) as $outputDemandKey
     | ($activation | output_closure_fingerprint)
         as $outputClosureFingerprint
     | ($activation | output_members) as $output
     | select(
-        $activation.replayable == true
-        and $activation.symbolicReady == true
-        and ($output.cell
+        ($output.cell
             | type == "string" and length > 0))
     | $activation.edgeBindings[]? as $edge
     | select(

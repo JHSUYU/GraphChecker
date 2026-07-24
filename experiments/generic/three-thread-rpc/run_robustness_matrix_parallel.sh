@@ -5,7 +5,7 @@ set -uo pipefail
 fixture_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker_dir=$(cd "${fixture_dir}/../../.." && pwd -P)
 matrix="${fixture_dir}/run_robustness_matrix.sh"
-jobs=${GRAPH_CHECKER_MATRIX_JOBS:-6}
+jobs=${GRAPH_CHECKER_MATRIX_JOBS:-9}
 
 die() {
   echo "[three-thread-rpc-parallel] $*" >&2
@@ -21,15 +21,16 @@ Usage:
 Builds GraphChecker exactly once, then runs independent workload directories
 in bounded parallel batches. PROFILE is one of:
   baseline cross-method-fields multitype dependent-scalar containers
-  unreachable-parity
+  unreachable-parity unreachable-correlated-fields
+  unreachable-nested-object unreachable-inherited-alias
 
-Set GRAPH_CHECKER_MATRIX_JOBS to control parallelism (default: 6).
+Set GRAPH_CHECKER_MATRIX_JOBS to control parallelism (default: 9).
 EOF
 }
 
 valid_profile() {
   case "$1" in
-    baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity)
+    baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias)
       return 0
       ;;
     *)
@@ -47,7 +48,7 @@ config_for() {
 
 [[ "${jobs}" =~ ^[1-9][0-9]*$ ]] \
   || die "GRAPH_CHECKER_MATRIX_JOBS must be a positive integer"
-(( jobs <= 6 )) || die "GRAPH_CHECKER_MATRIX_JOBS must not exceed 6"
+(( jobs <= 9 )) || die "GRAPH_CHECKER_MATRIX_JOBS must not exceed 9"
 [[ -x "${matrix}" ]] || die "matrix runner is not executable: ${matrix}"
 command -v mvn >/dev/null 2>&1 || die "mvn is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
@@ -61,7 +62,8 @@ esac
 
 if [[ $# -eq 0 || $# -eq 1 && "${1:-}" == "all" ]]; then
   profiles=(baseline cross-method-fields multitype dependent-scalar \
-    containers unreachable-parity)
+    containers unreachable-parity unreachable-correlated-fields \
+    unreachable-nested-object unreachable-inherited-alias)
 elif [[ $# -eq 1 && "$1" == "core" ]]; then
   profiles=(baseline cross-method-fields multitype)
 else
