@@ -801,8 +801,8 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
   一次明确授权的 `cross-method-fields` 重构把 Producer A 从 110 cases / 109 replays 缩成
   4 cases / 3 replays，并新增同一 invocation 的 `a/aWitness` 联合输出、完整 case keyset 和
   shared-selector 真正端到端门禁；最终 truth table 不变且真实 Z3 为 `sat`，本机完整耗时由
-  约 61 分钟降到 2 分 49 秒。生产 Java 当前为 81,516 行；相对 84,166 行阶段起点累计
-  净减 2,650 行，也比 81,594 行冻结基线少 78 行。除上述 authority cutover 外，已删除
+  约 61 分钟降到 2 分 49 秒。生产 Java 当前为 81,084 行；相对 84,166 行阶段起点累计
+  净减 3,082 行，也比 81,594 行冻结基线少 510 行。除上述 authority cutover 外，已删除
   Replay 派生布尔/计数镜像、Composer 三个零消费者 catalog、Importer 纯 dead helper，
   同时保留原始 failure codes、SMT assertion 和 summary hash。
 - 并行后的 robustness follow-up `COMPLETED`：增强后的 `unreachable-parity` 在不改变
@@ -812,11 +812,15 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
   paths，四个 Boolean valuation 均由 Z3 判定 `unsat`。concrete observation 现在只由相同
   `closure + site + occurrence` 的 symbolic EXPLORE witness 覆盖，失败 wave 会打印并保留
   exact task artifact。
+- correctness follow-up 后的低风险清理 `COMPLETED`：删除零引用 private helper/constant，
+  将三份相同的 JVM descriptor 规范化收敛到既有 primitive semantics authority，并合并
+  if/switch 的 exact marker prefix 与 symbolic/concrete 的公共 runtime result 构造。没有
+  新增兼容层、schema 或 custom-JDK 分支；边界校验仍留在原 trust boundary。
 - 最终源码已从构建、静态分析、runtime planning、完整 producer campaign、
   merge/composition 一直执行到真实 Z3；六个隔离 workload 全并行完成，结果为五个
   `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或增量
   re-compose 代替门禁。最终日志位于
-  `target/robustness-matrix-logs/20260724T062900Z.1366357`。custom JDK/`third_party`
+  `target/robustness-matrix-logs/20260724T210031Z.2143687`。custom JDK/`third_party`
   未修改。
 - 全量 typed internal pipeline、`ArtifactStore`/inspect CLI、planner 大拆类以及
   45,000–55,000 行宏观目标统一标记为长期 `DEFERRED`，不是本轮正确性里程碑。实测没有
