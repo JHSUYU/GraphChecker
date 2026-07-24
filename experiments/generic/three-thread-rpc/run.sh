@@ -154,15 +154,18 @@ runtime_channel_rows() {
     def canonical_identity:
       canonicalize | tojson | @base64;
     def output_member_rows:
-      if has("outputClosure")
-      then .outputClosure.members[]?
-      else {
-        output: .requestedOutput?,
-        slice: .requestedOutputSlice?
-      }
-      end
-      | select(type == "object"
-          and (.output | type) == "object");
+      if (.outputClosure | type) == "object"
+          and .outputClosure.schemaVersion == 1
+          and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
+          and (.outputClosure.members | type) == "array"
+          and (.outputClosure.members | length) > 0
+          and all(.outputClosure.members[];
+            (type == "object")
+            and (.output | type) == "object"
+            and (.slice | type) == "object")
+      then .outputClosure.members[]
+      else error("missing or malformed canonical outputClosure")
+      end;
     def output_members:
       output_member_rows | .output
       | select(type == "object");
@@ -176,7 +179,7 @@ runtime_channel_rows() {
         outputs: ([output_member_rows
           | .output
           | {
-              portId: (.portId // .symbol // ""),
+              portId: (.portId // ""),
               cell: (.cell // ""),
               kind: (.kind // ""),
               javaTypeDescriptor: (.javaTypeDescriptor // "")
@@ -188,21 +191,7 @@ runtime_channel_rows() {
       if (.outputClosureFingerprint | type) == "string"
           and (.outputClosureFingerprint | length) > 0
       then .outputClosureFingerprint
-      elif has("outputClosure")
-      then .outputClosure | canonical_identity
-      else {
-        producer: {
-          regionId: .regionId,
-          regionInstanceId: .regionInstanceId,
-          rootCallId: .rootCallId
-        },
-        members: [output_member_rows],
-        requestedOutputCapture: (.requestedOutputCapture // []),
-        requestedOutputCaptureRequired:
-          (.requestedOutputCaptureRequired // false),
-        requestedOutputCaptureComplete:
-          (.requestedOutputCaptureComplete // false)
-      } | canonical_identity
+      else .outputClosure | canonical_identity
       end;
 
     . as $activations
@@ -220,13 +209,13 @@ runtime_channel_rows() {
         error("runtime read-from graph has no unique terminal target region")
       else $terminalRegions[0] end) as $terminalRegion
     | $activations[] as $activation
+    | select($activation.captureGoal.kind == "OUTPUT_CLOSURE")
     | ($activation | output_demand_key) as $outputDemandKey
     | ($activation | output_closure_fingerprint)
         as $outputClosureFingerprint
     | ($activation | output_members) as $output
     | select(
-        $activation.captureGoal.kind == "OUTPUT_CLOSURE"
-        and $activation.replayable == true
+        $activation.replayable == true
         and $activation.symbolicReady == true
         and ($output.cell
             | type == "string" and length > 0))
@@ -482,18 +471,25 @@ scheduled_activation() {
     --arg region "${region}" --arg sourceActivation "${source_activation}" \
     --arg fromCell "${from_cell}" '
     def output_members:
-      if has("outputClosure")
-      then .outputClosure.members[]?.output
-      else .requestedOutput?
-      end
-      | select(type == "object");
+      if (.outputClosure | type) == "object"
+          and .outputClosure.schemaVersion == 1
+          and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
+          and (.outputClosure.members | type) == "array"
+          and (.outputClosure.members | length) > 0
+          and all(.outputClosure.members[];
+            (type == "object")
+            and (.output | type) == "object"
+            and (.slice | type) == "object")
+      then .outputClosure.members[].output
+      else error("missing or malformed canonical outputClosure")
+      end;
 
     select(
       .activationBundleMemberRole == "PRIMARY"
       and .activationId == $sourceActivation
       and .regionId == $region
-      and .captureGoal.kind == "OUTPUT_CLOSURE"
-      and any(output_members; .cell == $fromCell))
+      and .captureGoal.kind == "OUTPUT_CLOSURE")
+    | select(any(output_members; .cell == $fromCell))
     | .activationId
   ' "${schedule}/scheduled_activation_plan.jsonl")
   [[ ${#matches[@]} -eq 1 ]] || die \

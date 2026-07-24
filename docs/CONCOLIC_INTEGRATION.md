@@ -180,9 +180,11 @@ declaration authority; the scheduler re-derives executable `materializations`
 from those declarations, so pre-existing materializations cannot authorize
 themselves. A seed capture contains no forced branch.
 
-Every output closure must explicitly carry
-`requestedOutputCaptureComplete=true`. A stale singular template or
-occurrence `0` cannot bypass that gate.
+Every output activation must carry the canonical schema-v1 `outputClosure`.
+Each demanded member owns its own slice and capture ledger; when capture is
+required that member must declare both `captureBindingsRequired=true` and
+`captureBindingsComplete=true`. A stale singular `requestedOutput*` template,
+an incomplete member, or occurrence `0` cannot bypass that gate.
 Failure leaves `schedulerReady=false` and `symbolicReady=false`.
 
 The importer rejects relational completeness unless every slice input has a
@@ -201,7 +203,43 @@ A representative witnessed branch row is:
   "regionId": "REGION.17",
   "activationId": "ACT.OUTPUT.<stable>",
   "captureGoal": {"kind": "OUTPUT_CLOSURE"},
-  "requestedOutput": {"portId": "REGION.17.out.0"},
+  "outputClosure": {
+    "schemaVersion": 1,
+    "kind": "OUTPUT_CLOSURE_CONTRACT",
+    "producer": {
+      "regionId": "REGION.17",
+      "regionInstanceId": "REGION.17@test#call7",
+      "rootCallId": 7
+    },
+    "members": [{
+      "output": {
+        "portId": "REGION.17.out.0",
+        "cell": "<example.Region: int value>",
+        "kind": "SINK_STATE",
+        "javaTypeDescriptor": "I",
+        "selectionAuthority": "CONFIRMED_READ_FROM_EDGE"
+      },
+      "slice": {
+        "inputPorts": ["REGION.17.in.0"],
+        "sites": ["<example.Region: void run()>#u12"],
+        "staticSites": ["<example.Region: void run()>#u12"],
+        "methods": ["<example.Region: void run()>"],
+        "causalEdgeIds": ["DF.17"],
+        "captureBindingsRequired": true,
+        "captureBindingsComplete": true,
+        "captureBindings": [{
+          "captureKind": "FIELD_ASSIGNMENT_RHS",
+          "captureBindingId": "REGION.17.out.0.capture.0",
+          "outputPort": "REGION.17.out.0",
+          "outputCell": "<example.Region: int value>",
+          "method": "<example.Region: void run()>",
+          "siteId": "<example.Region: void run()>#u12",
+          "unitIndex": 12,
+          "occurrence": 1
+        }]
+      }
+    }]
+  },
   "pathCondition": [{"_type": "BinaryExpression"}],
   "branchMappings": [
     {
@@ -223,7 +261,13 @@ A representative witnessed branch row is:
       "policy": "EXPLORE"
     }
   ],
-  "outputExpressions": {},
+  "outputExpressions": {
+    "REGION.17.out.0": {
+      "_type": "ConstExpr",
+      "_java_type": "I",
+      "_exp": "Y_I_17"
+    }
+  },
   "heapStateInitializers": [],
   "heapEffects": [],
   "relationallyComplete": true
@@ -284,9 +328,10 @@ suffixPolicy  := DROP_SOURCE_SUFFIX
 `SolverPathContext` separately retains positioned `_array_expr` and
 `MethodExpression` constraints before the selected branch. Both values are
 immutable typed JSON without a self-hash. The stable task key is computed from
-their canonical content, requested output, and semantic branch identity; it
-excludes activation IDs. Terminal SAT/UNSAT/materialization records prevent
-duplicate work. Unwitnessed Boolean conditions are gaps.
+their canonical content, the output demand key, the full closure fingerprint,
+and semantic branch identity; it excludes dynamic activation IDs. Terminal
+SAT/UNSAT/materialization records prevent duplicate work. Unwitnessed Boolean
+conditions are gaps.
 
 ## 8. Producer constraint solve and replay
 
@@ -313,8 +358,9 @@ candidate query because the maintained workflow performs no target replay.
 
 ## 9. Guarded merging
 
-`RegionSummaryMerger` groups path summaries by region and requested output.
-Each case carries its own path-condition guard, output expressions, heap
+`RegionSummaryMerger` groups path summaries by exact producer invocation,
+canonical output demand, and closure fingerprint. Each case carries its own
+path-condition guard, the complete demanded output-expression set, heap
 initializers, and heap effects. The merge is complete only when the path
 worklist itself is closed without gaps.
 

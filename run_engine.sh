@@ -720,7 +720,8 @@ debug_merge_artifacts() {
     select(type == "object")
     | (.regionRelation // {}) as $relation
     | {regionId,
-       requestedOutput: ((.requestedOutput // {}) | {portId, cell, kind}),
+       outputs: [(.outputClosure.members[]?.output // empty)
+         | {portId, cell, kind}],
        relation: {kind: ($relation.kind // ""),
          complete: ($relation.complete // false),
          caseCount: ($relation.caseCount // (($relation.cases // []) | length)),
