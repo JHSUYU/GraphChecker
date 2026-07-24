@@ -270,12 +270,6 @@ public final class ConcolicSmtComposer {
         manifest.add("unsupportedExpressions",
                 GSON.toJsonTree(emitter.unsupported));
         manifest.add("unboundPorts", GSON.toJsonTree(emitter.unboundPorts));
-        manifest.add("runtimeBoundedMapSnapshots",
-                emitter.runtimeBoundedMapSnapshots.deepCopy());
-        manifest.add("exactCausalInputAliases",
-                emitter.exactCausalInputAliases.deepCopy());
-        manifest.add("opaqueComputedMapKeys",
-                emitter.opaqueComputedMapKeys.deepCopy());
         manifest.add("caseProjectionCatalog",
                 emitter.caseProjectionCatalog.deepCopy());
         boolean structurallyComplete = missingSummaries.isEmpty()
@@ -1614,9 +1608,6 @@ public final class ConcolicSmtComposer {
         private boolean caseProjectionCatalogComplete = true;
         private int unknownCounter;
         private int assertionCount;
-        private final JsonArray runtimeBoundedMapSnapshots = new JsonArray();
-        private final JsonArray exactCausalInputAliases = new JsonArray();
-        private final JsonArray opaqueComputedMapKeys = new JsonArray();
         private String currentGuard = "";
         private String currentSymbolScope = "global";
         private CaseProjectionCapture currentCaseProjection;
@@ -4810,17 +4801,6 @@ public final class ConcolicSmtComposer {
                 assertNamed("finite_map_snapshot_exact_" + id,
                         "(= " + portName(statePort) + " " + exactState
                                 + ")");
-                JsonObject catalog = new JsonObject();
-                catalog.addProperty("snapshotId", id);
-                catalog.addProperty("regionId", region);
-                catalog.addProperty("statePort", rawStatePort);
-                catalog.addProperty("runtimeBoundedMapCardinality",
-                        cardinality);
-                catalog.addProperty("objectTokenScope", scope);
-                catalog.addProperty("authority", string(snapshot,
-                        "authority"));
-                catalog.addProperty("guarded", !currentGuard.isEmpty());
-                runtimeBoundedMapSnapshots.add(catalog);
             }
         }
 
@@ -7212,33 +7192,11 @@ public final class ConcolicSmtComposer {
                     String formula = "(= " + from.text + " "
                             + to.text + ")";
                     String label = "exact_causal_input_alias_"
-                            + exactCausalInputAliases.size();
+                            + (emittedExactCausalInputAliasKeys.size() - 1);
                     assertNamed(label, formula);
                     addAutomaticRelationship(label,
                             "STATIC_EXACT_CAUSAL_SCALAR_INPUT_ALIAS",
                             formula, source, target);
-
-                    JsonObject record = new JsonObject();
-                    record.addProperty("summaryId", string(summary,
-                            "summaryId"));
-                    record.addProperty("regionId", selection.regionId);
-                    record.addProperty("sourceInput", source);
-                    record.addProperty("targetInput", target);
-                    record.addProperty("sourceCell", proof.sourceCell);
-                    record.addProperty("targetCell", proof.targetCell);
-                    record.addProperty("sort", sourceSort.smt);
-                    JsonArray edgeIds = new JsonArray();
-                    JsonArray transferKinds = new JsonArray();
-                    for (JsonObject edge : proof.edges) {
-                        edgeIds.add(string(edge, "edgeId"));
-                        transferKinds.add(string(edge, "transferKind"));
-                    }
-                    record.add("proofEdgeIds", edgeIds);
-                    record.add("proofTransferKinds", transferKinds);
-                    record.addProperty("authority",
-                            "SUMMARY_EXACT_INPUT_CELLS_AND_ALLOWED_"
-                                    + "EQUALITY_PRESERVING_CAUSAL_PATH_V1");
-                    exactCausalInputAliases.add(record);
                 }
             }
         }
@@ -7703,10 +7661,6 @@ public final class ConcolicSmtComposer {
                         + string(encodedExpression, "_exp"));
                 return null;
             }
-            if (opaqueComputedKey) {
-                recordOpaqueComputedMapKey(origin, object,
-                        encodedExpression, kind);
-            }
             if ("STRING".equals(kind)) {
                 if (raw.sort != Sort.STRING) {
                     unsupported.add("MAP_KEY_TERM_SORT_MISMATCH:" + origin
@@ -7762,31 +7716,6 @@ public final class ConcolicSmtComposer {
             }
             return new Term("(" + constructor + " " + raw.text + ")",
                     Sort.VALUE);
-        }
-
-        private void recordOpaqueComputedMapKey(String origin,
-                                                JsonObject computation,
-                                                JsonObject result,
-                                                String kind) {
-            JsonObject admission = new JsonObject();
-            admission.addProperty("authority",
-                    "CONCOLIC_TYPED_METHOD_RESULT_ONE_LOOKUP_KEY_V1");
-            admission.addProperty("bounded", true);
-            admission.addProperty("relationallyComplete", false);
-            admission.addProperty("scope",
-                    "ONE_OBSERVED_MAP_MEMBERSHIP_AND_VALUE_PROJECTION");
-            admission.addProperty("origin", firstNonBlank(origin));
-            admission.addProperty("symbolScope", currentSymbolScope);
-            admission.addProperty("computation",
-                    string(computation, "_name"));
-            admission.addProperty("resultJavaType",
-                    string(result, "_java_type"));
-            admission.addProperty("resultEngineSymbol",
-                    string(result, "_exp"));
-            admission.addProperty("boxedKeyKind", kind);
-            admission.addProperty("computationRelationMode",
-                    "OPAQUE_CONCRETE_WORKLOAD_RESULT");
-            opaqueComputedMapKeys.add(admission);
         }
 
         private static String mapKeyKind(String javaType) {

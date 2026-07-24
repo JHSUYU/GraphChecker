@@ -3603,10 +3603,8 @@ public final class ConcolicSummaryImporter {
 
         return new HeapEffectExtraction(initializers, effects,
                 heapObservations.observations, finiteMapSnapshots,
-                dynamicBindingCatalog.normalizedBindings(),
-                runtimeHeapEvidence.ignoredEvidence, issues,
-                outputBindings, staticCoverage,
-                heapObservations);
+                dynamicBindingCatalog.normalizedBindings(), issues,
+                outputBindings, staticCoverage, heapObservations);
     }
 
     private static RuntimeMapStateInputResolution
@@ -10019,16 +10017,6 @@ public final class ConcolicSummaryImporter {
         return value == null || value.isJsonNull() ? fallback : value.deepCopy();
     }
 
-    private static JsonElement firstElement(JsonObject object,
-                                            String... names) {
-        if (object == null) return null;
-        for (String name : names) {
-            JsonElement value = object.get(name);
-            if (value != null && !value.isJsonNull()) return value;
-        }
-        return null;
-    }
-
     private static Map<String, String> parseArgs(String[] args) {
         Map<String, String> result = new LinkedHashMap<>();
         for (int index = 0; args != null && index < args.length; index++) {
@@ -10775,25 +10763,6 @@ public final class ConcolicSummaryImporter {
                     == catalog.recordCount;
         }
 
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("policy",
-                    "RUNTIME_MAP_ENTRY_READ_EXACT_STATE_AND_TOKEN_JOIN_V1");
-            result.addProperty("recordCount", catalog.recordCount);
-            result.addProperty("validatedCount", catalog.byId.size()
-                    + catalog.finiteMapSnapshotsById.size()
-                    + catalog.mapStateInputsById.size());
-            result.addProperty("mapEntryReadCount", catalog.byId.size());
-            result.addProperty("finiteMapSnapshotCount",
-                    catalog.finiteMapSnapshotsById.size());
-            result.addProperty("mapStateInputObservationCount",
-                    catalog.mapStateInputsById.size());
-            result.addProperty("observationCount", observations.size());
-            result.addProperty("issueCount",
-                    catalog.issues.size() + issues.size());
-            result.addProperty("complete", complete());
-            return result;
-        }
     }
 
     private static final class HeapOutputBinding {
@@ -11008,7 +10977,6 @@ public final class ConcolicSummaryImporter {
         private final JsonArray observations;
         private final JsonArray finiteMapSnapshots;
         private final JsonArray dynamicFieldBindings;
-        private final JsonArray ignoredEvidence;
         private final List<HeapEffectIssue> issues;
         private final Map<String, HeapOutputBinding> outputBindings;
         private final StaticHeapTransformerCoverage staticCoverage;
@@ -11018,7 +10986,6 @@ public final class ConcolicSummaryImporter {
                 JsonArray initializers, JsonArray effects,
                 JsonArray observations, JsonArray finiteMapSnapshots,
                 JsonArray dynamicFieldBindings,
-                JsonArray ignoredEvidence,
                 List<HeapEffectIssue> issues,
                 Map<String, HeapOutputBinding> outputBindings,
                 StaticHeapTransformerCoverage staticCoverage,
@@ -11028,7 +10995,6 @@ public final class ConcolicSummaryImporter {
             this.observations = observations;
             this.finiteMapSnapshots = finiteMapSnapshots;
             this.dynamicFieldBindings = dynamicFieldBindings;
-            this.ignoredEvidence = ignoredEvidence;
             this.issues = issues;
             this.outputBindings = outputBindings;
             this.staticCoverage = staticCoverage;
