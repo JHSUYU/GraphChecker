@@ -184,9 +184,7 @@ public final class ConcolicPathFlipPlanner {
                             intValue(values, "max-flips-per-path",
                                     defaults.maxFlipsPerPath),
                             intValue(values, "max-tasks",
-                                    defaults.maxTasks),
-                            longValue(values, "max-wall-clock-ms",
-                                    defaults.maxWallClockMillis));
+                                    defaults.maxTasks));
             return new Arguments(summaries, activations, records, output,
                     bounds, value(values, "region-id"));
         }
@@ -218,11 +216,5 @@ public final class ConcolicPathFlipPlanner {
                     ? fallback : Integer.parseInt(value);
         }
 
-        private static long longValue(Map<String, String> values, String name,
-                                      long fallback) {
-            String value = values.get(name);
-            return value == null || value.trim().isEmpty()
-                    ? fallback : Long.parseLong(value);
-        }
     }
 }

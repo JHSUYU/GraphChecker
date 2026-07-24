@@ -65,14 +65,6 @@ public final class ConcolicPathReplayVerifier {
         report.addProperty("schemaVersion", 1);
         report.addProperty("kind",
                 "CONCOLIC_PATH_REPLAY_VERIFICATION_MANIFEST");
-        report.add("taskArtifact", sourceArtifact(arguments.task, 1));
-        report.add("activationPlanArtifact", sourceArtifact(
-                arguments.activationPlan, activations.size()));
-        report.add("rawResultsArtifact", sourceArtifact(arguments.results,
-                rawRows.size()));
-        report.add("importedSummariesArtifact", sourceArtifact(
-                arguments.summary, summaryRows.size()));
-
         require(failures, "TASK_IS_NOT_REGION_PATH_FLIP",
                 "REGION_PATH_FLIP".equals(string(task, "kind")));
         require(failures, "TASK_IS_NOT_OUTPUT_CLOSURE",
@@ -282,16 +274,6 @@ public final class ConcolicPathReplayVerifier {
                 result.add(row);
             }
         }
-        return result;
-    }
-
-    private static JsonObject sourceArtifact(Path path, int rowCount)
-            throws IOException {
-        JsonObject result = new JsonObject();
-        result.addProperty("path", path.toAbsolutePath().normalize()
-                .toString());
-        result.addProperty("sha256", ArtifactIO.sha256(path));
-        result.addProperty("rowCount", rowCount);
         return result;
     }
 

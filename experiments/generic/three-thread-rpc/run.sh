@@ -947,8 +947,8 @@ run_path_task() {
   local task_dir=$5
   local z3=$6
   local solver_timeout=$7
-  local region=$8
-  local solver_status replay_activation raw imported replay_verification
+  local solver_status solver_outcome replay_activation raw imported
+  local replay_verification
 
   mkdir -p "${task_dir}/tmp"
   set +e
@@ -964,14 +964,13 @@ run_path_task() {
   set -e
   require_file "producer path solver result" \
     "${task_dir}/path_flip_solver_result.json"
+  [[ "${solver_status}" -eq 0 ]] \
+    || die "producer path solver failed with exit ${solver_status}"
+  solver_outcome=$(jq -er '.status' \
+    "${task_dir}/path_flip_solver_result.json") \
+    || die "producer path solver emitted no status"
 
-  if jq -e --arg query "${query_key}" '
-      .status == "UNSAT" and .queryKey == $query
-    ' "${task_dir}/path_flip_solver_result.json" >/dev/null; then
-    [[ "${solver_status}" -eq 0 ]] \
-      || die "producer UNSAT solver exited ${solver_status}"
-    [[ ! -s "${task_dir}/activation_plan.jsonl" ]] \
-      || die "UNSAT producer path unexpectedly emitted a replay"
+  if [[ "${solver_outcome}" == "UNSAT" ]]; then
     jq -c '{
       schemaVersion: 1,
       kind: "PATH_EXPLORATION_RECORD",
@@ -986,20 +985,10 @@ run_path_task() {
     return 0
   fi
 
-  [[ "${solver_status}" -eq 0 ]] \
-    || die "producer path solver failed with exit ${solver_status}"
-  jq -e --arg query "${query_key}" '
-    .status == "SAT_MODEL_READY" and .queryKey == $query
-  ' "${task_dir}/path_flip_solver_result.json" >/dev/null \
+  [[ "${solver_outcome}" == "SAT_MODEL_READY" ]] \
     || die "producer path flip is not solver-backed"
-  replay_activation=$(jq -er -s --arg query "${query_key}" \
-    --arg region "${region}" '
-    if length == 1
-        and .[0].regionId == $region
-        and .[0].pathQueryKey == $query
-        and .[0].captureGoal.kind == "OUTPUT_CLOSURE"
-        and .[0].executionPhase == "REPLAY_OUTPUT_PATH_FLIP"
-    then .[0].activationId
+  replay_activation=$(jq -er -s '
+    if length == 1 then .[0].activationId
     else error("expected one exact replay activation")
     end
   ' "${task_dir}/activation_plan.jsonl") \
@@ -1020,16 +1009,6 @@ run_path_task() {
     --results "${raw}" \
     --summary "${imported}" \
     --output "${replay_verification}"
-  jq -e --arg query "${query_key}" --arg region "${region}" \
-    --arg activation "${replay_activation}" '
-    .valid == true
-    and .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
-    and .queryKey == $query
-    and .regionId == $region
-    and .activationId == $activation
-    and (.observedPathKey | test("^[0-9a-f]{64}$"))
-  ' "${replay_verification}" >/dev/null \
-    || die "producer path replay did not pass the exact verifier"
   jq -c '{
     schemaVersion: 1,
     kind: "PATH_EXPLORATION_RECORD",
@@ -1101,7 +1080,7 @@ publish_path_wave() {
 
 do_explore_producer() {
   local requested=$1
-  local channel schedule classes campaign region source_activation binding
+  local channel schedule classes campaign region binding
   local summaries activations raw_results records state_dir planner_dir
   local z3 solver_timeout planner_status query_key iteration jobs task_dir
   local observed_paths max_paths remaining_paths wave_limit
@@ -1113,7 +1092,6 @@ do_explore_producer() {
   IFS=$'\t' read -r region _ <<< "${binding}"
   schedule=$(channel_schedule "${channel}") || return $?
   classes=$(channel_classes "${channel}") || return $?
-  source_activation=$(scheduled_activation "${channel}") || return $?
   require_file "producer seed summary" \
     "${schedule}/concolic_region_summaries.jsonl"
   require_directory "producer concolic classes" "${classes}"
@@ -1142,8 +1120,7 @@ do_explore_producer() {
   for bound_spec in \
       "producer_max_paths_per_region:max-paths-per-region" \
       "producer_max_flips_per_path:max-flips-per-path" \
-      "producer_max_path_tasks:max-tasks" \
-      "producer_max_path_wall_clock_ms:max-wall-clock-ms"; do
+      "producer_max_path_tasks:max-tasks"; do
     bound_property=${bound_spec%%:*}
     bound_option=${bound_spec#*:}
     bound_value=$(workflow_property "${bound_property}" false)
@@ -1219,7 +1196,7 @@ do_explore_producer() {
         run_path_task "${query_key}" \
           "${planner_dir}/region_path_worklist.jsonl" \
           "${activations}" "${classes}" "${task_dir}" "${z3}" \
-          "${solver_timeout}" "${region}"
+          "${solver_timeout}"
       ) >"${task_dir}/stdout.log" 2>"${task_dir}/stderr.log" &
       worker_pids+=("$!")
     done

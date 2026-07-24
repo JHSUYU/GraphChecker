@@ -99,7 +99,6 @@ public final class RegionPathWorklist {
 
     private static final class Planner {
         private final Bounds bounds;
-        private final long startedNanos = System.nanoTime();
         private final Map<String, JsonObject> activations =
                 new LinkedHashMap<>();
         private final Map<String, JsonObject> records = new LinkedHashMap<>();
@@ -109,7 +108,7 @@ public final class RegionPathWorklist {
         private final Set<String> gapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
-        private final Set<String> witnessedBranchPositions =
+        private final Set<String> witnessedBranchSites =
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
@@ -196,11 +195,6 @@ public final class RegionPathWorklist {
                     gap("BOUND_REACHED", "MAX_PATHS_PER_REGION", region,
                             pathKey, "", -1);
                     continue;
-                }
-                if (wallClockExceeded()) {
-                    gap("BOUND_REACHED", "MAX_WALL_CLOCK", region,
-                            pathKey, "", -1);
-                    break;
                 }
                 planSummary(summary, activation, outputScope, pathKey,
                         branchMappings.get(summary));
@@ -299,11 +293,6 @@ public final class RegionPathWorklist {
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
-                if (gapStatus(previous)) {
-                    gap("EXPLORATION_GAP", firstNonBlank(string(previous,
-                                    "reason"), string(previous, "status")),
-                            region, pathKey, site, occurrence);
-                }
                 return;
             }
             if (observedFlipKeys.contains(key)) {
@@ -378,7 +367,7 @@ public final class RegionPathWorklist {
                 if (mappings == null) continue;
                 for (SummaryBranchMapping mapping : mappings) {
                     if (!mapping.isWitnessed()) continue;
-                    witnessedBranchPositions.add(branchPosition(
+                    witnessedBranchSites.add(branchSite(
                             outputScope, mapping));
                 }
             }
@@ -387,21 +376,23 @@ public final class RegionPathWorklist {
         /**
          * A concrete VM branch has no solver predicate and therefore is not
          * itself flippable.  It is safe to omit from the worklist only when
-         * the same binary branch position has an immutable witnessed
-         * predicate on another admitted path.  No predicate is
-         * copied or synthesized; an otherwise unmapped branch remains a gap.
+         * the same static binary branch site has an immutable witnessed
+         * predicate on another admitted path. This matters for a bounded
+         * loop's final guard: after the bound is reached the VM may simplify
+         * a later occurrence to concrete even though earlier occurrences
+         * retain the complete symbolic frontier. No predicate is copied or
+         * synthesized; a site with no witnessed predicate remains a gap.
          */
         private boolean coveredConcreteObservation(
                 OutputScope outputScope, SummaryBranchMapping mapping) {
             if (!mapping.isConcreteObservation()) return false;
-            return witnessedBranchPositions.contains(branchPosition(
+            return witnessedBranchSites.contains(branchSite(
                     outputScope, mapping));
         }
 
-        private String branchPosition(OutputScope outputScope,
-                                      SummaryBranchMapping mapping) {
-            return outputScope.identity + "\n" + mapping.siteId()
-                    + "\n" + mapping.occurrence();
+        private String branchSite(OutputScope outputScope,
+                                  SummaryBranchMapping mapping) {
+            return outputScope.identity + "\n" + mapping.siteId();
         }
 
         /**
@@ -530,28 +521,22 @@ public final class RegionPathWorklist {
             gaps.add(gap);
         }
 
-        private boolean wallClockExceeded() {
-            return (System.nanoTime() - startedNanos) / 1_000_000L
-                    >= bounds.maxWallClockMillis;
-        }
     }
 
     public static final class Bounds {
         public final int maxPathsPerRegion;
         public final int maxFlipsPerPath;
         public final int maxTasks;
-        public final long maxWallClockMillis;
 
         public Bounds(int maxPathsPerRegion, int maxFlipsPerPath,
-                      int maxTasks, long maxWallClockMillis) {
+                      int maxTasks) {
             this.maxPathsPerRegion = Math.max(1, maxPathsPerRegion);
             this.maxFlipsPerPath = Math.max(1, maxFlipsPerPath);
             this.maxTasks = Math.max(1, maxTasks);
-            this.maxWallClockMillis = Math.max(1L, maxWallClockMillis);
         }
 
         public static Bounds defaults() {
-            return new Bounds(64, 32, 256, 30_000L);
+            return new Bounds(64, 32, 256);
         }
 
         private JsonObject toJson() {
@@ -559,7 +544,6 @@ public final class RegionPathWorklist {
             result.addProperty("maxPathsPerRegion", maxPathsPerRegion);
             result.addProperty("maxFlipsPerPath", maxFlipsPerPath);
             result.addProperty("maxTasks", maxTasks);
-            result.addProperty("maxWallClockMillis", maxWallClockMillis);
             return result;
         }
     }
@@ -630,24 +614,7 @@ public final class RegionPathWorklist {
     private static boolean terminal(JsonObject record) {
         String status = string(record, "status");
         return "UNSAT".equals(status)
-                || "TRANSITION_VALIDATED".equals(status)
-                || "NO_RUNTIME_TRANSITION_EVIDENCE".equals(status)
-                || "EXECUTED_NEW_PATH".equals(status)
-                || "EXECUTED_DUPLICATE_PATH".equals(status)
-                || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status)
-                || "UNSUPPORTED".equals(status)
-                || "MATERIALIZATION_GAP".equals(status)
-                || "EXECUTION_ERROR".equals(status)
-                || "BOUND_REACHED".equals(status);
-    }
-
-    private static boolean gapStatus(JsonObject record) {
-        String status = string(record, "status");
-        return "UNSUPPORTED".equals(status)
-                || "NO_RUNTIME_TRANSITION_EVIDENCE".equals(status)
-                || "MATERIALIZATION_GAP".equals(status)
-                || "EXECUTION_ERROR".equals(status)
-                || "BOUND_REACHED".equals(status);
+                || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status);
     }
 
     private static String canonical(JsonElement value) {

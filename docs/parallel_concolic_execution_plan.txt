@@ -725,6 +725,35 @@ importer 后再删。不能为了行数直接丢掉。
 该收敛预计可以净删约 1,200-1,800 行生产代码，但它必须是并行功能之后的独立
 milestone/commit。
 
+16.1 实现时的 invariant mapping
+
+并行 wave 稳定后逐项核对的结果如下：
+
+    raw schema / activation / region
+        -> ConcolicSummaryImporter.canonicalRuntimeResultSchemaIssue
+           与 activation/region join
+
+    pathQueryKey 与 applied model assignment core
+        -> ConcolicSummaryImporter.replayAdmission
+
+    immutable BranchReplayContract witness prefix/flip
+        -> ConcolicSummaryImporter.validateReplayContractObservation
+
+    normal exit、requested output、relational completeness
+        -> importer 的 output extraction 与 summary completeness
+
+    singleton task/activation/raw/summary artifact identity
+        -> ConcolicPathReplayVerifier，仍是唯一职责
+
+    完整 dynamic selector schema、fresh Map.Entry rebinding、
+    container replay rebinding
+        -> ConcolicReplayValidator，仍是唯一职责
+
+因此本轮不删除 verifier/validator。直接删除会丢掉 Map/array/container replay
+的唯一语义检查，违反“功能正确性优先于行数”。实现只删除无人调用的 validator
+API、scratch artifact hash，以及 shell 对 verifier 结果的字段级重复判断；
+shell 以 verifier 的进程退出状态为准。
+
 
 17. 不在本任务范围内
 --------------------

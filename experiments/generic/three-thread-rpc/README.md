@@ -73,10 +73,11 @@ fixture metadata when supplying a custom configuration.
 Producer exploration remains explicitly bounded.  A workload with a larger
 finite path product can raise any of
 `producer_max_paths_per_region`, `producer_max_flips_per_path`,
-`producer_max_path_tasks`, or `producer_max_path_wall_clock_ms` in its
-properties file.  The runner passes those values to every planning round and
-still fails closed if the resulting worklist reports a bound gap; it never
-treats exhaustion of a configured budget as closure.
+or `producer_max_path_tasks` in its properties file. The runner passes those
+values to every planning round and still fails closed if the resulting
+worklist reports a bound gap; it never treats exhaustion of a configured
+budget as closure. Solver time remains bounded separately by
+`solver_timeout_ms`.
 
 `clean` is guarded to remove only the configured fixture work root below the
 project's `target` directory (`target/three-thread-rpc` by default). It does
@@ -98,11 +99,13 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    The seed schedule contains no forced branch. The query is an input to
    candidate composition; this workflow does not execute a target replay.
 4. Capture every producer seed. For each producer,
-   `ConcolicPathFlipPlanner` repeatedly selects one pending path, Z3 derives
-   its input model, the custom JDK executes that model naturally, and the
-   strict importer validates the result. Exploration stops only when the
-   worklist manifest is closed, then `RegionSummaryMerger` builds the guarded
-   producer relation.
+   `ConcolicPathFlipPlanner` computes one immutable frontier per wave, then up
+   to `CAUSYNTH_CONCOLIC_JOBS` independent workers solve and naturally execute
+   exact path tasks in private directories. The coordinator publishes a wave
+   only after every importer/verifier succeeds. Exploration stops only when
+   the worklist manifest is closed, then `RegionSummaryMerger` builds the
+   guarded producer relation. The default worker count is `nproc`; set it to
+   `1` for serial debugging.
 5. Compose the closed producer relations with the target seed into one
    structurally complete candidate SMT model.
 6. Solve that candidate model by enumerating its discovered Boolean roots while

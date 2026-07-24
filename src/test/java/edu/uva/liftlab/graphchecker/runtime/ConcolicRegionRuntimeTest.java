@@ -7,7 +7,6 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
-import edu.uva.liftlab.graphchecker.concolic.ConcolicReplayValidator;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RegionCaptureGoal;
 import org.junit.Test;
