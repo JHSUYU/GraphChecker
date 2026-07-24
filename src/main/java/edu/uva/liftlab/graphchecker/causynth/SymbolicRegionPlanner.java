@@ -184,25 +184,10 @@ final class SymbolicRegionPlanner {
         private final List<String> fieldPath;
         private final List<String> proofEdgeIds;
         private final String proofAuthority;
+        private final String requestedStateTransformerSiteId;
         private final int elementIndex;
         private final boolean constantIndex;
         private final boolean materializeFromContainerSnapshot;
-
-        private ContainerElementFieldCandidate(
-                Map<String, Object> containerAccessor,
-                Map<String, Object> arrayLoad,
-                Map<String, Object> projectedAccessor,
-                Map<String, Object> declaredAccessor,
-                DeclaredFieldIdentity containerField,
-                DeclaredFieldIdentity elementField,
-                int elementIndex, boolean constantIndex) {
-            this(containerAccessor, arrayLoad, projectedAccessor,
-                    declaredAccessor, null, containerField, elementField,
-                    elementField.signature,
-                    Collections.singletonList(elementField.name),
-                    elementIndex, constantIndex, false,
-                    Collections.<String>emptyList(), "");
-        }
 
         private ContainerElementFieldCandidate(
                 Map<String, Object> containerAccessor,
@@ -217,7 +202,8 @@ final class SymbolicRegionPlanner {
                 int elementIndex, boolean constantIndex,
                 boolean materializeFromContainerSnapshot,
                 Collection<String> proofEdgeIds,
-                String proofAuthority) {
+                String proofAuthority,
+                String requestedStateTransformerSiteId) {
             this.containerAccessor = containerAccessor;
             this.arrayLoad = arrayLoad;
             this.projectedAccessor = projectedAccessor;
@@ -230,6 +216,9 @@ final class SymbolicRegionPlanner {
             this.proofEdgeIds = new ArrayList<>(proofEdgeIds);
             this.proofAuthority = proofAuthority == null ? ""
                     : proofAuthority;
+            this.requestedStateTransformerSiteId =
+                    requestedStateTransformerSiteId == null ? ""
+                            : requestedStateTransformerSiteId;
             this.elementIndex = elementIndex;
             this.constantIndex = constantIndex;
             this.materializeFromContainerSnapshot =
@@ -2146,12 +2135,32 @@ final class SymbolicRegionPlanner {
                         continue;
                     }
                     Map<String, Object> declaredRead = declaredReads.get(0);
+                    List<Map<String, Object>> putKeys = new ArrayList<>();
+                    List<Map<String, Object>> putValues = new ArrayList<>();
+                    for (Map<String, Object> edge : slice.causalEdges) {
+                        if (exactMapPutArgument(edge, method,
+                                string(projection.get("toCell")),
+                                outputCell, 0)) {
+                            putKeys.add(edge);
+                        }
+                        if (exactMapPutArgument(edge, method, ownerCell,
+                                outputCell, 1)) {
+                            putValues.add(edge);
+                        }
+                    }
+                    if (putKeys.size() != 1 || putValues.size() != 1
+                            || !string(putKeys.get(0).get("siteId")).equals(
+                            string(putValues.get(0).get("siteId")))) {
+                        continue;
+                    }
                     Set<String> proofIds = new LinkedHashSet<>(Arrays.asList(
                             string(container.get("id")),
                             string(arrayLoad.get("id")),
                             string(projection.get("id")),
-                            string(declaredRead.get("id"))));
-                    if (proofIds.size() != 4 || proofIds.contains("")) {
+                            string(declaredRead.get("id")),
+                            string(putKeys.get(0).get("id")),
+                            string(putValues.get(0).get("id"))));
+                    if (proofIds.contains("")) {
                         continue;
                     }
                     String identity = string(arrayLoad.get("id")) + "\n"
@@ -2162,9 +2171,14 @@ final class SymbolicRegionPlanner {
                     }
                     int selector = arrayLoadSelector(arrayLoad);
                     result.add(new ContainerElementFieldCandidate(container,
-                            arrayLoad, projection, declaredRead,
-                            containerField, elementField, selector,
-                            selector >= 0));
+                            arrayLoad, projection, declaredRead, null,
+                            containerField, elementField,
+                            elementField.signature,
+                            Collections.singletonList(elementField.name),
+                            selector, selector >= 0, false, proofIds,
+                            "STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                                    + "KEY_VALUE_V1",
+                            string(putKeys.get(0).get("siteId"))));
                 }
             }
             addArrayPutValueFieldCandidates(slice, outputCell,
@@ -2263,7 +2277,7 @@ final class SymbolicRegionPlanner {
                             access.fieldPath, selector, selector >= 0, true,
                             proof,
                             "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_"
-                                    + "CHAIN_V1"));
+                                    + "CHAIN_V1", ""));
                 }
             }
         }
@@ -2380,7 +2394,7 @@ final class SymbolicRegionPlanner {
                             containerField, elementField,
                             elementField.signature, fieldPath, selector,
                             selector >= 0, true,
-                            Collections.<String>emptyList(), ""));
+                            Collections.<String>emptyList(), "", ""));
                 }
             }
         }
@@ -2470,9 +2484,16 @@ final class SymbolicRegionPlanner {
         private boolean exactArrayElementMapPutValue(
                 Map<String, Object> edge, String method,
                 String elementCell, String outputCell) {
+            return exactMapPutArgument(edge, method, elementCell,
+                    outputCell, 1);
+        }
+
+        private boolean exactMapPutArgument(
+                Map<String, Object> edge, String method,
+                String sourceCell, String outputCell, int argumentIndex) {
             if (!exactStaticEdge(edge)
                     || !method.equals(string(edge.get("method")))
-                    || !elementCell.equals(string(edge.get("fromCell")))
+                    || !sourceCell.equals(string(edge.get("fromCell")))
                     || !outputCell.equals(string(edge.get("toCell")))
                     || !"field_mutation".equals(string(edge.get("kind")))
                     || !"HEAP_WRITE".equals(string(edge.get(
@@ -2481,7 +2502,7 @@ final class SymbolicRegionPlanner {
                     || !exactJavaMapPut(string(edge.get("invoke")))) {
                 return false;
             }
-            String local = exactLocalName(method, elementCell);
+            String local = exactLocalName(method, sourceCell);
             String unit = string(edge.get("unit")).trim();
             int open = unit.lastIndexOf('(');
             int close = unit.lastIndexOf(')');
@@ -2490,14 +2511,16 @@ final class SymbolicRegionPlanner {
             }
             String[] arguments = unit.substring(open + 1, close).split(",",
                     -1);
-            return arguments.length == 2
-                    && local.equals(arguments[1].trim());
+            return argumentIndex >= 0 && arguments.length == 2
+                    && local.equals(arguments[argumentIndex].trim());
         }
 
         private boolean exactJavaMapPut(String invoke) {
             return invoke.matches("^<java\\.util\\.(?:Map|SortedMap|"
-                    + "NavigableMap|Hashtable|concurrent\\.ConcurrentMap|"
-                    + "concurrent\\.ConcurrentNavigableMap):\\s+"
+                    + "NavigableMap|HashMap|LinkedHashMap|TreeMap|Hashtable|"
+                    + "WeakHashMap|IdentityHashMap|concurrent\\.(?:"
+                    + "ConcurrentMap|ConcurrentHashMap|"
+                    + "ConcurrentNavigableMap|ConcurrentSkipListMap)):\\s+"
                     + "java\\.lang\\.Object\\s+put\\(java\\.lang\\.Object,"
                     + "java\\.lang\\.Object\\)>$");
         }
@@ -2533,7 +2556,7 @@ final class SymbolicRegionPlanner {
                 String selectorAuthority = candidate.constantIndex
                         ? "EXACT_ARRAY_INDEX"
                         : "DISCOVER_UNIQUE_IDENTITY_INDEX";
-                result.add(object(
+                Map<String, Object> binding = object(
                         "schemaVersion",
                         candidate.materializeFromContainerSnapshot ? 2 : 1,
                         "kind", "ARRAY_ELEMENT_FIELD",
@@ -2587,9 +2610,14 @@ final class SymbolicRegionPlanner {
                                 : candidate.materializeFromContainerSnapshot
                                 ? "STATIC_EXACT_ARRAY_ELEMENT_MAP_PUT_VALUE_"
                                 + "AND_DECLARED_FIELD_FIVE_EDGE_JOIN_V1"
-                                : "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_"
-                                + "DECLARED_FIELD_FOUR_EDGE_JOIN_V1",
-                        "complete", true));
+                                : "STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_"
+                                + "MAP_PUT_KEY_VALUE_V1",
+                        "complete", true);
+                if (!candidate.requestedStateTransformerSiteId.isEmpty()) {
+                    binding.put("requestedStateTransformerSiteId",
+                            candidate.requestedStateTransformerSiteId);
+                }
+                result.add(binding);
             }
             return result;
         }

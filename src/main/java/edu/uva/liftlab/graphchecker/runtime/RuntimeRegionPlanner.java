@@ -70,11 +70,6 @@ final class RuntimeRegionPlanner {
             "AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_REQUIRED_V1";
     private static final String UNRESOLVED_INPUT_PROVENANCE_AUTHORITY =
             "STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1";
-    static final String ROOT_ARGUMENT_SELECTOR_SCHEMA_V1 =
-            "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_V1";
-    static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY_V1 =
-            "RUNTIME_METHOD_ARGUMENT_EXACT_TYPES_"
-                    + "PREDICATE_RELATIVE_ORDINAL_V1";
     static final String ROOT_ARGUMENT_SELECTOR_SCHEMA =
             "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_AND_RECEIVER_V2";
     static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY =
@@ -8083,6 +8078,8 @@ final class RuntimeRegionPlanner {
                     "fieldMaterializationSiteId"),
                     "arrayLoadSiteId", jsonString(json,
                     "arrayLoadSiteId"),
+                    "requestedStateTransformerSiteId", jsonString(json,
+                    "requestedStateTransformerSiteId"),
                     "proofCausalEdgeIds", jsonStringArray(json,
                     "proofCausalEdgeIds"),
                     "proofAuthority", jsonString(json,
@@ -8135,10 +8132,13 @@ final class RuntimeRegionPlanner {
                     && (materializationMode.isEmpty()
                     || "FIELD_ACCESS_HOOK".equals(materializationMode))
                     && path.equals(Collections.singletonList(field.name))
-                    && proof.size() == 4
-                    && "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(string(
-                    declaration.get("proofAuthority")));
+                    && !proof.isEmpty()
+                    && proofRows.size() == proof.size()
+                    && "STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                    .concat("KEY_VALUE_V1").equals(string(declaration.get(
+                    "proofAuthority")))
+                    && exactContainerTransformerSite(declaration, method,
+                    proof);
             boolean snapshot = schemaVersion == 2
                     && "CONTAINER_SNAPSHOT".equals(materializationMode)
                     && !path.isEmpty() && path.size() <= 4
@@ -8187,6 +8187,40 @@ final class RuntimeRegionPlanner {
                     "arrayLoadSiteId")))
                     && !proof.contains("")
                     && new LinkedHashSet<>(causalEdgeIds).containsAll(proof);
+        }
+
+        private boolean exactContainerTransformerSite(
+                Map<String, Object> declaration, String method,
+                Set<String> proofEdgeIds) {
+            String site = string(declaration.get(
+                    "requestedStateTransformerSiteId"));
+            if (!exactUnitSite(method, site) || !sites.contains(site)) {
+                return false;
+            }
+            int matches = 0;
+            for (Map<String, Object> obligation
+                    : requestedStateTransformerObligations) {
+                if (!site.equals(string(obligation.get("siteId")))
+                        || !method.equals(string(obligation.get("method")))
+                        || !outputCell.equals(string(obligation.get(
+                        "targetCell")))
+                        || !"HEAP_WRITE".equals(string(obligation.get(
+                        "transferKind")))
+                        || !"field_mutation".equals(string(obligation.get(
+                        "kind")))
+                        || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL"
+                        .equals(string(obligation.get("authority")))) {
+                    continue;
+                }
+                Set<String> obligationEdges = stringSet(obligation.get(
+                        "causalEdgeIds"));
+                if (obligationEdges.isEmpty()
+                        || !proofEdgeIds.containsAll(obligationEdges)) {
+                    return false;
+                }
+                matches++;
+            }
+            return matches == 1;
         }
 
         private int intValue(Object value, int fallback) {

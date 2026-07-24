@@ -5592,17 +5592,45 @@ public final class ConcolicSmtComposer {
         private void bindContainerElementFieldsForClosure(
                 String region, JsonObject summary,
                 OutputClosureContract outputClosure) {
+            Map<String, Set<String>> schemaOneDeclarationsByBase =
+                    new LinkedHashMap<>();
+            for (String output : outputClosure.outputPorts()) {
+                JsonObject memberSlice = outputClosure.member(output).slice();
+                for (JsonElement element : array(memberSlice,
+                        "containerElementFieldBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (integer(binding, "schemaVersion", -1) != 1) {
+                        continue;
+                    }
+                    String base = string(binding, "baseInputSymbol");
+                    if (!base.isEmpty()) {
+                        schemaOneDeclarationsByBase.computeIfAbsent(base,
+                                ignored -> new LinkedHashSet<>()).add(
+                                CanonicalJson.render(binding));
+                    }
+                }
+            }
+            Map<String, Integer> schemaOneBaseCounts =
+                    new LinkedHashMap<>();
+            for (Map.Entry<String, Set<String>> entry
+                    : schemaOneDeclarationsByBase.entrySet()) {
+                schemaOneBaseCounts.put(entry.getKey(),
+                        entry.getValue().size());
+            }
             for (String output : outputClosure.outputPorts()) {
                 JsonObject memberSlice = outputClosure.member(output).slice();
                 if (memberSlice.size() != 0) {
-                    bindContainerElementFields(region, summary, memberSlice);
+                    bindContainerElementFields(region, summary, memberSlice,
+                            schemaOneBaseCounts);
                 }
             }
         }
 
         private void bindContainerElementFields(
                 String region, JsonObject summary,
-                JsonObject requestedOutputSlice) {
+                JsonObject requestedOutputSlice,
+                Map<String, Integer> schemaOneBaseCounts) {
             JsonElement declared = requestedOutputSlice.get(
                     "containerElementFieldBindings");
             if (declared == null) return;
@@ -5619,7 +5647,6 @@ public final class ConcolicSmtComposer {
                 }
             }
             Set<String> bindingIds = new LinkedHashSet<>();
-            Set<String> basePorts = new LinkedHashSet<>();
             JsonArray bindings = declared.getAsJsonArray();
             for (int ordinal = 0; ordinal < bindings.size(); ordinal++) {
                 JsonElement rawBinding = bindings.get(ordinal);
@@ -5633,7 +5660,7 @@ public final class ConcolicSmtComposer {
                         "bindingId"), String.valueOf(ordinal));
                 String issue = validateContainerElementFieldBinding(
                         binding, requestedOutputSlice, requestedInputs,
-                        bindingIds, basePorts);
+                        bindingIds);
                 if (!issue.isEmpty()) {
                     heapGap(region, "ContainerElementFieldBinding@" + region
                             + ":" + bindingId + ":" + issue);
@@ -5658,10 +5685,17 @@ public final class ConcolicSmtComposer {
                         "containerInputPort");
                 String declaredType = string(binding, "declaredFieldType");
                 Sort fieldSort = containerFieldSort(basePort, declaredType);
-                Term base = containerFieldPortTerm(basePort, fieldSort);
-                if (base == null) {
-                    heapGap(region, "ContainerElementFieldBinding@" + region
-                            + ":" + bindingId + ":FIELD_PORT_SORT_CONFLICT");
+                boolean repeatedSchemaOneBase =
+                        integer(binding, "schemaVersion", -1) == 1
+                                && schemaOneBaseCounts.getOrDefault(
+                                basePort, 0) > 1;
+                if (repeatedSchemaOneBase
+                        && selector.fieldExpression == null) {
+                    // A closure-wide declaration may be guard-excluded from
+                    // this case.  Without an occurrence-specific runtime
+                    // witness there is no safe field projection to emit;
+                    // relational completeness was already certified while
+                    // importing the case's heap effects.
                     continue;
                 }
 
@@ -5692,15 +5726,8 @@ public final class ConcolicSmtComposer {
                     continue;
                 }
                 String projected = "(" + accessor + " " + owner + ")";
-                String equality = "(= " + projected + " " + base.text
-                        + ")";
-                assertNamed("container_element_field_" + bindingId,
-                        equality);
-                addAutomaticRelationship("container_element_field_"
-                                + bindingId,
-                        "CONTAINER_ELEMENT_FIELD_BINDING", equality,
-                        basePort, projected);
-
+                String equality;
+                String relationshipLeft;
                 if (selector.fieldExpression != null) {
                     Term dynamic = exactDynamicFieldTerm(
                             selector.fieldExpression,
@@ -5711,9 +5738,26 @@ public final class ConcolicSmtComposer {
                                 + ":DYNAMIC_FIELD_SORT_CONFLICT");
                         continue;
                     }
-                    assertNamed("container_dynamic_field_" + bindingId,
-                            "(= " + dynamic.text + " " + base.text + ")");
+                    equality = "(= " + projected + " " + dynamic.text
+                            + ")";
+                    relationshipLeft = selector.dynamicFieldSymbol;
+                } else {
+                    Term base = containerFieldPortTerm(basePort, fieldSort);
+                    if (base == null) {
+                        heapGap(region, "ContainerElementFieldBinding@"
+                                + region + ":" + bindingId
+                                + ":FIELD_PORT_SORT_CONFLICT");
+                        continue;
+                    }
+                    equality = "(= " + projected + " " + base.text + ")";
+                    relationshipLeft = basePort;
                 }
+                assertNamed("container_element_field_" + bindingId,
+                        equality);
+                addAutomaticRelationship("container_element_field_"
+                                + bindingId,
+                        "CONTAINER_ELEMENT_FIELD_BINDING", equality,
+                        relationshipLeft, projected);
             }
         }
 
@@ -6121,7 +6165,7 @@ public final class ConcolicSmtComposer {
         private String validateContainerElementFieldBinding(
                 JsonObject binding, JsonObject requestedOutputSlice,
                 Set<String> requestedInputs,
-                Set<String> bindingIds, Set<String> basePorts) {
+                Set<String> bindingIds) {
             String id = string(binding, "bindingId");
             String base = string(binding, "baseInputSymbol");
             String container = string(binding, "containerInputPort");
@@ -6139,7 +6183,7 @@ public final class ConcolicSmtComposer {
                 return "MISSING_OR_DUPLICATE_BINDING_ID";
             }
             if (base.isEmpty() || container.isEmpty()
-                    || base.equals(container) || !basePorts.add(base)) {
+                    || base.equals(container)) {
                 return "AMBIGUOUS_INPUT_PORTS";
             }
             if (!ports.contains(base) || !ports.isInput(base)
@@ -6213,14 +6257,68 @@ public final class ConcolicSmtComposer {
             String fieldSite = string(binding,
                     "fieldMaterializationSiteId");
             String arraySite = string(binding, "arrayLoadSiteId");
+            Set<String> sliceMethods = strictStringSet(array(
+                    requestedOutputSlice, "methods"));
+            Set<String> sliceSites = strictStringSet(array(
+                    requestedOutputSlice, "sites"));
+            Set<String> sliceEdges = requestedSliceCausalEdgeIds(
+                    requestedOutputSlice);
             if (schemaOne) {
-                if (proof.size() != 4
+                String transformerSite = string(binding,
+                        "requestedStateTransformerSiteId");
+                if (proofIds.isEmpty()
                         || method.isEmpty() || fieldSite.isEmpty()
-                        || arraySite.isEmpty()
-                        || !"STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_"
-                        .concat("DECLARED_FIELD_FOUR_EDGE_JOIN_V1").equals(
-                                string(binding, "proofAuthority"))) {
-                    return "STATIC_FOUR_EDGE_PROOF_INCOMPLETE";
+                        || arraySite.isEmpty() || transformerSite.isEmpty()
+                        || !"STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                        .concat("KEY_VALUE_V1").equals(string(binding,
+                                "proofAuthority"))) {
+                    return "STATIC_CONTAINER_TRANSFORMER_PROOF_INCOMPLETE";
+                }
+                if (sliceMethods == null || sliceSites == null
+                        || !sliceMethods.contains(method)
+                        || !exactMethodUnitSite(method, fieldSite)
+                        || !exactMethodUnitSite(method, arraySite)
+                        || !exactMethodUnitSite(method, transformerSite)
+                        || !sliceSites.contains(fieldSite)
+                        || !sliceSites.contains(arraySite)
+                        || !sliceSites.contains(transformerSite)
+                        || sliceEdges == null
+                        || !sliceEdges.containsAll(proofIds)) {
+                    return "STATIC_CONTAINER_TRANSFORMER_SLICE_"
+                            + "CLOSURE_INCOMPLETE";
+                }
+                JsonObject obligation = null;
+                for (JsonElement element : array(requestedOutputSlice,
+                        "requestedStateTransformerObligations")) {
+                    if (!element.isJsonObject()
+                            || !transformerSite.equals(string(
+                            element.getAsJsonObject(), "siteId"))) {
+                        continue;
+                    }
+                    if (obligation != null) {
+                        return "STATIC_CONTAINER_TRANSFORMER_OBLIGATION_"
+                                + "AMBIGUOUS";
+                    }
+                    obligation = element.getAsJsonObject();
+                }
+                Set<String> obligationEdges = obligation == null ? null
+                        : strictStringSet(array(obligation,
+                        "causalEdgeIds"));
+                if (obligation == null
+                        || !method.equals(string(obligation, "method"))
+                        || !string(requestedOutputSlice, "outputCell").equals(
+                        string(obligation, "targetCell"))
+                        || !"HEAP_WRITE".equals(string(obligation,
+                        "transferKind"))
+                        || !"field_mutation".equals(string(obligation,
+                        "kind"))
+                        || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL"
+                        .equals(string(obligation, "authority"))
+                        || obligationEdges == null
+                        || obligationEdges.isEmpty()
+                        || !proofIds.containsAll(obligationEdges)) {
+                    return "STATIC_CONTAINER_TRANSFORMER_OBLIGATION_"
+                            + "INCOMPLETE";
                 }
                 return "";
             }
@@ -6234,12 +6332,6 @@ public final class ConcolicSmtComposer {
                             "proofAuthority"))) {
                 return "STATIC_DIRECT_FIELD_PATH_PROOF_INCOMPLETE";
             }
-            Set<String> sliceMethods = strictStringSet(array(
-                    requestedOutputSlice, "methods"));
-            Set<String> sliceSites = strictStringSet(array(
-                    requestedOutputSlice, "sites"));
-            Set<String> sliceEdges = requestedSliceCausalEdgeIds(
-                    requestedOutputSlice);
             if (sliceMethods == null || sliceSites == null
                     || method.isEmpty() || !sliceMethods.contains(method)
                     || !exactMethodUnitSite(method, fieldSite)
@@ -8382,6 +8474,7 @@ public final class ConcolicSmtComposer {
             }
             Map<String, Integer> eligibleBaseCounts =
                     new LinkedHashMap<>();
+            Set<String> strictUniqueBases = new LinkedHashSet<>();
             for (JsonElement element : dynamicBindings) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
@@ -8397,10 +8490,15 @@ public final class ConcolicSmtComposer {
                 Integer previous = eligibleBaseCounts.get(base);
                 eligibleBaseCounts.put(base, previous == null ? 1
                         : previous + 1);
+                if ("DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(
+                        string(binding, "kind"))) {
+                    strictUniqueBases.add(base);
+                }
             }
             for (Map.Entry<String, Integer> entry
                     : eligibleBaseCounts.entrySet()) {
-                if (entry.getValue() != 1) {
+                if (entry.getValue() != 1
+                        && strictUniqueBases.contains(entry.getKey())) {
                     gap("AMBIGUOUS_DYNAMIC_BASE_ROOT:" + entry.getKey()
                             + ":" + entry.getValue());
                 }
