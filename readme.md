@@ -378,6 +378,22 @@ experiments/generic/three-thread-rpc/run.sh all
 producer campaigns、candidate composition、Z3 solve 和 candidate manifest。成功时会生成
 `candidate/candidate_result_manifest.json`；它不是 trusted result。
 
+producer path exploration 默认使用 `nproc` 个独立 custom-JDK worker。每个 worker
+拥有私有 result、tmp 和日志目录；同一 wave 全部成功后才由单一 coordinator 发布。
+串行 debug 或显式高并发可以分别使用：
+
+```bash
+CAUSYNTH_CONCOLIC_JOBS=1 experiments/generic/three-thread-rpc/run.sh all
+CAUSYNTH_CONCOLIC_JOBS=64 experiments/generic/three-thread-rpc/run.sh all
+```
+
+2026-07-24 的 container 实测中，jobs=1/8/40/64 都闭合相同的 48 条路径并得到
+相同语义投影与最终 `sat`；耗时分别约为 870、233.56、203.35 和 202.77 秒。
+单 wave 最多只有 16 个 pending task，因此 64 没有优于 40，默认值保持 `nproc`。
+六个 maintained fixture 的并行矩阵耗时 231.77 秒，五个预期 `sat` 与一个预期
+`unsat` 全部通过。完整设计、正确性边界和测量口径见
+`docs/parallel_concolic_execution_plan.txt`。
+
 ## 关键实现
 
 | 组件 | 职责 |
@@ -385,7 +401,8 @@ producer campaigns、candidate composition、Z3 solve 和 candidate manifest。�
 | `SymbolicRegionPlanner` | 静态 region、live-in/live-out、output slice 和候选 edge |
 | `RuntimeRegionPlanner` / `ConcolicRegionRuntime` | 动态 activation、thread context、精确事件与运行时绑定 |
 | `ConcolicScheduler` | 为 target 或 producer 选择 activation 并生成 capture/materialization plan |
-| `ConcolicPathFlipPlanner` / `RegionPathWorklist` | pending flip、稳定去重、Z3 输入和 closure |
+| `ConcolicPathFlipPlanner` / `RegionPathWorklist` | 纯 frontier planning、pending flip、稳定去重和 closure |
+| `ConcolicPathFlipSolver` | 精确求解一个 query，生成 singleton replay activation |
 | `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
 | `SolverPathContext` | 与 branch authority 分离的、有位置的 typed 非 branch solver constraints |
 | `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
@@ -863,7 +880,7 @@ bundle 和上述 inspect CLI 尚未实现，不把它们计作本轮完成项。
 普通单测用于快速定位，但重构的 release gate 是实际 workload 和真实 Z3：
 
 ```bash
-# 精简后的 57 个 boundary regression（包含真实 Z3）
+# 精简后的 56 个 boundary regression（包含真实 Z3）
 mvn -q test
 
 # 三个核心三线程 workload
@@ -894,7 +911,7 @@ fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT ga
 
 2026-07-23 的普通 JUnit 基线是 39 个 `*Test` 类、724 个可执行测试方法；其中六个巨型
 测试类占 479 项。这个规模主要在重复锁定 JSON 字段、private helper 和同一路径的类型排列，
-并没有形成 724 个独立的语义保证。当前已经压缩为 13 类、57 个可执行测试，`mvn -q test`
+并没有形成 724 个独立的语义保证。当前已经压缩为 13 类、56 个可执行测试，`mvn -q test`
 全部通过。
 
 普通 suite 固定维持约 40–60 个高价值测试，按 boundary 组织而不是按实现分支堆叠：

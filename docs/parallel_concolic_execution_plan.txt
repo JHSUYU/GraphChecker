@@ -961,3 +961,52 @@ Milestone 4：并行度调优与文档
 custom JDK、output closure、heap/Map/array 语义和 SMT composition 都不是这次
 并行化的修改对象。并行只是改变“独立 path task 何时执行”，不能改变“一个 task
 代表什么、如何验证、如何合并”。
+
+
+24. 实施结果（2026-07-24）
+-------------------------
+
+设计及三个代码 milestone 已按独立 commit 完成并推送：
+
+    cdb8b05a  design parallel path workers
+    6f7a55b3  separate frontier planning from solving
+    f8e77c77  explore path frontiers in parallel waves
+    91e2b7c9  remove serial exploration residue
+
+container workload 的 map producer 固定闭合为 48 条路径。不同并行度得到完全相同的
+排序后语义投影
+`[pathCondition, outputExpressions, normalExit, exceptionType]`，SHA-256 均为：
+
+    528a898e933d5d2eab49ed4367ed1b2ae33b6022c4f22d3432cf1b1e2a7652e3
+
+实测结果：
+
+    jobs    container elapsed    final result
+       1    约 870 秒            SAT
+       8    233.56 秒            SAT
+      40    203.35 秒            SAT
+      64    202.77 秒            SAT
+
+jobs=40 与 jobs=64 几乎相同，因为该 workload 单个 wave 最多只有 16 个 pending
+task。默认值因此保持 `nproc`（当前服务器为 40），不硬编码 64。只有一个 pending
+task 的 unreachable-parity 在 jobs=1 与 jobs=40 下均为 92.79 秒，符合 wave
+dependency 的预期；两者均闭合两个 producer 的各 2 条路径并得到 UNSAT。
+
+最后一次 maintained matrix 使用 6 个外层 fixture job、每个 fixture 8 个内部
+concolic worker，在 231.77 秒内全部通过：
+
+    baseline                SAT
+    cross-method-fields     SAT
+    multitype               SAT
+    dependent-scalar        SAT
+    containers              SAT
+    unreachable-parity      UNSAT
+
+multitype 暴露并修复了一处原有过度校验：有界循环的最后一次 guard 可能被 VM
+concretize；当同一 output closure、同一静态 branch site 已存在 immutable symbolic
+witness 时，不再要求最后一次动态 occurrence 自己也生成 predicate。query/flip
+identity 仍包含 occurrence 与 prefix，因此该修复不合并不同 path task。
+
+最终 `mvn -q test` 的 56 个精简 boundary regression 全部通过。custom JDK 没有
+代码 diff；fixture/testworkload 没有被本任务提交。worker 只写私有目录，coordinator
+仍是 aggregate ledger 的唯一 writer，任一 wave 失败时不发布部分结果。
