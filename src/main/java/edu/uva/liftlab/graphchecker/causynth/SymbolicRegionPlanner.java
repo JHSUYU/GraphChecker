@@ -318,20 +318,9 @@ final class SymbolicRegionPlanner {
     }
 
     private static final class Planner {
-        private final List<Map<String, Object>> edges;
-        /**
-         * Input-order-preserving indexes for the two demand-driven hot paths.
-         * The planner's edge rows are immutable for the lifetime of a plan,
-         * so indexing once is semantically equivalent to repeatedly filtering
-         * {@link #edges} while avoiding a full graph scan per worklist cell or
-         * per call-path level.
-         */
-        private final Map<String, List<Map<String, Object>>> edgesByMethod =
-                new LinkedHashMap<>();
+        private final StaticGraphIndex graph;
         private final Map<String, List<Map<String, Object>>>
                 edgesByMethodSet = new LinkedHashMap<>();
-        private final Map<String, List<Map<String, Object>>>
-                incomingEdgesByCell = new LinkedHashMap<>();
         private final Map<String, Map<String, Object>> plansByMethod = new LinkedHashMap<>();
         /**
          * Region-local targets that have an in-region definition.  Input
@@ -360,6 +349,8 @@ final class SymbolicRegionPlanner {
         private final Map<RegionDraft, Set<String>>
                 callResultsWithCausalAlternativeByRegion =
                 new IdentityHashMap<>();
+        private final Map<RegionDraft, StaticGraphIndex>
+                analysisGraphsByRegion = new IdentityHashMap<>();
         private final Map<String, Set<String>> calleesByCaller = new LinkedHashMap<>();
         private final Map<String, Set<String>> parentsByCallee = new LinkedHashMap<>();
         private final Map<String, Set<String>> callSitesByMethod = new LinkedHashMap<>();
@@ -371,7 +362,8 @@ final class SymbolicRegionPlanner {
         private final Set<String> anchorMethods = new LinkedHashSet<>();
         private Planner(List<Map<String, Object>> edges,
                         List<Map<String, Object>> methodPlans) {
-            this.edges = edges == null ? Collections.emptyList() : edges;
+            graph = new StaticGraphIndex(edges == null
+                    ? Collections.emptyList() : edges);
             if (methodPlans != null) {
                 for (Map<String, Object> row : methodPlans) {
                     String method = string(row.get("method"));
@@ -521,7 +513,7 @@ final class SymbolicRegionPlanner {
             int modelEdges = 0;
             int alternativePathEdges = 0;
             List<String> uncoveredEdges = new ArrayList<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
                 String site = string(edge.get("siteId"));
                 if (isBoundary(edge)) {
@@ -569,7 +561,7 @@ final class SymbolicRegionPlanner {
             result.coverage.put("modeledMethodCount", modeledMethods.size());
             result.coverage.put("uncoveredMethodCount", uncoveredMethods.size());
             result.coverage.put("uncoveredMethods", uncoveredMethods);
-            result.coverage.put("staticEdgeCount", edges.size());
+            result.coverage.put("staticEdgeCount", graph.edges().size());
             result.coverage.put("internalEdgeCount", internalEdges);
             result.coverage.put("interRegionEdgeCount", interRegionEdges);
             result.coverage.put("modelEdgeCount", modelEdges);
@@ -631,7 +623,7 @@ final class SymbolicRegionPlanner {
             Set<String> coveredMethods = methodsCovered(regions);
             Set<String> anchors = new LinkedHashSet<>();
             Set<String> consumedFields = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
                 String transfer = string(edge.get("transferKind"));
                 if (coveredMethods.contains(method) && "HEAP_READ".equals(transfer)) {
@@ -704,7 +696,7 @@ final class SymbolicRegionPlanner {
                 }
             }
             if (!consumedFields.isEmpty()) {
-                for (Map<String, Object> edge : edges) {
+                for (Map<String, Object> edge : graph.edges()) {
                     String method = string(edge.get("method"));
                     if (!"HEAP_WRITE".equals(string(edge.get("transferKind")))
                             || !consumedFields.contains(string(edge.get("toCell")))
@@ -804,13 +796,8 @@ final class SymbolicRegionPlanner {
         }
 
         private void index() {
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
-                edgesByMethod.computeIfAbsent(method,
-                        ignored -> new ArrayList<>()).add(edge);
-                String targetCell = string(edge.get("toCell"));
-                incomingEdgesByCell.computeIfAbsent(targetCell,
-                        ignored -> new ArrayList<>()).add(edge);
                 String transfer = string(edge.get("transferKind"));
                 String kind = string(edge.get("kind"));
                 if ("SEED".equals(transfer) || lower(kind).contains("seed")) {
@@ -908,9 +895,8 @@ final class SymbolicRegionPlanner {
          */
         private CausalSlice exceptionCausalSlice(String anchor) {
             Set<String> seeds = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
-                if (!anchor.equals(string(edge.get("method")))
-                        || !"SEED".equals(string(edge.get("transferKind")))) {
+            for (Map<String, Object> edge : graph.forMethod(anchor)) {
+                if (!"SEED".equals(string(edge.get("transferKind")))) {
                     continue;
                 }
                 String kind = lower(string(edge.get("kind")));
@@ -981,9 +967,7 @@ final class SymbolicRegionPlanner {
             }
             while (!queue.isEmpty()) {
                 String target = queue.removeFirst();
-                for (Map<String, Object> edge : incomingEdgesByCell
-                        .getOrDefault(target, Collections
-                                .<Map<String, Object>>emptyList())) {
+                for (Map<String, Object> edge : graph.incoming(target)) {
                     String method = string(edge.get("method"));
                     if (allowedMethods != null
                             && !allowedMethods.contains(method)) {
@@ -1026,9 +1010,8 @@ final class SymbolicRegionPlanner {
                 String callee = path.get(index + 1);
                 Set<Integer> callUnits = new LinkedHashSet<>();
                 Set<String> directGuardSources = new LinkedHashSet<>();
-                List<Map<String, Object>> callerEdges = edgesByMethod
-                        .getOrDefault(caller, Collections
-                                .<Map<String, Object>>emptyList());
+                List<Map<String, Object>> callerEdges =
+                        graph.forMethod(caller);
                 for (Map<String, Object> edge : callerEdges) {
                     if (string(edge.get("kind"))
                             .contains("synchronous_callback_path_guard")
@@ -1128,7 +1111,7 @@ final class SymbolicRegionPlanner {
         private Set<String> callbackContextExcludedMethods() {
             Map<String, Set<String>> registrationsByExecutor =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 if (!"synchronous_callback_capture_receiver".equals(
                         string(edge.get("kind")))) {
                     continue;
@@ -1164,7 +1147,7 @@ final class SymbolicRegionPlanner {
                 }
             }
             Set<String> oppositeBranchCells = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String site = string(edge.get("siteId"));
                 Boolean required = requiredBySite.get(site);
                 Boolean outcome = requiredOutcome(edge);
@@ -1180,7 +1163,7 @@ final class SymbolicRegionPlanner {
             // globally would therefore lose a real external input.
             Map<String, Set<String>> oppositeSitesByCallee =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 if (!draft.methods.contains(string(edge.get("method")))) {
                     continue;
                 }
@@ -1407,7 +1390,7 @@ final class SymbolicRegionPlanner {
             // retain one strongest edge only for compatibility metadata.
             Map<String, List<Map<String, Object>>> branchEdgesBySite =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
                 if (!draft.methods.contains(method)
                         || draft.exceptionDirected
@@ -1677,17 +1660,15 @@ final class SymbolicRegionPlanner {
                     slice.causalCells.add(string(candidate.containerAccessor
                             .get("fromCell")));
                     for (String proofId : candidate.proofEdgeIds) {
-                        for (Map<String, Object> proofEdge : edges) {
-                            if (!proofId.equals(string(proofEdge.get("id")))) {
-                                continue;
-                            }
-                            slice.causalEdges.add(proofEdge);
-                            slice.causalCells.add(string(proofEdge.get(
-                                    "fromCell")));
-                            slice.causalCells.add(string(proofEdge.get(
-                                    "toCell")));
-                            break;
-                        }
+                        List<Map<String, Object>> rows =
+                                graph.withId(proofId);
+                        if (rows.isEmpty()) continue;
+                        Map<String, Object> proofEdge = rows.get(0);
+                        slice.causalEdges.add(proofEdge);
+                        slice.causalCells.add(string(proofEdge.get(
+                                "fromCell")));
+                        slice.causalCells.add(string(proofEdge.get(
+                                "toCell")));
                     }
                 }
                 RequestedStateTransformerContract transformerContract =
@@ -2046,11 +2027,11 @@ final class SymbolicRegionPlanner {
         exactContainerElementFieldCandidates(RegionDraft region,
                                               RegionDraft slice,
                                               String outputCell) {
-            Set<String> sliceEdgeIds = new LinkedHashSet<>(
-                    causalEdgeIds(slice.causalEdges));
+            StaticGraphIndex sliceGraph =
+                    globalEdgeIdSubgraph(slice.causalEdges);
             Map<String, List<Map<String, Object>>> arrayLoadsByShape =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 // A requested-output walk can legitimately admit a
                 // synchronous helper that the compact/bounded broad region
                 // omitted.  Requiring region.methods here silently discarded
@@ -2078,10 +2059,9 @@ final class SymbolicRegionPlanner {
                 String ownerCell = string(arrayLoad.get("toCell"));
 
                 List<Map<String, Object>> containers = new ArrayList<>();
-                for (Map<String, Object> edge : edges) {
-                    if (sliceEdgeIds.contains(string(edge.get("id")))
-                            && exactContainerAccessor(edge, method,
-                            arrayCell)) {
+                for (Map<String, Object> edge
+                        : sliceGraph.incoming(arrayCell)) {
+                    if (exactContainerAccessor(edge, method, arrayCell)) {
                         containers.add(edge);
                     }
                 }
@@ -2098,9 +2078,9 @@ final class SymbolicRegionPlanner {
 
                 Map<String, List<Map<String, Object>>> projectionsByShape =
                         new LinkedHashMap<>();
-                for (Map<String, Object> edge : edges) {
-                    if (!sliceEdgeIds.contains(string(edge.get("id")))
-                            || !exactProjectedAccessor(edge, method,
+                for (Map<String, Object> edge
+                        : sliceGraph.forMethod(method)) {
+                    if (!exactProjectedAccessor(edge, method,
                             ownerCell)) {
                         continue;
                     }
@@ -2124,9 +2104,9 @@ final class SymbolicRegionPlanner {
                     }
                     List<Map<String, Object>> declaredReads =
                             new ArrayList<>();
-                    for (Map<String, Object> edge : edges) {
-                        if (sliceEdgeIds.contains(string(edge.get("id")))
-                                && exactDeclaredAccessorPair(edge,
+                    for (Map<String, Object> edge : sliceGraph.outgoing(
+                            elementField.signature)) {
+                        if (exactDeclaredAccessorPair(edge,
                                 projection, elementField)) {
                             declaredReads.add(edge);
                         }
@@ -2182,7 +2162,7 @@ final class SymbolicRegionPlanner {
                 }
             }
             addArrayPutValueFieldCandidates(slice, outputCell,
-                    sliceEdgeIds, arrayLoadsByShape, result, emitted);
+                    sliceGraph, arrayLoadsByShape, result, emitted);
             addDirectArrayFieldPathCandidates(slice, arrayLoadsByShape,
                     result, emitted);
             result.sort(Comparator
@@ -2194,12 +2174,24 @@ final class SymbolicRegionPlanner {
             return result;
         }
 
+        private StaticGraphIndex globalEdgeIdSubgraph(
+                Set<Map<String, Object>> selected) {
+            Set<String> ids = new LinkedHashSet<>(causalEdgeIds(selected));
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (Map<String, Object> edge : graph.edges()) {
+                if (ids.contains(string(edge.get("id")))) rows.add(edge);
+            }
+            return new StaticGraphIndex(rows);
+        }
+
         /** Exact array[index].a.b.leaf provenance, materialized eagerly. */
         private void addDirectArrayFieldPathCandidates(
                 RegionDraft slice,
                 Map<String, List<Map<String, Object>>> arrayLoadsByShape,
                 List<ContainerElementFieldCandidate> result,
                 Set<String> emitted) {
+            StaticGraphIndex causalGraph = new StaticGraphIndex(
+                    new ArrayList<>(slice.causalEdges));
             for (String cell : sorted(slice.causalCells)) {
                 DeclaredFieldPathAccess access =
                         materializableDeclaredFieldPathAccess(cell, slice);
@@ -2208,10 +2200,8 @@ final class SymbolicRegionPlanner {
                 }
                 Map<String, Object> rootProjection = null;
                 Map<String, Object> leafDeclared = null;
-                for (Map<String, Object> edge : slice.causalEdges) {
-                    if (cell.equals(string(edge.get("fromCell")))
-                            && access.siteId.equals(string(edge.get(
-                            "siteId")))) {
+                for (Map<String, Object> edge : causalGraph.outgoing(cell)) {
+                    if (access.siteId.equals(string(edge.get("siteId")))) {
                         if (rootProjection != null) {
                             rootProjection = null;
                             break;
@@ -2219,10 +2209,9 @@ final class SymbolicRegionPlanner {
                         rootProjection = edge;
                     }
                 }
-                for (Map<String, Object> edge : slice.causalEdges) {
-                    if (access.leafField.signature.equals(string(edge.get(
-                            "fromCell")))
-                            && "field_read".equals(string(edge.get(
+                for (Map<String, Object> edge : causalGraph.outgoing(
+                        access.leafField.signature)) {
+                    if ("field_read".equals(string(edge.get(
                             "kind")))) {
                         if (leafDeclared != null) {
                             leafDeclared = null;
@@ -2245,7 +2234,8 @@ final class SymbolicRegionPlanner {
                     }
                     String arrayCell = string(arrayLoad.get("fromCell"));
                     List<Map<String, Object>> containers = new ArrayList<>();
-                    for (Map<String, Object> edge : edges) {
+                    for (Map<String, Object> edge
+                            : graph.incoming(arrayCell)) {
                         if (exactContainerAccessor(edge, access.method,
                                 arrayCell)) {
                             containers.add(edge);
@@ -2300,7 +2290,7 @@ final class SymbolicRegionPlanner {
          */
         private void addArrayPutValueFieldCandidates(
                 RegionDraft slice, String outputCell,
-                Set<String> sliceEdgeIds,
+                StaticGraphIndex sliceGraph,
                 Map<String, List<Map<String, Object>>> arrayLoadsByShape,
                 List<ContainerElementFieldCandidate> result,
                 Set<String> emitted) {
@@ -2312,7 +2302,7 @@ final class SymbolicRegionPlanner {
             }
 
             List<Map<String, Object>[]> accessorPairs =
-                    exactProjectedDeclaredAccessorPairs(sliceEdgeIds);
+                    exactProjectedDeclaredAccessorPairs(sliceGraph);
             for (List<Map<String, Object>> loadGroup
                     : arrayLoadsByShape.values()) {
                 if (loadGroup.size() != 1) {
@@ -2324,10 +2314,9 @@ final class SymbolicRegionPlanner {
                 String elementCell = string(arrayLoad.get("toCell"));
 
                 List<Map<String, Object>> containers = new ArrayList<>();
-                for (Map<String, Object> edge : edges) {
-                    if (sliceEdgeIds.contains(string(edge.get("id")))
-                            && exactContainerAccessor(edge, method,
-                            arrayCell)) {
+                for (Map<String, Object> edge
+                        : sliceGraph.incoming(arrayCell)) {
+                    if (exactContainerAccessor(edge, method, arrayCell)) {
                         containers.add(edge);
                     }
                 }
@@ -2401,13 +2390,12 @@ final class SymbolicRegionPlanner {
 
         @SuppressWarnings("unchecked")
         private List<Map<String, Object>[]>
-        exactProjectedDeclaredAccessorPairs(Set<String> sliceEdgeIds) {
+        exactProjectedDeclaredAccessorPairs(StaticGraphIndex sliceGraph) {
             List<Map<String, Object>[]> result = new ArrayList<>();
             Map<String, List<Map<String, Object>>> projections =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
-                if (!sliceEdgeIds.contains(string(edge.get("id")))
-                        || !exactProjectedAccessorPath(edge)) {
+            for (Map<String, Object> edge : sliceGraph.edges()) {
+                if (!exactProjectedAccessorPath(edge)) {
                     continue;
                 }
                 projections.computeIfAbsent(projectedAccessorShape(edge),
@@ -2425,9 +2413,9 @@ final class SymbolicRegionPlanner {
                     continue;
                 }
                 List<Map<String, Object>> declared = new ArrayList<>();
-                for (Map<String, Object> edge : edges) {
-                    if (sliceEdgeIds.contains(string(edge.get("id")))
-                            && exactDeclaredAccessorPair(edge, projection,
+                for (Map<String, Object> edge : sliceGraph.outgoing(
+                        field.signature)) {
+                    if (exactDeclaredAccessorPair(edge, projection,
                             field)) {
                         declared.add(edge);
                     }
@@ -3393,6 +3381,7 @@ final class SymbolicRegionPlanner {
             }
             internallyDerivedTargetsByRegion.remove(slice);
             callResultsWithCausalAlternativeByRegion.remove(slice);
+            analysisGraphsByRegion.remove(slice);
         }
 
         private Map<String, Object> inputPort(
@@ -3521,40 +3510,18 @@ final class SymbolicRegionPlanner {
                 return null;
             }
 
+            StaticGraphIndex sliceGraph = new StaticGraphIndex(
+                    new ArrayList<>(slice.causalEdges));
             DeclaredFieldAccess selected = null;
-            for (Map<String, Object> edge : slice.causalEdges) {
-                if (!cell.equals(string(edge.get("fromCell")))
-                        || !"HEAP_READ".equals(string(edge.get(
-                        "transferKind")))) {
+            for (Map<String, Object> edge : sliceGraph.outgoing(cell)) {
+                if (!"HEAP_READ".equals(string(edge.get("transferKind")))) {
                     continue;
                 }
-                String method = string(edge.get("method"));
-                String siteId = string(edge.get("siteId"));
-                String kind = string(edge.get("kind"));
-                String invokedMethod = string(edge.get("invoke"));
-                boolean accessorCall = kind.contains("accessor")
-                        && kind.contains("field_return");
-                String accessorImplementationMethod = string(edge.get(
-                        "accessorImplementationMethod"));
-                int unitIndex = integer(edge.get("unitIndex"), -1);
-                if (!slice.methods.contains(method)
-                        || !exactStaticValueFlow(edge)
-                        || !declaredMetadataMatches(edge, field)
-                        || method.isEmpty() || unitIndex < 0
-                        || !siteId.equals(method + "#u" + unitIndex)
-                        || string(edge.get("toCell")).isEmpty()
-                        || accessorCall != !invokedMethod.isEmpty()
-                        || accessorCall && (accessorImplementationMethod
-                        .isEmpty()
-                        || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
-                        .equals(string(edge.get(
-                                "accessorImplementationAuthority"))))
-                        || !accessorCall && !kind.contains("field_read")) {
+                DeclaredFieldAccess candidate = declaredFieldAccessAtEdge(
+                        edge, field, slice);
+                if (candidate == null) {
                     return null;
                 }
-                DeclaredFieldAccess candidate = new DeclaredFieldAccess(
-                        field, method, siteId, unitIndex, accessorCall,
-                        invokedMethod, accessorImplementationMethod);
                 if (selected != null
                         && (!selected.method.equals(candidate.method)
                         || !selected.siteId.equals(candidate.siteId)
@@ -3856,25 +3823,20 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> projection, String kind,
                 String fromCell, String toCell) {
             String baseId = string(projection.get("projectionBaseEdgeId"));
-            Map<String, Object> selected = null;
-            for (Map<String, Object> edge : edges) {
-                if (!baseId.equals(string(edge.get("id")))) {
-                    continue;
-                }
-                if (selected != null || !kind.equals(string(edge.get(
-                        "kind"))) || !exactStaticEdge(edge)
-                        || !"HEAP_READ".equals(string(edge.get(
-                        "transferKind")))
-                        || !"value_flow".equals(string(edge.get(
-                        "relation")))
-                        || !fromCell.equals(string(edge.get("fromCell")))
-                        || !toCell.equals(string(edge.get("toCell")))
-                        || !sameExactReadSite(projection, edge)) {
-                    return null;
-                }
-                selected = edge;
+            List<Map<String, Object>> matches = graph.withId(baseId);
+            if (matches.size() != 1) {
+                return null;
             }
-            return selected;
+            Map<String, Object> selected = matches.get(0);
+            return kind.equals(string(selected.get("kind")))
+                    && exactStaticEdge(selected)
+                    && "HEAP_READ".equals(string(selected.get(
+                    "transferKind")))
+                    && "value_flow".equals(string(selected.get("relation")))
+                    && fromCell.equals(string(selected.get("fromCell")))
+                    && toCell.equals(string(selected.get("toCell")))
+                    && sameExactReadSite(projection, selected)
+                    ? selected : null;
         }
 
         private boolean sameExactReadSite(Map<String, Object> left,
@@ -3939,7 +3901,8 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> instance, String expectedOwner,
                 String fieldName) {
             List<Map<String, Object>> result = new ArrayList<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.incoming(string(
+                    instance.get("toCell")))) {
                 DeclaredFieldIdentity field = declaredField(string(edge.get(
                         "fromCell")));
                 if (field == null || !expectedOwner.equals(field.owner)
@@ -3950,8 +3913,6 @@ final class SymbolicRegionPlanner {
                         "transferKind")))
                         || !"value_flow".equals(string(edge.get(
                         "relation")))
-                        || !string(instance.get("toCell")).equals(string(
-                        edge.get("toCell")))
                         || !sameExactReadSite(instance, edge)
                         || !exactDeclaredGetfieldUnit(edge, field, "")) {
                     continue;
@@ -4041,9 +4002,8 @@ final class SymbolicRegionPlanner {
                 RegionDraft region, String outputCell) {
             List<Map<String, Object>> result = new ArrayList<>();
             boolean rejected = false;
-            for (Map<String, Object> edge : edges) {
-                if (!isBoundary(edge)
-                        || !outputCell.equals(string(edge.get("fromCell")))) {
+            for (Map<String, Object> edge : graph.outgoing(outputCell)) {
+                if (!isBoundary(edge)) {
                     continue;
                 }
                 String targetMethod = methodForCell(
@@ -4067,7 +4027,7 @@ final class SymbolicRegionPlanner {
 
         private boolean hasExactProjectedOutboundBoundary(
                 RegionDraft region, String base) {
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String from = string(edge.get("fromCell"));
                 if (!from.startsWith(base + "#field:")) {
                     continue;
@@ -4160,7 +4120,7 @@ final class SymbolicRegionPlanner {
                 result.add(cellMethod);
             }
             String inputField = semanticFieldKey(input, slice.rootMethod);
-            for (Map<String, Object> edge : analysisEdges(slice)) {
+            for (Map<String, Object> edge : analysisGraph(slice).edges()) {
                 String method = string(edge.get("method"));
                 if (method.isEmpty()) {
                     continue;
@@ -4367,26 +4327,16 @@ final class SymbolicRegionPlanner {
                         guardSites, unclassified, contract.complete, false);
             }
 
-            Map<String, List<Map<String, Object>>> outgoing =
-                    new LinkedHashMap<>();
-            for (Map<String, Object> edge : slice.causalEdges) {
-                String from = string(edge.get("fromCell"));
-                if (!from.isEmpty()) {
-                    outgoing.computeIfAbsent(from,
-                            ignored -> new ArrayList<>()).add(edge);
-                }
-            }
+            StaticGraphIndex sliceGraph = new StaticGraphIndex(
+                    new ArrayList<>(slice.causalEdges));
             Deque<String> queue = new ArrayDeque<>();
             Set<String> seen = new LinkedHashSet<>();
             queue.add(input);
             seen.add(input);
             while (!queue.isEmpty()) {
                 String current = queue.removeFirst();
-                List<Map<String, Object>> next = outgoing.get(current);
-                if (next == null) {
-                    continue;
-                }
-                for (Map<String, Object> edge : next) {
+                for (Map<String, Object> edge
+                        : sliceGraph.outgoing(current)) {
                     String target = string(edge.get("toCell"));
                     if (outputCell.equals(target)) {
                         String site = string(edge.get("siteId"));
@@ -5241,15 +5191,12 @@ final class SymbolicRegionPlanner {
             if (baseId.isEmpty()) {
                 return false;
             }
-            Map<String, Object> base = null;
-            int matches = 0;
-            for (Map<String, Object> candidate : edges) {
-                if (baseId.equals(string(candidate.get("id")))) {
-                    base = candidate;
-                    matches++;
-                }
+            List<Map<String, Object>> matches = graph.withId(baseId);
+            if (matches.size() != 1) {
+                return false;
             }
-            if (matches != 1 || base == projected || isBoundary(base)
+            Map<String, Object> base = matches.get(0);
+            if (base == projected || isBoundary(base)
                     || !exactStaticValueFlow(base)
                     || !string(projected.get("method")).equals(
                     string(base.get("method")))
@@ -5331,15 +5278,12 @@ final class SymbolicRegionPlanner {
                 return false;
             }
 
-            Map<String, Object> base = null;
-            int matches = 0;
-            for (Map<String, Object> candidate : edges) {
-                if (baseId.equals(string(candidate.get("id")))) {
-                    base = candidate;
-                    matches++;
-                }
+            List<Map<String, Object>> matches = graph.withId(baseId);
+            if (matches.size() != 1) {
+                return false;
             }
-            if (matches != 1 || base == projected
+            Map<String, Object> base = matches.get(0);
+            if (base == projected
                     || !"local_def_use".equals(string(base.get("kind")))
                     || !"VALUE_PASS".equals(string(base.get(
                     "transferKind")))
@@ -5496,10 +5440,7 @@ final class SymbolicRegionPlanner {
                     return InputPortResolution.unresolved();
                 }
                 boolean proof = false;
-                for (Map<String, Object> edge : edges) {
-                    if (!cell.equals(string(edge.get("fromCell")))) {
-                        continue;
-                    }
+                for (Map<String, Object> edge : graph.outgoing(cell)) {
                     if (!exactStaticValueFlow(edge)
                             || !Boolean.TRUE.equals(edge.get(
                             "fieldSensitive"))
@@ -5519,9 +5460,8 @@ final class SymbolicRegionPlanner {
                 return InputPortResolution.unresolved();
             }
             Set<String> projectedSources = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
-                if (!isBoundary(edge)
-                        || !cell.equals(string(edge.get("toCell")))) {
+            for (Map<String, Object> edge : graph.incoming(cell)) {
+                if (!isBoundary(edge)) {
                     continue;
                 }
                 if (!exactStaticValueFlow(edge)
@@ -5548,10 +5488,8 @@ final class SymbolicRegionPlanner {
             // projected alternative and let runtime select the observed one.
             for (String sourceBase : projectedSources) {
                 boolean rawProof = false;
-                for (Map<String, Object> edge : edges) {
+                for (Map<String, Object> edge : graph.outgoing(sourceBase)) {
                     if (!isBoundary(edge)
-                            || !sourceBase.equals(string(edge.get(
-                            "fromCell")))
                             || !base.equals(string(edge.get("toCell")))) {
                         continue;
                     }
@@ -5631,8 +5569,9 @@ final class SymbolicRegionPlanner {
                                                      Set<String> candidates,
                                                      Set<String> produced) {
             InputSelection result = new InputSelection(candidates.size());
-            Set<String> boundaryInputs = boundaryInputs(draft.methods);
-            Set<String> boundarySources = incomingBoundarySources(draft.methods);
+            Set<String> boundarySources = new LinkedHashSet<>();
+            Set<String> boundaryInputs = boundaryInputs(draft.methods,
+                    boundarySources);
             Set<String> opaqueCallReturns = opaqueCallReturnFrontier(draft);
             SeedGuardInputFrontier seedGuardFrontier =
                     seedGuardInputFrontier(draft, boundaryInputs,
@@ -5644,10 +5583,9 @@ final class SymbolicRegionPlanner {
                             mandatorySeedGuardInputs);
             result.seedGuardInputDerivationGaps.addAll(
                     seedGuardFrontier.derivationGaps);
-            Set<String> readFieldKeys = readFieldKeys(draft.methods,
-                    draft.rootMethod);
+            Set<String> readFieldKeys = new LinkedHashSet<>();
             Map<String, String> mutableHeapPrestates =
-                    mutableHeapPrestateCells(draft);
+                    mutableHeapPrestateCells(draft, readFieldKeys);
             readFieldKeys.addAll(mutableHeapPrestates.keySet());
             Map<String, String> fieldsBySemanticKey = new LinkedHashMap<>();
 
@@ -5901,10 +5839,8 @@ final class SymbolicRegionPlanner {
                 String alias, DeclaredFieldPathAccess replacement,
                 RegionDraft draft) {
             boolean observed = false;
-            for (Map<String, Object> edge : analysisEdges(draft)) {
-                if (!alias.equals(string(edge.get("fromCell")))) {
-                    continue;
-                }
+            for (Map<String, Object> edge
+                    : analysisGraph(draft).outgoing(alias)) {
                 String kind = string(edge.get("kind"));
                 if (syntheticProjectionAlias(edge, kind)) {
                     continue;
@@ -5933,15 +5869,10 @@ final class SymbolicRegionPlanner {
             if (heapPrestates.isEmpty()) {
                 return Collections.emptySet();
             }
-            Map<String, List<Map<String, Object>>> incoming =
-                    new LinkedHashMap<>();
+            StaticGraphIndex analysis = analysisGraph(draft);
             Deque<String> work = new ArrayDeque<>();
-            for (Map<String, Object> edge : analysisEdges(draft)) {
+            for (Map<String, Object> edge : analysis.edges()) {
                 String target = string(edge.get("toCell"));
-                if (!target.isEmpty()) {
-                    incoming.computeIfAbsent(target,
-                            ignored -> new ArrayList<>()).add(edge);
-                }
                 if (heapPrestates.contains(target)
                         && "HEAP_WRITE".equals(string(edge.get(
                         "transferKind")))
@@ -5959,8 +5890,7 @@ final class SymbolicRegionPlanner {
                         || !upstream.add(current)) {
                     continue;
                 }
-                for (Map<String, Object> edge : incoming.getOrDefault(
-                        current, Collections.<Map<String, Object>>emptyList())) {
+                for (Map<String, Object> edge : analysis.incoming(current)) {
                     if (isBoundary(edge)
                             && authoritativeGuardProtocolBoundary(edge)) {
                         continue;
@@ -6011,15 +5941,10 @@ final class SymbolicRegionPlanner {
                 return result;
             }
 
-            Map<String, List<Map<String, Object>>> incoming =
-                    new LinkedHashMap<>();
+            StaticGraphIndex analysis = analysisGraph(draft);
             Set<String> guardSources = new LinkedHashSet<>();
-            for (Map<String, Object> edge : analysisEdges(draft)) {
+            for (Map<String, Object> edge : analysis.edges()) {
                 String target = string(edge.get("toCell"));
-                if (!target.isEmpty()) {
-                    incoming.computeIfAbsent(target,
-                            ignored -> new ArrayList<>()).add(edge);
-                }
                 if (draft.anchorMethod.equals(string(edge.get("method")))
                         && "GUARD".equals(string(edge.get("transferKind")))
                         && seedCells.contains(target)) {
@@ -6046,8 +5971,7 @@ final class SymbolicRegionPlanner {
                 List<Map<String, Object>> definitions = new ArrayList<>();
                 boolean incomingProtocolBoundary = false;
                 boolean rejectedDefinition = false;
-                for (Map<String, Object> edge : incoming.getOrDefault(
-                        current, Collections.<Map<String, Object>>emptyList())) {
+                for (Map<String, Object> edge : analysis.incoming(current)) {
                     if (isBoundary(edge)) {
                         // The consumer-side endpoint is the region live-in.
                         // Its producer belongs to another region and is
@@ -6077,8 +6001,7 @@ final class SymbolicRegionPlanner {
                     result.addGap(current, rejectedDefinition
                                     ? "NON_AUTHORITATIVE_IN_REGION_DEFINITION"
                                     : "MISSING_IN_REGION_DEFINITION",
-                            incoming.getOrDefault(current,
-                                    Collections.<Map<String, Object>>emptyList()));
+                            analysis.incoming(current));
                     continue;
                 }
                 for (Map<String, Object> definition : definitions) {
@@ -6291,9 +6214,9 @@ final class SymbolicRegionPlanner {
                     || methodForCell(candidate).isEmpty()) {
                 return false;
             }
-            for (Map<String, Object> edge : analysisEdges(draft)) {
-                if (!candidate.equals(string(edge.get("toCell")))
-                        || isBoundary(edge)
+            for (Map<String, Object> edge
+                    : analysisGraph(draft).incoming(candidate)) {
+                if (isBoundary(edge)
                         || "GUARD".equals(string(edge.get("transferKind")))) {
                     continue;
                 }
@@ -6350,7 +6273,7 @@ final class SymbolicRegionPlanner {
          */
         private Set<String> opaqueCallReturnFrontier(RegionDraft draft) {
             Set<String> opaque = new LinkedHashSet<>();
-            for (Map<String, Object> edge : analysisEdges(draft)) {
+            for (Map<String, Object> edge : analysisGraph(draft).edges()) {
                 if (isBoundary(edge)) {
                     continue;
                 }
@@ -6425,9 +6348,9 @@ final class SymbolicRegionPlanner {
                     || !reachableFrom(draft.rootMethod, returnedMethod)) {
                 return false;
             }
-            for (Map<String, Object> edge : analysisEdges(draft)) {
-                if (!candidate.equals(string(edge.get("fromCell")))
-                        || !draft.methods.contains(string(edge.get("method")))
+            for (Map<String, Object> edge
+                    : analysisGraph(draft).outgoing(candidate)) {
+                if (!draft.methods.contains(string(edge.get("method")))
                         || isBoundary(edge)
                         || !"FUNCTION_RETURN".equals(string(edge.get(
                         "transferKind")))
@@ -6453,7 +6376,7 @@ final class SymbolicRegionPlanner {
                     targets.addAll(strings(plan.get("outputs")));
                 }
             }
-            for (Map<String, Object> edge : analysisEdges(draft)) {
+            for (Map<String, Object> edge : analysisGraph(draft).edges()) {
                 if (draft.methods.contains(string(edge.get("method")))) {
                     String target = string(edge.get("toCell"));
                     if (!target.isEmpty()) {
@@ -6465,18 +6388,24 @@ final class SymbolicRegionPlanner {
             return targets;
         }
 
-        private Collection<Map<String, Object>> analysisEdges(
-                RegionDraft draft) {
-            if (draft.exceptionDirected) {
-                return draft.causalEdges;
+        private StaticGraphIndex analysisGraph(RegionDraft draft) {
+            StaticGraphIndex cached = analysisGraphsByRegion.get(draft);
+            if (cached != null) {
+                return cached;
             }
             List<Map<String, Object>> relevant = new ArrayList<>();
-            for (Map<String, Object> edge : edges) {
-                if (draft.methods.contains(string(edge.get("method")))) {
-                    relevant.add(edge);
+            if (draft.exceptionDirected) {
+                relevant.addAll(draft.causalEdges);
+            } else {
+                for (Map<String, Object> edge : graph.edges()) {
+                    if (draft.methods.contains(string(edge.get("method")))) {
+                        relevant.add(edge);
+                    }
                 }
             }
-            return relevant;
+            StaticGraphIndex result = new StaticGraphIndex(relevant);
+            analysisGraphsByRegion.put(draft, result);
+            return result;
         }
 
         private String inputSelectionReason(String candidate,
@@ -6619,10 +6548,8 @@ final class SymbolicRegionPlanner {
                 return false;
             }
             boolean read = false;
-            for (Map<String, Object> raw : analysisEdges(draft)) {
-                if (!candidate.equals(string(raw.get("fromCell")))) {
-                    continue;
-                }
+            StaticGraphIndex analysis = analysisGraph(draft);
+            for (Map<String, Object> raw : analysis.outgoing(candidate)) {
                 if (!"HEAP_READ".equals(string(raw.get("transferKind")))
                         || Boolean.TRUE.equals(raw.get("fieldSensitive"))
                         || !exactStaticValueFlow(raw)) {
@@ -6630,7 +6557,7 @@ final class SymbolicRegionPlanner {
                 }
                 read = true;
                 boolean projected = false;
-                for (Map<String, Object> shadow : analysisEdges(draft)) {
+                for (Map<String, Object> shadow : analysis.edges()) {
                     String path = string(shadow.get("fieldPath"));
                     if (path.isEmpty()
                             || !Boolean.TRUE.equals(shadow.get(
@@ -6695,7 +6622,8 @@ final class SymbolicRegionPlanner {
             if (cached != null) {
                 return cached;
             }
-            Collection<Map<String, Object>> selected = analysisEdges(draft);
+            List<Map<String, Object>> selected =
+                    analysisGraph(draft).edges();
             Map<CallResultSiteKey, Set<String>> returnsBySite =
                     new LinkedHashMap<>();
             Set<CallResultSiteKey> alternativeSites = new LinkedHashSet<>();
@@ -6761,14 +6689,15 @@ final class SymbolicRegionPlanner {
         private boolean fieldDefinedInsideRegion(String fieldKey,
                                                  Set<String> methods,
                                                  String rootMethod) {
-            List<Map<String, Object>> reads = fieldReads(fieldKey, methods,
-                    rootMethod);
+            List<Map<String, Object>> methodEdges = edgesForMethods(methods);
+            List<Map<String, Object>> reads = fieldReads(fieldKey,
+                    methodEdges, rootMethod);
             if (!reads.isEmpty()
                     && !fieldDefinitelyDefinedBeforeAllReads(fieldKey,
-                    methods, rootMethod, reads)) {
+                    methodEdges, rootMethod, reads)) {
                 return false;
             }
-            for (Map<String, Object> edge : edgesForMethods(methods)) {
+            for (Map<String, Object> edge : methodEdges) {
                 String target = string(edge.get("toCell"));
                 String targetKey = semanticFieldKey(target, rootMethod);
                 if (targetKey.isEmpty()) {
@@ -6791,9 +6720,10 @@ final class SymbolicRegionPlanner {
         }
 
         private List<Map<String, Object>> fieldReads(
-                String fieldKey, Set<String> methods, String rootMethod) {
+                String fieldKey, List<Map<String, Object>> methodEdges,
+                String rootMethod) {
             List<Map<String, Object>> result = new ArrayList<>();
-            for (Map<String, Object> edge : edgesForMethods(methods)) {
+            for (Map<String, Object> edge : methodEdges) {
                 if (!"HEAP_READ".equals(string(edge.get(
                         "transferKind")))) {
                     continue;
@@ -6815,7 +6745,8 @@ final class SymbolicRegionPlanner {
          * and an authoritative dominance set covering every read site.
          */
         private boolean fieldDefinitelyDefinedBeforeAllReads(
-                String fieldKey, Set<String> methods, String rootMethod,
+                String fieldKey, List<Map<String, Object>> methodEdges,
+                String rootMethod,
                 List<Map<String, Object>> reads) {
             if (reads.isEmpty()) {
                 return false;
@@ -6837,7 +6768,7 @@ final class SymbolicRegionPlanner {
             if (readSites.size() != reads.size()) {
                 return false;
             }
-            for (Map<String, Object> write : edgesForMethods(methods)) {
+            for (Map<String, Object> write : methodEdges) {
                 if (!readMethod.equals(string(write.get("method")))
                         || !"HEAP_WRITE".equals(string(write.get(
                         "transferKind")))
@@ -6869,16 +6800,16 @@ final class SymbolicRegionPlanner {
             }
             List<Map<String, Object>> selected = new ArrayList<>();
             for (String method : sorted(methods)) {
-                selected.addAll(edgesByMethod.getOrDefault(method,
-                        Collections.<Map<String, Object>>emptyList()));
+                selected.addAll(graph.forMethod(method));
             }
             edgesByMethodSet.put(key, selected);
             return selected;
         }
 
-        private Set<String> boundaryInputs(Set<String> methods) {
+        private Set<String> boundaryInputs(
+                Set<String> methods, Set<String> externalSources) {
             Set<String> inputs = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 if (!isBoundary(edge)) {
                     continue;
                 }
@@ -6891,70 +6822,41 @@ final class SymbolicRegionPlanner {
                 }
                 String target = string(edge.get("toCell"));
                 inputs.add(target.isEmpty() ? string(edge.get("fromCell")) : target);
+                String sourceMethod = methodForCell(string(edge.get("fromCell")));
+                if (!methods.contains(sourceMethod)) {
+                    externalSources.add(string(edge.get("fromCell")));
+                }
             }
             return inputs;
         }
 
-        private Set<String> incomingBoundarySources(Set<String> methods) {
-            Set<String> sources = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
-                if (!isBoundary(edge)) {
-                    continue;
-                }
-                String targetMethod = methodForCell(string(edge.get("toCell")));
-                if (targetMethod.isEmpty()) {
-                    targetMethod = string(edge.get("method"));
-                }
-                String sourceMethod = methodForCell(string(edge.get("fromCell")));
-                if (methods.contains(targetMethod)
-                        && !methods.contains(sourceMethod)) {
-                    sources.add(string(edge.get("fromCell")));
-                }
-            }
-            return sources;
-        }
-
-        private Set<String> readFieldKeys(Set<String> methods,
-                                          String rootMethod) {
-            Set<String> keys = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
-                if (!methods.contains(string(edge.get("method")))
-                        || !"HEAP_READ".equals(string(edge.get("transferKind")))) {
-                    continue;
-                }
-                String key = semanticFieldKey(string(edge.get("fromCell")),
-                        rootMethod);
-                if (!key.isEmpty()) {
-                    keys.add(key);
-                }
-            }
-            return keys;
-        }
-
         private Map<String, String> mutableHeapPrestateCells(
-                RegionDraft draft) {
+                RegionDraft draft, Set<String> readFieldKeys) {
             Map<String, String> readCells = new LinkedHashMap<>();
             Map<String, List<Map<String, Object>>> readsByKey =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
-                if (!draft.methods.contains(string(edge.get("method")))
-                        || !"HEAP_READ".equals(string(edge.get(
-                        "transferKind")))) {
+            List<Map<String, Object>> methodEdges = new ArrayList<>();
+            for (Map<String, Object> edge : graph.edges()) {
+                if (draft.methods.contains(string(edge.get("method")))) {
+                    methodEdges.add(edge);
+                }
+            }
+            for (Map<String, Object> edge : methodEdges) {
+                if (!"HEAP_READ".equals(string(edge.get("transferKind")))) {
                     continue;
                 }
                 String cell = string(edge.get("fromCell"));
                 String key = semanticFieldKey(cell, draft.rootMethod);
                 if (!key.isEmpty()) {
+                    readFieldKeys.add(key);
                     readCells.putIfAbsent(key, cell);
                     readsByKey.computeIfAbsent(key,
                             ignored -> new ArrayList<>()).add(edge);
                 }
             }
             Map<String, String> result = new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
-                if (!draft.methods.contains(string(edge.get("method")))
-                        || !"HEAP_WRITE".equals(string(edge.get(
-                        "transferKind")))) {
+            for (Map<String, Object> edge : methodEdges) {
+                if (!"HEAP_WRITE".equals(string(edge.get("transferKind")))) {
                     continue;
                 }
                 String cell = string(edge.get("toCell"));
@@ -6965,7 +6867,7 @@ final class SymbolicRegionPlanner {
                     result.putIfAbsent(key, cell);
                 } else if (!key.isEmpty() && readCells.containsKey(key)
                         && !fieldDefinitelyDefinedBeforeAllReads(key,
-                        draft.methods, draft.rootMethod,
+                        methodEdges, draft.rootMethod,
                         readsByKey.get(key))) {
                     result.putIfAbsent(key, readCells.get(key));
                 }
@@ -7068,7 +6970,7 @@ final class SymbolicRegionPlanner {
         }
 
         private void addSeedOutputs(Set<String> methods, Set<String> outputs) {
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
                 if (!methods.contains(method)) {
                     continue;
@@ -7150,9 +7052,8 @@ final class SymbolicRegionPlanner {
                 RegionDraft region, String field) {
             boolean exactDefinition = false;
             boolean anchorDefinition = false;
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.incoming(field)) {
                 if (region.methods.contains(string(edge.get("method")))
-                        && field.equals(string(edge.get("toCell")))
                         && exactSharedFieldDefinition(edge)) {
                     exactDefinition = true;
                     anchorDefinition |= region.anchorMethod.equals(
@@ -7162,16 +7063,14 @@ final class SymbolicRegionPlanner {
             if (!exactDefinition) {
                 return false;
             }
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.outgoing(field)) {
                 String method = string(edge.get("method"));
                 if (!region.methods.contains(method)
                         && "HEAP_READ".equals(string(edge.get(
-                        "transferKind")))
-                        && field.equals(string(edge.get("fromCell")))) {
+                        "transferKind")))) {
                     return true;
                 }
-                if (isBoundary(edge)
-                        && field.equals(string(edge.get("fromCell")))) {
+                if (isBoundary(edge)) {
                     String targetMethod = methodForCell(string(edge.get(
                             "toCell")));
                     if (!targetMethod.isEmpty()
@@ -7181,10 +7080,9 @@ final class SymbolicRegionPlanner {
                 }
             }
             if (anchorDefinition) {
-                for (Map<String, Object> edge : edges) {
+                for (Map<String, Object> edge : graph.outgoing(field)) {
                     if (!"HEAP_READ".equals(string(edge.get(
-                            "transferKind")))
-                            || !field.equals(string(edge.get("fromCell")))) {
+                            "transferKind")))) {
                         continue;
                     }
                     String reader = string(edge.get("method"));
@@ -7240,7 +7138,7 @@ final class SymbolicRegionPlanner {
             if (field == null) {
                 return false;
             }
-            for (Map<String, Object> boundary : edges) {
+            for (Map<String, Object> boundary : graph.edges()) {
                 if (!isBoundary(boundary)) {
                     continue;
                 }
@@ -7251,9 +7149,8 @@ final class SymbolicRegionPlanner {
                         || region.methods.contains(targetMethod)) {
                     continue;
                 }
-                for (Map<String, Object> proof : edges) {
-                    if (!raw.equals(string(proof.get("toCell")))
-                            || !eligibleProjectedReturnAlias(proof,
+                for (Map<String, Object> proof : graph.incoming(raw)) {
+                    if (!eligibleProjectedReturnAlias(proof,
                             region.methods)) {
                         continue;
                     }
@@ -7284,9 +7181,8 @@ final class SymbolicRegionPlanner {
                     || !region.methods.contains(sourceMethod)) {
                 return false;
             }
-            for (Map<String, Object> edge : edges) {
-                if (!isBoundary(edge)
-                        || !outputCell.equals(string(edge.get("fromCell")))) {
+            for (Map<String, Object> edge : graph.outgoing(outputCell)) {
+                if (!isBoundary(edge)) {
                     continue;
                 }
                 String targetMethod = methodForCell(
@@ -7312,7 +7208,7 @@ final class SymbolicRegionPlanner {
             }
             Set<String> emitted = new LinkedHashSet<>();
             int index = 0;
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 if (!isBoundary(edge)) {
                     continue;
                 }
@@ -7401,7 +7297,7 @@ final class SymbolicRegionPlanner {
             Map<String, Set<String>> producerRegionsByField = new LinkedHashMap<>();
             Map<String, Set<String>> consumerRegionsByField = new LinkedHashMap<>();
             Set<String> mutationFieldsNeedingProjectedReads = new LinkedHashSet<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 String transfer = string(edge.get("transferKind"));
                 String method = string(edge.get("method"));
                 List<Map<String, Object>> methodRegions = regionsByMethod.get(method);
@@ -7505,9 +7401,8 @@ final class SymbolicRegionPlanner {
             Map<String, Map<String, Object>> outputsByKey =
                     new LinkedHashMap<>();
             boolean rejectedEligibleProof = false;
-            for (Map<String, Object> proof : edges) {
-                if (!rawEndpoint.equals(string(proof.get("toCell")))
-                        || !eligibleProjectedReturnAlias(proof,
+            for (Map<String, Object> proof : graph.incoming(rawEndpoint)) {
+                if (!eligibleProjectedReturnAlias(proof,
                         regionMethods)) {
                     continue;
                 }
@@ -7938,7 +7833,7 @@ final class SymbolicRegionPlanner {
             }
             Map<String, List<Map<String, Object>>> causalBySite =
                     new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
+            for (Map<String, Object> edge : graph.edges()) {
                 if (!selectedEdgeIds.contains(string(edge.get("id")))
                         || !"GUARD".equals(string(edge.get(
                         "transferKind")))) {
@@ -8076,18 +7971,7 @@ final class SymbolicRegionPlanner {
                 return false;
             }
 
-            Map<String, List<Map<String, Object>>> incoming =
-                    new LinkedHashMap<>();
-            for (Map<String, Object> dependency : analysisEdges(draft)) {
-                if (isBoundary(dependency)) {
-                    continue;
-                }
-                String target = string(dependency.get("toCell"));
-                if (!target.isEmpty()) {
-                    incoming.computeIfAbsent(target,
-                            ignored -> new ArrayList<>()).add(dependency);
-                }
-            }
+            StaticGraphIndex analysis = analysisGraph(draft);
             Set<String> seen = new LinkedHashSet<>();
             Deque<String> work = new ArrayDeque<>();
             seen.add(start);
@@ -8100,11 +7984,9 @@ final class SymbolicRegionPlanner {
                 if (scalarMethodReturnFrontier(current)) {
                     return true;
                 }
-                List<Map<String, Object>> dependencies = incoming.get(current);
-                if (dependencies == null) {
-                    continue;
-                }
-                for (Map<String, Object> dependency : dependencies) {
+                for (Map<String, Object> dependency
+                        : analysis.incoming(current)) {
+                    if (isBoundary(dependency)) continue;
                     String source = string(dependency.get("fromCell"));
                     if (!source.isEmpty() && seen.add(source)) {
                         work.addLast(source);
