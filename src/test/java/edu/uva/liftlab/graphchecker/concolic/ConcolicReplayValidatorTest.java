@@ -15,7 +15,7 @@ import static org.junit.Assert.assertTrue;
 public class ConcolicReplayValidatorTest {
     @Test
     public void admitsNormalExactOutputClosureReplay() {
-        JsonObject task = outputTask();
+        JsonObject task = outputTaskMember();
         JsonObject raw = result(true);
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
@@ -25,11 +25,7 @@ public class ConcolicReplayValidatorTest {
 
         assertTrue(validation.toString(), validation.get("valid")
                 .getAsBoolean());
-        assertTrue(validation.get("normalExitValidated").getAsBoolean());
-        assertTrue(validation.get("requestedOutputExpressionValidated")
-                .getAsBoolean());
-        assertFalse(validation.get("outputClosureAdmissionGap")
-                .getAsBoolean());
+        assertEquals(0, validation.getAsJsonArray("failures").size());
     }
 
     @Test
@@ -49,12 +45,11 @@ public class ConcolicReplayValidatorTest {
         JsonObject missing = ConcolicReplayValidator.validate(task, raw,
                 missingSummary);
         assertFalse(missing.toString(), missing.get("valid").getAsBoolean());
-        assertTrue(missing.get("requestedOutputIdentityValidated")
-                .getAsBoolean());
-        assertFalse(missing.get("requestedOutputExpressionValidated")
-                .getAsBoolean());
-        assertTrue(missing.getAsJsonArray("failures").toString().contains(
+        String missingFailures = missing.getAsJsonArray("failures")
+                .toString();
+        assertTrue(missingFailures.contains(
                 "REQUESTED_OUTPUT_EXPRESSION_MISSING"));
+        assertFalse(missingFailures.contains("REQUESTED_OUTPUT_MISMATCH"));
 
         JsonObject stale = outputSummary(task);
         stale.addProperty("activationId", "ACT.OLDER.PATH");
@@ -85,8 +80,6 @@ public class ConcolicReplayValidatorTest {
 
         assertFalse(validation.toString(), validation.get("valid")
                 .getAsBoolean());
-        assertFalse(validation.get("requestedOutputIdentityValidated")
-                .getAsBoolean());
         assertTrue(validation.getAsJsonArray("failures").toString()
                 .contains("REQUESTED_OUTPUT_MISMATCH"));
     }
@@ -106,17 +99,10 @@ public class ConcolicReplayValidatorTest {
         return task;
     }
 
-    private static JsonObject outputTask() {
-        JsonObject task = legacyOutputTask();
-        OutputClosureContract closure = OutputClosureCodec.decode(task);
-        OutputClosureCodec.writeTo(task, closure);
-        return task;
-    }
-
     private static JsonObject jointOutputTask() {
-        JsonObject first = legacyOutputTask(
+        JsonObject first = outputTaskMember(
                 "REGION.3.out.0", "<example.Region: int x>", 2);
-        JsonObject second = legacyOutputTask(
+        JsonObject second = outputTaskMember(
                 "REGION.3.out.1", "<example.Region: int y>", 3);
         OutputClosureContract closure = OutputClosureCodec.merge(
                 Arrays.asList(OutputClosureCodec.decode(first),
@@ -125,33 +111,17 @@ public class ConcolicReplayValidatorTest {
         return first;
     }
 
-    private static JsonObject legacyOutputTask() {
-        return legacyOutputTask("REGION.3.out.0",
+    private static JsonObject outputTaskMember() {
+        return outputTaskMember("REGION.3.out.0",
                 "<example.Region: java.util.Map out>", 2);
     }
 
-    private static JsonObject legacyOutputTask(
+    private static JsonObject outputTaskMember(
             String port, String cell, int unitIndex) {
         JsonObject task = task();
         task.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
         task.addProperty("regionInstanceId", "REGION.3@test#call7");
         task.addProperty("rootCallId", 7);
-        JsonObject requested = new JsonObject();
-        requested.addProperty("portId", port);
-        requested.addProperty("cell", cell);
-        requested.addProperty("kind", "HEAP_STATE");
-        requested.addProperty("selectionAuthority",
-                "CONFIRMED_READ_FROM_EDGE");
-        task.add("requestedOutput", requested);
-
-        JsonObject output = new JsonObject();
-        output.addProperty("symbol", port);
-        output.addProperty("cell", cell);
-        output.addProperty("kind", "HEAP_STATE");
-        output.addProperty("location", "RETURN_OR_HEAP_EFFECT");
-        JsonArray outputs = new JsonArray();
-        outputs.add(output);
-        task.add("outputs", outputs);
 
         String method = "<example.Region: void run()>";
         String site = method + "#u" + unitIndex;
@@ -166,9 +136,6 @@ public class ConcolicReplayValidatorTest {
         capture.addProperty("fieldSignature", cell);
         JsonArray captures = new JsonArray();
         captures.add(capture);
-        task.add("requestedOutputCapture", captures);
-        task.addProperty("requestedOutputCaptureRequired", true);
-        task.addProperty("requestedOutputCaptureComplete", true);
 
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", port);
@@ -181,8 +148,6 @@ public class ConcolicReplayValidatorTest {
         slice.add("captureBindings", captures.deepCopy());
         slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
-        task.add("requestedOutputSlice", slice);
-        task.add("requestedOutputMethods", strings(method));
         OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
                 "REGION.3", "REGION.3@test#call7", 7,
                 port, cell, "HEAP_STATE", "CONFIRMED_READ_FROM_EDGE",
@@ -204,21 +169,9 @@ public class ConcolicReplayValidatorTest {
         summary.addProperty("exceptionType", "");
         summary.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        if (task.has(OutputClosureContract.FIELD)) {
-            summary.add(OutputClosureContract.FIELD,
-                    task.getAsJsonObject(
-                            OutputClosureContract.FIELD).deepCopy());
-        } else {
-            for (String field : new String[]{"requestedOutput",
-                    "requestedOutputSlice", "requestedOutputCapture",
-                    "requestedOutputCaptureRequired",
-                    "requestedOutputCaptureComplete",
-                    "requestedOutputMethods", "outputs"}) {
-                if (task.has(field)) {
-                    summary.add(field, task.get(field).deepCopy());
-                }
-            }
-        }
+        summary.add(OutputClosureContract.FIELD,
+                task.getAsJsonObject(
+                        OutputClosureContract.FIELD).deepCopy());
         JsonObject outputs = new JsonObject();
         for (String port : OutputClosureCodec.decode(task).outputPorts()) {
             outputs.add(port, outputExpression());
