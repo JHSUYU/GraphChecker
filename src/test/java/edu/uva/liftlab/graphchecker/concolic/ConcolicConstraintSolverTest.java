@@ -290,7 +290,7 @@ public class ConcolicConstraintSolverTest {
 
     private static JsonObject intConstant(int value) {
         JsonObject result = new JsonObject();
-        result.addProperty("_type", "ConstExpr");
+        result.addProperty("_type", "ConSymbolExp");
         result.addProperty("_java_type", "I");
         result.addProperty("_exp", "Y_I_" + value);
         return result;
@@ -298,7 +298,7 @@ public class ConcolicConstraintSolverTest {
 
     private static JsonObject numericConstant(String javaType, String value) {
         JsonObject result = new JsonObject();
-        result.addProperty("_type", "ConstExpr");
+        result.addProperty("_type", "ConSymbolExp");
         result.addProperty("_java_type", javaType);
         result.addProperty("_exp", "Y_" + javaType + "_" + value);
         return result;

@@ -4,19 +4,11 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -156,7 +148,7 @@ public final class ConcolicPathFlipPlanner {
         writeJson(directory.resolve("path_flip_solver_result.json"),
                 result.solve == null ? new JsonObject()
                         : result.solve.record);
-        writeText(directory.resolve("path_flip_query.smt2"),
+        ArtifactIO.replace(directory.resolve("path_flip_query.smt2"),
                 result.solve == null ? "" : result.solve.smtLib);
         if (result.replayActivation != null) {
             writeJsonl(directory.resolve("activation_plan.jsonl"),
@@ -294,29 +286,8 @@ public final class ConcolicPathFlipPlanner {
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            int number = 0;
-            while ((line = reader.readLine()) != null) {
-                number++;
-                if (line.trim().isEmpty()) continue;
-                JsonElement parsed;
-                try {
-                    parsed = JsonParser.parseString(line);
-                } catch (RuntimeException exception) {
-                    throw new IOException("Malformed JSONL " + path + ":"
-                            + number, exception);
-                }
-                if (!parsed.isJsonObject()) {
-                    throw new IOException("Non-object JSONL row " + path
-                            + ":" + number);
-                }
-                result.add(parsed.getAsJsonObject());
-            }
-        }
-        return result;
+        return ArtifactIO.readJsonl(path, "Malformed JSONL %1$s:%2$d",
+                "Non-object JSONL row %1$s:%2$d");
     }
 
     private static void writeJsonl(Path path, List<JsonObject> rows)
@@ -325,27 +296,13 @@ public final class ConcolicPathFlipPlanner {
         for (JsonObject row : rows) {
             content.append(JSON.toJson(row)).append(System.lineSeparator());
         }
-        writeText(path, content.toString());
+        ArtifactIO.replace(path, content.toString());
     }
 
     private static void writeJson(Path path, JsonObject value)
             throws IOException {
-        writeText(path, PRETTY.toJson(value) + System.lineSeparator());
-    }
-
-    private static void writeText(Path path, String value)
-            throws IOException {
-        Files.createDirectories(path.toAbsolutePath().normalize().getParent());
-        Path temporary = path.resolveSibling(path.getFileName() + ".tmp."
-                + java.util.UUID.randomUUID());
-        Files.write(temporary, value.getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-        try {
-            Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException exception) {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
-        }
+        ArtifactIO.replace(path, PRETTY.toJson(value)
+                + System.lineSeparator());
     }
 
     private static void addArtifact(JsonObject manifest, Path directory,
@@ -354,7 +311,7 @@ public final class ConcolicPathFlipPlanner {
         Path path = directory.resolve(file);
         JsonObject artifact = new JsonObject();
         artifact.addProperty("file", file);
-        artifact.addProperty("sha256", sha256(path));
+        artifact.addProperty("sha256", ArtifactIO.sha256(path));
         artifact.addProperty("sizeBytes", Files.size(path));
         manifest.add(name, artifact);
     }
@@ -363,29 +320,9 @@ public final class ConcolicPathFlipPlanner {
         JsonObject artifact = new JsonObject();
         artifact.addProperty("file", path.toAbsolutePath().normalize()
                 .toString());
-        artifact.addProperty("sha256", sha256(path));
+        artifact.addProperty("sha256", ArtifactIO.sha256(path));
         artifact.addProperty("sizeBytes", Files.size(path));
         return artifact;
-    }
-
-    private static String sha256(Path path) throws IOException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] buffer = new byte[8192];
-            try (java.io.InputStream input = Files.newInputStream(path)) {
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    if (read > 0) digest.update(buffer, 0, read);
-                }
-            }
-            StringBuilder result = new StringBuilder();
-            for (byte current : digest.digest()) {
-                result.append(String.format("%02x", current & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException(exception);
-        }
     }
 
     private static String string(JsonObject object, String field) {

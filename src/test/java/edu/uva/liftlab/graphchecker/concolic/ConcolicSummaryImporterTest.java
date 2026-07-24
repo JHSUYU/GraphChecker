@@ -229,6 +229,8 @@ public class ConcolicSummaryImporterTest {
         partial.create();
         TemporaryFolder wrongGoal = new TemporaryFolder();
         wrongGoal.create();
+        TemporaryFolder missingContract = new TemporaryFolder();
+        missingContract.create();
         try {
             JsonObject summary = importJointOutputCaptureFixture(
                     complete.getRoot().toPath(), false, false);
@@ -247,10 +249,30 @@ public class ConcolicSummaryImporterTest {
             JsonObject rejected = importJointOutputCaptureFixture(
                     wrongGoal.getRoot().toPath(), false, true);
             assertEquals(0, rejected.size());
+
+            Path missingRoot = missingContract.getRoot().toPath();
+            importJointOutputCaptureFixture(missingRoot, false, false);
+            JsonObject activation = readObject(
+                    missingRoot.resolve("activation.jsonl"));
+            activation.remove(OutputClosureContract.FIELD);
+            writeVerbatim(missingRoot.resolve("activation.jsonl"),
+                    activation + "\n");
+            ConcolicSummaryImporter.ImportResult missingContractResult =
+                    ConcolicSummaryImporter.importSummaries(
+                            missingRoot.resolve("results.jsonl"),
+                            missingRoot.resolve("activation.jsonl"),
+                            missingRoot.resolve("regions.jsonl"),
+                            missingRoot.resolve("missing-summary.jsonl"),
+                            missingRoot.resolve("missing-diagnostics.jsonl"));
+            assertEquals(0, missingContractResult.validSummaryCount);
+            assertTrue(readOptional(missingRoot.resolve(
+                    "missing-diagnostics.jsonl")).contains(
+                    "canonical outputClosure is required"));
         } finally {
             complete.delete();
             partial.delete();
             wrongGoal.delete();
+            missingContract.delete();
         }
     }
 
@@ -3032,6 +3054,9 @@ public class ConcolicSummaryImporterTest {
     }
 
     private static void makeCodecLegacyReady(JsonObject activation) {
+        if (activation.has(OutputClosureContract.FIELD)) {
+            return;
+        }
         JsonObject requested = activation.getAsJsonObject(
                 "requestedOutput");
         requested.addProperty("selectionAuthority",
@@ -4178,6 +4203,7 @@ public class ConcolicSummaryImporterTest {
                                         ? declarations.deepCopy()
                                         : new JsonArray());
                     }
+                    canonicalizeOutputClosureForTest(activation);
                     line = activation.toString();
                 }
             }
@@ -4185,6 +4211,118 @@ public class ConcolicSummaryImporterTest {
             if (index + 1 < lines.length) canonical.append('\n');
         }
         writeVerbatim(path, canonical.toString());
+    }
+
+    private static void canonicalizeOutputClosureForTest(
+            JsonObject activation) {
+        if (activation.has(OutputClosureContract.FIELD)
+                || !RegionCaptureGoal.from(activation).isOutputClosure()) {
+            return;
+        }
+        JsonObject requested = activation.has("requestedOutput")
+                ? activation.getAsJsonObject("requestedOutput").deepCopy()
+                : new JsonObject();
+        JsonObject outputAction = new JsonObject();
+        for (JsonElement element : activation.has("outputs")
+                ? activation.getAsJsonArray("outputs") : new JsonArray()) {
+            if (element.isJsonObject()) {
+                outputAction = element.getAsJsonObject();
+                break;
+            }
+        }
+        String port = firstNonBlankForTest(
+                textForTest(requested, "portId"),
+                textForTest(outputAction, "symbol"));
+        String kind = firstNonBlankForTest(
+                textForTest(requested, "kind"),
+                textForTest(outputAction, "kind"));
+        if ("PRIMITIVE".equals(kind)) kind = "RETURN";
+        if (kind.isEmpty()) {
+            kind = "THROW_OR_BRANCH".equals(textForTest(
+                    outputAction, "location"))
+                    ? "FAILURE_PREDICATE" : "RETURN";
+        }
+        String rootMethod = textForTest(activation, "rootMethod");
+        String cell = firstNonBlankForTest(
+                textForTest(requested, "cell"),
+                textForTest(outputAction, "cell"),
+                "FAILURE_PREDICATE".equals(kind)
+                        ? rootMethod + ".failure"
+                        : rootMethod + ".return");
+
+        JsonObject slice = activation.has("requestedOutputSlice")
+                ? activation.getAsJsonObject("requestedOutputSlice")
+                .deepCopy() : new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        if (!slice.has("complete")) slice.addProperty("complete", true);
+        ensureStringArray(slice, "inputPorts", new JsonArray());
+        ensureStringArray(slice, "sites", new JsonArray());
+        ensureStringArray(slice, "staticSites", new JsonArray());
+        JsonArray methods = activation.has("requestedOutputMethods")
+                ? activation.getAsJsonArray("requestedOutputMethods")
+                .deepCopy() : new JsonArray();
+        if (methods.size() == 0 && !rootMethod.isEmpty()) {
+            methods.add(rootMethod);
+        }
+        ensureStringArray(slice, "methods", methods);
+        JsonArray causalEdgeIds = new JsonArray();
+        for (JsonElement element : slice.has("causalEdges")
+                ? slice.getAsJsonArray("causalEdges") : new JsonArray()) {
+            if (element.isJsonObject()
+                    && !textForTest(element.getAsJsonObject(),
+                    "edgeId").isEmpty()) {
+                causalEdgeIds.add(textForTest(
+                        element.getAsJsonObject(), "edgeId"));
+            }
+        }
+        ensureStringArray(slice, "causalEdgeIds", causalEdgeIds);
+        JsonArray captures = activation.has("requestedOutputCapture")
+                ? activation.getAsJsonArray("requestedOutputCapture")
+                .deepCopy() : new JsonArray();
+        slice.add("captureBindings", captures);
+        slice.addProperty("captureBindingsRequired",
+                captures.size() > 0);
+        slice.addProperty("captureBindingsComplete",
+                !activation.has("requestedOutputCaptureComplete")
+                        || activation.get(
+                        "requestedOutputCaptureComplete").getAsBoolean());
+
+        String regionId = textForTest(activation, "regionId");
+        if (!activation.has("rootCallId")) {
+            activation.addProperty("rootCallId", 0);
+        }
+        long rootCallId = activation.get("rootCallId").getAsLong();
+        if (!activation.has("regionInstanceId")) {
+            activation.addProperty("regionInstanceId",
+                    regionId + "@test#call" + rootCallId);
+        }
+        OutputClosureCodec.writeTo(activation,
+                OutputClosureCodec.singleton(
+                        regionId,
+                        textForTest(activation, "regionInstanceId"),
+                        rootCallId, port, cell, kind,
+                        "TEST_FIXTURE_DECLARATION", slice));
+    }
+
+    private static void ensureStringArray(
+            JsonObject target, String field, JsonArray fallback) {
+        if (!target.has(field)) target.add(field, fallback);
+    }
+
+    private static String textForTest(JsonObject value, String field) {
+        JsonElement element = value == null ? null : value.get(field);
+        return element != null && element.isJsonPrimitive()
+                ? element.getAsString() : "";
+    }
+
+    private static String firstNonBlankForTest(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return "";
     }
 
     private static JsonObject canonicalRuntimeResultForTest(JsonObject raw) {

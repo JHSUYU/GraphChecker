@@ -5,17 +5,11 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,7 +41,7 @@ public final class ConcolicPathReplayVerifier {
     static int run(String[] argv) throws IOException {
         Arguments arguments = Arguments.parse(argv);
         JsonObject report = verify(arguments);
-        writeNew(arguments.output, GSON.toJson(report)
+        ArtifactIO.writeNew(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
         return bool(report, "valid", false) ? 0 : 2;
@@ -59,7 +53,7 @@ public final class ConcolicPathReplayVerifier {
         requireFile(arguments.results, "path replay raw results");
         requireFile(arguments.summary, "path replay imported summaries");
 
-        JsonObject task = readObject(arguments.task);
+        JsonObject task = ArtifactIO.readObject(arguments.task);
         BranchReplayContract replayContract = replayContract(task,
                 "task");
         List<JsonObject> activations = readJsonl(arguments.activationPlan);
@@ -296,76 +290,19 @@ public final class ConcolicPathReplayVerifier {
         JsonObject result = new JsonObject();
         result.addProperty("path", path.toAbsolutePath().normalize()
                 .toString());
-        result.addProperty("sha256", sha256(Files.readAllBytes(path)));
+        result.addProperty("sha256", ArtifactIO.sha256(path));
         result.addProperty("rowCount", rowCount);
         return result;
     }
 
-    private static String sha256(byte[] value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value);
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
-
     private static String shortHash(String value) {
-        return sha256((value == null ? "" : value).getBytes(
-                StandardCharsets.UTF_8)).substring(0, 16);
-    }
-
-    private static JsonObject readObject(Path path) throws IOException {
-        JsonElement parsed;
-        try {
-            parsed = new JsonParser().parse(new String(
-                    Files.readAllBytes(path), StandardCharsets.UTF_8));
-        } catch (RuntimeException malformed) {
-            throw new IOException("Malformed JSON object in " + path,
-                    malformed);
-        }
-        if (!parsed.isJsonObject()) {
-            throw new IOException("Expected one JSON object in " + path);
-        }
-        return parsed.getAsJsonObject();
+        return ArtifactIO.sha256(value).substring(0, 16);
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            int number = 0;
-            while ((line = reader.readLine()) != null) {
-                number++;
-                if (line.trim().isEmpty()) continue;
-                JsonElement parsed;
-                try {
-                    parsed = new JsonParser().parse(line);
-                } catch (RuntimeException malformed) {
-                    throw new IOException("Malformed JSONL row " + number
-                            + " in " + path, malformed);
-                }
-                if (!parsed.isJsonObject()) {
-                    throw new IOException("Expected JSON object at row "
-                            + number + " in " + path);
-                }
-                result.add(parsed.getAsJsonObject());
-            }
-        }
-        return result;
-    }
-
-    private static void writeNew(Path path, String value) throws IOException {
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Files.write(path, value.getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        return ArtifactIO.readJsonl(path,
+                "Malformed JSONL row %2$d in %1$s",
+                "Expected JSON object at row %2$d in %1$s");
     }
 
     private static void requireFile(Path path, String label)

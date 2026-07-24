@@ -141,19 +141,8 @@ public class OutputClosureCodecTest {
                 .addProperty("captureBindingsComplete", false);
         OutputClosureContract incomplete =
                 OutputClosureCodec.decodeEnvelope(singleton);
-        JsonObject activation = canonicalActivation("REGION.1.out.0",
-                "<P: int x>", "DF.1");
-        for (String field : new String[]{"requestedOutput",
-                "requestedOutputSlice", "requestedOutputCapture",
-                "requestedOutputCaptureRequired",
-                "requestedOutputCaptureComplete", "requestedOutputMethods",
-                "outputs"}) {
-            activation.remove(field);
-        }
-        activation.add("outputClosure", incomplete.toJson());
-        assertFalse(OutputClosureCodec.memberActivationView(
-                activation, incomplete, "REGION.1.out.0")
-                .get("requestedOutputCaptureComplete").getAsBoolean());
+        assertFalse(incomplete.member(
+                "REGION.1.out.0").captureComplete());
     }
 
     private static JsonObject canonicalActivation(

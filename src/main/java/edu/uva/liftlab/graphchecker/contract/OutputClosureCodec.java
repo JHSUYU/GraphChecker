@@ -222,42 +222,6 @@ public final class OutputClosureCodec {
         activation.add(OutputClosureContract.FIELD, contract.toJson());
     }
 
-    public static JsonObject memberActivationView(
-            JsonObject activation, OutputClosureContract contract,
-            String portId) {
-        if (activation == null || contract == null) {
-            throw new IllegalArgumentException(
-                    "activation and output closure are required");
-        }
-        validateOuterScope(activation, contract.producer(), true);
-        OutputClosureContract.Member member = contract.member(portId);
-        if (member == null) {
-            throw new IllegalArgumentException(
-                    "output closure has no member " + portId);
-        }
-        JsonObject result = activation.deepCopy();
-        result.remove(OutputClosureContract.FIELD);
-        JsonObject requested = new JsonObject();
-        requested.addProperty("portId", member.portId());
-        requested.addProperty("cell", member.cell());
-        requested.addProperty("kind", member.outputKind());
-        requested.addProperty("selectionAuthority",
-                text(member.output(), "selectionAuthority"));
-        result.add("requestedOutput", requested);
-        result.add("requestedOutputSlice", member.slice());
-        result.addProperty("requestedOutputCaptureRequired",
-                member.captureRequired());
-        result.addProperty("requestedOutputCaptureComplete",
-                member.captureComplete());
-        result.add("requestedOutputCapture", member.captures());
-        result.add("requestedOutputMethods",
-                member.slice().getAsJsonArray("methods").deepCopy());
-        JsonArray outputs = new JsonArray();
-        outputs.add(member.executionOutput());
-        result.add("outputs", outputs);
-        return result;
-    }
-
     public static JsonArray captures(OutputClosureContract contract) {
         JsonArray result = new JsonArray();
         for (OutputClosureContract.Member member : contract.members()) {
