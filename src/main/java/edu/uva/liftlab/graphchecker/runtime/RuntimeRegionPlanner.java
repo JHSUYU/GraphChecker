@@ -21,7 +21,6 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -172,21 +171,16 @@ final class RuntimeRegionPlanner {
             List<RootCandidate> roots = rootCandidates(region, regions,
                     methodsBySignature, calls);
             if (roots.isEmpty()) {
-                result.unobservedRegionIds.add(region.regionId);
                 continue;
             }
             for (RootCandidate candidate : roots) {
                 if (instanceIndex >= MAX_INSTANCES) {
-                    result.truncated = true;
                     break outer;
                 }
                 MethodEvent root = candidate.event;
                 ContainedCallSelection callSelection = containedCalls(root,
                         methodEvents, calls);
                 Set<Long> containedCalls = callSelection.calls;
-                if (callSelection.truncated) {
-                    result.truncated = true;
-                }
                 Set<String> observedMethods = new LinkedHashSet<>();
                 List<MethodEvent> containedMethodEvents = new ArrayList<>();
                 for (MethodEvent event : methodEvents) {
@@ -195,11 +189,6 @@ final class RuntimeRegionPlanner {
                         containedMethodEvents.add(event);
                     }
                 }
-                boolean fullyObserved = !callSelection.truncated
-                        && observedMethods.containsAll(region.methods);
-                Set<String> runtimeAdmittedMethods = new LinkedHashSet<>(
-                        observedMethods);
-                runtimeAdmittedMethods.removeAll(region.methods);
 
                 int ordinal = invocationOrdinal(root, methodEvents);
                 int ordinalWithinContext = invocationOrdinalWithinContext(
@@ -216,10 +205,6 @@ final class RuntimeRegionPlanner {
                         containedCalls, fields);
                 PathSignatureSelection pathSelection = pathSignature(
                         containedRuntime);
-                List<String> pathSignature = pathSelection.signature;
-                if (pathSelection.truncated) {
-                    result.truncated = true;
-                }
                 boolean runtimePathEvidenceComplete = !callSelection.truncated
                         && !pathSelection.truncated;
                 List<String> runtimeGaps = new ArrayList<>();
@@ -229,8 +214,6 @@ final class RuntimeRegionPlanner {
                 if (pathSelection.truncated) {
                     runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
                 }
-                List<String> actualCallees = actualCallees(containedMethodEvents,
-                        containedRuntime);
                 ConcreteDemandSlice demandSlice = staticProjections.reslice(
                         region, runtimePathEvidenceComplete,
                         observedMethods, root.method, root, containedCalls,
@@ -243,7 +226,6 @@ final class RuntimeRegionPlanner {
                 List<Map<String, Object>> symbolize = symbolizeActions(
                         region, concreteInputs, root, inputObjects,
                         containedRuntime, containedFields);
-                List<Map<String, Object>> outputs = outputActions(region);
                 List<Map<String, Object>> branchPlan = branchActions(
                         region, containedRuntime);
                 boolean anchorObserved = observedMethods.contains(region.anchorMethod)
@@ -262,9 +244,6 @@ final class RuntimeRegionPlanner {
                         && region.inputSelectionComplete
                         && runtimePathEvidenceComplete
                         && symbolizeActionsReady;
-                String validationStatus = !runtimePathEvidenceComplete
-                        ? "TRUNCATED_RUNTIME_PATH" : anchorObserved
-                        ? "VALIDATED_PATH" : "PARTIAL_PATH";
                 boolean replayable = anchorObserved
                         && runtimePathEvidenceComplete;
                 boolean symbolicReady = replayable && boundaryReady;
@@ -272,87 +251,11 @@ final class RuntimeRegionPlanner {
                     symbolicReady = false;
                 }
 
-                boolean finalRootIsStatic = root.method.equals(region.rootMethod);
-                String rootSelection = finalRootIsStatic
-                        ? "RUNTIME_CONFIRMED_STATIC_CANDIDATE"
-                        : "RUNTIME_SELECTED_ENTRY";
-
-                Map<String, Object> instance = object(
-                        "regionInstanceId", instanceId,
-                        "regionId", region.regionId,
-                        "test", root.test,
-                        "rootCallId", root.callId,
-                        "staticRootMethod", region.rootMethod,
-                        "finalRootMethod", root.method,
-                        "observedRootMethod", root.method,
-                        "rootAuthority", "RUNTIME_CALL_TREE",
-                        "rootObserved", true,
-                        "staticRootObserved", candidate.staticRootObserved,
-                        "rootSelection", rootSelection,
-                        "process", root.process,
-                        "threadId", root.tid,
-                        "threadName", root.threadName,
-                        "threadRole", threadRole(root.threadName),
-                        "receiverObjectId", root.objectId,
-                        "receiverType", root.receiverType,
-                        "invocationOrdinal", ordinal,
-                        "pathSignature", pathSignature,
-                        "pathSignatureEventCount", pathSelection.total,
-                        "pathSignatureLimit", MAX_PATH_SIGNATURE_EVENTS,
-                        "pathSignatureTruncated", pathSelection.truncated,
-                        "containedCallCount", containedCalls.size(),
-                        "containedCallLimit", MAX_CALLS_PER_INSTANCE,
-                        "containedCallTreeTruncated", callSelection.truncated,
-                        "runtimePathEvidenceComplete",
-                        runtimePathEvidenceComplete,
-                        "runtimeGaps", runtimeGaps,
-                        "actualCallees", actualCallees,
-                        "observedMethods", sorted(observedMethods),
-                        "runtimeAdmittedMethods",
-                        sorted(runtimeAdmittedMethods),
-                        "runtimeMethodAdmissionAuthority",
-                        "EXACT_SAME_THREAD_DESCENDANT_CALL_TREE_V1",
-                        "missingMethods", difference(region.methods, observedMethods),
-                        "inputObjects", inputObjects,
-                        "anchorObserved", anchorObserved,
-                        "observedInputCount", observedInputCount,
-                        "deferredInputCount", deferredInputCount,
-                        "staticInputSelectionComplete",
-                        region.inputSelectionComplete,
-                        "staticInputPortCount", region.inputs.size(),
-                        "concreteInputPortCount", concreteInputs.size(),
-                        "runtimePrunedInputPorts",
-                        region.excludedInputPorts(concreteInputs),
-                        "concreteInputSelectionAuthority",
-                        demandSlice.selectionAuthority(),
-                        "concreteDemandSymbolicPotential",
-                        demandHasSymbolicPotential,
-                        "concreteDemandSlice", demandSlice.toMap(),
-                        "staticUnresolvedInputs", region.unresolvedInputs,
-                        "observedBranchCount", observedBranchCount,
-                        "symbolizeActionsReady", symbolizeActionsReady,
-                        "boundaryReady", boundaryReady,
-                        "validationStatus", validationStatus,
-                        "symbolicReady", symbolicReady,
-                        "fullyObserved", fullyObserved,
-                        "replayable", replayable,
-                        "observed", true,
-                        "precision", fullyObserved
-                                ? "RUNTIME_CALL_TREE" : "PARTIAL_RUNTIME_CALL_TREE");
-                addRootContextSelector(instance, root,
-                        ordinalWithinContext);
-                if (!rootArgumentSelector.isEmpty()) {
-                    instance.put("runtimeRootArgumentSelector",
-                            rootArgumentSelector);
-                }
-                result.instances.add(instance);
-
                 InstanceEvidence instanceEvidence = new InstanceEvidence(
                         instanceId, region, root, containedCalls,
                         containedMethodEvents, containedRuntime,
                         containedFields, observedMethods,
                         portIds(concreteInputs), demandSlice,
-                        validationStatus,
                         runtimePathEvidenceComplete,
                         !callSelection.truncated,
                         !pathSelection.truncated);
@@ -381,7 +284,6 @@ final class RuntimeRegionPlanner {
                         "receiverType", root.receiverType,
                         "invocationOrdinal", ordinal,
                         "rootCallId", root.callId,
-                        "observedMethods", sorted(observedMethods),
                         "runtimeDefinitionMethods",
                         demandSlice.definitionMethods(observedMethods),
                         "captureGoal", object(
@@ -395,12 +297,6 @@ final class RuntimeRegionPlanner {
                         "runtimeGaps", runtimeGaps,
                         "symbolize", symbolize,
                         "branches", branchPlan,
-                        "outputs", outputs,
-                        "requiredModels", region.models,
-                        "runtimePrunedInputPorts",
-                        region.excludedInputPorts(concreteInputs),
-                        "concreteDemandSlice", demandSlice.toMap(),
-                        "staticUnresolvedInputs", region.unresolvedInputs,
                         "replayable", replayable,
                         "symbolicReady", symbolicReady,
                         "replayMode", replayable
@@ -469,15 +365,13 @@ final class RuntimeRegionPlanner {
             }
 
             MethodEvent selected = anchor;
-            boolean staticRootObserved = exactRootOwners.contains(
-                    region.regionId);
             for (MethodEvent entry : lineage) {
                 if (region.methods.contains(entry.method)) {
                     selected = entry;
                 }
             }
             if (selectedCalls.add(selected.callId)) {
-                roots.add(new RootCandidate(selected, staticRootObserved));
+                roots.add(new RootCandidate(selected));
             }
         }
 
@@ -498,7 +392,7 @@ final class RuntimeRegionPlanner {
         // evidence for diagnostics, without claiming a validated path.
         for (MethodEvent event : values(methodsBySignature.get(region.rootMethod))) {
             if (selectedCalls.add(event.callId)) {
-                roots.add(new RootCandidate(event, true));
+                roots.add(new RootCandidate(event));
             }
         }
         return roots;
@@ -753,7 +647,7 @@ final class RuntimeRegionPlanner {
             Map<Long, MethodEvent> calls) {
         Set<Long> result = new LinkedHashSet<>();
         result.add(root.callId);
-        long skipped = 0L;
+        boolean truncated = false;
         for (MethodEvent event : methods) {
             if (event.seq < root.seq || !sameContext(root, event)) {
                 continue;
@@ -774,7 +668,7 @@ final class RuntimeRegionPlanner {
                         break;
                     }
                     if (result.size() >= MAX_CALLS_PER_INSTANCE) {
-                        skipped++;
+                        truncated = true;
                     } else {
                         result.add(event.callId);
                     }
@@ -787,7 +681,7 @@ final class RuntimeRegionPlanner {
                 cursor = parent.parentCallId;
             }
         }
-        return new ContainedCallSelection(result, skipped > 0L, skipped);
+        return new ContainedCallSelection(result, truncated);
     }
 
     private static boolean sameContext(MethodEvent left, MethodEvent right) {
@@ -821,40 +715,15 @@ final class RuntimeRegionPlanner {
 
     private static PathSignatureSelection pathSignature(
             List<RuntimeEvent> events) {
-        List<String> result = new ArrayList<>();
         int total = 0;
         for (RuntimeEvent event : events) {
             if ("BRANCH".equals(event.kind) && event.hasOutcome) {
-                total++;
-                if (result.size() < MAX_PATH_SIGNATURE_EVENTS) {
-                    result.add(event.siteId + "="
-                            + (event.hasSuccessorIndex
-                            ? "successor:" + event.successorIndex
-                            : Boolean.toString(event.outcome)));
+                if (++total > MAX_PATH_SIGNATURE_EVENTS) {
+                    return new PathSignatureSelection(true);
                 }
             }
         }
-        long skipped = Math.max(0L, (long) total - result.size());
-        return new PathSignatureSelection(result, total, skipped > 0L,
-                skipped);
-    }
-
-    private static List<String> actualCallees(List<MethodEvent> methodEvents,
-                                               List<RuntimeEvent> events) {
-        Map<Long, RuntimeEvent> sites = new LinkedHashMap<>();
-        for (RuntimeEvent event : events) {
-            if ("CALL_SITE_ENTER".equals(event.kind)) {
-                sites.put(event.invocationId, event);
-            }
-        }
-        Set<String> result = new LinkedHashSet<>();
-        for (MethodEvent method : methodEvents) {
-            RuntimeEvent site = sites.get(method.parentSiteId);
-            if (site != null) {
-                result.add(site.siteId + "=>" + method.method);
-            }
-        }
-        return limited(sorted(result), 512);
+        return new PathSignatureSelection(false);
     }
 
     private static boolean invokedAnchor(List<RuntimeEvent> events,
@@ -2031,23 +1900,6 @@ final class RuntimeRegionPlanner {
         return "REGION_LIVE_IN";
     }
 
-    private static List<Map<String, Object>> outputActions(StaticRegion region) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (StaticPort port : region.outputs) {
-            result.add(outputAction(port));
-        }
-        return result;
-    }
-
-    private static Map<String, Object> outputAction(StaticPort port) {
-        return object(
-                "symbol", port.portId,
-                "cell", port.cell,
-                "kind", port.kind,
-                "location", "FAILURE_PREDICATE".equals(port.kind)
-                        ? "THROW_OR_BRANCH" : "RETURN_OR_HEAP_EFFECT");
-    }
-
     private static List<Map<String, Object>> branchActions(
             StaticRegion region, List<RuntimeEvent> events) {
         Map<String, List<RuntimeEvent>> observed = new LinkedHashMap<>();
@@ -2538,21 +2390,7 @@ final class RuntimeRegionPlanner {
                             resolution, readFrom)) {
                         continue;
                     }
-                    Map<String, Object> endpointPromotion = object(
-                            "promotionKind",
-                            "RUNTIME_CONFIRMED_EXTERNAL_EDGE_ENDPOINT",
-                            "edgeId", edge.edgeId,
-                            "fromRegionInstance", upstream.instanceId,
-                            "toRegionInstance", downstream.instanceId,
-                            "rawEndpoint", edge.toPort,
-                            "resolutionAuthority", resolution.authority,
-                            "resolutionEvidenceEdgeIds",
-                            new ArrayList<>(resolution.evidenceEdgeIds),
-                            "runtimeWitnessAuthority", readFrom == null
-                                    ? "RUNTIME_COMPLETE_VALUE_FINGERPRINT"
-                                    : readFrom.writeEvidence.authority);
-                    downstream.promoteExternalInput(resolution.port,
-                            endpointPromotion);
+                    downstream.promoteExternalInput(resolution.port);
 
                     if (readFrom == null) {
                         continue;
@@ -2574,17 +2412,7 @@ final class RuntimeRegionPlanner {
                         if (input == null) {
                             continue;
                         }
-                        Map<String, Object> outputPromotion = object(
-                                "promotionKind",
-                                "RUNTIME_CONFIRMED_REQUESTED_OUTPUT_SLICE",
-                                "edgeId", edge.edgeId,
-                                "fromRegionInstance", upstream.instanceId,
-                                "toRegionInstance", downstream.instanceId,
-                                "requestedOutputPort", output.portId,
-                                "runtimeWitnessAuthority",
-                                readFrom.writeEvidence.authority);
-                        upstream.promoteExternalInput(input,
-                                outputPromotion);
+                        upstream.promoteExternalInput(input);
                     }
                 }
             }
@@ -2595,16 +2423,13 @@ final class RuntimeRegionPlanner {
         return values == null || values.isEmpty() ? null : values.get(0);
     }
 
-    /** Rebuilds both maintained row views from the same promoted set. */
+    /** Rebuilds activation execution inputs from the promoted demand set. */
     private static void refreshPromotedConcreteInputRows(
             List<InstanceEvidence> evidence, Result result) {
-        Map<String, Map<String, Object>> instances = rowsByInstanceId(
-                result.instances);
         Map<String, Map<String, Object>> activations = rowsByInstanceId(
                 result.activations);
         for (InstanceEvidence instance : evidence) {
-            if (instance.concreteDemandSlice.externalInputPromotions
-                    .isEmpty()) {
+            if (!instance.concreteDemandSlice.externalInputPromoted) {
                 continue;
             }
             List<StaticPort> concreteInputs =
@@ -2640,30 +2465,6 @@ final class RuntimeRegionPlanner {
                     && Boolean.TRUE.equals(activation.get("replayable"));
             boolean symbolicReady = replayable && boundaryReady
                     && symbolicPotential;
-            List<String> pruned = instance.region.excludedInputPorts(
-                    concreteInputs);
-            String authority = instance.concreteDemandSlice
-                    .selectionAuthority();
-            Map<String, Object> demand = instance.concreteDemandSlice.toMap();
-
-            Map<String, Object> instanceRow = instances.get(
-                    instance.instanceId);
-            if (instanceRow != null) {
-                instanceRow.put("inputObjects", inputObjects);
-                instanceRow.put("observedInputCount", observedInputCount);
-                instanceRow.put("deferredInputCount", deferredInputCount);
-                instanceRow.put("concreteInputPortCount",
-                        concreteInputs.size());
-                instanceRow.put("runtimePrunedInputPorts", pruned);
-                instanceRow.put("concreteInputSelectionAuthority",
-                        authority);
-                instanceRow.put("concreteDemandSymbolicPotential",
-                        symbolicPotential);
-                instanceRow.put("concreteDemandSlice", demand);
-                instanceRow.put("symbolizeActionsReady", symbolizeReady);
-                instanceRow.put("boundaryReady", boundaryReady);
-                instanceRow.put("symbolicReady", symbolicReady);
-            }
 
             if (activation != null) {
                 activation.put("symbolize", symbolize);
@@ -2671,8 +2472,6 @@ final class RuntimeRegionPlanner {
                 activation.put("runtimeDefinitionMethods",
                         instance.concreteDemandSlice.definitionMethods(
                                 instance.observedMethods));
-                activation.put("runtimePrunedInputPorts", pruned);
-                activation.put("concreteDemandSlice", demand);
                 activation.put("boundaryReady", boundaryReady);
                 activation.put("symbolicReady", symbolicReady);
             }
@@ -2860,11 +2659,9 @@ final class RuntimeRegionPlanner {
             if (issues.isEmpty()) {
                 activation.put("_plannerOutputClosure", outputClosure);
                 activation.put("_plannerOutputMembers", members);
-                removeLegacyOutputFields(activation);
                 activation.put("boundaryReady", true);
                 activation.put("symbolicReady", true);
             } else {
-                removeLegacyOutputFields(activation);
                 activation.put("symbolize", Collections.emptyList());
                 activation.put("branches", Collections.emptyList());
                 activation.remove("containerElementFieldBindings");
@@ -3030,23 +2827,11 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static void removeLegacyOutputFields(
-            Map<String, Object> activation) {
-        activation.remove("requestedOutput");
-        activation.remove("requestedOutputSlice");
-        activation.remove("requestedOutputCapture");
-        activation.remove("requestedOutputCaptureRequired");
-        activation.remove("requestedOutputCaptureComplete");
-        activation.remove("requestedOutputMethods");
-        activation.remove("outputs");
-    }
-
     private static void finalizeOutputClosureArtifacts(Result result) {
         for (Map<String, Object> activation : result.activations) {
             activation.remove("_plannerOutputMembers");
             Object encoded = activation.remove("_plannerOutputClosure");
             if (encoded instanceof OutputClosureContract) {
-                removeLegacyOutputFields(activation);
                 activation.put(OutputClosureContract.FIELD,
                         ((OutputClosureContract) encoded).toJson());
             }
@@ -4817,12 +4602,9 @@ final class RuntimeRegionPlanner {
     }
 
     static final class Result {
-        final List<Map<String, Object>> instances = new ArrayList<>();
         final List<Map<String, Object>> activations = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
         final List<String> warnings = new ArrayList<>();
-        final Set<String> unobservedRegionIds = new LinkedHashSet<>();
-        boolean truncated;
 
         String activationsJsonl() {
             return jsonl(activations);
@@ -4938,28 +4720,18 @@ final class RuntimeRegionPlanner {
     private static final class ContainedCallSelection {
         private final Set<Long> calls;
         private final boolean truncated;
-        private final long skipped;
 
-        private ContainedCallSelection(Set<Long> calls, boolean truncated,
-                                       long skipped) {
+        private ContainedCallSelection(Set<Long> calls, boolean truncated) {
             this.calls = calls;
             this.truncated = truncated;
-            this.skipped = skipped;
         }
     }
 
     private static final class PathSignatureSelection {
-        private final List<String> signature;
-        private final int total;
         private final boolean truncated;
-        private final long skipped;
 
-        private PathSignatureSelection(List<String> signature, int total,
-                                       boolean truncated, long skipped) {
-            this.signature = signature;
-            this.total = total;
+        private PathSignatureSelection(boolean truncated) {
             this.truncated = truncated;
-            this.skipped = skipped;
         }
     }
 
@@ -5224,9 +4996,7 @@ final class RuntimeRegionPlanner {
             String field = exactFieldKey(readDefinition.fromCell);
             if (root == null || containedCalls == null
                     || staticProjections == null || field.isEmpty()) {
-                return RuntimeHeapDefinition.concrete(readDefinition, null,
-                        "MISSING_EXACT_RUNTIME_HEAP_CONTEXT:"
-                                + readDefinition.fromCell);
+                return RuntimeHeapDefinition.concrete();
             }
 
             List<FieldAccessEvent> matchingReads = new ArrayList<>();
@@ -5239,19 +5009,12 @@ final class RuntimeRegionPlanner {
                 }
             }
             if (matchingReads.size() != 1) {
-                String reason = matchingReads.isEmpty()
-                        ? "MISSING_EXACT_CONTAINED_RUNTIME_FIELD_READ:"
-                        : "AMBIGUOUS_EXACT_CONTAINED_RUNTIME_FIELD_READ:"
-                        + matchingReads.size() + ':';
-                return RuntimeHeapDefinition.concrete(readDefinition, null,
-                        reason + readDefinition.siteId);
+                return RuntimeHeapDefinition.concrete();
             }
 
             FieldAccessEvent read = matchingReads.get(0);
             if (read.receiverObjectId == 0) {
-                return RuntimeHeapDefinition.concrete(readDefinition, read,
-                        "MISSING_RUNTIME_FIELD_RECEIVER_IDENTITY:"
-                                + readDefinition.siteId);
+                return RuntimeHeapDefinition.concrete();
             }
 
             List<FieldAccessEvent> writes = values(writesByContext.get(
@@ -5263,17 +5026,13 @@ final class RuntimeRegionPlanner {
                             read.receiverObjectId, field))), read.seq);
             if (unknown != null && (latest == null
                     || unknown.seq >= latest.seq)) {
-                return RuntimeHeapDefinition.concrete(readDefinition, read,
-                        "UNSCOPED_LATEST_RUNTIME_FIELD_WRITE:"
-                                + unknown.seq + ':' + readDefinition.fromCell);
+                return RuntimeHeapDefinition.concrete();
             }
             if (latest == null) {
-                return RuntimeHeapDefinition.entry(readDefinition, read,
-                        null);
+                return RuntimeHeapDefinition.entry();
             }
             if (!containedCalls.contains(latest.callId)) {
-                return RuntimeHeapDefinition.entry(readDefinition, read,
-                        latest);
+                return RuntimeHeapDefinition.entry();
             }
 
             StaticDataflowProjectionEdge writeDefinition =
@@ -5281,12 +5040,9 @@ final class RuntimeRegionPlanner {
                             latest, readDefinition.fromCell,
                             observedMethods);
             if (writeDefinition == null) {
-                return RuntimeHeapDefinition.concrete(readDefinition, read,
-                        "MISSING_OR_AMBIGUOUS_FROZEN_HEAP_WRITE_RHS:"
-                                + latest.siteId);
+                return RuntimeHeapDefinition.concrete();
             }
-            return RuntimeHeapDefinition.internal(readDefinition, read,
-                    latest, writeDefinition);
+            return RuntimeHeapDefinition.internal(writeDefinition);
         }
 
         private static FieldAccessEvent latestBefore(
@@ -5332,82 +5088,34 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class RuntimeHeapDefinition {
-        private final String classification;
-        private final StaticDataflowProjectionEdge readDefinition;
-        private final FieldAccessEvent read;
-        private final FieldAccessEvent write;
+        private final boolean concreteBound;
         private final StaticDataflowProjectionEdge writeDefinition;
-        private final String failure;
 
-        private RuntimeHeapDefinition(String classification,
-                StaticDataflowProjectionEdge readDefinition,
-                FieldAccessEvent read, FieldAccessEvent write,
-                StaticDataflowProjectionEdge writeDefinition,
-                String failure) {
-            this.classification = safe(classification);
-            this.readDefinition = readDefinition;
-            this.read = read;
-            this.write = write;
+        private RuntimeHeapDefinition(boolean concreteBound,
+                StaticDataflowProjectionEdge writeDefinition) {
+            this.concreteBound = concreteBound;
             this.writeDefinition = writeDefinition;
-            this.failure = safe(failure);
         }
 
         private static RuntimeHeapDefinition internal(
-                StaticDataflowProjectionEdge readDefinition,
-                FieldAccessEvent read, FieldAccessEvent write,
                 StaticDataflowProjectionEdge writeDefinition) {
-            return new RuntimeHeapDefinition(
-                    "INTRA_REGION_LATEST_WRITE_RHS", readDefinition,
-                    read, write, writeDefinition, "");
+            return new RuntimeHeapDefinition(false, writeDefinition);
         }
 
-        private static RuntimeHeapDefinition entry(
-                StaticDataflowProjectionEdge readDefinition,
-                FieldAccessEvent read, FieldAccessEvent externalWrite) {
-            return new RuntimeHeapDefinition(externalWrite == null
-                    ? "REGION_ENTRY_STATE_NO_PRIOR_WRITE"
-                    : "REGION_ENTRY_STATE_EXTERNAL_LATEST_WRITE",
-                    readDefinition, read, externalWrite, null, "");
+        private static RuntimeHeapDefinition entry() {
+            return new RuntimeHeapDefinition(false, null);
         }
 
-        private static RuntimeHeapDefinition concrete(
-                StaticDataflowProjectionEdge readDefinition,
-                FieldAccessEvent read, String failure) {
-            return new RuntimeHeapDefinition("CONCRETE_BOUND",
-                    readDefinition, read, null, null, failure);
+        private static RuntimeHeapDefinition concrete() {
+            return new RuntimeHeapDefinition(true, null);
         }
 
         private boolean internal() {
-            return "INTRA_REGION_LATEST_WRITE_RHS".equals(classification);
+            return writeDefinition != null;
         }
 
         private boolean concreteBound() {
-            return "CONCRETE_BOUND".equals(classification);
-        }
-
-        private Map<String, Object> toMap() {
-            return object(
-                    "classification", classification,
-                    "field", readDefinition == null ? ""
-                            : readDefinition.fromCell,
-                    "readStaticEdgeId", readDefinition == null ? ""
-                            : readDefinition.edgeId,
-                    "readSiteId", read == null
-                            ? readDefinition == null ? ""
-                            : readDefinition.siteId : read.siteId,
-                    "readSeq", read == null ? 0L : read.seq,
-                    "readCallId", read == null ? 0L : read.callId,
-                    "receiverObjectId", read == null ? 0
-                            : read.receiverObjectId,
-                    "writeSeq", write == null ? 0L : write.seq,
-                    "writeCallId", write == null ? 0L : write.callId,
-                    "writeSiteId", write == null ? "" : write.siteId,
-                    "writeStaticEdgeId", writeDefinition == null ? ""
-                            : writeDefinition.edgeId,
-                    "rhsCell", writeDefinition == null ? ""
-                            : writeDefinition.fromCell,
-                    "failure", failure,
-                    "authority", RuntimeFieldAccessIndex.AUTHORITY);
+            return concreteBound;
         }
     }
 
@@ -5421,9 +5129,7 @@ final class RuntimeRegionPlanner {
         private final Map<String, StaticOutputSlice> outputSlices =
                 new LinkedHashMap<>();
         private final List<BranchPolicy> branches = new ArrayList<>();
-        private final List<String> models = new ArrayList<>();
         private boolean inputSelectionComplete = true;
-        private final List<String> unresolvedInputs = new ArrayList<>();
         private final Map<String, Map<Integer, List<String>>> argumentPathFields =
                 new LinkedHashMap<>();
 
@@ -5435,21 +5141,6 @@ final class RuntimeRegionPlanner {
             }
             List<String> fields = byArgument.get(argumentIndex);
             return fields == null ? Collections.emptyList() : fields;
-        }
-
-        private List<String> excludedInputPorts(
-                List<StaticPort> concreteInputs) {
-            Set<String> retained = new LinkedHashSet<>();
-            for (StaticPort input : concreteInputs) {
-                retained.add(input.portId);
-            }
-            List<String> excluded = new ArrayList<>();
-            for (StaticPort input : inputs) {
-                if (!retained.contains(input.portId)) {
-                    excluded.add(input.portId);
-                }
-            }
-            return excluded;
         }
 
         private StaticPort outputFor(String endpoint) {
@@ -5657,11 +5348,8 @@ final class RuntimeRegionPlanner {
                             .put(argumentIndex, fields);
                 }
             }
-            region.models.addAll(jsonStringArray(json, "models"));
             region.inputSelectionComplete = jsonBoolean(json,
                     "inputSelectionComplete", true);
-            region.unresolvedInputs.addAll(jsonStringArray(json,
-                    "unresolvedInputs"));
             return region;
         }
     }
@@ -6085,34 +5773,26 @@ final class RuntimeRegionPlanner {
             // falls back to its broad candidate input list after runtime has
             // selected an invocation.
             if (!catalogSupplied) {
-                return ConcreteDemandSlice.legacyStatic(
-                        "NO_FROZEN_STATIC_GRAPH");
+                return ConcreteDemandSlice.legacyStatic();
             }
 
             ConcreteDemandSlice result = new ConcreteDemandSlice();
             result.applied = true;
             if (!catalogReadComplete || catalogRowCount == 0
                     || catalogInvalidRowCount > 0 || byId.isEmpty()) {
-                result.bindConcrete(region.inputs, firstNonBlank(
-                        catalogFailure,
-                        "FROZEN_STATIC_GRAPH_HAS_NO_USABLE_EDGES"));
                 return result;
             }
             if (region.outputs.isEmpty() && region.branches.isEmpty()) {
                 for (StaticPort input : region.inputs) {
                     result.inputPortIds.add(input.portId);
                 }
-                result.seedSites.add("DECLARED_OBSERVATION_INPUTS");
                 return result;
             }
             if (!runtimePathEvidenceComplete || observedMethods == null
                     || observedMethods.isEmpty()) {
-                result.bindConcrete(region.inputs,
-                        "INCOMPLETE_RUNTIME_CALL_TREE");
                 return result;
             }
 
-            Set<String> seedSites = new LinkedHashSet<>();
             Set<String> seeds = new LinkedHashSet<>();
             boolean failureDirected = false;
             for (StaticPort output : region.outputs) {
@@ -6120,7 +5800,6 @@ final class RuntimeRegionPlanner {
                     failureDirected = true;
                 } else if (!output.cell.isEmpty()) {
                     seeds.add(output.cell);
-                    seedSites.add("OUTPUT:" + output.portId);
                 }
             }
             for (BranchPolicy branch : region.branches) {
@@ -6135,19 +5814,13 @@ final class RuntimeRegionPlanner {
                     if (!edge.exactGuardDependency(observedMethods)) {
                         continue;
                     }
-                    seedSites.add(branch.siteId);
                     addNonBlank(seeds, edge.fromCell);
                 }
             }
             if (seeds.isEmpty()) {
-                result.bindConcrete(region.inputs,
-                        failureDirected
-                                ? "NO_EXACT_ANCHOR_GUARD_SEED"
-                                : "NO_EXACT_RUNTIME_DEMAND_SEED");
                 return result;
             }
 
-            result.seedSites.addAll(seedSites);
             Deque<String> work = new ArrayDeque<>(seeds);
             Set<String> visited = new LinkedHashSet<>();
             while (!work.isEmpty()) {
@@ -6156,9 +5829,6 @@ final class RuntimeRegionPlanner {
                     continue;
                 }
                 if (visited.size() > 20000) {
-                    result.gaps.add("CONCRETE_DEMAND_CELL_LIMIT_EXCEEDED");
-                    result.concreteBoundCells.add(cell);
-                    result.concreteBoundCells.addAll(work);
                     break;
                 }
 
@@ -6172,8 +5842,6 @@ final class RuntimeRegionPlanner {
                 List<StaticDataflowProjectionEdge> definitions =
                         exactDefinitions(cell, observedMethods);
                 if (definitions.isEmpty()) {
-                    result.gaps.add("NO_EXACT_CONCRETE_DEFINITION:" + cell);
-                    result.concreteBoundCells.add(cell);
                     continue;
                 }
                 definitions = preferCanonicalDeclaredFieldReads(
@@ -6181,7 +5849,6 @@ final class RuntimeRegionPlanner {
                 for (StaticDataflowProjectionEdge definition : definitions) {
                     result.edgeIds.add(definition.edgeId);
                     addNonBlank(result.methods, definition.method);
-                    addNonBlank(result.sites, definition.siteId);
                     if (definition.exactDeclaredHeapRead()
                             && region.runtimeHeapReachingDefinitionEligible(
                             definition.fromCell)) {
@@ -6190,22 +5857,16 @@ final class RuntimeRegionPlanner {
                                         definition, runtimeRoot,
                                         containedCalls, observedMethods,
                                         this);
-                        result.recordHeapDefinition(heapDefinition);
                         if (heapDefinition.internal()) {
                             StaticDataflowProjectionEdge writeDefinition =
                                     heapDefinition.writeDefinition;
                             result.edgeIds.add(writeDefinition.edgeId);
                             addNonBlank(result.methods,
                                     writeDefinition.method);
-                            addNonBlank(result.sites,
-                                    writeDefinition.siteId);
                             work.addLast(writeDefinition.fromCell);
                             continue;
                         }
                         if (heapDefinition.concreteBound()) {
-                            result.gaps.add(heapDefinition.failure);
-                            result.concreteBoundCells.add(
-                                    definition.fromCell);
                             continue;
                         }
                     }
@@ -6214,7 +5875,6 @@ final class RuntimeRegionPlanner {
                     }
                 }
             }
-            result.visitedCellCount = visited.size();
             return result;
         }
 
@@ -6287,39 +5947,14 @@ final class RuntimeRegionPlanner {
 
     /** Result of the post-runtime demand slice over the frozen static graph. */
     private static final class ConcreteDemandSlice {
-        private static final String AUTHORITY =
-                "RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_STATIC_"
-                        + "DEMAND_SLICE_V2";
         private boolean applied;
-        private int visitedCellCount;
+        private boolean externalInputPromoted;
         private final Set<String> inputPortIds = new LinkedHashSet<>();
         private final Set<String> methods = new LinkedHashSet<>();
-        private final Set<String> sites = new LinkedHashSet<>();
-        private final Set<String> seedSites = new LinkedHashSet<>();
         private final Set<String> edgeIds = new LinkedHashSet<>();
-        private final Set<String> concreteBoundCells = new LinkedHashSet<>();
-        private final List<String> gaps = new ArrayList<>();
-        private final List<Map<String, Object>> externalInputPromotions =
-                new ArrayList<>();
-        private final Set<String> externalInputPromotionKeys =
-                new LinkedHashSet<>();
-        private final List<Map<String, Object>> heapReadClassifications =
-                new ArrayList<>();
 
-        private static ConcreteDemandSlice legacyStatic(String reason) {
-            ConcreteDemandSlice result = new ConcreteDemandSlice();
-            result.gaps.add(reason);
-            return result;
-        }
-
-        private void bindConcrete(Collection<StaticPort> ports,
-                                  String reason) {
-            gaps.add(reason);
-            if (ports != null) {
-                for (StaticPort port : ports) {
-                    addNonBlank(concreteBoundCells, port.cell);
-                }
-            }
+        private static ConcreteDemandSlice legacyStatic() {
+            return new ConcreteDemandSlice();
         }
 
         private List<StaticPort> inputs(StaticRegion region) {
@@ -6346,74 +5981,12 @@ final class RuntimeRegionPlanner {
             return sorted(result);
         }
 
-        private String selectionAuthority() {
-            return applied && !externalInputPromotions.isEmpty()
-                    ? AUTHORITY + "_PLUS_RUNTIME_CONFIRMED_EXTERNAL_INPUT_V2"
-                    : applied ? AUTHORITY
-                    : "LEGACY_NO_FROZEN_GRAPH_STATIC_FRONTIER";
-        }
-
-        private void promoteExternalInput(StaticPort port,
-                                          Map<String, Object> provenance) {
+        private void promoteExternalInput(StaticPort port) {
             if (port == null || port.portId.isEmpty()) {
                 return;
             }
             inputPortIds.add(port.portId);
-            concreteBoundCells.remove(port.cell);
-            String key = port.portId + "\n"
-                    + string(provenance == null ? null
-                    : provenance.get("promotionKind")) + "\n"
-                    + string(provenance == null ? null
-                    : provenance.get("edgeId"));
-            if (!externalInputPromotionKeys.add(key)) {
-                return;
-            }
-            Map<String, Object> row = provenance == null
-                    ? new LinkedHashMap<>()
-                    : new LinkedHashMap<>(provenance);
-            row.put("inputPort", port.portId);
-            row.put("inputCell", port.cell);
-            externalInputPromotions.add(row);
-        }
-
-        private void recordHeapDefinition(
-                RuntimeHeapDefinition definition) {
-            if (definition != null) {
-                heapReadClassifications.add(definition.toMap());
-            }
-        }
-
-        private Map<String, Object> toMap() {
-            return object(
-                    "kind", "CONCRETE_REGION_DEMAND_SLICE",
-                    "applied", applied,
-                    // Gaps are intentionally fixed to this invocation's
-                    // concrete values.  They make static provenance partial,
-                    // not the operational input selection incomplete.
-                    "complete", applied,
-                    "staticProvenanceComplete", applied && gaps.isEmpty(),
-                    "unresolvedValuePolicy",
-                    applied ? "CONCRETE_BOUND_OBSERVED_VALUE"
-                            : "LEGACY_STATIC_FRONTIER",
-                    "authority", selectionAuthority(),
-                    "seedSites", sorted(seedSites),
-                    "inputPorts", sorted(inputPortIds),
-                    "methods", sorted(methods),
-                    "sites", sorted(sites),
-                    "edgeIds", sorted(edgeIds),
-                    "externalInputPromotionCount",
-                    externalInputPromotions.size(),
-                    "externalInputPromotions",
-                    copyRows(externalInputPromotions),
-                    "heapReachingDefinitionAuthority",
-                    RuntimeFieldAccessIndex.AUTHORITY,
-                    "heapReadClassificationCount",
-                    heapReadClassifications.size(),
-                    "heapReadClassifications",
-                    copyRows(heapReadClassifications),
-                    "concreteBoundCells", sorted(concreteBoundCells),
-                    "visitedCellCount", visitedCellCount,
-                    "gaps", new ArrayList<>(gaps));
+            externalInputPromoted = true;
         }
     }
 
@@ -6907,7 +6480,6 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         private final Set<String> unresolvedExternalCandidateInputCache =
                 new LinkedHashSet<>();
-        private final String validationStatus;
         private final boolean runtimePathEvidenceComplete;
         private final boolean containedCallTreeComplete;
         private final boolean pathSignatureComplete;
@@ -6920,7 +6492,6 @@ final class RuntimeRegionPlanner {
                                  Set<String> observedMethods,
                                  Set<String> concreteInputPortIds,
                                  ConcreteDemandSlice concreteDemandSlice,
-                                 String validationStatus,
                                  boolean runtimePathEvidenceComplete,
                                  boolean containedCallTreeComplete,
                                  boolean pathSignatureComplete) {
@@ -6942,14 +6513,12 @@ final class RuntimeRegionPlanner {
             this.concreteDemandEdgeIds = new LinkedHashSet<>(
                     concreteDemandSlice.edgeIds);
             this.concreteDemandSliceApplied = concreteDemandSlice.applied;
-            this.validationStatus = validationStatus;
             this.runtimePathEvidenceComplete = runtimePathEvidenceComplete;
             this.containedCallTreeComplete = containedCallTreeComplete;
             this.pathSignatureComplete = pathSignatureComplete;
         }
 
-        private boolean promoteExternalInput(StaticPort port,
-                                             Map<String, Object> provenance) {
+        private boolean promoteExternalInput(StaticPort port) {
             if (port == null || port.portId.isEmpty()) {
                 return false;
             }
@@ -6957,7 +6526,7 @@ final class RuntimeRegionPlanner {
             if (!added) {
                 return false;
             }
-            concreteDemandSlice.promoteExternalInput(port, provenance);
+            concreteDemandSlice.promoteExternalInput(port);
             consumerInputResolutionCache.clear();
             unresolvedConsumerInputCache.clear();
             return true;
@@ -9444,11 +9013,9 @@ final class RuntimeRegionPlanner {
 
     private static final class RootCandidate {
         private final MethodEvent event;
-        private final boolean staticRootObserved;
 
-        private RootCandidate(MethodEvent event, boolean staticRootObserved) {
+        private RootCandidate(MethodEvent event) {
             this.event = event;
-            this.staticRootObserved = staticRootObserved;
         }
     }
 
@@ -9539,21 +9106,6 @@ final class RuntimeRegionPlanner {
                 || left.type.equals(right.type);
     }
 
-    private static String threadRole(String threadName) {
-        String value = safe(threadName);
-        String lower = value.toLowerCase(Locale.ROOT);
-        if (lower.contains("ipc") || lower.contains("rpc")) {
-            return "RPCHandler";
-        }
-        if (lower.contains("updater") || lower.contains("monitor")) {
-            return "BackgroundUpdater";
-        }
-        if (lower.contains("dispatcher")) {
-            return "Dispatcher";
-        }
-        return value.isEmpty() ? "unknown" : value;
-    }
-
     /**
      * Returns the replay-stable portion of a root thread context. Ordinary
      * worker names remain exact. The JDK default executor pool generation is
@@ -9614,15 +9166,6 @@ final class RuntimeRegionPlanner {
             addNonBlank(result, port.portId);
         }
         return result;
-    }
-
-    private static List<String> actionSymbols(
-            List<Map<String, Object>> actions) {
-        Set<String> result = new LinkedHashSet<>();
-        for (Map<String, Object> action : values(actions)) {
-            addNonBlank(result, string(action.get("symbol")));
-        }
-        return sorted(result);
     }
 
     private static Set<String> stringSet(Object value) {
@@ -9699,11 +9242,6 @@ final class RuntimeRegionPlanner {
         }
         Collections.sort(result);
         return result;
-    }
-
-    private static <T> List<T> limited(List<T> values, int limit) {
-        return values.size() <= limit
-                ? values : new ArrayList<>(values.subList(0, limit));
     }
 
     private static void copy(Map<String, Object> from, Map<String, Object> to,

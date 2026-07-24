@@ -856,18 +856,7 @@ public class RuntimeRegionPlannerTest {
 
             assertEquals(1, result.activations.size());
             Map<String, Object> activation = result.activations.get(0);
-            @SuppressWarnings("unchecked")
-            Map<String, Object> demand = (Map<String, Object>) activation.get(
-                    "concreteDemandSlice");
-            assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
-                            + "STATIC_DEMAND_SLICE_V2",
-                    demand.get("authority"));
-            assertEquals(Boolean.TRUE, demand.get("applied"));
-            assertEquals(Boolean.TRUE, demand.get("complete"));
-            assertEquals(Boolean.TRUE, demand.get("staticProvenanceComplete"));
-            assertEquals(Arrays.asList("REGION.0.in.0", "REGION.0.in.1"),
-                    demand.get("inputPorts"));
-            assertTrue(((List<?>) demand.get("concreteBoundCells")).isEmpty());
+            assertFalse(activation.containsKey("concreteDemandSlice"));
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> actions =
                     (List<Map<String, Object>>) activation.get("symbolize");
@@ -882,23 +871,6 @@ public class RuntimeRegionPlannerTest {
         } finally {
             folder.delete();
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void assertConcreteFrozenGraphFailure(
-            RuntimeRegionPlanner.Result result, String input,
-            String expectedGap) {
-        Map<String, Object> activation = result.activations.get(0);
-        assertEquals(Boolean.FALSE, activation.get("symbolicReady"));
-        Map<String, Object> demand = (Map<String, Object>) activation.get(
-                "concreteDemandSlice");
-        assertEquals("RUNTIME_EXACT_ROOT_CALL_CLOSURE_PLUS_FROZEN_"
-                        + "STATIC_DEMAND_SLICE_V2",
-                demand.get("authority"));
-        assertEquals(Boolean.TRUE, demand.get("applied"));
-        assertEquals(Collections.singletonList(input),
-                demand.get("concreteBoundCells"));
-        assertTrue(String.valueOf(demand.get("gaps")).contains(expectedGap));
     }
 
     private static String inputPort(String id, String cell,
