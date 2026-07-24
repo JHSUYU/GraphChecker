@@ -181,8 +181,8 @@ from those declarations, so pre-existing materializations cannot authorize
 themselves. A seed capture contains no forced branch.
 
 Every output closure must explicitly carry
-`requestedOutputCaptureComplete=true`. A legacy transition template,
-occurrence `0`, or `TRANSITION_DISCOVERY_ONLY` goal cannot bypass that gate.
+`requestedOutputCaptureComplete=true`. A stale singular template or
+occurrence `0` cannot bypass that gate.
 Failure leaves `schedulerReady=false` and `symbolicReady=false`.
 
 The importer rejects relational completeness unless every slice input has a

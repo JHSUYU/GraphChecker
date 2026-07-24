@@ -339,10 +339,6 @@ public final class ConcolicReplayValidator {
         private int assignmentCount;
         private int dynamicCount;
 
-        private static DynamicAssignmentSet empty() {
-            return new DynamicAssignmentSet();
-        }
-
         private static DynamicAssignmentSet from(JsonArray assignments,
                                                  String source,
                                                  String activationId) {

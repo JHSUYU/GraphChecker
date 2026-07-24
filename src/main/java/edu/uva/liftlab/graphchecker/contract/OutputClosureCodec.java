@@ -56,7 +56,10 @@ public final class OutputClosureCodec {
                     "output closure artifact is required");
         }
         JsonElement encoded = artifact.get(OutputClosureContract.FIELD);
-        if (encoded == null) return decodeLegacyActivation(artifact);
+        if (encoded == null) {
+            throw new IllegalArgumentException(
+                    "canonical outputClosure is required");
+        }
         if (!encoded.isJsonObject()) {
             throw new IllegalArgumentException(
                     "outputClosure must be an object");
@@ -164,6 +167,50 @@ public final class OutputClosureCodec {
         return result;
     }
 
+    /**
+     * Builds one canonical member at the planner boundary.  This is the only
+     * supported adapter for producers that still hold their frozen slice as a
+     * separate value; it never creates or decodes singular activation mirrors.
+     */
+    public static OutputClosureContract singleton(
+            String regionId, String regionInstanceId, long rootCallId,
+            String portId, String cell, String kind,
+            String selectionAuthority, JsonObject slice) {
+        JsonObject normalizedSlice = slice == null
+                ? null : slice.deepCopy();
+        JsonArray bindings = requireArray(normalizedSlice,
+                "captureBindings");
+        String descriptor = inferDescriptor(cell, kind, bindings);
+        if (descriptor.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "requested output Java type is unknown");
+        }
+
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", portId);
+        output.addProperty("cell", cell);
+        output.addProperty("kind", kind);
+        output.addProperty("javaTypeDescriptor", descriptor);
+        output.addProperty("selectionAuthority", selectionAuthority);
+        JsonObject member = new JsonObject();
+        member.add("output", output);
+        member.add("slice", normalizedSlice);
+
+        JsonObject producer = new JsonObject();
+        producer.addProperty("regionId", regionId);
+        producer.addProperty("regionInstanceId", regionInstanceId);
+        producer.addProperty("rootCallId", rootCallId);
+        JsonArray members = new JsonArray();
+        members.add(member);
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("schemaVersion",
+                OutputClosureContract.SCHEMA_VERSION);
+        envelope.addProperty("kind", OutputClosureContract.KIND);
+        envelope.add("producer", producer);
+        envelope.add("members", members);
+        return decodeEnvelope(envelope);
+    }
+
     public static void writeTo(JsonObject activation,
                                OutputClosureContract contract) {
         if (activation == null || contract == null) {
@@ -256,82 +303,6 @@ public final class OutputClosureCodec {
         return new OutputClosureContract.Member(output, slice);
     }
 
-    private static OutputClosureContract decodeLegacyActivation(
-            JsonObject activation) {
-        JsonObject requested = requireObject(activation, "requestedOutput");
-        String port = first(text(requested, "portId"),
-                text(requested, "symbol"));
-        String cell = requireText(requested, "cell");
-        String kind = requireText(requested, "kind");
-        if (port.isEmpty() || !OUTPUT_KINDS.contains(kind)) {
-            throw new IllegalArgumentException(
-                    "legacy requestedOutput identity/kind is invalid");
-        }
-        JsonObject action = legacyOutputAction(
-                activation, port, cell, kind);
-        JsonObject slice = requireObject(
-                activation, "requestedOutputSlice").deepCopy();
-        validateSliceShape(slice, port, cell, "requestedOutputSlice");
-        boolean required = requireBoolean(
-                activation, "requestedOutputCaptureRequired");
-        if (!requireBoolean(
-                activation, "requestedOutputCaptureComplete")) {
-            throw new IllegalArgumentException(
-                    "legacy requested output capture is incomplete");
-        }
-        JsonArray bindings = requireArray(
-                activation, "requestedOutputCapture").deepCopy();
-        JsonArray sliceBindings = requireArray(
-                slice, "captureBindings").deepCopy();
-        if (!CanonicalJson.render(bindings)
-                .equals(CanonicalJson.render(sliceBindings))) {
-            throw new IllegalArgumentException(
-                    "legacy capture mirrors conflict with slice ledger");
-        }
-        normalizeLegacyCaptureKinds(bindings);
-        normalizeLegacyCaptureKinds(sliceBindings);
-        slice.add("captureBindings", sliceBindings);
-        if (required
-                != requireBoolean(slice, "captureBindingsRequired")) {
-            throw new IllegalArgumentException(
-                    "legacy capture requirement conflicts with slice");
-        }
-
-        String descriptor = first(text(requested, "javaTypeDescriptor"),
-                text(action, "javaTypeDescriptor"));
-        String inferred = inferLegacyDescriptor(cell, kind, bindings);
-        if (descriptor.isEmpty()) descriptor = inferred;
-        else {
-            requireFieldDescriptor(descriptor, "legacy requestedOutput");
-            if (!inferred.isEmpty() && !descriptor.equals(inferred)) {
-                throw new IllegalArgumentException(
-                        "legacy output type conflicts with endpoint");
-            }
-        }
-        if (descriptor.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "legacy output Java type is unknown");
-        }
-        validateCaptureLedger(bindings, required, port, cell,
-                "legacy requestedOutput", descriptor);
-
-        JsonObject output = new JsonObject();
-        output.addProperty("portId", port);
-        output.addProperty("cell", cell);
-        output.addProperty("kind", kind);
-        output.addProperty("javaTypeDescriptor", descriptor);
-        output.addProperty("selectionAuthority",
-                requireText(requested, "selectionAuthority"));
-        OutputClosureContract.Producer producer =
-                new OutputClosureContract.Producer(
-                        requireText(activation, "regionId"),
-                        requireText(activation, "regionInstanceId"),
-                        requireLong(activation, "rootCallId"));
-        return new OutputClosureContract(producer,
-                Collections.singletonList(new OutputClosureContract.Member(
-                        output, slice)));
-    }
-
     private static void validateSliceShape(
             JsonObject slice, String port, String cell, String path) {
         if (!port.equals(requireText(slice, "outputPort"))
@@ -407,45 +378,7 @@ public final class OutputClosureCodec {
         requireText(binding, "argumentCell");
     }
 
-    private static JsonObject legacyOutputAction(
-            JsonObject activation, String port, String cell, String kind) {
-        JsonObject match = null;
-        for (JsonElement element : requireArray(activation, "outputs")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject candidate = element.getAsJsonObject();
-            if (port.equals(text(candidate, "symbol"))
-                    && cell.equals(text(candidate, "cell"))
-                    && kind.equals(text(candidate, "kind"))) {
-                if (match != null) {
-                    throw new IllegalArgumentException(
-                            "legacy requested output action is ambiguous");
-                }
-                match = candidate;
-            }
-        }
-        if (match == null) {
-            throw new IllegalArgumentException(
-                    "legacy requested output action is missing");
-        }
-        String location = "FAILURE_PREDICATE".equals(kind)
-                ? "THROW_OR_BRANCH" : "RETURN_OR_HEAP_EFFECT";
-        requireText(match, "location", location);
-        return match;
-    }
-
-    private static void normalizeLegacyCaptureKinds(JsonArray bindings) {
-        for (JsonElement element : bindings) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            if (text(row, "captureKind").isEmpty()) {
-                row.addProperty("captureKind",
-                        row.has("fieldSignature")
-                                ? "FIELD_ASSIGNMENT_RHS" : "CALL_ARGUMENT");
-            }
-        }
-    }
-
-    private static String inferLegacyDescriptor(
+    private static String inferDescriptor(
             String cell, String kind, JsonArray bindings) {
         if ("FAILURE_PREDICATE".equals(kind)) return "Z";
         String type = typeFromCell(cell);
@@ -734,15 +667,6 @@ public final class OutputClosureCodec {
 
     private static String text(JsonObject object, String name) {
         return OutputClosureContract.text(object, name);
-    }
-
-    private static String first(String... values) {
-        for (String value : values) {
-            if (!OutputClosureContract.trim(value).isEmpty()) {
-                return value.trim();
-            }
-        }
-        return "";
     }
 
     private static Set<String> set(String... values) {

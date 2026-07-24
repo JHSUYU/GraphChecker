@@ -183,6 +183,10 @@ public class ConcolicReplayValidatorTest {
         slice.addProperty("captureBindingsComplete", true);
         task.add("requestedOutputSlice", slice);
         task.add("requestedOutputMethods", strings(method));
+        OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
+                "REGION.3", "REGION.3@test#call7", 7,
+                port, cell, "HEAP_STATE", "CONFIRMED_READ_FROM_EDGE",
+                slice));
         return task;
     }
 

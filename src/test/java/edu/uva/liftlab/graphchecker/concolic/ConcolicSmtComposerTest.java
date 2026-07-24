@@ -5,6 +5,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Assume;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -69,11 +71,6 @@ public class ConcolicSmtComposerTest {
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), true);
             JsonObject positive = producerSummary(singlePutEffect(), true);
-            positive.add("captureGoal",
-                    RegionCaptureGoal.outputClosure().toJson());
-            JsonObject requested = new JsonObject();
-            requested.addProperty("portId", "REGION.P.out.0");
-            positive.add("requestedOutput", requested);
             positive.getAsJsonArray("pathCondition").add(
                     integerCondition(">", 0));
             JsonObject nonPositive = positive.deepCopy();
@@ -84,7 +81,7 @@ public class ConcolicSmtComposerTest {
                     integerCondition("<=", 0));
             RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
                     java.util.Arrays.asList(positive, nonPositive),
-                    closedPathManifest());
+                    closedPathManifest(positive));
             writeSummary(fixture, merged.summaries.get(0));
 
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
@@ -135,10 +132,6 @@ public class ConcolicSmtComposerTest {
                     java.nio.file.StandardOpenOption.APPEND);
 
             JsonObject intermediate = producerSummary(singlePutEffect(), true);
-            intermediate.add("requestedOutput", requestedOutput(
-                    "REGION.P.out.0"));
-            intermediate.add("requestedOutputSlice", requestedSlice(
-                    "REGION.P.in.0"));
 
             JsonObject upstream = JsonParser.parseString(
                     producerSummary(singlePutEffect(), true).toString()
@@ -147,8 +140,10 @@ public class ConcolicSmtComposerTest {
                             .replace("ACT.P", "ACT.U")
                             .replace("fixture#call1", "fixture#call0"))
                     .getAsJsonObject();
-            upstream.add("requestedOutput", requestedOutput(
-                    "REGION.U.out.0"));
+            upstream.addProperty("rootCallId", 0);
+            upstream.getAsJsonObject(OutputClosureContract.FIELD)
+                    .getAsJsonObject("producer")
+                    .addProperty("rootCallId", 0);
             JsonArray bindings = new JsonArray();
             JsonObject exactBinding = runtimeEdgeBinding("REGION.U",
                     "REGION.U@fixture#call0", "REGION.U.out.0",
@@ -591,12 +586,61 @@ public class ConcolicSmtComposerTest {
         summary.addProperty("regionId", "REGION.P");
         summary.addProperty("regionInstanceId",
                 "REGION.P@fixture#call1");
+        summary.addProperty("rootCallId", 1);
         summary.addProperty("relationallyComplete", complete);
+        summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
         summary.add("pathCondition", new JsonArray());
         summary.add("outputExpressions", new JsonObject());
         summary.add("heapStateInitializers", initializers);
         summary.add("heapEffects", effects);
+        explicitSingletonHeapOutputClosure(summary);
         return summary;
+    }
+
+    private static void explicitSingletonHeapOutputClosure(
+            JsonObject summary) {
+        String region = summary.get("regionId").getAsString();
+        String instance = summary.get("regionInstanceId").getAsString();
+        long rootCallId = summary.get("rootCallId").getAsLong();
+        String outputPort = region + ".out.0";
+        String outputCell = "<example.Producer: java.util.Map state>";
+
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", outputPort);
+        output.addProperty("cell", outputCell);
+        output.addProperty("kind", "HEAP_STATE");
+        output.addProperty("javaTypeDescriptor", "Ljava/util/Map;");
+        output.addProperty("selectionAuthority",
+                "STATIC_EXACT_OUTPUT_PORT");
+
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", outputPort);
+        slice.addProperty("outputCell", outputCell);
+        slice.add("inputPorts", singletonString(region + ".in.0"));
+        slice.add("sites", new JsonArray());
+        slice.add("staticSites", new JsonArray());
+        slice.add("methods", new JsonArray());
+        slice.add("causalEdgeIds", new JsonArray());
+        slice.add("captureBindings", new JsonArray());
+        slice.addProperty("captureBindingsRequired", false);
+        slice.addProperty("captureBindingsComplete", true);
+
+        JsonObject member = new JsonObject();
+        member.add("output", output);
+        member.add("slice", slice);
+        JsonArray members = new JsonArray();
+        members.add(member);
+
+        JsonObject producer = new JsonObject();
+        producer.addProperty("regionId", region);
+        producer.addProperty("regionInstanceId", instance);
+        producer.addProperty("rootCallId", rootCallId);
+        JsonObject closure = new JsonObject();
+        closure.addProperty("schemaVersion", 1);
+        closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
+        closure.add("producer", producer);
+        closure.add("members", members);
+        summary.add(OutputClosureContract.FIELD, closure);
     }
 
     private static JsonObject requestedOutput(String port) {
@@ -1654,7 +1698,8 @@ public class ConcolicSmtComposerTest {
         return result;
     }
 
-    private static JsonObject closedPathManifest() {
+    private static JsonObject closedPathManifest(JsonObject summary) {
+        OutputClosureContract contract = OutputClosureCodec.decode(summary);
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "REGION_PATH_WORKLIST");
@@ -1668,6 +1713,9 @@ public class ConcolicSmtComposerTest {
         result.add("bounds", bounds);
         result.addProperty("observedPathCount", 1);
         result.addProperty("pendingTaskCount", 0);
+        result.addProperty("outputDemandKey", contract.demandKey());
+        result.addProperty("outputClosureFingerprint",
+                contract.closureFingerprint());
         result.add("gaps", new JsonArray());
         return result;
     }

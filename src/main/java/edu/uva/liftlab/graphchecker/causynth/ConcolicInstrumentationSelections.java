@@ -190,9 +190,7 @@ final class ConcolicInstrumentationSelections {
         JsonObject captureGoal = captureGoalElement.getAsJsonObject();
         if (!"OUTPUT_CLOSURE".equals(jsonString(captureGoal, "kind"))
                 || !"BOUNDED_OUTPUT_RELEVANT_PATHS".equals(
-                jsonString(captureGoal, "scope"))
-                || "TRANSITION_DISCOVERY_ONLY".equals(
-                jsonString(captureGoal, "purpose"))) {
+                jsonString(captureGoal, "scope"))) {
             return false;
         }
 
@@ -221,9 +219,7 @@ final class ConcolicInstrumentationSelections {
                 "pathSignatureTruncated", false)
                 || !strictJsonBooleanEquals(row,
                 "containedCallTreeTruncated", false)
-                || !emptyJsonArray(row, "runtimeGaps")
-                || row.has("transitionDiscovery")
-                || row.has("transitionOutputRefinement")) {
+                || !emptyJsonArray(row, "runtimeGaps")) {
             return false;
         }
         boolean seedReplay = "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
@@ -1239,10 +1235,7 @@ final class ConcolicInstrumentationSelections {
                     if (!strictJsonBooleanEquals(row, "replayable", true)
                             || !strictJsonBooleanEquals(row,
                             "schedulerReady", true)) continue;
-                    if (!row.has(OutputClosureContract.FIELD)
-                            && !row.has("requestedOutputCapture")
-                            && !row.has("requestedOutputCaptureRequired")
-                            && !row.has("requestedOutputCaptureComplete")) {
+                    if (!row.has(OutputClosureContract.FIELD)) {
                         continue;
                     }
                     final OutputClosureContract closure;

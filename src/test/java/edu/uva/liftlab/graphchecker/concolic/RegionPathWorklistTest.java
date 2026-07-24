@@ -21,10 +21,16 @@ public class RegionPathWorklistTest {
                 RegionCaptureGoal.outputClosure());
         JsonObject activation = activation("ACT.NEW",
                 RegionCaptureGoal.outputClosure());
+        JsonObject targetSummary = summary("ACT.TARGET",
+                RegionCaptureGoal.targetBranch());
+        JsonObject targetActivation = activation("ACT.TARGET",
+                RegionCaptureGoal.targetBranch());
+        targetSummary.remove("outputClosure");
+        targetActivation.remove("outputClosure");
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation),
+                Arrays.asList(summary, targetSummary),
+                Arrays.asList(activation, targetActivation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -47,16 +53,16 @@ public class RegionPathWorklistTest {
     public void completeEmptyOutputSliceDoesNotBecomeWildcard() {
         JsonObject summary = summary("ACT.EMPTY.SLICE",
                 RegionCaptureGoal.outputClosure());
-        JsonObject slice = new JsonObject();
-        slice.add("sites", new JsonArray());
-        slice.add("staticSites", new JsonArray());
-        summary.add("requestedOutputSlice", slice);
+        JsonObject activation = activation(
+                "ACT.EMPTY.SLICE", RegionCaptureGoal.outputClosure());
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.EMPTY");
+        attachClosure(summary, closure);
+        attachClosure(activation, closure);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
-                Collections.singletonList(activation(
-                        "ACT.EMPTY.SLICE",
-                        RegionCaptureGoal.outputClosure())),
+                Collections.singletonList(activation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -97,6 +103,7 @@ public class RegionPathWorklistTest {
 
         JsonObject legacySummary = summary("ACT.CLOSURE",
                 RegionCaptureGoal.outputClosure());
+        legacySummary.remove("outputClosure");
         boolean rejected = false;
         try {
             RegionPathWorklist.plan(
@@ -106,7 +113,7 @@ public class RegionPathWorklistTest {
                     RegionPathWorklist.Bounds.defaults());
         } catch (IllegalArgumentException expected) {
             rejected = expected.getMessage().contains(
-                    "canonical outputClosure summary");
+                    "canonical outputClosure is required");
         }
         assertTrue("legacy summary must not inherit joint activation scope",
                 rejected);
@@ -461,6 +468,8 @@ public class RegionPathWorklistTest {
         activation.addProperty("activationId", id);
         activation.addProperty("regionId", "REGION.3");
         activation.add("captureGoal", goal.toJson());
+        attachClosure(activation, outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
         return activation;
     }
 
@@ -473,9 +482,8 @@ public class RegionPathWorklistTest {
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
         summary.add("captureGoal", goal.toJson());
-        JsonObject output = new JsonObject();
-        output.addProperty("portId", "REGION.3.out.0");
-        summary.add("requestedOutput", output);
+        attachClosure(summary, outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
 
         JsonArray conditions = new JsonArray();
         conditions.add(binary(">", 0));

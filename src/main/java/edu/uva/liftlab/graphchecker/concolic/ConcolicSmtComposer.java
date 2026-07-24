@@ -89,14 +89,6 @@ public final class ConcolicSmtComposer {
     private ConcolicSmtComposer() {
     }
 
-    static boolean completeContainerSelectorForTests(JsonObject binding) {
-        return Emitter.completeContainerSelector(binding);
-    }
-
-    static JsonObject projectionDynamicMetadataForTests(JsonObject binding) {
-        return Emitter.projectionDynamicMetadata(binding);
-    }
-
     static String heapObservationStatePortForTests(
             String region, String observationId, String baseInputSymbol,
             String dynamicBindingId) {
@@ -109,13 +101,6 @@ public final class ConcolicSmtComposer {
             String dynamicBindingId) {
         return heapObservationStateSelectorDigest(observationId,
                 baseInputSymbol, dynamicBindingId);
-    }
-
-    static boolean authenticatedValueRefWitnessForTests(
-            JsonObject record, String expressionField,
-            String authorityField, String objectTokenField) {
-        return Emitter.authenticatedValueRefWitness(record, expressionField,
-                authorityField, objectTokenField);
     }
 
     public static void main(String[] argv) throws Exception {
@@ -491,7 +476,8 @@ public final class ConcolicSmtComposer {
                 continue;
             }
             Set<String> demandedInputs =
-                    consumerSelection.outputClosure.inputPorts;
+                    consumerSelection.outputClosure.executionScope()
+                            .inputPorts();
             if (demandedInputs.isEmpty()) continue;
 
             // Discover the whole upstream demand for this consumer before
@@ -705,35 +691,34 @@ public final class ConcolicSmtComposer {
             return null;
         }
         if (regionSelection != null
-                && !regionSelection.demandedOutputs.equals(demandedOutputs)) {
+                && !regionSelection.outputClosure.outputPorts().equals(
+                demandedOutputs)) {
             // The outer resolver reruns from a clean graph with the monotonic
             // demand index.  Never keep using the earlier singleton selection
             // during the pass in which a later consumer discovers a new port.
             graph.gaps.add("ProducerDemandExpandedAfterSelection:"
                     + producerLabel(region, requestedInstance,
                     demandedOutputs) + ":selected="
-                    + regionSelection.demandedOutputs);
+                    + regionSelection.outputClosure.outputPorts());
             return null;
         }
         Map<String, JsonObject> unique = new LinkedHashMap<>();
-        Map<String, SummaryOutputClosure> closures = new LinkedHashMap<>();
+        Map<String, OutputClosureContract> closures = new LinkedHashMap<>();
         Set<String> fingerprints = new LinkedHashSet<>();
         for (JsonObject summary : summaries) {
             if (!region.equals(string(summary, "regionId"))) continue;
-            SummaryOutputClosure closure;
+            if (!summary.has(OutputClosureContract.FIELD)) continue;
+            OutputClosureContract closure;
             try {
-                closure = SummaryOutputClosure.decodeForDemand(summary,
-                        demandedOutputs);
+                closure = OutputClosureCodec.decode(summary);
             } catch (IllegalArgumentException malformed) {
-                if (summary.has(OutputClosureContract.FIELD)) {
-                    graph.gaps.add("MalformedProducerOutputClosure:"
-                            + firstNonBlank(string(summary, "summaryId"),
-                            region) + ":" + malformed.getMessage());
-                }
+                graph.gaps.add("MalformedProducerOutputClosure:"
+                        + firstNonBlank(string(summary, "summaryId"),
+                        region) + ":" + malformed.getMessage());
                 continue;
             }
-            if (!region.equals(closure.regionId)
-                    || !closure.outputPorts.equals(demandedOutputs)) {
+            if (!region.equals(closure.producer().regionId())
+                    || !closure.outputPorts().equals(demandedOutputs)) {
                 continue;
             }
             if (!completeExactJointOutputPayload(summary, closure)) {
@@ -743,25 +728,16 @@ public final class ConcolicSmtComposer {
                                 demandedOutputs)));
                 continue;
             }
-            Set<String> instances = summaryInstances(summary);
-            if (!closure.instanceId.isEmpty()) {
-                instances.add(closure.instanceId);
-            }
-            if (!requestedInstance.isEmpty()) {
-                if (!closure.instanceId.isEmpty()
-                        ? !requestedInstance.equals(closure.instanceId)
-                        : instances.size() != 1
-                        || !instances.contains(requestedInstance)) {
-                    continue;
-                }
-            } else if (instances.size() != 1) {
+            if (!requestedInstance.isEmpty()
+                    && !requestedInstance.equals(
+                    closure.producer().regionInstanceId())) {
                 continue;
             }
             String identity = string(summary, "summaryId");
             if (identity.isEmpty()) continue;
             unique.put(identity, summary);
             closures.put(identity, closure);
-            fingerprints.add(closure.fingerprint);
+            fingerprints.add(closure.closureFingerprint());
         }
         if (unique.isEmpty()) {
             if (missingProducerIsGap) {
@@ -795,20 +771,10 @@ public final class ConcolicSmtComposer {
                     demandedOutputs));
             return null;
         }
-        SummaryOutputClosure selectedClosure = closures.get(
+        OutputClosureContract selectedClosure = closures.get(
                 string(selected, "summaryId"));
-        Set<String> instances = summaryInstances(selected);
-        if (!selectedClosure.instanceId.isEmpty()) {
-            instances.add(selectedClosure.instanceId);
-        }
         String instance = firstNonBlank(requestedInstance,
-                selectedClosure.instanceId,
-                instances.size() == 1 ? instances.iterator().next() : "");
-        if (instance.isEmpty()) {
-            graph.gaps.add("MissingProducerInstanceIdentity:" + region
-                    + ":" + demandedOutputs);
-            return null;
-        }
+                selectedClosure.producer().regionInstanceId());
         ProducerKey key = new ProducerKey(region, instance, output);
         if (!graph.admitRegionSummary(key, selected, selectedClosure,
                 demandedOutputs)) return null;
@@ -844,8 +810,8 @@ public final class ConcolicSmtComposer {
     }
 
     private static boolean completeExactJointOutputPayload(
-            JsonObject summary, SummaryOutputClosure closure) {
-        if (!closure.explicit || closure.outputPorts.size() <= 1) return true;
+            JsonObject summary, OutputClosureContract closure) {
+        if (closure.outputPorts().size() <= 1) return true;
         JsonObject relation = object(summary, "regionRelation");
         JsonArray cases = array(relation, "cases");
         if ("GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
@@ -854,14 +820,14 @@ public final class ConcolicSmtComposer {
                 if (!element.isJsonObject()
                         || !object(element.getAsJsonObject(),
                         "outputExpressions").keySet().equals(
-                        closure.outputPorts)) {
+                        closure.outputPorts())) {
                     return false;
                 }
             }
             return true;
         }
         return object(summary, "outputExpressions").keySet().equals(
-                closure.outputPorts);
+                closure.outputPorts());
     }
 
     private static boolean sameSummary(JsonObject left, JsonObject right) {
@@ -875,20 +841,6 @@ public final class ConcolicSmtComposer {
         return region + "[instance="
                 + firstNonBlank(instance, "<unique-instance>")
                 + ",outputs=" + outputs + "]";
-    }
-
-    private static Set<String> summaryInstances(JsonObject summary) {
-        Set<String> result = new LinkedHashSet<>();
-        String direct = string(summary, "regionInstanceId");
-        if (!direct.isEmpty()) result.add(direct);
-        for (JsonElement element : array(summary,
-                "sourceRegionInstanceIds")) {
-            if (element.isJsonPrimitive()) {
-                String value = element.getAsString();
-                if (!value.isEmpty()) result.add(value);
-            }
-        }
-        return result;
     }
 
     private static JsonObject matchingBinding(JsonObject summary,
@@ -1062,146 +1014,6 @@ public final class ConcolicSmtComposer {
         return boundedRegions.isEmpty() || boundedRegions.contains(region);
     }
 
-    /**
-     * One decoded summary-side output authority.  Explicit contracts are
-     * authoritative.  The legacy path is deliberately bounded to a single
-     * output and exists only while old singleton artifacts are readable.
-     */
-    private static final class SummaryOutputClosure {
-        private final boolean explicit;
-        private final String regionId;
-        private final String instanceId;
-        private final Set<String> outputPorts;
-        private final Set<String> inputPorts;
-        private final Map<String, JsonObject> slices;
-        private final String demandKey;
-        private final String fingerprint;
-
-        private SummaryOutputClosure(boolean explicit, String regionId,
-                                     String instanceId,
-                                     Set<String> outputPorts,
-                                     Set<String> inputPorts,
-                                     Map<String, JsonObject> slices,
-                                     String demandKey,
-                                     String fingerprint) {
-            this.explicit = explicit;
-            this.regionId = firstNonBlank(regionId);
-            this.instanceId = firstNonBlank(instanceId);
-            this.outputPorts = Collections.unmodifiableSet(
-                    new java.util.TreeSet<>(outputPorts));
-            this.inputPorts = Collections.unmodifiableSet(
-                    new java.util.TreeSet<>(inputPorts));
-            this.slices = Collections.unmodifiableMap(
-                    new LinkedHashMap<>(slices));
-            this.demandKey = firstNonBlank(demandKey);
-            this.fingerprint = firstNonBlank(fingerprint);
-        }
-
-        private static SummaryOutputClosure decodeForDemand(
-                JsonObject summary, Set<String> demandedOutputs) {
-            if (summary.has(OutputClosureContract.FIELD)) {
-                OutputClosureContract contract =
-                        OutputClosureCodec.decode(summary);
-                Map<String, JsonObject> slices = new LinkedHashMap<>();
-                for (OutputClosureContract.Member member
-                        : contract.members()) {
-                    slices.put(member.portId(), member.slice());
-                }
-                return new SummaryOutputClosure(true,
-                        contract.producer().regionId(),
-                        contract.producer().regionInstanceId(),
-                        contract.outputPorts(),
-                        contract.executionScope().inputPorts(), slices,
-                        contract.demandKey(),
-                        contract.closureFingerprint());
-            }
-
-            if (demandedOutputs == null || demandedOutputs.size() != 1) {
-                throw new IllegalArgumentException(
-                        "legacy summary requires exactly one demanded output");
-            }
-            String output = demandedOutputs.iterator().next();
-            JsonObject requested = object(summary, "requestedOutput");
-            String requestedPort = firstNonBlank(
-                    string(requested, "portId"),
-                    string(requested, "symbol"));
-            if (!requestedPort.isEmpty()
-                    && !requestedPort.equals(output)) {
-                throw new IllegalArgumentException(
-                        "legacy requested output does not match demand");
-            }
-            if (!legacyProvidesDemandedOutput(summary, output)) {
-                throw new IllegalArgumentException(
-                        "legacy summary does not provide demanded output");
-            }
-            JsonObject slice = object(summary,
-                    "requestedOutputSlice").deepCopy();
-            Set<String> inputs = new java.util.TreeSet<>();
-            for (JsonElement element : array(slice, "inputPorts")) {
-                if (element.isJsonPrimitive()) {
-                    String input = element.getAsString().trim();
-                    if (!input.isEmpty()) inputs.add(input);
-                }
-            }
-            Map<String, JsonObject> slices = new LinkedHashMap<>();
-            slices.put(output, slice);
-            JsonObject identity = new JsonObject();
-            identity.addProperty("regionId", string(summary, "regionId"));
-            identity.addProperty("outputPort", output);
-            identity.add("slice", slice.deepCopy());
-            String fingerprint = CanonicalJson.sha256(identity);
-            JsonObject demand = new JsonObject();
-            demand.addProperty("regionId", string(summary, "regionId"));
-            demand.addProperty("outputPort", output);
-            return new SummaryOutputClosure(false,
-                    string(summary, "regionId"),
-                    uniqueSummaryInstance(summary),
-                    Collections.singleton(output), inputs,
-                    slices, CanonicalJson.sha256(demand), fingerprint);
-        }
-
-        private JsonObject slice(String output) {
-            JsonObject value = slices.get(output);
-            return value == null ? new JsonObject() : value.deepCopy();
-        }
-    }
-
-    private static boolean legacyProvidesDemandedOutput(
-            JsonObject summary, String demandedOutput) {
-        if (object(summary, "outputExpressions").has(demandedOutput)) {
-            return true;
-        }
-        for (JsonElement element : array(summary, "heapEffects")) {
-            if (!element.isJsonObject()) continue;
-            String output = string(element.getAsJsonObject(), "outputPort");
-            if (demandedOutput.equals(output)) return true;
-        }
-        for (JsonElement caseElement : array(object(summary,
-                "regionRelation"), "cases")) {
-            if (!caseElement.isJsonObject()) continue;
-            JsonObject item = caseElement.getAsJsonObject();
-            if (object(item, "outputExpressions").has(demandedOutput)) {
-                return true;
-            }
-            for (JsonElement effectElement : array(item, "heapEffects")) {
-                if (!effectElement.isJsonObject()) continue;
-                String output = string(effectElement.getAsJsonObject(),
-                        "outputPort");
-                if (demandedOutput.equals(output)) return true;
-            }
-        }
-        JsonObject requested = object(summary, "requestedOutput");
-        return demandedOutput.equals(firstNonBlank(
-                string(requested, "portId"),
-                string(requested, "symbol")));
-    }
-
-    private static String uniqueSummaryInstance(JsonObject summary) {
-        Set<String> instances = summaryInstances(summary);
-        return instances.size() == 1
-                ? instances.iterator().next() : "";
-    }
-
     private static final class ProducerDemandIndex {
         private final Map<String, Set<String>> outputsByInvocation =
                 new LinkedHashMap<>();
@@ -1303,19 +1115,15 @@ public final class ConcolicSmtComposer {
         private final String regionId;
         private final String instanceId;
         private final JsonObject summary;
-        private final SummaryOutputClosure outputClosure;
-        private final Set<String> demandedOutputs;
+        private final OutputClosureContract outputClosure;
 
         private RegionSummarySelection(ProducerKey key,
                                        JsonObject summary,
-                                       SummaryOutputClosure outputClosure,
-                                       Set<String> demandedOutputs) {
+                                       OutputClosureContract outputClosure) {
             this.regionId = key.regionId;
             this.instanceId = key.instanceId;
             this.summary = summary;
             this.outputClosure = outputClosure;
-            this.demandedOutputs = Collections.unmodifiableSet(
-                    new java.util.TreeSet<>(demandedOutputs));
         }
     }
 
@@ -1419,14 +1227,13 @@ public final class ConcolicSmtComposer {
 
         private boolean admitRegionSummary(ProducerKey key,
                                            JsonObject summary,
-                                           SummaryOutputClosure closure,
+                                           OutputClosureContract closure,
                                            Set<String> demandedOutputs) {
             RegionSummarySelection selected = selectedRegionSummaries.get(
                     key.regionId);
             if (selected == null) {
                 selectedRegionSummaries.put(key.regionId,
-                        new RegionSummarySelection(key, summary, closure,
-                                demandedOutputs));
+                        new RegionSummarySelection(key, summary, closure));
                 return true;
             }
             if (!selected.instanceId.equals(key.instanceId)) {
@@ -1440,14 +1247,15 @@ public final class ConcolicSmtComposer {
                 gaps.add("ConflictingProducerSummarySelection:" + key);
                 return false;
             }
-            if (!selected.demandedOutputs.equals(demandedOutputs)
-                    || !selected.outputClosure.fingerprint.equals(
-                    closure.fingerprint)) {
+            if (!selected.outputClosure.outputPorts().equals(demandedOutputs)
+                    || !selected.outputClosure.closureFingerprint().equals(
+                    closure.closureFingerprint())) {
                 addMissingPort(key.regionId, key.outputPort);
                 gaps.add("ConflictingProducerDemandSelection:" + key);
                 return false;
             }
-            return selected.demandedOutputs.contains(key.outputPort);
+            return selected.outputClosure.outputPorts().contains(
+                    key.outputPort);
         }
 
         private String expansionIdentity(ProducerKey key,
@@ -1542,14 +1350,6 @@ public final class ConcolicSmtComposer {
             List<String> result = new ArrayList<>();
             for (ProducerKey key : selectedSummaries.keySet()) {
                 result.add(key.toString());
-            }
-            return result;
-        }
-
-        private int recursiveEdgeCount() {
-            int result = 0;
-            for (ResolvedEdge edge : selectedEdges) {
-                if (edge.recursive) result++;
             }
             return result;
         }
@@ -3833,7 +3633,7 @@ public final class ConcolicSmtComposer {
         }
 
         private void regionSummary(JsonObject summary,
-                                   SummaryOutputClosure outputClosure) {
+                                   OutputClosureContract outputClosure) {
             String region = string(summary, "regionId");
             String previousScope = enterSymbolScope("summary:"
                     + firstNonBlank(string(summary, "summaryId"),
@@ -3884,7 +3684,7 @@ public final class ConcolicSmtComposer {
 
         private void guardedRegionRelation(String region,
                                            JsonObject relation,
-                                           SummaryOutputClosure outputClosure) {
+                                           OutputClosureContract outputClosure) {
             JsonArray cases = array(relation, "cases");
             if (!bool(relation, "complete", false)) {
                 heapGap(region, "IncompleteGuardedPathMerge@" + region);
@@ -5791,9 +5591,9 @@ public final class ConcolicSmtComposer {
          */
         private void bindContainerElementFieldsForClosure(
                 String region, JsonObject summary,
-                SummaryOutputClosure outputClosure) {
-            for (String output : outputClosure.outputPorts) {
-                JsonObject memberSlice = outputClosure.slice(output);
+                OutputClosureContract outputClosure) {
+            for (String output : outputClosure.outputPorts()) {
+                JsonObject memberSlice = outputClosure.member(output).slice();
                 if (memberSlice.size() != 0) {
                     bindContainerElementFields(region, summary, memberSlice);
                 }
@@ -7253,8 +7053,10 @@ public final class ConcolicSmtComposer {
             for (RegionSummarySelection selection : selections) {
                 JsonObject summary = selection.summary;
                 JsonObject outputs = object(summary, "outputExpressions");
-                for (String output : selection.demandedOutputs) {
-                    JsonObject slice = selection.outputClosure.slice(output);
+                for (String output
+                        : selection.outputClosure.outputPorts()) {
+                    JsonObject slice =
+                            selection.outputClosure.member(output).slice();
                     if (slice.size() == 0) continue;
                     JsonElement expression = outputs.get(output);
                     if (expression == null) continue;

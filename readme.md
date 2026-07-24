@@ -716,17 +716,21 @@ replay <failure-bundle>
   全部 outputs 共享 case selector。shell campaign 同样按 demand identity 去重，不再按
   output channel 重复执行同一个 producer。
 - Phase 1–2 的本 vertical slice `COMPLETED`：canonical JSON 与版本化 codec 已投入主链；
-  legacy singleton 只剩集中兼容入口和少量内部 member view，禁止 dual-write。
+  外部 wire reader 已删除 singular fallback 和 mirror，Importer 暂时只通过 codec 提供的一个
+  内部 member view 复用既有逐成员 heap verifier，禁止 consumer 自建兼容分支或 dual-write。
 - Phase 3–6 `IN_PROGRESS`：joint scalar 功能已贯通，但 immutable static graph、共享
   execution/capture spec、Java-expression-to-SMT core 和 Java campaign state machine
   尚未完成。
 - Phase 7 `IN_PROGRESS`：普通回归已从 39 类 / 724 项压缩为 13 类 / 57 项且全部通过；
-  fixture workload main 零修改。生产 Java 当前为 84,166 行，相对冻结基线暂增 2,572 行，
-  因此本阶段尚不能宣称代码精简完成；下一步必须删除被 canonical contract 替代的 legacy
-  分支和重复 validation，再重新统计净减量。
-- 当前源码已对六套完整 campaign 产出的 path/summary 重新执行 Composer、manifest hash
-  与真实 Z3：五个 `sat/reachable`、一个 `unsat/unreachable`。最终删除阶段仍必须再跑一次
-  从 clean 到 Z3 的完整并行矩阵，不能用这次增量 re-compose 代替最终门禁。
+  fixture workload main 零修改。第一批 canonical cleanup 将生产 Java 从 84,166 行降到
+  82,498 行，净减 1,668 行；相对冻结基线仍多 904 行，因此本阶段尚不能宣称代码精简完成。
+  已删除 singular wire decode/mirror、无根 transition-discovery、零引用 replay runner、
+  compatibility wrapper 和死 helper；下一步继续消除 Importer 的内部 member view 与重复
+  expression/graph/artifact helper。
+- 第一批 canonical cleanup 的当前源码已经从构建、静态分析、runtime planning、完整
+  producer campaign、merge/composition 一直执行到真实 Z3；六个隔离 workload 并行完成，
+  结果为五个 `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或
+  增量 re-compose 代替门禁。后续每个会改变语义 authority 的里程碑仍须重复完整矩阵。
 
 #### Phase 0：冻结行为与端到端基线
 
@@ -744,18 +748,24 @@ replay <failure-bundle>
 - 首批只替换 replay validation 中与现有算法完全等价的 canonical rendering，不改
   worklist/query/summary identity。
 
-#### Phase 2：类型化 contract 与单一 legacy adapter
+#### Phase 2：类型化 contract 与唯一 codec boundary
 
-- 引入 `Proof<T>`、`StaticRegion`、`OutputSlice`、`Activation`、
-  `OutputClosureContract` 和 codec。
-- 所有 reader 先通过同一个 v1 adapter 消费当前 artifact。
-- adapter 外禁止直接读取 `requestedOutput*`。
-- 此阶段仍可由旧 Planner 生产 artifact，不改变 concolic 结果。
+- `OutputClosureContract` 和 codec 取代 singular output wire schema；single output 只是
+  canonical member set 的一个元素。
+- 只在一种类型能立即删除重复 parser、identity 或 completeness 代码时引入它；不建立通用
+  `Proof<T>`、第二套 artifact model 或与现有 workflow 平行的 framework。
+- 所有 wire reader 只消费 canonical `outputClosure`；逐成员复用只能通过 codec 的唯一
+  internal view，禁止在 consumer 中直接实现 `requestedOutput*` fallback。
+- Importer 完成 joint-native 提取后删除 internal member view，不永久保留迁移层。
 
 #### Phase 3：静态 graph 与 planning
 
-- 将 `SeedBackwardStaticAnalyzer` 和 `SymbolicRegionPlanner` 的 graph index/closure 合并为
-  一个 immutable `StaticGraphIndex`。
+- 保留 `SeedBackwardStaticAnalyzer` 的可变 Soot CFG、relevance worklist 和全程序
+  writer/callsite 索引；它与 finalized edge graph 的停止条件和副作用不同，不能塞进一个
+  通用 `GraphClosure`。
+- 只在 edge rows 补全 `transferKind/siteId` 之后，为 `SymbolicRegionPlanner` 构建一个
+  保序、保重复 edge 的 immutable `StaticGraphIndex`，替换 Planner 内部重复的 method、
+  incoming/outgoing 与 edge-id 扫描；它不拥有 heap/container 语义或查询 DSL。
 - 将 boundary、input frontier、output slice、branch policy 分为独立 planner。
 - 先独立计算每个 output member slice，再构造 joint execution union。
 - `SymbolicRegionPlanner` 最终退化为薄 facade。
@@ -774,6 +784,9 @@ replay <failure-bundle>
 - Importer 先逐 member 提取一次 output，再把 validated extraction 交给 heap verifier。
 - 删除 global exact-capture mode、root-output broadcast、重复 output extraction 和对
   capture plan 的重复扫描。
+- 删除 `exactOrderedPutBijection` 中“数组长度 4 / 四次 Map.put”的 workload-shaped
+  特例；若通用 finite-selector/effect 双射尚不能证明同一语义，就先补成与长度无关的一种
+  证明，而不是保留 fixture 常量或新增另一条旁路。
 - runtime producer attestation 与 importer consumer verification继续独立。
 
 #### Phase 6：campaign、merge、composition 与 SMT
@@ -783,7 +796,9 @@ replay <failure-bundle>
 - Merger 按 exact producer invocation + demand 分组，每个 case 验证全部 outputs。
 - Composer 复用现有 multi-output map 和 shared case selector，只绑定 declared outputs。
 - `ConcolicConstraintSolver` 和 `ConcolicSmtComposer` 共享 Java-expression-to-SMT core，
-  各自保留 model materialization 与 relation/heap emission。
+  只合并 primitive cast、数值/比较、基础 String、sort/term 与 precondition 传播；各自保留
+  symbol resolution、placeholder policy、array/Map、model materialization 与
+  relation/heap emission。一旦共享需要模式开关或大量 callback 就停止抽取。
 - shell 中的 exploration 状态机迁入一个 Java `ExplorationCampaign`；shell 只负责进程边界。
 
 #### Phase 7：切换与删除
@@ -868,7 +883,9 @@ rg -g '*.java' '@Test\b' src/test | wc -l
 - artifact schema 改变时必须 bump version，并使旧 worklist/cache/query identity 失效。
 - identity/hash 改动必须先有 golden semantic identity 测试，再触及 worklist、summary id 或
   composition binding。
-- 第一批重构不改变 custom JDK、SMT emitter、worklist identity 或 terminal manifest。
+- canonical cleanup 不改变 custom JDK、SMT emitter 或 terminal manifest；identity 的变化
+  只允许来自 canonical output demand，并由 worklist/merge/composition boundary test 与六
+  fixture 的真实 Z3 结果共同证明。
 
 ### 完成定义
 

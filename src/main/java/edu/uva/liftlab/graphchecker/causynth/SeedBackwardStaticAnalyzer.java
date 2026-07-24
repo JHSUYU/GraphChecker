@@ -433,17 +433,6 @@ final class SeedBackwardStaticAnalyzer {
         return rows;
     }
 
-    private List<Map<String, Object>> collectLoadedTraceMethods() {
-        List<String> methods = new ArrayList<>(factsByMethod.keySet());
-        Collections.sort(methods);
-        List<Map<String, Object>> rows = new ArrayList<>();
-        int index = 0;
-        for (String method : methods) {
-            rows.add(object("id", "TM." + index++, "method", method));
-        }
-        return rows;
-    }
-
     private Set<String> findCandidateClasses() {
         return Collections.singleton(target.exceptionTargetSite.className);
     }
@@ -809,23 +798,6 @@ final class SeedBackwardStaticAnalyzer {
                 return true;
             }
             if (current == candidateBranch || !seen.add(current)) {
-                continue;
-            }
-            work.addAll(graph.getSuccsOf(current));
-        }
-        return false;
-    }
-
-    private boolean canReach(UnitGraph graph, Unit start, Unit targetUnit) {
-        Set<Unit> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        Deque<Unit> work = new ArrayDeque<>();
-        work.add(start);
-        while (!work.isEmpty()) {
-            Unit current = work.removeFirst();
-            if (current == targetUnit) {
-                return true;
-            }
-            if (!seen.add(current)) {
                 continue;
             }
             work.addAll(graph.getSuccsOf(current));
@@ -5045,11 +5017,6 @@ final class SeedBackwardStaticAnalyzer {
                 : Arrays.asList(paramsText.split("\\s*,\\s*"));
         return new MethodSig(raw, matcher.group(1), matcher.group(2),
                 matcher.group(3), params);
-    }
-
-    private static String ownerOf(String methodSignature) {
-        MethodSig sig = parseMethodSig(methodSignature);
-        return sig == null ? "" : sig.owner;
     }
 
     private static String stableSiteId(String method, int unitIndex, String kind) {

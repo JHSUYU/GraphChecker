@@ -74,11 +74,6 @@ public final class RegionSummaryMerger {
                                 "UNKNOWN")));
                 continue;
             }
-            if (input == null) {
-                diagnostics.add(gap(string(summary, "regionId"),
-                        "MISSING_REQUESTED_OUTPUT"));
-                continue;
-            }
             List<MergeInput> values = groups.get(input.groupKey);
             if (values == null) {
                 values = new ArrayList<>();
@@ -151,7 +146,7 @@ public final class RegionSummaryMerger {
                 }
                 continue;
             }
-            if (input.joint()
+            if (input.contract.members().size() > 1
                     && !exactOutputExpressions(summary,
                     input.contract.outputPorts())) {
                 casesComplete = false;
@@ -185,23 +180,21 @@ public final class RegionSummaryMerger {
             diagnostics.add(gap(region,
                     "PATH_WORKLIST_NOT_CLOSED:" + pathState));
         }
-        if (firstInput.contract != null) {
-            String demand = string(pathManifest, "outputDemandKey");
-            String fingerprint = string(pathManifest,
-                    "outputClosureFingerprint");
-            if (!firstInput.contract.demandKey().equals(demand)) {
-                outputScopeMatches = false;
-                diagnostics.add(gap(region,
-                        "PATH_WORKLIST_OUTPUT_DEMAND_MISMATCH:"
-                                + firstNonBlank(demand, "MISSING")));
-            }
-            if (!firstInput.contract.closureFingerprint().equals(
-                    fingerprint)) {
-                outputScopeMatches = false;
-                diagnostics.add(gap(region,
-                        "PATH_WORKLIST_OUTPUT_CLOSURE_FINGERPRINT_MISMATCH:"
-                                + firstNonBlank(fingerprint, "MISSING")));
-            }
+        String demand = string(pathManifest, "outputDemandKey");
+        String fingerprint = string(pathManifest,
+                "outputClosureFingerprint");
+        if (!firstInput.contract.demandKey().equals(demand)) {
+            outputScopeMatches = false;
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_OUTPUT_DEMAND_MISMATCH:"
+                            + firstNonBlank(demand, "MISSING")));
+        }
+        if (!firstInput.contract.closureFingerprint().equals(
+                fingerprint)) {
+            outputScopeMatches = false;
+            diagnostics.add(gap(region,
+                    "PATH_WORKLIST_OUTPUT_CLOSURE_FINGERPRINT_MISMATCH:"
+                            + firstNonBlank(fingerprint, "MISSING")));
         }
         boolean complete = pathClosed && outputScopeMatches
                 && casesComplete && cases.size() > 0;
@@ -258,19 +251,12 @@ public final class RegionSummaryMerger {
         merged.add("sourceRegionInstanceIds",
                 GSON.toJsonTree(sourceInstances));
         merged.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        if (firstInput.contract == null) {
-            merged.add("requestedOutput", object(first,
-                    "requestedOutput").deepCopy());
-            merged.add("requestedOutputSlice", object(first,
-                    "requestedOutputSlice").deepCopy());
-        } else {
-            OutputClosureContract.Producer producer =
-                    firstInput.contract.producer();
-            merged.addProperty("regionInstanceId",
-                    producer.regionInstanceId());
-            merged.addProperty("rootCallId", producer.rootCallId());
-            OutputClosureCodec.writeTo(merged, firstInput.contract);
-        }
+        OutputClosureContract.Producer producer =
+                firstInput.contract.producer();
+        merged.addProperty("regionInstanceId",
+                producer.regionInstanceId());
+        merged.addProperty("rootCallId", producer.rootCallId());
+        OutputClosureCodec.writeTo(merged, firstInput.contract);
         merged.add("edgeBindings", mergedBindings);
         merged.add("regionRelation", relation);
         merged.addProperty("relationallyComplete", complete);
@@ -364,10 +350,7 @@ public final class RegionSummaryMerger {
     }
 
     private static String outputIdentity(JsonObject summary) {
-        JsonElement closure = summary.get(OutputClosureContract.FIELD);
-        return closure != null
-                ? canonical(closure)
-                : canonical(summary.get("requestedOutput"));
+        return canonical(summary.get(OutputClosureContract.FIELD));
     }
 
     private static final class MergeInput {
@@ -388,31 +371,22 @@ public final class RegionSummaryMerger {
         }
 
         private static MergeInput from(JsonObject summary) {
-            if (summary.has(OutputClosureContract.FIELD)) {
-                OutputClosureContract contract =
-                        OutputClosureCodec.decode(summary);
-                OutputClosureContract.Producer producer =
-                        contract.producer();
-                String key = "OUTPUT_CLOSURE_V1\n"
-                        + producer.regionId() + "\n"
-                        + producer.regionInstanceId() + "\n"
-                        + producer.rootCallId() + "\n"
-                        + contract.demandKey() + "\n"
-                        + contract.closureFingerprint();
-                return new MergeInput(summary, contract, key,
-                        canonical(contract.toJson()));
+            if (!summary.has(OutputClosureContract.FIELD)) {
+                throw new IllegalArgumentException(
+                        "canonical outputClosure is required");
             }
-            String region = string(summary, "regionId");
-            JsonObject output = object(summary, "requestedOutput");
-            if (region.isEmpty() || output.size() == 0) return null;
-            String identity = canonical(output);
-            return new MergeInput(summary, null,
-                    "LEGACY_SINGLETON\n" + region + "\n" + identity,
-                    identity);
-        }
-
-        private boolean joint() {
-            return contract != null && contract.members().size() > 1;
+            OutputClosureContract contract =
+                    OutputClosureCodec.decode(summary);
+            OutputClosureContract.Producer producer =
+                    contract.producer();
+            String key = "OUTPUT_CLOSURE_V1\n"
+                    + producer.regionId() + "\n"
+                    + producer.regionInstanceId() + "\n"
+                    + producer.rootCallId() + "\n"
+                    + contract.demandKey() + "\n"
+                    + contract.closureFingerprint();
+            return new MergeInput(summary, contract, key,
+                    canonical(contract.toJson()));
         }
     }
 

@@ -2864,28 +2864,16 @@ final class RuntimeRegionPlanner {
             }
             if (issues.isEmpty()) {
                 activation.put("_plannerOutputClosure", outputClosure);
-                if (members.size() == 1) {
-                    applySingletonOutputMemberView(activation,
-                            members.get(0));
-                } else {
-                    removeLegacyOutputFields(activation);
-                }
+                activation.put("_plannerOutputMembers", members);
+                removeLegacyOutputFields(activation);
                 activation.put("boundaryReady", true);
                 activation.put("symbolicReady", true);
             } else {
-                if (members.size() == 1
-                        && members.get(0).outputSlice != null) {
-                    applyFailedSingletonOutputMember(activation,
-                            members.get(0));
-                } else {
-                    removeLegacyOutputFields(activation);
-                    activation.put("symbolize",
-                            Collections.emptyList());
-                    activation.put("branches",
-                            Collections.emptyList());
-                    activation.remove("containerElementFieldBindings");
-                    activation.remove("heapStateBindings");
-                }
+                removeLegacyOutputFields(activation);
+                activation.put("symbolize", Collections.emptyList());
+                activation.put("branches", Collections.emptyList());
+                activation.remove("containerElementFieldBindings");
+                activation.remove("heapStateBindings");
                 activation.put("outputClosureIssues", issues);
                 activation.put("boundaryReady", false);
                 activation.put("symbolicReady", false);
@@ -2976,16 +2964,15 @@ final class RuntimeRegionPlanner {
                     "OUTPUT_MEMBER_INCOMPLETE:" + first.output.portId);
         }
 
-        Map<String, Object> singleton = new LinkedHashMap<>(base);
-        applySingletonOutputMemberView(singleton,
-                new UpstreamOutputMemberPlan(first.output, outputSlice,
-                        selectedInputs, selectedBranches, containerBindings,
-                        heapBindings, null, ""));
-
         final OutputClosureContract contract;
         try {
-            contract = OutputClosureCodec.decode(JsonParser.parseString(
-                    json(singleton)).getAsJsonObject());
+            contract = OutputClosureCodec.singleton(
+                    first.upstream.region.regionId,
+                    first.upstream.instanceId, first.upstream.root.callId,
+                    first.output.portId, first.output.cell, first.output.kind,
+                    "CONFIRMED_READ_FROM_EDGE",
+                    JsonParser.parseString(json(outputSlice.toMap()))
+                            .getAsJsonObject());
         } catch (RuntimeException malformed) {
             return new UpstreamOutputMemberPlan(first.output, outputSlice,
                     selectedInputs, selectedBranches, containerBindings,
@@ -3048,46 +3035,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static void applySingletonOutputMemberView(
-            Map<String, Object> activation,
-            UpstreamOutputMemberPlan member) {
-        activation.put("outputs", Collections.singletonList(
-                outputAction(member.output)));
-        activation.put("requestedOutput", object(
-                "portId", member.output.portId,
-                "cell", member.output.cell,
-                "kind", member.output.kind,
-                "selectionAuthority", "CONFIRMED_READ_FROM_EDGE"));
-        activation.put("requestedOutputMethods",
-                new ArrayList<>(member.outputSlice.methods));
-        activation.put("requestedOutputSlice", member.outputSlice.toMap());
-        activation.put("requestedOutputCapture",
-                copyRows(member.outputSlice.captureBindings));
-        activation.put("requestedOutputCaptureRequired",
-                member.outputSlice.captureBindingsRequired);
-        activation.put("requestedOutputCaptureComplete",
-                member.outputSlice.captureBindingsComplete);
-    }
-
-    private static void applyFailedSingletonOutputMember(
-            Map<String, Object> activation,
-            UpstreamOutputMemberPlan member) {
-        applySingletonOutputMemberView(activation, member);
-        activation.put("symbolize", member.selectedInputs);
-        activation.put("branches", member.selectedBranches);
-        if (member.containerBindings.isEmpty()) {
-            activation.remove("containerElementFieldBindings");
-        } else {
-            activation.put("containerElementFieldBindings",
-                    member.containerBindings);
-        }
-        if (member.heapBindings.isEmpty()) {
-            activation.remove("heapStateBindings");
-        } else {
-            activation.put("heapStateBindings", member.heapBindings);
-        }
-    }
-
     private static void removeLegacyOutputFields(
             Map<String, Object> activation) {
         activation.remove("requestedOutput");
@@ -3101,6 +3048,7 @@ final class RuntimeRegionPlanner {
 
     private static void finalizeOutputClosureArtifacts(Result result) {
         for (Map<String, Object> activation : result.activations) {
+            activation.remove("_plannerOutputMembers");
             Object encoded = activation.remove("_plannerOutputClosure");
             if (encoded instanceof OutputClosureContract) {
                 removeLegacyOutputFields(activation);
@@ -3649,8 +3597,10 @@ final class RuntimeRegionPlanner {
         Map<String, List<Map<String, Object>>> selectedByInstance =
                 new LinkedHashMap<>();
         for (Map<String, Object> activation : result.activations) {
+            UpstreamOutputMemberPlan member =
+                    singletonPlannerOutputMember(activation);
             if (!"OUTPUT_CLOSURE".equals(captureGoalKind(activation))
-                    || !nestedOutputSliceComplete(activation)) {
+                    || member == null || !member.outputSlice.complete) {
                 continue;
             }
             String instance = string(activation.get("regionInstanceId"));
@@ -3660,8 +3610,10 @@ final class RuntimeRegionPlanner {
         }
 
         for (Map<String, Object> activation : result.activations) {
-            Map<String, Object> producerSlice = mapValue(
-                    activation.get("requestedOutputSlice"));
+            UpstreamOutputMemberPlan producerMember =
+                    singletonPlannerOutputMember(activation);
+            Map<String, Object> producerSlice = producerMember == null
+                    ? null : producerMember.outputSlice.toMap();
             List<Map<String, Object>> edgeBindings = mapRows(
                     activation.get("edgeBindings"));
             if (producerSlice == null || edgeBindings.isEmpty()) {
@@ -3678,13 +3630,13 @@ final class RuntimeRegionPlanner {
                 List<Map<String, Object>> selected = values(
                         selectedByInstance.get(downstreamInstance));
                 for (Map<String, Object> downstream : selected) {
-                    Map<String, Object> downstreamSlice = mapValue(
-                            downstream.get("requestedOutputSlice"));
-                    if (downstreamSlice == null) {
+                    UpstreamOutputMemberPlan downstreamMember =
+                            singletonPlannerOutputMember(downstream);
+                    if (downstreamMember == null) {
                         continue;
                     }
                     for (Map<String, Object> declaration : mapRows(
-                            downstreamSlice.get(
+                            downstreamMember.outputSlice.toMap().get(
                                     "containerElementFieldBindings"))) {
                         if (!downstreamInput.equals(string(declaration.get(
                                 "containerInputPort")))) {
@@ -3727,14 +3679,11 @@ final class RuntimeRegionPlanner {
                                     + demand.edgeId + ":" + demand.bindingId,
                             "mapInputPort", proof.mapInputPort,
                             "mapInputCell", proof.mapInputCell,
-                            "outputPort", string(activationOutputPort(
-                                    activation)),
-                            "outputCell", string(activationOutputCell(
-                                    activation)),
+                            "outputPort", producerMember.output.portId,
+                            "outputCell", producerMember.output.cell,
                             "outputFieldPath", proof.outputFieldPath,
                             "outputValidationMode",
-                            Boolean.TRUE.equals(activation.get(
-                                    "requestedOutputCaptureRequired"))
+                            producerMember.outputSlice.captureBindingsRequired
                                     ? "EXACT_REQUESTED_OUTPUT_CAPTURE"
                                     : "ROOT_RETURN_PROJECTED_FIELD",
                             "mapProjectionOperation", proof.operation,
@@ -3806,57 +3755,22 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    static void refineMapValueElementProjectionActivationsForTests(
-            Result result) {
-        refineMapValueElementProjectionActivations(result);
-    }
-
-    static String uniqueExactInputPortForTests(String regionJson,
-                                               String rawInputCell) {
-        StaticPort input = StaticRegion.fromJson(regionJson)
-                .uniqueExactInputFor(rawInputCell);
-        return input == null ? "" : input.portId;
-    }
-
-    static Map<String, Object> evidenceBackedProjectedInputForTests(
-            String regionJson, String staticGraphJsonl,
-            String rawInputCell) {
-        StaticProjectionIndex projections = new StaticProjectionIndex();
-        for (String row : safe(staticGraphJsonl).split("\\r?\\n")) {
-            projections.add(StaticDataflowProjectionEdge.fromJson(row));
-        }
-        ConsumerInputResolution resolution = StaticRegion.fromJson(regionJson)
-                .resolveConsumerInput(rawInputCell, projections, null);
-        if (resolution == null || resolution.projection == null) {
-            return Collections.emptyMap();
-        }
-        StaticProjectionProof proof = resolution.projection;
-        return object("portId", resolution.port.portId,
-                "cell", resolution.port.cell,
-                "fieldPath", new ArrayList<>(proof.fieldPath),
-                "evidenceEdgeIds", new ArrayList<>(proof.evidenceEdgeIds),
-                "declaredFieldSignature", proof.declaredFieldSignature,
-                "declaredFieldType", proof.declaredFieldType,
-                "authority", STATIC_INPUT_FIELD_PROJECTION_AUTHORITY);
-    }
-
     private static String captureGoalKind(Map<String, Object> activation) {
         Map<String, Object> goal = mapValue(activation.get("captureGoal"));
         return goal == null ? "" : string(goal.get("kind"));
     }
 
-    private static Object activationOutputPort(
+    private static UpstreamOutputMemberPlan singletonPlannerOutputMember(
             Map<String, Object> activation) {
-        Map<String, Object> requested = mapValue(
-                activation.get("requestedOutput"));
-        return requested == null ? "" : requested.get("portId");
-    }
-
-    private static Object activationOutputCell(
-            Map<String, Object> activation) {
-        Map<String, Object> requested = mapValue(
-                activation.get("requestedOutput"));
-        return requested == null ? "" : requested.get("cell");
+        Object encoded = activation == null ? null
+                : activation.get("_plannerOutputMembers");
+        if (!(encoded instanceof List<?>)
+                || ((List<?>) encoded).size() != 1
+                || !(((List<?>) encoded).get(0)
+                instanceof UpstreamOutputMemberPlan)) {
+            return null;
+        }
+        return (UpstreamOutputMemberPlan) ((List<?>) encoded).get(0);
     }
 
     private static List<Map<String, Object>> selectActivationRows(
@@ -5545,22 +5459,6 @@ final class RuntimeRegionPlanner {
 
         private StaticPort outputFor(String endpoint) {
             return portFor(outputs, endpoint, true);
-        }
-
-        private StaticPort uniqueExactInputFor(String endpoint) {
-            String value = safe(endpoint);
-            StaticPort match = null;
-            for (StaticPort port : inputs) {
-                if (!value.equals(port.portId)
-                        && !value.equals(port.cell)) {
-                    continue;
-                }
-                if (match != null) {
-                    return null;
-                }
-                match = port;
-            }
-            return match;
         }
 
         private ConsumerInputResolution resolveConsumerInput(
@@ -7507,57 +7405,6 @@ final class RuntimeRegionPlanner {
             return result;
         }
 
-        private Map<String, Object> eventMap() {
-            return object(
-                    "rootCallId", upstream.root.callId,
-                    "writerCallId", readFrom.writerCallId(),
-                    "writerEventSeq", readFrom.writerEventSeq(),
-                    "writerSiteId", readFrom.writerSiteId(),
-                    "mutatorEnterSeq",
-                    readFrom.writeEvidence.mutation == null ? 0L
-                            : readFrom.writeEvidence.mutation.seq,
-                    "mutationCompletionSeq",
-                    readFrom.writeEvidence.completion == null ? 0L
-                            : readFrom.writeEvidence.completion.seq,
-                    "writerFieldReadSeq", readFrom.write.seq,
-                    "mutationInvocationId",
-                    readFrom.writeEvidence.mutation == null ? 0L
-                            : readFrom.writeEvidence.mutation.invocationId,
-                    "mutatorDeclaredCallee",
-                    readFrom.writeEvidence.mutation == null ? ""
-                            : readFrom.writeEvidence.mutation.declaredCallee,
-                    "mutatorRuntimeType",
-                    readFrom.writeEvidence.mutation == null ? ""
-                            : readFrom.writeEvidence.mutation.runtimeType,
-                    "mutationContractAuthority",
-                    readFrom.writeEvidence.mutation == null ? ""
-                            : CONTAINER_MUTATOR_CONTRACT_AUTHORITY,
-                    "writerOccurrence", upstream.runtimeOccurrence(
-                            readFrom.writeEvidence.mutation),
-                    "writeEvidenceKind", readFrom.writeEvidence.kind,
-                    "writeEvidenceAuthority",
-                    readFrom.writeEvidence.authority,
-                    "writerAssociationAuthority",
-                    readFrom.writeEvidence.associationAuthority,
-                    "containerMutationSemanticAssumption",
-                    readFrom.writeEvidence.semanticAssumption,
-                    "pathSignatureTruncationAssumption",
-                    readFrom.pathSignatureAssumption(),
-                    "receiverObjectId", readFrom.write.receiverObjectId,
-                    "valueObjectId", readFrom.write.valueObjectId,
-                    "readerValueObjectId", readFrom.read.valueObjectId,
-                    "fieldReceiverIdentityConfirmed", true,
-                    "fieldReceiverIdentityAuthority",
-                    PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY,
-                    "containerIdentityConfirmed",
-                    readFrom.containerIdentityConfirmed(),
-                    "containerIdentityAuthority",
-                    readFrom.containerIdentityConfirmed()
-                            ? PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY : "",
-                    "orderAuthority", TRACE_ORDER_AUTHORITY,
-                    "field", readFrom.write.field,
-                    "authority", "RUNTIME_EVENT_TRACE");
-        }
     }
 
     private static final class DownstreamContainerDemand {
@@ -9775,13 +9622,6 @@ final class RuntimeRegionPlanner {
     private static Map<String, Object> mapValue(Object value) {
         return value instanceof Map<?, ?>
                 ? (Map<String, Object>) value : null;
-    }
-
-    private static boolean nestedOutputSliceComplete(
-            Map<String, Object> value) {
-        Map<String, Object> slice = value == null ? null : mapValue(
-                value.get("requestedOutputSlice"));
-        return slice != null && Boolean.TRUE.equals(slice.get("complete"));
     }
 
     @SuppressWarnings("unchecked")

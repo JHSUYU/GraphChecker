@@ -2922,6 +2922,11 @@ public class ConcolicSummaryImporterTest {
         action.addProperty("location", "RETURN_OR_HEAP_EFFECT");
         action.addProperty("javaTypeDescriptor", "I");
         activation.add("outputs", singletonObject(action));
+        OutputClosureCodec.writeTo(activation,
+                OutputClosureCodec.singleton(
+                        regionId, regionId + "@fixture#call1", 1,
+                        port, cell, "SINK_STATE",
+                        "CONFIRMED_READ_FROM_EDGE", slice));
         return activation;
     }
 
@@ -2944,7 +2949,9 @@ public class ConcolicSummaryImporterTest {
         makeCodecLegacyReady(firstActivation);
         makeCodecLegacyReady(secondActivation);
         if (invalidateSecondTransformer) {
-            secondActivation.getAsJsonObject("requestedOutputSlice")
+            secondActivation.getAsJsonObject(OutputClosureContract.FIELD)
+                    .getAsJsonArray("members").get(0).getAsJsonObject()
+                    .getAsJsonObject("slice")
                     .addProperty(
                             "requestedStateTransformerContractComplete",
                             false);
@@ -3047,6 +3054,16 @@ public class ConcolicSummaryImporterTest {
         action.addProperty("cell", requested.get("cell").getAsString());
         action.addProperty("kind", requested.get("kind").getAsString());
         action.addProperty("javaTypeDescriptor", "I");
+        OutputClosureCodec.writeTo(activation,
+                OutputClosureCodec.singleton(
+                        activation.get("regionId").getAsString(),
+                        activation.get("regionInstanceId").getAsString(),
+                        activation.get("rootCallId").getAsLong(),
+                        requested.get("portId").getAsString(),
+                        requested.get("cell").getAsString(),
+                        requested.get("kind").getAsString(),
+                        requested.get("selectionAuthority").getAsString(),
+                        slice));
     }
 
     private static JsonObject renamedOutputPort(

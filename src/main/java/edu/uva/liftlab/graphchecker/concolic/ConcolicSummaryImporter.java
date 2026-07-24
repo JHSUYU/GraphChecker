@@ -80,16 +80,6 @@ public final class ConcolicSummaryImporter {
     private ConcolicSummaryImporter() {
     }
 
-    static boolean validValueRefWitnessForTests(JsonObject record,
-                                                String activationId) {
-        return validValueRefWitness(record, activationId);
-    }
-
-    static boolean validMapRefWitnessForTests(JsonObject record,
-                                              String activationId) {
-        return validMapRefWitness(record, activationId);
-    }
-
     public static void main(String[] args) throws Exception {
         Map<String, String> options = parseArgs(args);
         Path results = required(options, "results");
@@ -1921,18 +1911,6 @@ public final class ConcolicSummaryImporter {
         return false;
     }
 
-    private static boolean jsonArrayContainsString(JsonArray values,
-                                                   String expected) {
-        if (expected == null || expected.isEmpty()) return false;
-        for (JsonElement value : values) {
-            if (value.isJsonPrimitive()
-                    && expected.equals(value.getAsString())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static final class ExactPathGuardDependency {
         private final boolean complete;
         private final List<String> issues;
@@ -2374,16 +2352,6 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    static boolean engineArrayIdMatchesComponentForTests(
-            String engineArrayId, String arrayDescriptor) {
-        return engineArrayIdMatchesComponent(engineArrayId, arrayDescriptor);
-    }
-
-    static boolean validConcretePrimitiveLiteralForTests(
-            String descriptor, String expression) {
-        return validConcretePrimitiveLiteral(descriptor, expression);
-    }
-
     private static String declaredMethodReturnType(String method) {
         String value = method == null ? "" : method.trim();
         if (!value.startsWith("<") || !value.endsWith(">")) return "";
@@ -2582,7 +2550,6 @@ public final class ConcolicSummaryImporter {
         String[] reasons = new String[raw.size()];
         String[] codePositions = new String[raw.size()];
         String[] admissionAuthorities = new String[raw.size()];
-        int[] normalizedBoundaries = new int[raw.size() + 1];
         String previous = null;
         int filteredCount = 0;
         Set<String> mappedBinarySignatures = new LinkedHashSet<>();
@@ -2592,9 +2559,7 @@ public final class ConcolicSummaryImporter {
                 mappedBinarySignatures.add(GSON.toJson(raw.get(mappedIndex)));
             }
         }
-        for (int index = 0; index <= raw.size(); index++) {
-            normalizedBoundaries[index] = result.size();
-            if (index == raw.size()) break;
+        for (int index = 0; index < raw.size(); index++) {
             JsonElement rawCondition = raw.get(index);
             JsonElement condition = semanticBranchConditions.containsKey(index)
                     ? semanticBranchConditions.get(index)
@@ -2654,7 +2619,7 @@ public final class ConcolicSummaryImporter {
         }
         return new PathNormalization(result, rawToNormalized, statuses,
                 reasons, codePositions, admissionAuthorities,
-                filteredCount, normalizedBoundaries);
+                filteredCount);
     }
 
     /**
@@ -4823,24 +4788,6 @@ public final class ConcolicSummaryImporter {
         }
         return VALUE_REF_WITNESS_SYMBOL_PREFIX + hex.length() + "_" + hex
                 + "_T" + objectToken;
-    }
-
-    private static boolean importerCertifiedValueRefWitness(
-            JsonObject record) {
-        long token = longInteger(record,
-                "valueExpressionWitnessObjectToken", 0L);
-        return VALUE_REF_WITNESS_AUTHORITY.equals(string(record,
-                "valueExpressionAuthority"))
-                && bool(record, "valueExpressionWitnessCertified", false)
-                && VALUE_REF_WITNESS_CERTIFICATION_AUTHORITY.equals(string(
-                record, "valueExpressionWitnessCertificationAuthority"))
-                && token > 0L
-                && token == longInteger(record,
-                "valueExpressionWitnessCertifiedObjectToken", 0L)
-                && string(record,
-                "valueExpressionWitnessObjectTokenScope").equals(string(
-                record,
-                "valueExpressionWitnessCertifiedObjectTokenScope"));
     }
 
     private static void copyValueRefWitnessMetadata(JsonObject source,
@@ -11845,7 +11792,6 @@ public final class ConcolicSummaryImporter {
         private final String[] codePositions;
         private final String[] admissionAuthorities;
         private final int filteredConditionCount;
-        private final int[] normalizedBoundaries;
 
         private PathNormalization(JsonArray conditions,
                                   int[] rawToNormalized,
@@ -11853,8 +11799,7 @@ public final class ConcolicSummaryImporter {
                                   String[] reasons,
                                   String[] codePositions,
                                   String[] admissionAuthorities,
-                                  int filteredConditionCount,
-                                  int[] normalizedBoundaries) {
+                                  int filteredConditionCount) {
             this.conditions = conditions;
             this.rawToNormalized = rawToNormalized;
             this.statuses = statuses;
@@ -11862,7 +11807,6 @@ public final class ConcolicSummaryImporter {
             this.codePositions = codePositions;
             this.admissionAuthorities = admissionAuthorities;
             this.filteredConditionCount = filteredConditionCount;
-            this.normalizedBoundaries = normalizedBoundaries.clone();
         }
 
         private int index(int rawIndex) {
@@ -11883,15 +11827,6 @@ public final class ConcolicSummaryImporter {
         private String admissionAuthority(int rawIndex) {
             return rawIndex < 0 || rawIndex >= admissionAuthorities.length
                     ? "" : admissionAuthorities[rawIndex];
-        }
-
-        private int boundary(int rawBoundary) {
-            if (rawBoundary < 0) {
-                return 0;
-            }
-            int boundary = Math.min(rawBoundary,
-                    normalizedBoundaries.length - 1);
-            return normalizedBoundaries[boundary];
         }
 
         private boolean hasFilteredReason(String reason) {

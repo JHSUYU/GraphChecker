@@ -420,11 +420,13 @@ public class RuntimeRegionPlannerTest {
                             Arrays.asList(write, read));
             assertEquals(Boolean.FALSE, missingEdge.activations.get(2)
                     .get("symbolicReady"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> rejectedSlice =
-                    (Map<String, Object>) missingEdge.activations.get(2)
-                            .get("requestedOutputSlice");
-            assertEquals(Boolean.FALSE, rejectedSlice.get("complete"));
+            assertFalse(missingEdge.activations.get(2).containsKey(
+                    "requestedOutputSlice"));
+            assertFalse(missingEdge.activations.get(2).containsKey(
+                    "outputClosure"));
+            assertTrue(String.valueOf(missingEdge.activations.get(2).get(
+                    "outputClosureIssues")).contains(
+                    "OUTPUT_MEMBER_INCOMPLETE"));
             assertTrue(String.valueOf(missingEdge.warnings).contains(
                     "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:DF.WRITE"));
         } finally {

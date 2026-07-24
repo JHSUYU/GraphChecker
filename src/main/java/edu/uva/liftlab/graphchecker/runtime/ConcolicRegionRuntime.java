@@ -185,12 +185,6 @@ public final class ConcolicRegionRuntime {
         return (T) new JsonParser().parse(GSON.toJson(source));
     }
 
-    static JsonObject valueRefWitnessExpressionForTests(
-            String activationId, long objectToken) {
-        return activationLocalValueRefWitnessExpression(activationId,
-                objectToken);
-    }
-
     /**
      * Process-wide companion to the ordinary field trace hook.  A schema-v3
      * Map projection uses it as execution-local evidence that the exact
@@ -3206,10 +3200,6 @@ public final class ConcolicRegionRuntime {
         return frame;
     }
 
-    static int regionFrameDepthForTests() {
-        return ROOT_INVOCATION_FRAMES.get().size();
-    }
-
     private static final class RootInvocationFrame {
         private final String rootMethod;
         private long token;
@@ -4983,27 +4973,10 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    static Boolean lightweightAccessorContextMatchesForTests(
-            String callerMethod, int callUnitIndex, String callSiteId,
-            String declaredCallee, Object fieldOwner) {
-        return lightweightAccessorContextMatches(callerMethod,
-                callUnitIndex, callSiteId, declaredCallee, fieldOwner);
-    }
-
     private static ActiveRegion ownerRegion(long token) {
         ActiveRegion active = ACTIVE.get(token);
         return active != null && active.thread == Thread.currentThread()
                 ? active : null;
-    }
-
-    static boolean activeTokenForTests(long token) {
-        return ACTIVE.containsKey(token);
-    }
-
-    static int concreteReplayActiveCountForTests() {
-        synchronized (EXECUTION_MODE_LOCK) {
-            return concreteReplayActiveCount;
-        }
     }
 
     @SuppressWarnings("deprecation")
@@ -9468,29 +9441,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    static boolean symbolizeActionMatchesFieldForTests(JsonObject action,
-                                                        Object owner,
-                                                        String signature,
-                                                        String field) {
-        return new SymbolizeAction(action).matchesField("", -1, owner,
-                signature, field);
-    }
-
-    static boolean symbolizeActionMatchesFieldAtSiteForTests(
-            JsonObject action, String method, int unitIndex, Object owner,
-            String signature, String field) {
-        return new SymbolizeAction(action).matchesField(method, unitIndex,
-                owner, signature, field);
-    }
-
-    static boolean symbolizeActionMatchesFieldAtAccessorCallSiteForTests(
-            JsonObject action, String method, int unitIndex, Object owner,
-            String signature, String field,
-            boolean accessorContextMatches) {
-        return new SymbolizeAction(action).matchesField(method, unitIndex,
-                owner, signature, field, accessorContextMatches);
-    }
-
     private static String[] declaredField(String cell) {
         String value = safe(cell);
         int projection = value.indexOf("#field:");
@@ -10742,24 +10692,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    static boolean modelAssignmentTargetsFieldForTests(JsonObject action,
-                                                        JsonObject assignment) {
-        return new ModelAssignment(assignment).targetsFieldAccess(
-                new SymbolizeAction(action));
-    }
-
-    static boolean writeModeledFieldForTests(Object owner, String field,
-                                              JsonObject assignment) {
-        return writeModeledField(owner, field,
-                new ModelAssignment(assignment));
-    }
-
-    static boolean writeModeledExactFieldForTests(
-            Object owner, String fieldSignature, JsonObject assignment) {
-        return writeModeledExactField(owner, fieldSignature,
-                new ModelAssignment(assignment));
-    }
-
     private static final class OutputCaptureRequest {
         private static final String CALL_ARGUMENT = "CALL_ARGUMENT";
         private static final String FIELD_ASSIGNMENT_RHS =
@@ -11321,10 +11253,7 @@ public final class ConcolicRegionRuntime {
                                     element.getAsJsonObject()));
                 }
             }
-            if (json.has(OutputClosureContract.FIELD)
-                    || json.has("requestedOutputCapture")
-                    || json.has("requestedOutputCaptureRequired")
-                    || json.has("requestedOutputCaptureComplete")) {
+            if (json.has(OutputClosureContract.FIELD)) {
                 OutputClosureContract closure =
                         OutputClosureCodec.decode(json);
                 for (JsonElement element

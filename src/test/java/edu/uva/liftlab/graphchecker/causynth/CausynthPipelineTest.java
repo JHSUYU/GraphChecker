@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -262,6 +263,10 @@ public class CausynthPipelineTest {
         row.add("heapStateBindings", heapBindings);
         row.addProperty("requestedOutputCaptureRequired", false);
         row.add("requestedOutputCapture", new JsonArray());
+        OutputClosureCodec.writeTo(row, OutputClosureCodec.singleton(
+                "REGION.15", "REGION.15@TEST#call0", 0,
+                outputPort, outputCell, "HEAP_STATE",
+                "TEST_EXACT_REQUESTED_OUTPUT", slice));
         return row;
     }
 
@@ -519,6 +524,18 @@ public class CausynthPipelineTest {
                 duplicateRejected = true;
             }
             assertTrue(duplicateRejected);
+
+            JsonObject singularOnly = activation.deepCopy();
+            singularOnly.remove("outputClosure");
+            singularOnly.add("requestedOutputCapture", captures.deepCopy());
+            singularOnly.addProperty(
+                    "requestedOutputCaptureRequired", true);
+            singularOnly.addProperty(
+                    "requestedOutputCaptureComplete", true);
+            writePlanRow(plan, singularOnly);
+            assertTrue(ConcolicInstrumentationSelections
+                    .ConcolicOutputCaptureSelection.from(
+                    plan, "ACT.JOINT.CAPTURE").targets().isEmpty());
         } finally {
             folder.delete();
         }

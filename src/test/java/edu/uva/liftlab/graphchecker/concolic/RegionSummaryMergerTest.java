@@ -24,9 +24,10 @@ public class RegionSummaryMergerTest {
 
     @Test
     public void mergesOutputPathsUnderTheirOwnGuards() {
+        JsonObject first = summary("A", ">");
+        JsonObject second = summary("B", "<=");
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary("A", ">"), summary("B", "<=")),
-                closedManifest());
+                Arrays.asList(first, second), manifestFor(first));
 
         assertEquals(1, result.summaries.size());
         JsonObject relation = result.summaries.get(0)
@@ -44,7 +45,7 @@ public class RegionSummaryMergerTest {
         assertTrue(result.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertFalse(result.summaries.get(0).has("protocolModel"));
-        assertEquals(2, result.summaries.get(0).getAsJsonArray(
+        assertEquals(1, result.summaries.get(0).getAsJsonArray(
                 "sourceRegionInstanceIds").size());
     }
 
@@ -142,9 +143,11 @@ public class RegionSummaryMergerTest {
 
     @Test
     public void openPathWorklistCannotBecomeAnAutomaticCompleteRelation() {
+        JsonObject summary = summary("A", ">");
+        JsonObject manifest = manifestFor(summary);
+        manifest.addProperty("state", RegionPathWorklist.State.PENDING.name());
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
-                Arrays.asList(summary("A", ">")),
-                pathManifest(RegionPathWorklist.State.PENDING));
+                Arrays.asList(summary), manifest);
 
         assertFalse(result.summaries.get(0).getAsJsonObject(
                 "regionRelation").get("complete").getAsBoolean());
@@ -275,13 +278,12 @@ public class RegionSummaryMergerTest {
         summary.addProperty("activationId", "ACT." + id);
         summary.addProperty("regionId", "REGION.4");
         summary.addProperty("regionInstanceId",
-                "REGION.4@fixture#call" + id);
+                "REGION.4@fixture#call7");
+        summary.addProperty("rootCallId", 7);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
         summary.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        JsonObject output = new JsonObject();
-        output.addProperty("portId", "REGION.4.out.0");
-        summary.add("requestedOutput", output);
+        summary.add(OutputClosureContract.FIELD, outputClosure(false, 1));
         JsonArray path = new JsonArray();
         JsonObject condition = new JsonObject();
         condition.addProperty("_type", "BinaryExpression");
