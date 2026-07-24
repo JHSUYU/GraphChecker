@@ -97,11 +97,6 @@ public final class ConcolicRegionRuntime {
             "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1";
     private static final String REFERENCE_NULLNESS_ENCODING_AUTHORITY =
             "JAVA_REFERENCE_NULLNESS_AS_EXACT_REF_EQUALITY_V1";
-    private static final String ROOT_ARGUMENT_SELECTOR_SCHEMA_V1 =
-            "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_V1";
-    private static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY_V1 =
-            "RUNTIME_METHOD_ARGUMENT_EXACT_TYPES_"
-                    + "PREDICATE_RELATIVE_ORDINAL_V1";
     private static final String ROOT_ARGUMENT_SELECTOR_SCHEMA_V2 =
             "EXACT_RUNTIME_ROOT_ARGUMENT_TYPES_AND_RECEIVER_V2";
     private static final String ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2 =
@@ -356,16 +351,9 @@ public final class ConcolicRegionRuntime {
         return method;
     }
 
-    /** Called at a statically selected same-thread region root. */
-    public static long enterRegion(String rootMethod, Object receiver) {
-        return enterRegion(rootMethod, receiver, null);
-    }
-
     /**
      * Called at a statically selected same-thread region root with its actual
-     * reference arguments.  Primitive parameter slots are null.  The
-     * compatibility overload above preserves legacy instrumented classes and
-     * legacy plans that select by the global invocation ordinal.
+     * reference arguments.  Primitive parameter slots are null.
      */
     public static long enterRegion(String rootMethod, Object receiver,
                                    Object[] rootArguments) {
@@ -1308,16 +1296,6 @@ public final class ConcolicRegionRuntime {
             if (assignments.size() > 1) {
                 active.unresolved.add(binding.dynamicBindingId
                         + ": multiple exact model assignments target one "
-                        + "dynamic field binding");
-                return;
-            }
-            if (assignments.isEmpty()) {
-                assignments = active.explicitUniqueLegacyFieldAssignments(
-                        action, binding);
-            }
-            if (assignments.size() > 1) {
-                active.unresolved.add(binding.dynamicBindingId
-                        + ": multiple legacy-unique assignments target one "
                         + "dynamic field binding");
                 return;
             }
@@ -3136,15 +3114,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Normal exit resolved from the current concolic thread. */
-    public static void exitActiveRegion(Object returnValue,
-                                        String primitiveValue) {
-        Long token = CURRENT_TOKEN.get();
-        if (token != null) {
-            exitRegion(token, returnValue, primitiveValue);
-        }
-    }
-
     /** Exceptional region exit. */
     public static void throwRegion(long token, Throwable throwable) {
         finish(token, "THROW",
@@ -3166,14 +3135,6 @@ public final class ConcolicRegionRuntime {
             }
         } catch (Throwable ignored) {
             // Preserve the program's original throwable identity.
-        }
-    }
-
-    /** Exceptional exit resolved from the current concolic thread. */
-    public static void throwActiveRegion(Throwable throwable) {
-        Long token = CURRENT_TOKEN.get();
-        if (token != null) {
-            throwRegion(token, throwable);
         }
     }
 
@@ -5268,12 +5229,6 @@ public final class ConcolicRegionRuntime {
                 ? "LEGACY_NO_STABLE_ROOT_CONTEXT"
                 : contextSelector.identity()) + "\n" + selector.identity();
         synchronized (ORDINALS) {
-            if (!selector.receiverScoped) {
-                Integer previous = ORDINALS.get(key);
-                int value = previous == null ? 1 : previous + 1;
-                ORDINALS.put(key, value);
-                return SelectorOccurrence.global(value);
-            }
             ReceiverSelectorState state = RECEIVER_SELECTOR_STATES.get(key);
             if (state == null) {
                 state = new ReceiverSelectorState();
@@ -8228,27 +8183,6 @@ public final class ConcolicRegionRuntime {
             return result;
         }
 
-        private List<ModelAssignment> explicitUniqueLegacyFieldAssignments(
-                SymbolizeAction action, DynamicFieldBinding binding) {
-            List<ModelAssignment> result = new ArrayList<>();
-            // A base-only assignment cannot be broadcast across entry values.
-            // Preserve it solely when the producer explicitly certified one
-            // unique field target and this is that first stable occurrence.
-            if (binding.materializationOccurrence != 1) {
-                return result;
-            }
-            for (ModelAssignment assignment : activation.modelAssignments) {
-                if (!assignment.hasDynamicMetadata()
-                        && assignment.legacyUniqueFieldTarget
-                        && assignment.targetsFieldAccess(action)
-                        && !appliedModelAssignments.contains(
-                        assignment.key)) {
-                    result.add(assignment);
-                }
-            }
-            return result;
-        }
-
         private JsonArray dynamicFieldBindingsJson() {
             JsonArray result = new JsonArray();
             for (DynamicFieldBinding binding : dynamicFieldBindings.values()) {
@@ -9946,7 +9880,6 @@ public final class ConcolicRegionRuntime {
         private final String expectedEntryKeyAuthority;
         private final String dynamicReplayRebindingAuthority;
         private final boolean sourceEntrySelectorRetained;
-        private final boolean legacyUniqueFieldTarget;
         private final boolean materializeAtRealDefinition;
         private final boolean modelIsNull;
         private final boolean modelIsNullDeclared;
@@ -10079,8 +10012,6 @@ public final class ConcolicRegionRuntime {
                     "dynamicReplayRebindingAuthority");
             this.sourceEntrySelectorRetained = bool(json,
                     "sourceEntrySelectorRetained", true);
-            this.legacyUniqueFieldTarget = bool(json,
-                    "legacyUniqueFieldTarget", false);
             this.materializeAtRealDefinition = bool(json,
                     "materializeAtRealDefinition", false);
             Boolean declaredModelIsNull = strictBoolean(json,
@@ -10683,9 +10614,6 @@ public final class ConcolicRegionRuntime {
                 result.addProperty("sourceEntrySelectorRetained",
                         sourceEntrySelectorRetained);
             }
-            if (legacyUniqueFieldTarget) {
-                result.addProperty("legacyUniqueFieldTarget", true);
-            }
             result.addProperty("materializeAtRealDefinition",
                     materializeAtRealDefinition);
             return result;
@@ -10922,22 +10850,17 @@ public final class ConcolicRegionRuntime {
         private final boolean present;
         private final boolean valid;
         private final String error;
-        private final boolean receiverScoped;
-        private final int matchOrdinal;
         private final int receiverOrdinal;
         private final int matchOrdinalWithinReceiver;
         private final List<RootArgumentTypePredicate> predicates;
 
         private RootArgumentSelector(boolean present, boolean valid,
-                                     String error, boolean receiverScoped,
-                                     int matchOrdinal, int receiverOrdinal,
+                                     String error, int receiverOrdinal,
                                      int matchOrdinalWithinReceiver,
                                      List<RootArgumentTypePredicate> predicates) {
             this.present = present;
             this.valid = valid;
             this.error = safe(error);
-            this.receiverScoped = receiverScoped;
-            this.matchOrdinal = matchOrdinal;
             this.receiverOrdinal = receiverOrdinal;
             this.matchOrdinalWithinReceiver = matchOrdinalWithinReceiver;
             this.predicates = predicates;
@@ -10945,8 +10868,8 @@ public final class ConcolicRegionRuntime {
 
         private static RootArgumentSelector from(JsonObject activation) {
             if (!activation.has("runtimeRootArgumentSelector")) {
-                return new RootArgumentSelector(false, true, "", false,
-                        -1, -1, -1, Collections.emptyList());
+                return new RootArgumentSelector(false, true, "",
+                        -1, -1, Collections.emptyList());
             }
             JsonElement raw = activation.get("runtimeRootArgumentSelector");
             if (raw == null || !raw.isJsonObject()) {
@@ -10955,11 +10878,9 @@ public final class ConcolicRegionRuntime {
             JsonObject json = raw.getAsJsonObject();
             String schema = strictString(json, "schema");
             String authority = strictString(json, "authority");
-            boolean v1 = ROOT_ARGUMENT_SELECTOR_SCHEMA_V1.equals(schema)
-                    && ROOT_ARGUMENT_SELECTOR_AUTHORITY_V1.equals(authority);
-            boolean v2 = ROOT_ARGUMENT_SELECTOR_SCHEMA_V2.equals(schema)
+            boolean supported = ROOT_ARGUMENT_SELECTOR_SCHEMA_V2.equals(schema)
                     && ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2.equals(authority);
-            if (!v1 && !v2) {
+            if (!supported) {
                 return invalid("unsupported selector schema/authority pair");
             }
             JsonElement rawPredicates = json.get("predicates");
@@ -10991,19 +10912,6 @@ public final class ConcolicRegionRuntime {
             }
             predicates.sort((left, right) -> Integer.compare(
                     left.argumentIndex, right.argumentIndex));
-            if (v1) {
-                Integer matchOrdinal = strictInteger(json,
-                        "matchOrdinal", 1);
-                if (matchOrdinal == null
-                        || json.has("receiverOrdinal")
-                        || json.has("matchOrdinalWithinReceiver")) {
-                    return invalid("V1 selector requires only a positive "
-                            + "matchOrdinal");
-                }
-                return new RootArgumentSelector(true, true, "", false,
-                        matchOrdinal, -1, -1,
-                        Collections.unmodifiableList(predicates));
-            }
             Integer receiverOrdinal = strictInteger(json,
                     "receiverOrdinal", 1);
             Integer withinReceiver = strictInteger(json,
@@ -11013,14 +10921,14 @@ public final class ConcolicRegionRuntime {
                 return invalid("V2 selector requires positive receiverOrdinal "
                         + "and matchOrdinalWithinReceiver");
             }
-            return new RootArgumentSelector(true, true, "", true,
-                    -1, receiverOrdinal, withinReceiver,
+            return new RootArgumentSelector(true, true, "",
+                    receiverOrdinal, withinReceiver,
                     Collections.unmodifiableList(predicates));
         }
 
         private static RootArgumentSelector invalid(String error) {
-            return new RootArgumentSelector(true, false, error, false,
-                    -1, -1, -1, Collections.emptyList());
+            return new RootArgumentSelector(true, false, error,
+                    -1, -1, Collections.emptyList());
         }
 
         private boolean matches(Object[] rootArguments) {
@@ -11041,11 +10949,8 @@ public final class ConcolicRegionRuntime {
         private String identity() {
             if (!present) return "LEGACY_GLOBAL_INVOCATION_ORDINAL";
             StringBuilder result = new StringBuilder(
-                    receiverScoped ? ROOT_ARGUMENT_SELECTOR_SCHEMA_V2
-                            : ROOT_ARGUMENT_SELECTOR_SCHEMA_V1).append('|')
-                    .append(receiverScoped
-                            ? ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2
-                            : ROOT_ARGUMENT_SELECTOR_AUTHORITY_V1);
+                    ROOT_ARGUMENT_SELECTOR_SCHEMA_V2).append('|')
+                    .append(ROOT_ARGUMENT_SELECTOR_AUTHORITY_V2);
             for (RootArgumentTypePredicate predicate : predicates) {
                 result.append('|').append(predicate.argumentIndex)
                         .append('=').append(predicate.runtimeType.length())
@@ -11056,41 +10961,30 @@ public final class ConcolicRegionRuntime {
 
         private boolean selects(SelectorOccurrence occurrence) {
             if (occurrence == null) return false;
-            return receiverScoped
-                    ? receiverOrdinal == occurrence.receiverOrdinal
+            return receiverOrdinal == occurrence.receiverOrdinal
                     && matchOrdinalWithinReceiver
-                    == occurrence.matchOrdinalWithinReceiver
-                    : matchOrdinal == occurrence.matchOrdinal;
+                    == occurrence.matchOrdinalWithinReceiver;
         }
 
         private String selectionIdentity() {
-            return receiverScoped
-                    ? "receiver=" + receiverOrdinal + ",within="
-                    + matchOrdinalWithinReceiver
-                    : "globalMatch=" + matchOrdinal;
+            return "receiver=" + receiverOrdinal + ",within="
+                    + matchOrdinalWithinReceiver;
         }
     }
 
     private static final class SelectorOccurrence {
-        private final int matchOrdinal;
         private final int receiverOrdinal;
         private final int matchOrdinalWithinReceiver;
 
-        private SelectorOccurrence(int matchOrdinal, int receiverOrdinal,
+        private SelectorOccurrence(int receiverOrdinal,
                                    int matchOrdinalWithinReceiver) {
-            this.matchOrdinal = matchOrdinal;
             this.receiverOrdinal = receiverOrdinal;
             this.matchOrdinalWithinReceiver = matchOrdinalWithinReceiver;
         }
 
-        private static SelectorOccurrence global(int ordinal) {
-            return new SelectorOccurrence(ordinal, -1, -1);
-        }
-
         private static SelectorOccurrence receiver(int receiverOrdinal,
                                                    int withinReceiver) {
-            return new SelectorOccurrence(-1, receiverOrdinal,
-                    withinReceiver);
+            return new SelectorOccurrence(receiverOrdinal, withinReceiver);
         }
     }
 

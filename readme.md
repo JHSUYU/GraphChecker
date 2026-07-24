@@ -724,20 +724,28 @@ replay <failure-bundle>
   execution/capture spec、Java-expression-to-SMT core 和 Java campaign state machine
   尚未完成。共享 primitive lowering 已做过完整实现试验，但最多净减 112 行且新增约
   376 行抽象，按“不为抽象而抽象”原则回退；试验发现的 `ConSymbolExp` 常量分类错误已用
-  两处局部修复解决。
+  两处局部修复解决。Phase 5 的固定 four-put / ordered-put 双射已经删除：schema-v1
+  container mutation 现在按 declaration 的 selector、finite-array snapshot、dynamic
+  consumer 和 exact transformer obligation 逐项证明，数量、稀疏 index、raw load
+  邻接与排序都不再是语义条件；同一 static base 的多个 occurrence 在 Composer 中保持
+  各自的 dynamic term，不再错误折叠为一个标量。
 - Phase 7 `IN_PROGRESS`：普通回归已从 39 类 / 724 项压缩为 13 类 / 57 项且全部通过；
   一次明确授权的 `cross-method-fields` 重构把 Producer A 从 110 cases / 109 replays 缩成
   4 cases / 3 replays，并新增同一 invocation 的 `a/aWitness` 联合输出、完整 case keyset 和
   shared-selector 真正端到端门禁；最终 truth table 不变且真实 Z3 为 `sat`，本机完整耗时由
-  约 61 分钟降到 2 分 49 秒。第二批 cleanup 将生产 Java 从 82,498 行继续降到 82,395 行；
-  相对 84,166 行阶段起点累计净减 1,771 行，相对冻结基线仍多 801 行，因此本阶段尚不能
+  约 61 分钟降到 2 分 49 秒。后续 cleanup 将生产 Java 从 82,498 行继续降到 82,258 行；
+  相对 84,166 行阶段起点累计净减 1,908 行，相对冻结基线仍多 664 行，因此本阶段尚不能
   宣称代码精简完成。已删除 singular wire decode/mirror、Importer internal member view、
-  无根 transition-discovery、零引用 replay runner、compatibility wrapper 和死 helper，并
-  将三个 CLI 的重复 artifact I/O 收敛为一个 schema-free helper。
+  固定 ordered-put 特例、RootArgumentSelector V1、legacy unique-field fallback、无根
+  transition-discovery、零引用 replay/active-region API、compatibility wrapper 和死 helper，
+  并将三个 CLI 的重复 artifact I/O 收敛为一个 schema-free helper。
 - 第一批 canonical cleanup 的当前源码已经从构建、静态分析、runtime planning、完整
   producer campaign、merge/composition 一直执行到真实 Z3；六个隔离 workload 并行完成，
   结果为五个 `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或
-  增量 re-compose 代替门禁。后续每个会改变语义 authority 的里程碑仍须重复完整矩阵。
+  增量 re-compose 代替门禁。ordered-put 泛化与 runtime API 清理后的完整矩阵再次 6/6
+  通过，耗时约 6 分 32 秒，日志位于
+  `target/robustness-matrix-logs/20260724T052653Z.986522`。后续每个会改变语义 authority
+  的里程碑仍须重复完整矩阵。
 
 #### Phase 0：冻结行为与端到端基线
 
@@ -791,9 +799,9 @@ replay <failure-bundle>
 - Importer 先逐 member 提取一次 output，再把 validated extraction 交给 heap verifier。
 - 删除 global exact-capture mode、root-output broadcast、重复 output extraction 和对
   capture plan 的重复扫描。
-- 删除 `exactOrderedPutBijection` 中“数组长度 4 / 四次 Map.put”的 workload-shaped
-  特例；若通用 finite-selector/effect 双射尚不能证明同一语义，就先补成与长度无关的一种
-  证明，而不是保留 fixture 常量或新增另一条旁路。
+- `COMPLETED`：删除 `exactOrderedPutBijection` 中“数组长度 4 / 四次 Map.put”的
+  workload-shaped 特例，改为与长度、selector 密度和 event 邻接无关的逐 declaration
+  finite-selector/effect/transformer 证明；没有保留 fixture 常量或新增旁路。
 - runtime producer attestation 与 importer consumer verification继续独立。
 
 #### Phase 6：campaign、merge、composition 与 SMT
