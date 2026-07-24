@@ -14,16 +14,17 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Producer A crosses {@code compute -> firstHop -> secondHop -> thirdHop}.
  * Its result depends on a preconstructed external object's instance field, a
- * mutable static field, and {@link Boolean}, {@code int}, and {@link String}
- * parameters.  Auxiliary integer inputs are bounded before they contribute to
- * the result.  Consequently those fields remain useful symbolic inputs while
- * the two command-line Booleans retain the exact fatal condition
+ * mutable static field, and primitive Boolean/integer parameters.  The three
+ * integer roots jointly control one sign branch, keeping the cross-method
+ * field projection observable without a redundant Cartesian product.
+ * Consequently those fields remain useful symbolic inputs while the two
+ * command-line Booleans retain the exact fatal condition
  * {@code producerAEnabled && !strictThreshold}.</p>
  *
  * <p>The producers rendezvous while both worker frames are live.  The
  * consumer remains {@link Thread.State#NEW} until both producers have
- * terminated, then reads the two values from the exact fields written by the
- * publishers.</p>
+ * terminated, then reads Producer A's value and correlated witness plus
+ * Producer B's threshold from the exact fields written by the publishers.</p>
  */
 public final class CrossMethodExternalFieldThreeThreadWorkload {
     public static final String PRODUCER_A_THREAD =
@@ -33,10 +34,9 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
     public static final String CONSUMER_THREAD = "cross-method-consumer";
 
     static final int DEFAULT_BASE_INPUT = 2;
-    static final String DEFAULT_ROUTE_INPUT = "rpc-ready";
     static final int RELAXED_THRESHOLD = 10;
     static final int STRICT_THRESHOLD = 20;
-    private static final long JOIN_TIMEOUT_MILLIS = 10_000L;
+    private static final long JOIN_TIMEOUT_MILLIS = 60_000L;
 
     private CrossMethodExternalFieldThreeThreadWorkload() {
     }
@@ -71,22 +71,12 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
             this.secondHop = new SecondHop();
         }
 
-        public int compute(Boolean enabled, int baseInput,
-                           String routeInput) {
-            // Null is a legitimate concolic branch value in this robustness
-            // fixture.  Return a deterministic non-bug sentinel so either
-            // null edge still reaches publishA and preserves the workload's
-            // producer/consumer protocol during an unforced replay.
-            if (enabled == null) return -20;
-            if (routeInput == null) return -20;
-            return firstHop(enabled, baseInput, routeInput);
+        public int compute(boolean enabled, int baseInput) {
+            return firstHop(enabled, baseInput);
         }
 
-        private int firstHop(Boolean enabled, int baseInput,
-                             String routeInput) {
-            int boundedBase = boundedWeight(baseInput);
-            return secondHop.secondHop(profile, enabled, boundedBase,
-                    routeInput);
+        private int firstHop(boolean enabled, int baseInput) {
+            return secondHop.secondHop(profile, enabled, baseInput);
         }
     }
 
@@ -94,26 +84,21 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
     public static final class SecondHop {
         private final ThirdHop thirdHop = new ThirdHop();
 
-        int secondHop(ExternalProfile profile, Boolean enabled,
-                      int boundedBase, String routeInput) {
+        int secondHop(ExternalProfile profile, boolean enabled,
+                      int baseInput) {
             int instanceWeight = profile.instanceWeight;
             int processWeight = ExternalTuning.processWeight;
-            int accumulated = boundedBase + boundedWeight(instanceWeight)
-                    + boundedWeight(processWeight);
-            return thirdHop.thirdHop(enabled, accumulated, routeInput);
+            int accumulated = baseInput + instanceWeight + processWeight;
+            return thirdHop.thirdHop(enabled, accumulated);
         }
     }
 
-    /** Third helper layer; all three scalar parameter types affect output. */
+    /** Third helper layer; both the Boolean and integer roots affect output. */
     public static final class ThirdHop {
-        int thirdHop(Boolean enabled, int accumulated,
-                     String routeInput) {
-            int result = accumulated;
-            if (enabled.booleanValue()) {
+        int thirdHop(boolean enabled, int accumulated) {
+            int result = accumulated > 0 ? 1 : 0;
+            if (enabled) {
                 result += 12;
-            }
-            if (routeInput.contains("ready")) {
-                result++;
             }
             return result;
         }
@@ -129,31 +114,27 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
         }
     }
 
-    private static int boundedWeight(int value) {
-        if (value < 0) {
-            return 0;
-        }
-        if (value > 2) {
-            return 2;
-        }
-        return value;
-    }
-
-    /** Shared fields {@code a} and {@code b} are the two local RPC channels. */
+    /**
+     * Producer A publishes the correlated pair {@code a}/{@code aWitness}
+     * within one region invocation; Producer B publishes {@code b}.
+     */
     public static final class RpcBus {
         private final CountDownLatch aReady = new CountDownLatch(1);
         private final CountDownLatch bReady = new CountDownLatch(1);
         private volatile int a;
+        private volatile int aWitness;
         private volatile int b;
         private volatile long aPublisherThreadId;
         private volatile long bPublisherThreadId;
         private volatile long aConsumerThreadId;
         private volatile long bConsumerThreadId;
         private volatile int aReceiveCount;
+        private volatile int aWitnessReceiveCount;
         private volatile int bReceiveCount;
 
         public void publishA(int value) {
             a = value;
+            aWitness = 100 - value;
             aPublisherThreadId = Thread.currentThread().getId();
             aReady.countDown();
         }
@@ -172,6 +153,15 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
             aConsumerThreadId = Thread.currentThread().getId();
             aReceiveCount++;
             return a;
+        }
+
+        public int getRPCWitnessFromA() throws InterruptedException {
+            if (!aReady.await(JOIN_TIMEOUT_MILLIS,
+                    TimeUnit.MILLISECONDS)) {
+                throw new IllegalStateException("RPC A witness timed out");
+            }
+            aWitnessReceiveCount++;
+            return aWitness;
         }
 
         public int getRPCFromB() throws InterruptedException {
@@ -242,20 +232,18 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
 
     private static final class ProducerAThread extends WorkerThread {
         private final ProducerA producer;
-        private final Boolean enabled;
+        private final boolean enabled;
         private int baseInput;
-        private String routeInput;
         private final RpcBus bus;
         private final ProducerConcurrencyGate concurrencyGate;
 
-        ProducerAThread(ProducerA producer, Boolean enabled, int baseInput,
-                        String routeInput, RpcBus bus, CountDownLatch start,
+        ProducerAThread(ProducerA producer, boolean enabled, int baseInput,
+                        RpcBus bus, CountDownLatch start,
                         ProducerConcurrencyGate concurrencyGate) {
             super(PRODUCER_A_THREAD, start);
             this.producer = producer;
             this.enabled = enabled;
             this.baseInput = baseInput;
-            this.routeInput = routeInput;
             this.bus = bus;
             this.concurrencyGate = concurrencyGate;
         }
@@ -263,7 +251,7 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
         @Override
         void executeWorker() throws InterruptedException {
             concurrencyGate.enterAndAwaitPeer();
-            int value = producer.compute(enabled, baseInput, routeInput);
+            int value = producer.compute(enabled, baseInput);
             bus.publishA(value);
         }
     }
@@ -306,11 +294,15 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
         @Override
         void executeWorker() throws InterruptedException {
             int producerValue = bus.getRPCFromA();
+            int witnessValue = bus.getRPCWitnessFromA();
             int thresholdValue = bus.getRPCFromB();
             receivedA = producerValue;
             receivedB = thresholdValue;
             received = true;
-            if (producerValue > thresholdValue) {
+            // Keep the correlation guard first so the non-bug discovery seed
+            // still executes the terminal threshold branch.
+            if (producerValue + witnessValue == 100
+                    && producerValue > thresholdValue) {
                 throw new @CausynthExceptionTarget("cross-method-fields")
                         CrossMethodBugReachedException(producerValue,
                                 thresholdValue);
@@ -456,8 +448,8 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
         ProducerConcurrencyGate concurrencyGate =
                 new ProducerConcurrencyGate();
         ProducerAThread producerAThread = new ProducerAThread(producerA,
-                producerAEnabled, DEFAULT_BASE_INPUT, DEFAULT_ROUTE_INPUT,
-                bus, start, concurrencyGate);
+                producerAEnabled.booleanValue(), DEFAULT_BASE_INPUT, bus,
+                start, concurrencyGate);
         ProducerBThread producerBThread = new ProducerBThread(
                 strictThreshold, bus, start, concurrencyGate);
         ConsumerThread consumer = new ConsumerThread(bus, start);
@@ -488,7 +480,7 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
         }
 
         List<ChannelObservation> observations = new ArrayList<>();
-        if (bus.aReceiveCount == 1) {
+        if (bus.aReceiveCount == 1 && bus.aWitnessReceiveCount == 1) {
             observations.add(new ChannelObservation("A", bus.a,
                     bus.aPublisherThreadId, bus.aConsumerThreadId));
         }

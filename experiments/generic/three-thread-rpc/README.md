@@ -198,10 +198,12 @@ workload supplies fixture-specific SMT or a declared RPC mapping.
    an external integer producer live-in, Java integer arithmetic/overflow, RPC
    composition, and the consumer comparison.
 2. `CrossMethodExternalFieldThreeThreadWorkload`, configured by
-   `cross-method-fields/workflow.properties`, covers nullable Boolean/String
-   inputs, `String.contains`, several helper-call hops, and genuine instance
-   and static integer fields.  Helper return values must remain internal
-   definitions rather than being promoted to root inputs.
+   `cross-method-fields/workflow.properties`, covers several helper-call hops,
+   genuine instance/static integer fields, and an atomic correlated two-output
+   publication. Its four Producer A paths are the exact product of one Boolean
+   branch and one sign branch over the three integer roots. Helper return
+   values must remain internal definitions rather than being promoted to root
+   inputs. Nullable String semantics are covered separately by `multitype`.
 3. `MixedTypeThreeThreadRpcWorkload`, configured by
    `multitype/workflow.properties`, covers Boolean, `int`, `long`, `double`,
    nullable `String.contains`, Java floating-point comparison semantics, and a

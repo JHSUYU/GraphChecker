@@ -124,9 +124,6 @@ def output_members:
     then .outputClosure.members
     else error("malformed explicit outputClosure")
     end
-  elif (.requestedOutput | type) == "object"
-    and (.requestedOutputSlice | type) == "object"
-  then [{output: .requestedOutput, slice: .requestedOutputSlice}]
   else error("missing output closure")
   end;
 def singleton_output_member:
@@ -168,6 +165,85 @@ validate_composition_common() {
             | type == "string" and length > 0))))
   ' "${manifest}" >/dev/null \
     || die "composition manifest is incomplete: ${manifest}"
+}
+
+validate_cross_method_joint_output_artifacts() {
+  local work_root=$1
+  local smt=$2
+  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local merged="${work_root}/producer-campaign/a/merged_region_summaries.jsonl"
+  local composition="${work_root}/candidate/candidate_composition_manifest.json"
+  local producer_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int a>'
+  local witness_cell='<edu.uva.liftlab.graphchecker.fixtures.CrossMethodExternalFieldThreeThreadWorkload$RpcBus: int aWitness>'
+  local port selector
+  local -a output_ports selectors
+
+  require_file "cross-method runtime activation plan" "${activation_plan}"
+  require_file "cross-method Producer A merged relation" "${merged}"
+  require_file "cross-method composition manifest" "${composition}"
+
+  jq -e -s --arg producer "${producer_cell}" --arg witness "${witness_cell}" '
+    [.[] | select(
+      .captureGoal.kind == "OUTPUT_CLOSURE"
+      and ([.outputClosure.members[].output.cell] | sort)
+        == ([$producer, $witness] | sort))] as $joint
+    | ($joint | length) == 1
+    and ($joint[0].outputClosure.members | length) == 2
+    and ([$joint[0].edgeBindings[]
+      | select(.relation == "READ_FROM"
+        and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        and (.fromOutputCell == $producer
+          or .fromOutputCell == $witness))] as $edges
+      | ($edges | length) == 2
+      and ([$edges[].fromOutputCell] | sort)
+        == ([$producer, $witness] | sort)
+      and ([$edges[].toRegionInstance] | unique | length) == 1)
+  ' "${activation_plan}" >/dev/null \
+    || die "cross-method Producer A is not one two-output runtime demand"
+
+  jq -e --arg producer "${producer_cell}" --arg witness "${witness_cell}" '
+    . as $summary
+    | ($summary.outputClosure.members
+      | map(.output.portId) | sort) as $ports
+    | ([ $summary.outputClosure.members[].output.cell ] | sort)
+        == ([$producer, $witness] | sort)
+      and all($summary.regionRelation.cases[];
+        (.outputExpressions | keys | sort) == $ports)
+  ' "${merged}" >/dev/null \
+    || die "cross-method merged cases do not carry both Producer A outputs"
+
+  jq -e --slurpfile relation "${merged}" '
+    ($relation[0].regionRelation.cases | map(.caseId)) as $caseIds
+    | [.caseProjectionCatalog[]
+        | select(.caseId as $caseId
+          | $caseIds | index($caseId) != null)] as $selectors
+    | ($selectors | length) == ($caseIds | length)
+      and ([$selectors[].caseId] | unique | length)
+        == ($caseIds | length)
+      and ([$selectors[].selectorTerm] | unique | length)
+        == ($caseIds | length)
+  ' "${composition}" >/dev/null \
+    || die "cross-method joint relation lost its shared case selectors"
+
+  mapfile -t output_ports < <(jq -r '
+    .outputClosure.members[].output.portId | gsub("\\."; "_")
+  ' "${merged}")
+  mapfile -t selectors < <(jq -r --slurpfile relation "${merged}" '
+    ($relation[0].regionRelation.cases | map(.caseId)) as $caseIds
+    | .caseProjectionCatalog[]
+    | select(.caseId as $caseId | $caseIds | index($caseId) != null)
+    | .selectorTerm
+  ' "${composition}")
+  [[ ${#output_ports[@]} -eq 2 && ${#selectors[@]} -gt 0 ]] \
+    || die "cross-method joint selector catalog is empty"
+  # Both output equations for a relation case must be guarded by that case's
+  # one selector; independently selected summaries would fail this check.
+  for selector in "${selectors[@]}"; do
+    for port in "${output_ports[@]}"; do
+      grep -Fq "(=> ${selector} (= port__${port}" "${smt}" \
+        || die "cross-method output ${port} does not share selector ${selector}"
+    done
+  done
 }
 
 validate_multitype_producer_artifacts() {
@@ -687,7 +763,7 @@ validate_semantic_profile() {
     cross-method-fields)
       jq -e '
         (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 4
+        and (.existentialNonBooleanRootInputs | length) == 3
         and (.truthTable | length) == 4
         and ([.truthTable[] | select(.reachesBug == true)]
           | length) == 1
@@ -696,25 +772,19 @@ validate_semantic_profile() {
         and ([.truthTable[] | select(.reachesBug) | .valuationKey]
           == ["10"])
         and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
-          | sort) == ["I", "I", "I", "Ljava/lang/String;"]
+          | sort) == ["I", "I", "I"]
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("baseInput"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("instanceWeight"))
         and ([.existentialNonBooleanRootInputs[].cell] | tostring
           | contains("processWeight"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
-          | contains("routeInput"))
         and (all(.existentialNonBooleanRootInputs[];
-          (.cell | contains("boundedWeight.return") | not)
-          and (.cell | contains("ThirdHop.return") | not)
+          (.cell | contains("ThirdHop.return") | not)
           and (.cell | contains("thirdHop.return") | not)))
       ' "${reach_report}" >/dev/null \
         || die "cross-method-fields lost an external root or exact truth row"
-      grep -Fq 'str.contains' "${smt}" \
-        || die "cross-method-fields SMT omitted String.contains"
-      grep -Fq '"ready"' "${smt}" \
-        || die "cross-method-fields SMT omitted the ready needle"
+      validate_cross_method_joint_output_artifacts "${work_root}" "${smt}"
       ;;
     multitype)
       jq -e '

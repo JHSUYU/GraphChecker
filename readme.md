@@ -404,8 +404,10 @@ custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端
 
 本节是 GraphChecker Java 实现的权威重构计划。重构只统计
 `src/main/java` 的手写生产代码；测试和 fixture 不计入行数目标。maintained fixture 下的
-test workload 不得删除或改弱；普通回归测试则随旧实现一起合并、去重和删除，最终只保留
-几十个覆盖真实 contract boundary、关键 fail-closed 行为和端到端语义的高价值用例。
+test workload 不得删除或改弱；唯一例外是经明确授权后把
+`cross-method-fields` 的冗余 110-path Cartesian product 缩成 4 个语义路径，同时增加真实
+joint-output 相关性门禁。普通回归测试则随旧实现一起合并、去重和删除，最终只保留几十个
+覆盖真实 contract boundary、关键 fail-closed 行为和端到端语义的高价值用例。
 2026-07-23 的基线为 81,594 行生产 Java，其中
 `ConcolicRegionRuntime`、`ConcolicSummaryImporter`、`RuntimeRegionPlanner`、
 `ConcolicSmtComposer`、`SymbolicRegionPlanner` 和 `SeedBackwardStaticAnalyzer`
@@ -492,15 +494,14 @@ JSON 只存在于入口、跨进程交接、持久化和调试导出边界。内
 核心 value 类型包括：
 
 - `MethodRef`、`CellRef`、`FieldRef`、`FieldPath`、`PortRef`、`SiteRef`；
-- `Proof<T>`：value、authority、evidence 和 gaps，complete 由 gaps 是否为空推导；
 - `StaticRegion`、`OutputSlice`、`OutputMember`、`OutputClosureContract`；
 - `Activation`、`MaterializationPlan`、`CapturePlan`、`ExecutionEvidence`；
 - `BranchWitness`、`BranchReplayContract`、`SolverPathContext`；
 - `PathCase`、`RegionRelation`、`CompositionQuery`；
 - `JavaExpr`、`SmtSort`、`SmtTerm`。
 
-禁止再为同一事实同时维护多个 boolean 和 issues 镜像。阶段可以增加自己的运行证据，但不能
-重新解释上游已经验证过的静态语法。
+禁止引入通用 `Proof<T>` framework，也禁止再为同一事实同时维护多个 boolean 和 issues
+镜像。阶段可以增加自己的运行证据，但不能重新解释上游已经验证过的静态语法。
 
 ### 目标模块与允许依赖
 
@@ -716,17 +717,23 @@ replay <failure-bundle>
   全部 outputs 共享 case selector。shell campaign 同样按 demand identity 去重，不再按
   output channel 重复执行同一个 producer。
 - Phase 1–2 的本 vertical slice `COMPLETED`：canonical JSON 与版本化 codec 已投入主链；
-  外部 wire reader 已删除 singular fallback 和 mirror，Importer 暂时只通过 codec 提供的一个
-  内部 member view 复用既有逐成员 heap verifier，禁止 consumer 自建兼容分支或 dual-write。
+  外部 wire reader 已删除 singular fallback 和 mirror；Importer 现在直接消费 typed member
+  和 execution-scope union，内部 singular member view 也已删除，禁止 consumer 自建兼容
+  分支或 dual-write。
 - Phase 3–6 `IN_PROGRESS`：joint scalar 功能已贯通，但 immutable static graph、共享
   execution/capture spec、Java-expression-to-SMT core 和 Java campaign state machine
-  尚未完成。
+  尚未完成。共享 primitive lowering 已做过完整实现试验，但最多净减 112 行且新增约
+  376 行抽象，按“不为抽象而抽象”原则回退；试验发现的 `ConSymbolExp` 常量分类错误已用
+  两处局部修复解决。
 - Phase 7 `IN_PROGRESS`：普通回归已从 39 类 / 724 项压缩为 13 类 / 57 项且全部通过；
-  fixture workload main 零修改。第一批 canonical cleanup 将生产 Java 从 84,166 行降到
-  82,498 行，净减 1,668 行；相对冻结基线仍多 904 行，因此本阶段尚不能宣称代码精简完成。
-  已删除 singular wire decode/mirror、无根 transition-discovery、零引用 replay runner、
-  compatibility wrapper 和死 helper；下一步继续消除 Importer 的内部 member view 与重复
-  expression/graph/artifact helper。
+  一次明确授权的 `cross-method-fields` 重构把 Producer A 从 110 cases / 109 replays 缩成
+  4 cases / 3 replays，并新增同一 invocation 的 `a/aWitness` 联合输出、完整 case keyset 和
+  shared-selector 真正端到端门禁；最终 truth table 不变且真实 Z3 为 `sat`，本机完整耗时由
+  约 61 分钟降到 2 分 49 秒。第二批 cleanup 将生产 Java 从 82,498 行继续降到 82,395 行；
+  相对 84,166 行阶段起点累计净减 1,771 行，相对冻结基线仍多 801 行，因此本阶段尚不能
+  宣称代码精简完成。已删除 singular wire decode/mirror、Importer internal member view、
+  无根 transition-discovery、零引用 replay runner、compatibility wrapper 和死 helper，并
+  将三个 CLI 的重复 artifact I/O 收敛为一个 schema-free helper。
 - 第一批 canonical cleanup 的当前源码已经从构建、静态分析、runtime planning、完整
   producer campaign、merge/composition 一直执行到真实 Z3；六个隔离 workload 并行完成，
   结果为五个 `sat/reachable`、一个 `unsat/unreachable`，0 failure，没有用旧 artifact 或
