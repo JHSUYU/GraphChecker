@@ -14,6 +14,8 @@ import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ConcolicCodePosition;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -11319,12 +11321,27 @@ public final class ConcolicRegionRuntime {
                                     element.getAsJsonObject()));
                 }
             }
-            for (JsonElement element : array(json,
-                    "requestedOutputCapture")) {
-                if (!element.isJsonObject()) continue;
-                OutputCaptureRequest request = new OutputCaptureRequest(
-                        element.getAsJsonObject());
-                if (request.valid()) outputCaptures.add(request);
+            if (json.has(OutputClosureContract.FIELD)
+                    || json.has("requestedOutputCapture")
+                    || json.has("requestedOutputCaptureRequired")
+                    || json.has("requestedOutputCaptureComplete")) {
+                OutputClosureContract closure =
+                        OutputClosureCodec.decode(json);
+                for (JsonElement element
+                        : OutputClosureCodec.captures(closure)) {
+                    if (!element.isJsonObject()) {
+                        throw new IllegalArgumentException(
+                                "output capture must be a JSON object");
+                    }
+                    OutputCaptureRequest request = new OutputCaptureRequest(
+                            element.getAsJsonObject());
+                    if (!request.valid()) {
+                        throw new IllegalArgumentException(
+                                "invalid output capture "
+                                        + request.captureBindingId);
+                    }
+                    outputCaptures.add(request);
+                }
             }
         }
 

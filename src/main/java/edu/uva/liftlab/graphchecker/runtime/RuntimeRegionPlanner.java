@@ -4,6 +4,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -433,6 +435,7 @@ final class RuntimeRegionPlanner {
                 edgeBindings, relationEvidence);
         deriveUpstreamActivations(edgeBindings, staticProjections, result);
         refineMapValueElementProjectionActivations(result);
+        finalizeOutputClosureArtifacts(result);
         return result;
     }
 
@@ -2793,13 +2796,13 @@ final class RuntimeRegionPlanner {
             if (!seen.add(identity)) {
                 continue;
             }
-            add(grouped, binding.upstream.instanceId + "\n" + output.portId,
-                    binding);
+            add(grouped, binding.upstream.instanceId + "\n"
+                    + binding.downstream.instanceId, binding);
         }
 
         int activationIndex = 0;
-        for (List<UpstreamEdgeBinding> group : grouped.values()) {
-            UpstreamEdgeBinding first = group.get(0);
+        for (List<UpstreamEdgeBinding> demand : grouped.values()) {
+            UpstreamEdgeBinding first = demand.get(0);
             Map<String, Object> base = baseByInstance.get(
                     first.upstream.instanceId);
             if (base == null) {
@@ -2823,85 +2826,72 @@ final class RuntimeRegionPlanner {
                             ? "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
                             : "RUNTIME_READ_FROM_WITNESS_ONLY_PATH_TRUNCATED");
 
-            List<Map<String, Object>> selectedOutputs = new ArrayList<>();
-            selectedOutputs.add(outputAction(first.output));
-            activation.put("outputs", selectedOutputs);
-            activation.put("requestedOutput", object(
-                    "portId", first.output.portId,
-                    "cell", first.output.cell,
-                    "kind", first.output.kind,
-                    "selectionAuthority", "CONFIRMED_READ_FROM_EDGE"));
+            Map<String, List<UpstreamEdgeBinding>> byOutput =
+                    new LinkedHashMap<>();
+            for (UpstreamEdgeBinding binding : demand) {
+                add(byOutput, binding.output.portId, binding);
+            }
+            List<UpstreamOutputMemberPlan> members = new ArrayList<>();
+            List<String> issues = new ArrayList<>();
+            for (String outputPort : sorted(byOutput.keySet())) {
+                UpstreamOutputMemberPlan member =
+                        upstreamOutputMemberPlan(base,
+                                byOutput.get(outputPort));
+                members.add(member);
+                if (!member.issue.isEmpty()) {
+                    issues.add(member.issue);
+                }
+            }
 
-            StaticOutputSlice staticOutputSlice = first.upstream.region
-                    .outputSliceFor(first.output.portId);
-            StaticOutputSlice outputSlice = staticOutputSlice == null
-                    ? null : staticOutputSlice.runtimeRefined(first.upstream);
-            if (outputSlice == null) {
-                activation.put("symbolicReady", false);
-                activation.put("boundaryReady", false);
-                result.warnings.add("upstream output has no static backward "
-                        + "slice: " + first.output.portId);
+            OutputClosureContract outputClosure = null;
+            if (issues.isEmpty()) {
+                List<OutputClosureContract> contracts = new ArrayList<>();
+                for (UpstreamOutputMemberPlan member : members) {
+                    contracts.add(member.contract);
+                }
+                try {
+                    outputClosure = OutputClosureCodec.merge(contracts);
+                } catch (RuntimeException unsupported) {
+                    issues.add("JOINT_OUTPUT_CLOSURE_UNSUPPORTED:"
+                            + safe(unsupported.getMessage()));
+                }
+            }
+
+            if (issues.isEmpty()
+                    && !mergeUpstreamMemberExecution(activation, members,
+                    issues)) {
+                outputClosure = null;
+            }
+            if (issues.isEmpty()) {
+                activation.put("_plannerOutputClosure", outputClosure);
+                if (members.size() == 1) {
+                    applySingletonOutputMemberView(activation,
+                            members.get(0));
+                } else {
+                    removeLegacyOutputFields(activation);
+                }
+                activation.put("boundaryReady", true);
+                activation.put("symbolicReady", true);
             } else {
-                List<Map<String, Object>> selectedInputs = selectActivationRows(
-                        base.get("symbolize"), outputSlice.inputPorts, "symbol");
-                Set<String> selectedInputPorts = new LinkedHashSet<>();
-                for (Map<String, Object> selectedInput : selectedInputs) {
-                    addNonBlank(selectedInputPorts,
-                            string(selectedInput.get("symbol")));
+                if (members.size() == 1
+                        && members.get(0).outputSlice != null) {
+                    applyFailedSingletonOutputMember(activation,
+                            members.get(0));
+                } else {
+                    removeLegacyOutputFields(activation);
+                    activation.put("symbolize",
+                            Collections.emptyList());
+                    activation.put("branches",
+                            Collections.emptyList());
+                    activation.remove("containerElementFieldBindings");
+                    activation.remove("heapStateBindings");
                 }
-                boolean inputSelectionComplete = selectedInputPorts
-                        .containsAll(outputSlice.inputPorts);
-                applySliceDrivenArgumentFieldPaths(selectedInputs, outputSlice);
-                List<Map<String, Object>> containerBindings = copyRows(
-                        outputSlice.containerElementFieldBindings);
-                // Canonicalize a projected field alias before replay (and
-                // before a container declaration resolves its input port).
-                // Static type/name equality is insufficient: this join also
-                // requires exact runtime receiver/value identity.
-                applyExactConsumedArrayFieldEvidence(selectedInputs,
-                        first.upstream.root, first.upstream.fieldEvents);
-                boolean inputAliasesReady =
-                        canonicalizeExactRuntimeInputAliases(
-                                selectedInputs, outputSlice,
-                                containerBindings,
-                                first.upstream.fieldEvents);
-                boolean containerBindingsReady = inputAliasesReady
-                        && applyContainerElementFieldBindings(selectedInputs,
-                        containerBindings);
-                // Container-element declarations can introduce another exact
-                // leaf contract for their base/container actions.  Rejoin
-                // consumed reads after applying those declarations as well.
-                if (containerBindingsReady) {
-                    applyExactConsumedArrayFieldEvidence(selectedInputs,
-                            first.upstream.root,
-                            first.upstream.fieldEvents);
-                }
-                List<Map<String, Object>> selectedBranches = selectActivationRows(
-                        base.get("branches"), outputSlice.sites, "siteId");
-                boolean sliceReady = outputSlice.complete
-                        && outputSlice.captureBindingsComplete
-                        && inputSelectionComplete
-                        && containerBindingsReady
-                        && inputAliasesReady
-                        && symbolizeActionsReady(selectedInputs)
-                        && branchActionsReady(selectedBranches);
-                activation.put("symbolize", selectedInputs);
-                activation.put("branches", selectedBranches);
-                activation.put("requestedOutputMethods",
-                        new ArrayList<>(outputSlice.methods));
-                activation.put("requestedOutputSlice", outputSlice.toMap());
-                activation.put("requestedOutputCapture",
-                        copyRows(outputSlice.captureBindings));
-                activation.put("requestedOutputCaptureRequired",
-                        outputSlice.captureBindingsRequired);
-                activation.put("requestedOutputCaptureComplete",
-                        outputSlice.captureBindingsComplete);
-                if (!containerBindings.isEmpty()) {
-                    activation.put("containerElementFieldBindings",
-                            containerBindings);
-                }
-                activation.put("boundaryReady", sliceReady);
-                activation.put("symbolicReady", sliceReady);
+                activation.put("outputClosureIssues", issues);
+                activation.put("boundaryReady", false);
+                activation.put("symbolicReady", false);
+                result.warnings.add("joint upstream output demand failed "
+                        + "closed for " + first.upstream.instanceId + " -> "
+                        + first.downstream.instanceId + ": " + issues);
             }
 
             if (!writerPathReplayable) {
@@ -2914,25 +2904,247 @@ final class RuntimeRegionPlanner {
             }
 
             List<Map<String, Object>> bindingRows = new ArrayList<>();
-            for (UpstreamEdgeBinding binding : group) {
+            for (UpstreamEdgeBinding binding : demand) {
                 bindingRows.add(binding.toMap());
             }
             activation.put("edgeBindings", bindingRows);
-
-            StaticPort input = first.upstream.region.exactInputFor(
-                    first.output.cell);
-            if (input != null && (outputSlice == null
-                    || outputSlice.inputPorts.contains(input.portId))) {
-                List<Map<String, Object>> heapBindings = new ArrayList<>();
-                heapBindings.add(object(
-                        "inputPort", input.portId,
-                        "outputPort", first.output.portId,
-                        "cell", first.output.cell,
-                        "bindingAuthority",
-                        "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM"));
-                activation.put("heapStateBindings", heapBindings);
-            }
             result.activations.add(activation);
+        }
+    }
+
+    private static UpstreamOutputMemberPlan upstreamOutputMemberPlan(
+            Map<String, Object> base, List<UpstreamEdgeBinding> bindings) {
+        UpstreamEdgeBinding first = bindings.get(0);
+        StaticOutputSlice declared = first.upstream.region.outputSliceFor(
+                first.output.portId);
+        StaticOutputSlice outputSlice = declared == null ? null
+                : declared.runtimeRefined(first.upstream);
+        if (outputSlice == null) {
+            return UpstreamOutputMemberPlan.failed(first.output,
+                    "OUTPUT_MEMBER_HAS_NO_STATIC_BACKWARD_SLICE:"
+                            + first.output.portId);
+        }
+
+        List<Map<String, Object>> selectedInputs = selectActivationRows(
+                base.get("symbolize"), outputSlice.inputPorts, "symbol");
+        Set<String> selectedInputPorts = new LinkedHashSet<>();
+        for (Map<String, Object> selectedInput : selectedInputs) {
+            addNonBlank(selectedInputPorts,
+                    string(selectedInput.get("symbol")));
+        }
+        boolean inputSelectionComplete = selectedInputPorts.containsAll(
+                outputSlice.inputPorts);
+        applySliceDrivenArgumentFieldPaths(selectedInputs, outputSlice);
+        List<Map<String, Object>> containerBindings = copyRows(
+                outputSlice.containerElementFieldBindings);
+        applyExactConsumedArrayFieldEvidence(selectedInputs,
+                first.upstream.root, first.upstream.fieldEvents);
+        boolean inputAliasesReady = canonicalizeExactRuntimeInputAliases(
+                selectedInputs, outputSlice, containerBindings,
+                first.upstream.fieldEvents);
+        boolean containerBindingsReady = inputAliasesReady
+                && applyContainerElementFieldBindings(selectedInputs,
+                containerBindings);
+        if (containerBindingsReady) {
+            applyExactConsumedArrayFieldEvidence(selectedInputs,
+                    first.upstream.root, first.upstream.fieldEvents);
+        }
+        List<Map<String, Object>> selectedBranches = selectActivationRows(
+                base.get("branches"), outputSlice.sites, "siteId");
+        boolean sliceReady = outputSlice.complete
+                && outputSlice.captureBindingsComplete
+                && inputSelectionComplete
+                && containerBindingsReady
+                && inputAliasesReady
+                && symbolizeActionsReady(selectedInputs)
+                && branchActionsReady(selectedBranches);
+        List<Map<String, Object>> heapBindings = new ArrayList<>();
+        StaticPort input = first.upstream.region.exactInputFor(
+                first.output.cell);
+        if (input != null && outputSlice.inputPorts.contains(input.portId)) {
+            heapBindings.add(object(
+                    "inputPort", input.portId,
+                    "outputPort", first.output.portId,
+                    "cell", first.output.cell,
+                    "bindingAuthority",
+                    "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM"));
+        }
+        if (!sliceReady) {
+            return new UpstreamOutputMemberPlan(first.output, outputSlice,
+                    selectedInputs, selectedBranches, containerBindings,
+                    heapBindings, null,
+                    "OUTPUT_MEMBER_INCOMPLETE:" + first.output.portId);
+        }
+
+        Map<String, Object> singleton = new LinkedHashMap<>(base);
+        applySingletonOutputMemberView(singleton,
+                new UpstreamOutputMemberPlan(first.output, outputSlice,
+                        selectedInputs, selectedBranches, containerBindings,
+                        heapBindings, null, ""));
+
+        final OutputClosureContract contract;
+        try {
+            contract = OutputClosureCodec.decode(JsonParser.parseString(
+                    json(singleton)).getAsJsonObject());
+        } catch (RuntimeException malformed) {
+            return new UpstreamOutputMemberPlan(first.output, outputSlice,
+                    selectedInputs, selectedBranches, containerBindings,
+                    heapBindings, null,
+                    "OUTPUT_MEMBER_CONTRACT_INVALID:"
+                            + first.output.portId + ":"
+                            + safe(malformed.getMessage()));
+        }
+        return new UpstreamOutputMemberPlan(first.output, outputSlice,
+                selectedInputs, selectedBranches, containerBindings,
+                heapBindings, contract, "");
+    }
+
+    private static boolean mergeUpstreamMemberExecution(
+            Map<String, Object> activation,
+            List<UpstreamOutputMemberPlan> members, List<String> issues) {
+        Map<String, Map<String, Object>> inputs = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> branches = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> containers = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> heaps = new LinkedHashMap<>();
+        for (UpstreamOutputMemberPlan member : members) {
+            mergeExactRows(inputs, member.selectedInputs, "symbol",
+                    "SYMBOLIZE_ACTION", issues);
+            mergeExactRows(branches, member.selectedBranches, "siteId",
+                    "BRANCH_ACTION", issues);
+            mergeExactRows(containers, member.containerBindings, "bindingId",
+                    "CONTAINER_BINDING", issues);
+            mergeExactRows(heaps, member.heapBindings, "outputPort",
+                    "HEAP_STATE_BINDING", issues);
+        }
+        if (!issues.isEmpty()) return false;
+        activation.put("symbolize", new ArrayList<>(inputs.values()));
+        activation.put("branches", new ArrayList<>(branches.values()));
+        if (containers.isEmpty()) {
+            activation.remove("containerElementFieldBindings");
+        } else {
+            activation.put("containerElementFieldBindings",
+                    new ArrayList<>(containers.values()));
+        }
+        if (heaps.isEmpty()) {
+            activation.remove("heapStateBindings");
+        } else {
+            activation.put("heapStateBindings",
+                    new ArrayList<>(heaps.values()));
+        }
+        return true;
+    }
+
+    private static void mergeExactRows(
+            Map<String, Map<String, Object>> target,
+            List<Map<String, Object>> rows, String keyField, String label,
+            List<String> issues) {
+        for (Map<String, Object> row : rows) {
+            String key = string(row.get(keyField));
+            if (key.isEmpty()) key = json(row);
+            Map<String, Object> previous = target.putIfAbsent(key, row);
+            if (previous != null && !json(previous).equals(json(row))) {
+                issues.add("CONFLICTING_" + label + ":" + key);
+            }
+        }
+    }
+
+    private static void applySingletonOutputMemberView(
+            Map<String, Object> activation,
+            UpstreamOutputMemberPlan member) {
+        activation.put("outputs", Collections.singletonList(
+                outputAction(member.output)));
+        activation.put("requestedOutput", object(
+                "portId", member.output.portId,
+                "cell", member.output.cell,
+                "kind", member.output.kind,
+                "selectionAuthority", "CONFIRMED_READ_FROM_EDGE"));
+        activation.put("requestedOutputMethods",
+                new ArrayList<>(member.outputSlice.methods));
+        activation.put("requestedOutputSlice", member.outputSlice.toMap());
+        activation.put("requestedOutputCapture",
+                copyRows(member.outputSlice.captureBindings));
+        activation.put("requestedOutputCaptureRequired",
+                member.outputSlice.captureBindingsRequired);
+        activation.put("requestedOutputCaptureComplete",
+                member.outputSlice.captureBindingsComplete);
+    }
+
+    private static void applyFailedSingletonOutputMember(
+            Map<String, Object> activation,
+            UpstreamOutputMemberPlan member) {
+        applySingletonOutputMemberView(activation, member);
+        activation.put("symbolize", member.selectedInputs);
+        activation.put("branches", member.selectedBranches);
+        if (member.containerBindings.isEmpty()) {
+            activation.remove("containerElementFieldBindings");
+        } else {
+            activation.put("containerElementFieldBindings",
+                    member.containerBindings);
+        }
+        if (member.heapBindings.isEmpty()) {
+            activation.remove("heapStateBindings");
+        } else {
+            activation.put("heapStateBindings", member.heapBindings);
+        }
+    }
+
+    private static void removeLegacyOutputFields(
+            Map<String, Object> activation) {
+        activation.remove("requestedOutput");
+        activation.remove("requestedOutputSlice");
+        activation.remove("requestedOutputCapture");
+        activation.remove("requestedOutputCaptureRequired");
+        activation.remove("requestedOutputCaptureComplete");
+        activation.remove("requestedOutputMethods");
+        activation.remove("outputs");
+    }
+
+    private static void finalizeOutputClosureArtifacts(Result result) {
+        for (Map<String, Object> activation : result.activations) {
+            Object encoded = activation.remove("_plannerOutputClosure");
+            if (encoded instanceof OutputClosureContract) {
+                removeLegacyOutputFields(activation);
+                activation.put(OutputClosureContract.FIELD,
+                        ((OutputClosureContract) encoded).toJson());
+            }
+        }
+    }
+
+    private static final class UpstreamOutputMemberPlan {
+        private final StaticPort output;
+        private final StaticOutputSlice outputSlice;
+        private final List<Map<String, Object>> selectedInputs;
+        private final List<Map<String, Object>> selectedBranches;
+        private final List<Map<String, Object>> containerBindings;
+        private final List<Map<String, Object>> heapBindings;
+        private final OutputClosureContract contract;
+        private final String issue;
+
+        private UpstreamOutputMemberPlan(
+                StaticPort output, StaticOutputSlice outputSlice,
+                List<Map<String, Object>> selectedInputs,
+                List<Map<String, Object>> selectedBranches,
+                List<Map<String, Object>> containerBindings,
+                List<Map<String, Object>> heapBindings,
+                OutputClosureContract contract, String issue) {
+            this.output = output;
+            this.outputSlice = outputSlice;
+            this.selectedInputs = selectedInputs;
+            this.selectedBranches = selectedBranches;
+            this.containerBindings = containerBindings;
+            this.heapBindings = heapBindings;
+            this.contract = contract;
+            this.issue = issue;
+        }
+
+        private static UpstreamOutputMemberPlan failed(
+                StaticPort output, String issue) {
+            return new UpstreamOutputMemberPlan(output, null,
+                    Collections.<Map<String, Object>>emptyList(),
+                    Collections.<Map<String, Object>>emptyList(),
+                    Collections.<Map<String, Object>>emptyList(),
+                    Collections.<Map<String, Object>>emptyList(),
+                    null, issue);
         }
     }
 
@@ -9679,6 +9891,9 @@ final class RuntimeRegionPlanner {
     private static String json(Object value) {
         if (value == null) {
             return "null";
+        }
+        if (value instanceof JsonElement) {
+            return value.toString();
         }
         if (value instanceof String) {
             return quote((String) value);

@@ -200,7 +200,8 @@ public final class OutputClosureCodec {
         result.add("requestedOutputSlice", member.slice());
         result.addProperty("requestedOutputCaptureRequired",
                 member.captureRequired());
-        result.addProperty("requestedOutputCaptureComplete", true);
+        result.addProperty("requestedOutputCaptureComplete",
+                member.captureComplete());
         result.add("requestedOutputCapture", member.captures());
         result.add("requestedOutputMethods",
                 member.slice().getAsJsonArray("methods").deepCopy());
@@ -341,6 +342,7 @@ public final class OutputClosureCodec {
         for (String name : SCOPE_ARRAYS) stringSet(slice, name);
         requireArray(slice, "captureBindings");
         requireBoolean(slice, "captureBindingsRequired");
+        requireBoolean(slice, "captureBindingsComplete");
     }
 
     private static void validateCaptureLedger(

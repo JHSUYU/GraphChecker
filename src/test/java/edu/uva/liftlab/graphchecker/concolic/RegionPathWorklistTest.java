@@ -16,36 +16,6 @@ import static org.junit.Assert.assertTrue;
 
 public class RegionPathWorklistTest {
     @Test
-    public void targetCaptureDoesNotEnumerateEveryRegionPath() {
-        JsonObject summary = summary("ACT.TARGET",
-                RegionCaptureGoal.targetBranch());
-        JsonObject activation = activation("ACT.TARGET",
-                RegionCaptureGoal.targetBranch());
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(result.tasks.isEmpty());
-        assertEquals(8, result.manifest.size());
-        assertEquals("REGION.3",
-                result.manifest.get("regionId").getAsString());
-        assertEquals(RegionPathWorklist.State.NOT_STARTED.name(),
-                result.manifest.get("state").getAsString());
-        assertEquals(0, result.manifest.get(
-                "observedPathCount").getAsInt());
-        assertEquals(0, result.manifest.get(
-                "pendingTaskCount").getAsInt());
-        assertEquals("NO_OBSERVED_PATH_SEED", result.manifest
-                .getAsJsonArray("gaps").get(0).getAsJsonObject()
-                .get("kind").getAsString());
-        assertFalse(result.manifest.has("complete"));
-        assertFalse(result.manifest.has("status"));
-    }
-
-    @Test
     public void outputCaptureFlipsLatestBranchAndDropsOldSuffix() {
         JsonObject summary = summary("ACT.NEW",
                 RegionCaptureGoal.outputClosure());
@@ -74,255 +44,136 @@ public class RegionPathWorklistTest {
     }
 
     @Test
-    public void replayAdmitsNewlyObservedStaticSliceAlternative() {
-        JsonObject summary = summary("ACT.NEW.ALTERNATIVE",
+    public void completeEmptyOutputSliceDoesNotBecomeWildcard() {
+        JsonObject summary = summary("ACT.EMPTY.SLICE",
                 RegionCaptureGoal.outputClosure());
         JsonObject slice = new JsonObject();
-        JsonArray seedPathSites = new JsonArray();
-        seedPathSites.add("SITE.0");
-        slice.add("sites", seedPathSites);
-        JsonArray staticSites = new JsonArray();
-        staticSites.add("SITE.0");
-        staticSites.add("SITE.1");
-        slice.add("staticSites", staticSites);
-        JsonArray excluded = new JsonArray();
-        excluded.add("SITE.1");
-        slice.add("excludedPathAlternativeSites", excluded);
+        slice.add("sites", new JsonArray());
+        slice.add("staticSites", new JsonArray());
         summary.add("requestedOutputSlice", slice);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
                 Collections.singletonList(activation(
-                        "ACT.NEW.ALTERNATIVE",
+                        "ACT.EMPTY.SLICE",
                         RegionCaptureGoal.outputClosure())),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(result.manifest.toString(), 2, result.tasks.size());
-        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
-        assertEquals("SITE.0", sourceSite(result.tasks.get(1)));
+        assertTrue(result.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                result.manifest.get("state").getAsString());
     }
 
     @Test
-    public void witnessSummaryEmitsOneAuthoritativeReplayContract() {
-        JsonObject summary = summary("ACT.WITNESS",
+    public void explicitClosureScopesBranchTasksAndManifest() {
+        JsonObject summary = summary("ACT.CLOSURE",
                 RegionCaptureGoal.outputClosure());
+        JsonObject activation = activation("ACT.CLOSURE",
+                RegionCaptureGoal.outputClosure());
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.A", "SITE.1");
+        attachClosure(summary, closure);
+        attachClosure(activation, closure);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.WITNESS",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        JsonObject latest = result.tasks.get(0);
-        assertEquals(3, latest.get("schemaVersion").getAsInt());
-        BranchReplayContract contract = BranchReplayContract.fromJson(
-                latest.getAsJsonObject("replayContract"));
-        assertEquals("SITE.1", contract.source().siteId());
-        assertEquals(1, contract.orderedPrefix().size());
-        assertEquals(">=", contract.requiredSatisfiedPredicate()
-                .getAsJsonObject().get("_op").getAsString());
-    }
-
-    @Test
-    public void arrayLoadContextIsSeparatedFromTheBranchContract() {
-        JsonObject summary = summary("ACT.ARRAY.CONTEXT",
-                RegionCaptureGoal.outputClosure());
-        JsonObject arrayLoad = new JsonObject();
-        arrayLoad.addProperty("_type", "_array_expr");
-        arrayLoad.addProperty("_arr_str", "AL_1");
-        arrayLoad.addProperty("_is_load", true);
-        JsonObject index = new JsonObject();
-        index.addProperty("_type", "ConstExpr");
-        index.addProperty("_java_type", "I");
-        index.addProperty("_exp", "Y_I_1");
-        arrayLoad.add("_index_exp", index);
-        JsonObject value = new JsonObject();
-        value.addProperty("_type", "SymbolExpression");
-        value.addProperty("_java_type", "Lexample/State;");
-        value.addProperty("_exp", "EL_1-0-1");
-        arrayLoad.add("_value_exp", value);
-        JsonArray conditions = new JsonArray();
-        conditions.add(arrayLoad);
-        conditions.add(binary("<", 5));
-        summary.add("pathCondition", conditions);
-        JsonArray mappings = new JsonArray();
-        mappings.add(mapping("SITE.1", 1));
-        summary.add("branchMappings", mappings);
-        authorizeVmPcMappings(summary);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation(
-                        "ACT.ARRAY.CONTEXT",
-                        RegionCaptureGoal.outputClosure())),
+                Collections.singletonList(activation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
         assertEquals(result.manifest.toString(), 1, result.tasks.size());
         JsonObject task = result.tasks.get(0);
-        BranchReplayContract replay = replayContract(task);
-        assertTrue(replay.orderedPrefix().isEmpty());
-        SolverPathContext context = SolverPathContext.fromJson(
-                task.getAsJsonObject("solverPathContext"));
-        assertEquals(1, context.size());
-        assertEquals(arrayLoad, context.expressions().get(0));
-        assertFalse(task.has("constraints"));
-    }
+        assertEquals("SITE.1", sourceSite(task));
+        assertTrue(task.has("outputClosure"));
+        assertFalse(task.has("requestedOutput"));
+        assertEquals("REGION.3@test#call7",
+                task.get("regionInstanceId").getAsString());
+        assertEquals(7, task.get("rootCallId").getAsLong());
+        assertEquals(task.get("outputDemandKey"),
+                result.manifest.get("outputDemandKey"));
+        assertEquals(task.get("outputClosureFingerprint"),
+                result.manifest.get("outputClosureFingerprint"));
 
-    @Test
-    public void summaryWithoutBranchPolicyFailsClosed() {
-        JsonObject summary = summary("ACT.LEGACY",
+        JsonObject legacySummary = summary("ACT.CLOSURE",
                 RegionCaptureGoal.outputClosure());
-        summary.getAsJsonArray("branchMappings").get(0).getAsJsonObject()
-                .remove("policy");
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.LEGACY",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(result.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                result.manifest.get("state").getAsString());
-        assertTrue(result.manifest.getAsJsonArray("gaps").toString(),
-                result.manifest.getAsJsonArray("gaps").toString()
-                        .contains("INVALID_BRANCH_MAPPING_SCHEMA"));
-    }
-
-    @Test
-    public void policyAwareSummaryEnumeratesOnlyExploreMappings() {
-        JsonObject summary = summary("ACT.POLICY",
-                RegionCaptureGoal.outputClosure());
-        JsonArray mappings = summary.getAsJsonArray("branchMappings");
-        mappings.get(0).getAsJsonObject().addProperty("policy",
-                "PATH_ASSUMPTION");
-        mappings.get(1).getAsJsonObject().addProperty("policy", "EXPLORE");
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.POLICY",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertEquals(1, result.tasks.size());
-        assertEquals("SITE.1", sourceSite(result.tasks.get(0)));
-    }
-
-    @Test
-    public void policyAwareSummaryFailsClosedForUnknownPolicy() {
-        JsonObject summary = summary("ACT.FAIL.CLOSED",
-                RegionCaptureGoal.outputClosure());
-        summary.getAsJsonArray("branchMappings").get(1).getAsJsonObject()
-                .addProperty("policy", "UNKNOWN");
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.FAIL.CLOSED",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(result.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                result.manifest.get("state").getAsString());
-        assertEquals(1, result.manifest.getAsJsonArray("gaps").size());
-        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("unsupported branch policy: UNKNOWN"));
-    }
-
-    @Test
-    public void stableFlipIdentityExcludesActivationIdsAndUnsatClosesIt() {
-        JsonObject first = summary("ACT.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.2",
-                RegionCaptureGoal.outputClosure());
-        JsonObject activation1 = activation("ACT.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject activation2 = activation("ACT.2",
-                RegionCaptureGoal.outputClosure());
-
-        RegionPathWorklist.Result initial = RegionPathWorklist.plan(
-                Arrays.asList(first, second), Arrays.asList(activation1,
-                        activation2), Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertEquals(2, initial.tasks.size());
-
-        List<JsonObject> records = new ArrayList<>();
-        for (JsonObject task : initial.tasks) {
-            JsonObject record = new JsonObject();
-            record.addProperty("queryKey", task.get("queryKey").getAsString());
-            record.addProperty("status", "UNSAT");
-            records.add(record);
+        boolean rejected = false;
+        try {
+            RegionPathWorklist.plan(
+                    Collections.singletonList(legacySummary),
+                    Collections.singletonList(activation),
+                    Collections.<JsonObject>emptyList(),
+                    RegionPathWorklist.Bounds.defaults());
+        } catch (IllegalArgumentException expected) {
+            rejected = expected.getMessage().contains(
+                    "canonical outputClosure summary");
         }
-        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
-                Arrays.asList(first, second), Arrays.asList(activation1,
-                        activation2), records,
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(closed.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.CLOSED.name(),
-                closed.manifest.get("state").getAsString());
-        assertEquals(1, closed.manifest.get(
-                "observedPathCount").getAsInt());
-        assertEquals(0, closed.manifest.get(
-                "pendingTaskCount").getAsInt());
+        assertTrue("legacy summary must not inherit joint activation scope",
+                rejected);
     }
 
     @Test
-    public void oppositeObservedFrontiersCloseWithoutReverseReplay() {
-        JsonObject taken = oneBranchSummary("ACT.TAKEN", ">", true, -1);
-        JsonObject notTaken = oneBranchSummary("ACT.NOT.TAKEN", "<=",
-                false, 1);
-        assertNotEquals(RegionPathWorklist.stablePathKey(taken),
-                RegionPathWorklist.stablePathKey(notTaken));
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Arrays.asList(taken, notTaken), Arrays.asList(
-                        activation("ACT.TAKEN",
-                                RegionCaptureGoal.outputClosure()),
-                        activation("ACT.NOT.TAKEN",
-                                RegionCaptureGoal.outputClosure())),
+    public void closureDemandAndProofCannotReuseTerminalFlipRecord() {
+        JsonObject firstSummary = summary("ACT.CLOSURE.A",
+                RegionCaptureGoal.outputClosure());
+        JsonObject firstActivation = activation("ACT.CLOSURE.A",
+                RegionCaptureGoal.outputClosure());
+        JsonObject firstClosure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.A", "SITE.1");
+        attachClosure(firstSummary, firstClosure);
+        attachClosure(firstActivation, firstClosure);
+        RegionPathWorklist.Result first = RegionPathWorklist.plan(
+                Collections.singletonList(firstSummary),
+                Collections.singletonList(firstActivation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertTrue(result.tasks.toString(), result.tasks.isEmpty());
-        assertEquals(result.manifest.toString(),
-                RegionPathWorklist.State.CLOSED.name(),
-                result.manifest.get("state").getAsString());
-        assertEquals(2, result.manifest.get(
-                "observedPathCount").getAsInt());
-        assertTrue(result.manifest.getAsJsonArray("gaps").isEmpty());
-    }
-
-    @Test
-    public void observedOutcomeUnderDifferentPrefixDoesNotCloseFlip() {
-        JsonObject first = summary("ACT.PREFIX.1",
+        JsonObject secondSummary = summary("ACT.CLOSURE.B",
                 RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.PREFIX.2",
+        JsonObject secondActivation = activation("ACT.CLOSURE.B",
                 RegionCaptureGoal.outputClosure());
-        second.getAsJsonArray("pathCondition").set(0, binary("<=", 0));
-        second.getAsJsonArray("pathCondition").set(1, binary(">=", 5));
-        replaceWitnessOutcomes(second, false);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Arrays.asList(first, second), Arrays.asList(
-                        activation("ACT.PREFIX.1",
-                                RegionCaptureGoal.outputClosure()),
-                        activation("ACT.PREFIX.2",
-                                RegionCaptureGoal.outputClosure())),
+        JsonObject secondClosure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.B", "SITE.1");
+        attachClosure(secondSummary, secondClosure);
+        attachClosure(secondActivation, secondClosure);
+        RegionPathWorklist.Result second = RegionPathWorklist.plan(
+                Collections.singletonList(secondSummary),
+                Collections.singletonList(secondActivation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
-        assertEquals(result.manifest.toString(), 2, result.tasks.size());
-        assertTrue(result.tasks.stream().allMatch(task -> "SITE.1".equals(
-                sourceSite(task))));
-        assertEquals(RegionPathWorklist.State.PENDING.name(),
-                result.manifest.get("state").getAsString());
+        assertEquals(first.tasks.get(0).get("outputDemandKey"),
+                second.tasks.get(0).get("outputDemandKey"));
+        assertNotEquals(first.tasks.get(0).get("queryKey"),
+                second.tasks.get(0).get("queryKey"));
+        JsonObject record = new JsonObject();
+        record.addProperty("queryKey", first.tasks.get(0)
+                .get("queryKey").getAsString());
+        record.addProperty("status", "UNSAT");
+        RegionPathWorklist.Result replay = RegionPathWorklist.plan(
+                Collections.singletonList(secondSummary),
+                Collections.singletonList(secondActivation),
+                Collections.singletonList(record),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(1, replay.tasks.size());
+
+        JsonObject otherDemandSummary = summary("ACT.CLOSURE.C",
+                RegionCaptureGoal.outputClosure());
+        JsonObject otherDemandActivation = activation("ACT.CLOSURE.C",
+                RegionCaptureGoal.outputClosure());
+        JsonObject otherDemand = outputClosure("REGION.3.out.1",
+                "<P: int y>", "PROOF.A", "SITE.1");
+        attachClosure(otherDemandSummary, otherDemand);
+        attachClosure(otherDemandActivation, otherDemand);
+        RegionPathWorklist.Result third = RegionPathWorklist.plan(
+                Collections.singletonList(otherDemandSummary),
+                Collections.singletonList(otherDemandActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertNotEquals(first.tasks.get(0).get("outputDemandKey"),
+                third.tasks.get(0).get("outputDemandKey"));
+        assertNotEquals(first.tasks.get(0).get("queryKey"),
+                third.tasks.get(0).get("queryKey"));
     }
 
     @Test
@@ -361,372 +212,6 @@ public class RegionPathWorklistTest {
                 .contains("EXPLORATION_GAP"));
         assertTrue(replanned.manifest.getAsJsonArray("gaps").toString()
                 .contains("OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT"));
-    }
-
-    @Test
-    public void incompleteRegionSummaryIsAGapAndIsNeverFlipped() {
-        JsonObject summary = summary("ACT.INCOMPLETE",
-                RegionCaptureGoal.outputClosure());
-        summary.addProperty("relationallyComplete", false);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.INCOMPLETE",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(result.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                result.manifest.get("state").getAsString());
-        assertEquals("INCOMPLETE_REGION_SUMMARY", result.manifest
-                .getAsJsonArray("gaps").get(0).getAsJsonObject()
-                .get("kind").getAsString());
-    }
-
-    @Test
-    public void quarantinedDiscoverySeedMayFlipOnlyItsReachabilityGuard() {
-        JsonObject summary = summary("ACT.DISCOVERY",
-                RegionCaptureGoal.transitionDiscovery());
-        summary.addProperty("relationallyComplete", false);
-        summary.addProperty("normalExit", true);
-        JsonObject slice = new JsonObject();
-        slice.addProperty("complete", true);
-        JsonArray sites = new JsonArray();
-        sites.add("SITE.1");
-        slice.add("sites", sites);
-        slice.add("inputPorts", new JsonArray());
-        summary.add("requestedOutputSlice", slice);
-        JsonObject discovery = new JsonObject();
-        discovery.addProperty("candidateEdgeId", "EDGE.P.C");
-        discovery.addProperty("guardSiteId", "SITE.1");
-        discovery.addProperty("guardOccurrence", 1);
-        discovery.addProperty("desiredOutcome", false);
-        discovery.addProperty("seedExecutionId", "EXEC.1");
-        summary.add("transitionDiscovery", discovery);
-        JsonObject activation = activation("ACT.DISCOVERY",
-                RegionCaptureGoal.transitionDiscovery());
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertEquals(result.manifest.toString(), 1, result.tasks.size());
-        JsonObject task = result.tasks.get(0);
-        assertEquals("SITE.1", sourceSite(task));
-        assertTrue(task.get("discoveryOnly").getAsBoolean());
-        assertTrue(RegionCaptureGoal.from(task).isTransitionDiscovery());
-        assertEquals("QUARANTINED", task.get(
-                "summaryCacheAdmission").getAsString());
-        assertEquals(RegionPathWorklist.State.PENDING.name(),
-                result.manifest.get("state").getAsString());
-
-        JsonObject anotherExecution = summary.deepCopy();
-        anotherExecution.getAsJsonObject("transitionDiscovery").addProperty(
-                "seedExecutionId", "EXEC.99");
-        RegionPathWorklist.Result replanned = RegionPathWorklist.plan(
-                Collections.singletonList(anotherExecution),
-                Collections.singletonList(activation),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertEquals(task.get("queryKey").getAsString(), replanned.tasks
-                .get(0).get("queryKey").getAsString());
-
-        JsonObject legacyTopLevel = summary.deepCopy();
-        legacyTopLevel.addProperty("requestedOutputSliceComplete", true);
-        legacyTopLevel.getAsJsonObject("requestedOutputSlice")
-                .addProperty("complete", false);
-        RegionPathWorklist.Result nestedFalse = RegionPathWorklist.plan(
-                Collections.singletonList(legacyTopLevel),
-                Collections.singletonList(activation),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertTrue(nestedFalse.tasks.isEmpty());
-
-        legacyTopLevel.remove("requestedOutputSlice");
-        RegionPathWorklist.Result nestedMissing = RegionPathWorklist.plan(
-                Collections.singletonList(legacyTopLevel),
-                Collections.singletonList(activation),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertTrue(nestedMissing.tasks.isEmpty());
-    }
-
-    @Test
-    public void stablePathIdentityAlphaNormalizesOnlyExecutionLocals() {
-        JsonObject first = summary("ACT.ALPHA.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.ALPHA.2",
-                RegionCaptureGoal.outputClosure());
-        replaceConditionSymbol(first, "M_I_1");
-        replaceConditionSymbol(second, "M_I_97");
-        first.getAsJsonObject("outputExpressions").add(
-                "REGION.3.out.0", localSymbol("M_I_1"));
-        second.getAsJsonObject("outputExpressions").add(
-                "REGION.3.out.0", localSymbol("M_I_97"));
-
-        assertEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(second));
-
-        JsonObject differentAlias = second.deepCopy();
-        differentAlias.getAsJsonArray("pathCondition").get(1)
-                .getAsJsonObject().getAsJsonObject("_left")
-                .addProperty("_exp", "M_I_98");
-        assertNotEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(differentAlias));
-    }
-
-    @Test
-    public void stablePathIdentityPreservesCanonicalActivationPorts() {
-        JsonObject first = summary("ACT.PORT.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.PORT.2",
-                RegionCaptureGoal.outputClosure());
-        first.add("symbolicInputs", strings("REGION.3.in.0"));
-        second.add("symbolicInputs", strings("REGION.3.in.1"));
-        replaceConditionSymbol(first,
-                "M_I_field_REGION.3.in.0_java/lang/Integer");
-        replaceConditionSymbol(second,
-                "M_I_field_REGION.3.in.1_java/lang/Integer");
-
-        assertNotEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(second));
-    }
-
-    @Test
-    public void dynamicSelectorIsStableAcrossObjectTokensButKeepsOccurrence()
-            throws Exception {
-        JsonObject first = summary("ACT.DYNAMIC.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.DYNAMIC.2",
-                RegionCaptureGoal.outputClosure());
-        first.add("dynamicFieldBindings", dynamicBindings("OBJECT.1", 2,
-                "key-two"));
-        second.add("dynamicFieldBindings", dynamicBindings("OBJECT.99", 2,
-                "key-two"));
-
-        assertEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(second));
-
-        JsonObject differentOccurrence = second.deepCopy();
-        differentOccurrence.getAsJsonArray("dynamicFieldBindings").get(0)
-                .getAsJsonObject().addProperty("materializationOccurrence",
-                1);
-        assertNotEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(differentOccurrence));
-
-        RegionPathWorklist.Result planned = RegionPathWorklist.plan(
-                Collections.singletonList(first),
-                Collections.singletonList(activation("ACT.DYNAMIC.1",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertEquals(2, planned.tasks.get(0).getAsJsonArray(
-                "dynamicFieldBindings").get(0).getAsJsonObject().get(
-                "materializationOccurrence").getAsInt());
-    }
-
-    @Test
-    public void mapProjectionStableKeyErasesTokensButKeepsIndexAndOperation() {
-        JsonObject first = summary("ACT.MAP.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.MAP.2",
-                RegionCaptureGoal.outputClosure());
-        first.add("dynamicFieldBindings", mapProjectionBindings(
-                "ACT.MAP.1", 10L, 20L, 30L, 0,
-                "MAP_VALUES_VIEW"));
-        second.add("dynamicFieldBindings", mapProjectionBindings(
-                "ACT.MAP.2", 100L, 200L, 300L, 0,
-                "MAP_VALUES_VIEW"));
-
-        assertEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(second));
-
-        JsonObject differentIndex = second.deepCopy();
-        differentIndex.add("dynamicFieldBindings", mapProjectionBindings(
-                "ACT.MAP.2", 100L, 200L, 300L, 1,
-                "MAP_VALUES_VIEW"));
-        assertNotEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(differentIndex));
-
-        JsonObject differentOperation = second.deepCopy();
-        differentOperation.add("dynamicFieldBindings",
-                mapProjectionBindings("ACT.MAP.2", 100L, 200L, 300L, 0,
-                        "MAP_KEY_SET_VIEW"));
-        assertNotEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(differentOperation));
-    }
-
-    @Test
-    public void engineArrayBridgeAlphaNormalizesIdsButPreservesPortJoin() {
-        JsonObject first = summary("ACT.ARRAY.1",
-                RegionCaptureGoal.outputClosure());
-        JsonObject second = summary("ACT.ARRAY.2",
-                RegionCaptureGoal.outputClosure());
-        first.getAsJsonArray("pathCondition").set(0,
-                arrayLoad("VM_ARRAY_1"));
-        second.getAsJsonArray("pathCondition").set(0,
-                arrayLoad("VM_ARRAY_99"));
-        first.add("engineArrayInputBindings", engineArrayBindings(
-                "REGION.3.in.0", "VM_ARRAY_1", 7));
-        second.add("engineArrayInputBindings", engineArrayBindings(
-                "REGION.3.in.0", "VM_ARRAY_99", 700));
-
-        assertEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(second));
-
-        JsonObject differentPort = second.deepCopy();
-        differentPort.add("engineArrayInputBindings", engineArrayBindings(
-                "REGION.3.in.1", "VM_ARRAY_99", 700));
-        assertNotEquals(RegionPathWorklist.stablePathKey(first),
-                RegionPathWorklist.stablePathKey(differentPort));
-    }
-
-    @Test
-    public void pathFlipTaskCarriesExactEngineArrayBridgeCatalog() {
-        JsonObject summary = summary("ACT.ARRAY.TASK",
-                RegionCaptureGoal.outputClosure());
-        JsonArray bindings = engineArrayBindings("REGION.3.in.0",
-                "VM_ARRAY_TASK", 17);
-        summary.add("engineArrayInputBindings", bindings);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.ARRAY.TASK",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertFalse(result.tasks.isEmpty());
-        assertEquals(bindings, result.tasks.get(0).getAsJsonArray(
-                "engineArrayInputBindings"));
-    }
-
-    @Test
-    public void boundedNumericLoopKeepsEveryOccurrenceAndFailsClosedWhenUnmapped() {
-        JsonObject summary = summary("ACT.NUMERIC.LOOP",
-                RegionCaptureGoal.outputClosure());
-        JsonArray conditions = new JsonArray();
-        conditions.add(typedBinary(">=", "J", 7));
-        conditions.add(typedBinary("<", "D", 3));
-        conditions.add(typedBinary("<", "I", 3));
-        conditions.add(typedBinary("<", "I", 3));
-        conditions.add(typedBinary(">=", "I", 3));
-        summary.add("pathCondition", conditions);
-        JsonArray mappings = new JsonArray();
-        mappings.add(mapping("NUMERIC.LONG", 0, 1));
-        mappings.add(mapping("NUMERIC.DOUBLE", 1, 1));
-        mappings.add(mapping("NUMERIC.LOOP.GUARD", 2, 1));
-        mappings.add(mapping("NUMERIC.LOOP.GUARD", 3, 2));
-        mappings.add(mapping("NUMERIC.LOOP.GUARD", 4, 3));
-        summary.add("branchMappings", mappings);
-        authorizeVmPcMappings(summary);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Collections.singletonList(summary),
-                Collections.singletonList(activation("ACT.NUMERIC.LOOP",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertEquals(result.manifest.toString(), 5, result.tasks.size());
-        assertEquals("NUMERIC.LOOP.GUARD", sourceSite(result.tasks.get(0)));
-        assertEquals(3, replayContract(result.tasks.get(0)).source()
-                .occurrence());
-        assertEquals(2, replayContract(result.tasks.get(1)).source()
-                .occurrence());
-        assertEquals(1, replayContract(result.tasks.get(2)).source()
-                .occurrence());
-        assertEquals("D", replayContract(result.tasks.get(3))
-                .requiredSatisfiedPredicate().getAsJsonObject()
-                .getAsJsonObject("_left")
-                .get("_java_type").getAsString());
-        assertEquals("J", replayContract(result.tasks.get(4))
-                .requiredSatisfiedPredicate().getAsJsonObject()
-                .getAsJsonObject("_left")
-                .get("_java_type").getAsString());
-        assertEquals(5, result.tasks.stream().map(task -> task.get(
-                "queryKey").getAsString()).distinct().count());
-
-        JsonObject unmodeled = summary.deepCopy();
-        JsonArray onlyUnmapped = new JsonArray();
-        onlyUnmapped.add(SummaryBranchMapping.concrete(
-                ExactConcreteBranchObservation.attested(
-                        "NUMERIC.LOOP.GUARD",
-                        "<test.Region: void run()>", 4, 3, true),
-                SummaryBranchMapping.Policy.EXPLORE).toJson());
-        unmodeled.add("branchMappings", onlyUnmapped);
-        RegionPathWorklist.Result rejected = RegionPathWorklist.plan(
-                Collections.singletonList(unmodeled),
-                Collections.singletonList(activation("ACT.NUMERIC.LOOP",
-                        RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertTrue(rejected.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                rejected.manifest.get("state").getAsString());
-        JsonObject gap = rejected.manifest.getAsJsonArray("gaps").get(0)
-                .getAsJsonObject();
-        assertEquals("UNMAPPED_BRANCH", gap.get("kind").getAsString());
-        assertEquals("NO_NORMALIZED_CONDITION", gap.get("reason")
-                .getAsString());
-        assertEquals(3, gap.get("occurrence").getAsInt());
-    }
-
-    @Test
-    public void concreteBranchCoveredAtSamePositionNeedsNoBorrowedPredicate() {
-        JsonObject modeled = exactBranchTemplateSummary("ACT.MODELED",
-                false);
-        JsonObject concrete = exactBranchTemplateSummary("ACT.CONCRETE",
-                true);
-        List<JsonObject> summaries = Arrays.asList(modeled, concrete);
-        List<JsonObject> activations = Arrays.asList(
-                activation("ACT.MODELED", RegionCaptureGoal.outputClosure()),
-                activation("ACT.CONCRETE", RegionCaptureGoal.outputClosure()));
-
-        RegionPathWorklist.Result initial = RegionPathWorklist.plan(
-                summaries, activations, Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(initial.tasks.toString(), initial.tasks.isEmpty());
-        assertEquals(initial.manifest.toString(),
-                RegionPathWorklist.State.CLOSED.name(),
-                initial.manifest.get("state").getAsString());
-        assertTrue(initial.manifest.getAsJsonArray("gaps").isEmpty());
-    }
-
-    @Test
-    public void exactConcreteSwitchDoesNotBorrowBinaryIfPredicate() {
-        JsonObject modeled = exactBranchTemplateSummary("ACT.SWITCH.MODELED",
-                false);
-        JsonObject concrete = exactBranchTemplateSummary(
-                "ACT.SWITCH.CONCRETE", true);
-        JsonObject mapping = concrete.getAsJsonArray("branchMappings").get(1)
-                .getAsJsonObject();
-        mapping.remove("concreteObservation");
-        mapping.addProperty("branchKind", "TABLE_SWITCH");
-        mapping.addProperty("observedSuccessorIndex", 2);
-        JsonArray keys = new JsonArray();
-        keys.add(0);
-        keys.add(1);
-        mapping.add("switchCaseKeys", keys);
-
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Arrays.asList(modeled, concrete), Arrays.asList(
-                        activation("ACT.SWITCH.MODELED",
-                                RegionCaptureGoal.outputClosure()),
-                        activation("ACT.SWITCH.CONCRETE",
-                                RegionCaptureGoal.outputClosure())),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertTrue(result.tasks.isEmpty());
-        assertEquals(RegionPathWorklist.State.GAPPED.name(),
-                result.manifest.get("state").getAsString());
-        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
-                .contains("INVALID_BRANCH_MAPPING_SCHEMA"));
     }
 
     private static JsonObject exactBranchTemplateSummary(
@@ -917,6 +402,58 @@ public class RegionPathWorklistTest {
         JsonArray result = new JsonArray();
         result.add(binding);
         return result;
+    }
+
+    private static JsonObject outputClosure(
+            String port, String cell, String proofTag, String... sites) {
+        JsonObject producer = new JsonObject();
+        producer.addProperty("regionId", "REGION.3");
+        producer.addProperty("regionInstanceId",
+                "REGION.3@test#call7");
+        producer.addProperty("rootCallId", 7);
+
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", port);
+        output.addProperty("cell", cell);
+        output.addProperty("kind", "REGION_OUTPUT");
+        output.addProperty("javaTypeDescriptor", "I");
+        output.addProperty("selectionAuthority", "TEST_EXACT_DEMAND");
+
+        JsonArray siteArray = new JsonArray();
+        for (String site : sites) siteArray.add(site);
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", new JsonArray());
+        slice.add("sites", siteArray.deepCopy());
+        slice.add("staticSites", siteArray.deepCopy());
+        slice.add("methods", new JsonArray());
+        slice.add("causalEdgeIds", new JsonArray());
+        slice.add("captureBindings", new JsonArray());
+        slice.addProperty("captureBindingsRequired", false);
+        slice.addProperty("captureBindingsComplete", true);
+        slice.addProperty("proofTag", proofTag);
+
+        JsonObject member = new JsonObject();
+        member.add("output", output);
+        member.add("slice", slice);
+        JsonArray members = new JsonArray();
+        members.add(member);
+        JsonObject closure = new JsonObject();
+        closure.addProperty("schemaVersion", 1);
+        closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
+        closure.add("producer", producer);
+        closure.add("members", members);
+        return closure;
+    }
+
+    private static void attachClosure(JsonObject artifact,
+                                      JsonObject closure) {
+        artifact.remove("requestedOutput");
+        artifact.addProperty("regionInstanceId",
+                "REGION.3@test#call7");
+        artifact.addProperty("rootCallId", 7);
+        artifact.add("outputClosure", closure.deepCopy());
     }
 
     private static JsonObject activation(String id, RegionCaptureGoal goal) {

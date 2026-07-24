@@ -6,6 +6,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -20,7 +22,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,34 +58,42 @@ public final class RegionSummaryMerger {
 
     public static Result merge(List<JsonObject> summaries,
                                JsonObject pathManifest) {
-        Map<String, List<JsonObject>> groups = new LinkedHashMap<>();
+        Map<String, List<MergeInput>> groups = new LinkedHashMap<>();
         List<JsonObject> diagnostics = new ArrayList<>();
         for (JsonObject summary : safe(summaries)) {
             if (!RegionCaptureGoal.from(summary).isOutputClosure()) {
                 continue;
             }
-            String region = string(summary, "regionId");
-            JsonObject output = object(summary, "requestedOutput");
-            if (region.isEmpty() || output.size() == 0) {
-                diagnostics.add(gap(region, "MISSING_REQUESTED_OUTPUT"));
+            MergeInput input;
+            try {
+                input = MergeInput.from(summary);
+            } catch (IllegalArgumentException malformed) {
+                diagnostics.add(gap(string(summary, "regionId"),
+                        "INVALID_OUTPUT_CLOSURE:"
+                                + firstNonBlank(malformed.getMessage(),
+                                "UNKNOWN")));
                 continue;
             }
-            String key = region + "\n" + canonical(output);
-            List<JsonObject> values = groups.get(key);
+            if (input == null) {
+                diagnostics.add(gap(string(summary, "regionId"),
+                        "MISSING_REQUESTED_OUTPUT"));
+                continue;
+            }
+            List<MergeInput> values = groups.get(input.groupKey);
             if (values == null) {
                 values = new ArrayList<>();
-                groups.put(key, values);
+                groups.put(input.groupKey, values);
             }
-            values.add(summary);
+            values.add(input);
         }
 
         List<JsonObject> merged = new ArrayList<>();
-        for (List<JsonObject> values : groups.values()) {
+        for (List<MergeInput> values : groups.values()) {
             merged.add(mergeGroup(values, pathManifest, diagnostics));
         }
         Collections.sort(merged, Comparator.comparing(value ->
                 string(value, "regionId") + "\n"
-                        + canonical(value.get("requestedOutput"))));
+                        + outputIdentity(value)));
         if (merged.isEmpty()) {
             diagnostics.add(gap("", "NO_VALID_OUTPUT_CLOSURE_RELATIONS"));
         }
@@ -116,69 +125,42 @@ public final class RegionSummaryMerger {
         return new Result(merged, manifest);
     }
 
-    private static JsonObject mergeGroup(List<JsonObject> source,
+    private static JsonObject mergeGroup(List<MergeInput> source,
                                          JsonObject pathManifest,
                                          List<JsonObject> diagnostics) {
-        List<JsonObject> values = new ArrayList<>(source);
+        List<MergeInput> values = new ArrayList<>(source);
         Collections.sort(values, Comparator.comparing(
-                RegionPathWorklist::stablePathKey));
-        JsonObject first = values.get(0);
+                value -> value.pathKey));
+        MergeInput firstInput = values.get(0);
+        JsonObject first = firstInput.summary;
         String region = string(first, "regionId");
-        Set<String> pathKeys = new LinkedHashSet<>();
+        Map<String, String> payloadByPath = new LinkedHashMap<>();
         JsonArray cases = new JsonArray();
         boolean casesComplete = true;
-        for (JsonObject summary : values) {
-            String pathKey = RegionPathWorklist.stablePathKey(summary);
-            if (!pathKeys.add(pathKey)) continue;
-            JsonObject item = new JsonObject();
-            String caseId = "CASE." + pathKey.substring(0, 16);
-            item.addProperty("caseId", caseId);
-            item.addProperty("pathKey", pathKey);
-            // Engine-local ids are recycled by every concolic JVM.  Preserve a
-            // deterministic case namespace in the relation so the SMT emitter
-            // never mistakes equal raw counters from two reruns for one value.
-            item.addProperty("symbolScope", "region:" + region
-                    + "/case:" + caseId);
-            JsonObject guard = new JsonObject();
-            guard.addProperty("kind", "PATH_CONDITION");
-            guard.add("conditions", array(summary,
-                    "pathCondition").deepCopy());
-            item.add("guard", guard);
-            item.add("outputExpressions", object(summary,
-                    "outputExpressions").deepCopy());
-            item.add("heapStateInitializers", array(summary,
-                    "heapStateInitializers").deepCopy());
-            item.add("heapObservations", array(summary,
-                    "heapObservations").deepCopy());
-            item.add("finiteMapSnapshots", array(summary,
-                    "finiteMapSnapshots").deepCopy());
-            // Occurrence-specific field symbols are scoped to this execution
-            // case.  Preserve them inside the case and never union them at the
-            // merged-summary root, where equal ids from separate JVM runs
-            // could otherwise be mistaken for one object instance.
-            item.add("dynamicFieldBindings", array(summary,
-                    "dynamicFieldBindings").deepCopy());
-            item.add("engineArrayInputBindings", array(summary,
-                    "engineArrayInputBindings").deepCopy());
-            item.add("vmIntrinsicPlaceholderBindings", array(summary,
-                    "vmIntrinsicPlaceholderBindings").deepCopy());
-            item.add("unforcedEnvironmentValidationRequirements",
-                    array(summary,
-                            "unforcedEnvironmentValidationRequirements")
-                            .deepCopy());
-            item.add("heapEffects", array(summary,
-                    "heapEffects").deepCopy());
-            item.addProperty("relationallyComplete", bool(summary,
-                    "relationallyComplete", false));
-            item.addProperty("normalExit", bool(summary,
-                    "normalExit", false));
-            item.addProperty("exceptionType", string(summary,
-                    "exceptionType"));
-            item.addProperty("sourceSummaryId", string(summary,
-                    "summaryId"));
-            item.addProperty("sourceActivationId", string(summary,
-                    "activationId"));
-            cases.add(item);
+        for (MergeInput input : values) {
+            JsonObject summary = input.summary;
+            String pathKey = input.pathKey;
+            String payload = stableCasePayload(summary);
+            String previous = payloadByPath.putIfAbsent(pathKey, payload);
+            if (previous != null) {
+                if (!previous.equals(payload)) {
+                    casesComplete = false;
+                    diagnostics.add(gap(region,
+                            "CONFLICTING_DUPLICATE_PATH_PAYLOAD:"
+                                    + pathKey));
+                }
+                continue;
+            }
+            if (input.joint()
+                    && !exactOutputExpressions(summary,
+                    input.contract.outputPorts())) {
+                casesComplete = false;
+                diagnostics.add(gap(region,
+                        "JOINT_OUTPUT_EXPRESSION_SET_MISMATCH:"
+                                + pathKey));
+                continue;
+            }
+            cases.add(pathCase(summary, region, pathKey));
             if (!bool(summary, "relationallyComplete", false)) {
                 casesComplete = false;
                 diagnostics.add(gap(region,
@@ -192,6 +174,7 @@ public final class RegionSummaryMerger {
                 "observedPathCount", 0) > 0;
         boolean pathClosed = RegionPathWorklist.State.CLOSED.name().equals(
                 pathState) && hasObservedPath && region.equals(pathRegion);
+        boolean outputScopeMatches = true;
         if (!region.equals(pathRegion)) {
             diagnostics.add(gap(region,
                     "PATH_WORKLIST_REGION_MISMATCH:" + pathRegion));
@@ -202,7 +185,26 @@ public final class RegionSummaryMerger {
             diagnostics.add(gap(region,
                     "PATH_WORKLIST_NOT_CLOSED:" + pathState));
         }
-        boolean complete = pathClosed && casesComplete && cases.size() > 0;
+        if (firstInput.contract != null) {
+            String demand = string(pathManifest, "outputDemandKey");
+            String fingerprint = string(pathManifest,
+                    "outputClosureFingerprint");
+            if (!firstInput.contract.demandKey().equals(demand)) {
+                outputScopeMatches = false;
+                diagnostics.add(gap(region,
+                        "PATH_WORKLIST_OUTPUT_DEMAND_MISMATCH:"
+                                + firstNonBlank(demand, "MISSING")));
+            }
+            if (!firstInput.contract.closureFingerprint().equals(
+                    fingerprint)) {
+                outputScopeMatches = false;
+                diagnostics.add(gap(region,
+                        "PATH_WORKLIST_OUTPUT_CLOSURE_FINGERPRINT_MISMATCH:"
+                                + firstNonBlank(fingerprint, "MISSING")));
+            }
+        }
+        boolean complete = pathClosed && outputScopeMatches
+                && casesComplete && cases.size() > 0;
         JsonObject relation = new JsonObject();
         relation.addProperty("schemaVersion", 1);
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
@@ -220,11 +222,12 @@ public final class RegionSummaryMerger {
                 "RUNTIME_CONCOLIC_MULTI_PATH_SUMMARIES");
 
         String relationHash = sha256(region + "\n"
-                + canonical(first.get("requestedOutput")) + "\n"
+                + firstInput.outputIdentity + "\n"
                 + canonical(cases));
         Set<String> sourceInstances = new TreeSet<>();
         Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
-        for (JsonObject summary : values) {
+        for (MergeInput input : values) {
+            JsonObject summary = input.summary;
             String instance = string(summary, "regionInstanceId");
             if (!instance.isEmpty()) sourceInstances.add(instance);
             for (JsonElement element : array(summary, "edgeBindings")) {
@@ -255,14 +258,162 @@ public final class RegionSummaryMerger {
         merged.add("sourceRegionInstanceIds",
                 GSON.toJsonTree(sourceInstances));
         merged.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        merged.add("requestedOutput", object(first,
-                "requestedOutput").deepCopy());
-        merged.add("requestedOutputSlice", object(first,
-                "requestedOutputSlice").deepCopy());
+        if (firstInput.contract == null) {
+            merged.add("requestedOutput", object(first,
+                    "requestedOutput").deepCopy());
+            merged.add("requestedOutputSlice", object(first,
+                    "requestedOutputSlice").deepCopy());
+        } else {
+            OutputClosureContract.Producer producer =
+                    firstInput.contract.producer();
+            merged.addProperty("regionInstanceId",
+                    producer.regionInstanceId());
+            merged.addProperty("rootCallId", producer.rootCallId());
+            OutputClosureCodec.writeTo(merged, firstInput.contract);
+        }
         merged.add("edgeBindings", mergedBindings);
         merged.add("regionRelation", relation);
         merged.addProperty("relationallyComplete", complete);
         return merged;
+    }
+
+    private static JsonObject pathCase(JsonObject summary, String region,
+                                       String pathKey) {
+        JsonObject item = new JsonObject();
+        String caseId = "CASE." + pathKey.substring(0, 16);
+        item.addProperty("caseId", caseId);
+        item.addProperty("pathKey", pathKey);
+        // Engine-local ids are recycled by every concolic JVM. Preserve a
+        // deterministic namespace per case.
+        item.addProperty("symbolScope", "region:" + region
+                + "/case:" + caseId);
+        JsonObject guard = new JsonObject();
+        guard.addProperty("kind", "PATH_CONDITION");
+        guard.add("conditions", array(summary,
+                "pathCondition").deepCopy());
+        item.add("guard", guard);
+        item.add("outputExpressions", object(summary,
+                "outputExpressions").deepCopy());
+        item.add("heapStateInitializers", array(summary,
+                "heapStateInitializers").deepCopy());
+        item.add("heapObservations", array(summary,
+                "heapObservations").deepCopy());
+        item.add("finiteMapSnapshots", array(summary,
+                "finiteMapSnapshots").deepCopy());
+        // Occurrence-specific symbols stay inside their source case and are
+        // never unioned at the merged root.
+        item.add("dynamicFieldBindings", array(summary,
+                "dynamicFieldBindings").deepCopy());
+        item.add("engineArrayInputBindings", array(summary,
+                "engineArrayInputBindings").deepCopy());
+        item.add("vmIntrinsicPlaceholderBindings", array(summary,
+                "vmIntrinsicPlaceholderBindings").deepCopy());
+        item.add("unforcedEnvironmentValidationRequirements",
+                array(summary,
+                        "unforcedEnvironmentValidationRequirements")
+                        .deepCopy());
+        item.add("heapEffects", array(summary,
+                "heapEffects").deepCopy());
+        item.addProperty("relationallyComplete", bool(summary,
+                "relationallyComplete", false));
+        item.addProperty("normalExit", bool(summary,
+                "normalExit", false));
+        item.addProperty("exceptionType", string(summary,
+                "exceptionType"));
+        item.addProperty("sourceSummaryId", string(summary,
+                "summaryId"));
+        item.addProperty("sourceActivationId", string(summary,
+                "activationId"));
+        return item;
+    }
+
+    /**
+     * stablePathKey already covers the normalized guard, outputs, heap
+     * effects, and runtime bindings. These remaining case certificates must
+     * also agree before two observations with that key may collapse.
+     */
+    private static String stableCasePayload(JsonObject summary) {
+        JsonObject stable = new JsonObject();
+        stable.add("heapStateInitializers", array(summary,
+                "heapStateInitializers").deepCopy());
+        stable.add("heapObservations", array(summary,
+                "heapObservations").deepCopy());
+        stable.add("finiteMapSnapshots", array(summary,
+                "finiteMapSnapshots").deepCopy());
+        stable.add("vmIntrinsicPlaceholderBindings", array(summary,
+                "vmIntrinsicPlaceholderBindings").deepCopy());
+        stable.add("unforcedEnvironmentValidationRequirements",
+                array(summary,
+                        "unforcedEnvironmentValidationRequirements")
+                        .deepCopy());
+        stable.addProperty("relationallyComplete", bool(summary,
+                "relationallyComplete", false));
+        stable.addProperty("normalExit", bool(summary,
+                "normalExit", false));
+        stable.addProperty("exceptionType", string(summary,
+                "exceptionType"));
+        return canonical(stable);
+    }
+
+    private static boolean exactOutputExpressions(
+            JsonObject summary, Set<String> outputPorts) {
+        JsonElement encoded = summary.get("outputExpressions");
+        return encoded != null && encoded.isJsonObject()
+                && new TreeSet<>(encoded.getAsJsonObject().keySet())
+                .equals(new TreeSet<>(outputPorts));
+    }
+
+    private static String outputIdentity(JsonObject summary) {
+        JsonElement closure = summary.get(OutputClosureContract.FIELD);
+        return closure != null
+                ? canonical(closure)
+                : canonical(summary.get("requestedOutput"));
+    }
+
+    private static final class MergeInput {
+        private final JsonObject summary;
+        private final OutputClosureContract contract;
+        private final String groupKey;
+        private final String outputIdentity;
+        private final String pathKey;
+
+        private MergeInput(JsonObject summary,
+                           OutputClosureContract contract,
+                           String groupKey, String outputIdentity) {
+            this.summary = summary;
+            this.contract = contract;
+            this.groupKey = groupKey;
+            this.outputIdentity = outputIdentity;
+            this.pathKey = RegionPathWorklist.stablePathKey(summary);
+        }
+
+        private static MergeInput from(JsonObject summary) {
+            if (summary.has(OutputClosureContract.FIELD)) {
+                OutputClosureContract contract =
+                        OutputClosureCodec.decode(summary);
+                OutputClosureContract.Producer producer =
+                        contract.producer();
+                String key = "OUTPUT_CLOSURE_V1\n"
+                        + producer.regionId() + "\n"
+                        + producer.regionInstanceId() + "\n"
+                        + producer.rootCallId() + "\n"
+                        + contract.demandKey() + "\n"
+                        + contract.closureFingerprint();
+                return new MergeInput(summary, contract, key,
+                        canonical(contract.toJson()));
+            }
+            String region = string(summary, "regionId");
+            JsonObject output = object(summary, "requestedOutput");
+            if (region.isEmpty() || output.size() == 0) return null;
+            String identity = canonical(output);
+            return new MergeInput(summary, null,
+                    "LEGACY_SINGLETON\n" + region + "\n" + identity,
+                    identity);
+        }
+
+        private boolean joint() {
+            return contract != null && contract.members().size() > 1;
+        }
     }
 
     private static JsonObject gap(String region, String reason) {

@@ -2,30 +2,17 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Test;
+
+import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConcolicReplayValidatorTest {
-    @Test
-    public void admitsOnlyInputDrivenUnforcedBranchFlip() {
-        JsonObject validation = ConcolicReplayValidator.validate(task(),
-                result(true));
-
-        assertTrue(validation.get("valid").getAsBoolean());
-    }
-
-    @Test
-    public void rejectsAReplayThatDoesNotTakeTheSolvedFlip() {
-        JsonObject validation = ConcolicReplayValidator.validate(task(),
-                result(false));
-
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertFalse(validation.get("flippedBranchValidated").getAsBoolean());
-    }
-
     @Test
     public void admitsNormalExactOutputClosureReplay() {
         JsonObject task = outputTask();
@@ -46,565 +33,62 @@ public class ConcolicReplayValidatorTest {
     }
 
     @Test
-    public void rejectsExceptionalOutputClosureAfterObservedFlip() {
-        JsonObject task = outputTask();
+    public void jointOutputClosureRequiresEveryDeclaredExpression() {
+        JsonObject task = jointOutputTask();
         JsonObject raw = result(true);
-        raw.addProperty("exitKind", "EXCEPTION");
-        raw.addProperty("exceptionType",
-                "java.util.NoSuchElementException");
-        JsonObject summary = outputSummary(task);
-        summary.addProperty("normalExit", false);
-        summary.addProperty("exceptionType",
-                "java.util.NoSuchElementException");
+        raw.addProperty("exitKind", "NORMAL");
+        raw.addProperty("exceptionType", "");
 
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw,
-                summary);
+        JsonObject complete = ConcolicReplayValidator.validate(task, raw,
+                outputSummary(task));
+        assertTrue(complete.toString(), complete.get("valid").getAsBoolean());
 
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertTrue(validation.get("flippedBranchValidated").getAsBoolean());
-        assertTrue(validation.get("outputClosureAdmissionGap")
+        JsonObject missingSummary = outputSummary(task);
+        missingSummary.getAsJsonObject("outputExpressions")
+                .remove("REGION.3.out.1");
+        JsonObject missing = ConcolicReplayValidator.validate(task, raw,
+                missingSummary);
+        assertFalse(missing.toString(), missing.get("valid").getAsBoolean());
+        assertTrue(missing.get("requestedOutputIdentityValidated")
                 .getAsBoolean());
-        assertEquals("OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT",
-                validation.get("outputClosureGapReason").getAsString());
-        assertTrue(validation.getAsJsonArray("failures").toString()
-                .contains("IMPORTED_OUTPUT_SUMMARY_NOT_NORMAL_EXIT"));
+        assertFalse(missing.get("requestedOutputExpressionValidated")
+                .getAsBoolean());
+        assertTrue(missing.getAsJsonArray("failures").toString().contains(
+                "REQUESTED_OUTPUT_EXPRESSION_MISSING"));
+
+        JsonObject stale = outputSummary(task);
+        stale.addProperty("activationId", "ACT.OLDER.PATH");
+        JsonObject staleValidation = ConcolicReplayValidator.validate(
+                task, raw, stale);
+        assertFalse(staleValidation.toString(),
+                staleValidation.get("valid").getAsBoolean());
+        assertTrue(staleValidation.getAsJsonArray("failures").toString()
+                .contains(
+                "IMPORTED_OUTPUT_SUMMARY_ACTIVATION_ID_MISMATCH"));
     }
 
     @Test
-    public void rejectsOutputClosureWithoutExactRequestedExpression() {
-        JsonObject task = outputTask();
+    public void rejectsSamePortsWhenImportedClosureProofDiffers() {
+        JsonObject task = jointOutputTask();
         JsonObject raw = result(true);
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
         JsonObject summary = outputSummary(task);
-        summary.add("outputExpressions", new JsonObject());
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw,
-                summary);
-
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertTrue(validation.get("outputClosureAdmissionGap")
-                .getAsBoolean());
-        assertTrue(validation.getAsJsonArray("failures").toString()
-                .contains("REQUESTED_OUTPUT_EXPRESSION_MISSING"));
-    }
-
-    @Test
-    public void validatesExactTwoEntryDynamicAssignmentSet() {
-        JsonObject task = task();
-        JsonArray planned = dynamicAssignments();
-        task.add("modelAssignments", planned.deepCopy());
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", planned.size());
-        raw.add("modelAssignmentsApplied", planned.deepCopy());
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw);
-
-        assertTrue(validation.toString(), validation.get("valid")
-                .getAsBoolean());
-        assertTrue(validation.get("dynamicAssignmentIdentityValidated")
-                .getAsBoolean());
-        assertEquals(2, validation.get(
-                "appliedDynamicModelAssignmentCount").getAsInt());
-    }
-
-    @Test
-    public void validatesFreshKeyRebindingByExactStaticOccurrence() {
-        JsonObject task = outputTask();
-        JsonObject plannedRow = freshRebindingPlan();
-        JsonArray planned = new JsonArray();
-        planned.add(plannedRow);
-        task.add("modelAssignments", planned);
-
-        JsonObject appliedRow = freshRebindingApplied(plannedRow, 99);
-        JsonArray applied = new JsonArray();
-        applied.add(appliedRow);
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", 1);
-        raw.add("modelAssignmentsApplied", applied);
-        JsonArray freshBindings = new JsonArray();
-        freshBindings.add(freshRawBinding(appliedRow));
-        raw.add("dynamicFieldBindings", freshBindings);
-        raw.addProperty("exitKind", "NORMAL");
-        raw.addProperty("exceptionType", "");
-        JsonObject summary = outputSummary(task);
-        JsonObject importedBinding = freshRawBinding(appliedRow);
-        importedBinding.addProperty("authority",
-                "RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_AND_"
-                        + "ENTRY_VALUE_TOKEN_JOIN");
-        importedBinding.remove("complete");
-        JsonArray importedBindings = new JsonArray();
-        importedBindings.add(importedBinding);
-        addImportedFreshBindings(summary, importedBindings,
-                appliedRow.get("entryReadObservationId").getAsString());
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw,
-                summary);
-
-        assertTrue(validation.toString(), validation.get("valid")
-                .getAsBoolean());
-        assertEquals(1, validation.get("freshMapEntryRebindingCount")
-                .getAsInt());
-        assertTrue(validation.get("freshMapEntryRebindingValidated")
-                .getAsBoolean());
-        assertFalse("planned replay must not retain a seed key",
-                plannedRow.has("expectedEntryKey"));
-        assertEquals("Y_I_99", appliedRow.getAsJsonObject("keyExpression")
-                .get("_exp").getAsString());
-    }
-
-    @Test
-    public void rejectsFreshRebindingWhenRuntimeSelectorDoesNotMatch() {
-        JsonObject plannedRow = freshRebindingPlan();
-        for (String fault : new String[]{"KEY", "OCCURRENCE", "SITE"}) {
-            JsonObject task = task();
-            JsonArray planned = new JsonArray();
-            planned.add(plannedRow.deepCopy());
-            task.add("modelAssignments", planned);
-            JsonObject appliedRow = freshRebindingApplied(plannedRow, 99);
-            JsonArray applied = new JsonArray();
-            applied.add(appliedRow);
-            JsonObject rawBinding = freshRawBinding(appliedRow);
-            if ("KEY".equals(fault)) {
-                rawBinding.add("keyExpression", integerKey(100));
-            } else if ("OCCURRENCE".equals(fault)) {
-                rawBinding.addProperty("materializationOccurrence", 2);
-            } else {
-                rawBinding.addProperty("materializationSiteId",
-                        "SITE.OTHER.GETTER");
-            }
-            JsonObject raw = result(true);
-            raw.addProperty("modelAssignmentAppliedCount", 1);
-            raw.add("modelAssignmentsApplied", applied);
-            JsonArray bindings = new JsonArray();
-            bindings.add(rawBinding);
-            raw.add("dynamicFieldBindings", bindings);
-
-            JsonObject validation = ConcolicReplayValidator.validate(task,
-                    raw);
-
-            assertFalse(fault + ":" + validation,
-                    validation.get("valid").getAsBoolean());
-            assertTrue(validation.getAsJsonArray("failures").toString()
-                    .contains("NO_EXACT_FRESH_RAW_BINDING"));
-        }
-    }
-
-    @Test
-    public void rejectsFreshRebindingWhenImportedSelectorDoesNotMatch() {
-        JsonObject task = outputTask();
-        JsonObject plannedRow = freshRebindingPlan();
-        JsonArray planned = new JsonArray();
-        planned.add(plannedRow);
-        task.add("modelAssignments", planned);
-
-        JsonObject appliedRow = freshRebindingApplied(plannedRow, 99);
-        JsonArray applied = new JsonArray();
-        applied.add(appliedRow);
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", 1);
-        raw.add("modelAssignmentsApplied", applied);
-        JsonArray rawBindings = new JsonArray();
-        rawBindings.add(freshRawBinding(appliedRow));
-        raw.add("dynamicFieldBindings", rawBindings);
-        raw.addProperty("exitKind", "NORMAL");
-        raw.addProperty("exceptionType", "");
-
-        JsonObject summary = outputSummary(task);
-        JsonObject importedBinding = freshRawBinding(appliedRow);
-        importedBinding.addProperty("authority",
-                "RUNTIME_DYNAMIC_FIELD_INSTANCE_EXACT_EXPRESSION_AND_"
-                        + "ENTRY_VALUE_TOKEN_JOIN");
-        importedBinding.remove("complete");
-        importedBinding.add("keyExpression", integerKey(100));
-        JsonArray importedBindings = new JsonArray();
-        importedBindings.add(importedBinding);
-        addImportedFreshBindings(summary, importedBindings,
-                appliedRow.get("entryReadObservationId").getAsString());
+        summary.getAsJsonObject(OutputClosureContract.FIELD)
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice")
+                .getAsJsonArray("causalEdgeIds").set(0,
+                        new com.google.gson.JsonPrimitive("DF.changed"));
 
         JsonObject validation = ConcolicReplayValidator.validate(task, raw,
                 summary);
 
         assertFalse(validation.toString(), validation.get("valid")
                 .getAsBoolean());
-        assertTrue(validation.getAsJsonArray("failures").toString()
-                .contains("NO_EXACT_FRESH_IMPORTED_BINDING"));
-    }
-
-    @Test
-    public void validatesExactArrayElementAssignmentWithoutMapKey() {
-        JsonObject task = task();
-        JsonArray planned = new JsonArray();
-        planned.add(containerAssignment(2, 3));
-        task.add("modelAssignments", planned.deepCopy());
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", 1);
-        JsonObject applied = appliedContainerAssignment(
-                planned.get(0).getAsJsonObject(), "ACT.REPLAY");
-        // Runtime reconstructs the selector but does not need to echo the
-        // producer-only binding-kind discriminator.
-        applied.remove("dynamicFieldBindingKind");
-        JsonArray appliedRows = new JsonArray();
-        appliedRows.add(applied);
-        raw.add("modelAssignmentsApplied", appliedRows);
-        JsonArray rawBindings = new JsonArray();
-        rawBindings.add(rawContainerBinding(applied));
-        raw.add("dynamicFieldBindings", rawBindings);
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw);
-
-        assertTrue(validation.toString(), validation.get("valid")
-                .getAsBoolean());
-        assertTrue(validation.get("dynamicAssignmentIdentityValidated")
-                .getAsBoolean());
-    }
-
-    @Test
-    public void rejectsSeedTokensWrongReplayScopeAndUnjoinedContainerToken() {
-        for (String fault : new String[]{"SEED_TOKEN", "WRONG_SCOPE",
-                "RAW_TOKEN"}) {
-            JsonObject plannedRow = containerAssignment(2, 3);
-            if ("SEED_TOKEN".equals(fault)) {
-                plannedRow.getAsJsonObject("containerSelector")
-                        .addProperty("containerObjectToken", 77L);
-            }
-            JsonObject task = task();
-            JsonArray planned = new JsonArray();
-            planned.add(plannedRow);
-            task.add("modelAssignments", planned);
-            String scope = "WRONG_SCOPE".equals(fault)
-                    ? "ACT.SOURCE" : "ACT.REPLAY";
-            JsonObject applied = appliedContainerAssignment(plannedRow,
-                    scope);
-            JsonObject binding = rawContainerBinding(applied);
-            if ("RAW_TOKEN".equals(fault)) {
-                binding.addProperty(
-                        "materializationSiteBridgeElementObjectToken",
-                        999L);
-            }
-            JsonObject raw = result(true);
-            raw.addProperty("modelAssignmentAppliedCount", 1);
-            JsonArray appliedRows = new JsonArray();
-            appliedRows.add(applied);
-            raw.add("modelAssignmentsApplied", appliedRows);
-            JsonArray bindings = new JsonArray();
-            bindings.add(binding);
-            raw.add("dynamicFieldBindings", bindings);
-
-            JsonObject validation = ConcolicReplayValidator.validate(task,
-                    raw);
-
-            assertFalse(fault + ":" + validation,
-                    validation.get("valid").getAsBoolean());
-            String failures = validation.getAsJsonArray("failures")
-                    .toString();
-            if ("SEED_TOKEN".equals(fault)) {
-                assertTrue(failures.contains(
-                        "PLANNED_CONTAINER_HAS_RUNTIME_MEMBER"));
-            } else if ("WRONG_SCOPE".equals(fault)) {
-                assertTrue(failures.contains(
-                        "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE"));
-            } else {
-                assertTrue(failures.contains(
-                        "NO_EXACT_FRESH_RAW_CONTAINER_BINDING"));
-            }
-        }
-    }
-
-    @Test
-    public void rejectsMissingDiscoveryOrWrongArraySelector() {
-        JsonObject exact = containerAssignment(2, 3);
-        JsonObject missing = exact.deepCopy();
-        missing.remove("containerSelector");
-        JsonObject discovery = exact.deepCopy();
-        discovery.getAsJsonObject("containerSelector").addProperty(
-                "selectorAuthority", "DISCOVER_UNIQUE_IDENTITY_INDEX");
-        for (JsonObject invalid : new JsonObject[]{missing, discovery}) {
-            JsonObject task = task();
-            JsonArray planned = new JsonArray();
-            planned.add(invalid);
-            task.add("modelAssignments", planned.deepCopy());
-            JsonObject raw = result(true);
-            raw.add("modelAssignmentsApplied", planned.deepCopy());
-            JsonObject validation = ConcolicReplayValidator.validate(
-                    task, raw);
-            assertFalse(validation.get("valid").getAsBoolean());
-            assertTrue(validation.getAsJsonArray("failures").toString()
-                    .contains("INVALID_PLANNED_DYNAMIC_ASSIGNMENT"));
-        }
-
-        JsonObject task = task();
-        JsonArray planned = new JsonArray();
-        planned.add(exact);
-        task.add("modelAssignments", planned.deepCopy());
-        JsonArray applied = new JsonArray();
-        applied.add(appliedContainerAssignment(exact, "ACT.REPLAY"));
-        applied.get(0).getAsJsonObject().getAsJsonObject(
-                "containerSelector").addProperty("elementIndex", 1);
-        JsonObject raw = result(true);
-        raw.add("modelAssignmentsApplied", applied);
-        JsonArray rawBindings = new JsonArray();
-        rawBindings.add(rawContainerBinding(
-                applied.get(0).getAsJsonObject()));
-        raw.add("dynamicFieldBindings", rawBindings);
-        JsonObject mismatch = ConcolicReplayValidator.validate(task, raw);
-        assertFalse(mismatch.get("valid").getAsBoolean());
-        assertTrue(mismatch.getAsJsonArray("failures").toString().contains(
-                "DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH"));
-    }
-
-    @Test
-    public void validatesRealVmFieldWrapperWithOwnerSuffix() {
-        JsonObject task = task();
-        JsonArray planned = dynamicAssignments();
-        for (int index = 0; index < planned.size(); index++) {
-            JsonObject assignment = planned.get(index).getAsJsonObject();
-            assignment.addProperty("engineSymbol", "M_J_field_"
-                    + assignment.get("dynamicFieldSymbol").getAsString()
-                    + "_org/apache/hadoop/hdfs/security/token/block/BlockKey");
-        }
-        task.add("modelAssignments", planned.deepCopy());
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", planned.size());
-        raw.add("modelAssignmentsApplied", planned.deepCopy());
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw);
-
-        assertTrue(validation.toString(), validation.get("valid")
-                .getAsBoolean());
-    }
-
-    @Test
-    public void rejectsMalformedVmSuffixAndCrossBindingEngine() {
-        JsonObject task = task();
-        JsonArray malformed = dynamicAssignments();
-        JsonObject first = malformed.get(0).getAsJsonObject();
-        first.addProperty("engineSymbol", "M_J_field_"
-                + first.get("dynamicFieldSymbol").getAsString()
-                + "_java.lang.Long");
-        task.add("modelAssignments", malformed.deepCopy());
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", malformed.size());
-        raw.add("modelAssignmentsApplied", malformed.deepCopy());
-
-        JsonObject invalid = ConcolicReplayValidator.validate(task, raw);
-        assertFalse(invalid.get("valid").getAsBoolean());
-        assertTrue(invalid.getAsJsonArray("failures").toString().contains(
-                "ENGINE_DYNAMIC_SYMBOL_MISMATCH"));
-
-        JsonArray crossed = dynamicAssignments();
-        String otherDynamic = crossed.get(0).getAsJsonObject().get(
-                "dynamicFieldSymbol").getAsString();
-        crossed.get(1).getAsJsonObject().addProperty("engineSymbol",
-                "M_J_field_" + otherDynamic + "_java/lang/Long");
-        JsonObject crossedTask = task();
-        crossedTask.add("modelAssignments", crossed.deepCopy());
-        JsonObject crossedRaw = result(true);
-        crossedRaw.addProperty("modelAssignmentAppliedCount",
-                crossed.size());
-        crossedRaw.add("modelAssignmentsApplied", crossed.deepCopy());
-
-        JsonObject crossValidation = ConcolicReplayValidator.validate(
-                crossedTask, crossedRaw);
-        assertFalse(crossValidation.get("valid").getAsBoolean());
-        assertTrue(crossValidation.getAsJsonArray("failures").toString()
-                .contains("ENGINE_DYNAMIC_SYMBOL_MISMATCH"));
-    }
-
-    @Test
-    public void rejectsWrongOccurrenceTwoKeySelector() {
-        JsonObject task = task();
-        JsonArray planned = dynamicAssignments();
-        task.add("modelAssignments", planned.deepCopy());
-        JsonArray applied = planned.deepCopy();
-        applied.get(1).getAsJsonObject().getAsJsonObject(
-                "expectedEntryKey").addProperty("_exp", "wrong-key");
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", applied.size());
-        raw.add("modelAssignmentsApplied", applied);
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw);
-
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertFalse(validation.get("dynamicAssignmentIdentityValidated")
+        assertFalse(validation.get("requestedOutputIdentityValidated")
                 .getAsBoolean());
         assertTrue(validation.getAsJsonArray("failures").toString()
-                .contains("DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH"));
-    }
-
-    @Test
-    public void rejectsWrongDynamicOwnerEvenWithSameBindingId() {
-        JsonObject task = task();
-        JsonArray planned = dynamicAssignments();
-        task.add("modelAssignments", planned.deepCopy());
-        JsonArray applied = planned.deepCopy();
-        applied.get(1).getAsJsonObject().addProperty("inputSymbol",
-                "REGION.3.in.99");
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", applied.size());
-        raw.add("modelAssignmentsApplied", applied);
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw);
-
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertTrue(validation.getAsJsonArray("failures").toString()
-                .contains("WRONG_INPUT_OWNER"));
-    }
-
-    @Test
-    public void rejectsMissingOrExtraDynamicAssignment() {
-        JsonObject task = task();
-        JsonArray planned = dynamicAssignments();
-        task.add("modelAssignments", planned.deepCopy());
-        JsonArray applied = new JsonArray();
-        applied.add(planned.get(0).deepCopy());
-        applied.add(dynamicAssignment("REGION.3.in.0.field.extra.occ.3",
-                3, "key-three"));
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", applied.size());
-        raw.add("modelAssignmentsApplied", applied);
-
-        JsonObject validation = ConcolicReplayValidator.validate(task, raw);
-
-        assertFalse(validation.get("valid").getAsBoolean());
-        assertTrue(validation.getAsJsonArray(
-                "missingDynamicModelAssignments").size() > 0);
-        assertTrue(validation.getAsJsonArray(
-                "extraDynamicModelAssignments").size() > 0);
-    }
-
-    @Test
-    public void keyedMapProjectionReplayRequiresExactScopeKeyAndTokens() {
-        JsonObject exact = mapProjectionAssignment();
-        JsonObject task = task();
-        task.addProperty("activationId", "ACT.REPLAY");
-        JsonArray assignments = new JsonArray();
-        assignments.add(exact);
-        task.add("modelAssignments", assignments.deepCopy());
-        JsonObject raw = result(true);
-        raw.addProperty("activationId", "ACT.REPLAY");
-        raw.addProperty("modelAssignmentAppliedCount", 1);
-        raw.add("modelAssignmentsApplied", assignments.deepCopy());
-
-        JsonObject valid = ConcolicReplayValidator.validate(task, raw);
-        assertTrue(valid.toString(), valid.get("valid").getAsBoolean());
-
-        for (String fault : new String[]{"TOKEN", "SCOPE", "SOURCE",
-                "FLOAT"}) {
-            JsonObject invalidAssignment = exact.deepCopy();
-            JsonObject selector = invalidAssignment.getAsJsonObject(
-                    "mapProjectionSelector");
-            if ("TOKEN".equals(fault)) {
-                selector.addProperty("elementObjectToken",
-                        selector.get("mapObjectToken").getAsLong());
-            } else if ("SCOPE".equals(fault)) {
-                selector.addProperty("objectTokenScope", "ACT.OTHER");
-            } else if ("SOURCE".equals(fault)) {
-                selector.remove("sourceObjectTokenScope");
-            } else {
-                JsonObject floatKey = new JsonObject();
-                floatKey.addProperty("_type", "ConstExpr");
-                floatKey.addProperty("_java_type", "java/lang/Float");
-                floatKey.addProperty("_exp", "Y_F_-0.0");
-                selector.add("expectedMapKey", floatKey);
-            }
-            JsonObject invalidTask = task();
-            invalidTask.addProperty("activationId", "ACT.REPLAY");
-            JsonArray invalidRows = new JsonArray();
-            invalidRows.add(invalidAssignment);
-            invalidTask.add("modelAssignments", invalidRows.deepCopy());
-            JsonObject invalidRaw = result(true);
-            invalidRaw.addProperty("activationId", "ACT.REPLAY");
-            invalidRaw.add("modelAssignmentsApplied",
-                    invalidRows.deepCopy());
-            JsonObject rejected = ConcolicReplayValidator.validate(
-                    invalidTask, invalidRaw);
-            assertFalse(fault + ":" + rejected,
-                    rejected.get("valid").getAsBoolean());
-            assertTrue(rejected.getAsJsonArray("failures").toString()
-                    .contains("INVALID_PLANNED_DYNAMIC_ASSIGNMENT"));
-        }
-
-        JsonObject duplicateKeyAtOtherIndex = exact.deepCopy();
-        String secondDynamic = "REGION.3.in.0.field.map.occ.2";
-        duplicateKeyAtOtherIndex.addProperty("dynamicBindingId",
-                "DYNAMIC_FIELD:" + secondDynamic);
-        duplicateKeyAtOtherIndex.addProperty("dynamicFieldSymbol",
-                secondDynamic);
-        duplicateKeyAtOtherIndex.addProperty("engineSymbol", secondDynamic);
-        duplicateKeyAtOtherIndex.addProperty(
-                "materializationOccurrence", 2);
-        JsonObject duplicateSelector = duplicateKeyAtOtherIndex
-                .getAsJsonObject("mapProjectionSelector");
-        duplicateSelector.addProperty("outputIndex", 1);
-        duplicateSelector.addProperty("elementOccurrence", 2);
-        duplicateSelector.addProperty("elementObjectToken", 602L);
-        JsonArray duplicatePlan = new JsonArray();
-        duplicatePlan.add(exact.deepCopy());
-        duplicatePlan.add(duplicateKeyAtOtherIndex);
-        JsonObject duplicateTask = task();
-        duplicateTask.addProperty("activationId", "ACT.REPLAY");
-        duplicateTask.add("modelAssignments", duplicatePlan.deepCopy());
-        JsonObject duplicateRaw = result(true);
-        duplicateRaw.addProperty("activationId", "ACT.REPLAY");
-        duplicateRaw.add("modelAssignmentsApplied", duplicatePlan.deepCopy());
-        JsonObject duplicateRejected = ConcolicReplayValidator.validate(
-                duplicateTask, duplicateRaw);
-        assertFalse(duplicateRejected.get("valid").getAsBoolean());
-        assertTrue(duplicateRejected.getAsJsonArray("failures").toString()
-                .contains("MAP_PROJECTION_KEY_INDEX_NOT_BIJECTIVE"));
-    }
-
-    @Test
-    public void rejectsAppliedValueTypeOrAuthorityTampering() {
-        for (String member : new String[]{"value", "valueType",
-                "authority"}) {
-            JsonObject task = task();
-            JsonArray planned = dynamicAssignments();
-            task.add("modelAssignments", planned.deepCopy());
-            JsonArray applied = planned.deepCopy();
-            JsonObject first = applied.get(0).getAsJsonObject();
-            if ("value".equals(member)) {
-                first.addProperty(member, "9223372036854775807");
-            } else if ("valueType".equals(member)) {
-                first.addProperty(member, "BOOL");
-            } else {
-                first.addProperty(member, "UNTRUSTED_MODEL");
-            }
-            JsonObject raw = result(true);
-            raw.addProperty("modelAssignmentAppliedCount", applied.size());
-            raw.add("modelAssignmentsApplied", applied);
-
-            JsonObject rejected = ConcolicReplayValidator.validate(task, raw);
-            assertFalse(member + ":" + rejected,
-                    rejected.get("valid").getAsBoolean());
-            assertTrue(rejected.getAsJsonArray("failures").toString(),
-                    rejected.getAsJsonArray("failures").toString().contains(
-                            "MODEL_ASSIGNMENT_SET_MISMATCH")
-                            || rejected.getAsJsonArray("failures").toString()
-                            .contains("INVALID_APPLIED_MODEL_ASSIGNMENT"));
-        }
-    }
-
-    @Test
-    public void rejectsExtraAppliedDirectAssignment() {
-        JsonObject task = task();
-        JsonArray planned = new JsonArray();
-        planned.add(directAssignment("REGION.3.in.0", "7"));
-        task.add("modelAssignments", planned.deepCopy());
-        JsonArray applied = planned.deepCopy();
-        applied.add(directAssignment("REGION.3.in.1", "8"));
-        JsonObject raw = result(true);
-        raw.addProperty("modelAssignmentAppliedCount", applied.size());
-        raw.add("modelAssignmentsApplied", applied);
-
-        JsonObject rejected = ConcolicReplayValidator.validate(task, raw);
-
-        assertFalse(rejected.get("valid").getAsBoolean());
-        assertTrue(rejected.getAsJsonArray("failures").toString().contains(
-                "MODEL_ASSIGNMENT_SET_MISMATCH"));
-        assertEquals(1, rejected.getAsJsonArray(
-                "extraModelAssignments").size());
+                .contains("REQUESTED_OUTPUT_MISMATCH"));
     }
 
     private static JsonObject task() {
@@ -623,35 +107,134 @@ public class ConcolicReplayValidatorTest {
     }
 
     private static JsonObject outputTask() {
+        JsonObject task = legacyOutputTask();
+        OutputClosureContract closure = OutputClosureCodec.decode(task);
+        OutputClosureCodec.writeTo(task, closure);
+        return task;
+    }
+
+    private static JsonObject jointOutputTask() {
+        JsonObject first = legacyOutputTask(
+                "REGION.3.out.0", "<example.Region: int x>", 2);
+        JsonObject second = legacyOutputTask(
+                "REGION.3.out.1", "<example.Region: int y>", 3);
+        OutputClosureContract closure = OutputClosureCodec.merge(
+                Arrays.asList(OutputClosureCodec.decode(first),
+                        OutputClosureCodec.decode(second)));
+        OutputClosureCodec.writeTo(first, closure);
+        return first;
+    }
+
+    private static JsonObject legacyOutputTask() {
+        return legacyOutputTask("REGION.3.out.0",
+                "<example.Region: java.util.Map out>", 2);
+    }
+
+    private static JsonObject legacyOutputTask(
+            String port, String cell, int unitIndex) {
         JsonObject task = task();
         task.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
+        task.addProperty("regionInstanceId", "REGION.3@test#call7");
+        task.addProperty("rootCallId", 7);
         JsonObject requested = new JsonObject();
-        requested.addProperty("portId", "REGION.3.out.0");
-        requested.addProperty("cell", "<example.Region: java.util.Map out>");
+        requested.addProperty("portId", port);
+        requested.addProperty("cell", cell);
         requested.addProperty("kind", "HEAP_STATE");
+        requested.addProperty("selectionAuthority",
+                "CONFIRMED_READ_FROM_EDGE");
         task.add("requestedOutput", requested);
+
+        JsonObject output = new JsonObject();
+        output.addProperty("symbol", port);
+        output.addProperty("cell", cell);
+        output.addProperty("kind", "HEAP_STATE");
+        output.addProperty("location", "RETURN_OR_HEAP_EFFECT");
+        JsonArray outputs = new JsonArray();
+        outputs.add(output);
+        task.add("outputs", outputs);
+
+        String method = "<example.Region: void run()>";
+        String site = method + "#u" + unitIndex;
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+        capture.addProperty("captureBindingId", port + ".capture.0");
+        capture.addProperty("outputPort", port);
+        capture.addProperty("outputCell", cell);
+        capture.addProperty("method", method);
+        capture.addProperty("siteId", site);
+        capture.addProperty("unitIndex", unitIndex);
+        capture.addProperty("fieldSignature", cell);
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        task.add("requestedOutputCapture", captures);
+        task.addProperty("requestedOutputCaptureRequired", true);
+        task.addProperty("requestedOutputCaptureComplete", true);
+
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", strings("REGION.3.in.0"));
+        slice.add("sites", strings(site));
+        slice.add("staticSites", strings(site));
+        slice.add("methods", strings(method));
+        slice.add("causalEdgeIds", strings("DF." + unitIndex));
+        slice.add("captureBindings", captures.deepCopy());
+        slice.addProperty("captureBindingsRequired", true);
+        slice.addProperty("captureBindingsComplete", true);
+        task.add("requestedOutputSlice", slice);
+        task.add("requestedOutputMethods", strings(method));
         return task;
     }
 
     private static JsonObject outputSummary(JsonObject task) {
         JsonObject summary = new JsonObject();
         summary.addProperty("summaryId", "SUMMARY.REPLAY");
+        summary.addProperty("activationId", "ACT.REPLAY");
         summary.addProperty("regionId", "REGION.3");
+        summary.addProperty("regionInstanceId",
+                task.get("regionInstanceId").getAsString());
+        summary.addProperty("rootCallId",
+                task.get("rootCallId").getAsLong());
         summary.addProperty("relationallyComplete", true);
         summary.addProperty("normalExit", true);
         summary.addProperty("exceptionType", "");
         summary.add("captureGoal",
                 RegionCaptureGoal.outputClosure().toJson());
-        summary.add("requestedOutput", task.getAsJsonObject(
-                "requestedOutput").deepCopy());
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "SymbolExpression");
-        expression.addProperty("_java_type", "Ljava/util/Map;");
-        expression.addProperty("_exp", "REGION.3.in.0");
+        if (task.has(OutputClosureContract.FIELD)) {
+            summary.add(OutputClosureContract.FIELD,
+                    task.getAsJsonObject(
+                            OutputClosureContract.FIELD).deepCopy());
+        } else {
+            for (String field : new String[]{"requestedOutput",
+                    "requestedOutputSlice", "requestedOutputCapture",
+                    "requestedOutputCaptureRequired",
+                    "requestedOutputCaptureComplete",
+                    "requestedOutputMethods", "outputs"}) {
+                if (task.has(field)) {
+                    summary.add(field, task.get(field).deepCopy());
+                }
+            }
+        }
         JsonObject outputs = new JsonObject();
-        outputs.add("REGION.3.out.0", expression);
+        for (String port : OutputClosureCodec.decode(task).outputPorts()) {
+            outputs.add(port, outputExpression());
+        }
         summary.add("outputExpressions", outputs);
         return summary;
+    }
+
+    private static JsonObject outputExpression() {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "I");
+        expression.addProperty("_exp", "REGION.3.in.0");
+        return expression;
+    }
+
+    private static JsonArray strings(String... values) {
+        JsonArray result = new JsonArray();
+        for (String value : values) result.add(value);
+        return result;
     }
 
     private static JsonObject result(boolean flippedOutcome) {

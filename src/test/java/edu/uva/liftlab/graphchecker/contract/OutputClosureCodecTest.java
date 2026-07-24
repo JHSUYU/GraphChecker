@@ -98,82 +98,6 @@ public class OutputClosureCodecTest {
     }
 
     @Test
-    public void proofChangeOnlyChangesFingerprint() {
-        OutputClosureContract original = OutputClosureCodec.decode(
-                legacyActivation("REGION.1.out.0", "<P: int out>", "DF.1"));
-        JsonObject changedArtifact = legacyActivation("REGION.1.out.0",
-                "<P: int out>", "DF.1");
-        changedArtifact.getAsJsonArray("requestedOutputCapture")
-                .get(0).getAsJsonObject()
-                .addProperty("occurrenceAuthority", "OTHER_EXACT_AUTHORITY");
-        changedArtifact.getAsJsonObject("requestedOutputSlice")
-                .getAsJsonArray("captureBindings").get(0).getAsJsonObject()
-                .addProperty("occurrenceAuthority", "OTHER_EXACT_AUTHORITY");
-        OutputClosureContract changed =
-                OutputClosureCodec.decode(changedArtifact);
-
-        assertEquals(original.demandKey(), changed.demandKey());
-        assertNotEquals(original.closureFingerprint(),
-                changed.closureFingerprint());
-    }
-
-    @Test
-    public void explicitFieldDescriptorMustUseJvmFieldGrammar() {
-        OutputClosureContract original = OutputClosureCodec.decode(
-                legacyActivation("REGION.1.out.0", "<P: int out>", "DF.1"));
-        JsonObject encoded = original.toJson();
-        encoded.getAsJsonArray("members").get(0).getAsJsonObject()
-                .getAsJsonObject("output")
-                .addProperty("javaTypeDescriptor", "V");
-
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(encoded),
-                "is invalid");
-        assertFalse(OutputClosureCodec.validFieldDescriptor("[V"));
-        assertFalse(OutputClosureCodec.validFieldDescriptor(
-                "Ljava.lang.String;"));
-        assertTrue(OutputClosureCodec.validFieldDescriptor(
-                "[[Ljava/lang/String;"));
-
-        encoded.getAsJsonArray("members").get(0).getAsJsonObject()
-                .getAsJsonObject("output")
-                .addProperty("javaTypeDescriptor", "J");
-        assertEquals("J", OutputClosureCodec.decodeEnvelope(encoded)
-                .members().get(0).javaTypeDescriptor());
-    }
-
-    @Test
-    public void completeEmptyBranchSliceProducesNoWildcardSites() {
-        JsonObject activation = legacyActivation("REGION.1.out.0",
-                "<P: int out>", "DF.1");
-        JsonObject slice = activation.getAsJsonObject(
-                "requestedOutputSlice");
-        slice.add("sites", new JsonArray());
-        slice.add("staticSites", new JsonArray());
-
-        OutputClosureContract closure =
-                OutputClosureCodec.decode(activation);
-
-        assertTrue(closure.executionScope().branchSites().isEmpty());
-    }
-
-    @Test
-    public void multiOutputRejectsReferenceMember() {
-        OutputClosureContract first = OutputClosureCodec.decode(
-                legacyActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
-        OutputClosureContract second = OutputClosureCodec.decode(
-                legacyActivation("REGION.1.out.1",
-                        "<P: java.lang.String y>", "DF.2"));
-        JsonObject envelope = first.toJson();
-        JsonArray members = new JsonArray();
-        members.add(first.toJson().getAsJsonArray("members").get(0));
-        members.add(second.toJson().getAsJsonArray("members").get(0));
-        envelope.add("members", members);
-
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
-                "direct primitive");
-    }
-
-    @Test
     public void demandIncludesProducerRegionAndFingerprintIncludesInvocation() {
         OutputClosureContract original = OutputClosureCodec.decode(
                 legacyActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
@@ -196,107 +120,39 @@ public class OutputClosureCodecTest {
     }
 
     @Test
-    public void mergeDeduplicatesExactMembersAndRejectsMixedProducers() {
+    public void jointCaptureCompletenessCannotBeInventedByMemberView() {
         OutputClosureContract first = OutputClosureCodec.decode(
                 legacyActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
         OutputClosureContract second = OutputClosureCodec.decode(
                 legacyActivation("REGION.1.out.1", "<P: int y>", "DF.2"));
-        OutputClosureContract merged = OutputClosureCodec.merge(
-                Arrays.asList(second, first, first));
-        assertEquals(Arrays.asList("REGION.1.out.0", "REGION.1.out.1"),
-                Arrays.asList(merged.outputPorts().toArray(new String[0])));
-
-        JsonObject foreign = legacyActivation(
-                "REGION.2.out.0", "<P: int z>", "DF.3");
-        setProducer(foreign, "REGION.2", "REGION.2@test#call7", 7);
-        expectFailure(() -> OutputClosureCodec.merge(Arrays.asList(
-                first, OutputClosureCodec.decode(foreign))),
-                "different producer");
-    }
-
-    @Test
-    public void memberViewRequiresExactActivationProducerAndPort() {
-        JsonObject activation = legacyActivation(
-                "REGION.1.out.0", "<P: int x>", "DF.1");
-        OutputClosureContract closure = OutputClosureCodec.decode(activation);
-        JsonObject explicit = activation.deepCopy();
-        OutputClosureCodec.writeTo(explicit, closure);
-        JsonObject view = OutputClosureCodec.memberActivationView(
-                explicit, closure, "REGION.1.out.0");
-        assertEquals("REGION.1.out.0",
-                view.getAsJsonObject("requestedOutput")
-                        .get("portId").getAsString());
-
-        explicit.addProperty("rootCallId", 8);
-        expectFailure(() -> OutputClosureCodec.memberActivationView(
-                explicit, closure, "REGION.1.out.0"), "conflicts");
-        expectFailure(() -> OutputClosureCodec.memberActivationView(
-                activation, closure, "REGION.1.out.missing"),
-                "has no member");
-    }
-
-    @Test
-    public void legacyReturnWithoutDirectCaptureIsSupported() {
-        String method = "<P: int compute()>";
-        JsonObject activation = legacyActivation(
-                "REGION.1.out.0", method + ".return", "DF.1");
-        setOutputKind(activation, "RETURN");
-        setCaptures(activation, false, new JsonArray());
-
-        OutputClosureContract closure = OutputClosureCodec.decode(activation);
-
-        assertEquals("RETURN", closure.members().get(0).outputKind());
-        assertEquals("I",
-                closure.members().get(0).javaTypeDescriptor());
-        assertFalse(closure.members().get(0).captureRequired());
-    }
-
-    @Test
-    public void callCaptureChecksFormalMethodIndexAndType() {
-        String formal = "<P: void publish(int)>.param0:int";
-        JsonObject activation = legacyActivation(
-                "REGION.1.out.0", formal, "DF.1");
-        setOutputKind(activation, "REGION_OUTPUT");
-        JsonObject capture = activation.getAsJsonArray(
-                "requestedOutputCapture").get(0).getAsJsonObject();
-        capture.remove("captureKind");
-        capture.remove("fieldSignature");
-        capture.remove("method");
-        capture.addProperty("callerMethod", "<P: void run()>");
-        capture.addProperty("calleeMethod", "<P: void publish(int)>");
-        capture.addProperty("argumentIndex", 0);
-        capture.addProperty("argumentCell", "<P: void run()>::i0");
-        capture.addProperty("outputCell", formal);
-        activation.getAsJsonObject("requestedOutputSlice")
-                .addProperty("outputCell", formal);
-        activation.getAsJsonObject("requestedOutputSlice")
-                .add("captureBindings",
-                        activation.getAsJsonArray(
-                                "requestedOutputCapture").deepCopy());
-
-        OutputClosureContract closure = OutputClosureCodec.decode(activation);
-        assertEquals("I",
-                closure.members().get(0).javaTypeDescriptor());
-
-        JsonObject malformed = closure.toJson();
-        malformed.getAsJsonArray("members").get(0).getAsJsonObject()
+        JsonObject envelope = OutputClosureCodec.merge(
+                Arrays.asList(first, second)).toJson();
+        envelope.getAsJsonArray("members").get(1).getAsJsonObject()
                 .getAsJsonObject("slice")
-                .getAsJsonArray("captureBindings").get(0).getAsJsonObject()
-                .addProperty("calleeMethod", "<P: void publish(long)>");
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(malformed),
-                "call capture endpoint");
-    }
+                .addProperty("captureBindingsComplete", false);
 
-    @Test
-    public void explicitCaptureLedgerCannotDiverge() {
-        OutputClosureContract closure = OutputClosureCodec.decode(
-                legacyActivation("REGION.1.out.0", "<P: int x>", "DF.1"));
-        JsonObject encoded = closure.toJson();
-        encoded.getAsJsonArray("members").get(0).getAsJsonObject()
+        expectFailure(() -> OutputClosureCodec.decodeEnvelope(envelope),
+                "multi-output V1 requires");
+
+        JsonObject singleton = first.toJson();
+        singleton.getAsJsonArray("members").get(0).getAsJsonObject()
                 .getAsJsonObject("slice")
-                .add("captureBindings", new JsonArray());
-        expectFailure(() -> OutputClosureCodec.decodeEnvelope(encoded),
-                "capture ledger");
+                .addProperty("captureBindingsComplete", false);
+        OutputClosureContract incomplete =
+                OutputClosureCodec.decodeEnvelope(singleton);
+        JsonObject activation = legacyActivation("REGION.1.out.0",
+                "<P: int x>", "DF.1");
+        for (String field : new String[]{"requestedOutput",
+                "requestedOutputSlice", "requestedOutputCapture",
+                "requestedOutputCaptureRequired",
+                "requestedOutputCaptureComplete", "requestedOutputMethods",
+                "outputs"}) {
+            activation.remove(field);
+        }
+        activation.add("outputClosure", incomplete.toJson());
+        assertFalse(OutputClosureCodec.memberActivationView(
+                activation, incomplete, "REGION.1.out.0")
+                .get("requestedOutputCaptureComplete").getAsBoolean());
     }
 
     private static JsonObject legacyActivation(

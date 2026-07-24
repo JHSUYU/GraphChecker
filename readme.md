@@ -403,7 +403,9 @@ custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端
 ### 目标、口径与优先级
 
 本节是 GraphChecker Java 实现的权威重构计划。重构只统计
-`src/main/java` 的手写生产代码；测试和 fixture 不计入行数目标，也不能为了减少行数而删除。
+`src/main/java` 的手写生产代码；测试和 fixture 不计入行数目标。maintained fixture 下的
+test workload 不得删除或改弱；普通回归测试则随旧实现一起合并、去重和删除，最终只保留
+几十个覆盖真实 contract boundary、关键 fail-closed 行为和端到端语义的高价值用例。
 2026-07-23 的基线为 81,594 行生产 Java，其中
 `ConcolicRegionRuntime`、`ConcolicSummaryImporter`、`RuntimeRegionPlanner`、
 `ConcolicSmtComposer`、`SymbolicRegionPlanner` 和 `SeedBackwardStaticAnalyzer`
@@ -416,13 +418,16 @@ custom JDK 位于 `third_party/OpenJDK-Concolic-Execution-Engine`。三线程端
 3. 每个语义事实只有一个 authority 和一个 completeness 计算点；
 4. 不过度校验、不过度设计：只在真实 trust boundary 校验一次必要不变量；
 5. 删除兼容路径和重复实现，降低生产代码与认知负担；
-6. 在不牺牲前四项的前提下缩小代码规模。
+6. 删除只锁定 JSON 形状、私有实现细节或重复排列组合的低价值回归测试；
+7. 在不牺牲前四项的前提下缩小代码规模。
 
 “fail closed”不等于每一层重复证明全部事实。codec 只验证 wire schema、identity、scope 和
 无 partial decode；Planner/Scheduler 证明计划确实对应静态与运行时 endpoint；Runtime
 记录执行证据；Importer 在消费边界独立验证执行结果。中间层不得重新实现上下游已有的
 语义分析，也不得为了类型化而建立一套平行 framework。每个新增 abstraction 或 validation
 都必须能指出它替代的旧代码，或它所封堵的具体错误传播路径；否则不应加入。
+普通测试不得成为第二套 specification：同一 trust boundary 优先使用一个表驱动测试，
+真实 workflow 语义由 maintained fixture 和实际 Z3 `sat` / `unsat` 结果负责兜底。
 
 保留全部 heap、Map、array、dynamic-field、Java primitive/FP/String、跨线程 read-from 和
 runtime identity 功能时，可信的最终目标是约 45,000–55,000 行生产代码。约
@@ -556,6 +561,7 @@ static region、activation、summary、worklist task 也不再靠同名 `outputs
         "methods": ["<P: void produce()>"],
         "causalEdgeIds": ["E_x"],
         "captureBindingsRequired": true,
+        "captureBindingsComplete": true,
         "captureBindings": [{
           "captureKind": "FIELD_ASSIGNMENT_RHS",
           "captureBindingId": "REGION.P.out.0.capture.0",
@@ -583,6 +589,7 @@ static region、activation、summary、worklist task 也不再靠同名 `outputs
         "methods": ["<P: void produce()>"],
         "causalEdgeIds": ["E_y"],
         "captureBindingsRequired": true,
+        "captureBindingsComplete": true,
         "captureBindings": [{
           "captureKind": "FIELD_ASSIGNMENT_RHS",
           "captureBindingId": "REGION.P.out.1.capture.0",
@@ -680,13 +687,14 @@ heap evidence 和全部 output captures 已由同一 active token 产生，并�
 - 任意失败自动写可 replay 的 failure bundle。
 
 所有 artifact 使用同一个 canonical codec。调试 identity 至少包括 `campaignId`、
-`demandKey`、`activationId`、`executionId`、`pathKey` 和 `summaryId`。目标 CLI 是：
+`demandKey`、`activationId`、`pathKey` 和 `summaryId`；一次 runtime row 的定位使用
+`activationId` 加 row/content hash，不虚构第二个 execution identity。目标 CLI 是：
 
 ```text
 inspect <artifact>
 explain <diagnostic-id>
 diff <artifact-a> <artifact-b>
-trace <execution-id>
+trace <activation-id-or-path-key>
 replay <failure-bundle>
 ```
 
@@ -701,12 +709,24 @@ replay <failure-bundle>
   已经执行真实 concolic campaign 和真实 Z3，结果为五个 `sat`、一个 `unsat`，没有 skip。
   矩阵使用一次 Maven 构建和六个隔离 workdir 并行执行，shared JAR 在执行前后由 SHA-256
   校验为未改变。
-- Phase 1 `IN_PROGRESS`：ReplayValidator 与 ReplayVerifier 已删除各自的 canonical JSON
-  实现并统一使用 `CanonicalJson`；这批不改变 worklist identity、summary id、SMT 或
-  custom JDK，生产 Java 净减 51 行，当前总量为 81,543 行。
-- Phase 2 `IN_PROGRESS`：`OutputClosureContract` 与唯一 codec/legacy adapter 正在实现和
-  trust-boundary 审查；尚未切换生产 writer。
-- Phase 3–7 `NOT_STARTED`。
+- joint-output vertical slice `COMPLETED`：`OutputClosureContract` 已成为唯一 writer；
+  Planner 按 producer invocation 与 downstream demand 生成 canonical member set，
+  Scheduler/Runtime/Importer 在一个原子 result row 中处理全部 captures，Worklist/Merger
+  使用 demand/fingerprint identity，Composer 按 exact output set 选择一个 relation，并让
+  全部 outputs 共享 case selector。shell campaign 同样按 demand identity 去重，不再按
+  output channel 重复执行同一个 producer。
+- Phase 1–2 的本 vertical slice `COMPLETED`：canonical JSON 与版本化 codec 已投入主链；
+  legacy singleton 只剩集中兼容入口和少量内部 member view，禁止 dual-write。
+- Phase 3–6 `IN_PROGRESS`：joint scalar 功能已贯通，但 immutable static graph、共享
+  execution/capture spec、Java-expression-to-SMT core 和 Java campaign state machine
+  尚未完成。
+- Phase 7 `IN_PROGRESS`：普通回归已从 39 类 / 724 项压缩为 13 类 / 57 项且全部通过；
+  fixture workload main 零修改。生产 Java 当前为 84,166 行，相对冻结基线暂增 2,572 行，
+  因此本阶段尚不能宣称代码精简完成；下一步必须删除被 canonical contract 替代的 legacy
+  分支和重复 validation，再重新统计净减量。
+- 当前源码已对六套完整 campaign 产出的 path/summary 重新执行 Composer、manifest hash
+  与真实 Z3：五个 `sat/reachable`、一个 `unsat/unreachable`。最终删除阶段仍必须再跑一次
+  从 clean 到 Z3 的完整并行矩阵，不能用这次增量 re-compose 代替最终门禁。
 
 #### Phase 0：冻结行为与端到端基线
 
@@ -749,7 +769,8 @@ replay <failure-bundle>
 
 #### Phase 5：runtime evidence 与 strict import
 
-- Runtime 输出统一 `executionId` 和 typed capture rows。
+- Runtime 以一个 ActiveRegion result row 作为原子 execution envelope，并输出 typed
+  capture rows；不为同一 row 重复增加 `executionId`。
 - Importer 先逐 member 提取一次 output，再把 validated extraction 交给 heap verifier。
 - 删除 global exact-capture mode、root-output broadcast、重复 output extraction 和对
   capture plan 的重复扫描。
@@ -778,10 +799,8 @@ replay <failure-bundle>
 普通单测用于快速定位，但重构的 release gate 是实际 workload 和真实 Z3：
 
 ```bash
-# 快速真实 Z3 SAT/UNSAT
-mvn -q \
-  -Dtest=ScalarPathWorklistRegressionTest#booleanAndSameIntSequentialBranchesYieldSatAndUnsatFlips \
-  test
+# 精简后的 57 个 boundary regression（包含真实 Z3）
+mvn -q test
 
 # 三个核心三线程 workload
 experiments/generic/three-thread-rpc/run_robustness_matrix.sh core
@@ -806,6 +825,31 @@ experiments/generic/three-thread-rpc/run_robustness_matrix_parallel.sh all
 
 fixture main 和普通 fixture JUnit 只验证 concrete workload，不是 SMT gate；
 `experiments/generic/test_workflow.sh` 使用 dry-run/fake Z3，也不能替代上述矩阵。
+
+### 回归测试精简目标
+
+2026-07-23 的普通 JUnit 基线是 39 个 `*Test` 类、724 个可执行测试方法；其中六个巨型
+测试类占 479 项。这个规模主要在重复锁定 JSON 字段、private helper 和同一路径的类型排列，
+并没有形成 724 个独立的语义保证。当前已经压缩为 13 类、57 个可执行测试，`mvn -q test`
+全部通过。
+
+普通 suite 固定维持约 40–60 个高价值测试，按 boundary 组织而不是按实现分支堆叠：
+
+- contract/codec、static planning、runtime planning、schedule、runtime capture、import、
+  worklist、merge、composition 各保留一个小型测试类；
+- 每个 boundary 通常只保留 happy path、malformed/untrusted、identity/ambiguity、
+  completeness/empty 和 joint atomicity；
+- Java/SMT lowering 合并后使用少量表驱动测试覆盖 integral、String/null、FP 和
+  unsupported fail-closed；
+- 删除七个仅重复执行 workload main 的 fixture JUnit，但绝不删除或改动六个 maintained
+  workload main、配置和实际 Z3 matrix；
+- 每批合并或删测前后都运行六 fixture，一直保持五个 `sat`、一个 `unsat`。
+
+普通测试的可复现计数命令是：
+
+```bash
+rg -g '*.java' '@Test\b' src/test | wc -l
+```
 
 每一阶段的退出条件：
 

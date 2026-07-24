@@ -109,6 +109,34 @@ validate_artifact_binding() {
     || die "${field} size does not match ${expected}"
 }
 
+output_closure_helpers='
+def output_members:
+  if has("outputClosure") then
+    if (.outputClosure | type) == "object"
+      and .outputClosure.schemaVersion == 1
+      and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
+      and (.outputClosure.members | type) == "array"
+      and (.outputClosure.members | length) > 0
+      and all(.outputClosure.members[];
+        (type == "object")
+        and (.output | type) == "object"
+        and (.slice | type) == "object")
+    then .outputClosure.members
+    else error("malformed explicit outputClosure")
+    end
+  elif (.requestedOutput | type) == "object"
+    and (.requestedOutputSlice | type) == "object"
+  then [{output: .requestedOutput, slice: .requestedOutputSlice}]
+  else error("missing output closure")
+  end;
+def singleton_output_member:
+  output_members as $members
+  | if ($members | length) == 1
+    then $members[0]
+    else error("expected singleton output closure")
+    end;
+'
+
 validate_composition_common() {
   local manifest=$1
   jq -e '
@@ -170,7 +198,8 @@ validate_multitype_producer_artifacts() {
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
 
@@ -247,20 +276,23 @@ validate_dependent_scalar_artifacts() {
   # roots converging on one TARGET_BRANCH instance.  Region numbers and event
   # sequence values are intentionally not pinned.
   jq -e -s --arg arithmetic "${arithmetic_cell}" \
-    --arg text "${text_cell}" '
+    --arg text "${text_cell}" "${output_closure_helpers}"'
     [.[] | select(
       .captureGoal.kind == "OUTPUT_CLOSURE"
       and .captureGoal.scope == "BOUNDED_OUTPUT_RELEVANT_PATHS"
       and .replayable == true
-      and .symbolicReady == true
-      and (.requestedOutput.cell == $arithmetic
-        or .requestedOutput.cell == $text))] as $producers
+      and .symbolicReady == true)
+      | select(
+        ([output_members | .[].output.cell] | index($arithmetic)) != null
+        or ([output_members | .[].output.cell] | index($text)) != null)
+    ] as $producers
     | ([$producers[].edgeBindings[]?
         | select(.relation == "READ_FROM"
           and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
           and .fromOutputCell == .toInputCell)] as $edges
       | ($producers | length) == 2
-      and ([$producers[].requestedOutput.cell] | sort)
+      and all($producers[]; (output_members | length) == 1)
+      and ([$producers[] | output_members | .[].output.cell] | sort)
         == ([$arithmetic, $text] | sort)
       and ([$producers[].regionId] | unique | length) == 2
       and ($edges | length) == 2
@@ -303,7 +335,8 @@ validate_dependent_scalar_artifacts() {
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
     and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
@@ -312,9 +345,10 @@ validate_dependent_scalar_artifacts() {
   # arithmetic producer has six feasible clamp/add path partitions.  These
   # are source-level domains, unlike region IDs, unit indexes, or symbols.
   jq -e -s --arg arithmetic "${arithmetic_cell}" \
-    --arg text "${text_cell}" '
+    --arg text "${text_cell}" "${output_closure_helpers}"'
     length == 2
-    and ([.[].requestedOutputSlice.outputCell] | sort)
+    and all(.[]; (output_members | length) == 1)
+    and ([.[] | singleton_output_member | .slice.outputCell] | sort)
       == ([$arithmetic, $text] | sort)
     and all(.[];
       .relationallyComplete == true
@@ -330,10 +364,10 @@ validate_dependent_scalar_artifacts() {
         and (.guard.conditions | length) > 0
         and (.outputExpressions | length) == 1))
     and any(.[];
-      .requestedOutputSlice.outputCell == $arithmetic
+      (singleton_output_member | .slice.outputCell == $arithmetic)
       and .regionRelation.caseCount == 6)
     and any(.[];
-      .requestedOutputSlice.outputCell == $text
+      (singleton_output_member | .slice.outputCell == $text)
       and .regionRelation.caseCount == 2
       and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
         == ["Y_I_5", "Y_I_9"]
@@ -381,7 +415,8 @@ validate_container_producer_artifacts() {
       and .observedPathCount >= 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
@@ -417,17 +452,18 @@ validate_container_producer_artifacts() {
   ' "${raw_results[@]}" >/dev/null \
     || die "container custom-JDK replay evidence is incomplete"
 
-  jq -e '
-    .relationallyComplete == true
+  jq -e "${output_closure_helpers}"'
+    (singleton_output_member | .slice) as $outputSlice
+    | $outputSlice.containerElementFieldBindings[0] as $static
+    | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
     and .regionRelation.caseCount == 2
-    and (.requestedOutputSlice.containerElementFieldBindings | length) == 1
-    and .requestedOutputSlice.containerElementFieldBindings[0] as $static
-    | ($static.schemaVersion == 2
+    and ($outputSlice.containerElementFieldBindings | length) == 1
+    and $static.schemaVersion == 2
       and $static.kind == "ARRAY_ELEMENT_FIELD"
       and $static.materializationMode == "CONTAINER_SNAPSHOT"
       and $static.selectorAuthority == "EXACT_ARRAY_INDEX"
@@ -439,9 +475,9 @@ validate_container_producer_artifacts() {
         == "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
       and ($static.proofCausalEdgeIds | length)
         > ($static.fieldPath | length)
-      and (.requestedOutputSlice.inputPorts
+      and ($outputSlice.inputPorts
         | index($static.baseInputSymbol)) != null
-      and (.requestedOutputSlice.inputPorts
+      and ($outputSlice.inputPorts
         | index($static.containerInputPort)) != null
       and ([.regionRelation.cases[].guard.conditions[]._op] | sort)
         == ["!=", "=="]
@@ -471,16 +507,17 @@ validate_container_producer_artifacts() {
   ' "${array_summary}" >/dev/null \
     || die "array producer lost exact index-1 nested field semantics"
 
-  jq -e '
-    .relationallyComplete == true
+  jq -e "${output_closure_helpers}"'
+    (singleton_output_member | .slice) as $outputSlice
+    | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
     and .regionRelation.guardSemantics
       == "EXACT_NORMALIZED_PATH_CONDITION"
     and (.regionRelation.cases | length) >= 2
-    and (.requestedOutputSlice.inputAliasCanonicalizations | length) >= 3
-    and all(.requestedOutputSlice.inputAliasCanonicalizations[];
+    and ($outputSlice.inputAliasCanonicalizations | length) >= 3
+    and all($outputSlice.inputAliasCanonicalizations[];
       .schemaVersion == 1
       and .kind == "CANONICAL_PRIMITIVE_INPUT_ALIAS"
       and .staticAuthority
@@ -499,20 +536,20 @@ validate_container_producer_artifacts() {
       and .canonicalLeafFieldCallId > 0
       and .baseFieldEventSeq < .canonicalLeafFieldEventSeq
       and .complete == true)
-    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+    and ([$outputSlice.inputAliasCanonicalizations[]
       | .canonicalInputCell] | index(
         "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input1>")) != null
-    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+    and ([$outputSlice.inputAliasCanonicalizations[]
       | .canonicalInputCell] | index(
         "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input2>")) != null
-    and ([.requestedOutputSlice.inputAliasCanonicalizations[]
+    and ([$outputSlice.inputAliasCanonicalizations[]
       | .canonicalInputCell] | index(
         "<edu.uva.liftlab.graphchecker.fixtures.ContainerThreeThreadRpcWorkload$MapProducer: int input3>")) != null
-    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input1"))
-    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input2"))
-    and ([.requestedOutputSlice.inputBindings[].dependencyCell] | tostring
+    and ([$outputSlice.inputBindings[].dependencyCell] | tostring
       | contains("MapProducer: int input3"))
     and (any(.regionRelation.cases[].outputExpressions[]?;
       ._type == "ConstExpr" and ._exp == "Y_I_10"))
@@ -545,7 +582,7 @@ validate_container_producer_artifacts() {
         and $observation.entryFieldBindings[0].fieldPath
           == $dynamic.fieldPath
         and $observation.entryFieldBindings[0].keyExpression
-          == $dynamic.keyExpression))
+          == $dynamic.keyExpression)))
   ' "${map_summary}" >/dev/null \
     || die "map producer lost exact key-7 nested entry field semantics"
 
@@ -579,11 +616,12 @@ validate_unreachable_parity_producer_artifacts() {
       and .observedPathCount == 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps"] | sort))
+        "gaps", "outputDemandKey",
+        "outputClosureFingerprint"] | sort))
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
 
-  jq -e -s '
+  jq -e -s "${output_closure_helpers}"'
     length == 2
     and all(.[];
       .relationallyComplete == true
@@ -602,7 +640,8 @@ validate_unreachable_parity_producer_artifacts() {
     and ([.[] | .regionRelation.cases[].outputExpressions[]?._exp]
       | sort) == ["Y_I_-1", "Y_I_0", "Y_I_3", "Y_I_4"]
     and ([.[]
-      | .requestedOutputSlice.containerElementFieldBindings[]?
+      | singleton_output_member
+      | .slice.containerElementFieldBindings[]?
       | select(.kind == "ARRAY_ELEMENT_FIELD"
         and .selectorAuthority == "EXACT_ARRAY_INDEX"
         and .elementIndex == 1

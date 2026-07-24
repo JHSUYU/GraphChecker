@@ -5,6 +5,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -224,12 +226,22 @@ public final class ConcolicReplayValidator {
                 || importedSummaryPresent
                 && string(task, "regionId").equals(string(importedSummary,
                 "regionId"));
+        boolean importedSummaryActivationMatchesRaw = !outputClosure
+                || importedSummaryPresent
+                && !string(rawResult, "activationId").isEmpty()
+                && string(rawResult, "activationId").equals(
+                string(importedSummary, "activationId"));
+        OutputClosureAdmission outputAdmission =
+                outputClosure && importedSummaryPresent
+                        ? OutputClosureAdmission.validate(task,
+                        importedSummary)
+                        : OutputClosureAdmission.invalid();
         boolean requestedOutputMatches = !outputClosure
                 || importedSummaryPresent
-                && exactRequestedOutput(task, importedSummary);
+                && outputAdmission.contractIdentityMatches;
         boolean requestedOutputExpressionPresent = !outputClosure
                 || importedSummaryPresent
-                && exactRequestedOutputExpression(task, importedSummary);
+                && outputAdmission.expressionsMatchDeclaredPorts;
         if (outputClosure) {
             require(failures, "OUTPUT_CLOSURE_REPLAY_EXCEPTIONAL_EXIT",
                     rawNormalExit);
@@ -248,6 +260,9 @@ public final class ConcolicReplayValidator {
                 require(failures,
                         "IMPORTED_OUTPUT_SUMMARY_REGION_ID_MISMATCH",
                         importedSummaryRegionMatches);
+                require(failures,
+                        "IMPORTED_OUTPUT_SUMMARY_ACTIVATION_ID_MISMATCH",
+                        importedSummaryActivationMatchesRaw);
                 require(failures, "REQUESTED_OUTPUT_MISMATCH",
                         requestedOutputMatches);
                 require(failures,
@@ -1446,28 +1461,63 @@ public final class ConcolicReplayValidator {
                 || code.startsWith("OUTPUT_EXPRESSION_ADMISSION_"));
     }
 
-    private static boolean exactRequestedOutput(JsonObject task,
-                                                JsonObject summary) {
-        JsonObject expected = object(task, "requestedOutput");
-        JsonObject imported = object(summary, "requestedOutput");
-        if (expected.size() == 0 || imported.size() == 0) return false;
-        return CanonicalJson.render(expected).equals(
-                CanonicalJson.render(imported));
+    private static final class OutputClosureAdmission {
+        private final boolean contractIdentityMatches;
+        private final boolean expressionsMatchDeclaredPorts;
+
+        private OutputClosureAdmission(boolean contractIdentityMatches,
+                                       boolean expressionsMatchDeclaredPorts) {
+            this.contractIdentityMatches = contractIdentityMatches;
+            this.expressionsMatchDeclaredPorts =
+                    expressionsMatchDeclaredPorts;
+        }
+
+        private static OutputClosureAdmission invalid() {
+            return new OutputClosureAdmission(false, false);
+        }
+
+        private static OutputClosureAdmission validate(
+                JsonObject task, JsonObject summary) {
+            try {
+                OutputClosureContract requested =
+                        OutputClosureCodec.decode(task);
+                OutputClosureContract imported =
+                        OutputClosureCodec.decode(summary);
+                boolean sameContract = sameProducer(
+                        requested.producer(), imported.producer())
+                        && requested.demandKey().equals(
+                        imported.demandKey())
+                        && requested.closureFingerprint().equals(
+                        imported.closureFingerprint());
+                return new OutputClosureAdmission(sameContract,
+                        sameContract && exactUsableExpressionSet(
+                                summary, requested.outputPorts()));
+            } catch (RuntimeException malformedContract) {
+                return invalid();
+            }
+        }
+
+        private static boolean sameProducer(
+                OutputClosureContract.Producer expected,
+                OutputClosureContract.Producer actual) {
+            return expected.regionId().equals(actual.regionId())
+                    && expected.regionInstanceId().equals(
+                    actual.regionInstanceId())
+                    && expected.rootCallId() == actual.rootCallId();
+        }
     }
 
-    private static boolean exactRequestedOutputExpression(
-            JsonObject task, JsonObject summary) {
-        JsonObject requested = object(task, "requestedOutput");
-        JsonObject expressions = object(summary, "outputExpressions");
-        Set<String> identities = new LinkedHashSet<>();
-        addNonBlank(identities, string(requested, "portId"));
-        addNonBlank(identities, string(requested, "symbol"));
-        addNonBlank(identities, string(requested, "cell"));
-        for (String identity : identities) {
-            JsonElement expression = expressions.get(identity);
-            if (usableExpression(expression)) return true;
+    private static boolean exactUsableExpressionSet(
+            JsonObject summary, Set<String> declaredPorts) {
+        JsonElement encoded = summary == null
+                ? null : summary.get("outputExpressions");
+        if (encoded == null || !encoded.isJsonObject()) return false;
+        JsonObject expressions = encoded.getAsJsonObject();
+        if (!expressions.keySet().equals(declaredPorts)) return false;
+        for (String port : declaredPorts) {
+            if (!usableExpression(expressions.get(port))) return false;
         }
-        return false;
+        return true;
     }
 
     private static boolean usableExpression(JsonElement expression) {
@@ -1479,12 +1529,6 @@ public final class ConcolicReplayValidator {
             return expression.getAsJsonArray().size() > 0;
         }
         return true;
-    }
-
-    private static void addNonBlank(Set<String> values, String value) {
-        if (value != null && !value.trim().isEmpty()) {
-            values.add(value.trim());
-        }
     }
 
     private static JsonArray array(JsonObject owner, String field) {

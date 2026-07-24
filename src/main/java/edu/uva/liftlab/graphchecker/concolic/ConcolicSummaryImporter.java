@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -151,6 +153,26 @@ public final class ConcolicSummaryImporter {
                         activationId));
                 continue;
             }
+            JsonObject wireActivation = activation;
+            OutputClosureContract outputContract = null;
+            if (activation.has(OutputClosureContract.FIELD)) {
+                try {
+                    if (!RegionCaptureGoal.from(activation)
+                            .isOutputClosure()) {
+                        throw new IllegalArgumentException(
+                                "outputClosure requires OUTPUT_CLOSURE "
+                                        + "captureGoal");
+                    }
+                    outputContract = OutputClosureCodec.decode(activation);
+                    activation = jointAnalysisActivation(
+                            activation, outputContract);
+                } catch (IllegalArgumentException malformedContract) {
+                    diagnostics.add(diagnostic(raw,
+                            "INVALID_OUTPUT_CLOSURE_CONTRACT",
+                            malformedContract.getMessage()));
+                    continue;
+                }
+            }
             String activationSchemaIssue =
                     canonicalExecutableActivationSchemaIssue(activation);
             if (!activationSchemaIssue.isEmpty()) {
@@ -231,41 +253,34 @@ public final class ConcolicSummaryImporter {
             EngineArrayInputBindingExtraction engineArrayBindings =
                     engineArrayInputBindings(raw, activation, region,
                             enginePathCondition, pathCondition);
-            HeapEffectExtraction heapEffects = extractHeapEffects(
+            RelationalExtraction relational = relationalExtraction(
                     raw, enginePathCondition, normalization,
                     runtimeHeapObservations,
                     raw.get("fieldObservations"),
                     dynamicFieldBindings, rawBranchMappings,
-                    activation, regionId, dynamicPcFallbacks,
-                    engineArrayBindings.bindings);
-            OutputExpressionExtraction outputExtraction =
-                    outputExpressions(raw, activation, captureGoal,
-                            normalization);
-            InputAdmission inputAdmission = inputAdmission(raw, activation,
-                    outputClosure, heapEffects.staticCoverage,
-                    pathCondition, outputExtraction);
+                    activation, wireActivation, outputContract, region,
+                    regionId, captureGoal, pathCondition,
+                    dynamicPcFallbacks, engineArrayBindings.bindings);
             VmIntrinsicPlaceholderBindingExtraction placeholderBindings =
                     vmIntrinsicPlaceholderBindings(pathCondition,
-                            inputAdmission);
-            ReplayAdmission replayAdmission = replayAdmission(raw,
-                    activation, region, captureGoal);
-            if (!replayAdmission.valid) {
+                            relational.inputAdmission);
+            if (!relational.replayAdmission.valid) {
                 diagnostics.add(diagnostic(raw, "TARGET_REPLAY_REJECTED",
-                        replayAdmission.failures.toString()));
+                        relational.replayAdmission.failures.toString()));
                 continue;
             }
 
             String contentHash = sha256(GSON.toJson(region) + "\n"
-                    + GSON.toJson(activation) + "\n"
+                    + GSON.toJson(wireActivation) + "\n"
                     + GSON.toJson(pathCondition) + "\n"
-                    + GSON.toJson(heapEffects.effects) + "\n"
-                    + GSON.toJson(heapEffects.observations) + "\n"
+                    + GSON.toJson(relational.effects) + "\n"
+                    + GSON.toJson(relational.observations) + "\n"
                     + "EXACT_RUNTIME_FINITE_MAP_SNAPSHOT_POLICY_V1\n"
-                    + GSON.toJson(heapEffects.finiteMapSnapshots) + "\n"
+                    + GSON.toJson(relational.finiteMapSnapshots) + "\n"
                     + "OWNER_EXACT_VM_INTRINSIC_PLACEHOLDER_BINDING_V1\n"
                     + GSON.toJson(placeholderBindings.bindings) + "\n"
                     + GSON.toJson(placeholderBindings.failures) + "\n"
-                    + GSON.toJson(heapEffects.staticCoverage.toJson()) + "\n"
+                    + GSON.toJson(relational.staticCoverageEvidence) + "\n"
                     + GSON.toJson(rawBranchMappings) + "\n"
                     + GSON.toJson(runtimeHeapObservations) + "\n"
                     + (raw.has("fieldObservations")
@@ -307,69 +322,88 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("rootMethod", firstNonBlank(
                     string(activation, "rootMethod"), string(region, "rootMethod")));
             summary.add("symbolicInputs", symbolicInputs(activation));
-            summary.add("requestedOutput", copy(
-                    activation.get("requestedOutput"), new JsonObject()));
-            summary.add("requestedOutputSlice", copy(
-                    activation.get("requestedOutputSlice"), new JsonObject()));
+            if (outputContract == null) {
+                summary.add("requestedOutput", copy(
+                        activation.get("requestedOutput"),
+                        new JsonObject()));
+                summary.add("requestedOutputSlice", copy(
+                        activation.get("requestedOutputSlice"),
+                        new JsonObject()));
+            } else {
+                summary.add(OutputClosureContract.FIELD,
+                        outputContract.toJson());
+            }
             boolean outputSliceComplete = !outputClosure
-                    || nestedOutputSliceContractComplete(activation);
+                    || (outputContract == null
+                    ? nestedOutputSliceContractComplete(activation)
+                    : everyOutputSliceComplete(
+                            wireActivation, outputContract));
             summary.add("edgeBindings", copy(activation.get("edgeBindings"),
                     new JsonArray()));
             summary.add("pathCondition", pathCondition.deepCopy());
             summary.add("branchMappings",
                     canonicalBranchMappings.deepCopy());
-            JsonObject outputs = outputExtraction.expressions;
-            heapEffects.bindOutputExpressions(outputs);
+            JsonObject outputs = relational.outputExtraction.expressions;
+            boolean outputSetComplete = outputContract == null
+                    || exactOutputSet(outputs, outputContract);
             summary.add("outputExpressions", outputs);
             summary.add("heapStateInitializers",
-                    heapEffects.initializers.deepCopy());
-            summary.add("heapEffects", heapEffects.effects.deepCopy());
+                    relational.initializers.deepCopy());
+            summary.add("heapEffects", relational.effects.deepCopy());
             summary.add("heapObservations",
-                    heapEffects.observations.deepCopy());
+                    relational.observations.deepCopy());
             summary.add("finiteMapSnapshots",
-                    heapEffects.finiteMapSnapshots.deepCopy());
+                    relational.finiteMapSnapshots.deepCopy());
             summary.add("dynamicFieldBindings",
-                    heapEffects.dynamicFieldBindings.deepCopy());
+                    relational.dynamicFieldBindings.deepCopy());
             summary.add("engineArrayInputBindings",
                     engineArrayBindings.bindings.deepCopy());
             summary.addProperty("relationallyComplete",
-                    heapEffects.complete()
+                    relational.heapComplete
                             && outputSliceComplete
-                            && inputAdmission.complete
+                            && relational.inputAdmission.complete
                             && placeholderBindings.complete
                             && engineArrayBindings.complete
-                            && outputExtraction.complete
+                            && relational.outputExtraction.complete
+                            && outputSetComplete
                             && outputClosurePathMappingComplete);
             summary.add("unforcedEnvironmentValidationRequirements",
-                    inputAdmission.unforcedEnvironmentValidationRequirements
+                    relational.inputAdmission
+                            .unforcedEnvironmentValidationRequirements
                             .deepCopy());
             summary.add("vmIntrinsicPlaceholderBindings",
                     placeholderBindings.bindings.deepCopy());
             summary.addProperty("normalExit", "NORMAL".equals(string(raw, "exitKind")));
             summary.addProperty("exceptionType", string(raw, "exceptionType"));
-            summary.addProperty("executionKind", replayAdmission.required
+            summary.addProperty("executionKind",
+                    relational.replayAdmission.required
                     ? "INPUT_MODEL_REPLAY" : "UNFORCED_SEED");
             summaries.add(summary);
-            for (HeapEffectIssue issue : heapEffects.issues) {
+            for (HeapEffectIssue issue : relational.heapIssues) {
                 diagnostics.add(diagnostic(raw, issue.code, issue.detail()));
             }
             for (EngineArrayInputBindingIssue issue
                     : engineArrayBindings.issues) {
                 diagnostics.add(diagnostic(raw, issue.code, issue.detail));
             }
-            if (!inputAdmission.complete) {
+            if (!relational.inputAdmission.complete) {
                 diagnostics.add(diagnostic(raw,
                         "INCOMPLETE_OUTPUT_INPUT_MATERIALIZATION",
-                        inputAdmission.failures.toString()));
+                        relational.inputAdmission.failures.toString()));
             }
             if (!placeholderBindings.complete) {
                 diagnostics.add(diagnostic(raw,
                         "INCOMPLETE_VM_INTRINSIC_PLACEHOLDER_BINDING",
                         placeholderBindings.failures.toString()));
             }
-            for (String issue : outputExtraction.issues) {
+            for (String issue : relational.outputExtraction.issues) {
                 diagnostics.add(diagnostic(raw,
                         "INCOMPLETE_OUTPUT_EXPRESSION", issue));
+            }
+            if (!outputSetComplete) {
+                diagnostics.add(diagnostic(raw,
+                        "INCOMPLETE_OUTPUT_EXPRESSION",
+                        "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND"));
             }
             if (normalization.filteredConditionCount > 0) {
                 diagnostics.add(diagnostic(raw,
@@ -866,6 +900,266 @@ public final class ConcolicSummaryImporter {
         for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
             collectArrayEvents(entry.getValue(), result);
         }
+    }
+
+    /**
+     * Reuses the existing singleton validators without persisting another
+     * schema.  The view exists only inside this importer; execution scope is
+     * the deterministic union carried by the contract.
+     */
+    private static JsonObject jointAnalysisActivation(
+            JsonObject activation, OutputClosureContract contract) {
+        JsonObject result = OutputClosureCodec.memberActivationView(
+                activation, contract, contract.members().get(0).portId());
+        if (contract.members().size() == 1) return result;
+
+        OutputClosureContract.ExecutionScope scope =
+                contract.executionScope();
+        JsonObject slice = result.getAsJsonObject(
+                "requestedOutputSlice");
+        slice.add("inputPorts", strings(scope.inputPorts()));
+        slice.add("sites", strings(scope.sites()));
+        slice.add("staticSites", strings(scope.staticSites()));
+        slice.add("methods", strings(scope.methods()));
+        slice.add("causalEdgeIds", strings(scope.causalEdgeIds()));
+        result.add("requestedOutputMethods", strings(scope.methods()));
+        return result;
+    }
+
+    private static boolean everyOutputSliceComplete(
+            JsonObject activation, OutputClosureContract contract) {
+        for (OutputClosureContract.Member member : contract.members()) {
+            JsonObject view = OutputClosureCodec.memberActivationView(
+                    activation, contract, member.portId());
+            if (!nestedOutputSliceContractComplete(view)
+                    || !member.captureComplete()) return false;
+        }
+        return true;
+    }
+
+    private static boolean exactOutputSet(
+            JsonObject expressions, OutputClosureContract contract) {
+        Set<String> actual = new LinkedHashSet<>(expressions.keySet());
+        return actual.equals(contract.outputPorts());
+    }
+
+    private static RelationalExtraction relationalExtraction(
+            JsonObject raw, JsonArray enginePathCondition,
+            PathNormalization normalization,
+            JsonArray runtimeHeapObservations,
+            JsonElement fieldObservations,
+            JsonArray dynamicFieldBindings, JsonArray rawBranchMappings,
+            JsonObject analysisActivation, JsonObject wireActivation,
+            OutputClosureContract contract, JsonObject region,
+            String regionId, RegionCaptureGoal captureGoal,
+            JsonArray pathCondition,
+            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
+            JsonArray engineArrayBindings) {
+        if (contract == null) {
+            HeapEffectExtraction heap = extractHeapEffects(
+                    raw, enginePathCondition, normalization,
+                    runtimeHeapObservations, fieldObservations,
+                    dynamicFieldBindings, rawBranchMappings,
+                    analysisActivation, regionId, dynamicPcFallbacks,
+                    engineArrayBindings);
+            OutputExpressionExtraction output = outputExpressions(
+                    raw, analysisActivation, captureGoal, normalization);
+            InputAdmission inputs = inputAdmission(raw,
+                    analysisActivation, captureGoal.isOutputClosure(),
+                    heap.staticCoverage, pathCondition, output);
+            ReplayAdmission replay = replayAdmission(raw,
+                    analysisActivation, region, captureGoal);
+            heap.bindOutputExpressions(output.expressions);
+            return RelationalExtraction.single(
+                    heap, output, inputs, replay);
+        }
+
+        JsonObject expressions = new JsonObject();
+        JsonArray initializers = new JsonArray();
+        JsonArray effects = new JsonArray();
+        JsonArray observations = new JsonArray();
+        JsonArray snapshots = new JsonArray();
+        JsonArray bindings = new JsonArray();
+        JsonObject coverage = new JsonObject();
+        List<HeapEffectIssue> heapIssues = new ArrayList<>();
+        Set<String> heapIssueKeys = new LinkedHashSet<>();
+        List<String> outputIssues = new ArrayList<>();
+        List<InputAdmission> inputAdmissions = new ArrayList<>();
+        boolean heapComplete = true;
+        boolean outputComplete = true;
+        ReplayAdmission replay = replayAdmission(
+                raw, analysisActivation, region, captureGoal);
+
+        for (OutputClosureContract.Member member : contract.members()) {
+            JsonObject view = OutputClosureCodec.memberActivationView(
+                    wireActivation, contract, member.portId());
+            HeapEffectExtraction heap = extractHeapEffects(
+                    raw, enginePathCondition, normalization,
+                    runtimeHeapObservations, fieldObservations,
+                    dynamicFieldBindings, rawBranchMappings, view,
+                    regionId, dynamicPcFallbacks, engineArrayBindings);
+            OutputExpressionExtraction output = outputExpressions(
+                    raw, view, captureGoal, normalization);
+            InputAdmission inputs = inputAdmission(raw, view, true,
+                    heap.staticCoverage, pathCondition, output);
+
+            for (Map.Entry<String, JsonElement> entry
+                    : output.expressions.entrySet()) {
+                if (expressions.has(entry.getKey())) {
+                    outputIssues.add(member.portId()
+                            + ":DUPLICATE_JOINT_OUTPUT_EXPRESSION:"
+                            + entry.getKey());
+                } else {
+                    expressions.add(entry.getKey(),
+                            entry.getValue().deepCopy());
+                }
+            }
+            for (String issue : output.issues) {
+                outputIssues.add(member.portId() + ":" + issue);
+            }
+            if (!output.complete && output.issues.isEmpty()) {
+                outputIssues.add(member.portId()
+                        + ":INCOMPLETE_MEMBER_OUTPUT_EXPRESSION");
+            }
+            heapComplete &= appendUniqueByIdentity(initializers,
+                    heap.initializers, "initializerId",
+                    "JOINT_INITIALIZER_IDENTITY_CONFLICT", heapIssues);
+            heapComplete &= appendUniqueByIdentity(effects, heap.effects,
+                    "effectId", "JOINT_EFFECT_IDENTITY_CONFLICT",
+                    heapIssues);
+            heapComplete &= appendUniqueByIdentity(observations,
+                    heap.observations, "observationId",
+                    "JOINT_OBSERVATION_IDENTITY_CONFLICT", heapIssues);
+            heapComplete &= appendUniqueByIdentity(snapshots,
+                    heap.finiteMapSnapshots, "snapshotId",
+                    "JOINT_SNAPSHOT_IDENTITY_CONFLICT", heapIssues);
+            heapComplete &= appendUniqueByIdentity(bindings,
+                    heap.dynamicFieldBindings, "dynamicBindingId",
+                    "JOINT_DYNAMIC_BINDING_IDENTITY_CONFLICT", heapIssues);
+            for (HeapEffectIssue issue : heap.issues) {
+                String key = issue.code + "\n" + issue.detail();
+                if (heapIssueKeys.add(key)) heapIssues.add(issue);
+            }
+            coverage.add(member.portId(),
+                    heap.staticCoverage.toJson());
+            heapComplete &= heap.complete();
+            outputComplete &= output.complete;
+            inputAdmissions.add(inputs);
+        }
+
+        outputIssues.addAll(observedCaptureBijectionIssues(
+                raw, OutputClosureCodec.captures(contract)));
+        OutputExpressionExtraction output =
+                new OutputExpressionExtraction(expressions,
+                        outputComplete && outputIssues.isEmpty(),
+                        outputIssues, "JOINT_EXACT_OUTPUT_CAPTURES");
+        return new RelationalExtraction(initializers, effects,
+                observations, snapshots, bindings, coverage, heapIssues,
+                heapComplete, output, mergeInputAdmissions(inputAdmissions),
+                replay);
+    }
+
+    private static List<String> observedCaptureBijectionIssues(
+            JsonObject raw, JsonArray requests) {
+        List<String> issues = new ArrayList<>();
+        JsonArray observed = array(raw, "outputCaptures");
+        if (observed.size() != requests.size()) {
+            issues.add("OUTPUT_CAPTURE_CARDINALITY_MISMATCH:"
+                    + observed.size() + ":" + requests.size());
+        }
+        for (int index = 0; index < observed.size(); index++) {
+            JsonElement observedElement = observed.get(index);
+            int matches = 0;
+            if (observedElement.isJsonObject()) {
+                for (JsonElement requestElement : requests) {
+                    if (exactOutputCaptureMatch(
+                            requestElement.getAsJsonObject(),
+                            observedElement.getAsJsonObject())) {
+                        matches++;
+                    }
+                }
+            }
+            if (matches != 1) {
+                issues.add("OBSERVED_CAPTURE_NOT_BIJECTIVE:"
+                        + index + ":" + matches);
+            }
+        }
+        return issues;
+    }
+
+    private static void appendUnique(JsonArray target, JsonArray source) {
+        Set<String> seen = new LinkedHashSet<>();
+        for (JsonElement element : target) {
+            seen.add(CanonicalJson.render(element));
+        }
+        for (JsonElement element : source) {
+            if (seen.add(CanonicalJson.render(element))) {
+                target.add(element.deepCopy());
+            }
+        }
+    }
+
+    private static boolean appendUniqueByIdentity(
+            JsonArray target, JsonArray source, String identityField,
+            String conflictCode, List<HeapEffectIssue> issues) {
+        Map<String, String> existing = new LinkedHashMap<>();
+        for (JsonElement element : target) {
+            if (!element.isJsonObject()) continue;
+            String id = string(element.getAsJsonObject(), identityField);
+            if (!id.isEmpty()) {
+                existing.put(id, CanonicalJson.render(element));
+            }
+        }
+        boolean complete = true;
+        for (JsonElement element : source) {
+            String rendered = CanonicalJson.render(element);
+            String id = element.isJsonObject()
+                    ? string(element.getAsJsonObject(), identityField) : "";
+            if (id.isEmpty()) {
+                if (!containsCanonical(target, rendered)) {
+                    target.add(element.deepCopy());
+                }
+                continue;
+            }
+            String prior = existing.putIfAbsent(id, rendered);
+            if (prior == null) {
+                target.add(element.deepCopy());
+            } else if (!prior.equals(rendered)) {
+                complete = false;
+                issues.add(new HeapEffectIssue(conflictCode, -1,
+                        identityField + "=" + id, "joint-output-closure"));
+            }
+        }
+        return complete;
+    }
+
+    private static boolean containsCanonical(
+            JsonArray values, String rendered) {
+        for (JsonElement value : values) {
+            if (rendered.equals(CanonicalJson.render(value))) return true;
+        }
+        return false;
+    }
+
+    private static InputAdmission mergeInputAdmissions(
+            List<InputAdmission> values) {
+        boolean complete = true;
+        Set<String> globalRequired = new LinkedHashSet<>();
+        Set<String> required = new LinkedHashSet<>();
+        Set<String> placeholders = new LinkedHashSet<>();
+        JsonArray requirements = new JsonArray();
+        JsonArray failures = new JsonArray();
+        for (InputAdmission value : values) {
+            complete &= value.complete;
+            globalRequired.addAll(value.globalRequired);
+            required.addAll(value.required);
+            placeholders.addAll(value.admittedVmIntrinsicPlaceholders);
+            appendUnique(requirements,
+                    value.unforcedEnvironmentValidationRequirements);
+            appendUnique(failures, value.failures);
+        }
+        return new InputAdmission(complete, globalRequired, required,
+                placeholders, requirements, failures);
     }
 
     private static OutputExpressionExtraction outputExpressions(
@@ -2227,6 +2521,53 @@ public final class ConcolicSummaryImporter {
                     Collections.<String>emptyList(), authority);
         }
 
+    }
+
+    private static final class RelationalExtraction {
+        private final JsonArray initializers;
+        private final JsonArray effects;
+        private final JsonArray observations;
+        private final JsonArray finiteMapSnapshots;
+        private final JsonArray dynamicFieldBindings;
+        private final JsonElement staticCoverageEvidence;
+        private final List<HeapEffectIssue> heapIssues;
+        private final boolean heapComplete;
+        private final OutputExpressionExtraction outputExtraction;
+        private final InputAdmission inputAdmission;
+        private final ReplayAdmission replayAdmission;
+
+        private RelationalExtraction(
+                JsonArray initializers, JsonArray effects,
+                JsonArray observations, JsonArray finiteMapSnapshots,
+                JsonArray dynamicFieldBindings,
+                JsonElement staticCoverageEvidence,
+                List<HeapEffectIssue> heapIssues, boolean heapComplete,
+                OutputExpressionExtraction outputExtraction,
+                InputAdmission inputAdmission,
+                ReplayAdmission replayAdmission) {
+            this.initializers = initializers;
+            this.effects = effects;
+            this.observations = observations;
+            this.finiteMapSnapshots = finiteMapSnapshots;
+            this.dynamicFieldBindings = dynamicFieldBindings;
+            this.staticCoverageEvidence = staticCoverageEvidence;
+            this.heapIssues = heapIssues;
+            this.heapComplete = heapComplete;
+            this.outputExtraction = outputExtraction;
+            this.inputAdmission = inputAdmission;
+            this.replayAdmission = replayAdmission;
+        }
+
+        private static RelationalExtraction single(
+                HeapEffectExtraction heap,
+                OutputExpressionExtraction output,
+                InputAdmission inputs, ReplayAdmission replay) {
+            return new RelationalExtraction(heap.initializers,
+                    heap.effects, heap.observations,
+                    heap.finiteMapSnapshots, heap.dynamicFieldBindings,
+                    heap.staticCoverage.toJson(), heap.issues,
+                    heap.complete(), output, inputs, replay);
+        }
     }
 
     private static PathNormalization normalizePathCondition(

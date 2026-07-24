@@ -104,6 +104,7 @@ public final class OutputClosureContract {
             if (member.javaTypeDescriptor().length() != 1
                     || !"ZBCSIJFD".contains(member.javaTypeDescriptor())
                     || !member.captureRequired()
+                    || !member.captureComplete()
                     || member.captureBindings().size() != 1) {
                 return false;
             }
@@ -217,6 +218,10 @@ public final class OutputClosureContract {
 
         public boolean captureRequired() {
             return slice.get("captureBindingsRequired").getAsBoolean();
+        }
+
+        public boolean captureComplete() {
+            return slice.get("captureBindingsComplete").getAsBoolean();
         }
 
         public JsonObject output() { return output.deepCopy(); }
