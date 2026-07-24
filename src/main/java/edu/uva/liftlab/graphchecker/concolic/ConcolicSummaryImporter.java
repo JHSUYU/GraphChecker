@@ -899,11 +899,14 @@ public final class ConcolicSummaryImporter {
      */
     private static final class OutputMemberAnalysis {
         private final JsonObject activation;
+        private final OutputClosureContract contract;
         private final OutputClosureContract.Member member;
 
         private OutputMemberAnalysis(
-                JsonObject activation, OutputClosureContract.Member member) {
+                JsonObject activation, OutputClosureContract contract,
+                OutputClosureContract.Member member) {
             this.activation = activation;
+            this.contract = contract;
             this.member = member;
         }
 
@@ -925,6 +928,28 @@ public final class ConcolicSummaryImporter {
 
         private boolean captureComplete() {
             return member != null && member.captureComplete();
+        }
+
+        private Set<String> outputPorts() {
+            return contract == null
+                    ? Collections.<String>emptySet()
+                    : new LinkedHashSet<>(contract.outputPorts());
+        }
+
+        private Set<String> containerBindingIds() {
+            if (contract == null) return Collections.emptySet();
+            Set<String> result = new LinkedHashSet<>();
+            for (OutputClosureContract.Member outputMember
+                    : contract.members()) {
+                for (JsonElement element : array(outputMember.slice(),
+                        "containerElementFieldBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    String bindingId = string(element.getAsJsonObject(),
+                            "bindingId");
+                    if (!bindingId.isEmpty()) result.add(bindingId);
+                }
+            }
+            return result;
         }
     }
 
@@ -948,7 +973,7 @@ public final class ConcolicSummaryImporter {
             JsonArray engineArrayBindings) {
         if (contract == null) {
             OutputMemberAnalysis analysis =
-                    new OutputMemberAnalysis(activation, null);
+                    new OutputMemberAnalysis(activation, null, null);
             HeapEffectExtraction heap = extractHeapEffects(
                     raw, enginePathCondition, normalization,
                     runtimeHeapObservations, fieldObservations,
@@ -985,7 +1010,7 @@ public final class ConcolicSummaryImporter {
 
         for (OutputClosureContract.Member member : contract.members()) {
             OutputMemberAnalysis analysis =
-                    new OutputMemberAnalysis(activation, member);
+                    new OutputMemberAnalysis(activation, contract, member);
             HeapEffectExtraction heap = extractHeapEffects(
                     raw, enginePathCondition, normalization,
                     runtimeHeapObservations, fieldObservations,
@@ -3127,7 +3152,8 @@ public final class ConcolicSummaryImporter {
         for (OutputClosureContract.Member member
                 : outputContract.members()) {
             OutputMemberAnalysis analysis =
-                    new OutputMemberAnalysis(activation, member);
+                    new OutputMemberAnalysis(activation, outputContract,
+                            member);
             if (nestedOutputSliceContractComplete(analysis.slice())
                     && new HeapPortResolver(analysis)
                     .requestedOutputBinding(parameters.get(0)).resolved) {
@@ -3577,10 +3603,8 @@ public final class ConcolicSummaryImporter {
 
         return new HeapEffectExtraction(initializers, effects,
                 heapObservations.observations, finiteMapSnapshots,
-                dynamicBindingCatalog.normalizedBindings(),
-                runtimeHeapEvidence.ignoredEvidence, issues,
-                outputBindings, staticCoverage,
-                heapObservations);
+                dynamicBindingCatalog.normalizedBindings(), issues,
+                outputBindings, staticCoverage, heapObservations);
     }
 
     private static RuntimeMapStateInputResolution
@@ -4886,6 +4910,21 @@ public final class ConcolicSummaryImporter {
         Set<String> containerSelectorTuples = new LinkedHashSet<>();
         Set<String> containerIdentityTuples = new LinkedHashSet<>();
         Set<String> containerBridgeTuples = new LinkedHashSet<>();
+        Set<String> memberContainerBindingIds = new LinkedHashSet<>();
+        for (JsonElement element : array(analysis.slice(),
+                "containerElementFieldBindings")) {
+            if (element.isJsonObject()) {
+                String bindingId = string(element.getAsJsonObject(),
+                        "bindingId");
+                if (!bindingId.isEmpty()) {
+                    memberContainerBindingIds.add(bindingId);
+                }
+            }
+        }
+        Set<String> activationContainerBindingIds =
+                analysis.containerBindingIds();
+        Set<String> activationOutputPorts = analysis.outputPorts();
+        String memberOutputPort = string(analysis.output(), "portId");
         Map<String, List<Integer>> mapProjectionIndices =
                 new LinkedHashMap<>();
         Map<String, Integer> mapProjectionExpectedCounts =
@@ -4902,6 +4941,12 @@ public final class ConcolicSummaryImporter {
             JsonObject record = element.getAsJsonObject();
             if ("DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING"
                     .equals(string(record, "kind"))) {
+                String ownerPort = string(object(record,
+                        "mapProjectionSelector"), "outputPort");
+                if (activationOutputPorts.contains(ownerPort)
+                        && !ownerPort.equals(memberOutputPort)) {
+                    continue;
+                }
                 MapProjectionDynamicFieldValidation validated =
                         validateMapProjectionDynamicFieldBinding(record,
                                 analysis, fieldObservations,
@@ -4958,6 +5003,14 @@ public final class ConcolicSummaryImporter {
             }
             if ("DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
                     string(record, "kind"))) {
+                String selectorBindingId = string(object(record,
+                        "containerSelector"), "bindingId");
+                if (activationContainerBindingIds.contains(
+                        selectorBindingId)
+                        && !memberContainerBindingIds.contains(
+                        selectorBindingId)) {
+                    continue;
+                }
                 ContainerDynamicFieldValidation validated =
                         validateContainerDynamicFieldBinding(record,
                                 analysis, actions, duplicateActions,
@@ -7686,22 +7739,54 @@ public final class ConcolicSummaryImporter {
         Set<String> exactCoveredWriteSites = new LinkedHashSet<>();
         Set<String> exactCoveredVoidMethods = new LinkedHashSet<>();
         Map<String, JsonObject> exactMatches = new LinkedHashMap<>();
-        ExactOrderedPutBijection orderedPutBijection =
-                exactTransformerContract
-                        ? exactOrderedPutBijection(analysis,
-                        writeSitesByMethod, requestedStateEffects,
-                        rawPathCondition, normalization,
-                        dynamicFieldBindings, engineArrayInputBindings,
-                        requestedPort, requestedCell)
-                        : ExactOrderedPutBijection.notApplicable();
-        if (orderedPutBijection.complete) {
-            exactCoveredWriteSites.addAll(
-                    orderedPutBijection.coveredWriteSites);
-            for (JsonElement matchElement : orderedPutBijection.matches) {
-                JsonObject match = matchElement.getAsJsonObject();
-                exactMatches.put("WRITE::" + string(match, "siteId"),
-                        match.deepCopy());
+        List<JsonObject> containerDeclarations = new ArrayList<>();
+        for (JsonElement element : array(slice,
+                "containerElementFieldBindings")) {
+            if (element.isJsonObject()
+                    && integer(element.getAsJsonObject(),
+                    "schemaVersion", -1) == 1
+                    && "ARRAY_ELEMENT_FIELD".equals(string(
+                    element.getAsJsonObject(), "kind"))) {
+                containerDeclarations.add(element.getAsJsonObject());
             }
+        }
+        Set<String> containerWriteSites = new LinkedHashSet<>();
+        Set<Integer> containerEffectIndices = new LinkedHashSet<>();
+        Set<String> unmatchedContainerSites = new LinkedHashSet<>();
+        int containerMatchCount = 0;
+        boolean unsiteableContainerDeclaration = false;
+        for (JsonObject declaration : exactTransformerContract
+                ? containerDeclarations
+                : Collections.<JsonObject>emptyList()) {
+            JsonObject match = exactContainerMutationMatch(analysis,
+                    declaration, writeSitesByMethod,
+                    requestedStateEffects, rawPathCondition, normalization,
+                    dynamicFieldBindings, engineArrayInputBindings,
+                    requestedPort, requestedCell);
+            String site = match == null ? "" : string(match, "siteId");
+            int effectIndex = match == null ? -1 : integer(match,
+                    "rawConditionIndex", -1);
+            if (match == null) {
+                String declaredSite = string(declaration,
+                        "requestedStateTransformerSiteId");
+                if (declaredSite.isEmpty()) {
+                    unsiteableContainerDeclaration = true;
+                } else {
+                    unmatchedContainerSites.add(declaredSite);
+                }
+                continue;
+            }
+            if (site.isEmpty() || containerWriteSites.contains(site)
+                    || effectIndex < 0
+                    || containerEffectIndices.contains(effectIndex)) {
+                unsiteableContainerDeclaration = true;
+                continue;
+            }
+            containerWriteSites.add(site);
+            containerEffectIndices.add(effectIndex);
+            exactCoveredWriteSites.add(site);
+            exactMatches.put("WRITE::" + site, match);
+            containerMatchCount++;
         }
         if (fieldAssignmentCapture != null
                 && fieldAssignmentCapture.complete) {
@@ -7756,6 +7841,11 @@ public final class ConcolicSummaryImporter {
                 }
             }
         }
+        unmatchedContainerSites.removeAll(
+                guardExcludedWriteSites.keySet());
+        boolean unmatchedContainerDeclaration =
+                unsiteableContainerDeclaration
+                        || !unmatchedContainerSites.isEmpty();
 
         List<StaticTransformerObligation> remaining = new ArrayList<>();
         int declaredWriteSiteCount = 0;
@@ -7810,18 +7900,36 @@ public final class ConcolicSummaryImporter {
                     requestedPort));
         }
         int guardExcludedWriteSiteCount = guardExcludedWriteSites.size();
-        int statePortMatchedTransformerCount =
-                orderedPutBijection.matchedCount;
+        int statePortMatchedTransformerCount = containerMatchCount;
         int unresolvedStatePortEffectCount = 0;
-        Set<String> libraryFamilies = new LinkedHashSet<>();
+        List<JsonObject> residualRequestedStateEffects = new ArrayList<>();
+        for (JsonObject effect : requestedStateEffects) {
+            if (!containerEffectIndices.contains(integer(effect,
+                    "rawConditionIndex", -1))) {
+                residualRequestedStateEffects.add(effect);
+            }
+        }
+        List<JsonObject> residualLibraryRequestedStateEffects =
+                new ArrayList<>();
         for (JsonObject effect : libraryRequestedStateEffects) {
+            if (!containerEffectIndices.contains(integer(effect,
+                    "rawConditionIndex", -1))) {
+                residualLibraryRequestedStateEffects.add(effect);
+            }
+        }
+        Set<String> residualStateFamilies = new LinkedHashSet<>();
+        for (JsonObject effect : residualRequestedStateEffects) {
+            residualStateFamilies.add(string(effect, "stateFamily"));
+        }
+        Set<String> libraryFamilies = new LinkedHashSet<>();
+        for (JsonObject effect : residualLibraryRequestedStateEffects) {
             libraryFamilies.add(string(effect, "stateFamily"));
         }
         boolean uniqueLibraryFallbackCandidate =
                 exactTransformerContract
-                && !orderedPutBijection.applicable
+                && !unmatchedContainerDeclaration
                 && remaining.size() == 1
-                && !libraryRequestedStateEffects.isEmpty()
+                && !residualLibraryRequestedStateEffects.isEmpty()
                 && libraryFamilies.size() == 1;
         String transformerInvoke = uniqueLibraryFallbackCandidate
                 ? exactTransformerInvoke(analysis, remaining.get(0)) : "";
@@ -7830,8 +7938,9 @@ public final class ConcolicSummaryImporter {
                         transformerInvoke);
         boolean unresolvedTransformerInvoke = uniqueLibraryFallbackCandidate
                 && transformerInvoke.isEmpty();
-        if (requestedStateFamilies.size() > 1) {
-            unresolvedStatePortEffectCount = requestedStateEffects.size();
+        if (residualStateFamilies.size() > 1) {
+            unresolvedStatePortEffectCount =
+                    residualRequestedStateEffects.size();
         } else if (incompleteIteratorRemoveApplicationProvenance
                 || unresolvedTransformerInvoke) {
             // A VM HashMap.removeNode expression proves the library mutation,
@@ -7840,13 +7949,13 @@ public final class ConcolicSummaryImporter {
             // those facts post hoc.  Without that retired evidence path this
             // exact application transformer must remain fail-closed.
             unresolvedStatePortEffectCount =
-                    libraryRequestedStateEffects.size();
-        } else if (!orderedPutBijection.applicable
+                    residualRequestedStateEffects.size();
+        } else if (!unmatchedContainerDeclaration
                 && remaining.size() == 1
-                && !libraryRequestedStateEffects.isEmpty()
+                && !residualLibraryRequestedStateEffects.isEmpty()
                 && libraryFamilies.size() == 1
                 && libraryEffectsMatchUniqueTransformer(
-                libraryRequestedStateEffects, remaining.get(0),
+                residualLibraryRequestedStateEffects, remaining.get(0),
                 exactTransformerContract)) {
             StaticTransformerObligation matched = remaining.remove(0);
             statePortMatchedTransformerCount += 1;
@@ -7863,7 +7972,8 @@ public final class ConcolicSummaryImporter {
             match.addProperty("stateFamily",
                     libraryFamilies.iterator().next());
             JsonArray effectIds = new JsonArray();
-            for (JsonObject effect : libraryRequestedStateEffects) {
+            for (JsonObject effect
+                    : residualLibraryRequestedStateEffects) {
                 effectIds.add(string(effect, "effectId"));
             }
             match.add("effectIds", effectIds);
@@ -7874,20 +7984,17 @@ public final class ConcolicSummaryImporter {
                             : "UNIQUE_UNRESOLVED_TRANSFORMER_AND_REQUESTED_"
                             + "STATE_FAMILY");
             matches.add(match);
-        } else if (!remaining.isEmpty()
-                && !libraryRequestedStateEffects.isEmpty()) {
             unresolvedStatePortEffectCount =
-                    libraryRequestedStateEffects.size();
+                    residualRequestedStateEffects.size()
+                            - residualLibraryRequestedStateEffects.size();
+        } else if (!residualRequestedStateEffects.isEmpty()) {
+            unresolvedStatePortEffectCount =
+                    residualRequestedStateEffects.size();
         }
 
         List<HeapEffectIssue> issues = new ArrayList<>(
                 transformerContractIssues);
-        issues.addAll(orderedPutBijection.issues);
         JsonArray gaps = transformerContractGaps.deepCopy();
-        for (JsonElement gapElement : orderedPutBijection.gaps) {
-            JsonObject gap = gapElement.getAsJsonObject();
-            gaps.add(gap.deepCopy());
-        }
         Map<String, List<StaticTransformerObligation>> writeGaps =
                 new LinkedHashMap<>();
         int edgeFreeVoidMethodCount = 0;
@@ -7978,445 +8085,202 @@ public final class ConcolicSummaryImporter {
     }
 
     /**
-     * Discharges the exact four-site array-to-map transformer only through a
-     * one-to-one runtime witness.  This is deliberately narrower than the
-     * historical method-count fallback: every static array selector, raw
-     * array load, dynamic key field, map-state transition and requested
-     * output port must join in the same order.
+     * Joins one declared array selector to one requested-state mutation.
+     * Declaration count, selector density, static unit order, and adjacency
+     * are deliberately irrelevant: identity is carried by the declared
+     * transformer site and the runtime consumer/effect witnesses.
      */
-    private static ExactOrderedPutBijection exactOrderedPutBijection(
-            OutputMemberAnalysis analysis,
+    private static JsonObject exactContainerMutationMatch(
+            OutputMemberAnalysis analysis, JsonObject declaration,
             Map<String, Set<String>> writeSitesByMethod,
             List<JsonObject> requestedStateEffects,
             JsonArray rawPathCondition, PathNormalization normalization,
             JsonArray dynamicFieldBindings,
             JsonArray engineArrayInputBindings,
             String requestedPort, String requestedCell) {
-        JsonObject activation = analysis.activation;
-        Map<String, List<JsonObject>> declarationsByMethod =
-                new LinkedHashMap<>();
-        for (JsonElement element : array(activation,
-                "containerElementFieldBindings")) {
+        String bindingId = string(declaration, "bindingId");
+        String method = string(declaration, "method");
+        String methodKey = ConcolicCodePosition.sootMethodKey(method);
+        String transformerSite = string(declaration,
+                "requestedStateTransformerSiteId");
+        String containerPort = string(declaration, "containerInputPort");
+        Set<String> proofEdgeIds = strictPrimitiveStrings(array(
+                declaration, "proofCausalEdgeIds"));
+        if (bindingId.isEmpty() || methodKey.isEmpty()
+                || transformerSite.isEmpty() || containerPort.isEmpty()
+                || integer(declaration, "schemaVersion", -1) != 1
+                || !bool(declaration, "complete", false)
+                || !"ARRAY_ELEMENT_FIELD".equals(string(declaration,
+                "kind"))
+                || !"STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                .concat("KEY_VALUE_V1").equals(string(declaration,
+                "proofAuthority"))
+                || proofEdgeIds == null || proofEdgeIds.isEmpty()
+                || !writeSitesByMethod.containsKey(methodKey)
+                || !writeSitesByMethod.get(methodKey).contains(
+                transformerSite)) {
+            return null;
+        }
+
+        JsonObject transformer = null;
+        for (JsonElement element : array(analysis.slice(),
+                "requestedStateTransformerObligations")) {
             if (!element.isJsonObject()) continue;
-            JsonObject declaration = element.getAsJsonObject();
-            String methodKey = ConcolicCodePosition.sootMethodKey(string(
-                    declaration, "method"));
-            if (methodKey.isEmpty()
-                    || !"ARRAY_ELEMENT_FIELD".equals(string(declaration,
-                    "kind"))) {
+            JsonObject candidate = element.getAsJsonObject();
+            if (!transformerSite.equals(string(candidate, "siteId"))
+                    || !method.equals(string(candidate, "method"))
+                    || !requestedCell.equals(string(candidate,
+                    "targetCell"))
+                    || !"HEAP_WRITE".equals(string(candidate,
+                    "transferKind"))
+                    || !"field_mutation".equals(string(candidate, "kind"))
+                    || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL".equals(
+                    string(candidate, "authority"))) {
                 continue;
             }
-            List<JsonObject> group = declarationsByMethod.get(methodKey);
-            if (group == null) {
-                group = new ArrayList<>();
-                declarationsByMethod.put(methodKey, group);
-            }
-            group.add(declaration);
+            if (transformer != null) return null;
+            transformer = candidate;
+        }
+        Set<String> transformerEdges = transformer == null ? null
+                : strictPrimitiveStrings(array(transformer,
+                "causalEdgeIds"));
+        if (transformerEdges == null || transformerEdges.isEmpty()
+                || !proofEdgeIds.containsAll(transformerEdges)) {
+            return null;
         }
 
-        List<String> candidateMethods = new ArrayList<>();
-        for (Map.Entry<String, List<JsonObject>> entry
-                : declarationsByMethod.entrySet()) {
-            int writeCount = writeSitesByMethod.containsKey(entry.getKey())
-                    ? writeSitesByMethod.get(entry.getKey()).size() : 0;
-            if (entry.getValue().size() == 4 || writeCount == 4) {
-                candidateMethods.add(entry.getKey());
+        JsonObject binding = null;
+        for (JsonElement element : dynamicFieldBindings) {
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if ("DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
+                    string(candidate, "kind"))
+                    && bindingId.equals(string(object(candidate,
+                    "containerSelector"), "bindingId"))) {
+                if (binding != null) return null;
+                binding = candidate;
             }
         }
-        if (candidateMethods.isEmpty()) {
-            return ExactOrderedPutBijection.notApplicable();
+        if (binding == null
+                || !"MAP_PUT".equals(string(binding,
+                "consumerWitnessOperation"))
+                || !requestedPort.equals(string(binding,
+                "consumerWitnessOutputPort"))
+                || !hasNonNull(binding, "fieldExpression")) {
+            return null;
         }
-        if (candidateMethods.size() != 1) {
-            return ExactOrderedPutBijection.failed(
-                    "AMBIGUOUS_APPLICATION_METHOD_GROUP", -1);
-        }
-        String methodKey = candidateMethods.get(0);
-        List<JsonObject> declarations = new ArrayList<>(
-                declarationsByMethod.get(methodKey));
-        if (declarations.size() != 4) {
-            return ExactOrderedPutBijection.failed(
-                    "STATIC_CONTAINER_DECLARATION_CARDINALITY", -1);
-        }
-        Collections.sort(declarations, new Comparator<JsonObject>() {
-            @Override
-            public int compare(JsonObject left, JsonObject right) {
-                return Integer.compare(integer(left, "elementIndex", -1),
-                        integer(right, "elementIndex", -1));
-            }
-        });
-
-        Set<String> methodWriteSites = writeSitesByMethod.get(methodKey);
-        if (methodWriteSites == null) {
-            return ExactOrderedPutBijection.failed(
-                    "STATIC_WRITE_OBLIGATION_CARDINALITY", -1);
-        }
-        List<String> obligationSites = new ArrayList<>(methodWriteSites);
-        Collections.sort(obligationSites, new Comparator<String>() {
-            @Override
-            public int compare(String left, String right) {
-                return Integer.compare(siteUnitIndex(left),
-                        siteUnitIndex(right));
-            }
-        });
-        if (obligationSites.size() != 4) {
-            return ExactOrderedPutBijection.failed(
-                    "STATIC_WRITE_OBLIGATION_CARDINALITY", -1);
+        JsonObject selector = object(binding, "containerSelector");
+        int selectorIndex = integer(selector, "elementIndex", -1);
+        int effectIndex = integer(binding,
+                "consumerWitnessRawConditionIndex", -1);
+        if (selectorIndex < 0 || effectIndex < 0
+                || !containerPort.equals(string(selector,
+                "containerInputPort"))) {
+            return null;
         }
 
-        String baseInput = string(declarations.get(0),
-                "baseInputSymbol");
-        String containerPort = string(declarations.get(0),
-                "containerInputPort");
-        String containerCell = string(declarations.get(0),
-                "containerInputCell");
-        String methodSignature = string(declarations.get(0), "method");
-        if (baseInput.isEmpty() || containerPort.isEmpty()
-                || containerCell.isEmpty() || methodSignature.isEmpty()) {
-            return ExactOrderedPutBijection.failed(
-                    "STATIC_CONTAINER_ENDPOINT_MISSING", -1);
-        }
-
-        int previousWriteUnit = -1;
-        for (int index = 0; index < 4; index++) {
-            JsonObject declaration = declarations.get(index);
-            int loadUnit = siteUnitIndex(string(declaration,
-                    "arrayLoadSiteId"));
-            int fieldUnit = siteUnitIndex(string(declaration,
-                    "fieldMaterializationSiteId"));
-            int writeUnit = siteUnitIndex(obligationSites.get(index));
-            int nextLoadUnit = index + 1 < declarations.size()
-                    ? siteUnitIndex(string(declarations.get(index + 1),
-                    "arrayLoadSiteId")) : Integer.MAX_VALUE;
-            Set<String> proofEdgeIds = strictPrimitiveStrings(array(
-                    declaration, "proofCausalEdgeIds"));
-            boolean exactStaticOrder = integer(declaration,
-                    "schemaVersion", -1) == 1
-                    && bool(declaration, "complete", false)
-                    && "EXACT_ARRAY_INDEX".equals(string(declaration,
-                    "selectorAuthority"))
-                    && integer(declaration, "elementIndex", -1) == index
-                    && integer(declaration,
-                    "elementOccurrence", -1) == 1
-                    && baseInput.equals(string(declaration,
-                    "baseInputSymbol"))
-                    && containerPort.equals(string(declaration,
-                    "containerInputPort"))
-                    && containerCell.equals(string(declaration,
-                    "containerInputCell"))
-                    && methodSignature.equals(string(declaration, "method"))
-                    && methodKey.equals(ConcolicCodePosition.sootMethodKey(
-                    string(declaration, "arrayLoadSiteId")))
-                    && methodKey.equals(ConcolicCodePosition.sootMethodKey(
-                    string(declaration,
-                            "fieldMaterializationSiteId")))
-                    && methodKey.equals(ConcolicCodePosition.sootMethodKey(
-                    obligationSites.get(index)))
-                    && "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                    .concat("FIELD_FOUR_EDGE_JOIN_V1").equals(string(
-                            declaration, "proofAuthority"))
-                    && proofEdgeIds != null && proofEdgeIds.size() == 4
-                    && loadUnit >= 0 && loadUnit < fieldUnit
-                    && fieldUnit < writeUnit && writeUnit < nextLoadUnit
-                    && writeUnit > previousWriteUnit;
-            if (!exactStaticOrder) {
-                return ExactOrderedPutBijection.failed(
-                        "STATIC_SELECTOR_OR_SITE_ORDER", -1);
-            }
-            previousWriteUnit = writeUnit;
-        }
-
-        List<JsonObject> containerInputBindings = new ArrayList<>();
-        for (JsonElement element : array(analysis.slice(),
-                "inputBindings")) {
-            if (element.isJsonObject() && containerPort.equals(string(
-                    element.getAsJsonObject(), "inputPort"))) {
-                containerInputBindings.add(element.getAsJsonObject());
+        JsonObject effect = null;
+        for (JsonObject candidate : requestedStateEffects) {
+            if (integer(candidate, "rawConditionIndex", -1)
+                    == effectIndex) {
+                if (effect != null) return null;
+                effect = candidate;
             }
         }
-        if (containerInputBindings.size() != 1) {
-            return ExactOrderedPutBijection.failed(
-                    "CONTAINER_INPUT_PORT_BINDING_CARDINALITY", -1);
-        }
-        JsonObject containerInputBinding = containerInputBindings.get(0);
-        Set<String> declaredSinkSites = strictPrimitiveStrings(array(
-                containerInputBinding,
-                "requestedStateTransformerSinkSites"));
-        if (declaredSinkSites == null
-                || !declaredSinkSites.equals(new LinkedHashSet<>(
-                obligationSites))
-                || !containerCell.equals(string(containerInputBinding,
-                "dependencyCell"))
-                || !"EXACT_CELL_IDENTITY".equals(string(
-                containerInputBinding, "bindingAuthority"))
-                || !bool(containerInputBinding,
-                "requestedStateTransformerSinkClosureComplete", false)
-                || !bool(containerInputBinding,
-                "requestedStateTransformerSinkExclusive", false)
-                || array(containerInputBinding,
-                "requestedStateTransformerUnclassifiedEdgeIds").size()
-                != 0
-                || !"STATIC_FORWARD_CAUSAL_CLOSURE_TO_EXACT_REQUESTED_"
-                .concat("STATE_TRANSFORMERS").equals(string(
-                        containerInputBinding,
-                        "requestedStateTransformerSinkAuthority"))) {
-            return ExactOrderedPutBijection.failed(
-                    "CONTAINER_INPUT_TO_WRITE_SITES_JOIN", -1);
+        if (effect == null || !"MAP_PUT".equals(string(effect, "kind"))
+                || !methodKey.equals(ConcolicCodePosition.vmMethodKey(
+                string(effect, "codePosition")))
+                || !string(binding, "consumerWitnessSiteId").equals(
+                string(effect, "siteId"))
+                || !binding.get("fieldExpression").equals(effect.get(
+                "keyExpression"))
+                || effectIndex >= rawPathCondition.size()
+                || !normalization.isSemantic(effectIndex)) {
+            return null;
         }
 
-        List<JsonObject> putEffects = new ArrayList<>();
-        for (JsonObject effect : requestedStateEffects) {
-            if ("MAP_PUT".equals(string(effect, "kind"))) {
-                putEffects.add(effect);
-            }
-        }
-        if (putEffects.size() != 4) {
-            return ExactOrderedPutBijection.failed(
-                    "RUNTIME_MAP_PUT_CARDINALITY", -1);
-        }
-        String stateFamily = string(putEffects.get(0), "stateFamily");
-        JsonElement mapExpression = putEffects.get(0).get("mapExpression");
-        HeapPortBinding receiver = new HeapPortResolver(analysis)
-                .requestedOutputBinding(mapExpression);
-        if (stateFamily.isEmpty() || mapExpression == null
-                || !receiver.resolved
-                || !requestedPort.equals(receiver.outputPort)) {
-            return ExactOrderedPutBijection.failed(
-                    "REQUESTED_OUTPUT_PORT_OR_RECEIVER", integer(
-                    putEffects.get(0), "rawConditionIndex", -1));
-        }
-        int previousRawIndex = -1;
-        int previousStateAfter = -1;
-        String previousPostState = "";
-        String previousOutputPort = "";
-        for (int index = 0; index < putEffects.size(); index++) {
-            JsonObject effect = putEffects.get(index);
-            int rawIndex = integer(effect, "rawConditionIndex", -1);
-            int before = integer(effect, "stateOrdinalBefore", -1);
-            int after = integer(effect, "stateOrdinalAfter", -1);
-            boolean exactRuntimeOrder = methodKey.equals(
-                    ConcolicCodePosition.vmMethodKey(string(effect,
-                            "codePosition")))
-                    && stateFamily.equals(string(effect, "stateFamily"))
-                    && mapExpression.equals(effect.get("mapExpression"))
-                    && rawIndex > previousRawIndex
-                    && rawIndex >= 0
-                    && normalization.isSemantic(rawIndex)
-                    && before >= 0 && after == before + 1
-                    && (index == 0 || before == previousStateAfter
-                    && previousPostState.equals(string(effect, "preState"))
-                    && previousOutputPort.equals(string(effect,
-                            "inputPort")))
-                    && (index + 1 < putEffects.size()
-                    || requestedPort.equals(string(effect, "outputPort")));
-            if (!exactRuntimeOrder) {
-                return ExactOrderedPutBijection.failed(
-                        "RUNTIME_EFFECT_ORDER_OR_STATE_CHAIN", rawIndex);
-            }
-            previousRawIndex = rawIndex;
-            previousStateAfter = after;
-            previousPostState = string(effect, "postState");
-            previousOutputPort = string(effect, "outputPort");
-        }
-
-        List<JsonObject> arrays = new ArrayList<>();
+        JsonObject engineArray = null;
         for (JsonElement element : engineArrayInputBindings) {
-            if (element.isJsonObject() && containerPort.equals(string(
-                    element.getAsJsonObject(), "inputPort"))) {
-                arrays.add(element.getAsJsonObject());
+            if (!element.isJsonObject()) continue;
+            JsonObject candidate = element.getAsJsonObject();
+            if (containerPort.equals(string(candidate, "inputPort"))) {
+                if (engineArray != null) return null;
+                engineArray = candidate;
             }
         }
-        if (arrays.size() != 1) {
-            return ExactOrderedPutBijection.failed(
-                    "ENGINE_ARRAY_BINDING_CARDINALITY", -1);
+        if (engineArray == null
+                || longInteger(selector, "containerObjectToken", 0L)
+                != longInteger(engineArray, "arrayObjectToken", -1L)) {
+            return null;
         }
-        JsonObject engineArray = arrays.get(0);
         JsonObject arrayValue = object(engineArray,
                 "arrayValueExpression");
-        JsonArray engineElements = array(arrayValue, "_elements");
+        int arrayLength = integer(arrayValue, "_concrete_length", -1);
+        JsonArray arrayElements = array(arrayValue, "_elements");
         String engineArrayId = string(engineArray, "engineArrayId");
-        long arrayObjectToken = longInteger(engineArray,
-                "arrayObjectToken", 0L);
-        String activationId = string(activation, "activationId");
-        boolean completeEngineArray = bool(engineArray, "complete", false)
-                && !engineArrayId.isEmpty() && arrayObjectToken > 0L
-                && activationId.equals(string(engineArray,
-                "objectTokenScope"))
-                && "VM_ACTIVE_SYM_ARRAY_ID_V1".equals(string(engineArray,
-                "engineArrayIdAuthority"))
-                && "VM_EXACT_FINITE_ARRAY_VALUE_V1".equals(string(
-                arrayValue, "_authority"))
-                && bool(arrayValue, "_elements_complete", false)
-                && integer(arrayValue, "_concrete_length", -1) == 4
-                && engineElements.size() == 4;
-        for (int index = 0; index < engineElements.size(); index++) {
-            completeEngineArray &= engineElements.get(index).isJsonObject()
-                    && integer(engineElements.get(index).getAsJsonObject(),
-                    "index", -1) == index
-                    && hasNonNull(engineElements.get(index).getAsJsonObject(),
-                    "expression");
+        if (engineArrayId.isEmpty() || selectorIndex >= arrayLength) {
+            return null;
         }
-        if (!completeEngineArray) {
-            return ExactOrderedPutBijection.failed(
-                    "ENGINE_ARRAY_BINDING_INCOMPLETE", -1);
+        JsonObject arrayElement = null;
+        for (JsonElement element : arrayElements) {
+            if (!element.isJsonObject()
+                    || integer(element.getAsJsonObject(), "index", -1)
+                    != selectorIndex) {
+                continue;
+            }
+            if (arrayElement != null) return null;
+            arrayElement = element.getAsJsonObject();
+        }
+        if (arrayElement == null || !hasNonNull(arrayElement, "expression")
+                || !arrayElement.get("expression").equals(effect.get(
+                "valueExpression"))) {
+            return null;
         }
 
-        List<JsonObject> orderedBindings = new ArrayList<>();
-        for (JsonObject declaration : declarations) {
-            String staticBindingId = string(declaration, "bindingId");
-            List<JsonObject> matches = new ArrayList<>();
-            for (JsonElement element : dynamicFieldBindings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                if ("DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
-                        string(binding, "kind"))
-                        && staticBindingId.equals(string(object(binding,
-                        "containerSelector"), "bindingId"))) {
-                    matches.add(binding);
-                }
+        int loadIndex = -1;
+        for (int rawIndex = 0; rawIndex < effectIndex; rawIndex++) {
+            if (!normalization.isSemantic(rawIndex)
+                    || !rawPathCondition.get(rawIndex).isJsonObject()) {
+                continue;
             }
-            if (matches.size() != 1) {
-                return ExactOrderedPutBijection.failed(
-                        "DYNAMIC_FIELD_BINDING_CARDINALITY", -1);
-            }
-            orderedBindings.add(matches.get(0));
-        }
-
-        JsonArray runtimeMatches = new JsonArray();
-        Set<Integer> consumerRawIndices = new LinkedHashSet<>();
-        for (int index = 0; index < 4; index++) {
-            JsonObject declaration = declarations.get(index);
-            JsonObject binding = orderedBindings.get(index);
-            JsonObject selector = object(binding, "containerSelector");
-            JsonObject effect = putEffects.get(index);
-            int rawIndex = integer(effect, "rawConditionIndex", -1);
-            int loadIndex = rawIndex - 1;
-            boolean exactDynamicKey = bool(binding, "complete", false)
-                    && string(declaration, "bindingId").equals(string(
-                    selector, "bindingId"))
-                    && baseInput.equals(string(binding,
-                    "baseInputSymbol"))
-                    && containerPort.equals(string(selector,
-                    "containerInputPort"))
-                    && containerCell.equals(string(selector,
-                    "containerInputCell"))
-                    && integer(selector, "elementIndex", -1) == index
-                    && integer(selector,
-                    "elementOccurrence", -1) == 1
-                    && longInteger(selector,
-                    "containerObjectToken", 0L) == arrayObjectToken
-                    && longInteger(selector,
-                    "elementObjectToken", 0L) > 0L
-                    && activationId.equals(string(selector,
-                    "objectTokenScope"))
-                    && string(declaration,
-                    "fieldMaterializationSiteId").equals(string(binding,
-                    "effectiveMaterializationSiteId"))
-                    && integer(binding,
-                    "effectiveMaterializationOccurrence", -1) == 1
-                    && CONTAINER_SITE_BRIDGE_AUTHORITY.equals(string(binding,
-                    "materializationSiteBridgeAuthority"))
-                    && string(declaration, "bindingId").equals(string(
-                    binding, "materializationSiteBridgeBindingId"))
-                    && longInteger(selector, "elementObjectToken", 0L)
-                    == longInteger(binding,
-                    "materializationSiteBridgeElementObjectToken", -1L)
-                    && activationId.equals(string(binding,
-                    "materializationSiteBridgeObjectTokenScope"))
-                    && hasNonNull(binding, "fieldExpression")
-                    && binding.get("fieldExpression").equals(effect.get(
-                    "keyExpression"))
-                    && "EXACT_REQUESTED_OUTPUT_MAP_PUT_KEY_DYNAMIC_SYMBOL"
-                    .equals(string(binding, "fieldExpressionAuthority"))
-                    && integer(binding,
-                    "consumerWitnessRawConditionIndex", -1) == rawIndex
-                    && consumerRawIndices.add(rawIndex)
-                    && receiver.inputPort.equals(string(binding,
-                    "consumerWitnessInputPort"))
-                    && requestedPort.equals(string(binding,
-                    "consumerWitnessOutputPort"))
-                    && "MAP_PUT".equals(string(binding,
-                    "consumerWitnessOperation"))
-                    && CONTAINER_PUT_CONSUMER_AUTHORITY.equals(string(binding,
-                    "consumerWitnessAuthority"))
-                    && string(effect, "siteId").equals(string(binding,
-                    "consumerWitnessSiteId"));
-            if (!exactDynamicKey) {
-                return ExactOrderedPutBijection.failed(
-                        "DYNAMIC_KEY_BINDING_OR_RECEIVER", rawIndex);
-            }
-
-            if (loadIndex < 0 || loadIndex >= rawPathCondition.size()
-                    || !normalization.isSemantic(loadIndex)
-                    || !rawPathCondition.get(loadIndex).isJsonObject()) {
-                return ExactOrderedPutBijection.failed(
-                        "ARRAY_LOAD_NOT_IMMEDIATELY_BEFORE_PUT", rawIndex);
-            }
-            JsonObject load = rawPathCondition.get(loadIndex)
+            JsonObject candidate = rawPathCondition.get(rawIndex)
                     .getAsJsonObject();
-            JsonObject rawPut = rawPathCondition.get(rawIndex)
-                    .getAsJsonObject();
-            JsonArray rawParameters = array(rawPut, "_param_list");
-            boolean exactLoad = "_array_expr".equals(string(load, "_type"))
-                    && bool(load, "_is_load", false)
-                    && engineArrayId.equals(string(load, "_arr_str"))
-                    && exactIntConstant(object(load, "_index_exp"), index)
-                    && hasNonNull(load, "_value_exp")
-                    && load.get("_value_exp").equals(effect.get(
+            boolean match = "_array_expr".equals(string(candidate, "_type"))
+                    && bool(candidate, "_is_load", false)
+                    && engineArrayId.equals(string(candidate, "_arr_str"))
+                    && exactIntConstant(object(candidate, "_index_exp"),
+                    selectorIndex)
+                    && hasNonNull(candidate, "_value_exp")
+                    && candidate.get("_value_exp").equals(effect.get(
                     "valueExpression"))
                     && methodKey.equals(ConcolicCodePosition.vmMethodKey(
-                    codePosition(load)))
-                    && "MethodExpression".equals(string(rawPut, "_type"))
-                    && "java/util/HashMap put".equals(string(rawPut,
-                    "_name"))
-                    && rawParameters.size() == 3
-                    && rawParameters.get(0).equals(effect.get(
-                    "mapExpression"))
-                    && rawParameters.get(1).equals(effect.get(
-                    "keyExpression"))
-                    && rawParameters.get(2).equals(effect.get(
-                    "valueExpression"));
-            if (!exactLoad) {
-                return ExactOrderedPutBijection.failed(
-                        "ARRAY_LOAD_VALUE_INDEX_OR_RAW_PUT_JOIN", rawIndex);
+                    codePosition(candidate)));
+            if (match) {
+                loadIndex = rawIndex;
             }
-
-            JsonObject match = new JsonObject();
-            match.addProperty("obligationKind",
-                    "DECLARED_HEAP_WRITE_SITE");
-            match.addProperty("method", methodSignature);
-            match.addProperty("siteId", obligationSites.get(index));
-            match.addProperty("requestedOutputPort", requestedPort);
-            match.addProperty("requestedOutputCell", requestedCell);
-            match.addProperty("stateFamily", stateFamily);
-            JsonArray effectIds = new JsonArray();
-            effectIds.add(string(effect, "effectId"));
-            match.add("effectIds", effectIds);
-            match.addProperty("dynamicBindingId", string(binding,
-                    "dynamicBindingId"));
-            match.addProperty("containerBindingId", string(declaration,
-                    "bindingId"));
-            match.addProperty("elementIndex", index);
-            match.addProperty("rawConditionIndex", rawIndex);
-            match.addProperty("arrayLoadRawConditionIndex", loadIndex);
-            match.addProperty("engineArrayId", engineArrayId);
-            match.addProperty("authority",
-                    "RUNTIME_ORDERED_MAP_PUT_TO_EXACT_STATIC_WRITE_AND_"
-                            + "CONTAINER_ELEMENT_FIELD_V1");
-            runtimeMatches.add(match);
         }
-        return ExactOrderedPutBijection.complete(obligationSites,
-                runtimeMatches);
-    }
+        if (loadIndex < 0) return null;
 
-    private static int siteUnitIndex(String siteId) {
-        if (siteId == null) return -1;
-        int marker = siteId.lastIndexOf("#u");
-        if (marker < 0 || marker + 2 >= siteId.length()) return -1;
-        try {
-            return Integer.parseInt(siteId.substring(marker + 2));
-        } catch (NumberFormatException malformed) {
-            return -1;
-        }
+        JsonObject match = new JsonObject();
+        match.addProperty("obligationKind", "DECLARED_HEAP_WRITE_SITE");
+        match.addProperty("method", method);
+        match.addProperty("siteId", transformerSite);
+        match.addProperty("requestedOutputPort", requestedPort);
+        match.addProperty("requestedOutputCell", requestedCell);
+        match.addProperty("stateFamily", string(effect, "stateFamily"));
+        JsonArray effectIds = new JsonArray();
+        effectIds.add(string(effect, "effectId"));
+        match.add("effectIds", effectIds);
+        match.addProperty("dynamicBindingId", string(binding,
+                "dynamicBindingId"));
+        match.addProperty("containerBindingId", bindingId);
+        match.addProperty("elementIndex", selectorIndex);
+        match.addProperty("rawConditionIndex", effectIndex);
+        match.addProperty("arrayLoadRawConditionIndex", loadIndex);
+        match.addProperty("engineArrayId", engineArrayId);
+        match.addProperty("authority",
+                "RUNTIME_CONTAINER_SELECTOR_EFFECT_TO_EXACT_STATIC_WRITE_V1");
+        return match;
     }
 
     private static boolean exactIntConstant(JsonObject expression,
@@ -10153,16 +10017,6 @@ public final class ConcolicSummaryImporter {
         return value == null || value.isJsonNull() ? fallback : value.deepCopy();
     }
 
-    private static JsonElement firstElement(JsonObject object,
-                                            String... names) {
-        if (object == null) return null;
-        for (String name : names) {
-            JsonElement value = object.get(name);
-            if (value != null && !value.isJsonNull()) return value;
-        }
-        return null;
-    }
-
     private static Map<String, String> parseArgs(String[] args) {
         Map<String, String> result = new LinkedHashMap<>();
         for (int index = 0; args != null && index < args.length; index++) {
@@ -10909,25 +10763,6 @@ public final class ConcolicSummaryImporter {
                     == catalog.recordCount;
         }
 
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("policy",
-                    "RUNTIME_MAP_ENTRY_READ_EXACT_STATE_AND_TOKEN_JOIN_V1");
-            result.addProperty("recordCount", catalog.recordCount);
-            result.addProperty("validatedCount", catalog.byId.size()
-                    + catalog.finiteMapSnapshotsById.size()
-                    + catalog.mapStateInputsById.size());
-            result.addProperty("mapEntryReadCount", catalog.byId.size());
-            result.addProperty("finiteMapSnapshotCount",
-                    catalog.finiteMapSnapshotsById.size());
-            result.addProperty("mapStateInputObservationCount",
-                    catalog.mapStateInputsById.size());
-            result.addProperty("observationCount", observations.size());
-            result.addProperty("issueCount",
-                    catalog.issues.size() + issues.size());
-            result.addProperty("complete", complete());
-            return result;
-        }
     }
 
     private static final class HeapOutputBinding {
@@ -11024,63 +10859,6 @@ public final class ConcolicSummaryImporter {
             match.addProperty("authority",
                     "RUNTIME_OBSERVED_DOMINATING_GUARD_EXCLUDES_WRITE");
             return match;
-        }
-    }
-
-    private static final class ExactOrderedPutBijection {
-        private final boolean applicable;
-        private final boolean complete;
-        private final int matchedCount;
-        private final Set<String> coveredWriteSites;
-        private final JsonArray matches;
-        private final JsonArray gaps;
-        private final List<HeapEffectIssue> issues;
-
-        private ExactOrderedPutBijection(
-                boolean applicable, boolean complete, int matchedCount,
-                Set<String> coveredWriteSites, JsonArray matches,
-                JsonArray gaps, List<HeapEffectIssue> issues) {
-            this.applicable = applicable;
-            this.complete = complete;
-            this.matchedCount = matchedCount;
-            this.coveredWriteSites = coveredWriteSites;
-            this.matches = matches;
-            this.gaps = gaps;
-            this.issues = issues;
-        }
-
-        private static ExactOrderedPutBijection notApplicable() {
-            return new ExactOrderedPutBijection(false, false, 0,
-                    Collections.<String>emptySet(), new JsonArray(),
-                    new JsonArray(),
-                    Collections.<HeapEffectIssue>emptyList());
-        }
-
-        private static ExactOrderedPutBijection failed(String reason,
-                                                       int rawIndex) {
-            JsonObject gap = new JsonObject();
-            gap.addProperty("kind",
-                    "EXACT_ORDERED_MAP_PUT_BIJECTION_FAILED");
-            gap.addProperty("reason", reason);
-            gap.addProperty("rawConditionIndex", rawIndex);
-            JsonArray gaps = new JsonArray();
-            gaps.add(gap);
-            List<HeapEffectIssue> issues = new ArrayList<>();
-            issues.add(new HeapEffectIssue(
-                    "EXACT_ORDERED_MAP_PUT_BIJECTION_FAILED", rawIndex,
-                    reason, "requested-output-container-transformer"));
-            return new ExactOrderedPutBijection(true, false, 0,
-                    Collections.<String>emptySet(), new JsonArray(), gaps,
-                    issues);
-        }
-
-        private static ExactOrderedPutBijection complete(
-                List<String> coveredSites, JsonArray matches) {
-            return new ExactOrderedPutBijection(true, true,
-                    coveredSites.size(),
-                    new LinkedHashSet<>(coveredSites), matches.deepCopy(),
-                    new JsonArray(),
-                    Collections.<HeapEffectIssue>emptyList());
         }
     }
 
@@ -11199,7 +10977,6 @@ public final class ConcolicSummaryImporter {
         private final JsonArray observations;
         private final JsonArray finiteMapSnapshots;
         private final JsonArray dynamicFieldBindings;
-        private final JsonArray ignoredEvidence;
         private final List<HeapEffectIssue> issues;
         private final Map<String, HeapOutputBinding> outputBindings;
         private final StaticHeapTransformerCoverage staticCoverage;
@@ -11209,7 +10986,6 @@ public final class ConcolicSummaryImporter {
                 JsonArray initializers, JsonArray effects,
                 JsonArray observations, JsonArray finiteMapSnapshots,
                 JsonArray dynamicFieldBindings,
-                JsonArray ignoredEvidence,
                 List<HeapEffectIssue> issues,
                 Map<String, HeapOutputBinding> outputBindings,
                 StaticHeapTransformerCoverage staticCoverage,
@@ -11219,7 +10995,6 @@ public final class ConcolicSummaryImporter {
             this.observations = observations;
             this.finiteMapSnapshots = finiteMapSnapshots;
             this.dynamicFieldBindings = dynamicFieldBindings;
-            this.ignoredEvidence = ignoredEvidence;
             this.issues = issues;
             this.outputBindings = outputBindings;
             this.staticCoverage = staticCoverage;

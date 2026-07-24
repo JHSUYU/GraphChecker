@@ -329,7 +329,7 @@ public final class CausynthPipeline {
                                 StringConstant.v(signature), receiver,
                                 rootArguments));
                 entry.add(enterRegion);
-                // The wrapper pushes a zero placeholder before legacy entry.
+                // The wrapper pushes a zero placeholder before frame entry.
                 // Include the call itself so either this catch-all or an
                 // existing handler closes that exact frame if entry fails.
                 // The cleanup handler reads no incoming entry local, so this

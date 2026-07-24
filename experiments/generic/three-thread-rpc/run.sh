@@ -154,15 +154,18 @@ runtime_channel_rows() {
     def canonical_identity:
       canonicalize | tojson | @base64;
     def output_member_rows:
-      if has("outputClosure")
-      then .outputClosure.members[]?
-      else {
-        output: .requestedOutput?,
-        slice: .requestedOutputSlice?
-      }
-      end
-      | select(type == "object"
-          and (.output | type) == "object");
+      if (.outputClosure | type) == "object"
+          and .outputClosure.schemaVersion == 1
+          and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
+          and (.outputClosure.members | type) == "array"
+          and (.outputClosure.members | length) > 0
+          and all(.outputClosure.members[];
+            (type == "object")
+            and (.output | type) == "object"
+            and (.slice | type) == "object")
+      then .outputClosure.members[]
+      else error("missing or malformed canonical outputClosure")
+      end;
     def output_members:
       output_member_rows | .output
       | select(type == "object");
@@ -176,7 +179,7 @@ runtime_channel_rows() {
         outputs: ([output_member_rows
           | .output
           | {
-              portId: (.portId // .symbol // ""),
+              portId: (.portId // ""),
               cell: (.cell // ""),
               kind: (.kind // ""),
               javaTypeDescriptor: (.javaTypeDescriptor // "")
@@ -188,21 +191,7 @@ runtime_channel_rows() {
       if (.outputClosureFingerprint | type) == "string"
           and (.outputClosureFingerprint | length) > 0
       then .outputClosureFingerprint
-      elif has("outputClosure")
-      then .outputClosure | canonical_identity
-      else {
-        producer: {
-          regionId: .regionId,
-          regionInstanceId: .regionInstanceId,
-          rootCallId: .rootCallId
-        },
-        members: [output_member_rows],
-        requestedOutputCapture: (.requestedOutputCapture // []),
-        requestedOutputCaptureRequired:
-          (.requestedOutputCaptureRequired // false),
-        requestedOutputCaptureComplete:
-          (.requestedOutputCaptureComplete // false)
-      } | canonical_identity
+      else .outputClosure | canonical_identity
       end;
 
     . as $activations
@@ -220,13 +209,13 @@ runtime_channel_rows() {
         error("runtime read-from graph has no unique terminal target region")
       else $terminalRegions[0] end) as $terminalRegion
     | $activations[] as $activation
+    | select($activation.captureGoal.kind == "OUTPUT_CLOSURE")
     | ($activation | output_demand_key) as $outputDemandKey
     | ($activation | output_closure_fingerprint)
         as $outputClosureFingerprint
     | ($activation | output_members) as $output
     | select(
-        $activation.captureGoal.kind == "OUTPUT_CLOSURE"
-        and $activation.replayable == true
+        $activation.replayable == true
         and $activation.symbolicReady == true
         and ($output.cell
             | type == "string" and length > 0))
@@ -482,18 +471,25 @@ scheduled_activation() {
     --arg region "${region}" --arg sourceActivation "${source_activation}" \
     --arg fromCell "${from_cell}" '
     def output_members:
-      if has("outputClosure")
-      then .outputClosure.members[]?.output
-      else .requestedOutput?
-      end
-      | select(type == "object");
+      if (.outputClosure | type) == "object"
+          and .outputClosure.schemaVersion == 1
+          and .outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"
+          and (.outputClosure.members | type) == "array"
+          and (.outputClosure.members | length) > 0
+          and all(.outputClosure.members[];
+            (type == "object")
+            and (.output | type) == "object"
+            and (.slice | type) == "object")
+      then .outputClosure.members[].output
+      else error("missing or malformed canonical outputClosure")
+      end;
 
     select(
       .activationBundleMemberRole == "PRIMARY"
       and .activationId == $sourceActivation
       and .regionId == $region
-      and .captureGoal.kind == "OUTPUT_CLOSURE"
-      and any(output_members; .cell == $fromCell))
+      and .captureGoal.kind == "OUTPUT_CLOSURE")
+    | select(any(output_members; .cell == $fromCell))
     | .activationId
   ' "${schedule}/scheduled_activation_plan.jsonl")
   [[ ${#matches[@]} -eq 1 ]] || die \
@@ -932,7 +928,8 @@ do_explore_producer() {
   local channel schedule classes campaign region source_activation binding
   local summaries activations raw_results records state_dir planner_dir
   local replay_activation raw imported replay_verification
-  local z3 solver_timeout planner_status query_key iteration selection_dir
+  local z3 solver_timeout planner_status solver_status query_key iteration
+  local selection_dir
   local bound_spec bound_property bound_option bound_value
   local -A seen_queries=()
   local -a _replay_activations=() planner_bound_args=()
@@ -992,110 +989,89 @@ do_explore_producer() {
       --activations "${activations}" \
       --records "${records}" \
       --output-dir "${planner_dir}" \
-      --z3 "${z3}" \
-      --solver-timeout-ms "${solver_timeout}" \
       --region-id "${region}" \
       "${planner_bound_args[@]}"
     planner_status=$?
     set -e
-    require_file "producer path planner manifest" \
-      "${planner_dir}/path_flip_plan_manifest.json"
     require_file "producer path worklist manifest" \
       "${planner_dir}/region_path_manifest.json"
-    if [[ "${planner_status}" -eq 2 ]] \
-        && jq -e '.status == "AMBIGUOUS_PATH_FLIP"
-          and .selectedTaskCount > 1' \
-          "${planner_dir}/path_flip_plan_manifest.json" >/dev/null; then
-      query_key=$(jq -er -s \
-        'sort_by(.queryKey) | .[0].queryKey' \
-        "${planner_dir}/region_path_worklist.jsonl") \
-        || die "ambiguous producer worklist has no deterministic query key"
-      selection_dir="${planner_dir}/selected"
-      mkdir -p "${selection_dir}"
-      set +e
-      run_graphchecker_main \
-        edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
-        --summaries "${summaries}" \
-        --activations "${activations}" \
-        --records "${records}" \
-        --output-dir "${selection_dir}" \
-        --z3 "${z3}" \
-        --solver-timeout-ms "${solver_timeout}" \
-        --region-id "${region}" \
-        --query-key "${query_key}" \
-        "${planner_bound_args[@]}"
-      planner_status=$?
-      set -e
-      planner_dir=${selection_dir}
-      require_file "selected producer path planner manifest" \
-        "${planner_dir}/path_flip_plan_manifest.json"
-      require_file "selected producer path worklist manifest" \
-        "${planner_dir}/region_path_manifest.json"
-    fi
     if [[ "${planner_status}" -eq 2 ]]; then
-      if jq -e '.status == "PATH_FLIP_NOT_REPLAYABLE"
-          and .solverStatus == "UNSAT"
-          and .selectedTaskCount == 1' \
-          "${planner_dir}/path_flip_plan_manifest.json" >/dev/null; then
-        query_key=$(jq -er '.queryKey' \
-          "${planner_dir}/path_flip_plan_manifest.json") \
-          || die "UNSAT producer path flip has no query identity"
-        [[ -z "${seen_queries[${query_key}]+present}" ]] \
-          || die "producer path worklist repeated UNSAT query ${query_key}"
-        seen_queries[${query_key}]=present
-        jq -e --arg query "${query_key}" '
-          .status == "UNSAT" and .queryKey == $query
-        ' "${planner_dir}/path_flip_solver_result.json" >/dev/null \
-          || die "producer UNSAT result does not match its selected query"
-        [[ ! -s "${planner_dir}/activation_plan.jsonl" ]] \
-          || die "UNSAT producer path unexpectedly emitted a replay"
-        jq -c '{
-          schemaVersion: 1,
-          kind: "PATH_EXPLORATION_RECORD",
-          queryKey,
-          regionId,
-          sourcePathKey,
-          sourceSummaryId,
-          status,
-          solverInputHash
-        }' "${planner_dir}/path_flip_solver_result.json" \
-          >>"${records}"
-        echo "[three-thread-rpc] producer path proved UNSAT: ${query_key}"
-        discard_successful_iteration "${campaign}"
-        iteration=$((iteration + 1))
-        continue
-      fi
-      jq -e '
-        .status == "NO_MATCHING_PATH_FLIP"
-        and .selectedTaskCount == 0
-      ' "${planner_dir}/path_flip_plan_manifest.json" >/dev/null \
-        || die "producer planner stopped without closing its selection"
-      jq -e '.state == "CLOSED"' \
+      jq -e '.state == "GAPPED" or .state == "NOT_STARTED"' \
         "${planner_dir}/region_path_manifest.json" >/dev/null \
-        || die "producer path worklist is not closed"
-      [[ ! -s "${planner_dir}/activation_plan.jsonl" ]] \
-        || die "closed producer worklist retained an executable replay"
+        || die "producer path planner failed with exit ${planner_status}"
+      die "producer path worklist is not executable"
+    fi
+    [[ "${planner_status}" -eq 0 ]] \
+      || die "producer path planner failed with exit ${planner_status}"
+    if jq -e '.state == "CLOSED"' \
+        "${planner_dir}/region_path_manifest.json" >/dev/null; then
+      [[ ! -s "${planner_dir}/region_path_worklist.jsonl" ]] \
+        || die "closed producer worklist retained pending tasks"
       cp -f "${planner_dir}/region_path_manifest.json" \
         "${campaign}/region_path_closure.json"
       break
     fi
-    [[ "${planner_status}" -eq 0 ]] \
-      || die "producer path planner failed with exit ${planner_status}"
-    jq -e '
-      .complete == true
-      and .status == "PATH_FLIP_REPLAY_READY"
-      and .selectedTaskCount == 1
-    ' "${planner_dir}/path_flip_plan_manifest.json" >/dev/null \
-      || die "producer path flip is not one solver-backed replay"
-    query_key=$(jq -er '.queryKey' \
-      "${planner_dir}/path_flip_plan_manifest.json") \
-      || die "producer path flip has no query identity"
+    jq -e '.state == "PENDING" and .pendingTaskCount > 0' \
+      "${planner_dir}/region_path_manifest.json" >/dev/null \
+      || die "producer path planner emitted neither pending nor closed state"
+    query_key=$(jq -er -s \
+      'sort_by(.queryKey) | .[0].queryKey' \
+      "${planner_dir}/region_path_worklist.jsonl") \
+      || die "pending producer worklist has no deterministic query key"
     [[ -z "${seen_queries[${query_key}]+present}" ]] \
       || die "producer path worklist repeated query ${query_key}"
     seen_queries[${query_key}]=present
-    replay_manifest_id=$(jq -er '.replayActivationId' \
-      "${planner_dir}/path_flip_plan_manifest.json") \
+    selection_dir="${planner_dir}/selected"
+    mkdir -p "${selection_dir}"
+    set +e
+    run_graphchecker_main \
+      edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
+      --worklist "${planner_dir}/region_path_worklist.jsonl" \
+      --activations "${activations}" \
+      --query-key "${query_key}" \
+      --output-dir "${selection_dir}" \
+      --z3 "${z3}" \
+      --solver-timeout-ms "${solver_timeout}"
+    solver_status=$?
+    set -e
+    require_file "producer path solver result" \
+      "${selection_dir}/path_flip_solver_result.json"
+    if jq -e --arg query "${query_key}" '
+        .status == "UNSAT" and .queryKey == $query
+      ' "${selection_dir}/path_flip_solver_result.json" >/dev/null; then
+      [[ "${solver_status}" -eq 0 ]] \
+        || die "producer UNSAT solver exited ${solver_status}"
+      [[ ! -s "${selection_dir}/activation_plan.jsonl" ]] \
+        || die "UNSAT producer path unexpectedly emitted a replay"
+      jq -c '{
+        schemaVersion: 1,
+        kind: "PATH_EXPLORATION_RECORD",
+        queryKey,
+        regionId,
+        sourcePathKey,
+        sourceSummaryId,
+        status,
+        solverInputHash
+      }' "${selection_dir}/path_flip_solver_result.json" \
+        >>"${records}"
+      echo "[three-thread-rpc] producer path proved UNSAT: ${query_key}"
+      discard_successful_iteration "${campaign}"
+      iteration=$((iteration + 1))
+      continue
+    fi
+    [[ "${solver_status}" -eq 0 ]] \
+      || die "producer path solver failed with exit ${solver_status}"
+    jq -e --arg query "${query_key}" '
+      .status == "SAT_MODEL_READY" and .queryKey == $query
+    ' "${selection_dir}/path_flip_solver_result.json" >/dev/null \
+      || die "producer path flip is not solver-backed"
+    replay_manifest_id=$(jq -er -s '
+      if length == 1 then .[0].activationId
+      else error("expected one replay activation")
+      end
+    ' "${selection_dir}/activation_plan.jsonl") \
       || die "producer path flip has no replay activation identity"
+    planner_dir=${selection_dir}
     mapfile -t _replay_activations < <(jq -r \
       --arg region "${region}" --arg replay "${replay_manifest_id}" '
       select(

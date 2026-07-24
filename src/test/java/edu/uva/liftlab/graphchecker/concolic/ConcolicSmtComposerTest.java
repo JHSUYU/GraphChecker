@@ -66,17 +66,19 @@ public class ConcolicSmtComposerTest {
 
     @Test
     public void composesGuardedMultiPathRegionRelation() throws Exception {
+        Assume.assumeTrue(z3Available());
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         try {
             Fixture fixture = fixture(folder.getRoot().toPath(), true);
             JsonObject positive = producerSummary(singlePutEffect(), true);
+            installTwoEntryContainerEvidence(positive);
             positive.getAsJsonArray("pathCondition").add(
                     integerCondition(">", 0));
-            JsonObject nonPositive = positive.deepCopy();
+            JsonObject nonPositive = producerSummary(singlePutEffect(), true);
             nonPositive.addProperty("summaryId", "SUMMARY.P.SECOND");
             nonPositive.addProperty("activationId", "ACT.P.SECOND");
-            nonPositive.add("pathCondition", new JsonArray());
+            installTwoEntryContainerEvidence(nonPositive);
             nonPositive.getAsJsonArray("pathCondition").add(
                     integerCondition("<=", 0));
             RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
@@ -93,6 +95,15 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.smtLib.contains(
                     "region_case_selector_exclusive_REGION_P_0_1"));
             assertTrue(result.smtLib.contains("(=>"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    ":named container_element_field_BIND_ARRAY_0"));
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    ":named container_element_field_BIND_ARRAY_1"));
+            for (String line : linesContaining(result.smtLib,
+                    ":named container_element_field_BIND_ARRAY_")) {
+                assertFalse(line, line.contains(
+                        "sym__port__REGION_P_in_3__long"));
+            }
             JsonArray catalog = result.manifest.getAsJsonArray(
                     "caseProjectionCatalog");
             assertEquals(2, catalog.size());
@@ -110,6 +121,7 @@ public class ConcolicSmtComposerTest {
                 assertEquals("sym__port__REGION_P_in_2__int",
                         mapping.get("term").getAsString());
             }
+            assertZ3Status(result.smtLib, "sat");
         } finally {
             folder.delete();
         }
@@ -1510,7 +1522,10 @@ public class ConcolicSmtComposerTest {
         return result;
     }
 
-    private static JsonObject runtimeContainerFieldBinding(String dynamic) {
+    private static JsonObject runtimeContainerFieldBinding(
+            String dynamic, int index, String activationId) {
+        String bindingId = "BIND_ARRAY_" + index;
+        String method = "<example.Store: void update(example.Keys)>";
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 2);
         result.addProperty("kind",
@@ -1518,43 +1533,47 @@ public class ConcolicSmtComposerTest {
         result.addProperty("dynamicBindingId", "DYNAMIC_FIELD:" + dynamic);
         result.addProperty("baseInputSymbol", "REGION.P.in.3");
         result.addProperty("dynamicFieldSymbol", dynamic);
-        result.addProperty("materializationSiteId", "SITE.CONTAINER");
+        result.addProperty("materializationSiteId",
+                method + "#u" + (14 + 10 * index));
         result.addProperty("materializationOccurrence", 1);
-        result.addProperty("fieldSignature", "<example.Key: int id>");
+        result.addProperty("fieldSignature",
+                "<example.Key: long expiry>");
         JsonArray path = new JsonArray();
-        path.add("id");
+        path.add("expiry");
         result.add("fieldPath", path);
-        result.addProperty("leafOwnerObjectToken", 302L);
+        result.addProperty("leafOwnerObjectToken", 302L + index);
         result.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        result.addProperty("objectTokenScope", "ACT.P");
-        result.addProperty("containerBindingId", "BIND.ARRAY.1");
+        result.addProperty("objectTokenScope", activationId);
+        result.addProperty("containerBindingId", bindingId);
         result.addProperty("containerInputPort", "REGION.P.in.4");
-        result.addProperty("containerInputCell", "<Keys: Key[] keys>");
+        result.addProperty("containerInputCell",
+                "<example.Keys: example.Key[] keys>");
         result.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
         result.addProperty("resolvedFromSelectorAuthority",
                 "EXACT_ARRAY_INDEX");
-        result.addProperty("elementIndex", 2);
+        result.addProperty("elementIndex", index);
         result.addProperty("elementOccurrence", 1);
         result.addProperty("declaredFieldOwnerClass", "example.Key");
-        result.addProperty("declaredFieldType", "int");
+        result.addProperty("declaredFieldType", "long");
         JsonObject selector = new JsonObject();
         selector.addProperty("kind", "ARRAY_INDEX");
-        selector.addProperty("bindingId", "BIND.ARRAY.1");
+        selector.addProperty("bindingId", bindingId);
         selector.addProperty("containerInputPort", "REGION.P.in.4");
-        selector.addProperty("containerInputCell", "<Keys: Key[] keys>");
+        selector.addProperty("containerInputCell",
+                "<example.Keys: example.Key[] keys>");
         selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
         selector.addProperty("resolvedFromSelectorAuthority",
                 "EXACT_ARRAY_INDEX");
-        selector.addProperty("elementIndex", 2);
+        selector.addProperty("elementIndex", index);
         selector.addProperty("elementOccurrence", 1);
         selector.addProperty("declaredFieldOwnerClass", "example.Key");
-        selector.addProperty("declaredFieldType", "int");
+        selector.addProperty("declaredFieldType", "long");
         selector.addProperty("containerObjectToken", 301L);
-        selector.addProperty("elementObjectToken", 302L);
+        selector.addProperty("elementObjectToken", 302L + index);
         selector.addProperty("objectTokenAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        selector.addProperty("objectTokenScope", "ACT.P");
+        selector.addProperty("objectTokenScope", activationId);
         selector.addProperty("authority",
                 "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
                         + "ACTIVATION_LOCAL_ELEMENT_IDENTITY");
@@ -1909,119 +1928,114 @@ public class ConcolicSmtComposerTest {
         installFatalRelations(fixture, bindings);
     }
 
-    private static JsonObject containerFieldSummary(
-            Fixture fixture, String selectorAuthority, int index,
-            int occurrence, boolean runtimeDiscovery) throws Exception {
-        String containerCell = "<example.Keys: example.Key[] allKeys>";
-        addRegionPort(fixture, "REGION.P", "symbolicInputs",
-                port("REGION.P.in.4", containerCell));
-        JsonArray effects = new JsonArray();
-        effects.add(mapEffect("MAP_IDENTITY", "REGION.P.in.0",
-                "REGION.P.out.0", 0));
-        JsonObject summary = producerSummary(effects, true);
-        summary.add("requestedOutput", requestedOutput("REGION.P.out.0"));
-        JsonObject slice = requestedSlice("REGION.P.in.0",
-                "REGION.P.in.3", "REGION.P.in.4");
-        JsonObject declaration = new JsonObject();
-        declaration.addProperty("schemaVersion", 1);
-        declaration.addProperty("kind", "ARRAY_ELEMENT_FIELD");
-        declaration.addProperty("bindingId", "BIND.ARRAY.0");
-        declaration.addProperty("baseInputSymbol", "REGION.P.in.3");
-        declaration.addProperty("containerInputPort", "REGION.P.in.4");
-        declaration.addProperty("containerInputCell", containerCell);
-        declaration.addProperty("selectorAuthority", selectorAuthority);
-        declaration.addProperty("elementIndex", index);
-        declaration.addProperty("elementOccurrence", occurrence);
-        JsonArray fieldPath = new JsonArray();
-        fieldPath.add("expiry");
-        declaration.add("fieldPath", fieldPath);
-        declaration.addProperty("declaredFieldSignature",
-                "<example.Key: long expiry>");
-        declaration.addProperty("declaredFieldOwnerClass", "example.Key");
-        declaration.addProperty("declaredFieldType", "long");
-        declaration.addProperty("declaredFieldName", "expiry");
-        declaration.addProperty("method",
-                "<example.Store: void update(example.Keys)>");
-        declaration.addProperty("fieldMaterializationSiteId",
-                "<example.Store: void update(example.Keys)>#u14");
-        declaration.addProperty("arrayLoadSiteId",
-                "<example.Store: void update(example.Keys)>#u13");
-        JsonArray proof = new JsonArray();
-        proof.add("A");
-        proof.add("C");
-        proof.add("G");
-        proof.add("P");
-        declaration.add("proofCausalEdgeIds", proof);
-        declaration.addProperty("proofAuthority",
-                "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_"
-                        + "FIELD_FOUR_EDGE_JOIN_V1");
-        declaration.addProperty("complete", true);
-        JsonArray declarations = new JsonArray();
-        declarations.add(declaration);
-        slice.add("containerElementFieldBindings", declarations);
-        summary.add("requestedOutputSlice", slice);
+    private static void installTwoEntryContainerEvidence(JsonObject summary) {
+        String method = "<example.Store: void update(example.Keys)>";
+        String outputCell = "<example.Producer: java.util.Map state>";
+        JsonObject slice = summary.getAsJsonObject(
+                OutputClosureContract.FIELD).getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice");
+        slice.getAsJsonArray("inputPorts").add("REGION.P.in.3");
+        slice.getAsJsonArray("inputPorts").add("REGION.P.in.4");
+        slice.getAsJsonArray("methods").add(method);
+        slice.addProperty("requestedStateTransformerContractVersion", 1);
+        slice.addProperty("requestedStateTransformerContractApplicable",
+                true);
+        slice.addProperty("requestedStateTransformerContractOutputPort",
+                "REGION.P.out.0");
+        slice.addProperty("requestedStateTransformerContractOutputCell",
+                outputCell);
+        slice.addProperty("requestedStateTransformerContractComplete", true);
+        slice.addProperty("requestedStateTransformerContractAuthority",
+                "STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1");
+        slice.add("requestedStateTransformerContractIssues",
+                new JsonArray());
 
-        if (runtimeDiscovery) {
-            String dynamic = "REGION.P.in.3.field.cccccccccccc.occ.1";
+        JsonArray declarations = new JsonArray();
+        JsonArray obligations = new JsonArray();
+        JsonArray runtimeBindings = new JsonArray();
+        for (int index = 0; index < 2; index++) {
+            String bindingId = "BIND_ARRAY_" + index;
+            String fieldSite = method + "#u" + (14 + 10 * index);
+            String arraySite = method + "#u" + (13 + 10 * index);
+            String transformerSite = method + "#u" + (17 + 10 * index);
+            JsonArray proof = new JsonArray();
+            for (String prefix : new String[]{
+                    "CONTAINER_", "LOAD_", "PROJECT_", "READ_",
+                    "PUT_KEY_", "PUT_VALUE_"}) {
+                String edgeId = prefix + index;
+                proof.add(edgeId);
+                slice.getAsJsonArray("causalEdgeIds").add(edgeId);
+            }
+            slice.getAsJsonArray("sites").add(fieldSite);
+            slice.getAsJsonArray("sites").add(arraySite);
+            slice.getAsJsonArray("sites").add(transformerSite);
+            slice.getAsJsonArray("staticSites").add(fieldSite);
+            slice.getAsJsonArray("staticSites").add(arraySite);
+            slice.getAsJsonArray("staticSites").add(transformerSite);
+
+            JsonObject declaration = new JsonObject();
+            declaration.addProperty("schemaVersion", 1);
+            declaration.addProperty("kind", "ARRAY_ELEMENT_FIELD");
+            declaration.addProperty("bindingId", bindingId);
+            declaration.addProperty("baseInputSymbol", "REGION.P.in.3");
+            declaration.addProperty("containerInputPort", "REGION.P.in.4");
+            declaration.addProperty("containerInputCell",
+                    "<example.Keys: example.Key[] keys>");
+            declaration.addProperty("selectorAuthority",
+                    "EXACT_ARRAY_INDEX");
+            declaration.addProperty("elementIndex", index);
+            declaration.addProperty("elementOccurrence", 1);
+            declaration.add("fieldPath", singletonString("expiry"));
+            declaration.addProperty("declaredFieldSignature",
+                    "<example.Key: long expiry>");
+            declaration.addProperty("declaredFieldOwnerClass",
+                    "example.Key");
+            declaration.addProperty("declaredFieldType", "long");
+            declaration.addProperty("declaredFieldName", "expiry");
+            declaration.addProperty("materializationMode",
+                    "FIELD_ACCESS_HOOK");
+            declaration.addProperty("method", method);
+            declaration.addProperty("fieldMaterializationSiteId", fieldSite);
+            declaration.addProperty("arrayLoadSiteId", arraySite);
+            declaration.addProperty("requestedStateTransformerSiteId",
+                    transformerSite);
+            declaration.add("proofCausalEdgeIds", proof);
+            declaration.addProperty("proofAuthority",
+                    "STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                            + "KEY_VALUE_V1");
+            declaration.addProperty("complete", true);
+            declarations.add(declaration);
+
+            JsonObject obligation = new JsonObject();
+            obligation.addProperty("siteId", transformerSite);
+            obligation.addProperty("method", method);
+            obligation.addProperty("targetCell", outputCell);
+            obligation.addProperty("transferKind", "HEAP_WRITE");
+            obligation.addProperty("kind", "field_mutation");
+            obligation.add("causalEdgeIds",
+                    singletonString("PUT_VALUE_" + index));
+            obligation.addProperty("authority",
+                    "STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL");
+            obligations.add(obligation);
+
+            String dynamic = "REGION.P.in.3.field.cccccccccccc.occ."
+                    + (index + 1);
             JsonObject fieldExpression = symbol("J",
                     "M_J_field_" + dynamic + "_example/Key");
             summary.getAsJsonArray("pathCondition").add(binaryCondition(
-                    fieldExpression.deepCopy(), ">",
-                    constant("J", "Y_J_0")));
-            JsonObject runtime = new JsonObject();
-            runtime.addProperty("schemaVersion", 2);
-            runtime.addProperty("kind",
-                    "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
-            runtime.addProperty("dynamicBindingId",
-                    "DYNAMIC_FIELD:" + dynamic);
-            runtime.addProperty("baseInputSymbol", "REGION.P.in.3");
-            runtime.addProperty("dynamicFieldSymbol", dynamic);
-            runtime.addProperty("materializationSiteId",
-                    "<example.Store: void update(example.Keys)>#u14");
-            runtime.addProperty("materializationOccurrence", 1);
-            runtime.addProperty("fieldSignature",
-                    "<example.Key: long expiry>");
-            runtime.add("fieldPath", fieldPath.deepCopy());
-            runtime.add("fieldExpression", fieldExpression.deepCopy());
+                    fieldExpression.deepCopy(), "==",
+                    constant("J", "Y_J_" + (11 + 11 * index))));
+            JsonObject runtime = runtimeContainerFieldBinding(dynamic, index,
+                    summary.get("activationId").getAsString());
+            runtime.add("fieldExpression", fieldExpression);
             runtime.addProperty("fieldJavaType", "long");
-            runtime.addProperty("containerBindingId", "BIND.ARRAY.0");
-            runtime.addProperty("containerInputPort", "REGION.P.in.4");
-            runtime.addProperty("containerInputCell", containerCell);
-            runtime.addProperty("leafOwnerObjectToken", 202L);
-            runtime.addProperty("objectTokenAuthority",
-                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-            runtime.addProperty("objectTokenScope", "ACT.P");
-            runtime.addProperty("authority",
-                    "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_"
-                            + "IDENTITY_AND_STABLE_FIELD_SITE_OCCURRENCE");
-            runtime.addProperty("complete", true);
-            JsonObject selector = new JsonObject();
-            selector.addProperty("kind", "ARRAY_INDEX");
-            selector.addProperty("bindingId", "BIND.ARRAY.0");
-            selector.addProperty("containerInputPort", "REGION.P.in.4");
-            selector.addProperty("containerInputCell", containerCell);
-            selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
-            selector.addProperty("resolvedFromSelectorAuthority",
-                    "DISCOVER_UNIQUE_IDENTITY_INDEX");
-            selector.addProperty("elementIndex", 2);
-            selector.addProperty("elementOccurrence", 1);
-            selector.addProperty("declaredFieldOwnerClass", "example.Key");
-            selector.addProperty("declaredFieldType", "long");
-            selector.addProperty("containerObjectToken", 201L);
-            selector.addProperty("elementObjectToken", 202L);
-            selector.addProperty("objectTokenAuthority",
-                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-            selector.addProperty("objectTokenScope", "ACT.P");
-            selector.addProperty("authority",
-                    "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
-                            + "ACTIVATION_LOCAL_ELEMENT_IDENTITY");
-            selector.addProperty("complete", true);
-            runtime.add("containerSelector", selector);
-            JsonArray runtimeBindings = new JsonArray();
             runtimeBindings.add(runtime);
-            summary.add("dynamicFieldBindings", runtimeBindings);
         }
-        return summary;
+        slice.add("containerElementFieldBindings", declarations);
+        slice.add("requestedStateTransformerObligations", obligations);
+        slice.addProperty("requestedStateTransformerObligationCount",
+                obligations.size());
+        summary.add("dynamicFieldBindings", runtimeBindings);
     }
 
     private static void writeSummary(Fixture fixture, JsonObject summary)

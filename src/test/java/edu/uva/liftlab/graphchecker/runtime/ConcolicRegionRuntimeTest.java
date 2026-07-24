@@ -183,7 +183,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     ExactBranchEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(method,
-                    new Object());
+                    new Object(), null);
             assertTrue(token > 0L);
             long handle = ConcolicRegionRuntime.prepareBranch(method, 7,
                     "result != null");
@@ -241,7 +241,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     ExactSwitchEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(method,
-                    new Object());
+                    new Object(), null);
             assertTrue(token > 0L);
             long handle = ConcolicRegionRuntime.prepareBranch(method, 7,
                     "selector");
@@ -334,7 +334,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             assertTrue(token > 0L);
             ConcolicRegionRuntime.recordOutputCapture(caller, 7,
                     caller + "#u7", callee, 0, "REGION.TEST.out.0",
@@ -425,7 +425,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             assertTrue(token > 0L);
             ConcolicRegionRuntime.recordOutputCapture(caller, 7,
                     caller + "#u7", firstCallee, 0,
@@ -492,7 +492,7 @@ public class ConcolicRegionRuntimeTest {
         try {
             boolean rejected = false;
             try {
-                ConcolicRegionRuntime.enterRegion(root, new Object());
+                ConcolicRegionRuntime.enterRegion(root, new Object(), null);
             } catch (IllegalStateException expected) {
                 rejected = true;
             }
@@ -542,7 +542,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             assertTrue(token > 0L);
             assertEquals(token, ConcolicRegionRuntime.activeToken());
             AssignmentOwner owner = new AssignmentOwner();
@@ -666,7 +666,7 @@ public class ConcolicRegionRuntimeTest {
                     DelayedExpressionEngine.class);
             HiddenArraySub owner = new HiddenArraySub();
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             ConcolicRegionRuntime.prepareFieldMaterialization(root, 23,
                     owner, signature, "values");
             Current[] consumed = consumeSubclassField ? owner.values
@@ -709,7 +709,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             DelayedExpressionEngine.arrayExpressionMode = expressionMode;
             ConcolicRegionRuntime.symbolizeArgument(token, 0,
                     new Current[]{new Current()}, "");
@@ -754,7 +754,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             DelayedExpressionEngine.arrayExpressionMode = mode;
             ConcolicRegionRuntime.symbolizeArgument(token, 0,
                     new int[]{7, -3}, "");
@@ -793,7 +793,7 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.installEngineApiForTests(
                     DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegion(root,
-                    new Object());
+                    new Object(), null);
             DelayedExpressionEngine.forcedArrayId = "AL_77";
             ConcolicRegionRuntime.symbolizeArgument(token, 0,
                     new Current[]{new Current()}, "");
@@ -968,7 +968,8 @@ public class ConcolicRegionRuntimeTest {
                 producer.values.put(3, third);
             }
 
-            long token = ConcolicRegionRuntime.enterRegion(root, producer);
+            long token = ConcolicRegionRuntime.enterRegion(root, producer,
+                    null);
             assertTrue(token > 0L);
             ConcolicRegionRuntime.materializeField(root, 4, producer,
                     mapProjectionMapFieldSignature(), "values");
@@ -1247,7 +1248,8 @@ public class ConcolicRegionRuntimeTest {
             String root, String branchMethod, AtomicLong token,
             CountDownLatch entered, CountDownLatch release) {
         return new Thread(() -> {
-            long value = ConcolicRegionRuntime.enterRegion(root, new Object());
+            long value = ConcolicRegionRuntime.enterRegion(root,
+                    new Object(), null);
             token.set(value);
             entered.countDown();
             try {
@@ -1267,7 +1269,7 @@ public class ConcolicRegionRuntimeTest {
             String root,
             java.util.LinkedHashMap<Integer, ExpiringValue> map,
             ExpiringValue target, boolean skipFirstEntry) {
-        long token = ConcolicRegionRuntime.enterRegion(root, map);
+        long token = ConcolicRegionRuntime.enterRegion(root, map, null);
         assertTrue(token > 0L);
         Object view = map.entrySet();
         ConcolicRegionRuntime.registerMapView(root, 3, map, view,
@@ -1354,28 +1356,6 @@ public class ConcolicRegionRuntimeTest {
                 ordinalWithinContext);
         activation.addProperty("rootContextSelectionAuthority",
                 RuntimeRegionPlanner.ROOT_CONTEXT_SELECTION_AUTHORITY);
-    }
-
-    private static void addLegacyRootArgumentSelector(
-            JsonObject activation, int matchOrdinal,
-            String... runtimeTypes) {
-        JsonObject selector = new JsonObject();
-        selector.addProperty("schema",
-                RuntimeRegionPlanner.ROOT_ARGUMENT_SELECTOR_SCHEMA_V1);
-        selector.addProperty("authority",
-                RuntimeRegionPlanner.ROOT_ARGUMENT_SELECTOR_AUTHORITY_V1);
-        selector.addProperty("matchOrdinal", matchOrdinal);
-        JsonArray predicates = new JsonArray();
-        for (int index = 0; index < runtimeTypes.length; index++) {
-            JsonObject predicate = new JsonObject();
-            predicate.addProperty("kind",
-                    RuntimeRegionPlanner.ROOT_ARGUMENT_PREDICATE_KIND);
-            predicate.addProperty("argumentIndex", index);
-            predicate.addProperty("runtimeType", runtimeTypes[index]);
-            predicates.add(predicate);
-        }
-        selector.add("predicates", predicates);
-        activation.add("runtimeRootArgumentSelector", selector);
     }
 
     private static final class KeyUpdateCommand {
@@ -1606,7 +1586,7 @@ public class ConcolicRegionRuntimeTest {
             String root, GenericArrayEnvelope envelope,
             List<Current> fieldOwners, String fieldHookMethod,
             int fieldHookUnit) {
-        long token = ConcolicRegionRuntime.enterRegion(root, envelope);
+        long token = ConcolicRegionRuntime.enterRegion(root, envelope, null);
         assertTrue(token > 0L);
         ConcolicRegionRuntime.prepareFieldMaterialization(root, 2, envelope,
                 genericArrayFieldSignature(), "elements");

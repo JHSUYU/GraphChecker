@@ -132,18 +132,6 @@ public final class ConcolicReplayValidator {
                         && appliedRows.size() == plannedRows.size());
         result.add("missingModelAssignments", GSON.toJsonTree(missing));
         result.add("extraModelAssignments", GSON.toJsonTree(extra));
-        result.add("missingDynamicModelAssignments",
-                GSON.toJsonTree(dynamicOnly(missing)));
-        result.add("extraDynamicModelAssignments",
-                GSON.toJsonTree(dynamicOnly(extra)));
-        result.addProperty("plannedModelAssignmentCount",
-                planned.assignmentCount);
-        result.addProperty("appliedModelAssignmentCount",
-                applied.assignmentCount);
-        result.addProperty("plannedDynamicModelAssignmentCount",
-                planned.dynamicCount);
-        result.addProperty("appliedDynamicModelAssignmentCount",
-                applied.dynamicCount);
 
         List<String> freshRebindingProblems =
                 validateFreshMapEntryRebindings(plannedRows, appliedRows,
@@ -155,10 +143,6 @@ public final class ConcolicReplayValidator {
         for (String problem : freshRebindingProblems) {
             failures.add("FRESH_MAP_ENTRY_REBINDING_INVALID:" + problem);
         }
-        result.addProperty("freshMapEntryRebindingCount",
-                freshMapEntryRebindingCount(plannedRows));
-        result.addProperty("freshMapEntryRebindingValidated",
-                freshRebindingProblems.isEmpty());
 
         List<String> containerRebindingProblems =
                 validateContainerRebindings(plannedRows, appliedRows,
@@ -170,10 +154,6 @@ public final class ConcolicReplayValidator {
         for (String problem : containerRebindingProblems) {
             failures.add("CONTAINER_REPLAY_REBINDING_INVALID:" + problem);
         }
-        result.addProperty("containerReplayRebindingCount",
-                containerReplayRebindingCount(plannedRows));
-        result.addProperty("containerReplayRebindingValidated",
-                containerRebindingProblems.isEmpty());
 
         BranchReplayObservationValidator.Result branchObservation = null;
         if (replayContract != null) {
@@ -273,57 +253,8 @@ public final class ConcolicReplayValidator {
 
         result.add("failures", failures);
         result.addProperty("failureCount", failures.size());
-        result.addProperty("prefixValidated", branchObservation != null
-                && branchObservation.valid());
-        result.addProperty("flippedBranchValidated",
-                branchObservation != null && branchObservation.valid());
-        result.addProperty("dynamicAssignmentIdentityValidated",
-                !dynamicPlan || !contains(failures,
-                        "DYNAMIC_MODEL_ASSIGNMENT_SET_MISMATCH")
-                        && !contains(failures,
-                        "INVALID_PLANNED_DYNAMIC_ASSIGNMENT")
-                        && !contains(failures,
-                        "INVALID_APPLIED_DYNAMIC_ASSIGNMENT")
-                        && !contains(failures,
-                        "FRESH_MAP_ENTRY_REBINDING_INVALID")
-                        && !contains(failures,
-                        "CONTAINER_REPLAY_REBINDING_INVALID"));
-        result.addProperty("modelAssignmentIdentityValidated",
-                !contains(failures, "MODEL_ASSIGNMENT_SET_MISMATCH")
-                        && !contains(failures,
-                        "INVALID_PLANNED_MODEL_ASSIGNMENT")
-                        && !contains(failures,
-                        "INVALID_APPLIED_MODEL_ASSIGNMENT")
-                        && !contains(failures,
-                        "CONTAINER_REPLAY_REBINDING_INVALID"));
-        boolean outputClosureGap = outputClosure
-                && containsOutputClosureFailure(failures);
-        int outputClosureFailureCount = countOutputClosureFailures(failures);
-        int nonOutputClosureFailureCount = failures.size()
-                - outputClosureFailureCount;
         result.addProperty("captureGoal",
                 RegionCaptureGoal.from(task).kind());
-        result.addProperty("outputClosureAdmissionRequired",
-                outputClosure);
-        result.addProperty("normalExitValidated", rawNormalExit
-                && importedSummaryNormalExit);
-        result.addProperty("importedOutputSummaryValidated",
-                importedSummaryRelationallyComplete
-                        && importedSummaryGoalMatches
-                        && importedSummaryRegionMatches);
-        result.addProperty("requestedOutputIdentityValidated",
-                requestedOutputMatches);
-        result.addProperty("requestedOutputExpressionValidated",
-                requestedOutputExpressionPresent);
-        result.addProperty("outputClosureAdmissionGap", outputClosureGap);
-        result.addProperty("outputClosureFailureCount",
-                outputClosureFailureCount);
-        result.addProperty("nonOutputClosureFailureCount",
-                nonOutputClosureFailureCount);
-        result.addProperty("branchAndInputReplayValidated",
-                nonOutputClosureFailureCount == 0);
-        result.addProperty("outputClosureGapReason", outputClosureGap
-                ? firstOutputClosureFailure(failures) : "");
         result.addProperty("valid", failures.size() == 0);
         result.addProperty("status", failures.size() == 0
                 ? "VALIDATED_UNFORCED_REPLAY" : "REPLAY_REJECTED");
@@ -1355,16 +1286,6 @@ public final class ConcolicReplayValidator {
         return value.toString();
     }
 
-    private static Set<String> dynamicOnly(Set<String> identities) {
-        Set<String> result = new LinkedHashSet<>();
-        for (String identity : identities) {
-            // assignmentIdentity's first length-prefixed component is either
-            // DYNAMIC or DIRECT.
-            if (identity.startsWith("7:DYNAMIC|")) result.add(identity);
-        }
-        return result;
-    }
-
     private static JsonElement selectorKey(JsonObject assignment) {
         JsonElement expected = assignment.get("expectedEntryKey");
         return expected != null ? expected : assignment.get("keyExpression");
@@ -1410,51 +1331,6 @@ public final class ConcolicReplayValidator {
     private static void require(JsonArray failures, String code,
                                 boolean condition) {
         if (!condition) failures.add(code);
-    }
-
-    private static boolean contains(JsonArray failures, String prefix) {
-        for (JsonElement failure : failures) {
-            if (failure.isJsonPrimitive()
-                    && failure.getAsString().startsWith(prefix)) return true;
-        }
-        return false;
-    }
-
-    private static boolean containsOutputClosureFailure(JsonArray failures) {
-        for (JsonElement failure : failures) {
-            if (!failure.isJsonPrimitive()) continue;
-            String code = failure.getAsString();
-            if (isOutputClosureFailure(code)) return true;
-        }
-        return false;
-    }
-
-    private static int countOutputClosureFailures(JsonArray failures) {
-        int result = 0;
-        for (JsonElement failure : failures) {
-            if (failure.isJsonPrimitive()
-                    && isOutputClosureFailure(failure.getAsString())) {
-                result++;
-            }
-        }
-        return result;
-    }
-
-    private static String firstOutputClosureFailure(JsonArray failures) {
-        for (JsonElement failure : failures) {
-            if (!failure.isJsonPrimitive()) continue;
-            String code = failure.getAsString();
-            if (isOutputClosureFailure(code)) return code;
-        }
-        return "OUTPUT_CLOSURE_REPLAY_NOT_IMPORTABLE";
-    }
-
-    private static boolean isOutputClosureFailure(String code) {
-        return code != null && (code.startsWith("OUTPUT_CLOSURE_")
-                || code.startsWith("MISSING_IMPORTED_OUTPUT_SUMMARY")
-                || code.startsWith("IMPORTED_OUTPUT_SUMMARY_")
-                || code.startsWith("REQUESTED_OUTPUT_")
-                || code.startsWith("OUTPUT_EXPRESSION_ADMISSION_"));
     }
 
     private static final class OutputClosureAdmission {

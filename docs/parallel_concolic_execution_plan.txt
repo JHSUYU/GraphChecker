@@ -1,0 +1,934 @@
+GraphChecker 内部 Concolic Path 并行执行设计
+================================================
+
+状态：实现规格，尚未编码
+日期：2026-07-24
+实现对象：后续 xhigh 编码任务
+
+
+0. 一句话结论
+-------------
+
+并行单位是一个 path-flip task，而不是 custom JDK 内的一条 Java 线程。
+
+采用 bounded wave：
+
+    immutable campaign snapshot
+        -> plan frontier once
+        -> 取最多 K 个 queryKey
+        -> K 个独立 worker process
+             solve Z3
+             启动一个独立 custom-JDK JVM
+             import
+             verify/admit
+        -> wave barrier
+        -> coordinator 按 queryKey 排序后一次性发布
+        -> 用新 snapshot 规划下一 wave
+        -> CLOSED
+
+custom JDK 不修改。每个 worker 都启动现有 custom JDK。不同 worker 不共享
+JVM、result file、临时目录或可变 campaign ledger。
+
+当前服务器有 40 个逻辑 CPU、187 GiB 内存。默认：
+
+    CAUSYNTH_CONCOLIC_JOBS=$(nproc)
+
+在当前机器即 40。允许显式设置 64 等 oversubscription 值，不增加人为硬上限：
+
+    CAUSYNTH_CONCOLIC_JOBS=64
+
+`CAUSYNTH_CONCOLIC_JOBS=1` 必须保留为串行等价与 debug 模式。
+
+
+1. 必须遵守的原则
+-----------------
+
+1. maintained fixture 的最终 Z3 `sat` / `unsat` 结果优先级最高。
+2. fixture/testworkload 不因并行化而修改、删除或弱化。
+3. 不修改 custom JDK。
+4. 不在同一个 JVM 内并行 symbolic context。
+5. 不设计分布式调度器、数据库、lease、心跳、自动重试或跨机协议。
+6. 不创建新的版本化 output-closure/worker contract。
+7. 必要不变量只在真正的 trust boundary 检查一次；shell 不重复 Java
+   importer/verifier 已经完成的 schema 检查。
+8. worker 只产生私有结果；只有 coordinator 可以修改 campaign aggregate state。
+9. 任一真实 worker 错误使整个 wave 失败；失败 wave 不发布 partial state，也不自动重试。
+10. 完成顺序不能进入最终结果。所有 reduce 都按稳定 identity 排序。
+11. 新 abstraction 必须替换旧代码。不能为了“并行框架”再堆一套 framework。
+12. 不为了减少行数牺牲语义。如果某段代码确有唯一正确性职责，应保留或迁移，而不是硬删。
+
+
+2. 为什么不能在线程内并行 custom JDK
+------------------------------------
+
+Java runtime 和 custom JDK 都明确是 process-wide 单 symbolic context：
+
+1. `ConcolicRegionRuntime` 使用 process-global `ENGINE_BUSY` 和
+   `EXECUTION_MODE_LOCK`：
+
+   src/main/java/edu/uva/liftlab/graphchecker/runtime/
+   ConcolicRegionRuntime.java
+
+   当前关键位置：
+
+   - static runtime state：约 126-165 行
+   - `startSymbolicRegion`：约 378-435 行
+   - `reserveSymbolicEngine`：约 493-506 行
+
+2. custom JDK 的 `ConcolicMngr` 使用 process-global mutex 与
+   `_num_threads_in_concolic`，并明确拒绝 overlapping contexts：
+
+   third_party/OpenJDK-Concolic-Execution-Engine/hotspot/src/share/vm/
+   concolic/concolicMngr.hpp
+
+   third_party/OpenJDK-Concolic-Execution-Engine/hotspot/src/share/vm/
+   concolic/concolicMngr.cpp
+
+   当前关键位置：
+
+   - global state：hpp 约 14-25 行
+   - trylock 与 single-context contract：cpp 约 259-303 行
+   - region lifetime unlock：cpp 约 514-532 行
+
+3. activation plan/id/result path 来自 JVM-wide System properties。
+
+因此正确边界只能是：
+
+    one path task = one OS process = one custom-JDK JVM
+
+这也说明 custom JDK 无需改动；OS process 已经提供完整隔离。
+
+
+3. 当前串行瓶颈
+---------------
+
+当前真正的串行环位于：
+
+    experiments/generic/three-thread-rpc/run.sh
+    do_explore_producer，约 926-1182 行
+
+每条 path 当前都执行：
+
+    plan whole worklist
+      -> 若 pending 多于一个，得到 AMBIGUOUS
+      -> shell 排序选一个 queryKey
+      -> 再 plan whole worklist 一次
+      -> Z3
+      -> 一个 custom-JDK replay
+      -> 一次 importer JVM
+      -> 一次 verifier JVM
+      -> 三次扫描并重写 aggregate JSONL
+      -> 下一条 path
+
+具体冗余：
+
+1. `ConcolicPathFlipPlanner` 把 frontier planning、exactly-one selection、
+   Z3 solve 和 replay activation 创建绑在一起。
+2. 多个 pending task 会触发 `AMBIGUOUS_PATH_FLIP`，随后完整调用 planner
+   第二次。
+3. `seen_queries` 在 shell 再做一次 queryKey 去重，而 worklist/records
+   已有 canonical query identity。
+4. 每一条 path 后重新扫描、合并并替换 summaries、activations、raw results，
+   使 ledger 更新逐渐接近 O(path_count^2)。
+5. shell 用大量 jq 再检查 planner/importer/verifier 已经生成并验证的字段。
+6. producer region 外层已经并行，但每个 producer 内仍是严格串行；复杂 map
+   producer 因此决定总时间。
+
+当前 container/map producer 的闭合结果是 48 paths、47 replays。仅 seed
+summary 第一轮就能产生 6 个互相独立的 pending flip，因此并行机会真实存在，
+不是理论上的未来优化。
+
+
+4. 正确的依赖模型
+-----------------
+
+一个 task 的 solver query 只依赖规划时的 immutable snapshot：
+
+    observed summaries
+    observed activation plans
+    exploration records
+    requested output closure
+
+同一 snapshot 产生的 q1...qN 互不依赖。每个 task 都携带完整 prefix、目标
+branch、desired outcome、runtime binding identity 和 source activation。
+
+新 replay 产生的新 summary 可能产生下一层 frontier。因此依赖关系是：
+
+    wave N snapshot
+        -> wave N tasks（彼此独立）
+        -> wave N reduce
+        -> wave N+1 snapshot
+
+这里不需要通用 DAG scheduler。一个 bounded breadth wave 足够。
+
+并行可能让同一 wave 的两个 query 最终到达相同 semantic path，或者其中一个
+新 path 在串行执行时本来会覆盖另一个 pending frontier。这只会带来少量额外
+执行，不影响 soundness：
+
+1. queryKey 仍然不同且每个 query 只执行一次；
+2. replay contract 仍然验证 exact flipped branch；
+3. stablePathKey 在 reduce/worklist 层去重；
+4. 下一 wave 会根据新 snapshot 重新规划。
+
+不要为消除这点有限浪费引入 stale-task cancellation、任务依赖预测或动态 lease。
+
+
+5. 总体组件设计
+---------------
+
+保留一个 coordinator 和多个简单 worker：
+
+    run.sh coordinator
+        |
+        +-- ConcolicPathFlipPlanner：只规划 frontier
+        |
+        +-- task worker 1
+        |     +-- ConcolicPathFlipSolver
+        |     +-- custom-JDK JVM
+        |     +-- importer
+        |     `-- replay admission
+        |
+        +-- task worker 2
+        |     `-- ...
+        |
+        `-- publish_wave：单写者、确定性 reduce
+
+不引入 Java ExecutorService 来并行 custom JDK。并发由现有 Bash background
+process + wait 实现。每个 worker 内部顺序执行自己的小 pipeline。
+
+
+6. Planner 与 Solver 拆分
+------------------------
+
+6.1 ConcolicPathFlipPlanner
+
+文件：
+
+    src/main/java/edu/uva/liftlab/graphchecker/concolic/
+    ConcolicPathFlipPlanner.java
+
+改为纯 frontier planner：
+
+输入：
+
+    --summaries
+    --activations
+    --records
+    --output-dir
+    --region-id
+    existing path bounds
+
+输出只保留：
+
+    region_path_worklist.jsonl
+    region_path_manifest.json
+
+行为：
+
+1. 调用一次 `RegionPathWorklist.plan`。
+2. task 按 `queryKey` canonical sort。
+3. manifest state 是现有 `PENDING`、`CLOSED` 或 `GAPPED`。
+4. 不调用 Z3。
+5. 不再要求 exactly one candidate。
+6. 不再产生 `AMBIGUOUS_PATH_FLIP`。
+7. 不再生成 `selected_path_flip.jsonl`。
+8. 不再生成 scratch artifact hash manifest。
+
+删除未被生产 workflow 使用的 selector：
+
+    --activation-id
+    --flip-site
+    --flip-occurrence
+    --query-key
+    matchesTask(...)
+
+`--query-key` 的 exact task 选择职责下放给新的小 solver。
+
+6.2 ConcolicPathFlipSolver
+
+新增一个小而单一的类：
+
+    src/main/java/edu/uva/liftlab/graphchecker/concolic/
+    ConcolicPathFlipSolver.java
+
+它不是 scheduler，只负责一个 exact task：
+
+输入：
+
+    --worklist <region_path_worklist.jsonl>
+    --query-key <64 hex>
+    --activations <immutable activation snapshot>
+    --output-dir <private task dir>
+    --z3
+    --solver-timeout-ms
+
+行为：
+
+1. 从 worklist 精确找到一个 queryKey。
+2. 由 task.sourceActivationId 精确找到一个 source activation。
+3. 调用现有 `ConcolicConstraintSolver.solve`。
+4. SAT 时调用现有 `ReplayActivationFactory.create`。
+5. 不分析整个 worklist，不重新生成 frontier。
+
+输出复用当前语义，不新增 worker protocol：
+
+    path_flip_solver_result.json
+    path_flip_query.smt2
+    activation_plan.jsonl
+    replay_validation_plan.json
+
+状态：
+
+1. `SAT_MODEL_READY`：
+   - singleton activation plan 非空；
+   - worker 继续 custom-JDK replay。
+2. `UNSAT`：
+   - activation plan 为空；
+   - 这是正常 terminal，worker 不启动 custom JDK。
+3. `UNSUPPORTED`、`MATERIALIZATION_GAP`、`SOLVER_ERROR` 或异常：
+   - worker 失败；
+   - 整个 wave 失败；
+   - 不将失败伪装为 completed exploration record；
+   - 不自动重试。
+
+不要给这个类加入线程池、队列、重试或 campaign 状态。
+
+
+7. Wave 目录与文件隔离
+----------------------
+
+每个 task 使用完整 queryKey 作为目录名，避免另建 collision protocol：
+
+    producer-campaign/<channel>/
+      observed_path_summaries.jsonl
+      raw_results.jsonl
+      path_exploration_records.jsonl
+      .state/
+        observed_activation_plan.jsonl
+      wave-0001/
+        region_path_worklist.jsonl
+        region_path_manifest.json
+        task-<64-char-queryKey>/
+          path_flip_solver_result.json
+          path_flip_query.smt2
+          activation_plan.jsonl
+          replay_validation_plan.json
+          concolic_region_results.jsonl
+          concolic_region_summaries.jsonl
+          concolic_import_diagnostics.jsonl
+          path_replay_verification.json
+          stdout.log
+          stderr.log
+          tmp/
+          hs_err_pid%p.log
+
+共享只读：
+
+    instrumented classes
+    GraphChecker jar
+    custom JDK home / Docker image
+    wave 开始时的 summaries/activations/records snapshot
+
+worker 私有：
+
+    solver products
+    activation plan
+    raw result
+    imported summary
+    diagnostics
+    verifier result
+    stdout/stderr
+    java.io.tmpdir
+    JVM crash log
+
+禁止：
+
+1. 多个 JVM 写同一个 `concolic_region_results.jsonl`。
+   `ConcolicRegionRuntime.WRITE_LOCK` 只在一个 JVM 内有效，不是跨进程锁。
+2. worker append campaign aggregate JSONL。
+3. worker 对 aggregate files 执行 mv/replace。
+4. worker 重新运行 instrumentation 或修改共享 classes。
+5. wave 执行期间 coordinator 修改 snapshot。
+
+当前 fixture 不使用 ServerSocket，Docker 也没有 host port mapping。不要增加
+端口 allocator。
+
+
+8. Coordinator 算法
+-------------------
+
+伪代码：
+
+    jobs = positiveInt(CAUSYNTH_CONCOLIC_JOBS, nproc())
+    wave = 1
+
+    while true:
+        waveDir = createWaveDirectory(wave)
+
+        run ConcolicPathFlipPlanner once against immutable campaign state
+        read region_path_manifest.json
+
+        if state == CLOSED:
+            publish closure manifest
+            break
+
+        if state != PENDING:
+            fail and retain waveDir
+
+        queryKeys =
+            read region_path_worklist.jsonl
+            sort by queryKey
+            take first min(jobs, pending count)
+
+        for queryKey in queryKeys:
+            run_path_task(queryKey) in background
+
+        wait for every worker
+
+        if any worker failed:
+            do not mutate aggregate state
+            retain whole waveDir
+            fail campaign
+
+        publish_wave(queryKeys sorted)
+        delete successful waveDir unless debug is enabled
+        wave++
+
+    run RegionSummaryMerger once
+
+必要性质：
+
+1. 规划一次 wave 后，直到所有 worker 结束前 snapshot 不变。
+2. 一次最多启动 K=min(configured jobs, pending task count) 个 worker。
+3. queryKey 必须排序后选择；不能依赖 JSONL 到达顺序或 process completion order。
+4. 所有 worker 完成后才进入 publish barrier。
+5. 只有重新规划得到 `CLOSED` 才允许 `RegionSummaryMerger`。
+6. `PENDING` 或 `GAPPED` manifest 不能冒充 closure。
+
+不要使用 `wait -n` 动态补充本 wave 的新任务。wave 内一次发完 K 个任务、一次
+wait 即可。新任务属于下一 wave。
+
+
+9. Worker 算法
+-------------
+
+`run_path_task(queryKey, taskDir)`：
+
+    1. mkdir taskDir/tmp
+
+    2. ConcolicPathFlipSolver
+
+    3. inspect path_flip_solver_result.status
+
+       if UNSAT:
+           write one existing PATH_EXPLORATION_RECORD shape
+           exit success
+
+       if not SAT_MODEL_READY:
+           exit failure
+
+    4. run_custom_plan using:
+           task-private activation_plan.jsonl
+           exact activation id
+           shared read-only instrumented classes
+           task-private concolic_region_results.jsonl
+
+    5. import_plan into task-private imported summary/diagnostics
+
+    6. run existing replay admission/verifier
+
+    7. only if verifier/admission succeeds:
+           write one PATH_EXPLORATION_RECORD
+           exit success
+
+    8. otherwise:
+           exit failure
+
+worker 不修改 aggregate state。成功/失败只通过 process exit 与 task-private
+artifacts 表达。
+
+
+10. 高并行 JVM 资源配置
+-----------------------
+
+当前机器默认 40 worker。为避免每个 JVM 根据 40 CPU 创建一组 parallel-GC
+线程，path worker 的 custom-JDK 启动参数应包含：
+
+    -Xint
+    -Xms32m
+    -Xmx1g
+    -XX:+UseSerialGC
+    -Djava.io.tmpdir=<taskDir>/tmp
+    -XX:ErrorFile=<taskDir>/hs_err_pid%p.log
+
+先用现有 maintained fixture 验证 1 GiB 足够；如果单 worker 实测峰值明显更低，
+可以降到 512 MiB。不要写运行时内存探测器。
+
+本地 JVM 与 Docker 分支都必须使用相同参数。
+
+启动环境应显式清除可能导致共享 trace 输出的变量：
+
+    env -u CAUSYNTH_TRACE_OUTPUT_DIR
+
+普通 concolic replay 已设置 task-private `causynth.concolic.results`，并应保持
+context-only trace mode。不要让用户继承的 trace output dir 使 40 个 worker
+共同写 `runtime_trace.jsonl`。
+
+允许：
+
+    CAUSYNTH_CONCOLIC_JOBS=1
+    CAUSYNTH_CONCOLIC_JOBS=8
+    CAUSYNTH_CONCOLIC_JOBS=40
+    CAUSYNTH_CONCOLIC_JOBS=64
+
+只校验它是正整数；不要增加基于 CPU、load average、NUMA 或内存的复杂自动调参。
+
+
+11. 避免 producer 外层与 path 内层乘法嵌套
+------------------------------------------
+
+当前 `run_producers_parallel` 可以同时运行多个完整 producer pipeline。如果每个
+pipeline 再启动 K 个 path workers，总 custom-JDK JVM 数会变成 P*K。
+
+最简设计：
+
+1. 将 producer pipeline 拆成：
+
+       run_producer_seed_pipeline(channel):
+           schedule
+           instrument
+           unforced seed replay
+           import seed
+
+       explore_producer_parallel(channel):
+           bounded path waves
+           merge
+
+2. 所有 producer 的 seed pipeline 仍可使用现有
+   `CAUSYNTH_REGION_JOBS` 并行。
+3. seed 全部完成后，按 canonical channel 顺序逐个执行
+   `explore_producer_parallel`。
+4. 当前正在探索的 producer 独占完整
+   `CAUSYNTH_CONCOLIC_JOBS` 预算。
+
+对于当前两个 producer，array closure 很小，随后 map producer 可以使用完整
+40-worker 预算。这样总 custom-JDK process 数可预测，且删除了嵌套限流问题。
+
+不要在第一版实现跨 producer 的全局动态 queue/semaphore。
+
+
+12. Wave publish
+----------------
+
+只有 coordinator 执行 publish。
+
+输入：
+
+    sorted queryKeys
+    每个 task 的 solver result
+    每个 SAT task 的 activation/raw/imported summary/verification
+
+输出 aggregate：
+
+    observed_path_summaries.jsonl
+    .state/observed_activation_plan.jsonl
+    raw_results.jsonl
+    path_exploration_records.jsonl
+
+规则：
+
+1. 按 queryKey 排序 task directories。
+2. UNSAT 只合入 exploration record。
+3. verified SAT replay 合入 activation、raw、summary 和 exploration record。
+4. 每类 aggregate 每 wave 只扫描/合并一次。
+5. 使用 `.state/next_*` 临时文件，全部构建成功后才替换当前 aggregate。
+6. 同一个 aggregate 只能由 coordinator 写。
+7. summary 的 semantic duplicate 使用现有 stablePathKey 行为处理；不能以
+   completion order 选择。
+8. 发布完成后再进入下一 wave。
+
+第一版不需要实现跨四个文件的 transaction journal。正常错误必须发生在 publish
+之前并阻止任何替换；不要为进程在连续几个 `mv` 中间被 kill 的极端情况设计数据库。
+
+
+13. 确定性
+----------
+
+必须保持：
+
+1. frontier：按 queryKey sort。
+2. wave selection：取 sorted frontier 前 K 个。
+3. worker directory：完整 queryKey。
+4. exploration records：按 queryKey sort。
+5. summaries：按 stablePathKey/现有 merger canonical order。
+6. activation identity：继续由 queryKey 通过
+   `ReplayActivationFactory` 派生。
+7. final RegionSummaryMerger：只消费 CLOSED closure。
+
+不能进入最终 identity 的内容：
+
+    PID
+    worker ordinal
+    wave completion order
+    stdout interleaving
+    task directory timestamp
+    JVM-local object token
+
+jobs=1 与 jobs=40 的中间执行顺序可以不同；最终 stable path set、merged
+relation 和 Z3 结论必须相同。
+
+
+14. 错误语义
+------------
+
+正常 terminal：
+
+    UNSAT
+    VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY
+
+失败：
+
+    unsupported expression
+    materialization gap
+    solver timeout/error
+    custom-JDK 无 raw result
+    importer rejection
+    replay admission rejection
+    worker process crash
+
+失败策略：
+
+1. 当前 wave 失败。
+2. 不发布本 wave 的任何 partial aggregate。
+3. 保留 wave/task/log/SMT。
+4. 不自动 retry。
+5. 不把失败写成 terminal exploration record 后继续 closure。
+
+这是 fail closed，但不是重复校验。
+
+
+15. 明确的代码精简项
+--------------------
+
+并行实现同时删除以下旧路径：
+
+15.1 ConcolicPathFlipPlanner
+
+删除：
+
+    AMBIGUOUS_PATH_FLIP
+    EXACTLY_ONE_PATH_FLIP_MUST_MATCH_SELECTION
+    selected task mirror
+    unused activation/flip-site/occurrence selectors
+    matchesTask
+    scratch artifact hash manifest
+    planner 内 solve/replay activation 职责
+
+保留：
+
+    input filtering by region
+    RegionPathWorklist.plan
+    canonical worklist/manifest output
+
+15.2 run.sh
+
+删除：
+
+    ambiguous planner -> shell select -> second planner dance
+    seen_queries associative array
+    每 path 三次全量 combine/rewrite
+    重复验证 activation JSON 每个字段的约 40 行 jq
+    shell 对 Java verifier 已验证事实的重复检查
+    producer exploration 的 P*K 嵌套并行
+
+拆成短函数：
+
+    plan_path_wave
+    run_path_task
+    wait_path_wave
+    publish_path_wave
+    explore_producer_parallel
+
+目标是缩短当前约 250 行的单 task while，而不是把同样逻辑搬到另一个 250 行脚本。
+
+15.3 RegionPathWorklist
+
+`maxWallClockMillis` 当前只计算一次内存 planning 的时间，不覆盖 Z3、custom JVM、
+import 或 verifier；每次 re-plan 又会重置，因此不是 campaign wall-clock bound。
+
+删除：
+
+    startedNanos
+    wallClockExceeded
+    Bounds.maxWallClockMillis
+    producer_max_path_wall_clock_ms wiring/docs
+
+保留：
+
+    maxPathsPerRegion
+    maxFlipsPerPath
+    maxTasks
+    solver timeout
+
+清理 `terminal()` 中仓库没有生产者的旧状态。正常 ledger 只需识别实际生产的
+UNSAT 与 validated replay。失败直接终止 wave，不需要持久化为“已完成失败任务”。
+
+15.4 Scratch artifacts
+
+默认成功时删除 task/wave scratch，只保留 aggregate campaign artifacts。
+
+`GRAPH_CHECKER_DEBUG=true`：
+
+    保留所有 wave/task 目录
+    保留 SMT
+    保留 worker stdout/stderr
+
+无论 debug 是否开启，失败 wave 始终保留。不要为每个临时文件生成无人消费的
+SHA-256 manifest。
+
+
+16. Importer / Verifier 的后续收敛
+---------------------------------
+
+不要在第一个并行 commit 中同时删除 replay verifier。先取得 jobs=1 与 jobs=40
+等价。
+
+并行稳定后，执行一次明确的 authority 收敛：
+
+当前 importer 已经检查：
+
+    activation/raw pathQueryKey 一致
+    所有 solver model assignments 精确应用
+    BranchReplayContract 对 observed witness stream 成立
+    raw schema、activation、region 对应
+    requested output capture/output set
+    relational completeness
+
+当前 `ConcolicPathReplayVerifier` 和 `ConcolicReplayValidator` 又重复检查其中很多
+事实。应建立一个简短的 invariant mapping：
+
+    old verifier check
+        -> importer 中已有位置
+        -> 或迁移到 importer/reducer 的唯一必要位置
+
+如果 mapping 完整：
+
+1. importer 成为 raw replay admission 的唯一 trust boundary；
+2. 一个小 reducer 由 admitted summary 计算 stablePathKey 并生成 exploration
+   record；
+3. 删除 `ConcolicPathReplayVerifier`；
+4. 删除只被它使用且与 importer 重复的 `ConcolicReplayValidator`。
+
+如果发现 verifier 中确有 importer 没有的真实语义不变量，把该不变量迁移到
+importer 后再删。不能为了行数直接丢掉。
+
+该收敛预计可以净删约 1,200-1,800 行生产代码，但它必须是并行功能之后的独立
+milestone/commit。
+
+
+17. 不在本任务范围内
+--------------------
+
+以下内容明确不做：
+
+1. custom JDK 内部并行 symbolic contexts。
+2. 修改 HotSpot/concolic engine。
+3. 跨机器 execution。
+4. Redis、数据库、message queue、lease、heartbeat。
+5. worker 自动重试与 speculative cancellation。
+6. NUMA pinning、cgroup scheduler、动态 load controller。
+7. 网络端口分配。
+8. 新的 output closure schema/version。
+9. 修改 multi-output、heap、Map、array 的语义 contract。
+10. 修改 fixture/testworkload 来让并行测试更容易。
+11. 为所有并行排列组合创建几百个 unit tests。
+
+
+18. 最小回归测试
+----------------
+
+新增/保留的 unit test 总量应是个位数到十几个，不做排列组合爆炸。
+
+18.1 Worklist / planner
+
+1. 输入顺序不同，frontier queryKey 顺序与集合相同。
+2. 多 pending task 时 planner 返回 PENDING，而不是 AMBIGUOUS。
+3. records 中 UNSAT/validated query 不再重新发出。
+4. CLOSED 仍然只有在无 pending、无 gap 时产生。
+
+18.2 Exact solver
+
+1. queryKey 精确选择一个 task。
+2. SAT 产生一个稳定 activation id。
+3. UNSAT 不产生 activation。
+4. missing/duplicate/conflicting queryKey fail closed。
+
+18.3 Wave coordinator
+
+1. jobs=1 能走完一个 wave。
+2. 多 worker completion 顺序不同，publish 输出顺序仍相同。
+3. 任一 worker 失败，aggregate state 完全不变。
+4. 同一 wave 的 duplicate semantic path 不破坏 closure。
+
+不要给每个 worker 数量分别复制 unit test。并发度差异由 fixture 回归覆盖。
+
+
+19. Maintained fixture 验收
+--------------------------
+
+fixture/testworkload 源文件保持不动。
+
+至少执行：
+
+1. `CAUSYNTH_CONCOLIC_JOBS=1` 的 maintained workflow/matrix。
+2. `CAUSYNTH_CONCOLIC_JOBS=40` 的同一 workflow/matrix。
+3. 需要调优时额外比较 8 与 64，不为每个值保留永久测试。
+
+比较语义：
+
+    queryKey terminal set
+    stable path set
+    closure state == CLOSED
+    observedPathCount
+    merged region case set
+    relationallyComplete == true
+    final Z3 sat/unsat
+
+重点：
+
+1. current container：
+   - array producer 2 paths；
+   - map producer 48 paths；
+   - final candidate 维持当前预期 `sat`。
+2. unreachable-parity：
+   - final Z3 维持 `unsat`。
+3. cross-method-fields、dependent-scalar、multitype 与 scenario cases：
+   - 维持 robustness matrix 当前期待的 sat/unsat 结论。
+
+不要求比较：
+
+    PID
+    wave 数字
+    worker log 顺序
+    wall-clock timestamp
+    成功后已删除的 scratch artifact hash
+
+
+20. 性能验收
+------------
+
+记录而不新增永久 metrics schema：
+
+    total producer campaign wall time
+    map producer exploration wall time
+    wave count
+    executed replay count
+    max simultaneous custom-JDK process count
+    peak RSS（外部 time/ps 即可）
+
+基准：
+
+    jobs=1
+    jobs=8
+    jobs=40
+    可选 jobs=64
+
+当前服务器默认最终选择 40，除非实测 64 明显更快且稳定。性能目标不是宣称
+40 倍线性加速；path frontier 有 wave dependency。container map campaign 的
+目标是相对 jobs=1 获得显著的多倍加速，同时最终语义完全一致。
+
+不要为了达到一个数字而减少探索路径、放宽 verifier/importer 或修改 fixture。
+
+
+21. 实施 milestone 与 commit/push 顺序
+--------------------------------------
+
+Milestone 0：基线
+
+1. 记录当前 working tree；不得覆盖用户已有的
+   `ContainerThreeThreadRpcWorkload.java` 修改。
+2. 保存 jobs=1 当前 fixture 最终 sat/unsat、path count 和耗时。
+3. 不提交用户无关修改。
+
+Milestone 1：planner / exact solver 拆分，仍然串行
+
+1. planner 变成纯 frontier planner。
+2. 新增小型 `ConcolicPathFlipSolver`。
+3. run.sh 使用新两阶段接口，但 `CAUSYNTH_CONCOLIC_JOBS=1`。
+4. 删除 ambiguous double-plan。
+5. targeted tests + maintained核心 fixture 通过。
+6. 独立 commit 并 push。
+
+Milestone 2：bounded wave 多进程 worker
+
+1. 增加 plan/run/wait/publish wave 函数。
+2. 每 worker 私有目录/result/tmp/log。
+3. 默认 jobs=nproc（当前 40）。
+4. seed pipeline 与 path exploration 分阶段，避免 P*K。
+5. jobs=1 与 jobs=40 语义对比。
+6. container 与 unreachable-parity 必须通过。
+7. 独立 commit 并 push。
+
+Milestone 3：删除串行残留和重复校验
+
+1. 删除 unused selectors、seen_queries、per-path O(n^2) merge。
+2. 删除错误的 planning-only wall-clock bound。
+3. 删除 scratch hash/mirror artifacts。
+4. 建立 verifier/importer invariant mapping。
+5. 能完整迁移时删除重复 verifier/validator；否则保留唯一职责。
+6. 精简相关 unit tests，不增加测试总量。
+7. full maintained matrix 通过。
+8. 独立 commit 并 push。
+
+Milestone 4：并行度调优与文档
+
+1. 比较 1/8/40/64。
+2. 确认默认 40 或以实测结果调整。
+3. 更新 readme/help/config 文档。
+4. 最后一次 full maintained matrix。
+5. commit 并 push。
+
+每个 milestone 独立可回滚。不要把并行行为、verifier 删除和大规模无关重构塞进
+同一个 commit。
+
+
+22. 完成定义
+------------
+
+只有全部满足才算完成：
+
+1. custom JDK 没有代码 diff。
+2. fixture/testworkload 没有因本任务被修改。
+3. 一个 path task 一个独立 JVM/result/temp/log。
+4. jobs=1 可用。
+5. 默认 jobs 使用当前服务器多核能力（当前 40）。
+6. 同一 wave 的 worker 真正并发执行。
+7. worker 不写 aggregate state。
+8. wave 失败不发布 partial state。
+9. completion order 不影响 final stable path/merged relation。
+10. 只有 CLOSED closure 被 merge。
+11. jobs=1 与 jobs=40 的 maintained fixture 最终 sat/unsat 一致。
+12. container 保持 sat，unreachable-parity 保持 unsat。
+13. 旧 ambiguous 双规划和逐 path ledger 重写已删除。
+14. shell 不再重复 importer/verifier 的字段级校验。
+15. regression test 保持精简，总量不因并发排列组合暴涨。
+16. 重要 milestone 已 commit 并 push。
+
+
+23. 给实现者的最后提醒
+----------------------
+
+优先完成最小正确 wave，不要先抽象“通用并行执行框架”。
+
+正确的最小核心只有：
+
+    plan once
+    sorted first K
+    private process workers
+    wait all
+    deterministic single-writer publish
+    replan
+
+custom JDK、output closure、heap/Map/array 语义和 SMT composition 都不是这次
+并行化的修改对象。并行只是改变“独立 path task 何时执行”，不能改变“一个 task
+代表什么、如何验证、如何合并”。

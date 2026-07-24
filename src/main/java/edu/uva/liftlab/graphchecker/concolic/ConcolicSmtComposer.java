@@ -270,12 +270,6 @@ public final class ConcolicSmtComposer {
         manifest.add("unsupportedExpressions",
                 GSON.toJsonTree(emitter.unsupported));
         manifest.add("unboundPorts", GSON.toJsonTree(emitter.unboundPorts));
-        manifest.add("runtimeBoundedMapSnapshots",
-                emitter.runtimeBoundedMapSnapshots.deepCopy());
-        manifest.add("exactCausalInputAliases",
-                emitter.exactCausalInputAliases.deepCopy());
-        manifest.add("opaqueComputedMapKeys",
-                emitter.opaqueComputedMapKeys.deepCopy());
         manifest.add("caseProjectionCatalog",
                 emitter.caseProjectionCatalog.deepCopy());
         boolean structurallyComplete = missingSummaries.isEmpty()
@@ -1614,9 +1608,6 @@ public final class ConcolicSmtComposer {
         private boolean caseProjectionCatalogComplete = true;
         private int unknownCounter;
         private int assertionCount;
-        private final JsonArray runtimeBoundedMapSnapshots = new JsonArray();
-        private final JsonArray exactCausalInputAliases = new JsonArray();
-        private final JsonArray opaqueComputedMapKeys = new JsonArray();
         private String currentGuard = "";
         private String currentSymbolScope = "global";
         private CaseProjectionCapture currentCaseProjection;
@@ -4810,17 +4801,6 @@ public final class ConcolicSmtComposer {
                 assertNamed("finite_map_snapshot_exact_" + id,
                         "(= " + portName(statePort) + " " + exactState
                                 + ")");
-                JsonObject catalog = new JsonObject();
-                catalog.addProperty("snapshotId", id);
-                catalog.addProperty("regionId", region);
-                catalog.addProperty("statePort", rawStatePort);
-                catalog.addProperty("runtimeBoundedMapCardinality",
-                        cardinality);
-                catalog.addProperty("objectTokenScope", scope);
-                catalog.addProperty("authority", string(snapshot,
-                        "authority"));
-                catalog.addProperty("guarded", !currentGuard.isEmpty());
-                runtimeBoundedMapSnapshots.add(catalog);
             }
         }
 
@@ -5592,17 +5572,45 @@ public final class ConcolicSmtComposer {
         private void bindContainerElementFieldsForClosure(
                 String region, JsonObject summary,
                 OutputClosureContract outputClosure) {
+            Map<String, Set<String>> schemaOneDeclarationsByBase =
+                    new LinkedHashMap<>();
+            for (String output : outputClosure.outputPorts()) {
+                JsonObject memberSlice = outputClosure.member(output).slice();
+                for (JsonElement element : array(memberSlice,
+                        "containerElementFieldBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (integer(binding, "schemaVersion", -1) != 1) {
+                        continue;
+                    }
+                    String base = string(binding, "baseInputSymbol");
+                    if (!base.isEmpty()) {
+                        schemaOneDeclarationsByBase.computeIfAbsent(base,
+                                ignored -> new LinkedHashSet<>()).add(
+                                CanonicalJson.render(binding));
+                    }
+                }
+            }
+            Map<String, Integer> schemaOneBaseCounts =
+                    new LinkedHashMap<>();
+            for (Map.Entry<String, Set<String>> entry
+                    : schemaOneDeclarationsByBase.entrySet()) {
+                schemaOneBaseCounts.put(entry.getKey(),
+                        entry.getValue().size());
+            }
             for (String output : outputClosure.outputPorts()) {
                 JsonObject memberSlice = outputClosure.member(output).slice();
                 if (memberSlice.size() != 0) {
-                    bindContainerElementFields(region, summary, memberSlice);
+                    bindContainerElementFields(region, summary, memberSlice,
+                            schemaOneBaseCounts);
                 }
             }
         }
 
         private void bindContainerElementFields(
                 String region, JsonObject summary,
-                JsonObject requestedOutputSlice) {
+                JsonObject requestedOutputSlice,
+                Map<String, Integer> schemaOneBaseCounts) {
             JsonElement declared = requestedOutputSlice.get(
                     "containerElementFieldBindings");
             if (declared == null) return;
@@ -5619,7 +5627,6 @@ public final class ConcolicSmtComposer {
                 }
             }
             Set<String> bindingIds = new LinkedHashSet<>();
-            Set<String> basePorts = new LinkedHashSet<>();
             JsonArray bindings = declared.getAsJsonArray();
             for (int ordinal = 0; ordinal < bindings.size(); ordinal++) {
                 JsonElement rawBinding = bindings.get(ordinal);
@@ -5633,7 +5640,7 @@ public final class ConcolicSmtComposer {
                         "bindingId"), String.valueOf(ordinal));
                 String issue = validateContainerElementFieldBinding(
                         binding, requestedOutputSlice, requestedInputs,
-                        bindingIds, basePorts);
+                        bindingIds);
                 if (!issue.isEmpty()) {
                     heapGap(region, "ContainerElementFieldBinding@" + region
                             + ":" + bindingId + ":" + issue);
@@ -5658,10 +5665,17 @@ public final class ConcolicSmtComposer {
                         "containerInputPort");
                 String declaredType = string(binding, "declaredFieldType");
                 Sort fieldSort = containerFieldSort(basePort, declaredType);
-                Term base = containerFieldPortTerm(basePort, fieldSort);
-                if (base == null) {
-                    heapGap(region, "ContainerElementFieldBinding@" + region
-                            + ":" + bindingId + ":FIELD_PORT_SORT_CONFLICT");
+                boolean repeatedSchemaOneBase =
+                        integer(binding, "schemaVersion", -1) == 1
+                                && schemaOneBaseCounts.getOrDefault(
+                                basePort, 0) > 1;
+                if (repeatedSchemaOneBase
+                        && selector.fieldExpression == null) {
+                    // A closure-wide declaration may be guard-excluded from
+                    // this case.  Without an occurrence-specific runtime
+                    // witness there is no safe field projection to emit;
+                    // relational completeness was already certified while
+                    // importing the case's heap effects.
                     continue;
                 }
 
@@ -5692,15 +5706,8 @@ public final class ConcolicSmtComposer {
                     continue;
                 }
                 String projected = "(" + accessor + " " + owner + ")";
-                String equality = "(= " + projected + " " + base.text
-                        + ")";
-                assertNamed("container_element_field_" + bindingId,
-                        equality);
-                addAutomaticRelationship("container_element_field_"
-                                + bindingId,
-                        "CONTAINER_ELEMENT_FIELD_BINDING", equality,
-                        basePort, projected);
-
+                String equality;
+                String relationshipLeft;
                 if (selector.fieldExpression != null) {
                     Term dynamic = exactDynamicFieldTerm(
                             selector.fieldExpression,
@@ -5711,9 +5718,26 @@ public final class ConcolicSmtComposer {
                                 + ":DYNAMIC_FIELD_SORT_CONFLICT");
                         continue;
                     }
-                    assertNamed("container_dynamic_field_" + bindingId,
-                            "(= " + dynamic.text + " " + base.text + ")");
+                    equality = "(= " + projected + " " + dynamic.text
+                            + ")";
+                    relationshipLeft = selector.dynamicFieldSymbol;
+                } else {
+                    Term base = containerFieldPortTerm(basePort, fieldSort);
+                    if (base == null) {
+                        heapGap(region, "ContainerElementFieldBinding@"
+                                + region + ":" + bindingId
+                                + ":FIELD_PORT_SORT_CONFLICT");
+                        continue;
+                    }
+                    equality = "(= " + projected + " " + base.text + ")";
+                    relationshipLeft = basePort;
                 }
+                assertNamed("container_element_field_" + bindingId,
+                        equality);
+                addAutomaticRelationship("container_element_field_"
+                                + bindingId,
+                        "CONTAINER_ELEMENT_FIELD_BINDING", equality,
+                        relationshipLeft, projected);
             }
         }
 
@@ -6121,7 +6145,7 @@ public final class ConcolicSmtComposer {
         private String validateContainerElementFieldBinding(
                 JsonObject binding, JsonObject requestedOutputSlice,
                 Set<String> requestedInputs,
-                Set<String> bindingIds, Set<String> basePorts) {
+                Set<String> bindingIds) {
             String id = string(binding, "bindingId");
             String base = string(binding, "baseInputSymbol");
             String container = string(binding, "containerInputPort");
@@ -6139,7 +6163,7 @@ public final class ConcolicSmtComposer {
                 return "MISSING_OR_DUPLICATE_BINDING_ID";
             }
             if (base.isEmpty() || container.isEmpty()
-                    || base.equals(container) || !basePorts.add(base)) {
+                    || base.equals(container)) {
                 return "AMBIGUOUS_INPUT_PORTS";
             }
             if (!ports.contains(base) || !ports.isInput(base)
@@ -6213,14 +6237,68 @@ public final class ConcolicSmtComposer {
             String fieldSite = string(binding,
                     "fieldMaterializationSiteId");
             String arraySite = string(binding, "arrayLoadSiteId");
+            Set<String> sliceMethods = strictStringSet(array(
+                    requestedOutputSlice, "methods"));
+            Set<String> sliceSites = strictStringSet(array(
+                    requestedOutputSlice, "sites"));
+            Set<String> sliceEdges = requestedSliceCausalEdgeIds(
+                    requestedOutputSlice);
             if (schemaOne) {
-                if (proof.size() != 4
+                String transformerSite = string(binding,
+                        "requestedStateTransformerSiteId");
+                if (proofIds.isEmpty()
                         || method.isEmpty() || fieldSite.isEmpty()
-                        || arraySite.isEmpty()
-                        || !"STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_"
-                        .concat("DECLARED_FIELD_FOUR_EDGE_JOIN_V1").equals(
-                                string(binding, "proofAuthority"))) {
-                    return "STATIC_FOUR_EDGE_PROOF_INCOMPLETE";
+                        || arraySite.isEmpty() || transformerSite.isEmpty()
+                        || !"STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                        .concat("KEY_VALUE_V1").equals(string(binding,
+                                "proofAuthority"))) {
+                    return "STATIC_CONTAINER_TRANSFORMER_PROOF_INCOMPLETE";
+                }
+                if (sliceMethods == null || sliceSites == null
+                        || !sliceMethods.contains(method)
+                        || !exactMethodUnitSite(method, fieldSite)
+                        || !exactMethodUnitSite(method, arraySite)
+                        || !exactMethodUnitSite(method, transformerSite)
+                        || !sliceSites.contains(fieldSite)
+                        || !sliceSites.contains(arraySite)
+                        || !sliceSites.contains(transformerSite)
+                        || sliceEdges == null
+                        || !sliceEdges.containsAll(proofIds)) {
+                    return "STATIC_CONTAINER_TRANSFORMER_SLICE_"
+                            + "CLOSURE_INCOMPLETE";
+                }
+                JsonObject obligation = null;
+                for (JsonElement element : array(requestedOutputSlice,
+                        "requestedStateTransformerObligations")) {
+                    if (!element.isJsonObject()
+                            || !transformerSite.equals(string(
+                            element.getAsJsonObject(), "siteId"))) {
+                        continue;
+                    }
+                    if (obligation != null) {
+                        return "STATIC_CONTAINER_TRANSFORMER_OBLIGATION_"
+                                + "AMBIGUOUS";
+                    }
+                    obligation = element.getAsJsonObject();
+                }
+                Set<String> obligationEdges = obligation == null ? null
+                        : strictStringSet(array(obligation,
+                        "causalEdgeIds"));
+                if (obligation == null
+                        || !method.equals(string(obligation, "method"))
+                        || !string(requestedOutputSlice, "outputCell").equals(
+                        string(obligation, "targetCell"))
+                        || !"HEAP_WRITE".equals(string(obligation,
+                        "transferKind"))
+                        || !"field_mutation".equals(string(obligation,
+                        "kind"))
+                        || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL"
+                        .equals(string(obligation, "authority"))
+                        || obligationEdges == null
+                        || obligationEdges.isEmpty()
+                        || !proofIds.containsAll(obligationEdges)) {
+                    return "STATIC_CONTAINER_TRANSFORMER_OBLIGATION_"
+                            + "INCOMPLETE";
                 }
                 return "";
             }
@@ -6234,12 +6312,6 @@ public final class ConcolicSmtComposer {
                             "proofAuthority"))) {
                 return "STATIC_DIRECT_FIELD_PATH_PROOF_INCOMPLETE";
             }
-            Set<String> sliceMethods = strictStringSet(array(
-                    requestedOutputSlice, "methods"));
-            Set<String> sliceSites = strictStringSet(array(
-                    requestedOutputSlice, "sites"));
-            Set<String> sliceEdges = requestedSliceCausalEdgeIds(
-                    requestedOutputSlice);
             if (sliceMethods == null || sliceSites == null
                     || method.isEmpty() || !sliceMethods.contains(method)
                     || !exactMethodUnitSite(method, fieldSite)
@@ -7120,33 +7192,11 @@ public final class ConcolicSmtComposer {
                     String formula = "(= " + from.text + " "
                             + to.text + ")";
                     String label = "exact_causal_input_alias_"
-                            + exactCausalInputAliases.size();
+                            + (emittedExactCausalInputAliasKeys.size() - 1);
                     assertNamed(label, formula);
                     addAutomaticRelationship(label,
                             "STATIC_EXACT_CAUSAL_SCALAR_INPUT_ALIAS",
                             formula, source, target);
-
-                    JsonObject record = new JsonObject();
-                    record.addProperty("summaryId", string(summary,
-                            "summaryId"));
-                    record.addProperty("regionId", selection.regionId);
-                    record.addProperty("sourceInput", source);
-                    record.addProperty("targetInput", target);
-                    record.addProperty("sourceCell", proof.sourceCell);
-                    record.addProperty("targetCell", proof.targetCell);
-                    record.addProperty("sort", sourceSort.smt);
-                    JsonArray edgeIds = new JsonArray();
-                    JsonArray transferKinds = new JsonArray();
-                    for (JsonObject edge : proof.edges) {
-                        edgeIds.add(string(edge, "edgeId"));
-                        transferKinds.add(string(edge, "transferKind"));
-                    }
-                    record.add("proofEdgeIds", edgeIds);
-                    record.add("proofTransferKinds", transferKinds);
-                    record.addProperty("authority",
-                            "SUMMARY_EXACT_INPUT_CELLS_AND_ALLOWED_"
-                                    + "EQUALITY_PRESERVING_CAUSAL_PATH_V1");
-                    exactCausalInputAliases.add(record);
                 }
             }
         }
@@ -7611,10 +7661,6 @@ public final class ConcolicSmtComposer {
                         + string(encodedExpression, "_exp"));
                 return null;
             }
-            if (opaqueComputedKey) {
-                recordOpaqueComputedMapKey(origin, object,
-                        encodedExpression, kind);
-            }
             if ("STRING".equals(kind)) {
                 if (raw.sort != Sort.STRING) {
                     unsupported.add("MAP_KEY_TERM_SORT_MISMATCH:" + origin
@@ -7670,31 +7716,6 @@ public final class ConcolicSmtComposer {
             }
             return new Term("(" + constructor + " " + raw.text + ")",
                     Sort.VALUE);
-        }
-
-        private void recordOpaqueComputedMapKey(String origin,
-                                                JsonObject computation,
-                                                JsonObject result,
-                                                String kind) {
-            JsonObject admission = new JsonObject();
-            admission.addProperty("authority",
-                    "CONCOLIC_TYPED_METHOD_RESULT_ONE_LOOKUP_KEY_V1");
-            admission.addProperty("bounded", true);
-            admission.addProperty("relationallyComplete", false);
-            admission.addProperty("scope",
-                    "ONE_OBSERVED_MAP_MEMBERSHIP_AND_VALUE_PROJECTION");
-            admission.addProperty("origin", firstNonBlank(origin));
-            admission.addProperty("symbolScope", currentSymbolScope);
-            admission.addProperty("computation",
-                    string(computation, "_name"));
-            admission.addProperty("resultJavaType",
-                    string(result, "_java_type"));
-            admission.addProperty("resultEngineSymbol",
-                    string(result, "_exp"));
-            admission.addProperty("boxedKeyKind", kind);
-            admission.addProperty("computationRelationMode",
-                    "OPAQUE_CONCRETE_WORKLOAD_RESULT");
-            opaqueComputedMapKeys.add(admission);
         }
 
         private static String mapKeyKind(String javaType) {
@@ -8382,6 +8403,7 @@ public final class ConcolicSmtComposer {
             }
             Map<String, Integer> eligibleBaseCounts =
                     new LinkedHashMap<>();
+            Set<String> strictUniqueBases = new LinkedHashSet<>();
             for (JsonElement element : dynamicBindings) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
@@ -8397,10 +8419,15 @@ public final class ConcolicSmtComposer {
                 Integer previous = eligibleBaseCounts.get(base);
                 eligibleBaseCounts.put(base, previous == null ? 1
                         : previous + 1);
+                if ("DYNAMIC_MAP_ENTRY_FIELD_BINDING".equals(
+                        string(binding, "kind"))) {
+                    strictUniqueBases.add(base);
+                }
             }
             for (Map.Entry<String, Integer> entry
                     : eligibleBaseCounts.entrySet()) {
-                if (entry.getValue() != 1) {
+                if (entry.getValue() != 1
+                        && strictUniqueBases.contains(entry.getKey())) {
                     gap("AMBIGUOUS_DYNAMIC_BASE_ROOT:" + entry.getKey()
                             + ":" + entry.getValue());
                 }

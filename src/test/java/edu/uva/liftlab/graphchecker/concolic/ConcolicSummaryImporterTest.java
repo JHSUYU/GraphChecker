@@ -360,6 +360,37 @@ public class ConcolicSummaryImporterTest {
             assertTrue(causalGuardObservation.diagnostics,
                     causalGuardObservation.diagnostics.contains(
                             "INCOMPLETE_RUNTIME_HEAP_OBSERVATION"));
+
+            Object[][] containerCases = {
+                    {"one", 1, new int[]{0}, "NORMAL", true},
+                    {"sparse", 5, new int[]{1, 4}, "NORMAL", true},
+                    {"duplicate-load", 1, new int[]{0},
+                            "DUPLICATE_LOAD", true},
+                    {"wrong-site", 1, new int[]{0}, "SITE", false},
+                    {"wrong-value", 1, new int[]{0}, "VALUE", false},
+                    {"snapshot-value", 1, new int[]{0},
+                            "SNAPSHOT_VALUE", false},
+                    {"mixed-residual", 1, new int[]{0},
+                            "MIXED_RESIDUAL", false},
+                    {"missing-effect", 5, new int[]{1, 4},
+                            "MISSING_EFFECT", false}
+            };
+            for (Object[] testCase : containerCases) {
+                String name = (String) testCase[0];
+                MapFixture container = importContainerMutationFixture(
+                        folder.getRoot().toPath().resolve(name),
+                        (Integer) testCase[1], (int[]) testCase[2],
+                        (String) testCase[3]);
+                assertEquals(name + ": " + container.diagnostics,
+                        testCase[4], container.summary.get(
+                        "relationallyComplete").getAsBoolean());
+                if ("mixed-residual".equals(name)) {
+                    assertFalse(container.diagnostics,
+                            container.diagnostics.contains("#u17"));
+                    assertTrue(container.diagnostics,
+                            container.diagnostics.contains("#u90"));
+                }
+            }
         } finally {
             folder.delete();
         }
@@ -1640,6 +1671,11 @@ public class ConcolicSummaryImporterTest {
                         entry.getValue().deepCopy());
             }
         }
+        if (containerBindings != null
+                && containerBindings.isJsonArray()) {
+            requestedOutputSlice.add("containerElementFieldBindings",
+                    containerBindings.deepCopy());
+        }
         activation.add("requestedOutputSlice", requestedOutputSlice);
         activation.add("branches", branchPoliciesForTest(
                 authorizedBranchMappings));
@@ -2168,8 +2204,9 @@ public class ConcolicSummaryImporterTest {
         return result;
     }
 
-    private static MapFixture importOrderedPutFixture(
-            Path root, String mutation) throws Exception {
+    private static MapFixture importContainerMutationFixture(
+            Path root, int arrayLength, int[] selectors, String mutation)
+            throws Exception {
         String method = "<example.Store: void update()>";
         String outputCell = "<example.Store: java.util.Map data>";
         String base = "REGION.P.in.1";
@@ -2177,9 +2214,6 @@ public class ConcolicSummaryImporterTest {
         String containerCell =
                 "<example.Envelope: example.Value[] values>";
         String field = "<example.Value: long id>";
-        int[] loadUnits = new int[]{13, 19, 25, 31};
-        int[] fieldUnits = new int[]{14, 20, 26, 32};
-        int[] writeUnits = new int[]{17, 23, 29, 35};
         long arrayToken = 500L;
         String engineArrayId = "AL_1";
 
@@ -2197,34 +2231,33 @@ public class ConcolicSummaryImporterTest {
         JsonArray declarations = new JsonArray();
         JsonArray dynamicBindings = new JsonArray();
         JsonArray fieldObservations = new JsonArray();
-        JsonObject[] putExpressions = new JsonObject[4];
-        JsonObject[] loadExpressions = new JsonObject[4];
-        JsonElement[] putValues = new JsonElement[4];
-        String[] dynamicSymbols = new String[4];
+        JsonObject[] putExpressions = new JsonObject[selectors.length];
+        JsonObject[] loadExpressions = new JsonObject[selectors.length];
+        String[] dynamicSymbols = new String[selectors.length];
         JsonArray causalEdges = new JsonArray();
         JsonArray obligations = new JsonArray();
         JsonArray sinkSites = new JsonArray();
 
-        for (int index = 0; index < 4; index++) {
-            String bindingId = "CONTAINER.FIELD." + index;
-            String fieldSite = method + "#u" + fieldUnits[index];
-            String loadSite = method + "#u" + loadUnits[index];
-            String writeSite = method + "#u" + writeUnits[index];
+        for (int ordinal = 0; ordinal < selectors.length; ordinal++) {
+            int selectorIndex = selectors[ordinal];
+            String bindingId = "CONTAINER.FIELD." + ordinal;
+            String fieldSite = method + "#u" + (14 + ordinal * 6);
+            String loadSite = method + "#u" + (13 + ordinal * 6);
+            String writeSite = method + "#u" + (17 + ordinal * 6);
+            String edgeId = "DF.PUT." + ordinal;
             String dynamic = dynamicFieldSymbol(base, fieldSite, 1);
-            dynamicSymbols[index] = dynamic;
+            dynamicSymbols[ordinal] = dynamic;
 
             JsonObject declaration = new JsonObject();
             declaration.addProperty("schemaVersion", 1);
             declaration.addProperty("kind", "ARRAY_ELEMENT_FIELD");
             declaration.addProperty("bindingId", bindingId);
             declaration.addProperty("baseInputSymbol", base);
-            declaration.addProperty("containerInputPort",
-                    "PORT".equals(mutation)
-                            ? "REGION.P.in.missing" : containerPort);
+            declaration.addProperty("containerInputPort", containerPort);
             declaration.addProperty("containerInputCell", containerCell);
             declaration.addProperty("selectorAuthority",
                     "EXACT_ARRAY_INDEX");
-            declaration.addProperty("elementIndex", index);
+            declaration.addProperty("elementIndex", selectorIndex);
             declaration.addProperty("elementOccurrence", 1);
             declaration.add("fieldPath",
                     JsonParser.parseString("[\"id\"]"));
@@ -2238,11 +2271,16 @@ public class ConcolicSummaryImporterTest {
                     fieldSite);
             declaration.addProperty("arrayLoadSiteId", loadSite);
             declaration.add("proofCausalEdgeIds", strings(
-                    "PROOF." + index + ".0", "PROOF." + index + ".1",
-                    "PROOF." + index + ".2", "PROOF." + index + ".3"));
+                    "PROOF." + ordinal + ".0",
+                    "PROOF." + ordinal + ".1",
+                    "PROOF." + ordinal + ".2",
+                    "PROOF." + ordinal + ".3", edgeId));
             declaration.addProperty("proofAuthority",
-                    "STATIC_EXACT_CONTAINER_ARRAY_ACCESSOR_DECLARED_FIELD_"
-                            + "FOUR_EDGE_JOIN_V1");
+                    "STATIC_EXACT_CONTAINER_ARRAY_FIELD_TO_MAP_PUT_"
+                            + "KEY_VALUE_V1");
+            declaration.addProperty("requestedStateTransformerSiteId",
+                    "SITE".equals(mutation) && ordinal == 0
+                            ? method + "#u999" : writeSite);
             declaration.addProperty("complete", true);
             declarations.add(declaration);
 
@@ -2254,14 +2292,13 @@ public class ConcolicSummaryImporterTest {
             selector.addProperty("selectorAuthority", "EXACT_ARRAY_INDEX");
             selector.addProperty("resolvedFromSelectorAuthority",
                     "EXACT_ARRAY_INDEX");
-            selector.addProperty("elementIndex", index);
+            selector.addProperty("elementIndex", selectorIndex);
             selector.addProperty("elementOccurrence", 1);
             selector.addProperty("declaredFieldOwnerClass",
                     "example.Value");
             selector.addProperty("declaredFieldType", "long");
-            selector.addProperty("containerObjectToken",
-                    "TOKEN".equals(mutation) ? 999L : arrayToken);
-            selector.addProperty("elementObjectToken", 601L + index);
+            selector.addProperty("containerObjectToken", arrayToken);
+            selector.addProperty("elementObjectToken", 601L + ordinal);
             selector.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             selector.addProperty("objectTokenScope", "ACT.P");
@@ -2285,17 +2322,17 @@ public class ConcolicSummaryImporterTest {
             binding.addProperty("fieldSignature", field);
             binding.add("fieldPath",
                     JsonParser.parseString("[\"id\"]"));
-            binding.addProperty("leafOwnerObjectToken", 601L + index);
+            binding.addProperty("leafOwnerObjectToken", 601L + ordinal);
             binding.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             binding.addProperty("objectTokenScope", "ACT.P");
             binding.add("containerSelector", selector.deepCopy());
             addContainerSelectorFlatFields(binding, selector);
             addContainerSiteBridge(binding, fieldSite, 1, bindingId,
-                    601L + index);
+                    601L + ordinal);
             binding.addProperty("actualHookSiteId",
                     "<example.Value: long getId()>#u1");
-            binding.addProperty("actualHookOccurrence", index + 1);
+            binding.addProperty("actualHookOccurrence", ordinal + 1);
             binding.addProperty("authority",
                     "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_"
                             + "AND_STABLE_FIELD_SITE_OCCURRENCE");
@@ -2308,7 +2345,8 @@ public class ConcolicSummaryImporterTest {
             observation.add("path",
                     JsonParser.parseString("[\"id\"]"));
             observation.addProperty("available", true);
-            observation.addProperty("leafOwnerObjectToken", 601L + index);
+            observation.addProperty("leafOwnerObjectToken",
+                    601L + ordinal);
             observation.addProperty("leafOwnerObjectTokenKnown", true);
             observation.addProperty("objectTokenAuthority",
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
@@ -2320,10 +2358,10 @@ public class ConcolicSummaryImporterTest {
             observation.addProperty("materializationSiteId", fieldSite);
             observation.addProperty("materializationOccurrence", 1);
             addContainerSiteBridge(observation, fieldSite, 1, bindingId,
-                    601L + index);
+                    601L + ordinal);
             observation.addProperty("actualHookSiteId",
                     "<example.Value: long getId()>#u1");
-            observation.addProperty("actualHookOccurrence", index + 1);
+            observation.addProperty("actualHookOccurrence", ordinal + 1);
             observation.addProperty("dynamicFieldBindingSchemaVersion", 2);
             observation.addProperty("dynamicFieldBindingKind",
                     "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING");
@@ -2339,10 +2377,21 @@ public class ConcolicSummaryImporterTest {
             observation.addProperty("complete", true);
             fieldObservations.add(observation);
 
-            String edgeId = "DF.PUT." + index;
             JsonObject causal = causalEdge(edgeId, method, writeSite,
                     "HEAP_WRITE", "field_mutation");
-            causal.addProperty("fromCell", method + "::value" + index);
+            causal.addProperty("fromCell", method + "::value" + ordinal);
+            causal.addProperty("toCell", outputCell);
+            causalEdges.add(causal);
+            obligations.add(exactTransformerObligation(edgeId, method,
+                    writeSite, outputCell));
+            sinkSites.add(writeSite);
+        }
+        if ("MIXED_RESIDUAL".equals(mutation)) {
+            String edgeId = "DF.PUT.RESIDUAL";
+            String writeSite = method + "#u90";
+            JsonObject causal = causalEdge(edgeId, method, writeSite,
+                    "HEAP_WRITE", "field_mutation");
+            causal.addProperty("fromCell", method + "::literalValue");
             causal.addProperty("toCell", outputCell);
             causalEdges.add(causal);
             obligations.add(exactTransformerObligation(edgeId, method,
@@ -2351,40 +2400,44 @@ public class ConcolicSummaryImporterTest {
         }
 
         JsonObject map = mapInputExpression();
-        for (int index = 0; index < 4; index++) {
-            JsonElement value = symbol("EL_1-0-" + (index + 1),
+        for (int ordinal = 0; ordinal < selectors.length; ordinal++) {
+            JsonElement value = symbol("EL_1-0-" + (ordinal + 1),
                     "Lexample/Value;");
-            putValues[index] = value;
-            loadExpressions[index] = arrayLoadExpression(engineArrayId,
-                    index, value, 100 + index);
-            putExpressions[index] = methodExpression(
-                    "java/util/HashMap put", 100 + index,
+            loadExpressions[ordinal] = arrayLoadExpression(engineArrayId,
+                    selectors[ordinal], value, 100 + ordinal);
+            putExpressions[ordinal] = methodExpression(
+                    "java/util/HashMap put", 100 + ordinal,
                     map.deepCopy(), symbol(
-                            "M_J_field_" + dynamicSymbols[index]
+                            "M_J_field_" + dynamicSymbols[ordinal]
                                     + "_example/Value", "J"),
                     value.deepCopy());
         }
-        if ("KEY".equals(mutation)) {
-            JsonElement first = putExpressions[0].getAsJsonArray(
-                    "_param_list").get(1).deepCopy();
-            putExpressions[0].getAsJsonArray("_param_list").set(1,
-                    putExpressions[1].getAsJsonArray("_param_list").get(1)
-                            .deepCopy());
-            putExpressions[1].getAsJsonArray("_param_list").set(1, first);
-        }
-        if ("LOAD".equals(mutation)) {
+        if ("VALUE".equals(mutation)) {
             loadExpressions[0].add("_value_exp",
                     symbol("EL_1-0-wrong", "Lexample/Value;"));
         }
         JsonArray path = new JsonArray();
-        for (int index = 0; index < 4; index++) {
-            if ("CARDINALITY".equals(mutation) && index == 3) continue;
-            if ("ORDER".equals(mutation) && index == 1) {
-                path.add(methodExpression("java/util/HashMap remove", 99,
-                        map.deepCopy(), symbol("interveningKey", "J")));
+        for (int ordinal = 0; ordinal < selectors.length; ordinal++) {
+            if ("MISSING_EFFECT".equals(mutation)
+                    && ordinal == selectors.length - 1) {
+                continue;
             }
-            path.add(loadExpressions[index]);
-            path.add(putExpressions[index]);
+            path.add(loadExpressions[ordinal]);
+            if ("DUPLICATE_LOAD".equals(mutation)) {
+                path.add(loadExpressions[ordinal].deepCopy());
+            }
+            if (arrayLength > selectors.length) {
+                path.add(arrayLoadExpression(engineArrayId, 0,
+                        symbol("EL_noise_" + ordinal,
+                                "Lexample/Value;"),
+                        200 + ordinal));
+            }
+            path.add(putExpressions[ordinal]);
+        }
+        if ("MIXED_RESIDUAL".equals(mutation)) {
+            path.add(methodExpression("java/util/HashMap put", 300,
+                    map.deepCopy(), constant("Y_I_99", "I"),
+                    symbol("EL_literal", "Lexample/Value;")));
         }
 
         JsonObject containerInput = transformerInputBinding(containerPort,
@@ -2395,10 +2448,18 @@ public class ConcolicSummaryImporterTest {
         addHeapEffectCaptureDischarge(sliceMetadata, outputCell,
                 "REGION.P.in.0");
 
-        JsonElement[] arrayElements = new JsonElement[4];
-        for (int index = 0; index < 4; index++) {
+        JsonElement[] arrayElements = new JsonElement[arrayLength];
+        for (int index = 0; index < arrayLength; index++) {
             arrayElements[index] = symbol("M_L_array_element_" + index,
                     "Lexample/Value;");
+        }
+        for (int ordinal = 0; ordinal < selectors.length; ordinal++) {
+            arrayElements[selectors[ordinal]] = putExpressions[ordinal]
+                    .getAsJsonArray("_param_list").get(2).deepCopy();
+        }
+        if ("SNAPSHOT_VALUE".equals(mutation)) {
+            arrayElements[selectors[0]] = symbol(
+                    "M_L_array_element_wrong", "Lexample/Value;");
         }
         JsonObject arrayValue = arrayValueExpression(
                 "[Lexample/Value;", "Lexample/Value;", true,
