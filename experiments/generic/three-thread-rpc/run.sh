@@ -113,9 +113,10 @@ discovered from runtime-confirmed shared-field read-from evidence; this
 fixture has no declared RPC mapping.
 The terminal artifact is deliberately CANDIDATE_ONLY.  Promoting it to a
 trusted result by a natural replay is a documented follow-up TODO.
-Independent producer regions run concurrently, with eight worker processes by
-default. Set CAUSYNTH_REGION_JOBS=N to change the cap; N=1 preserves the
-serial execution order.
+Producer seed pipelines use up to eight region workers by default. Path
+exploration then uses bounded waves of independent custom-JDK processes;
+CAUSYNTH_CONCOLIC_JOBS defaults to nproc (40 on the current server), and N=1
+preserves serial path execution.
 EOF
 }
 
@@ -660,10 +661,13 @@ run_custom_plan() {
   local b1=$5
   local b2=$6
   local accept_nonzero=$7
+  local worker_dir=${8:-}
   local jdk java_path selected replay_status select_all=false
   local resolved_library_path="" java_library_path=""
-  local -a java_env
+  local -a java_env worker_jvm_args selection_args
   java_env=()
+  worker_jvm_args=()
+  selection_args=()
   require_file "concolic activation plan" "${plan}"
   require_directory "concolic fixture classes" "${classes}"
   [[ ! -e "${results}" ]] || die "capture output already exists: ${results}"
@@ -694,29 +698,41 @@ run_custom_plan() {
 
   local -a java_args fixture_variant_args
   fixture_variant_args=()
+  if [[ -n "${worker_dir}" ]]; then
+    mkdir -p "${worker_dir}/tmp"
+    worker_jvm_args=(
+      -Xms32m
+      -Xmx1g
+      -XX:+UseSerialGC
+      -Djava.io.tmpdir="${worker_dir}/tmp"
+      -XX:ErrorFile="${worker_dir}/hs_err_pid%p.log"
+    )
+  fi
   if [[ -n "${fixture_variant}" ]]; then
     fixture_variant_args+=(
       -Dcausynth.fixture.variant="${fixture_variant}"
     )
   fi
+  if [[ "${select_all}" != "true" ]]; then
+    selection_args+=(
+      -Dcausynth.concolic.activation.id="${selected}"
+    )
+  fi
   java_args=(
+    "${worker_jvm_args[@]}"
     -Xint
     -Dcausynth.trace.test="${trace_test}"
     -Dcausynth.concolic.activation.plan="${plan}"
+    "${selection_args[@]}"
     -Dcausynth.concolic.results="${results}"
     "${fixture_variant_args[@]}"
     -cp "${classes}:${graphchecker_jar}"
     "${fixture_class}" "${b1}" "${b2}"
   )
-  if [[ "${select_all}" != "true" ]]; then
-    java_args=(
-      "${java_args[@]:0:3}"
-      -Dcausynth.concolic.activation.id="${selected}"
-      "${java_args[@]:3}"
-    )
-  fi
-  if env "${java_env[@]}" "${java_path}" -version >/dev/null 2>&1; then
+  if env -u CAUSYNTH_TRACE_OUTPUT_DIR \
+      "${java_env[@]}" "${java_path}" -version >/dev/null 2>&1; then
     if (cd "${graphchecker_dir}" && env -u CAUSYNTH_CONCOLIC_ACTIVATION_ID \
+        -u CAUSYNTH_TRACE_OUTPUT_DIR \
         "${java_env[@]}" \
         "${java_path}" "${java_args[@]}"); then
       replay_status=0
@@ -923,16 +939,174 @@ producer_campaign_directory() {
     "$(printf '%s' "${channel}" | tr '[:upper:]' '[:lower:]')"
 }
 
+run_path_task() {
+  local query_key=$1
+  local worklist=$2
+  local activations=$3
+  local classes=$4
+  local task_dir=$5
+  local z3=$6
+  local solver_timeout=$7
+  local region=$8
+  local solver_status replay_activation raw imported replay_verification
+
+  mkdir -p "${task_dir}/tmp"
+  set +e
+  run_graphchecker_main \
+    edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
+    --worklist "${worklist}" \
+    --activations "${activations}" \
+    --query-key "${query_key}" \
+    --output-dir "${task_dir}" \
+    --z3 "${z3}" \
+    --solver-timeout-ms "${solver_timeout}"
+  solver_status=$?
+  set -e
+  require_file "producer path solver result" \
+    "${task_dir}/path_flip_solver_result.json"
+
+  if jq -e --arg query "${query_key}" '
+      .status == "UNSAT" and .queryKey == $query
+    ' "${task_dir}/path_flip_solver_result.json" >/dev/null; then
+    [[ "${solver_status}" -eq 0 ]] \
+      || die "producer UNSAT solver exited ${solver_status}"
+    [[ ! -s "${task_dir}/activation_plan.jsonl" ]] \
+      || die "UNSAT producer path unexpectedly emitted a replay"
+    jq -c '{
+      schemaVersion: 1,
+      kind: "PATH_EXPLORATION_RECORD",
+      queryKey,
+      regionId,
+      sourcePathKey,
+      sourceSummaryId,
+      status,
+      solverInputHash
+    }' "${task_dir}/path_flip_solver_result.json" \
+      >"${task_dir}/exploration_record.jsonl"
+    return 0
+  fi
+
+  [[ "${solver_status}" -eq 0 ]] \
+    || die "producer path solver failed with exit ${solver_status}"
+  jq -e --arg query "${query_key}" '
+    .status == "SAT_MODEL_READY" and .queryKey == $query
+  ' "${task_dir}/path_flip_solver_result.json" >/dev/null \
+    || die "producer path flip is not solver-backed"
+  replay_activation=$(jq -er -s --arg query "${query_key}" \
+    --arg region "${region}" '
+    if length == 1
+        and .[0].regionId == $region
+        and .[0].pathQueryKey == $query
+        and .[0].captureGoal.kind == "OUTPUT_CLOSURE"
+        and .[0].executionPhase == "REPLAY_OUTPUT_PATH_FLIP"
+    then .[0].activationId
+    else error("expected one exact replay activation")
+    end
+  ' "${task_dir}/activation_plan.jsonl") \
+    || die "producer path flip has no exact replay activation"
+
+  raw="${task_dir}/concolic_region_results.jsonl"
+  imported="${task_dir}/concolic_region_summaries.jsonl"
+  replay_verification="${task_dir}/path_replay_verification.json"
+  run_custom_plan "${task_dir}/activation_plan.jsonl" \
+    "${replay_activation}" "${classes}" "${raw}" false false true \
+    "${task_dir}"
+  import_plan "${task_dir}/activation_plan.jsonl" "${raw}" \
+    "${imported}" "${task_dir}"
+  run_graphchecker_main \
+    edu.uva.liftlab.graphchecker.concolic.ConcolicPathReplayVerifier \
+    --task "${task_dir}/replay_validation_plan.json" \
+    --activation-plan "${task_dir}/activation_plan.jsonl" \
+    --results "${raw}" \
+    --summary "${imported}" \
+    --output "${replay_verification}"
+  jq -e --arg query "${query_key}" --arg region "${region}" \
+    --arg activation "${replay_activation}" '
+    .valid == true
+    and .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+    and .queryKey == $query
+    and .regionId == $region
+    and .activationId == $activation
+    and (.observedPathKey | test("^[0-9a-f]{64}$"))
+  ' "${replay_verification}" >/dev/null \
+    || die "producer path replay did not pass the exact verifier"
+  jq -c '{
+    schemaVersion: 1,
+    kind: "PATH_EXPLORATION_RECORD",
+    queryKey,
+    regionId,
+    activationId,
+    observedPathKey,
+    summaryId,
+    status
+  }' "${replay_verification}" >"${task_dir}/exploration_record.jsonl"
+}
+
+wait_for_path_wave() {
+  local pid failed=false
+  for pid in "$@"; do
+    if ! wait "${pid}"; then
+      failed=true
+    fi
+  done
+  [[ "${failed}" == "false" ]]
+}
+
+publish_path_wave() {
+  local wave_dir=$1
+  local state_dir=$2
+  local summaries=$3
+  local activations=$4
+  local raw_results=$5
+  local records=$6
+  local task_dir
+  local -a task_dirs summary_inputs activation_inputs raw_inputs record_inputs
+
+  mapfile -t task_dirs < <(find "${wave_dir}" -mindepth 1 -maxdepth 1 \
+    -type d -name 'task-*' | LC_ALL=C sort)
+  [[ ${#task_dirs[@]} -gt 0 ]] || die "path wave has no task directories"
+  summary_inputs=("${summaries}")
+  activation_inputs=("${activations}")
+  raw_inputs=("${raw_results}")
+  record_inputs=("${records}")
+
+  for task_dir in "${task_dirs[@]}"; do
+    require_file "path exploration record" \
+      "${task_dir}/exploration_record.jsonl"
+    record_inputs+=("${task_dir}/exploration_record.jsonl")
+    if [[ -s "${task_dir}/activation_plan.jsonl" ]]; then
+      require_file "path replay raw result" \
+        "${task_dir}/concolic_region_results.jsonl"
+      require_file "path replay imported summary" \
+        "${task_dir}/concolic_region_summaries.jsonl"
+      activation_inputs+=("${task_dir}/activation_plan.jsonl")
+      raw_inputs+=("${task_dir}/concolic_region_results.jsonl")
+      summary_inputs+=("${task_dir}/concolic_region_summaries.jsonl")
+    fi
+  done
+
+  combine_jsonl_unique summaryId "${state_dir}/next_summaries.jsonl" \
+    "${summary_inputs[@]}"
+  combine_jsonl_unique activationId "${state_dir}/next_activations.jsonl" \
+    "${activation_inputs[@]}"
+  combine_jsonl_unique activationId "${state_dir}/next_raw_results.jsonl" \
+    "${raw_inputs[@]}"
+  combine_jsonl_unique queryKey "${state_dir}/next_records.jsonl" \
+    "${record_inputs[@]}"
+  mv -f "${state_dir}/next_summaries.jsonl" "${summaries}"
+  mv -f "${state_dir}/next_activations.jsonl" "${activations}"
+  mv -f "${state_dir}/next_raw_results.jsonl" "${raw_results}"
+  mv -f "${state_dir}/next_records.jsonl" "${records}"
+}
+
 do_explore_producer() {
   local requested=$1
   local channel schedule classes campaign region source_activation binding
   local summaries activations raw_results records state_dir planner_dir
-  local replay_activation raw imported replay_verification
-  local z3 solver_timeout planner_status solver_status query_key iteration
-  local selection_dir
+  local z3 solver_timeout planner_status query_key iteration jobs task_dir
+  local observed_paths max_paths remaining_paths wave_limit
   local bound_spec bound_property bound_option bound_value
-  local -A seen_queries=()
-  local -a _replay_activations=() planner_bound_args=()
+  local -a planner_bound_args=() wave_query_keys=() worker_pids=()
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
@@ -962,6 +1136,9 @@ do_explore_producer() {
     "${schedule}/concolic_region_results.jsonl"
   z3=$(configured_value z3_bin) || return $?
   solver_timeout=$(configured_value solver_timeout_ms) || return $?
+  jobs=${CAUSYNTH_CONCOLIC_JOBS:-$(nproc)}
+  [[ "${jobs}" =~ ^[1-9][0-9]*$ ]] \
+    || die "CAUSYNTH_CONCOLIC_JOBS must be a positive integer"
   for bound_spec in \
       "producer_max_paths_per_region:max-paths-per-region" \
       "producer_max_flips_per_path:max-flips-per-path" \
@@ -1014,131 +1191,42 @@ do_explore_producer() {
     jq -e '.state == "PENDING" and .pendingTaskCount > 0' \
       "${planner_dir}/region_path_manifest.json" >/dev/null \
       || die "producer path planner emitted neither pending nor closed state"
-    query_key=$(jq -er -s \
-      'sort_by(.queryKey) | .[0].queryKey' \
-      "${planner_dir}/region_path_worklist.jsonl") \
-      || die "pending producer worklist has no deterministic query key"
-    [[ -z "${seen_queries[${query_key}]+present}" ]] \
-      || die "producer path worklist repeated query ${query_key}"
-    seen_queries[${query_key}]=present
-    selection_dir="${planner_dir}/selected"
-    mkdir -p "${selection_dir}"
-    set +e
-    run_graphchecker_main \
-      edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
-      --worklist "${planner_dir}/region_path_worklist.jsonl" \
-      --activations "${activations}" \
-      --query-key "${query_key}" \
-      --output-dir "${selection_dir}" \
-      --z3 "${z3}" \
-      --solver-timeout-ms "${solver_timeout}"
-    solver_status=$?
-    set -e
-    require_file "producer path solver result" \
-      "${selection_dir}/path_flip_solver_result.json"
-    if jq -e --arg query "${query_key}" '
-        .status == "UNSAT" and .queryKey == $query
-      ' "${selection_dir}/path_flip_solver_result.json" >/dev/null; then
-      [[ "${solver_status}" -eq 0 ]] \
-        || die "producer UNSAT solver exited ${solver_status}"
-      [[ ! -s "${selection_dir}/activation_plan.jsonl" ]] \
-        || die "UNSAT producer path unexpectedly emitted a replay"
-      jq -c '{
-        schemaVersion: 1,
-        kind: "PATH_EXPLORATION_RECORD",
-        queryKey,
-        regionId,
-        sourcePathKey,
-        sourceSummaryId,
-        status,
-        solverInputHash
-      }' "${selection_dir}/path_flip_solver_result.json" \
-        >>"${records}"
-      echo "[three-thread-rpc] producer path proved UNSAT: ${query_key}"
-      discard_successful_iteration "${campaign}"
-      iteration=$((iteration + 1))
-      continue
+    observed_paths=$(jq -er '.observedPathCount' \
+      "${planner_dir}/region_path_manifest.json")
+    max_paths=$(jq -er '.bounds.maxPathsPerRegion' \
+      "${planner_dir}/region_path_manifest.json")
+    remaining_paths=$((max_paths - observed_paths))
+    (( remaining_paths > 0 )) \
+      || die "producer path bound reached with pending work"
+    wave_limit=${jobs}
+    if (( wave_limit > remaining_paths )); then
+      wave_limit=${remaining_paths}
     fi
-    [[ "${solver_status}" -eq 0 ]] \
-      || die "producer path solver failed with exit ${solver_status}"
-    jq -e --arg query "${query_key}" '
-      .status == "SAT_MODEL_READY" and .queryKey == $query
-    ' "${selection_dir}/path_flip_solver_result.json" >/dev/null \
-      || die "producer path flip is not solver-backed"
-    replay_manifest_id=$(jq -er -s '
-      if length == 1 then .[0].activationId
-      else error("expected one replay activation")
-      end
-    ' "${selection_dir}/activation_plan.jsonl") \
-      || die "producer path flip has no replay activation identity"
-    planner_dir=${selection_dir}
-    mapfile -t _replay_activations < <(jq -r \
-      --arg region "${region}" --arg replay "${replay_manifest_id}" '
-      select(
-        .activationId == $replay
-        and .regionId == $region
-        and .captureGoal.kind == "OUTPUT_CLOSURE"
-        and .executionPhase == "REPLAY_OUTPUT_PATH_FLIP"
-        and .replayMode == "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY"
-        and .replayContract.schemaVersion == 1
-        and .replayContract.kind == "BINARY_BRANCH_REPLAY_CONTRACT"
-        and .replayContract.suffixPolicy == "DROP_SOURCE_SUFFIX"
-        and (.replayContract.source.sourceTakenOutcome | type) == "boolean"
-        and (.replayContract.source.sourceSatisfiedPredicate | type) == "object"
-        and (.replayContract.source.vmPcIndex | type) == "number"
-        and (.replayContract | has("contractId") | not)
-        and (.replayContract | has("required") | not)
-        and (.replayContract.source | has("witnessId") | not)
-        and ((.modelAssignments // []) | length) > 0
-      )
-      | .activationId
-    ' "${planner_dir}/activation_plan.jsonl")
-    [[ ${#_replay_activations[@]} -eq 1 ]] \
-      || die "producer planner did not emit one unforced input-model replay"
-    replay_activation=${_replay_activations[0]}
-    raw="${planner_dir}/concolic_region_results.jsonl"
-    imported="${planner_dir}/concolic_region_summaries.jsonl"
-    replay_verification="${planner_dir}/path_replay_verification.json"
-    run_custom_plan "${planner_dir}/activation_plan.jsonl" \
-      "${replay_activation}" "${classes}" "${raw}" false false true
-    import_plan "${planner_dir}/activation_plan.jsonl" "${raw}" \
-      "${imported}" "${planner_dir}"
-    run_graphchecker_main \
-      edu.uva.liftlab.graphchecker.concolic.ConcolicPathReplayVerifier \
-      --task "${planner_dir}/replay_validation_plan.json" \
-      --activation-plan "${planner_dir}/activation_plan.jsonl" \
-      --results "${raw}" \
-      --summary "${imported}" \
-      --output "${replay_verification}"
-    jq -e --arg query "${query_key}" --arg region "${region}" \
-      --arg activation "${replay_activation}" '
-      .valid == true
-      and .status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
-      and .queryKey == $query
-      and .regionId == $region
-      and .activationId == $activation
-      and (.observedPathKey | test("^[0-9a-f]{64}$"))
-    ' "${replay_verification}" >/dev/null \
-      || die "producer path replay did not pass the exact verifier"
-    combine_jsonl_unique summaryId "${state_dir}/next_summaries.jsonl" \
-      "${summaries}" "${imported}"
-    combine_jsonl_unique activationId "${state_dir}/next_activations.jsonl" \
-      "${activations}" "${planner_dir}/activation_plan.jsonl"
-    combine_jsonl_unique activationId "${state_dir}/next_raw_results.jsonl" \
-      "${raw_results}" "${raw}"
-    mv -f "${state_dir}/next_summaries.jsonl" "${summaries}"
-    mv -f "${state_dir}/next_activations.jsonl" "${activations}"
-    mv -f "${state_dir}/next_raw_results.jsonl" "${raw_results}"
-    jq -c '{
-      schemaVersion: 1,
-      kind: "PATH_EXPLORATION_RECORD",
-      queryKey,
-      regionId,
-      activationId,
-      observedPathKey,
-      summaryId,
-      status
-    }' "${replay_verification}" >>"${records}"
+    mapfile -t wave_query_keys < <(jq -r -s \
+      --argjson limit "${wave_limit}" '
+      sort_by(.queryKey) | .[0:$limit][] | .queryKey
+    ' "${planner_dir}/region_path_worklist.jsonl")
+    [[ ${#wave_query_keys[@]} -gt 0 ]] \
+      || die "pending producer worklist has no deterministic query key"
+
+    worker_pids=()
+    echo "[three-thread-rpc] producer ${channel} wave ${iteration}: running ${#wave_query_keys[@]} path worker(s), cap=${jobs}"
+    for query_key in "${wave_query_keys[@]}"; do
+      task_dir="${planner_dir}/task-${query_key}"
+      mkdir -p "${task_dir}"
+      (
+        set -euo pipefail
+        run_path_task "${query_key}" \
+          "${planner_dir}/region_path_worklist.jsonl" \
+          "${activations}" "${classes}" "${task_dir}" "${z3}" \
+          "${solver_timeout}" "${region}"
+      ) >"${task_dir}/stdout.log" 2>"${task_dir}/stderr.log" &
+      worker_pids+=("$!")
+    done
+    wait_for_path_wave "${worker_pids[@]}" \
+      || die "producer ${channel} path wave ${iteration} failed; inspect ${planner_dir}"
+    publish_path_wave "${planner_dir}" "${state_dir}" "${summaries}" \
+      "${activations}" "${raw_results}" "${records}"
     discard_successful_iteration "${campaign}"
     iteration=$((iteration + 1))
   done
@@ -1158,16 +1246,15 @@ do_explore_producer() {
     || die "producer merged relation is not complete for channel ${channel}"
   discard_successful_iteration "${campaign}"
   discard_successful_campaign_state "${campaign}"
-  echo "[three-thread-rpc] producer ${channel} path worklist closed after $((iteration - 1)) replay(s)"
+  echo "[three-thread-rpc] producer ${channel} path worklist closed after $((iteration - 1)) wave(s)"
 }
 
-run_producer_pipeline() {
+run_producer_seed_pipeline() {
   local channel=$1
   do_schedule_producer "${channel}"
   do_instrument "${channel}"
   run_custom_java "${channel}" false false
   do_import "${channel}"
-  do_explore_producer "${channel}"
 }
 
 wait_for_producer_batch() {
@@ -1197,8 +1284,8 @@ run_producers_parallel() {
   for channel in "${channels[@]}"; do
     (
       set -euo pipefail
-      run_producer_pipeline "${channel}"
-      echo "[three-thread-rpc] producer ${channel} pipeline complete"
+      run_producer_seed_pipeline "${channel}"
+      echo "[three-thread-rpc] producer ${channel} seed pipeline complete"
     ) &
     producer_pids+=("$!")
     if (( ${#producer_pids[@]} >= max_jobs )); then
@@ -1212,6 +1299,11 @@ run_producers_parallel() {
     wait_for_producer_batch "${producer_pids[@]}" \
       || die "producer region pipeline failed"
   fi
+
+  for channel in "${channels[@]}"; do
+    do_explore_producer "${channel}"
+    echo "[three-thread-rpc] producer ${channel} path campaign complete"
+  done
 }
 
 do_candidate_compose() {
