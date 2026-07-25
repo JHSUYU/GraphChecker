@@ -2125,9 +2125,16 @@ box/pause/materialize/resume/unbox 模板合并为唯一 round-trip emitter。
 
 logical input port 类型也统一由 `MaterializationSpec.logicalJavaType()` 给出；Composer 和
 Boolean reach extractor 不再分别把 nested field 的中间 owner 类型当成 leaf 类型。这既
-决定 SMT sort，也决定 Boolean root catalog。当前手写生产 Java 为 68,923 行；快速回归
-维持在 67 项并全部通过。正式 release gate 仍是 clean worktree 的 13 个真实
-custom-JDK/Z3 fixture。
+决定 SMT sort，也决定 Boolean root catalog。里程碑 `95a9fc58` 已在隔离 clean worktree
+通过全部 13 个真实 custom-JDK/Z3 fixture，结果保持 6 个 `REACHABLE/sat`、7 个
+`UNREACHABLE/unsat`、0 failure。
+
+后续小批次继续只删除重复事实：Planner 直接复用 canonical `DeclaredField`，Composer
+只在 relation 真正消费点执行一次 admission，Scheduler 不再把
+`runtimeDefinitionMethods` 泄漏到 execution task，也不再重复 deep-copy/rewrite 已由
+goal projection 携带的 `goalKind` 和 `outputClosure`；同一 target goal 的多个 branch
+共享一份不可变 materialization plan。当前手写生产 Java 为 68,850 行；快速回归为
+68 项并全部通过。
 
 ### 明确不能删除
 

@@ -723,27 +723,13 @@ public final class ConcolicSmtComposer {
         Map<String, JsonObject> unique = new LinkedHashMap<>();
         Set<String> fingerprints = new LinkedHashSet<>();
         for (JsonObject summary : summaries.forRegion(region)) {
-            String malformed = summaries.closureIssue(summary);
-            if (!malformed.isEmpty()) {
-                graph.gaps.add("MalformedProducerOutputClosure:"
-                        + firstNonBlank(string(summary, "summaryId"),
-                        region) + ":" + malformed);
-                continue;
-            }
             OutputClosureContract closure = summaries.closure(summary);
-            if (closure == null) continue;
-            if (!region.equals(closure.producer().regionId())
-                    || !closure.outputPorts().equals(demandedOutputs)) {
+            if (!closure.outputPorts().equals(demandedOutputs)) {
                 continue;
             }
             if (!requestedInstance.isEmpty()
                     && !requestedInstance.equals(
                     closure.producer().regionInstanceId())) {
-                continue;
-            }
-            if (!summaries.canonical(summary)) {
-                graph.gaps.add("NonCanonicalProducerSummary:"
-                        + firstNonBlank(string(summary, "summaryId"), region));
                 continue;
             }
             String identity = string(summary, "summaryId");
@@ -804,37 +790,6 @@ public final class ConcolicSmtComposer {
             graph.pending.addLast(expansionKey);
         }
         return key;
-    }
-
-    private static boolean canonicalProducerPayload(
-            JsonObject summary, OutputClosureContract closure) {
-        if (!bool(summary, "relationallyComplete", false)) {
-            return false;
-        }
-        JsonObject relation = object(summary, "regionRelation");
-        JsonArray cases = array(relation, "cases");
-        if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))
-                || cases.size() == 0) {
-            return false;
-        }
-        for (JsonElement element : cases) {
-            if (!element.isJsonObject()
-                    || string(element.getAsJsonObject(),
-                    "sourceTaskId").isEmpty()) {
-                return false;
-            }
-        }
-        if (closure.outputPorts().size() > 1) {
-            for (JsonElement element : cases) {
-                if (!element.isJsonObject()
-                        || !object(element.getAsJsonObject(),
-                        "outputExpressions").keySet().equals(
-                        closure.outputPorts())) {
-                    return false;
-                }
-            }
-        }
-        return true;
     }
 
     private static boolean sameSummary(JsonObject left, JsonObject right) {
@@ -1002,37 +957,24 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         private final Map<JsonObject, OutputClosureContract> closures =
                 new LinkedHashMap<>();
-        private final Map<JsonObject, String> closureIssues =
-                new LinkedHashMap<>();
-        private final Set<JsonObject> canonical = new LinkedHashSet<>();
 
         private static SummaryIndex build(List<JsonObject> summaries) {
             SummaryIndex result = new SummaryIndex();
             for (JsonObject summary : summaries) {
-                OutputClosureContract closure = null;
-                String issue = "";
-                if (summary.has(OutputClosureContract.FIELD)) {
-                    try {
-                        closure = OutputClosureCodec.decode(summary);
-                    } catch (IllegalArgumentException malformed) {
-                        issue = malformed.getMessage();
-                    }
+                if (!summary.has(OutputClosureContract.FIELD)) {
+                    continue;
                 }
-                String region = closure == null
-                        ? string(object(object(summary,
-                        OutputClosureContract.FIELD), "producer"), "regionId")
-                        : closure.producer().regionId();
+                final OutputClosureContract closure;
+                try {
+                    closure = OutputClosureCodec.decode(summary);
+                } catch (IllegalArgumentException malformed) {
+                    continue;
+                }
+                String region = closure.producer().regionId();
                 if (region.isEmpty()) continue;
                 result.byRegion.computeIfAbsent(region,
                         ignored -> new ArrayList<>()).add(summary);
-                if (closure != null) {
-                    result.closures.put(summary, closure);
-                    if (canonicalProducerPayload(summary, closure)) {
-                        result.canonical.add(summary);
-                    }
-                } else if (!issue.isEmpty()) {
-                    result.closureIssues.put(summary, issue);
-                }
+                result.closures.put(summary, closure);
                 for (JsonElement element : array(summary, "edgeBindings")) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
@@ -1061,14 +1003,6 @@ public final class ConcolicSmtComposer {
 
         private OutputClosureContract closure(JsonObject summary) {
             return closures.get(summary);
-        }
-
-        private String closureIssue(JsonObject summary) {
-            return closureIssues.getOrDefault(summary, "");
-        }
-
-        private boolean canonical(JsonObject summary) {
-            return canonical.contains(summary);
         }
     }
 
@@ -3302,6 +3236,15 @@ public final class ConcolicSmtComposer {
         private void regionSummary(JsonObject summary,
                                    OutputClosureContract outputClosure) {
             String region = outputClosure.producer().regionId();
+            if (!bool(summary, "relationallyComplete", false)) {
+                heapGap("IncompleteRegionSummary@" + region);
+                return;
+            }
+            JsonObject relation = object(summary, "regionRelation");
+            if (!"GUARDED_PATH_MERGE".equals(string(relation, "kind"))) {
+                heapGap("UnsupportedRegionRelation@" + region);
+                return;
+            }
             String previousScope = enterSymbolScope("summary:"
                     + firstNonBlank(string(summary, "summaryId"),
                     region, "selected"));
@@ -3310,7 +3253,6 @@ public final class ConcolicSmtComposer {
                         "summary " + region);
                 registerVmIntrinsicPlaceholderBindings(summary,
                         "summary " + region);
-                JsonObject relation = object(summary, "regionRelation");
                 guardedRegionRelation(region, relation, outputClosure);
             } finally {
                 restoreSymbolScope(previousScope);
@@ -3340,6 +3282,18 @@ public final class ConcolicSmtComposer {
                     continue;
                 }
                 JsonObject item = cases.get(index).getAsJsonObject();
+                if (string(item, "sourceTaskId").isEmpty()) {
+                    heapGap("MissingRegionCaseSourceTask@" + region
+                            + ":" + index);
+                    continue;
+                }
+                if (outputClosure.outputPorts().size() > 1
+                        && !object(item, "outputExpressions").keySet().equals(
+                        outputClosure.outputPorts())) {
+                    heapGap("JointOutputExpressionSetMismatch@" + region
+                            + ":" + index);
+                    continue;
+                }
                 JsonObject guardIr = object(item, "guard");
                 if (!"PATH_CONDITION".equals(string(guardIr, "kind"))) {
                     heapGap("UnsupportedRegionGuard@" + region

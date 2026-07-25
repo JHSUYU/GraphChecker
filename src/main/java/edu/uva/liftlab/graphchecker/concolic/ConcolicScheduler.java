@@ -129,17 +129,10 @@ public final class ConcolicScheduler {
                     ? "CAPTURE_ONLY"
                     : captured != null
                     ? "NEGATE_CAPTURED_PATH" : "CAPTURE_THEN_NEGATE";
-            ClosureGoalKind goal = ClosureGoalKind.fromTask(
-                    candidate.activation);
-            goal.writeToTask(executionTask);
             executionTask.addProperty("executionPhase", executionPhase);
             executionTask.remove("symbolize");
             executionTask.add(InputActionCatalog.FIELD,
                     materialization.inputActions.deepCopy());
-            if (candidate.outputContract != null) {
-                OutputClosureCodec.writeTo(executionTask,
-                        candidate.outputContract);
-            }
             compactExecutionTask(executionTask,
                     materialization.ready);
 
@@ -267,25 +260,25 @@ public final class ConcolicScheduler {
             ClosureGoalKind goalKind) {
             Set<String> definitionMethods = runtimeDefinitionMethods(
                     activation);
+            activation.remove("runtimeDefinitionMethods");
             if (goalKind.capturesOutputRelation()) {
                 if (!activation.has(OutputClosureContract.FIELD)) {
                     return;
                 }
                 OutputClosureContract outputClosure =
                         OutputClosureCodec.decode(activation);
-                JsonObject executionActivation =
-                        compileOutputClosure(activation, outputClosure);
+                compileOutputClosure(activation, outputClosure);
                 MaterializationPlan upstreamPlan = materializationPlan(
-                        executionActivation, definitions, definitionMethods,
+                        activation, definitions, definitionMethods,
                         outputClosure);
                 boolean closureReady = outputClosureMembersReady(outputClosure)
-                        && executionScopeReady(executionActivation,
+                        && executionScopeReady(activation,
                         outputClosure,
                         definitions, definitionMethods);
                 if (!closureReady) {
                     upstreamPlan = upstreamPlan.notReady();
                 }
-                result.add(new Candidate(executionActivation,
+                result.add(new Candidate(activation,
                         regionInstanceId,
                         goalId, region,
                         TargetBranch.outputCapture(), true,
@@ -293,6 +286,7 @@ public final class ConcolicScheduler {
                 return;
             }
             JsonArray branches = array(activation, "branches");
+            MaterializationPlan plan = null;
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
                 if (!element.isJsonObject()) {
@@ -324,11 +318,13 @@ public final class ConcolicScheduler {
                 boolean desired = hasWitness ? !observed : required;
                 TargetBranch target = new TargetBranch(siteId,
                         occurrence, observed, desired);
+                if (plan == null) {
+                    plan = materializationPlan(activation, definitions,
+                            definitionMethods, null);
+                }
                 result.add(new Candidate(activation, regionInstanceId, goalId,
                         region, target, hasWitness,
-                        materializationPlan(activation, definitions,
-                                definitionMethods, null),
-                        null));
+                        plan, null));
             }
     }
 
@@ -382,18 +378,16 @@ public final class ConcolicScheduler {
     }
 
     /** Compiles the contract union needed by execution, without mirrors. */
-    private static JsonObject compileOutputClosure(
+    private static void compileOutputClosure(
             JsonObject activation, OutputClosureContract contract) {
-        JsonObject result = activation.deepCopy();
         OutputClosureContract.ExecutionScope scope =
                 contract.executionScope();
-        result.add("symbolize", selectExecutionRows(
+        activation.add("symbolize", selectExecutionRows(
                 array(activation, "symbolize"), scope.inputPorts(),
                 "symbol", "inputPort"));
-        result.add("branches", selectExecutionRows(
+        activation.add("branches", selectExecutionRows(
                 array(activation, "branches"), scope.branchSites(),
                 "siteId", ""));
-        return result;
     }
 
     private static JsonArray selectExecutionRows(
@@ -450,8 +444,7 @@ public final class ConcolicScheduler {
                 && validExecutionRows(array(activation, "branches"),
                 scope.branchSites(),
                 "siteId", "", false)
-                && (!activation.has("runtimeDefinitionMethods")
-                || regionMethods.containsAll(scope.methods()))
+                && regionMethods.containsAll(scope.methods())
                 && (scope.causalEdgeIds().isEmpty()
                 || definitions.containsAllEdges(scope.causalEdgeIds()));
     }
@@ -539,7 +532,7 @@ public final class ConcolicScheduler {
                     "symbol"))
                     && !authoritativeDefinitionResolutionRequested(action)
                     && !vmIntrinsic) {
-                concreteFallbacks.add(concreteFallback(binding));
+                concreteFallbacks.add(binding);
                 continue;
             }
             if (exactContainerSnapshotLeafDeclaration(activation, action)) {
@@ -559,7 +552,7 @@ public final class ConcolicScheduler {
                 if (validFieldPaths(action)) {
                     binding.addProperty("bindingMode", "ROOT_ENTRY");
                 } else {
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 }
             } else if ("CALL_RETURN".equals(location)) {
@@ -581,11 +574,11 @@ public final class ConcolicScheduler {
                 boolean pendingArrayFieldRoot =
                         pendingArrayFieldCallReturnRoot(action);
                 if (pendingArrayFieldRoot && sites.size() != 1) {
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 }
                 if (sites.size() == 0) {
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 }
                 for (JsonElement siteElement : sites) {
@@ -627,7 +620,7 @@ public final class ConcolicScheduler {
                         action, path);
                 boolean deepExactDeclarationRequired = path.size() > 2;
                 if (deepExactDeclarationRequired && declaredLeaf == null) {
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 }
                 String derivedLeafOwner = declaredLeaf == null
@@ -657,7 +650,7 @@ public final class ConcolicScheduler {
                         string(declaredLeaf, "declaredFieldType")));
                 binding.addProperty("lazy", true);
                 if (!exactMetadata) {
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 } else if (path.size() > 1
                         && action.has("valueObjectId")
@@ -667,7 +660,7 @@ public final class ConcolicScheduler {
                     // traversable, but that does not make it a region-entry
                     // value; keep the workload value instead of creating a
                     // temporal alias for a future object.
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 }
             } else if ("REGION_LIVE_IN".equals(location)) {
@@ -691,16 +684,16 @@ public final class ConcolicScheduler {
                     }
                     finalizePendingLocalArrayRoot(binding, true);
                     if (sites.size() == 0) {
-                        concreteFallbacks.add(concreteFallback(binding));
+                        concreteFallbacks.add(binding);
                         continue;
                     }
                     binding.addProperty("lazy", true);
                 } else {
-                    concreteFallbacks.add(concreteFallback(binding));
+                    concreteFallbacks.add(binding);
                     continue;
                 }
             } else {
-                concreteFallbacks.add(concreteFallback(binding));
+                concreteFallbacks.add(binding);
                 continue;
             }
             if (containerInputPorts.contains(string(binding, "symbol"))
@@ -877,11 +870,6 @@ public final class ConcolicScheduler {
             // own class path; the standard Map declaration remains exact.
             return "java.util.Map".equals(candidate);
         }
-    }
-
-    private static JsonObject concreteFallback(JsonObject action) {
-        JsonObject fallback = action.deepCopy();
-        return fallback;
     }
 
     private static JsonArray inputActionCatalog(

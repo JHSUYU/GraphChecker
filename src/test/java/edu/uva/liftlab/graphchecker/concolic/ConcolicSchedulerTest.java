@@ -76,6 +76,7 @@ public class ConcolicSchedulerTest {
                     .get("executionPhase").getAsString());
             assertEquals("OUTPUT_RELATION_CLOSURE",
                     scheduled.get("goalKind").getAsString());
+            assertFalse(scheduled.has("runtimeDefinitionMethods"));
             assertEquals(0, result.queries.size());
             assertTrue(Files.isRegularFile(fixture.output.resolve(
                     "execution_task_plan.jsonl")));
@@ -209,6 +210,7 @@ public class ConcolicSchedulerTest {
             assertEquals(1, result.executionTasks.size());
             JsonObject scheduled = result.executionTasks.get(0);
             assertTrue(scheduled.has(OutputClosureContract.FIELD));
+            assertFalse(scheduled.has("runtimeDefinitionMethods"));
             assertFalse(scheduled.has("requestedOutput"));
             assertEquals(2, OutputClosureCodec.decode(scheduled)
                     .members().size());

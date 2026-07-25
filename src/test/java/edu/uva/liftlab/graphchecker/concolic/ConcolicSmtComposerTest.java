@@ -49,6 +49,45 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void canonicalRelationAdmissionRunsOnceAtConsumption()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath(), true);
+            JsonObject summary = JsonParser.parseString(new String(
+                    Files.readAllBytes(fixture.summaries),
+                    StandardCharsets.UTF_8).trim()).getAsJsonObject();
+            summary.addProperty("relationallyComplete", false);
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result incomplete =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertFalse(candidateReady(incomplete.manifest));
+            assertTrue(incomplete.manifest.toString(),
+                    incomplete.manifest.toString().contains(
+                            "IncompleteRegionSummary@REGION.P"));
+
+            summary.addProperty("relationallyComplete", true);
+            summary.getAsJsonObject("regionRelation")
+                    .getAsJsonArray("cases").get(0).getAsJsonObject()
+                    .remove("sourceTaskId");
+            writeSummary(fixture, summary);
+
+            ConcolicSmtComposer.Result taskless =
+                    ConcolicSmtComposer.compose(arguments(fixture));
+
+            assertFalse(candidateReady(taskless.manifest));
+            assertTrue(taskless.manifest.toString(),
+                    taskless.manifest.toString().contains(
+                            "MissingRegionCaseSourceTask@REGION.P:0"));
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
     public void composesAndSolvesVersionedJavaMapMutationChain()
             throws Exception {
         Assume.assumeTrue(z3Available());
