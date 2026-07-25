@@ -1527,6 +1527,20 @@ worktree 的 13-fixture 并行真实 custom-JDK/Z3 矩阵再次零失败，保�
 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
 `target/robustness-matrix-logs/20260725T073029Z.1308684`。
 
+截至 `ea8639eb`，七套阶段私有的 forgiving JSON field reader、六套 SHA-256 和四套
+permissive JSONL reader 已由 `JsonFields`/`ArtifactIO` 唯一实现替代；malformed 或
+non-object JSONL row 现在在 artifact boundary 一致 fail closed，不再被个别阶段静默
+跳过。Replay admission 也只剩一个职责边界：Importer 校验 branch、完整 model
+assignment 与 canonical output closure，ReplayValidator 只校验不能由 payload 推导的
+fresh Map.Entry/container activation-local selector rebinding。原 replay 测试从 532 行
+收敛到 231 行，直接覆盖 fresh map 成功和错误 object-token scope 拒绝。
+
+手写生产 Java 现为 77,112 行，相对冻结基线累计净减 4,469 行。57 项快速回归、
+generic workflow shell test 与隔离干净 worktree 的 13-fixture 并行真实
+custom-JDK/Z3 矩阵全部通过，仍为 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`、零 failure；日志目录为
+`target/robustness-matrix-logs/20260725T075103Z.1490066`。
+
 ### 明确不能删除
 
 必须保留：
