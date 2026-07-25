@@ -579,7 +579,7 @@ final class SymbolicRegionPlanner {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> slice =
                             (Map<String, Object>) value;
-                    if (!Boolean.TRUE.equals(slice.get("complete"))) {
+                    if (!completeOutputSlice(slice)) {
                         continue;
                     }
                     for (String port : strings(slice.get("inputPorts"))) {
@@ -7051,7 +7051,7 @@ final class SymbolicRegionPlanner {
                         slice.get("outputPort")))
                         && string(output.get("cell")).equals(string(
                         slice.get("outputCell")))
-                        && Boolean.TRUE.equals(slice.get("complete"))) {
+                        && completeOutputSlice(slice)) {
                     matches++;
                 }
             }
@@ -7798,12 +7798,6 @@ final class SymbolicRegionPlanner {
         return builder.toString();
     }
 
-    private static List<String> limitedSorted(Collection<String> values, int limit) {
-        List<String> sorted = sorted(values);
-        return sorted.size() <= limit
-                ? sorted : new ArrayList<>(sorted.subList(0, limit));
-    }
-
     private static List<String> sorted(Collection<String> values) {
         List<String> result = new ArrayList<>();
         if (values != null) {
@@ -7829,6 +7823,22 @@ final class SymbolicRegionPlanner {
             }
         }
         return result;
+    }
+
+    static boolean completeOutputSlice(Map<?, ?> slice) {
+        if (slice == null
+                || !strings(slice.get("truncationReasons")).isEmpty()
+                || strings(slice.get("causalEdgeIds")).isEmpty()
+                || !(slice.get("inputGaps") instanceof Collection<?>)
+                || !((Collection<?>) slice.get("inputGaps")).isEmpty()
+                || !Boolean.TRUE.equals(slice.get(
+                "captureBindingsComplete"))) {
+            return false;
+        }
+        return !slice.containsKey(
+                "requestedStateTransformerContractComplete")
+                || Boolean.TRUE.equals(slice.get(
+                "requestedStateTransformerContractComplete"));
     }
 
     private static void add(Map<String, Set<String>> map, String key, String value) {

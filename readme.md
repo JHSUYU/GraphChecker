@@ -2107,6 +2107,12 @@ logical port type；否则 `StateNode.state.guard.enabled` 会被错误地按 `G
 `gaps=[] / CANDIDATE_READY`，并按其当前约束由真实 Z3 得到 `UNSAT`。官方 fixture 的
 SAT/UNSAT release gate 必须继续在排除该用户修改的 clean worktree 运行。
 
+删除旧 slice `complete` 镜像后，Planner 内部也不得继续读取该字段。所有内部
+producer-demand 与 canonical-output 选择统一调用同一个推导：truncation 与 input gap
+为空、causal edge 非空、capture complete，且适用时 transformer contract complete。
+这修复了“wire writer 已删除但类内旧 reader 把所有 slice 判为 incomplete”的原子迁移
+遗漏，同时没有恢复第二份 readiness boolean。
+
 ### 明确不能删除
 
 必须保留：

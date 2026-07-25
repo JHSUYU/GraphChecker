@@ -30,9 +30,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -41,6 +44,20 @@ public class CausynthPipelineTest {
     private String previousConcolicInstrumentation;
     private String previousTaskPlan;
     private String previousTaskId;
+
+    @Test
+    public void derivesOutputSliceCompletenessWithoutWireMirror() {
+        Map<String, Object> slice = new LinkedHashMap<>();
+        slice.put("truncationReasons", Collections.emptyList());
+        slice.put("causalEdgeIds", Collections.singletonList("DF.1"));
+        slice.put("inputGaps", Collections.emptyList());
+        slice.put("captureBindingsComplete", true);
+
+        assertTrue(SymbolicRegionPlanner.completeOutputSlice(slice));
+        slice.put("inputGaps", Collections.singletonList(
+                Collections.singletonMap("reason", "MISSING_INPUT")));
+        assertFalse(SymbolicRegionPlanner.completeOutputSlice(slice));
+    }
 
     @Before
     public void rememberSystemProperties() {
