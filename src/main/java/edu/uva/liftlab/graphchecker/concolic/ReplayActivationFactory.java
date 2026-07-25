@@ -50,6 +50,8 @@ final class ReplayActivationFactory {
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());
         result.addProperty("pathQueryKey", queryKey);
+        result.addProperty("sourceActivationId",
+                string(task, "sourceActivationId"));
         result.remove("summaryMode");
         return result;
     }

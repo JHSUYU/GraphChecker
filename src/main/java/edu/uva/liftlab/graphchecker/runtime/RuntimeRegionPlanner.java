@@ -4678,12 +4678,10 @@ final class RuntimeRegionPlanner {
         final long callId;
         final long parentCallId;
         final long parentSiteId;
-        final long timeNanos;
 
         MethodEvent(long seq, String test, String process, String threadName,
                     long tid, String method, int objectId, String receiverType,
-                    long callId, long parentCallId, long parentSiteId,
-                    long timeNanos) {
+                    long callId, long parentCallId, long parentSiteId) {
             this.seq = seq;
             this.test = safe(test);
             this.process = safe(process);
@@ -4695,7 +4693,6 @@ final class RuntimeRegionPlanner {
             this.callId = callId;
             this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
-            this.timeNanos = timeNanos;
         }
     }
 

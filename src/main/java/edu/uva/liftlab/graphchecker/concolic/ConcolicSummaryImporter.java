@@ -363,6 +363,22 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("executionKind",
                     relational.replayAdmission.required
                     ? "INPUT_MODEL_REPLAY" : "UNFORCED_SEED");
+            if (isPathFlip(activation)) {
+                JsonObject replayTask = activation.deepCopy();
+                replayTask.addProperty("queryKey",
+                        strictString(activation, "pathQueryKey"));
+                replayTask.addProperty("activationId",
+                        strictString(activation, "sourceActivationId"));
+                JsonObject replayValidation =
+                        ConcolicReplayValidator.validate(
+                                replayTask, raw, summary);
+                if (!bool(replayValidation, "valid", false)) {
+                    diagnostics.add(diagnostic(raw,
+                            "PATH_REPLAY_ADMISSION_REJECTED",
+                            GSON.toJson(replayValidation.get("failures"))));
+                    continue;
+                }
+            }
             summaries.add(summary);
             for (HeapEffectIssue issue : relational.heapIssues) {
                 diagnostics.add(diagnostic(raw, issue.code, issue.detail()));
@@ -8800,6 +8816,12 @@ public final class ConcolicSummaryImporter {
         return new ReplayAdmission(true, valid, failures);
     }
 
+    private static boolean isPathFlip(JsonObject activation) {
+        String phase = strictString(activation, "executionPhase");
+        return "REPLAY_OUTPUT_PATH_FLIP".equals(phase)
+                || "REPLAY_TARGET_PATH_FLIP".equals(phase);
+    }
+
     /**
      * Revalidates the immutable witness stream once at the importer trust
      * boundary. The replay contract derives the target polarity itself.
@@ -9762,12 +9784,16 @@ public final class ConcolicSummaryImporter {
     }
 
     private static Map<String, JsonObject> index(List<JsonObject> rows,
-                                                  String keyField) {
+                                                 String keyField)
+            throws IOException {
         Map<String, JsonObject> result = new LinkedHashMap<>();
         for (JsonObject row : rows) {
             String key = string(row, keyField);
-            if (!key.isEmpty()) {
-                result.put(key, row);
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (result.put(key, row) != null) {
+                throw new IOException("Duplicate " + keyField + ": " + key);
             }
         }
         return result;

@@ -14,9 +14,8 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * Admits a solver-generated execution only after ordinary Java branches,
- * without forced outcomes, reproduce the retained prefix and take the
- * requested flipped edge.
+ * Checks replay-model materialization and fresh dynamic selector rebinding.
+ * Branch witness admission belongs to {@link ConcolicSummaryImporter}.
  */
 public final class ConcolicReplayValidator {
     private static final String FRESH_MAP_ENTRY_REBINDING_AUTHORITY =
@@ -51,20 +50,6 @@ public final class ConcolicReplayValidator {
         result.addProperty("queryKey", string(task, "queryKey"));
         result.addProperty("regionId", string(task, "regionId"));
         JsonArray failures = new JsonArray();
-        BranchReplayContract replayContract = null;
-        JsonElement encodedReplayContract = task == null ? null
-                : task.get("replayContract");
-        if (encodedReplayContract != null
-                && encodedReplayContract.isJsonObject()) {
-            try {
-                replayContract = BranchReplayContract.fromJson(
-                        encodedReplayContract.getAsJsonObject());
-            } catch (RuntimeException malformed) {
-                failures.add("INVALID_BRANCH_REPLAY_CONTRACT");
-            }
-        } else {
-            failures.add("MISSING_BRANCH_REPLAY_CONTRACT");
-        }
         boolean outputClosure = RegionCaptureGoal.from(task)
                 .isOutputClosure();
 
@@ -151,38 +136,6 @@ public final class ConcolicReplayValidator {
             failures.add("CONTAINER_REPLAY_REBINDING_INVALID:" + problem);
         }
 
-        BranchReplayObservationValidator.Result branchObservation = null;
-        if (replayContract != null) {
-            List<BranchWitness> witnesses = new ArrayList<>();
-            int ordinal = 0;
-            for (JsonElement element : array(rawResult,
-                    "branchMappings")) {
-                if (!element.isJsonObject()) {
-                    ordinal++;
-                    continue;
-                }
-                JsonElement encoded = element.getAsJsonObject().get(
-                        "witness");
-                if (encoded == null) {
-                    ordinal++;
-                    continue;
-                }
-                try {
-                    witnesses.add(BranchWitness.fromJson(
-                            encoded.getAsJsonObject()));
-                } catch (RuntimeException malformed) {
-                    failures.add("MALFORMED_BRANCH_WITNESS_AT_" + ordinal);
-                }
-                ordinal++;
-            }
-            branchObservation = BranchReplayObservationValidator.validate(
-                    replayContract, witnesses);
-            require(failures, "BRANCH_REPLAY_CONTRACT_NOT_SATISFIED",
-                    branchObservation.valid());
-            result.add("branchReplayObservation",
-                    branchObservation.toJson());
-        }
-
         boolean rawNormalExit = !outputClosure || "NORMAL".equals(
                 string(rawResult, "exitKind"))
                 && string(rawResult, "exceptionType").isEmpty();
@@ -255,7 +208,7 @@ public final class ConcolicReplayValidator {
         result.addProperty("status", failures.size() == 0
                 ? "VALIDATED_UNFORCED_REPLAY" : "REPLAY_REJECTED");
         result.addProperty("admissionAuthority", failures.size() == 0
-                ? "SOLVER_MODEL_PLUS_IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1"
+                ? "EXACT_MODEL_AND_FRESH_DYNAMIC_SELECTOR_REBINDING_V1"
                 : "NONE");
         return result;
     }

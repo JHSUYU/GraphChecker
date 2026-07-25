@@ -508,7 +508,7 @@ CAUSYNTH_CONCOLIC_JOBS=64 experiments/generic/three-thread-rpc/run.sh all
 | `ConcolicPathFlipSolver` | 精确求解一个 query，生成 singleton replay activation |
 | `BranchWitness` / `BranchReplayContract` | 二元 branch 的唯一不可变 observation/replay authority |
 | `SolverPathContext` | 与 branch authority 分离的、有位置的 typed 非 branch solver constraints |
-| `ConcolicPathReplayVerifier` | 用同一 contract 验证有序 witness 流和 input-only replay |
+| `BranchReplayObservationValidator` | 在 runtime 与 Importer 边界验证有序 witness 流 |
 | `ConcolicSummaryImporter` | 将 raw custom-JDK 结果严格导入 `R(in,out)` path summary |
 | `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
@@ -1368,8 +1368,24 @@ Importer 收敛为：
 - replay 的唯一校验迁入一个 `ReplayAdmission`；
 - 删除重复 branch validation。
 
-确认 unique checks 已迁移后，删除 `ConcolicPathReplayVerifier` 和
-`ConcolicReplayValidator`；保留小而独立的 `BranchReplayObservationValidator`。
+确认 unique checks 已迁移后删除 standalone gate；保留小而独立的
+`BranchReplayObservationValidator`，以及 Map.Entry/container fresh rebinding
+所需的最小 model admission。
+
+截至 2026-07-25，PR 4 的 trace V2 原子切换已开始：每行明确携带
+`schemaVersion=2`，offline aggregator 直接拒绝旧行；全局 `seq` 已取代未消费的
+`timeNanos`，`outcome/successorIndex` 改为真正的可选字段。execution row 删除了未进入
+Planner 的 test/process/thread、parent/unit/type/expression/exception 镜像，field row
+删除同样未消费的 run/thread 镜像，METHOD_ENTER 仍保留调用树、线程和 receiver
+identity。Importer 的 activation/region 索引不再静默覆盖重复 key，path replay 也删除
+了 standalone `ConcolicPathReplayVerifier`；Importer 是唯一 admission 调用点，shell
+只检查单行 artifact identity 并生成最小 exploration record。原 `ConcolicReplayValidator`
+中并非重复的 Map.Entry、array/container 跨执行 fresh-identity rebinding 证明继续保留，
+不能为了减行误删。切换过程中 fixture 及时发现 robustness shell
+仍读取 PR 3 的旧 `relation/orderConfirmed/selectionAuthority`；Java 产物本身正确，
+shell reader 已同步改为三种 `evidenceKind` 的最小 payload 检查，未增加 fallback。
+当前 `dependent-scalar` 已覆盖 target path flip、两个并行 producer campaign、8 个
+guarded cases 与最终 Z3 `sat`；131 行 runtime trace 全部是 V2，retired trace 字段零出现。
 
 ### PR 5：Worklist、merge 和大 SMT schema 收敛
 

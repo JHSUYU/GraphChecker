@@ -1702,8 +1702,7 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.MethodEvent contained =
                     new RuntimeRegionPlanner.MethodEvent(5190, "testHandle",
                             "DATANODE", "KeyUpdater", 101L, addKeys,
-                            273814159, "example.SecretManager", 2, 1, 0,
-                            519000L);
+                            273814159, "example.SecretManager", 2, 1, 0);
             RuntimeRegionPlanner.MethodEvent read = methodContext(14000,
                     reader, 3, "DATANODE", "DataXceiver", 202L);
             List<RuntimeRegionPlanner.RuntimeEvent> runtime =
@@ -2420,15 +2419,14 @@ public class RuntimeRegionPlannerTest {
                                                             long parentSiteId) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle", "DATANODE",
                 "DataXceiver-1", 27L, method, 42, "example.Handler", callId,
-                parentCallId, parentSiteId, seq * 100L);
+                parentCallId, parentSiteId);
     }
 
     private static RuntimeRegionPlanner.MethodEvent methodWithReceiver(
             long seq, String method, long callId, int receiverObjectId) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle",
                 "DATANODE", "DataXceiver-1", 27L, method,
-                receiverObjectId, "example.Actor", callId, 0, 0,
-                seq * 100L);
+                receiverObjectId, "example.Actor", callId, 0, 0);
     }
 
     private static RuntimeRegionPlanner.MethodEvent rootContextMethod(
@@ -2436,7 +2434,7 @@ public class RuntimeRegionPlannerTest {
             String receiverRuntimeClass, long tid) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle",
                 "WORKER", threadName, tid, method, (int) (100 + callId),
-                receiverRuntimeClass, callId, 0, 0, seq * 100L);
+                receiverRuntimeClass, callId, 0, 0);
     }
 
     private static RuntimeRegionPlanner.MethodEvent methodContext(
@@ -2444,7 +2442,7 @@ public class RuntimeRegionPlannerTest {
             String threadName, long tid) {
         return new RuntimeRegionPlanner.MethodEvent(seq, "testHandle", process,
                 threadName, tid, method, 42, "example.State", callId,
-                0, 0, seq * 100L);
+                0, 0);
     }
 
     private static void writeRegions(Path path, byte[] rows)

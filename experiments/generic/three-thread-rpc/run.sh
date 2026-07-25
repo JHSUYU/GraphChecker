@@ -196,13 +196,20 @@ runtime_channel_rows() {
       then .outputClosureFingerprint
       else .outputClosure | canonical_identity
       end;
+    def read_from_evidence:
+      (.evidenceKind == "FIELD_ASSIGNMENT_READ_FROM_V1"
+        or .evidenceKind == "CONTAINER_MUTATION_READ_FROM_V1")
+      and (.writerEventSeq | type) == "number"
+      and (.readerEventSeq | type) == "number"
+      and .writerEventSeq < .readerEventSeq
+      and (.receiverObjectId | type) == "number"
+      and .receiverObjectId != 0;
 
     . as $activations
     | [$activations[]
         | select(.captureGoal.kind == "OUTPUT_CLOSURE")
         | .edgeBindings[]?
-        | select(.relation == "READ_FROM"
-            and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM")
+        | select(read_from_evidence)
       ] as $validatedEdges
     | ($validatedEdges | map(.fromRegion) | unique) as $sourceRegions
     | ($validatedEdges | map(.toRegion) | unique
@@ -223,17 +230,12 @@ runtime_channel_rows() {
             | type == "string" and length > 0))
     | $activation.edgeBindings[]? as $edge
     | select(
-        $edge.relation == "READ_FROM"
-        and $edge.selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        ($edge | read_from_evidence)
         and $edge.toRegion == $terminalRegion
         and $edge.fromRegion == $activation.regionId
         and $edge.fromRegionInstance == $activation.regionInstanceId
         and $edge.fromOutputCell == $output.cell
-        and $edge.rawFromPort == $output.cell
-        and $edge.canonicalOutputAliasUsed == false
-        and $edge.canonicalInputResolutionUsed == true
-        and $edge.objectIdentityConfirmed == true
-        and $edge.orderConfirmed == true
+        and $edge.inputProjectionUsed == false
         and ($edge.toInputCell | type == "string" and length > 0))
     | ($output.cell
         | capture("^<[^:]+:[[:space:]]+[^[:space:]]+"
@@ -998,29 +1000,46 @@ run_path_task() {
 
   raw="${task_dir}/concolic_region_results.jsonl"
   imported="${task_dir}/concolic_region_summaries.jsonl"
-  replay_verification="${task_dir}/path_replay_verification.json"
   run_custom_plan "${task_dir}/activation_plan.jsonl" \
     "${replay_activation}" "${classes}" "${raw}" false false true \
     "${task_dir}"
   import_plan "${task_dir}/activation_plan.jsonl" "${raw}" \
     "${imported}" "${task_dir}"
-  run_graphchecker_main \
-    edu.uva.liftlab.graphchecker.concolic.ConcolicPathReplayVerifier \
-    --task "${task_dir}/replay_validation_plan.json" \
-    --activation-plan "${task_dir}/activation_plan.jsonl" \
-    --results "${raw}" \
-    --summary "${imported}" \
-    --output "${replay_verification}"
-  jq -c '{
-    schemaVersion: 1,
-    kind: "PATH_EXPLORATION_RECORD",
-    queryKey,
-    regionId,
-    activationId,
-    observedPathKey,
-    summaryId,
-    status
-  }' "${replay_verification}" >"${task_dir}/exploration_record.jsonl"
+  jq -e -c -s \
+    --slurpfile task "${task_dir}/replay_validation_plan.json" \
+    --slurpfile activation "${task_dir}/activation_plan.jsonl" \
+    --slurpfile raw "${raw}" '
+    if length == 1
+      and ($task | length) == 1
+      and ($activation | length) == 1
+      and ($raw | length) == 1
+      and .[0].relationallyComplete == true
+      and .[0].activationId == $activation[0].activationId
+      and .[0].regionId == $task[0].regionId
+      and $raw[0].activationId == $activation[0].activationId
+      and $raw[0].regionId == $task[0].regionId
+      and $raw[0].pathQueryKey == $task[0].queryKey
+      and $activation[0].pathQueryKey == $task[0].queryKey
+      and ($task[0].captureGoal.kind != "OUTPUT_CLOSURE"
+        or (.[0].normalExit == true
+          and (.[0].outputExpressions | keys | sort)
+            == (.[0].outputClosure.members
+              | map(.output.portId) | sort)))
+    then {
+      schemaVersion: 1,
+      kind: "PATH_EXPLORATION_RECORD",
+      queryKey: $task[0].queryKey,
+      regionId: $task[0].regionId,
+      activationId: $activation[0].activationId,
+      status: (if $task[0].captureGoal.kind == "OUTPUT_CLOSURE"
+        then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+        else "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY"
+        end)
+    }
+    else error("imported replay did not satisfy the canonical admission")
+    end
+  ' "${imported}" >"${task_dir}/exploration_record.jsonl" \
+    || die "path replay admission failed; inspect ${task_dir}/replay_validation_plan.json, ${raw}, ${imported}, and ${task_dir}/concolic_import_diagnostics.jsonl"
 }
 
 wait_for_path_wave() {

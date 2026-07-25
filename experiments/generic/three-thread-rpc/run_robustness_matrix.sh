@@ -135,6 +135,14 @@ def singleton_output_member:
     then $members[0]
     else error("expected singleton output closure")
     end;
+def read_from_evidence:
+  (.evidenceKind == "FIELD_ASSIGNMENT_READ_FROM_V1"
+    or .evidenceKind == "CONTAINER_MUTATION_READ_FROM_V1")
+  and (.writerEventSeq | type) == "number"
+  and (.readerEventSeq | type) == "number"
+  and .writerEventSeq < .readerEventSeq
+  and (.receiverObjectId | type) == "number"
+  and .receiverObjectId != 0;
 '
 
 validate_composition_common() {
@@ -185,7 +193,8 @@ validate_cross_method_joint_output_artifacts() {
   require_file "cross-method Producer A merged relation" "${merged}"
   require_file "cross-method composition manifest" "${composition}"
 
-  jq -e -s --arg producer "${producer_cell}" --arg witness "${witness_cell}" '
+  jq -e -s --arg producer "${producer_cell}" --arg witness "${witness_cell}" \
+    "${output_closure_helpers}"'
     [.[] | select(
       .captureGoal.kind == "OUTPUT_CLOSURE"
       and ([.outputClosure.members[].output.cell] | sort)
@@ -193,8 +202,7 @@ validate_cross_method_joint_output_artifacts() {
     | ($joint | length) == 1
     and ($joint[0].outputClosure.members | length) == 2
     and ([$joint[0].edgeBindings[]
-      | select(.relation == "READ_FROM"
-        and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+      | select(read_from_evidence
         and (.fromOutputCell == $producer
           or .fromOutputCell == $witness))] as $edges
       | ($edges | length) == 2
@@ -359,8 +367,7 @@ validate_dependent_scalar_artifacts() {
         or ([output_members | .[].output.cell] | index($text)) != null)
     ] as $producers
     | ([$producers[].edgeBindings[]?
-        | select(.relation == "READ_FROM"
-          and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+        | select(read_from_evidence
           and .fromOutputCell == .toInputCell)] as $edges
       | ($producers | length) == 2
       and all($producers[]; (output_members | length) == 1)
@@ -373,10 +380,7 @@ validate_dependent_scalar_artifacts() {
       and ([$edges[].toRegionInstance] | unique | length) == 1
       and all($edges[];
         .fromRegion != .toRegion
-        and .objectIdentityConfirmed == true
-        and .orderConfirmed == true
-        and .canonicalOutputAliasUsed == false
-        and .canonicalInputResolutionUsed == true)
+        and .inputProjectionUsed == false)
       and ([.[] | select(
           .captureGoal.kind == "TARGET_BRANCH"
           and (.admission.state == "READY"
@@ -804,15 +808,14 @@ validate_scalar_unsat_producer_artifacts() {
   ' "${merged_summaries[@]}" >/dev/null \
     || die "${label} producer relations are not complete guarded merges"
 
-  jq -e --argjson expected "${expected_bindings}" '
+  jq -e --argjson expected "${expected_bindings}" \
+    "${output_closure_helpers}"'
     (.includedSummaries | length) == 2
     and (.resolvedEdgeBindings | length) == $expected
     and all(.resolvedEdgeBindings[];
-      .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+      (.binding | read_from_evidence)
       and .binding.fromOutputCell == .binding.toInputCell
-      and .binding.objectIdentityConfirmed == true
-      and .binding.orderConfirmed == true
-      and .binding.writerOccurrence == 1)
+      and .binding.inputProjectionUsed == false)
   ' "${composition}" >/dev/null \
     || die "${label} lost its one-write shared-field producer bindings"
 
@@ -890,7 +893,8 @@ validate_compound_target_artifacts() {
     || die "${label} target reach-path query is incomplete"
 
   jq -e -s --arg consumer "${consumer_name}" \
-    --arg target_region "$(jq -r '.regionId' "${target_closure}")" '
+    --arg target_region "$(jq -r '.regionId' "${target_closure}")" \
+    "${output_closure_helpers}"'
     [.[] | select(.captureGoal.kind == "OUTPUT_CLOSURE"
       and .admission.state == "READY")] as $producers
     | [.[] | select(.captureGoal.kind == "TARGET_BRANCH"
@@ -904,8 +908,7 @@ validate_compound_target_artifacts() {
       (.outputClosure.members | length) == 3
       and all(.outputClosure.members[]; .slice.complete == true))
     and ([$producers[].edgeBindings[]?
-      | select(.relation == "READ_FROM"
-        and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM")]
+      | select(read_from_evidence)]
       | length) == 6
     and ($targets | length) == 1
     and ([$targets[0].branches[]
@@ -943,7 +946,8 @@ validate_compound_target_artifacts() {
   ' "${merged_summaries[@]}" >/dev/null \
     || die "${label} joint producer summaries lost output correlation"
 
-  jq -e --arg expectation "${expected_reached}" '
+  jq -e --arg expectation "${expected_reached}" \
+    "${output_closure_helpers}"'
     .fatalConstraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
     and .fatalPathCount
@@ -952,11 +956,9 @@ validate_compound_target_artifacts() {
     and (.resolvedProducerKeys | length) == 6
     and (.resolvedEdgeBindings | length) == 6
     and all(.resolvedEdgeBindings[];
-      .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+      (.binding | read_from_evidence)
       and .binding.fromOutputCell == .binding.toInputCell
-      and .binding.objectIdentityConfirmed == true
-      and .binding.orderConfirmed == true
-      and .binding.writerOccurrence == 1)
+      and .binding.inputProjectionUsed == false)
   ' "${composition}" >/dev/null \
     || die "${label} composition lost target paths or shared-field bindings"
 }
@@ -968,7 +970,7 @@ validate_semantic_profile() {
   local work_root=$4
   case "${label}" in
     baseline)
-      jq -e '
+      jq -e "${output_closure_helpers}"'
         (.rootBooleanInputs | length) == 2
         and (.existentialNonBooleanRootInputs | length) == 1
         and (.truthTable | length) == 4
@@ -1087,7 +1089,7 @@ validate_semantic_profile() {
           | startswith("<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$ConsumerThread: void executeWorker()>#")
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "dependent-scalar composition moved away from the annotated target"
-      jq -e '
+      jq -e "${output_closure_helpers}"'
         . as $root
         | (.resolvedProducerKeys | length) == 2
         and (.resolvedEdgeBindings | length) == 2
@@ -1103,9 +1105,7 @@ validate_semantic_profile() {
           and .targetRegion == $root.fatalRegion
           and .targetRegionInstance == $root.fatalRegionInstanceId
           and .binding.fromOutputCell == .binding.toInputCell
-          and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
-          and .binding.objectIdentityConfirmed == true
-          and .binding.orderConfirmed == true)
+          and (.binding | read_from_evidence))
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "dependent-scalar lost either producer relation"
       grep -Fq 'str.contains' "${smt}" \

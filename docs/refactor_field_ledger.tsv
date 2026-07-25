@@ -99,13 +99,18 @@ runtime-edge	fromEndpointSeq/toEndpointSeq	RuntimeRegionPlanner	Scheduler/Compos
 runtime-edge	order/identity authority mirrors	RuntimeRegionPlanner	Scheduler/Composer	none	typed evidence payload	CUTOVER	3
 runtime-edge	path-completeness mirrors	RuntimeRegionPlanner	none	none	exact event evidence	DELETE	3
 runtime-edge	objectIdentityConfirmed	RuntimeRegionPlanner	Scheduler/Composer	none	nonzero receiver/value identity payload	CUTOVER	3
-trace	timeNanos	CausynthTraceRecorder	RuntimeRegionPlanner/tests	none	event order sequence	DELETE_AFTER_INDEX_AUDIT	4
-trace	test	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
+trace	timeNanos	CausynthTraceRecorder	none	none	event sequence	DELETE	4
+trace	test	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	DELETE_FROM_ROWS	4
 trace	process	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
 trace	threadName	CausynthTraceRecorder	RuntimeRegionPlanner	none	thread catalog	CUTOVER	4
 trace	tid	CausynthTraceRecorder	RuntimeRegionPlanner	none	thread catalog	CUTOVER	4
+trace	execution test/process/threadName/tid	CausynthTraceRecorder	none	none	METHOD_ENTER context	DELETE	4
+trace	execution parentCallId/unitIndex/declaredType/expression/exceptionType	CausynthTraceRecorder	none	none	callId/siteId/runtimeType	DELETE	4
+trace	field test/process/threadName/tid	CausynthTraceRecorder	none	none	owning METHOD_ENTER	DELETE	4
 trace	hasOutcome	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional outcome	CUTOVER	4
 trace	hasSuccessorIndex	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional successorIndex	CUTOVER	4
+replay	path replay verification manifest	ConcolicPathReplayVerifier	run.sh	none	importer admission + minimal exploration record	DELETE	4
+replay	dynamic selector/fresh rebinding proof	ConcolicReplayValidator	ConcolicSummaryImporter	none	not derivable	KEEP_AND_INTERNALIZE	4
 artifact-ref	sizeBytes	result builders	matrix/hash validators	none	path+sha256	DELETE_AND_UPDATE_READERS	5
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-

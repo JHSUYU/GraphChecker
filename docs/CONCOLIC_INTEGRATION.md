@@ -344,7 +344,8 @@ same immutable replay contract. The runtime reports applied assignment count
 and actual branch witnesses; branch outcomes are observations, not replay
 inputs.
 
-`ConcolicReplayValidator` checks:
+The importer is the only replay-admission call boundary. Its compact
+`ReplayAdmission` checks:
 
 ```text
 all assignments applied
@@ -352,9 +353,11 @@ expected branch prefix observed naturally
 selected site/occurrence has the desired outcome
 ```
 
-Only then may the importer append the canonical summary and let the path
-worklist mark the task covered. This validation is not run for the target
-candidate query because the maintained workflow performs no target replay.
+For dynamic Map.Entry and array/container assignments, the retained model
+admission additionally checks fresh activation-local rebinding; object tokens
+are never compared across executions. Only then may the importer append the
+canonical summary and let the path worklist mark the task covered. The former
+standalone path replay verifier and its scratch manifest no longer exist.
 
 ## 9. Guarded merging
 
