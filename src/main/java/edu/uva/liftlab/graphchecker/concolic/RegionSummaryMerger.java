@@ -96,16 +96,10 @@ public final class RegionSummaryMerger {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 1);
         manifest.addProperty("kind", "REGION_RELATION_MERGE_MANIFEST");
-        manifest.addProperty("inputSummaryCount", safe(summaries).size());
-        manifest.addProperty("mergedRelationCount", merged.size());
-        int caseCount = 0;
         boolean complete = diagnostics.isEmpty() && !merged.isEmpty();
         for (JsonObject summary : merged) {
-            JsonObject relation = object(summary, "regionRelation");
-            caseCount += array(relation, "cases").size();
-            complete &= bool(relation, "complete", false);
+            complete &= bool(summary, "relationallyComplete", false);
         }
-        manifest.addProperty("guardedCaseCount", caseCount);
         manifest.addProperty("pathWorklistState", string(pathManifest,
                 "state"));
         manifest.add("diagnostics", GSON.toJsonTree(diagnostics));
@@ -148,7 +142,7 @@ public final class RegionSummaryMerger {
                                 + pathKey));
                 continue;
             }
-            cases.add(pathCase(summary, region, pathKey));
+            cases.add(pathCase(summary, pathKey));
             if (!bool(summary, "relationallyComplete", false)) {
                 casesComplete = false;
                 diagnostics.add(gap(region,
@@ -173,21 +167,24 @@ public final class RegionSummaryMerger {
             diagnostics.add(gap(region,
                     "PATH_WORKLIST_NOT_CLOSED:" + pathState));
         }
-        String demand = string(pathManifest, "outputDemandKey");
-        String fingerprint = string(pathManifest,
-                "outputClosureFingerprint");
-        if (!firstInput.contract.demandKey().equals(demand)) {
+        OutputClosureContract pathContract = null;
+        try {
+            pathContract = OutputClosureCodec.decode(pathManifest);
+        } catch (IllegalArgumentException malformed) {
             outputScopeMatches = false;
             diagnostics.add(gap(region,
-                    "PATH_WORKLIST_OUTPUT_DEMAND_MISMATCH:"
-                            + firstNonBlank(demand, "MISSING")));
+                    "INVALID_PATH_WORKLIST_OUTPUT_CLOSURE:"
+                            + firstNonBlank(malformed.getMessage(),
+                            "MISSING")));
         }
-        if (!firstInput.contract.closureFingerprint().equals(
-                fingerprint)) {
+        if (pathContract != null
+                && (!firstInput.contract.demandKey().equals(
+                pathContract.demandKey())
+                || !firstInput.contract.closureFingerprint().equals(
+                pathContract.closureFingerprint()))) {
             outputScopeMatches = false;
             diagnostics.add(gap(region,
-                    "PATH_WORKLIST_OUTPUT_CLOSURE_FINGERPRINT_MISMATCH:"
-                            + firstNonBlank(fingerprint, "MISSING")));
+                    "PATH_WORKLIST_OUTPUT_CLOSURE_MISMATCH"));
         }
         boolean complete = pathClosed && outputScopeMatches
                 && casesComplete && cases.size() > 0;
@@ -196,26 +193,16 @@ public final class RegionSummaryMerger {
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
         relation.add("cases", cases);
         relation.addProperty("pathClosureState", pathState);
-        relation.addProperty("complete", complete);
 
         String relationHash = sha256(region + "\n"
                 + firstInput.outputIdentity + "\n"
                 + canonical(cases));
-        Set<String> sourceInstances = new TreeSet<>();
         Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
         for (MergeInput input : values) {
             JsonObject summary = input.summary;
-            String instance = string(summary, "regionInstanceId");
-            if (!instance.isEmpty()) sourceInstances.add(instance);
             for (JsonElement element : array(summary, "edgeBindings")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
-                String sourceInstance = firstNonBlank(string(binding,
-                        "fromRegionInstance"), string(binding,
-                        "producerRegionInstance"));
-                if (!sourceInstance.isEmpty()) {
-                    sourceInstances.add(sourceInstance);
-                }
                 bindingsByKey.put(canonical(binding), binding.deepCopy());
             }
         }
@@ -230,16 +217,8 @@ public final class RegionSummaryMerger {
         merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
         merged.addProperty("summaryId", "SUMMARY." + region
                 + ".MERGED." + relationHash);
-        merged.addProperty("activationId", "MERGED_PATHS");
         merged.addProperty("regionId", region);
-        merged.add("sourceRegionInstanceIds",
-                GSON.toJsonTree(sourceInstances));
         merged.add("captureGoal", RegionCaptureGoal.outputClosure().toJson());
-        OutputClosureContract.Producer producer =
-                firstInput.contract.producer();
-        merged.addProperty("regionInstanceId",
-                producer.regionInstanceId());
-        merged.addProperty("rootCallId", producer.rootCallId());
         OutputClosureCodec.writeTo(merged, firstInput.contract);
         merged.add("edgeBindings", mergedBindings);
         merged.add("regionRelation", relation);
@@ -247,16 +226,10 @@ public final class RegionSummaryMerger {
         return merged;
     }
 
-    private static JsonObject pathCase(JsonObject summary, String region,
-                                       String pathKey) {
+    private static JsonObject pathCase(JsonObject summary, String pathKey) {
         JsonObject item = new JsonObject();
-        String caseId = "CASE." + pathKey.substring(0, 16);
+        String caseId = "CASE." + pathKey;
         item.addProperty("caseId", caseId);
-        item.addProperty("pathKey", pathKey);
-        // Engine-local ids are recycled by every concolic JVM. Preserve a
-        // deterministic namespace per case.
-        item.addProperty("symbolScope", "region:" + region
-                + "/case:" + caseId);
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
         guard.add("conditions", array(summary,
@@ -284,8 +257,6 @@ public final class RegionSummaryMerger {
                         .deepCopy());
         item.add("heapEffects", array(summary,
                 "heapEffects").deepCopy());
-        item.addProperty("relationallyComplete", bool(summary,
-                "relationallyComplete", false));
         item.addProperty("normalExit", bool(summary,
                 "normalExit", false));
         item.addProperty("exceptionType", string(summary,
@@ -316,8 +287,6 @@ public final class RegionSummaryMerger {
                 array(summary,
                         "unforcedEnvironmentValidationRequirements")
                         .deepCopy());
-        stable.addProperty("relationallyComplete", bool(summary,
-                "relationallyComplete", false));
         stable.addProperty("normalExit", bool(summary,
                 "normalExit", false));
         stable.addProperty("exceptionType", string(summary,

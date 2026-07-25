@@ -173,10 +173,7 @@ runtime_channel_rows() {
       output_member_rows | .output
       | select(type == "object");
     def output_demand_key:
-      if (.outputDemandKey | type) == "string"
-          and (.outputDemandKey | length) > 0
-      then .outputDemandKey
-      else {
+      {
         schemaVersion: 1,
         producerRegionId: .regionId,
         outputs: ([output_member_rows
@@ -188,14 +185,9 @@ runtime_channel_rows() {
               javaTypeDescriptor: (.javaTypeDescriptor // "")
             }]
           | sort_by(.portId))
-      } | canonical_identity
-      end;
+      } | canonical_identity;
     def output_closure_fingerprint:
-      if (.outputClosureFingerprint | type) == "string"
-          and (.outputClosureFingerprint | length) > 0
-      then .outputClosureFingerprint
-      else .outputClosure | canonical_identity
-      end;
+      .outputClosure | canonical_identity;
     def read_from_evidence:
       (.evidenceKind == "FIELD_ASSIGNMENT_READ_FROM_V1"
         or .evidenceKind == "CONTAINER_MUTATION_READ_FROM_V1")
@@ -1309,7 +1301,6 @@ do_explore_producer() {
     length == 1
     and .[0].regionId == $region
     and .[0].relationallyComplete == true
-    and .[0].regionRelation.complete == true
   ' "${campaign}/merged_region_summaries.jsonl" >/dev/null \
     || die "producer merged relation is not complete for channel ${channel}"
   discard_successful_iteration "${campaign}"
@@ -1434,7 +1425,6 @@ do_candidate_compose() {
       and .[0].regionId == $region
       and (.[0].summaryId | type == "string" and length > 0)
       and .[0].relationallyComplete == true
-      and .[0].regionRelation.complete == true
     ' "${producer_summary}" >/dev/null \
       || die "producer relation is incomplete for channel ${channel}"
     bounded_args+=(--bounded-upstream-region "${producer_region}")
@@ -1462,8 +1452,7 @@ do_candidate_compose() {
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
     and ((.boundedUpstreamRegions // []) | length) == $expected
-    and ((.unsupportedExpressions // []) | length) == 0
-    and ((.unboundPorts // []) | length) == 0
+    and (.gaps | type == "array" and length == 0)
   ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
     || die "composition is not a structurally complete candidate model"
   jq -e '
@@ -1490,32 +1479,28 @@ do_candidate_solve() {
     CAUSYNTH_REACH_REPORT="${candidate_root}/candidate_boolean_model.json" \
     "${runner}" --config "${config}" reach)
   if jq -e '
-    .schemaVersion == 2
+    .schemaVersion == 3
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .reachability == "REACHABLE"
-    and ((.discoveryGaps // []) | length) == 0
-    and (.truthTable | type == "array" and length > 0)
-    and all(.truthTable[];
-      (.solverStatus == "sat" and .reachesBug == true)
-      or (.solverStatus == "unsat" and .reachesBug == false))
-    and any(.truthTable[];
-      .solverStatus == "sat" and .reachesBug == true)
+    and .reachCondition.reachability == "REACHABLE"
+    and (.gaps | type == "array" and length == 0)
+    and (.valuations | type == "array" and length > 0)
+    and all(.valuations[];
+      .status == "sat" or .status == "unsat")
+    and any(.valuations[]; .status == "sat")
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     :
   elif jq -e '
-    .schemaVersion == 2
+    .schemaVersion == 3
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .reachability == "UNREACHABLE"
-    and ((.discoveryGaps // []) | length) == 0
-    and (.truthTable | type == "array" and length > 0)
-    and ([.truthTable[] | select(.reachesBug == true)] | length) == 0
-    and all(.truthTable[]; .solverStatus == "unsat"
-      and .reachesBug == false)
-    and .reachConditionSmtLib == "false"
+    and .reachCondition.reachability == "UNREACHABLE"
+    and (.gaps | type == "array" and length == 0)
+    and (.valuations | type == "array" and length > 0)
+    and all(.valuations[]; .status == "unsat")
+    and .reachCondition.formula == "false"
   ' "${candidate_root}/candidate_boolean_model.json" >/dev/null; then
     echo "[three-thread-rpc] candidate SMT is UNSAT"
   else
@@ -1604,37 +1589,31 @@ write_candidate_manifest() {
   require_file "candidate composition manifest" "${composition}"
   require_file "candidate reach model" "${reach}"
   require_file "candidate relationships" "${relationships}"
-  status=$(jq -er '.reachability
+  status=$(jq -er '.reachCondition.reachability
     | select(. == "REACHABLE" or . == "UNREACHABLE")' "${reach}") \
     || die "candidate reach model has no exact reachability status"
   jq -n \
     --arg status "${status}" \
     --arg smt "$(realpath -m -- "${smt}")" \
     --arg smt_hash "$(sha256_file "${smt}")" \
-    --argjson smt_size "$(stat -c '%s' "${smt}")" \
     --arg composition "$(realpath -m -- "${composition}")" \
     --arg composition_hash "$(sha256_file "${composition}")" \
-    --argjson composition_size "$(stat -c '%s' "${composition}")" \
     --arg reach "$(realpath -m -- "${reach}")" \
     --arg reach_hash "$(sha256_file "${reach}")" \
-    --argjson reach_size "$(stat -c '%s' "${reach}")" \
     --arg relationships "$(realpath -m -- "${relationships}")" \
-    --arg relationships_hash "$(sha256_file "${relationships}")" \
-    --argjson relationships_size "$(stat -c '%s' "${relationships}")" '
+    --arg relationships_hash "$(sha256_file "${relationships}")" '
       {
         schemaVersion: 2,
         kind: "CONCOLIC_CANDIDATE_RESULT",
         state: "CANDIDATE_READY",
         trustState: "CANDIDATE_ONLY",
         reachability: $status,
-        candidateSmtArtifact: {path: $smt, sha256: $smt_hash,
-          sizeBytes: $smt_size},
+        candidateSmtArtifact: {path: $smt, sha256: $smt_hash},
         compositionManifestArtifact: {path: $composition,
-          sha256: $composition_hash, sizeBytes: $composition_size},
-        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash,
-          sizeBytes: $reach_size},
+          sha256: $composition_hash},
+        candidateReachModelArtifact: {path: $reach, sha256: $reach_hash},
         relationshipCandidatesArtifact: {path: $relationships,
-          sha256: $relationships_hash, sizeBytes: $relationships_size}
+          sha256: $relationships_hash}
       }
     ' >"${output}"
   jq -e '

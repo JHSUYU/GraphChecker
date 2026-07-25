@@ -39,15 +39,21 @@ public class RegionSummaryMergerTest {
         for (com.google.gson.JsonElement element : relation.getAsJsonArray(
                 "cases")) {
             JsonObject pathCase = element.getAsJsonObject();
-            assertTrue(pathCase.get("symbolScope").getAsString().startsWith(
-                    "region:REGION.4/case:CASE."));
+            assertTrue(pathCase.get("caseId").getAsString().startsWith(
+                    "CASE."));
+            assertFalse(pathCase.has("pathKey"));
+            assertFalse(pathCase.has("symbolScope"));
+            assertFalse(pathCase.has("relationallyComplete"));
         }
-        assertTrue(relation.get("complete").getAsBoolean());
+        assertFalse(relation.has("complete"));
         assertTrue(result.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
         assertFalse(result.summaries.get(0).has("protocolModel"));
-        assertEquals(1, result.summaries.get(0).getAsJsonArray(
-                "sourceRegionInstanceIds").size());
+        assertFalse(result.summaries.get(0).has("activationId"));
+        assertFalse(result.summaries.get(0).has(
+                "sourceRegionInstanceIds"));
+        assertFalse(result.summaries.get(0).has("regionInstanceId"));
+        assertFalse(result.summaries.get(0).has("rootCallId"));
     }
 
     @Test
@@ -101,25 +107,27 @@ public class RegionSummaryMergerTest {
         JsonObject missingRelation = missingResult.summaries.get(0)
                 .getAsJsonObject("regionRelation");
         assertEquals(0, missingRelation.getAsJsonArray("cases").size());
-        assertFalse(missingRelation.get("complete").getAsBoolean());
+        assertFalse(missingResult.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
         assertTrue(missingResult.manifest.getAsJsonArray(
                 "diagnostics").toString()
                 .contains("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH"));
 
         JsonObject wrongManifest = jointSummary("MANIFEST", ">");
         JsonObject manifest = manifestFor(wrongManifest);
-        manifest.addProperty("outputClosureFingerprint", "wrong");
+        manifest.getAsJsonObject("outputClosure")
+                .getAsJsonObject("producer")
+                .addProperty("regionInstanceId", "wrong");
 
         RegionSummaryMerger.Result manifestResult =
                 RegionSummaryMerger.merge(
                         Arrays.asList(wrongManifest), manifest);
 
-        assertFalse(manifestResult.summaries.get(0).getAsJsonObject(
-                "regionRelation").get("complete").getAsBoolean());
+        assertFalse(manifestResult.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
         assertTrue(manifestResult.manifest.getAsJsonArray(
                 "diagnostics").toString()
-                .contains("PATH_WORKLIST_OUTPUT_CLOSURE_"
-                        + "FINGERPRINT_MISMATCH"));
+                .contains("PATH_WORKLIST_OUTPUT_CLOSURE"));
 
         JsonObject first = jointSummary("DUP.A", ">");
         JsonObject second = jointSummary("DUP.B", ">");
@@ -136,7 +144,8 @@ public class RegionSummaryMergerTest {
         JsonObject duplicateRelation = duplicateResult.summaries.get(0)
                 .getAsJsonObject("regionRelation");
         assertEquals(1, duplicateRelation.getAsJsonArray("cases").size());
-        assertFalse(duplicateRelation.get("complete").getAsBoolean());
+        assertFalse(duplicateResult.summaries.get(0).get(
+                "relationallyComplete").getAsBoolean());
         assertTrue(duplicateResult.manifest.getAsJsonArray(
                 "diagnostics").toString()
                 .contains("CONFLICTING_DUPLICATE_PATH_PAYLOAD"));
@@ -150,8 +159,6 @@ public class RegionSummaryMergerTest {
         RegionSummaryMerger.Result result = RegionSummaryMerger.merge(
                 Arrays.asList(summary), manifest);
 
-        assertFalse(result.summaries.get(0).getAsJsonObject(
-                "regionRelation").get("complete").getAsBoolean());
         assertFalse(result.summaries.get(0).get(
                 "relationallyComplete").getAsBoolean());
     }
@@ -259,9 +266,7 @@ public class RegionSummaryMergerTest {
     private static JsonObject manifestFor(JsonObject summary) {
         OutputClosureContract contract = OutputClosureCodec.decode(summary);
         JsonObject manifest = closedManifest();
-        manifest.addProperty("outputDemandKey", contract.demandKey());
-        manifest.addProperty("outputClosureFingerprint",
-                contract.closureFingerprint());
+        manifest.add(OutputClosureContract.FIELD, contract.toJson());
         return manifest;
     }
 

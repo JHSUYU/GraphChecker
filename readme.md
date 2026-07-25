@@ -1400,6 +1400,18 @@ guarded cases 与最终 Z3 `sat`；131 行 runtime trace 全部是 V2，retired 
 - artifact ref 删除 `sizeBytes`，保留 `path + sha256`；
 - Boolean report 收敛为 `roots + valuations + reachCondition`，删除重复 truth-row 派生字段。
 
+截至 2026-07-25，PR 5 已完成实现并进入全矩阵验收。worklist manifest 现在直接携带
+canonical `outputClosure`，不再镜像 `outputDemandKey/outputClosureFingerprint`；
+Merger 以该 contract 校验同一 bounded demand。merged summary 只保留一个顶层
+`relationallyComplete`，case ID 使用完整 path hash，case scope 在 Composer 内派生。
+Composer manifest 的四套缺口已统一为 `gaps:[{kind,subject}]`，case coverage 和 fatal
+query readiness 也进入同一 gap gate；`resolvedEdgeBindings` 只存 canonical edge ID。
+artifact binding 只保留 `path + sha256`。Boolean report V3 只保留
+`roots + valuations + reachCondition + gaps`，SAT/UNSAT 由 valuation `status` 唯一表达，
+不再双写 `reachesBug/valuationKey/solverStatus`。Importer 的 summary ID 只 hash
+canonical semantic payload。57 项快速回归、generic workflow shell test 和
+`dependent-scalar` 的双 producer/8-case/Z3 端到端均已通过（`REACHABLE/sat`）。
+
 ### PR 6：替换高复杂度算法
 
 #### 静态 worklist

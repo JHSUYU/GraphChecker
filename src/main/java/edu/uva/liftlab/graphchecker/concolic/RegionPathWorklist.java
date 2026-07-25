@@ -491,9 +491,8 @@ public final class RegionPathWorklist {
             if (scopes.size() == 1) {
                 ExplorationScope scope = scopes.values().iterator().next();
                 if (scope.contract != null) {
-                    result.addProperty("outputDemandKey", scope.demandKey);
-                    result.addProperty("outputClosureFingerprint",
-                            scope.fingerprint);
+                    result.add(OutputClosureContract.FIELD,
+                            scope.contract.toJson());
                 } else {
                     result.addProperty("captureGoal", scope.goal.kind());
                 }

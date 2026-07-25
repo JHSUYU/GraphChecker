@@ -264,58 +264,19 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
 
-            String contentHash = sha256(GSON.toJson(region) + "\n"
-                    + GSON.toJson(activation) + "\n"
-                    + GSON.toJson(pathCondition) + "\n"
-                    + GSON.toJson(relational.effects) + "\n"
-                    + GSON.toJson(relational.observations) + "\n"
-                    + "EXACT_RUNTIME_FINITE_MAP_SNAPSHOT_POLICY_V1\n"
-                    + GSON.toJson(relational.finiteMapSnapshots) + "\n"
-                    + "OWNER_EXACT_VM_INTRINSIC_PLACEHOLDER_BINDING_V1\n"
-                    + GSON.toJson(placeholderBindings.bindings) + "\n"
-                    + GSON.toJson(placeholderBindings.failures) + "\n"
-                    + GSON.toJson(relational.staticCoverageEvidence) + "\n"
-                    + GSON.toJson(rawBranchMappings) + "\n"
-                    + GSON.toJson(runtimeHeapObservations) + "\n"
-                    + (raw.has("fieldObservations")
-                    ? GSON.toJson(raw.get("fieldObservations"))
-                    : "<no-field-observations>") + "\n"
-                    + (raw.has("finalFieldObservations")
-                    ? GSON.toJson(raw.get("finalFieldObservations"))
-                    : "<no-final-field-observations>") + "\n"
-                    + (raw.has("runtimeApproximations")
-                    ? GSON.toJson(raw.get("runtimeApproximations"))
-                    : "<no-runtime-approximations>") + "\n"
-                    + GSON.toJson(dynamicFieldBindings) + "\n"
-                    + (raw.has("engineArrayInputBindings")
-                    ? GSON.toJson(raw.get("engineArrayInputBindings"))
-                    : "<no-engine-array-input-bindings>") + "\n"
-                    + GSON.toJson(engineArrayBindings.bindings) + "\n"
-                    + (raw.has("outputCaptures")
-                    ? GSON.toJson(raw.get("outputCaptures"))
-                    : "<no-output-captures>") + "\n"
-                    + string(raw, "exitKind") + "\n"
-                    + string(raw, "exceptionType") + "\n"
-                    + PATH_CONDITION_ISOLATION_POLICY);
-            if (!emittedContentHashes.add(contentHash)) {
-                diagnostics.add(diagnostic(raw, "DUPLICATE_SUMMARY",
-                        contentHash));
-                continue;
-            }
-
             JsonObject summary = new JsonObject();
-            summary.addProperty("summaryId", "SUMMARY." + regionId + "."
-                    + contentHash);
             summary.addProperty("activationId", activationId);
             summary.addProperty("regionId", regionId);
-            summary.addProperty("regionInstanceId", string(activation,
-                    "regionInstanceId"));
-            summary.addProperty("rootCallId", integer(activation,
-                    "rootCallId", -1));
             summary.add("captureGoal", captureGoal.toJson());
-            summary.addProperty("rootMethod", firstNonBlank(
-                    activationRootMethod(activation),
-                    string(region, "rootMethod")));
+            if (!captureGoal.isOutputClosure()) {
+                summary.addProperty("regionInstanceId", string(activation,
+                        "regionInstanceId"));
+                summary.addProperty("rootCallId", integer(activation,
+                        "rootCallId", -1));
+                summary.addProperty("rootMethod", firstNonBlank(
+                        activationRootMethod(activation),
+                        string(region, "rootMethod")));
+            }
             summary.add("symbolicInputs", symbolicInputs(activation));
             if (outputContract != null) {
                 summary.add(OutputClosureContract.FIELD,
@@ -363,6 +324,18 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("executionKind",
                     relational.replayAdmission.required
                     ? "INPUT_MODEL_REPLAY" : "UNFORCED_SEED");
+            JsonObject semanticPayload = summary.deepCopy();
+            semanticPayload.remove("activationId");
+            semanticPayload.remove("rootMethod");
+            String contentHash = sha256(CanonicalJson.render(
+                    semanticPayload));
+            if (!emittedContentHashes.add(contentHash)) {
+                diagnostics.add(diagnostic(raw, "DUPLICATE_SUMMARY",
+                        contentHash));
+                continue;
+            }
+            summary.addProperty("summaryId", "SUMMARY." + regionId + "."
+                    + contentHash);
             if (isPathFlip(activation)) {
                 JsonObject replayTask = activation.deepCopy();
                 replayTask.addProperty("queryKey",

@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -34,7 +35,9 @@ public final class ConcolicPathFlipPlanner {
         Arguments arguments = Arguments.parse(argv);
         RegionPathWorklist.Result result = plan(arguments);
         writeOutputs(arguments.outputDirectory, result);
-        System.out.println(PRETTY.toJson(result.manifest));
+        JsonObject display = result.manifest.deepCopy();
+        display.remove(OutputClosureContract.FIELD);
+        System.out.println(PRETTY.toJson(display));
         String state = string(result.manifest, "state");
         if (RegionPathWorklist.State.GAPPED.name().equals(state)
                 || RegionPathWorklist.State.NOT_STARTED.name().equals(state)) {

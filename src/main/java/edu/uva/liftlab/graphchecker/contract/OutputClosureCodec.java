@@ -73,7 +73,7 @@ public final class OutputClosureCodec {
         }
         OutputClosureContract contract =
                 decodeEnvelope(encoded.getAsJsonObject());
-        validateOuterScope(artifact, contract.producer(), false);
+        validateOuterScope(artifact, contract.producer());
         return contract;
     }
 
@@ -217,7 +217,7 @@ public final class OutputClosureCodec {
             throw new IllegalArgumentException(
                     "activation and output closure are required");
         }
-        validateOuterScope(activation, contract.producer(), true);
+        validateOuterScope(activation, contract.producer());
         for (String field : SINGULAR_FIELDS) activation.remove(field);
         activation.add(OutputClosureContract.FIELD, contract.toJson());
     }
@@ -496,21 +496,18 @@ public final class OutputClosureCodec {
     }
 
     private static void validateOuterScope(
-            JsonObject activation, OutputClosureContract.Producer producer,
-            boolean required) {
-        boolean any = activation.has("regionId")
-                || activation.has("regionInstanceId")
-                || activation.has("rootCallId");
-        if (required || any) {
-            if (!producer.regionId().equals(
-                    requireText(activation, "regionId"))
-                    || !producer.regionInstanceId().equals(
-                    requireText(activation, "regionInstanceId"))
-                    || producer.rootCallId()
-                    != requireLong(activation, "rootCallId")) {
-                throw new IllegalArgumentException(
-                        "outputClosure producer conflicts with activation");
-            }
+            JsonObject activation, OutputClosureContract.Producer producer) {
+        if ((activation.has("regionId")
+                && !producer.regionId().equals(
+                requireText(activation, "regionId")))
+                || (activation.has("regionInstanceId")
+                && !producer.regionInstanceId().equals(
+                requireText(activation, "regionInstanceId")))
+                || (activation.has("rootCallId")
+                && producer.rootCallId()
+                != requireLong(activation, "rootCallId"))) {
+            throw new IllegalArgumentException(
+                    "outputClosure producer conflicts with artifact scope");
         }
     }
 

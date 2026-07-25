@@ -100,14 +100,14 @@ semantics exists.
 | Arbitrary `MethodExpression` | Both encoders may declare a sort-qualified diagnostic uninterpreted function and always add `MODEL_SEMANTICS_MISSING` | Fail-closed. The diagnostic UF keeps the SMT inspectable, but can no longer make branch-flip or candidate composition claim exact completeness. |
 | Unknown expression `_type` | Composer creates a fresh term and adds `unsupported`; solver adds `unsupported` and returns no model | Fail-closed. |
 | Unknown binary/String operator, invalid numeric literal, unbound placeholder | Composer may create a fresh well-sorted term, but also adds `unsupported`; solver does likewise or stops before Z3 | Fail-closed. The fresh term is diagnostic scaffolding, not admitted semantics. |
-| Missing upstream region summary | Uninterpreted region relation plus `incompleteSummaryRegions` | Fail-closed: the composition manifest state is `CANDIDATE_WITH_GAPS`. |
+| Missing upstream region summary | Uninterpreted region relation plus `{kind:"MISSING_SUMMARY", subject:region}` in canonical `gaps` | Fail-closed: the composition manifest state is `CANDIDATE_WITH_GAPS`. |
 | Unknown/malformed Java scalar type | Usually falls back to reference sort | Correct for actual references, but a malformed primitive descriptor can be silently misclassified. Static port schema checks reduce this risk; the encoders should nevertheless reject unknown non-reference descriptors explicitly. |
 
 ### Answer to the free-variable audit
 
 Most unknown-expression fallbacks are safe in the admission sense: although
 the composer declares a fresh SMT term so that it can still render a diagnostic
-query, it also appends an `unsupportedExpressions` reason. A nonempty gap set
+query, it also appends an `UNSUPPORTED_EXPRESSION` row to canonical `gaps`. A nonempty gap set
 forces the compact composition manifest to
 `state=CANDIDATE_WITH_GAPS`; only an empty set together with the other
 structural gates produces `state=CANDIDATE_READY`.
@@ -242,7 +242,7 @@ macro is the stable anchor.
 | Compare trichotomy | `bytecodeInterpreter.cpp`, `CONCOLIC_OPC_TRICHOTOMY`; branch recording in `threadContext.cpp` | `JavaPrimitiveSmtSemantics.integralCompareResult` / `floatingCompareResult` and both `binary` methods | Preserve the symbolic result (`--`, `--l`, `--g`) on the shadow stack until its consuming `if*`; never reintroduce a concrete compare witness. |
 | FP model materialization | N/A | `ConcolicConstraintSolver` FP bit/NaN queries; `SmtModelValueCodec` | Retain the separate NaN discriminator and exact bit decoding. Extend the producer-path replay matrix for special values without weakening the already-tested category-2 lifecycle. |
 | String capture surface | `symbolicString.cpp`, `init_handle_method_names` near line 18 and `finish_method_helper` near line 178 | Solver `stringOperation` near line 458; composer `stringOperation` near line 3231 | Keep the explicit exact-operation whitelist. Add overload/signature and character-domain metadata before extending it. |
-| Diagnostic fresh terms | N/A | Composer `unknownConstraint` and the unknown branches of `term`, `binary`, `codecGap` | Preserve fresh terms only for rendering, always paired with `unsupportedExpressions`; add a regression asserting manifest `state=CANDIDATE_WITH_GAPS`. |
+| Diagnostic fresh terms | N/A | Composer `unknownConstraint` and the unknown branches of `term`, `binary`, `codecGap` | Preserve fresh terms only for rendering, always paired with an `UNSUPPORTED_EXPRESSION` gap; add a regression asserting manifest `state=CANDIDATE_WITH_GAPS`. |
 | Signed `iinc` | `bytecodeInterpreter.cpp`, `_iinc` near line 1572 | Ordinary `+` lowering | Retain the explicit `(jint)(jbyte)pc[2]` constructor selection; smoke-test both positive and negative increments. |
 
 The remaining implementation order is therefore:

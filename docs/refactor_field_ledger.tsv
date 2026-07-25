@@ -45,9 +45,7 @@ worklist-task	rootCallId	RegionPathWorklist	none	none	outputClosure producer/sou
 worklist-task	outputDemandKey	RegionPathWorklist	none	none	outputClosure.demandKey	DELETE_TASK_MIRROR	1
 worklist-task	outputClosureFingerprint	RegionPathWorklist	none	none	outputClosure.closureFingerprint	DELETE_TASK_MIRROR	1
 worklist-task	engineArrayInputBindings	RegionPathWorklist	none	none	source summary/activation	DELETE_TASK_COPY	1
-worklist-manifest	outputDemandKey	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.demandKey	KEEP_UNTIL_PR5	5
-worklist-manifest	outputClosureFingerprint	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.closureFingerprint	KEEP_UNTIL_PR5	5
-composer-manifest	caseProjectionCatalogComplete	ConcolicSmtComposer	composition readiness	none	not safely derivable before typed CoverageReport	KEEP_REPLACE	5
+composer-internal	caseProjectionCatalogComplete	ConcolicSmtComposer	composition readiness	none	INCOMPLETE_CASE_PROJECTION_CATALOG gap	INTERNAL_TO_GAP_GATE	5
 relationship	status=UNVERIFIED_CANDIDATE	ConcolicSmtComposer	none	none	trustState=CANDIDATE_ONLY	DELETE	1
 region-relation	caseCount	RegionSummaryMerger	ConcolicSmtComposer	matrix	cases.length	DELETE_AND_UPDATE_READERS	1
 region-relation	guardSemantics	RegionSummaryMerger	none	matrix	kind/schema contract	DELETE_AND_UPDATE_SHELL	1
@@ -112,6 +110,21 @@ trace	hasSuccessorIndex	CausynthTraceRecorder	RuntimeRegionPlanner	none	optional
 replay	path replay verification manifest	ConcolicPathReplayVerifier	run.sh	none	importer admission + minimal exploration record	DELETE	4
 replay	dynamic selector/fresh rebinding proof	ConcolicReplayValidator	ConcolicSummaryImporter	none	not derivable	KEEP_AND_INTERNALIZE	4
 artifact-ref	sizeBytes	result builders	matrix/hash validators	none	path+sha256	DELETE_AND_UPDATE_READERS	5
+worklist-manifest	outputDemandKey	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure.demand identity	DELETE_AND_UPDATE_READERS	5
+worklist-manifest	outputClosureFingerprint	RegionPathWorklist	RegionSummaryMerger	run.sh,matrix	outputClosure canonical payload	DELETE_AND_UPDATE_READERS	5
+merged-summary	activationId=MERGED_PATHS	RegionSummaryMerger	none	none	outputClosure producer	DELETE	5
+merged-summary	regionInstanceId/rootCallId	RegionSummaryMerger	Composer	none	outputClosure.producer	DELETE_AND_UPDATE_READERS	5
+merged-summary	sourceRegionInstanceIds	RegionSummaryMerger	none	none	outputClosure.producer	DELETE	5
+region-relation	complete	RegionSummaryMerger	Composer	run.sh,matrix	top-level relationallyComplete	DELETE_AND_UPDATE_READERS	5
+region-case	pathKey	RegionSummaryMerger	none	none	full-hash caseId	DELETE	5
+region-case	symbolScope	RegionSummaryMerger	Composer	none	derive region/case scope	DELETE_AND_UPDATE_READERS	5
+region-case	relationallyComplete	RegionSummaryMerger	Composer	matrix	top-level relationallyComplete	DELETE_AND_UPDATE_READERS	5
+composer-manifest	missingSummaryRegions/incompleteSummaryRegions/unsupportedExpressions/unboundPorts	ConcolicSmtComposer	run.sh,matrix	typed gaps rows	CUTOVER	5
+composer-manifest	resolvedEdgeBindings payload	ConcolicSmtComposer	matrix	edge ID plus canonical activation evidence	DELETE_COPY_KEEP_IDS	5
+boolean-report	rootBooleanInputs/existentialNonBooleanRootInputs	BooleanReachConditionExtractor	run.sh,matrix	roots object	CUTOVER	5
+boolean-report	truthTable/reachesBug/valuationKey/solverStatus	BooleanReachConditionExtractor	run.sh,matrix	valuations assignments+status	CUTOVER	5
+boolean-report	reachCondition clauses/reachConditionSmtLib/reachability	BooleanReachConditionExtractor	run.sh,matrix	reachCondition formula+reachability	CUTOVER	5
+boolean-report	discoveryGaps	BooleanReachConditionExtractor	run.sh,matrix	gaps	CUTOVER	5
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

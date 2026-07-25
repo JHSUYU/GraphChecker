@@ -85,8 +85,8 @@ validate_artifact_binding() {
   local manifest=$1
   local field=$2
   local expected=$3
-  local declared_path declared_hash declared_size
-  local expected_path actual_hash actual_size
+  local declared_path declared_hash
+  local expected_path actual_hash
   declared_path=$(jq -er --arg field "${field}" '
     .[$field].path | select(type == "string" and length > 0)
   ' "${manifest}") \
@@ -96,10 +96,6 @@ validate_artifact_binding() {
     | select(type == "string" and test("^[0-9a-f]{64}$"))
   ' "${manifest}") \
     || die "${manifest} has no valid ${field}.sha256"
-  declared_size=$(jq -er --arg field "${field}" '
-    .[$field].sizeBytes | select(type == "number" and . >= 0)
-  ' "${manifest}") \
-    || die "${manifest} has no valid ${field}.sizeBytes"
   require_file "${field} artifact" "${expected}"
   expected_path=$(realpath -m -- "${expected}")
   [[ "$(realpath -m -- "${declared_path}")" == "${expected_path}" ]] \
@@ -107,9 +103,6 @@ validate_artifact_binding() {
   actual_hash=$(sha256_file "${expected}")
   [[ "${actual_hash}" == "${declared_hash}" ]] \
     || die "${field} hash does not match ${expected}"
-  actual_size=$(stat -c '%s' "${expected}")
-  [[ "${actual_size}" == "${declared_size}" ]] \
-    || die "${field} size does not match ${expected}"
 }
 
 output_closure_helpers='
@@ -152,8 +145,7 @@ validate_composition_common() {
     and .kind == "CONCOLIC_COMPOSED_SMT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and ((.unsupportedExpressions // []) | length) == 0
-    and ((.unboundPorts // []) | length) == 0
+    and (.gaps | type == "array" and length == 0)
     and ((.resolvedProducerKeys // []) | length) > 0
     and ((.resolvedEdgeBindings // []) | length) > 0
     and ((.caseProjectionCatalog // []) | type) == "array"
@@ -285,8 +277,8 @@ validate_multitype_producer_artifacts() {
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputDemandKey",
-        "outputClosureFingerprint"] | sort))
+        "gaps", "outputClosure"] | sort)
+      and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
 
@@ -295,7 +287,6 @@ validate_multitype_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
@@ -412,8 +403,8 @@ validate_dependent_scalar_artifacts() {
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputDemandKey",
-        "outputClosureFingerprint"] | sort))
+        "gaps", "outputClosure"] | sort)
+      and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
     and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
     || die "dependent-scalar producer path closure is incomplete"
@@ -430,12 +421,10 @@ validate_dependent_scalar_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
-        .relationallyComplete == true
-        and (.guard.conditions | length) > 0
+        (.guard.conditions | length) > 0
         and (.outputExpressions | length) == 1))
     and any(.[];
       (singleton_output_member | .slice.outputCell == $arithmetic)
@@ -489,8 +478,8 @@ validate_container_producer_artifacts() {
       and .observedPathCount >= 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
         "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputDemandKey",
-        "outputClosureFingerprint"] | sort))
+        "gaps", "outputClosure"] | sort)
+      and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
 
@@ -507,8 +496,8 @@ validate_container_producer_artifacts() {
       and (.queryKey | test("^[0-9a-f]{64}$"))
       and (.status == "UNSAT"
         or (.status == "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
-          and (.observedPathKey | test("^[0-9a-f]{64}$"))
-          and (.summaryId | type == "string" and length > 0))))
+          and (.regionId | type == "string" and length > 0)
+          and (.activationId | type == "string" and length > 0))))
     and ([.[].queryKey] | unique | length) == length
   ' "${exploration_records[@]}" >/dev/null \
     || die "container retained exploration ledger is incomplete"
@@ -531,7 +520,6 @@ validate_container_producer_artifacts() {
     | $outputSlice.containerElementFieldBindings[0] as $static
     | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
-    and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
     and (.regionRelation.cases | length) == 2
     and ($outputSlice.containerElementFieldBindings | length) == 1
@@ -583,7 +571,6 @@ validate_container_producer_artifacts() {
     (singleton_output_member | .slice) as $outputSlice
     | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
-    and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
     and (.regionRelation.cases | length) >= 2
     and ($outputSlice.inputAliasCanonicalizations | length) >= 3
@@ -692,12 +679,10 @@ validate_unreachable_parity_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 2
       and all(.regionRelation.cases[];
-        .relationallyComplete == true
-        and (.guard.conditions | length) > 0
+        (.guard.conditions | length) > 0
         and (.dynamicFieldBindings | length) == 3
         and ([.dynamicFieldBindings[].fieldPath] | sort)
           == ([["state", "guard", "enabled"],
@@ -746,16 +731,16 @@ validate_two_boolean_unsat_report() {
     --arg descriptor "${descriptor}" '
     .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and .reachability == "UNREACHABLE"
-    and (.rootBooleanInputs | length) == 2
-    and all(.rootBooleanInputs[]; .javaTypeDescriptor == "Z")
-    and (.existentialNonBooleanRootInputs | length) == $rootCount
-    and all(.existentialNonBooleanRootInputs[];
+    and .reachCondition.reachability == "UNREACHABLE"
+    and (.roots.booleanInputs | length) == 2
+    and all(.roots.booleanInputs[]; .javaTypeDescriptor == "Z")
+    and (.roots.existentialInputs | length) == $rootCount
+    and all(.roots.existentialInputs[];
       .javaTypeDescriptor == $descriptor)
-    and (.truthTable | length) == 4
-    and all(.truthTable[];
-      .solverStatus == "unsat" and .reachesBug == false)
-    and .reachConditionSmtLib == "false"
+    and (.valuations | length) == 4
+    and all(.valuations[];
+      .status == "unsat")
+    and .reachCondition.formula == "false"
   ' "${reach_report}" >/dev/null \
     || die "${label} was not proved unreachable for all Boolean roots"
 }
@@ -799,7 +784,6 @@ validate_scalar_unsat_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and (output_members | map(.output.portId) | sort) as $ports
@@ -812,10 +796,9 @@ validate_scalar_unsat_producer_artifacts() {
     "${output_closure_helpers}"'
     (.includedSummaries | length) == 2
     and (.resolvedEdgeBindings | length) == $expected
+    and ([.resolvedEdgeBindings[]] | unique | length) == $expected
     and all(.resolvedEdgeBindings[];
-      (.binding | read_from_evidence)
-      and .binding.fromOutputCell == .binding.toInputCell
-      and .binding.inputProjectionUsed == false)
+      type == "string" and length > 0)
   ' "${composition}" >/dev/null \
     || die "${label} lost its one-write shared-field producer bindings"
 
@@ -939,7 +922,6 @@ validate_compound_target_artifacts() {
     and all(.[];
       (output_members | length) == 3
       and .relationallyComplete == true
-      and .regionRelation.complete == true
       and (.regionRelation.cases | length) == 2
       and all(.regionRelation.cases[];
         (.outputExpressions | length) == 3))
@@ -955,10 +937,9 @@ validate_compound_target_artifacts() {
     and (.includedSummaries | length) == 2
     and (.resolvedProducerKeys | length) == 6
     and (.resolvedEdgeBindings | length) == 6
+    and ([.resolvedEdgeBindings[]] | unique | length) == 6
     and all(.resolvedEdgeBindings[];
-      (.binding | read_from_evidence)
-      and .binding.fromOutputCell == .binding.toInputCell
-      and .binding.inputProjectionUsed == false)
+      type == "string" and length > 0)
   ' "${composition}" >/dev/null \
     || die "${label} composition lost target paths or shared-field bindings"
 }
@@ -971,17 +952,19 @@ validate_semantic_profile() {
   case "${label}" in
     baseline)
       jq -e "${output_closure_helpers}"'
-        (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 1
-        and (.truthTable | length) == 4
-        and ([.truthTable[] | select(.reachesBug == true)]
+        (.roots.booleanInputs | length) == 2
+        and (.roots.existentialInputs | length) == 1
+        and (.valuations | length) == 4
+        and ([.valuations[] | select(.status == "sat")]
           | length) == 2
-        and ([.truthTable[] | select(.reachesBug == false)]
+        and ([.valuations[] | select(.status == "unsat")]
           | length) == 2
-        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+        and ([.valuations[] | select(.status == "sat")
+          | [.assignments[].value
+              | if . then "1" else "0" end] | join("")]
           == ["00", "10"])
-        and (.existentialNonBooleanRootInputs[0].javaTypeDescriptor == "I")
-        and (.existentialNonBooleanRootInputs[0].cell
+        and (.roots.existentialInputs[0].javaTypeDescriptor == "I")
+        and (.roots.existentialInputs[0].cell
           | contains("ThreeThreadRpcWorkload$ProducerBThread: int var"))
       ' "${reach_report}" >/dev/null \
         || die "baseline lost its Boolean/int overflow reach profile"
@@ -992,24 +975,26 @@ validate_semantic_profile() {
       ;;
     cross-method-fields)
       jq -e '
-        (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 3
-        and (.truthTable | length) == 4
-        and ([.truthTable[] | select(.reachesBug == true)]
+        (.roots.booleanInputs | length) == 2
+        and (.roots.existentialInputs | length) == 3
+        and (.valuations | length) == 4
+        and ([.valuations[] | select(.status == "sat")]
           | length) == 1
-        and ([.truthTable[] | select(.reachesBug == false)]
+        and ([.valuations[] | select(.status == "unsat")]
           | length) == 3
-        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+        and ([.valuations[] | select(.status == "sat")
+          | [.assignments[].value
+              | if . then "1" else "0" end] | join("")]
           == ["10"])
-        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
+        and ([.roots.existentialInputs[].javaTypeDescriptor]
           | sort) == ["I", "I", "I"]
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("baseInput"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("instanceWeight"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("processWeight"))
-        and (all(.existentialNonBooleanRootInputs[];
+        and (all(.roots.existentialInputs[];
           (.cell | contains("ThirdHop.return") | not)
           and (.cell | contains("thirdHop.return") | not)))
       ' "${reach_report}" >/dev/null \
@@ -1018,16 +1003,18 @@ validate_semantic_profile() {
       ;;
     multitype)
       jq -e '
-        (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 4
-        and (.truthTable | length) == 4
-        and ([.truthTable[] | select(.reachesBug == true)]
+        (.roots.booleanInputs | length) == 2
+        and (.roots.existentialInputs | length) == 4
+        and (.valuations | length) == 4
+        and ([.valuations[] | select(.status == "sat")]
           | length) == 2
-        and ([.truthTable[] | select(.reachesBug == false)]
+        and ([.valuations[] | select(.status == "unsat")]
           | length) == 2
-        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+        and ([.valuations[] | select(.status == "sat")
+          | [.assignments[].value
+              | if . then "1" else "0" end] | join("")]
           == ["10", "11"])
-        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
+        and ([.roots.existentialInputs[].javaTypeDescriptor]
           | sort) == ["D", "I", "J", "Ljava/lang/String;"]
       ' "${reach_report}" >/dev/null \
         || die "multitype lost its Boolean/I/J/D/String reach profile"
@@ -1049,38 +1036,42 @@ validate_semantic_profile() {
       jq -e '
         .state == "CANDIDATE_READY"
         and .trustState == "CANDIDATE_ONLY"
-        and .reachability == "REACHABLE"
-        and (.rootBooleanInputs | length) == 1
-        and (.existentialNonBooleanRootInputs | length) == 2
-        and (.truthTable | length) == 2
-        and ([.truthTable[] | select(.reachesBug == true)]
+        and .reachCondition.reachability == "REACHABLE"
+        and (.roots.booleanInputs | length) == 1
+        and (.roots.existentialInputs | length) == 2
+        and (.valuations | length) == 2
+        and ([.valuations[] | select(.status == "sat")]
           | length) == 1
-        and ([.truthTable[] | select(.reachesBug == false)]
+        and ([.valuations[] | select(.status == "unsat")]
           | length) == 1
-        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+        and ([.valuations[] | select(.status == "sat")
+          | [.assignments[].value
+              | if . then "1" else "0" end] | join("")]
           == ["1"])
-        and ([.truthTable[]
-          | select((.valuationKey == "1" and .solverStatus == "sat")
-            or (.valuationKey == "0" and .solverStatus == "unsat"))]
+        and ([.valuations[]
+          | ([.assignments[].value
+              | if . then "1" else "0" end] | join("")) as $key
+          | select(($key == "1" and .status == "sat")
+            or ($key == "0" and .status == "unsat"))]
           | length) == 2
-        and ([.existentialNonBooleanRootInputs[].javaTypeDescriptor]
+        and ([.roots.existentialInputs[].javaTypeDescriptor]
           | sort) == ["I", "Ljava/lang/String;"]
-        and ([.existentialNonBooleanRootInputs[]
+        and ([.roots.existentialInputs[]
           | select(.javaTypeDescriptor == "Ljava/lang/String;"
             and (.nullnessSolverTerm
               | type == "string" and length > 0))]
           | length) == 1
-        and ([.rootBooleanInputs[].cell] | tostring
+        and ([.roots.booleanInputs[].cell] | tostring
           | contains("<java.lang.Boolean: boolean booleanValue()>.return"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("DependentScalarThreeThreadWorkload$ArithmeticThread: int input"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("DependentScalarThreeThreadWorkload$TextThread: java.lang.String text"))
-        and ([.rootBooleanInputs[],
-          .existentialNonBooleanRootInputs[]] | map(.regionId)
+        and ([.roots.booleanInputs[],
+          .roots.existentialInputs[]] | map(.regionId)
           | unique | length) == 2
-        and .rootBooleanInputs[0].regionId
-          == ([.existentialNonBooleanRootInputs[]
+        and .roots.booleanInputs[0].regionId
+          == ([.roots.existentialInputs[]
             | select(.javaTypeDescriptor == "I")][0].regionId)
       ' "${reach_report}" >/dev/null \
         || die "dependent-scalar lost its exact existential reach profile"
@@ -1093,19 +1084,11 @@ validate_semantic_profile() {
         . as $root
         | (.resolvedProducerKeys | length) == 2
         and (.resolvedEdgeBindings | length) == 2
+        and ([.resolvedEdgeBindings[]] | unique | length) == 2
+        and all(.resolvedEdgeBindings[];
+          type == "string" and length > 0)
         and (.includedSummaries | length) == 2
         and (.caseProjectionCatalog | length) == 8
-        and ([.resolvedEdgeBindings[].binding.fromOutputCell] | sort)
-          == [
-            "<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$RpcBus: int arithmeticValue>",
-            "<edu.uva.liftlab.graphchecker.fixtures.DependentScalarThreeThreadWorkload$RpcBus: int textValue>"
-          ]
-        and all(.resolvedEdgeBindings[];
-          .targetRegion == .binding.toRegion
-          and .targetRegion == $root.fatalRegion
-          and .targetRegionInstance == $root.fatalRegionInstanceId
-          and .binding.fromOutputCell == .binding.toInputCell
-          and (.binding | read_from_evidence))
       ' "${work_root}/candidate/candidate_composition_manifest.json" >/dev/null \
         || die "dependent-scalar lost either producer relation"
       grep -Fq 'str.contains' "${smt}" \
@@ -1118,23 +1101,23 @@ validate_semantic_profile() {
       ;;
     containers)
       jq -e '
-        (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) >= 3
-        and all(.existentialNonBooleanRootInputs[];
+        (.roots.booleanInputs | length) == 2
+        and (.roots.existentialInputs | length) >= 3
+        and all(.roots.existentialInputs[];
           .javaTypeDescriptor == "I")
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("MapProducer: int input1"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("MapProducer: int input2"))
-        and ([.existentialNonBooleanRootInputs[].cell] | tostring
+        and ([.roots.existentialInputs[].cell] | tostring
           | contains("MapProducer: int input3"))
-        and (.truthTable | length) == 4
-        and ([.truthTable[] | select(.reachesBug == true)]
+        and (.valuations | length) == 4
+        and ([.valuations[] | select(.status == "sat")]
           | length) == 4
-        and ([.truthTable[] | select(.reachesBug == false)]
+        and ([.valuations[] | select(.status == "unsat")]
           | length) == 0
-        and all(.truthTable[];
-          .solverStatus == "sat" and .reachesBug == true)
+        and all(.valuations[];
+          .status == "sat")
       ' "${reach_report}" >/dev/null \
         || die "containers lost its Boolean/int existential reach profile"
       jq -e '
@@ -1157,20 +1140,20 @@ validate_semantic_profile() {
       jq -e '
         .state == "CANDIDATE_READY"
         and .trustState == "CANDIDATE_ONLY"
-        and .reachability == "UNREACHABLE"
-        and (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 4
-        and all(.existentialNonBooleanRootInputs[];
+        and .reachCondition.reachability == "UNREACHABLE"
+        and (.roots.booleanInputs | length) == 2
+        and (.roots.existentialInputs | length) == 4
+        and all(.roots.existentialInputs[];
           .javaTypeDescriptor == "I"
           and (.cell | contains("#field:metrics#field:")))
-        and (.truthTable | length) == 4
-        and ([.truthTable[] | select(.reachesBug == true)]
+        and (.valuations | length) == 4
+        and ([.valuations[] | select(.status == "sat")]
           | length) == 0
-        and ([.truthTable[] | select(.reachesBug == false)]
+        and ([.valuations[] | select(.status == "unsat")]
           | length) == 4
-        and .reachConditionSmtLib == "false"
-        and all(.truthTable[];
-          .solverStatus == "unsat" and .reachesBug == false)
+        and .reachCondition.formula == "false"
+        and all(.valuations[];
+          .status == "unsat")
       ' "${reach_report}" >/dev/null \
         || die "unreachable-parity was not proved unreachable for all roots"
       jq -e '
@@ -1189,7 +1172,7 @@ validate_semantic_profile() {
     unreachable-correlated-fields)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 2 I
       jq -e '
-        ([.existentialNonBooleanRootInputs[].cell] | sort) as $cells
+        ([.roots.existentialInputs[].cell] | sort) as $cells
         | ($cells | length) == 2
         and any($cells[]; endswith("#field:numeric#field:seed"))
         and any($cells[]; endswith("#field:numeric#field:delta"))
@@ -1200,12 +1183,12 @@ validate_semantic_profile() {
     unreachable-nested-object)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 4 I
       jq -e '
-        ([.rootBooleanInputs[].cell] | length) == 2
-        and all(.rootBooleanInputs[];
+        ([.roots.booleanInputs[].cell] | length) == 2
+        and all(.roots.booleanInputs[];
           .cell | endswith("#field:enabled"))
-        and ([.existentialNonBooleanRootInputs[].cell
+        and ([.roots.existentialInputs[].cell
           | select(endswith("#field:base"))] | length) == 2
-        and ([.existentialNonBooleanRootInputs[].cell
+        and ([.roots.existentialInputs[].cell
           | select(endswith("#field:adjustment"))] | length) == 2
       ' "${reach_report}" >/dev/null \
         || die "${label} lost its nested object-field roots"
@@ -1214,7 +1197,7 @@ validate_semantic_profile() {
     unreachable-inherited-alias)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 2 I
       jq -e '
-        ([.existentialNonBooleanRootInputs[].cell] | sort) as $cells
+        ([.roots.existentialInputs[].cell] | sort) as $cells
         | ($cells | length) == 2
         and any($cells[]; endswith(" int base>"))
         and any($cells[]; endswith(" int delta>"))
@@ -1225,7 +1208,7 @@ validate_semantic_profile() {
     unreachable-mutated-object)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 1 I
       jq -e '
-        .existentialNonBooleanRootInputs[0].cell
+        .roots.existentialInputs[0].cell
           | endswith("$MutableNumbers: int base>")
       ' "${reach_report}" >/dev/null \
         || die "${label} did not exclude the irrelevant object mutation"
@@ -1234,12 +1217,12 @@ validate_semantic_profile() {
     unreachable-long-fields)
       validate_two_boolean_unsat_report "${label}" "${reach_report}" 4 J
       jq -e '
-        ([.rootBooleanInputs[].cell] | length) == 2
-        and all(.rootBooleanInputs[];
+        ([.roots.booleanInputs[].cell] | length) == 2
+        and all(.roots.booleanInputs[];
           .cell | endswith("$SwitchLeaf: boolean enabled>"))
-        and ([.existentialNonBooleanRootInputs[].cell
+        and ([.roots.existentialInputs[].cell
           | select(endswith("#field:base"))] | length) == 2
-        and ([.existentialNonBooleanRootInputs[].cell
+        and ([.roots.existentialInputs[].cell
           | select(endswith("#field:adjustment"))] | length) == 2
       ' "${reach_report}" >/dev/null \
         || die "${label} lost its nested long-field roots"
@@ -1249,14 +1232,17 @@ validate_semantic_profile() {
       jq -e '
         .state == "CANDIDATE_READY"
         and .trustState == "CANDIDATE_ONLY"
-        and .reachability == "REACHABLE"
-        and (.rootBooleanInputs | length) == 2
-        and (.existentialNonBooleanRootInputs | length) == 0
-        and (.truthTable | length) == 4
-        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+        and .reachCondition.reachability == "REACHABLE"
+        and (.roots.booleanInputs | length) == 2
+        and (.roots.existentialInputs | length) == 0
+        and (.valuations | length) == 4
+        and ([.valuations[] | select(.status == "sat")
+          | [.assignments[].value
+              | if . then "1" else "0" end] | join("")]
           == ["01", "10", "11"])
-        and ([.truthTable[] | select(.reachesBug == false)
-          | .valuationKey] == ["00"])
+        and ([.valuations[] | select(.status == "unsat")
+          | [.assignments[].value
+              | if . then "1" else "0" end] | join("")] == ["00"])
       ' "${reach_report}" >/dev/null \
         || die "${label} lost its compound short-circuit truth table"
       grep -Fq ':named fatal_path' "${smt}" \
@@ -1304,27 +1290,30 @@ validate_candidate_outputs() {
   ' "${composition}" >/dev/null \
     || die "candidate composition escaped CANDIDATE trust state"
   jq -e '
-    .schemaVersion == 2
+    .schemaVersion == 3
     and .kind == "BOOLEAN_REACH_CONDITION_REPORT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and (.reachability == "REACHABLE"
-      or .reachability == "UNREACHABLE")
-    and ((.discoveryGaps // []) | length) == 0
-    and ((.rootBooleanInputs // []) | type) == "array"
-    and ((.existentialNonBooleanRootInputs // []) | type) == "array"
-    and ((.truthTable // []) | type) == "array"
-    and all(.truthTable[];
-      (.solverStatus == "sat" and .reachesBug == true)
-      or (.solverStatus == "unsat" and .reachesBug == false))
-    and ([.truthTable[].valuationKey] | unique | length)
-      == (.truthTable | length)
-    and (if .reachability == "REACHABLE"
-      then any(.truthTable[]; .reachesBug == true)
-      else all(.truthTable[]; .reachesBug == false)
+    and (.reachCondition.reachability == "REACHABLE"
+      or .reachCondition.reachability == "UNREACHABLE")
+    and ((.gaps // []) | length) == 0
+    and ((.roots.booleanInputs // []) | type) == "array"
+    and ((.roots.existentialInputs // []) | type) == "array"
+    and ((.valuations // []) | type) == "array"
+    and all(.valuations[];
+      (.status == "sat")
+      or (.status == "unsat"))
+    and ([.valuations[]
+      | [.assignments[].value
+          | if . then "1" else "0" end] | join("")]
+      | unique | length)
+      == (.valuations | length)
+    and (if .reachCondition.reachability == "REACHABLE"
+      then any(.valuations[]; .status == "sat")
+      else all(.valuations[]; .status == "unsat")
       end)
     and (.reachCondition | type == "object")
-    and (.reachConditionSmtLib | type == "string" and length > 0)
+    and (.reachCondition.formula | type == "string" and length > 0)
   ' "${reach_report}" >/dev/null \
     || die "candidate Boolean reach model is incomplete"
   jq -e '
@@ -1356,7 +1345,7 @@ validate_candidate_outputs() {
     relationshipCandidatesArtifact "${relationships}"
 
   reachability=$(jq -er '
-    .reachability
+    .reachCondition.reachability
     | select(. == "REACHABLE" or . == "UNREACHABLE")
   ' "${reach_report}") \
     || die "candidate reach model has no reachability status"
@@ -1415,7 +1404,6 @@ require_command grep
 require_command jq
 require_command realpath
 require_command sha256sum
-require_command stat
 [[ -x "${fixture_runner}" ]] \
   || die "fixture runner is not executable: ${fixture_runner}"
 [[ -x "${engine_runner}" ]] \
