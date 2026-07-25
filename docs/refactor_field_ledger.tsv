@@ -166,6 +166,8 @@ branch-contract	exact JSON object key sets	branch value codecs	none	none	require
 raw-result	engine-array base/location/dynamic mirrors and map projection expected counts	ConcolicRegionRuntime	none	none	canonical binding identity/expression plus unresolved gap	DELETE	6+
 imported-summary	heap effect method/result/normalization/source mirrors and admission-authority list	ConcolicSummaryImporter	none	none	canonical effect/binding IDs, normalized expression and admission outcome	DELETE	6+
 composer-manifest	fatal occurrence/outcome/region-instance and bounded-region reachability mirrors	ConcolicSmtComposer	none	none	fatal site, exact imported reach paths, resolved producers and typed gaps	DELETE	6+
+raw-result	branch flat outcome/index/PC-size/VM-attestation mirrors	ConcolicRegionRuntime	ConcolicSummaryImporter	none	typed BranchWitness/ExactConcreteBranchObservation plus canonical raw PC boundary	DELETE_AND_UPDATE_READER	6+
+raw-result	rootMethod/model-assignment count/isolation-policy claims	ConcolicRegionRuntime	ConcolicSummaryImporter	none	activation identity, exact assignment arrays and runtime implementation	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

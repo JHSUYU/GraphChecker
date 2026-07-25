@@ -39,8 +39,6 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
  */
 public final class ConcolicSummaryImporter {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
-    public static final String PATH_CONDITION_ISOLATION_POLICY =
-            "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1";
     private static final String UNMAPPED_BINARY_CONDITION =
             "BINARY_CONDITION_WITHOUT_INSTRUMENTED_BRANCH_MAPPING";
     private static final Pattern REGION_INPUT_PORT = Pattern.compile(
@@ -1795,51 +1793,28 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : array(raw, "branchMappings")) {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
-            int index = integer(mapping, "rawConditionIndex",
-                    integer(mapping, "engineConditionIndex",
-                            integer(mapping, "conditionIndex", -1)));
-            if (index < 0) continue;
+            BranchWitness witness = branchWitness(mapping);
+            if (witness == null) continue;
+            int index = witness.vmPcIndex();
             mappedCount++;
-            int occurrence = integer(mapping, "occurrence", -1);
-            int baseline = integer(mapping, "rawPathConditionBaseline",
-                    integer(mapping, "enginePathConditionBaseline", -1));
-            int boundary = integer(mapping, "rawPathConditionSize",
-                    integer(mapping, "enginePathConditionSize", -1));
+            int baseline = integer(mapping, "rawPathConditionBaseline", -1);
+            int boundary = integer(mapping, "rawPathConditionSize", -1);
             JsonElement rawCondition = mapping.get("rawCondition");
-            JsonElement condition = mapping.get("condition");
+            JsonElement condition = witness.sourceSatisfiedPredicate();
             int normalizedIndex = normalization == null
                     ? -1 : normalization.index(index);
             boolean exact = index < enginePath.size()
                     && normalizedIndex >= 0
                     && normalizedIndex < normalization.conditions.size()
                     && normalization.isSemantic(index)
-                    && occurrence > 0
-                    && occurrence == integer(mapping, "vmOccurrence", -1)
-                    && integer(mapping, "vmBranchEventId", 0) > 0
-                    && longInteger(mapping, "vmThreadContextId", 0L) > 0L
-                    && longInteger(mapping, "vmOwnerJavaThreadId", 0L) > 0L
-                    && longInteger(mapping, "vmOwnerOsThreadId", 0L) > 0L
-                    && bool(mapping, "vmBranchEventExpected", false)
-                    && bool(mapping, "vmBranchEventValidated", false)
-                    && bool(mapping, "outcome", false)
-                    == bool(mapping, "observedOutcome", !bool(mapping,
-                    "outcome", false))
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(
-                    string(mapping, "vmBranchEventAuthority"))
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX"
-                    .equals(string(mapping, "mappingPolicy"))
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
-                    .equals(string(mapping, "conditionAuthority"))
                     && baseline >= 0 && boundary > baseline
                     && index >= baseline && index < boundary
-                    && containsInteger(array(mapping,
-                    "vmConditionIndices"), index)
-                    && rawCondition != null && condition != null
+                    && rawCondition != null
                     && GSON.toJson(enginePath.get(index)).equals(
                     GSON.toJson(rawCondition))
-                    && validSemanticBranchCondition(mapping, rawCondition,
+                    && validWitnessSemanticCondition(witness, rawCondition,
                     condition)
-                    && sliceMethods.contains(string(mapping, "method"));
+                    && sliceMethods.contains(witness.method());
             if (!exact) {
                 issues.add("CONSTANT_OUTPUT_PATH_GUARD_NOT_EXACT_VM_EVENT");
                 continue;
@@ -1879,16 +1854,6 @@ public final class ConcolicSummaryImporter {
                     + "DEPENDENCY");
         }
         return new ExactPathGuardDependency(issues.isEmpty(), issues);
-    }
-
-    private static boolean containsInteger(JsonArray values, int expected) {
-        for (JsonElement value : values) {
-            if (value.isJsonPrimitive() && value.getAsJsonPrimitive()
-                    .isNumber() && value.getAsInt() == expected) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static final class ExactPathGuardDependency {
@@ -2568,9 +2533,7 @@ public final class ConcolicSummaryImporter {
             JsonObject mapping = element.getAsJsonObject();
             BranchWitness witness = branchWitness(mapping);
             int index = witness != null ? witness.vmPcIndex()
-                    : integer(mapping, "rawConditionIndex",
-                    integer(mapping, "engineConditionIndex",
-                            integer(mapping, "conditionIndex", -1)));
+                    : integer(mapping, "rawConditionIndex", -1);
             if (witness != null && index >= 0
                     && index < rawConditions.size()) {
                 JsonElement engineRaw = rawConditions.get(index);
@@ -2855,9 +2818,7 @@ public final class ConcolicSummaryImporter {
             for (JsonElement mappingElement : branchMappings) {
                 if (!mappingElement.isJsonObject()) continue;
                 JsonObject mapping = mappingElement.getAsJsonObject();
-                int rawIndex = integer(mapping, "rawConditionIndex",
-                        integer(mapping, "engineConditionIndex",
-                                integer(mapping, "conditionIndex", -1)));
+                int rawIndex = integer(mapping, "rawConditionIndex", -1);
                 if (rawIndex < 0
                         && occurrence == integer(mapping,
                         "occurrence", -1)
@@ -2916,8 +2877,8 @@ public final class ConcolicSummaryImporter {
                 JsonObject sibling = mappingElement.getAsJsonObject();
                 if (!branchSiteId.equals(string(sibling, "siteId"))
                         || integer(sibling, "rawConditionIndex", -1) < 0
-                        || bool(sibling, "outcome", false)
-                        != bool(target, "outcome", false)
+                        || bool(sibling, "observedOutcome", false)
+                        != bool(target, "observedOutcome", false)
                         || !candidate.codePosition.equals(firstNonBlank(
                         string(sibling, "conditionCodePosition"),
                         codePosition(sibling.get("rawCondition"))))
@@ -3103,9 +3064,7 @@ public final class ConcolicSummaryImporter {
             JsonObject mapping = element.getAsJsonObject();
             BranchWitness witness = branchWitness(mapping);
             int index = witness != null ? witness.vmPcIndex()
-                    : integer(mapping, "rawConditionIndex",
-                    integer(mapping, "engineConditionIndex",
-                            integer(mapping, "conditionIndex", -1)));
+                    : integer(mapping, "rawConditionIndex", -1);
             if (index >= 0) {
                 result.add(index);
             }
@@ -6120,37 +6079,29 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : branchMappings) {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
-            JsonElement condition = mapping.get("condition");
+            BranchWitness witness = branchWitness(mapping);
+            if (witness == null) continue;
+            JsonElement condition = witness.sourceSatisfiedPredicate();
             SnapshotDynamicExpressionScan scan =
                     new SnapshotDynamicExpressionScan();
             collectSnapshotDynamicExpressions(condition,
                     dynamicFieldSymbol, expectedRaw, descriptor, scan);
             if (scan.referenceCount == 0) continue;
-            String method = ConcolicCodePosition.sootMethodKey(string(
-                    mapping, "method"));
-            int unitIndex = integer(mapping, "unitIndex", -1);
-            int occurrence = integer(mapping, "occurrence", -1);
-            int conditionIndex = integer(mapping, "conditionIndex", -1);
-            int rawConditionIndex = integer(mapping,
-                    "rawConditionIndex", -1);
-            String siteId = string(mapping, "siteId");
+            String method = ConcolicCodePosition.sootMethodKey(
+                    witness.method());
+            int unitIndex = witness.unitIndex();
+            int occurrence = witness.occurrence();
+            String siteId = witness.siteId();
             boolean exact = !scan.invalid
                     && scan.referenceCount == 1
                     && scan.expression != null
                     && !method.isEmpty()
                     && applicationMethods.contains(method)
                     && unitIndex >= 0
-                    && siteId.equals(string(mapping, "method")
+                    && siteId.equals(witness.method()
                     + "#u" + unitIndex)
                     && occurrence > 0
-                    && conditionIndex >= 0
-                    && conditionIndex == rawConditionIndex
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_"
-                    .concat("PC_INDEX").equals(string(mapping,
-                            "mappingPolicy"))
-                    && bool(mapping, "vmBranchEventValidated", false)
-                    && "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX"
-                    .equals(string(mapping, "conditionAuthority"));
+                    && witness.vmPcIndex() >= 0;
             if (!exact) {
                 return Collections.emptyList();
             }
@@ -8059,10 +8010,7 @@ public final class ConcolicSummaryImporter {
                 int occurrence = integer(mapping, "occurrence", -1);
                 if (occurrence < 1 || !occurrences.add(occurrence)
                         || !proof.method.equals(string(mapping, "method"))
-                        || !hasBoolean(mapping, "observedOutcome")
-                        || !hasBoolean(mapping, "outcome")
-                        || mapping.get("observedOutcome").getAsBoolean()
-                        != mapping.get("outcome").getAsBoolean()) {
+                        || !hasBoolean(mapping, "observedOutcome")) {
                     complete = false;
                     break;
                 }
@@ -8349,12 +8297,8 @@ public final class ConcolicSummaryImporter {
 
         if (expectedAssignments.size() != appliedAssignments.size()
                 || expectedAssignments.size() > 0
-                && (!Boolean.TRUE.equals(strictBoolean(raw,
-                "allModelAssignmentsApplied"))
-                || !Integer.valueOf(expectedAssignments.size()).equals(
-                strictInteger(raw, "modelAssignmentAppliedCount"))
-                || !exactAppliedModelAssignments(expectedAssignments,
-                appliedAssignments))) {
+                && !exactAppliedModelAssignments(expectedAssignments,
+                appliedAssignments)) {
             failures.add("MODEL_ASSIGNMENTS_NOT_FULLY_APPLIED");
         }
 
@@ -9383,11 +9327,6 @@ public final class ConcolicSummaryImporter {
         if (!"SYMBOLIC_CONCOLIC".equals(strictString(raw,
                 "executionMode"))) {
             return "executionMode must be SYMBOLIC_CONCOLIC";
-        }
-        if (!PATH_CONDITION_ISOLATION_POLICY.equals(strictString(raw,
-                "pathConditionIsolationPolicy"))) {
-            return "pathConditionIsolationPolicy must be "
-                    + PATH_CONDITION_ISOLATION_POLICY;
         }
         if (raw.has("runtimeHeapEffects")) {
             return "runtimeHeapEffects is retired and must be absent";

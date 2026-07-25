@@ -3208,12 +3208,9 @@ public final class ConcolicRegionRuntime {
                 expected.defaultSuccessorIndex());
         mapping.addProperty("observedSuccessorIndex",
                 expected.observedSuccessorIndex);
-        mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("observedOutcome", expected.caseArm());
-        mapping.addProperty("conditionIndex", -1);
+        mapping.addProperty("rawConditionIndex", -1);
         mapping.add("conditionIndices", new JsonArray());
-        mapping.addProperty("mappingPolicy",
-                "CONCRETE_SWITCH_OBSERVATION_WITHOUT_SYMBOLIC_PC");
         active.branchMappings.add(mapping);
     }
 
@@ -3236,20 +3233,10 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("unitIndex", unitIndex);
         mapping.addProperty("expression", safe(expression));
         mapping.addProperty("occurrence", occurrence);
-        mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("pathConditionSize", 0);
         mapping.addProperty("rawPathConditionSize", 0);
-        mapping.addProperty("pathConditionBaseline", 0);
         mapping.addProperty("rawPathConditionBaseline", 0);
-        mapping.addProperty("pathConditionsAdded", 0);
-        mapping.addProperty("rawPathConditionsAdded", 0);
-        mapping.addProperty("targetMethodConditionsAdded", 0);
-        mapping.addProperty("branchConditionCandidateCount", 0);
-        mapping.addProperty("conditionIndex", -1);
         mapping.addProperty("rawConditionIndex", -1);
-        mapping.addProperty("mappingPolicy",
-                "CONCRETE_OBSERVATION_WITHOUT_SYMBOLIC_PC");
         active.branchMappings.add(mapping);
     }
 
@@ -3262,61 +3249,22 @@ public final class ConcolicRegionRuntime {
         JsonArray conditions = parsed.isJsonArray()
                 ? parsed.getAsJsonArray() : new JsonArray();
         int baseline = active.lastPathConditionSize;
-        int added = Math.max(0, conditions.size() - baseline);
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
                 occurrence, conditions, baseline);
-        int conditionCandidates = vmAttestation.valid
-                ? vmAttestation.conditionIndices.size() : 0;
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
-        int targetMethodConditions = conditionCandidates;
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", siteId);
         mapping.addProperty("method", safe(method));
         mapping.addProperty("unitIndex", unitIndex);
         mapping.addProperty("expression", safe(expression));
         mapping.addProperty("occurrence", occurrence);
-        mapping.addProperty("outcome", observedOutcome);
         mapping.addProperty("observedOutcome", observedOutcome);
-        mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
-        mapping.addProperty("pathConditionBaseline", baseline);
         mapping.addProperty("rawPathConditionBaseline", baseline);
-        mapping.addProperty("pathConditionsAdded", added);
-        mapping.addProperty("rawPathConditionsAdded", added);
-        mapping.addProperty("targetMethodConditionsAdded",
-                targetMethodConditions);
-        mapping.addProperty("branchConditionCandidateCount",
-                conditionCandidates);
-        mapping.addProperty("conditionIndex", conditionIndex);
         mapping.addProperty("rawConditionIndex", conditionIndex);
-        mapping.addProperty("engineConditionIndex", conditionIndex);
-        mapping.addProperty("mappingPolicy",
-                "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_ID_AND_PC_INDEX");
-        mapping.addProperty("vmBranchEventExpected", true);
-        mapping.addProperty("vmBranchEventId", vmEventId);
-        mapping.addProperty("vmOccurrence", occurrence);
-        mapping.addProperty("vmBranchEventValidated", vmAttestation.valid);
-        mapping.addProperty("vmBranchEventAuthority",
-                vmAttestation.authority);
-        if (vmAttestation.event != null) {
-            mapping.addProperty("vmThreadContextId",
-                    longInteger(vmAttestation.event, "contextId", 0L));
-            mapping.addProperty("vmOwnerJavaThreadId",
-                    longInteger(vmAttestation.event,
-                            "ownerJavaThreadId", 0L));
-            mapping.addProperty("vmOwnerOsThreadId",
-                    longInteger(vmAttestation.event,
-                            "ownerOsThreadId", 0L));
-            mapping.addProperty("vmOpcode",
-                    integer(vmAttestation.event, "opcode", -1));
-            mapping.addProperty("vmCodePosition",
-                    string(vmAttestation.event, "codePosition"));
-            mapping.add("vmConditionIndices",
-                    array(vmAttestation.event, "conditionIndices"));
-        }
         if (conditionIndex >= 0) {
             // Gson 2.2.x exposes its native tree-copy method only at package
             // scope.
@@ -3337,8 +3285,6 @@ public final class ConcolicRegionRuntime {
                         "JVM_CMP_TRICHOTOMY_TO_JIMPLE_BRANCH_PREDICATE");
             }
             if (vmAttestation.valid) {
-                mapping.addProperty("conditionAuthority",
-                        "VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_PC_INDEX");
                 BranchWitness witness = BranchWitness.vmPc(siteId,
                         safe(method), unitIndex, occurrence,
                         observedOutcome, semanticCondition, conditionIndex,
@@ -3347,16 +3293,12 @@ public final class ConcolicRegionRuntime {
                 mapping.add("witness", witness.toJson());
                 active.branchWitnesses.add(witness);
             }
-        } else if (vmAttestation.valid && conditionCandidates == 0) {
-            mapping.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_BRANCH_EVENT");
+        } else if (vmAttestation.valid
+                && vmAttestation.conditionIndices.isEmpty()) {
             mapping.add("concreteObservation",
                     ExactConcreteBranchObservation.attested(siteId,
                             safe(method), unitIndex, occurrence,
                             observedOutcome).toJson());
-        } else if (vmAttestation.valid) {
-            mapping.addProperty("conditionAuthority",
-                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT_PC_INDEX");
         }
         boolean pathConditionShrank = conditions.size() < baseline;
         if (pathConditionShrank) {
@@ -3366,8 +3308,6 @@ public final class ConcolicRegionRuntime {
             mapping.addProperty("mappingWarning",
                     "VM exact branch event rejected: "
                             + vmAttestation.error);
-            mapping.addProperty("conditionAuthority",
-                    "UNRESOLVED_VM_EXACT_BRANCH_EVENT");
         } else if (conditionIndex < 0) {
             mapping.addProperty("mappingWarning",
                     "no newly added target-method condition matches selected branch");
@@ -3413,23 +3353,9 @@ public final class ConcolicRegionRuntime {
                 expected.defaultSuccessorIndex());
         mapping.addProperty("observedSuccessorIndex",
                 expected.observedSuccessorIndex);
-        mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("observedOutcome", expected.caseArm());
-        mapping.addProperty("pathConditionSize", conditions.size());
         mapping.addProperty("rawPathConditionSize", conditions.size());
-        mapping.addProperty("pathConditionBaseline", baseline);
         mapping.addProperty("rawPathConditionBaseline", baseline);
-        mapping.addProperty("pathConditionsAdded",
-                Math.max(0, conditions.size() - baseline));
-        mapping.addProperty("rawPathConditionsAdded",
-                Math.max(0, conditions.size() - baseline));
-        mapping.addProperty("targetMethodConditionsAdded",
-                conditionIndices.size());
-        mapping.addProperty("branchConditionCandidateCount",
-                conditionIndices.size());
-        mapping.addProperty("conditionIndex",
-                conditionIndices.size() == 1
-                        ? conditionIndices.get(0) : -1);
         mapping.addProperty("rawConditionIndex",
                 conditionIndices.size() == 1
                         ? conditionIndices.get(0) : -1);
@@ -3439,42 +3365,20 @@ public final class ConcolicRegionRuntime {
             ownedConditions.add(conditions.get(conditionIndex));
         }
         mapping.add("conditions", ownedConditions);
-        mapping.addProperty("mappingPolicy",
-                "VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_ID_AND_PC_INDICES");
-        mapping.addProperty("vmBranchEventExpected", true);
-        mapping.addProperty("vmBranchEventId", vmEventId);
-        mapping.addProperty("vmBranchEventValidated", attestation.valid);
-        mapping.addProperty("vmBranchEventAuthority",
-                attestation.authority);
-        if (attestation.event != null) {
-            mapping.add("vmConditionIndices",
-                    array(attestation.event, "conditionIndices"));
-            mapping.addProperty("vmOpcode",
-                    integer(attestation.event, "opcode", -1));
-            mapping.addProperty("vmCodePosition",
-                    string(attestation.event, "codePosition"));
-        }
         if (!attestation.valid) {
             mapping.addProperty("mappingWarning",
                     "VM exact switch event rejected: "
                             + attestation.error);
-            mapping.addProperty("conditionAuthority",
-                    "UNRESOLVED_VM_EXACT_SWITCH_EVENT");
             active.addUnresolvedOnce(siteId
                     + ": exact switch event attestation failed: "
                     + attestation.error);
         } else if (conditionIndices.isEmpty()) {
-            mapping.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_CONCRETE_SWITCH_EVENT");
             mapping.addProperty("mappingWarning",
                     "switch selector was concrete; no symbolic arm guard "
                             + "is available for path closure");
             active.addUnresolvedOnce(siteId
                     + ": exact switch event has no symbolic selector "
                     + "conditions");
-        } else {
-            mapping.addProperty("conditionAuthority",
-                    "VM_THREAD_CONTEXT_EXACT_SWITCH_EVENT_PC_INDICES");
         }
         if ("EXPLORE".equals(active.activation.policy(siteId))) {
             active.addUnresolvedOnce(siteId
@@ -3774,8 +3678,7 @@ public final class ConcolicRegionRuntime {
             // can reuse a symbolic value and manufacture a false condition.
             api.pausePathCondition();
             populateCompletedResult(result, active, "SYMBOLIC_CONCOLIC",
-                    "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1", exitKind,
-                    exceptionType, output, true);
+                    exitKind, exceptionType, output, true);
             try {
                 String expression = api.expression(output);
                 result.add("rootOutputExpression", parseJson(expression));
@@ -3804,7 +3707,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("schemaVersion", 1);
             result.addProperty("activationId", active.activation.activationId);
             result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("rootMethod", active.activation.rootMethod);
             result.addProperty("exitKind", exitKind);
             result.addProperty("exceptionType", safe(exceptionType));
             addActivationReplayEvidence(result, active.activation);
@@ -3818,16 +3720,14 @@ public final class ConcolicRegionRuntime {
 
     private static void populateCompletedResult(
             JsonObject result, ActiveRegion active, String executionMode,
-            String isolationPolicy, String exitKind, String exceptionType,
-            Object output, boolean symbolicInputs) {
+            String exitKind, String exceptionType, Object output,
+            boolean symbolicInputs) {
         active.verifyRootMapProjectionOutputs(output, exitKind);
         result.addProperty("event", "CONCOLIC_REGION_RESULT");
         result.addProperty("schemaVersion", 1);
         result.addProperty("executionMode", executionMode);
-        result.addProperty("pathConditionIsolationPolicy", isolationPolicy);
         result.addProperty("activationId", active.activation.activationId);
         result.addProperty("regionId", active.activation.regionId);
-        result.addProperty("rootMethod", active.activation.rootMethod);
         addActivationReplayEvidence(result, active.activation);
         result.addProperty("exitKind", exitKind);
         result.addProperty("exceptionType", safe(exceptionType));
@@ -3868,11 +3768,6 @@ public final class ConcolicRegionRuntime {
                     target.binding));
         }
         result.add("finalFieldObservations", finalFields);
-        result.addProperty("modelAssignmentAppliedCount",
-                active.modelAssignmentsApplied.size());
-        result.addProperty("allModelAssignmentsApplied",
-                active.activation.modelAssignments.size()
-                        == active.modelAssignmentsApplied.size());
     }
 
     private static void finishConcreteReplay(
@@ -3881,8 +3776,7 @@ public final class ConcolicRegionRuntime {
         JsonObject result = new JsonObject();
         try {
             populateCompletedResult(result, active, "CONCRETE_REPLAY_ONLY",
-                    "CONCRETE_REPLAY_NO_SYMBOLIC_ENGINE_V1", exitKind,
-                    exceptionType, output, false);
+                    exitKind, exceptionType, output, false);
             JsonObject summary = new JsonObject();
             summary.addProperty("schemaVersion", 1);
             summary.addProperty("engine", "CONCRETE_REPLAY_ONLY");
@@ -3910,7 +3804,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("activationId",
                     active.activation.activationId);
             result.addProperty("regionId", active.activation.regionId);
-            result.addProperty("rootMethod", active.activation.rootMethod);
             result.addProperty("exitKind", exitKind);
             result.addProperty("exceptionType", safe(exceptionType));
             addActivationReplayEvidence(result, active.activation);
@@ -6655,8 +6548,6 @@ public final class ConcolicRegionRuntime {
     }
 
     private static final class VmBranchEventAttestation {
-        private final JsonObject event;
-        private final String authority;
         private final List<Integer> conditionIndices;
         private final boolean valid;
         private final String error;
@@ -6665,8 +6556,6 @@ public final class ConcolicRegionRuntime {
                                          List<Integer> conditionIndices,
                                          boolean valid,
                                          String error) {
-            this.event = event;
-            this.authority = safe(authority);
             this.conditionIndices = Collections.unmodifiableList(
                     new ArrayList<>(conditionIndices));
             this.valid = valid;

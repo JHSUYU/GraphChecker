@@ -4325,10 +4325,6 @@ public class ConcolicSummaryImporterTest {
         if (!result.has("executionMode")) {
             result.addProperty("executionMode", "SYMBOLIC_CONCOLIC");
         }
-        if (!result.has("pathConditionIsolationPolicy")) {
-            result.addProperty("pathConditionIsolationPolicy",
-                    ConcolicSummaryImporter.PATH_CONDITION_ISOLATION_POLICY);
-        }
         for (String field : new String[]{"runtimeHeapObservations",
                 "dynamicFieldBindings"}) {
             if (!result.has(field)) result.add(field, new JsonArray());

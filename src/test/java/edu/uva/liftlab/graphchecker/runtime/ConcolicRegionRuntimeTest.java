@@ -100,8 +100,8 @@ public class ConcolicRegionRuntimeTest {
             ConcolicRegionRuntime.exitRegionFrame(root, null, "");
 
             JsonObject result = resultRows(results).get(0);
-            assertTrue(result.get("allModelAssignmentsApplied")
-                    .getAsBoolean());
+            assertEquals(1, result.getAsJsonArray(
+                    "modelAssignmentsApplied").size());
             JsonObject applied = result.getAsJsonArray(
                     "modelAssignmentsApplied").get(0).getAsJsonObject();
             assertEquals(symbol, applied.get("inputSymbol").getAsString());
