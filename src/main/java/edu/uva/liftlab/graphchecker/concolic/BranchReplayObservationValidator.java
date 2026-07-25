@@ -1,8 +1,5 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -20,7 +17,6 @@ public final class BranchReplayObservationValidator {
         List<BranchWitness> stream = observed == null
                 ? Collections.<BranchWitness>emptyList() : observed;
         List<String> failures = new ArrayList<>();
-        JsonArray prefixPositions = new JsonArray();
         int previousPosition = -1;
         for (BranchWitness expected : contract.orderedPrefix()) {
             List<Integer> positions = positions(stream, expected.siteId(),
@@ -50,7 +46,6 @@ public final class BranchReplayObservationValidator {
                         + ":PREFIX_PREDICATE_MISMATCH");
             }
             previousPosition = position;
-            prefixPositions.add(position);
         }
 
         BranchWitness source = contract.source();
@@ -79,8 +74,7 @@ public final class BranchReplayObservationValidator {
                         + ":TARGET_PREDICATE_MISMATCH");
             }
         }
-        return new Result(true, failures.isEmpty(), prefixPositions,
-                targetPosition, failures);
+        return new Result(failures.isEmpty(), failures);
     }
 
     private static List<Integer> positions(List<BranchWitness> stream,
@@ -98,30 +92,17 @@ public final class BranchReplayObservationValidator {
     }
 
     public static final class Result {
-        private final boolean requested;
         private final boolean valid;
-        private final JsonArray prefixPositions;
-        private final int targetPosition;
         private final List<String> failures;
 
-        private Result(boolean requested, boolean valid,
-                       JsonArray prefixPositions, int targetPosition,
-                       List<String> failures) {
-            this.requested = requested;
+        private Result(boolean valid, List<String> failures) {
             this.valid = valid;
-            this.prefixPositions = prefixPositions.deepCopy();
-            this.targetPosition = targetPosition;
             this.failures = Collections.unmodifiableList(
                     new ArrayList<>(failures));
         }
 
         private static Result notRequested() {
-            return new Result(false, true, new JsonArray(), -1,
-                    Collections.<String>emptyList());
-        }
-
-        public boolean requested() {
-            return requested;
+            return new Result(true, Collections.<String>emptyList());
         }
 
         public boolean valid() {
@@ -130,21 +111,6 @@ public final class BranchReplayObservationValidator {
 
         public List<String> failures() {
             return failures;
-        }
-
-        public JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("schemaVersion", 1);
-            result.addProperty("kind", "BRANCH_REPLAY_OBSERVATION");
-            result.addProperty("requested", requested);
-            if (requested) {
-                result.add("prefixPositions", prefixPositions.deepCopy());
-                result.addProperty("targetPosition", targetPosition);
-            }
-            result.addProperty("valid", valid);
-            result.add("failures",
-                    new com.google.gson.Gson().toJsonTree(failures));
-            return result;
         }
     }
 }

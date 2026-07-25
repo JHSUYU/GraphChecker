@@ -96,19 +96,15 @@ final class RuntimeRegionPlanner {
                     "runtime planning requires the frozen static graph");
         }
         Result result = new Result();
-        List<StaticRegion> regions = readRegions(regionFile, result.warnings);
-        List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile,
-                result.warnings);
+        List<StaticRegion> regions = readRegions(regionFile);
+        List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile);
         regionEdges = expandMappingOnlyProtocolProducerRegions(regions,
                 regionEdges);
         applyFrozenStaticAccessorInputBindings(regions,
-                readFrozenStaticAccessorEvidence(staticGraphFile,
-                        result.warnings));
+                readFrozenStaticAccessorEvidence(staticGraphFile));
         StaticProjectionIndex staticProjections =
-                readStaticProjectionIndex(staticGraphFile,
-                        result.warnings);
-        resolveStaticCausalEdgeReferences(regions, staticProjections,
-                result.warnings);
+                readStaticProjectionIndex(staticGraphFile);
+        resolveStaticCausalEdgeReferences(regions, staticProjections);
         List<MethodEvent> methodEvents = sortedMethods(methods);
         List<RuntimeEvent> executions = sortedRuntime(runtimeEvents);
         List<FieldAccessEvent> fields = sortedFields(fieldEvents);
@@ -2365,9 +2361,6 @@ final class RuntimeRegionPlanner {
             StaticPort output = binding.edge.producerOutputFor(
                     binding.upstream.region);
             if (output == null) {
-                result.warnings.add("confirmed upstream edge "
-                        + binding.edge.edgeId + " has no unique output port for "
-                        + binding.edge.producerOutputEndpoint());
                 continue;
             }
             binding.output = output;
@@ -2386,9 +2379,6 @@ final class RuntimeRegionPlanner {
                 inputResolution = null;
             }
             if (inputResolution == null) {
-                result.warnings.add("confirmed upstream edge has no retained "
-                        + "concrete downstream input: " + binding.edge.edgeId
-                        + " -> " + binding.downstream.instanceId);
                 continue;
             }
             binding.downstreamInput = inputResolution.port;
@@ -2407,8 +2397,6 @@ final class RuntimeRegionPlanner {
             Map<String, Object> base = baseByInstance.get(
                     first.upstream.instanceId);
             if (base == null) {
-                result.warnings.add("confirmed upstream instance has no base "
-                        + "activation: " + first.upstream.instanceId);
                 continue;
             }
 
@@ -2467,9 +2455,6 @@ final class RuntimeRegionPlanner {
                 activation.remove("containerElementFieldBindings");
                 activation.remove("heapStateBindings");
                 activation.put("outputClosureIssues", issues);
-                result.warnings.add("joint upstream output demand failed "
-                        + "closed for " + first.upstream.instanceId + " -> "
-                        + first.downstream.instanceId + ": " + issues);
             }
 
             activation.put("admission", admission(writerPathReplayable,
@@ -3358,11 +3343,6 @@ final class RuntimeRegionPlanner {
                 activation.put("admission", admission(false, false,
                         admissionMode(activation), issues, false, false));
             }
-            if (!issues.isEmpty()) {
-                result.warnings.add("map value/output element projection "
-                        + "failed closed for " + string(activation.get(
-                        "activationId")) + ": " + issues);
-            }
         }
     }
 
@@ -4208,14 +4188,12 @@ final class RuntimeRegionPlanner {
     }
 
     private static List<FrozenStaticAccessorEvidence>
-    readFrozenStaticAccessorEvidence(File file, List<String> warnings) {
+    readFrozenStaticAccessorEvidence(File file) {
         List<FrozenStaticAccessorEvidence> result = new ArrayList<>();
         if (file == null) {
             return result;
         }
         if (!file.isFile()) {
-            warnings.add("static data-flow graph file not found: "
-                    + file.getPath());
             return result;
         }
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
@@ -4233,20 +4211,18 @@ final class RuntimeRegionPlanner {
                 }
             }
         } catch (IOException exception) {
-            warnings.add("failed to read static accessor evidence: "
-                    + exception);
+            throw new IllegalStateException(
+                    "failed to read static accessor evidence: " + file,
+                    exception);
         }
         return result;
     }
 
-    private static StaticProjectionIndex readStaticProjectionIndex(
-            File file, List<String> warnings) {
+    private static StaticProjectionIndex readStaticProjectionIndex(File file) {
         StaticProjectionIndex result = new StaticProjectionIndex();
         if (!file.isFile()) {
             result.catalogReadComplete = false;
             result.catalogFailure = "FROZEN_STATIC_GRAPH_NOT_FOUND";
-            warnings.add("frozen static graph file not found: "
-                    + file.getPath());
             return result;
         }
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
@@ -4270,26 +4246,19 @@ final class RuntimeRegionPlanner {
         } catch (IOException exception) {
             result.catalogReadComplete = false;
             result.catalogFailure = "FROZEN_STATIC_GRAPH_READ_FAILED";
-            warnings.add("failed to read static field projection evidence: "
-                    + exception);
         }
         if (result.catalogReadComplete && result.catalogRowCount == 0) {
             result.catalogFailure = "FROZEN_STATIC_GRAPH_EMPTY";
-            warnings.add("frozen static graph file is empty: "
-                    + file.getPath());
         } else if (result.catalogReadComplete
                 && result.catalogInvalidRowCount > 0) {
             result.catalogFailure = "FROZEN_STATIC_GRAPH_INVALID_ROWS:"
                     + result.catalogInvalidRowCount;
-            warnings.add("frozen static graph contains invalid or duplicate "
-                    + "rows: " + result.catalogInvalidRowCount);
         }
         return result;
     }
 
     private static void resolveStaticCausalEdgeReferences(
-            List<StaticRegion> regions, StaticProjectionIndex projections,
-            List<String> warnings) {
+            List<StaticRegion> regions, StaticProjectionIndex projections) {
         for (StaticRegion region : regions) {
             for (StaticOutputSlice slice : region.outputSlices.values()) {
                 String failure = projections.resolveCausalEdges(slice);
@@ -4301,20 +4270,15 @@ final class RuntimeRegionPlanner {
                 if (!slice.structuralIssues.contains(failure)) {
                     slice.structuralIssues.add(failure);
                 }
-                warnings.add("region " + region.regionId + " output "
-                        + slice.outputPort + " rejected canonical causal "
-                        + "edge references: " + failure);
             }
         }
     }
 
-    private static List<StaticRegion> readRegions(File file,
-                                                   List<String> warnings) {
+    private static List<StaticRegion> readRegions(File file) {
         List<StaticRegion> result = new ArrayList<>();
         if (file == null || !file.isFile()) {
-            warnings.add("symbolic region file not found: "
-                    + (file == null ? "null" : file.getPath()));
-            return result;
+            throw new IllegalArgumentException(
+                    "symbolic region artifact is required: " + file);
         }
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
@@ -4326,32 +4290,31 @@ final class RuntimeRegionPlanner {
                 }
                 if (jsonTopLevelInt(trimmed, "schemaVersion", -1)
                         != STATIC_REGION_SCHEMA_VERSION) {
-                    warnings.add("ignored symbolic region row with missing "
-                            + "or unsupported schemaVersion");
-                    continue;
+                    throw new IllegalArgumentException(
+                            "unsupported symbolic region schema");
                 }
                 StaticRegion region = StaticRegion.fromJson(trimmed);
                 if (region.regionId.isEmpty() || region.rootMethod.isEmpty()) {
-                    warnings.add("ignored malformed region row");
-                    continue;
+                    throw new IllegalArgumentException(
+                            "malformed symbolic region row");
                 }
                 result.add(region);
             }
         } catch (IOException exception) {
-            warnings.add("failed to read symbolic regions: " + exception);
+            throw new IllegalStateException(
+                    "failed to read symbolic regions: " + file, exception);
         }
         return result;
     }
 
-    private static List<StaticRegionEdge> readRegionEdges(File file,
-                                                           List<String> warnings) {
+    private static List<StaticRegionEdge> readRegionEdges(File file) {
         List<StaticRegionEdge> result = new ArrayList<>();
         if (file == null) {
             return result;
         }
         if (!file.isFile()) {
-            warnings.add("symbolic region edge file not found: " + file.getPath());
-            return result;
+            throw new IllegalArgumentException(
+                    "symbolic region edge artifact is missing: " + file);
         }
         try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
                 StandardCharsets.UTF_8)) {
@@ -4364,13 +4327,15 @@ final class RuntimeRegionPlanner {
                 StaticRegionEdge edge = StaticRegionEdge.fromJson(trimmed);
                 if (edge.edgeId.isEmpty() || edge.fromRegion.isEmpty()
                         || edge.toRegion.isEmpty()) {
-                    warnings.add("ignored malformed region edge row");
-                    continue;
+                    throw new IllegalArgumentException(
+                            "malformed symbolic region edge row");
                 }
                 result.add(edge);
             }
         } catch (IOException exception) {
-            warnings.add("failed to read symbolic region edges: " + exception);
+            throw new IllegalStateException(
+                    "failed to read symbolic region edges: " + file,
+                    exception);
         }
         return result;
     }
@@ -4421,7 +4386,6 @@ final class RuntimeRegionPlanner {
     static final class Result {
         final List<Map<String, Object>> activations = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
-        final List<String> warnings = new ArrayList<>();
 
         String activationsJsonl() {
             return jsonl(activations);
@@ -4442,22 +4406,17 @@ final class RuntimeRegionPlanner {
     static final class RootArgumentRuntimeTypeIndex {
         private final Map<String, Map<Long, RootArgumentTypes>> byMethod =
                 new LinkedHashMap<>();
-        private int scannedEventCount;
-        private int indexedArgumentEventCount;
-        private int indexedCallCount;
 
         static RootArgumentRuntimeTypeIndex build(
                 List<RuntimeEvent> runtimeEvents) {
             RootArgumentRuntimeTypeIndex result =
                     new RootArgumentRuntimeTypeIndex();
             for (RuntimeEvent event : values(runtimeEvents)) {
-                result.scannedEventCount++;
                 if (!"METHOD_ARGUMENT".equals(event.kind)
                         || event.argumentIndex < 0
                         || event.runtimeType.isEmpty()) {
                     continue;
                 }
-                result.indexedArgumentEventCount++;
                 Map<Long, RootArgumentTypes> byCall = result.byMethod.get(
                         event.method);
                 if (byCall == null) {
@@ -4468,7 +4427,6 @@ final class RuntimeRegionPlanner {
                 if (types == null) {
                     types = new RootArgumentTypes();
                     byCall.put(event.callId, types);
-                    result.indexedCallCount++;
                 }
                 types.observe(event.argumentIndex, event.runtimeType);
             }
@@ -4493,17 +4451,6 @@ final class RuntimeRegionPlanner {
             return types == null ? Collections.emptyMap() : types.values();
         }
 
-        int scannedEventCount() {
-            return scannedEventCount;
-        }
-
-        int indexedArgumentEventCount() {
-            return indexedArgumentEventCount;
-        }
-
-        int indexedCallCount() {
-            return indexedCallCount;
-        }
     }
 
     private static final class RootArgumentTypes {

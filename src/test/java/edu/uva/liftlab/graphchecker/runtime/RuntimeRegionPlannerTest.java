@@ -428,8 +428,6 @@ public class RuntimeRegionPlannerTest {
             assertTrue(String.valueOf(missingEdge.activations.get(2).get(
                     "outputClosureIssues")).contains(
                     "OUTPUT_MEMBER_INCOMPLETE"));
-            assertTrue(String.valueOf(missingEdge.warnings).contains(
-                    "STATIC_CAUSAL_EDGE_ID_UNRESOLVED:DF.WRITE"));
         } finally {
             folder.delete();
         }

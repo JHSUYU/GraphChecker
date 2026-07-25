@@ -8,8 +8,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayObservationValidator;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
@@ -3291,7 +3289,6 @@ public final class ConcolicRegionRuntime {
                         branchPredicateMetadata(rawOperator,
                                 semanticOperator));
                 mapping.add("witness", witness.toJson());
-                active.branchWitnesses.add(witness);
             }
         } else if (vmAttestation.valid
                 && vmAttestation.conditionIndices.isEmpty()) {
@@ -3404,18 +3401,18 @@ public final class ConcolicRegionRuntime {
             int occurrence, JsonArray conditions, int baseline,
             SwitchExpectation switchExpectation) {
         if (eventId <= 0L) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "marker returned a non-positive event id");
         }
         final JsonElement parsed;
         try {
             parsed = parseJson(api.branchEvents());
         } catch (Throwable throwable) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream is not readable: " + rootCause(throwable));
         }
         if (!parsed.isJsonObject()) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream is not a JSON object");
         }
         JsonObject envelope = parsed.getAsJsonObject();
@@ -3423,7 +3420,7 @@ public final class ConcolicRegionRuntime {
                 || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
                 string(envelope, "kind"))
                 || !bool(envelope, "active", false)) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "unexpected or inactive event stream");
         }
         long envelopeContext = longInteger(envelope, "contextId", 0L);
@@ -3432,11 +3429,11 @@ public final class ConcolicRegionRuntime {
         long envelopeOsOwner = longInteger(envelope,
                 "ownerOsThreadId", 0L);
         if (envelopeContext <= 0L) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "missing positive VM thread context id");
         }
         if (envelopeOwner != active.thread.getId()) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream belongs to Java thread " + envelopeOwner
                             + " instead of " + active.thread.getId());
         }
@@ -3444,7 +3441,7 @@ public final class ConcolicRegionRuntime {
                 string(envelope, "regionId"))
                 || !safe(active.activation.activationId).equals(
                 string(envelope, "activationId"))) {
-            return VmBranchEventAttestation.invalid(null, "",
+            return VmBranchEventAttestation.invalid(
                     "event stream region/activation does not match owner");
         }
 
@@ -3459,13 +3456,13 @@ public final class ConcolicRegionRuntime {
             }
         }
         if (matches != 1 || selected == null) {
-            return VmBranchEventAttestation.invalid(selected, "",
+            return VmBranchEventAttestation.invalid(
                     "event id " + eventId + " matched " + matches
                             + " records");
         }
         String authority = string(selected, "authority");
         if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "unsupported event authority " + authority);
         }
         if (longInteger(selected, "contextId", 0L) != envelopeContext
@@ -3473,37 +3470,37 @@ public final class ConcolicRegionRuntime {
                 != envelopeOwner
                 || longInteger(selected, "ownerOsThreadId", 0L)
                 != envelopeOsOwner) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event owner/context differs from its thread envelope");
         }
         if (!safe(active.activation.regionId).equals(
                 string(selected, "regionId"))
                 || !safe(active.activation.activationId).equals(
                 string(selected, "activationId"))) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event region/activation differs from its owner");
         }
         if (!safe(siteId).equals(string(selected, "siteId"))
                 || integer(selected, "occurrence", -1) != occurrence) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event site/occurrence does not match prepared branch");
         }
         if (bool(selected, "outcome", !observedOutcome)
                 != observedOutcome) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event outcome differs from observed branch");
         }
         JsonArray indices = array(selected, "conditionIndices");
         if (integer(selected, "conditionCount", -1) != indices.size()) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "event condition count differs from its index vector");
         }
         if (switchExpectation != null) {
-            return attestVmSwitchConditions(selected, authority,
+            return attestVmSwitchConditions(selected,
                     switchExpectation, indices, conditions, baseline);
         }
         if (indices.size() > 1) {
-            return VmBranchEventAttestation.invalid(selected, authority,
+            return VmBranchEventAttestation.invalid(
                     "instrumented IfStmt emitted multiple condition indices");
         }
         int conditionIndex = -1;
@@ -3511,41 +3508,41 @@ public final class ConcolicRegionRuntime {
             try {
                 conditionIndex = indices.get(0).getAsInt();
             } catch (RuntimeException exception) {
-                return VmBranchEventAttestation.invalid(selected, authority,
+                return VmBranchEventAttestation.invalid(
                         "condition index is not an integer");
             }
             if (conditionIndex < baseline
                     || conditionIndex >= conditions.size()) {
-                return VmBranchEventAttestation.invalid(selected, authority,
+                return VmBranchEventAttestation.invalid(
                         "condition index " + conditionIndex
                                 + " is outside new path-condition suffix ["
                                 + baseline + "," + conditions.size() + ")");
             }
             if (!branchConditionMatches(expression, observedOutcome,
                     conditions.get(conditionIndex))) {
-                return VmBranchEventAttestation.invalid(selected, authority,
+                return VmBranchEventAttestation.invalid(
                         "selected VM condition does not match the original "
                                 + "branch predicate");
             }
         }
-        return VmBranchEventAttestation.valid(selected, authority,
+        return VmBranchEventAttestation.valid(
                 conditionIndex < 0
                         ? Collections.<Integer>emptyList()
                         : Collections.singletonList(conditionIndex));
     }
 
     private static VmBranchEventAttestation attestVmSwitchConditions(
-            JsonObject event, String authority, SwitchExpectation expected,
+            JsonObject event, SwitchExpectation expected,
             JsonArray rawIndices, JsonArray conditions, int baseline) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
                 ? 170 : 171;
         if (integer(event, "opcode", -1) != expectedOpcode) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "event opcode does not match static "
                             + expected.branchKind);
         }
         if (string(event, "codePosition").isEmpty()) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "switch event has no bytecode position");
         }
 
@@ -3556,21 +3553,21 @@ public final class ConcolicRegionRuntime {
         // no condition that a path worklist may negate or redirect.
         if (rawIndices.size() == 0) {
             if (conditions.size() != baseline) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "conditionless switch event does not own an empty "
                                 + "path-condition suffix");
             }
-            return VmBranchEventAttestation.valid(event, authority,
+            return VmBranchEventAttestation.valid(
                     Collections.<Integer>emptyList());
         }
         if (rawIndices.size() != completeSymbolicCount) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "switch arm owns " + rawIndices.size()
                             + " conditions; exact arm requires "
                             + completeSymbolicCount);
         }
         if (conditions.size() != baseline + completeSymbolicCount) {
-            return VmBranchEventAttestation.invalid(event, authority,
+            return VmBranchEventAttestation.invalid(
                     "switch conditions do not form the complete new "
                             + "path-condition suffix");
         }
@@ -3583,11 +3580,11 @@ public final class ConcolicRegionRuntime {
             try {
                 conditionIndex = rawIndices.get(offset).getAsInt();
             } catch (RuntimeException malformed) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition index is not an integer");
             }
             if (conditionIndex != baseline + offset) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition indices are not the exact ordered "
                                 + "new path-condition suffix");
             }
@@ -3600,7 +3597,7 @@ public final class ConcolicRegionRuntime {
             String matchedSelector = switchSelectorIfMatches(condition,
                     operator, key);
             if (matchedSelector.isEmpty()) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition " + offset
                                 + " is not selector " + operator + " "
                                 + key);
@@ -3608,19 +3605,19 @@ public final class ConcolicRegionRuntime {
             if (selector.isEmpty()) {
                 selector = matchedSelector;
             } else if (!selector.equals(matchedSelector)) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch conditions do not share one selector");
             }
             String conditionPosition = conditionCodePosition(condition);
             if (!conditionPosition.isEmpty()
                     && !expectedPosition.equals(conditionPosition)) {
-                return VmBranchEventAttestation.invalid(event, authority,
+                return VmBranchEventAttestation.invalid(
                         "switch condition bytecode position differs from "
                                 + "its exact event");
             }
             indices.add(conditionIndex);
         }
-        return VmBranchEventAttestation.valid(event, authority, indices);
+        return VmBranchEventAttestation.valid(indices);
     }
 
     private static String switchSelectorIfMatches(
@@ -3741,7 +3738,6 @@ public final class ConcolicRegionRuntime {
             active.pendingArrayFieldMaterialization = null;
         }
         active.validateContainerElementFieldCoverage();
-        active.validateBranchReplayContract();
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", symbolicInputs
                 ? GSON.toJsonTree(active.symbolized) : new JsonArray());
@@ -6552,8 +6548,7 @@ public final class ConcolicRegionRuntime {
         private final boolean valid;
         private final String error;
 
-        private VmBranchEventAttestation(JsonObject event, String authority,
-                                         List<Integer> conditionIndices,
+        private VmBranchEventAttestation(List<Integer> conditionIndices,
                                          boolean valid,
                                          String error) {
             this.conditionIndices = Collections.unmodifiableList(
@@ -6563,15 +6558,12 @@ public final class ConcolicRegionRuntime {
         }
 
         private static VmBranchEventAttestation valid(
-                JsonObject event, String authority,
                 List<Integer> conditionIndices) {
-            return new VmBranchEventAttestation(event, authority,
-                    conditionIndices, true, "");
+            return new VmBranchEventAttestation(conditionIndices, true, "");
         }
 
-        private static VmBranchEventAttestation invalid(
-                JsonObject event, String authority, String error) {
-            return new VmBranchEventAttestation(event, authority,
+        private static VmBranchEventAttestation invalid(String error) {
+            return new VmBranchEventAttestation(
                     Collections.<Integer>emptyList(), false, error);
         }
     }
@@ -6611,7 +6603,6 @@ public final class ConcolicRegionRuntime {
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
-        private final List<BranchWitness> branchWitnesses = new ArrayList<>();
         private final List<JsonObject> runtimeHeapObservations =
                 new ArrayList<>();
         private final List<JsonObject> finiteMapSnapshots =
@@ -7765,20 +7756,6 @@ public final class ConcolicRegionRuntime {
             for (MapProjectionFieldBinding binding
                     : mapProjectionFieldBindings.values()) {
                 result.add(binding.toJson());
-            }
-            return result;
-        }
-
-        /** Validates the one immutable VM-PC branch replay contract. */
-        private BranchReplayObservationValidator.Result
-        validateBranchReplayContract() {
-            BranchReplayObservationValidator.Result result =
-                    BranchReplayObservationValidator.validate(
-                            activation.replayContract, branchWitnesses);
-            if (!result.valid()) {
-                for (String failure : result.failures()) {
-                    addUnresolvedOnce("branch replay contract: " + failure);
-                }
             }
             return result;
         }
@@ -10506,7 +10483,6 @@ public final class ConcolicRegionRuntime {
         private final List<MapValueElementProjectionSpec>
                 mapValueElementFieldProjections;
         private final List<OutputCaptureRequest> outputCaptures;
-        private final BranchReplayContract replayContract;
         private boolean modelAssignmentKeysUnique = true;
 
         private Activation(JsonObject json) {
@@ -10533,18 +10509,6 @@ public final class ConcolicRegionRuntime {
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
-            String executionPhase = string(json, "executionPhase");
-            boolean branchReplay = "REPLAY_OUTPUT_PATH_FLIP".equals(
-                    executionPhase);
-            JsonElement encodedReplayContract = json.get("replayContract");
-            if (branchReplay && encodedReplayContract == null) {
-                throw new IllegalArgumentException(
-                        executionPhase + " requires replayContract");
-            }
-            this.replayContract = encodedReplayContract == null ? null
-                    : BranchReplayContract.fromJson(
-                    requireObject(encodedReplayContract,
-                            "replayContract"));
             JsonArray materializations = executableMaterializations(json,
                     replayable, activationId);
             JsonArray declaredActions = array(json, "symbolize");
@@ -10625,15 +10589,6 @@ public final class ConcolicRegionRuntime {
                     outputCaptures.add(request);
                 }
             }
-        }
-
-        private static JsonObject requireObject(JsonElement value,
-                                                String label) {
-            if (value == null || !value.isJsonObject()) {
-                throw new IllegalArgumentException(label
-                        + " must be a JSON object");
-            }
-            return copyJsonTree(value.getAsJsonObject());
         }
 
         private static JsonArray executableMaterializations(

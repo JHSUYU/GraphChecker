@@ -6651,9 +6651,8 @@ public final class ConcolicSmtComposer {
             unsupported.add(detail);
         }
 
-        private MergeStats merge(JsonObject context,
-                                 Set<String> relevantRegions) {
-            MergeStats stats = new MergeStats();
+        private void merge(JsonObject context,
+                           Set<String> relevantRegions) {
             Set<String> projectedEndpointPairs =
                     projectedContextEndpointPairs(context);
             for (JsonElement element : array(context, "equalityClasses")) {
@@ -6678,11 +6677,7 @@ public final class ConcolicSmtComposer {
                         // field-select equality from its proof-bearing row.
                         continue;
                     }
-                    if (assertPortEquality(first,
-                            selected.get(index),
-                            "alias_" + stats.equalities)) {
-                        stats.equalities++;
-                    }
+                    assertPortEquality(first, selected.get(index), "alias");
                 }
             }
             for (JsonElement element : array(context,
@@ -6707,12 +6702,10 @@ public final class ConcolicSmtComposer {
                 boolean emitted = hasProjection
                         ? projection != null
                         && assertEvidenceBackedInputFieldProjection(from, to,
-                        projection, "read_from_" + stats.readFrom)
+                        projection, "read_from")
                         : assertPortEquality(from, to,
-                        "read_from_" + stats.readFrom);
-                if (emitted) {
-                    stats.readFrom++;
-                } else if (hasProjection) {
+                        "read_from");
+                if (!emitted && hasProjection) {
                     unsupported.add("AmbiguousOrInvalidContextInputFieldProjection:"
                             + string(relation, "edgeId"));
                 }
@@ -6728,9 +6721,8 @@ public final class ConcolicSmtComposer {
                             + integer(binding, "writerEventSeq", 0) + ")");
                     assertNamed(read + "_seq", "(= " + read + " "
                             + integer(binding, "readerEventSeq", 0) + ")");
-                    assertNamed("order_" + stats.orders,
+                    assertNamed("order",
                             "(< " + write + " " + read + ")");
-                    stats.orders++;
                 }
             }
             for (JsonElement element : array(context,
@@ -6739,7 +6731,7 @@ public final class ConcolicSmtComposer {
                 JsonObject group = element.getAsJsonObject();
                 JsonArray alternatives = array(group, "alternatives");
                 String groupId = firstNonBlank(string(group, "groupId"),
-                        "alternative-" + stats.alternativeWriterGroups);
+                        "alternative");
                 if (!"EXACTLY_ONE_GUARDED".equals(string(group,
                         "selectionSemantics")) || alternatives.size() < 2) {
                     unsupported.add("MalformedAlternativeWriterGroup:"
@@ -6778,9 +6770,7 @@ public final class ConcolicSmtComposer {
                     }
                     guards.add(guard);
                     emitted++;
-                    stats.readFrom++;
-                    guardedRuntimeEvidence(relation, groupId, index, guard,
-                            stats);
+                    guardedRuntimeEvidence(relation, groupId, index, guard);
                 }
                 if (emitted < 2) {
                     unsupported.add("IncompleteAlternativeWriterGroup:"
@@ -6795,9 +6785,7 @@ public final class ConcolicSmtComposer {
                 exactlyOne.append(") 1)");
                 assertNamed("writer_choice_" + groupId,
                         exactlyOne.toString());
-                stats.alternativeWriterGroups++;
             }
-            return stats;
         }
 
         private Set<String> projectedContextEndpointPairs(
@@ -6903,7 +6891,7 @@ public final class ConcolicSmtComposer {
 
         private void guardedRuntimeEvidence(JsonObject relation,
                                             String groupId, int alternative,
-                                            String guard, MergeStats stats) {
+                                            String guard) {
             JsonArray bindings = selectedBindings(relation);
             if (bindings.size() == 0) {
                 unsupported.add("MissingAlternativeWriterEvidence:"
@@ -6930,7 +6918,6 @@ public final class ConcolicSmtComposer {
                         + integer(binding, "readerEventSeq", 0) + ")");
                 assertNamed("order_alt_" + suffix, "(=> " + guard
                         + " (< " + write + " " + read + "))");
-                stats.orders++;
                 int receiver = integer(binding, "receiverObjectId", 0);
                 String writer = "receiver_write_alt_" + suffix;
                 String reader = "receiver_read_alt_" + suffix;
@@ -6945,9 +6932,8 @@ public final class ConcolicSmtComposer {
             }
         }
 
-        private MergeStats mergeEdgeBindings(
+        private void mergeEdgeBindings(
                 List<ResolvedEdge> edges, Set<String> relevantRegions) {
-            MergeStats stats = new MergeStats();
             int edgeIndex = 0;
             for (ResolvedEdge edge : edges) {
                 String region = edge.source.regionId;
@@ -7035,12 +7021,6 @@ public final class ConcolicSmtComposer {
                             + input + ":" + previousIncomingSort + "!="
                             + incomingSort);
                 }
-                if (valueEquality) {
-                    stats.equalities++;
-                } else {
-                    stats.readFrom++;
-                }
-
                 String write = "event_write_" + smtName(label);
                 String read = "event_read_" + smtName(label);
                 declare(write, Sort.INT);
@@ -7051,7 +7031,6 @@ public final class ConcolicSmtComposer {
                         + readSeq + ")");
                 assertNamed("order_" + label,
                         "(< " + write + " " + read + ")");
-                stats.orders++;
 
                 // A complete serialized value is sufficient for a transport
                 // equality. The receiver-side object is normally a new
@@ -7073,7 +7052,6 @@ public final class ConcolicSmtComposer {
                 assertNamed("identity_" + label, "(= "
                         + writerReceiver + " " + readerReceiver + ")");
             }
-            return stats;
         }
 
         /**
@@ -8576,14 +8554,6 @@ public final class ConcolicSmtComposer {
             this.postState = postState;
             this.outputPort = outputPort;
         }
-    }
-
-    private static final class MergeStats {
-        private int equalities;
-        private int readFrom;
-        private int orders;
-        private int alternativeWriterGroups;
-
     }
 
     public static final class Result {

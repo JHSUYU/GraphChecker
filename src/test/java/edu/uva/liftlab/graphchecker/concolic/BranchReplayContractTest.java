@@ -66,7 +66,7 @@ public class BranchReplayContractTest {
         BranchReplayObservationValidator.Result valid =
                 BranchReplayObservationValidator.validate(contract,
                         Arrays.asList(replayedPrefix, replayedTarget));
-        assertTrue(valid.toJson().toString(), valid.valid());
+        assertTrue(valid.failures().toString(), valid.valid());
 
         BranchReplayObservationValidator.Result wrong =
                 BranchReplayObservationValidator.validate(contract,

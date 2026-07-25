@@ -505,8 +505,6 @@ validate_container_producer_artifacts() {
   jq -e -s '
     ([.[] | select((.pathQueryKey // "") != "")] as $replays
       | ($replays | length) >= 2
-      and all($replays[];
-        .allModelAssignmentsApplied == true)
       and ([$replays[].pathQueryKey] | unique | length)
         == ($replays | length)
       and ([$replays[].modelAssignmentsApplied[]?

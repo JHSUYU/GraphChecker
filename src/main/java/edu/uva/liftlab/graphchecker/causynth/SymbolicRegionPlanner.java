@@ -1563,11 +1563,6 @@ final class SymbolicRegionPlanner {
                     "symbolicInputs", inputPorts,
                     "mandatorySeedGuardInputs", sorted(
                             inputSelection.mandatorySeedGuardInputs),
-                    "seedGuardInputDerivationComplete",
-                    inputSelection.seedGuardInputDerivationGaps.isEmpty(),
-                    "seedGuardInputDerivationGaps",
-                    inputSelection.seedGuardInputDerivationGaps,
-                    "broadInputPortTruncated", broadInputPortTruncated,
                     "unresolvedInputs", limitedSorted(
                             inputSelection.unresolvedInputs, MAX_PORTS),
                     "inputSelectionComplete",

@@ -8333,12 +8333,12 @@ public final class ConcolicSummaryImporter {
      * Revalidates the immutable witness stream once at the importer trust
      * boundary. The replay contract derives the target polarity itself.
      */
-    private static JsonObject validateReplayContractObservation(
+    private static void validateReplayContractObservation(
             JsonObject raw, JsonElement encodedContract,
             JsonArray failures) {
         if (!encodedContract.isJsonObject()) {
             failures.add("REPLAY_CONTRACT_MALFORMED");
-            return malformedBranchReplayObservation();
+            return;
         }
         final BranchReplayContract contract;
         try {
@@ -8347,7 +8347,7 @@ public final class ConcolicSummaryImporter {
         } catch (IllegalArgumentException malformed) {
             failures.add("REPLAY_CONTRACT_MALFORMED:"
                     + malformed.getMessage());
-            return malformedBranchReplayObservation();
+            return;
         }
         List<BranchWitness> observed = new ArrayList<>();
         for (JsonElement element : array(raw, "branchMappings")) {
@@ -8363,17 +8363,6 @@ public final class ConcolicSummaryImporter {
                 failures.add("BRANCH_REPLAY_CONTRACT:" + failure);
             }
         }
-        return validation.toJson();
-    }
-
-    private static JsonObject malformedBranchReplayObservation() {
-        JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("kind", "BRANCH_REPLAY_OBSERVATION");
-        result.addProperty("requested", true);
-        result.addProperty("valid", false);
-        result.add("failures", new JsonArray());
-        return result;
     }
 
     private static InputAdmission inputAdmission(JsonObject raw,

@@ -154,7 +154,7 @@ import-result	summary/skippedEventCount	ConcolicSummaryImporter	stdout/tests	non
 activation	outputCaptureReady	ConcolicScheduler	tests only	none	admission.state	DELETE_AND_UPDATE_TEST	6+
 activation-binding	arrayFieldMaterializationAuthority	ConcolicScheduler	none	none	arrayFieldMaterializationComplete	DELETE	6+
 target-query	branchWitnessCount	TargetReachPathQueryBuilder	run_robustness_matrix.sh	matrix	branchWitnesses size; duplicate-PC-position gate remains internal	DELETE_AND_UPDATE_READER	6+
-raw-result	assignmentIdentityError/modelAssignmentCount	ConcolicRegionRuntime	none	none	unresolvedInputs plus modelAssignmentAppliedCount/allModelAssignmentsApplied	DELETE	6+
+raw-result	assignmentIdentityError/modelAssignmentCount/allModelAssignmentsApplied	ConcolicRegionRuntime	run_robustness_matrix.sh	matrix	modelAssignmentsApplied exact key/value rows plus Importer uniqueness/completeness admission	DELETE_AND_UPDATE_READER	6+
 raw-result	engine array internal-validation mirrors	ConcolicRegionRuntime	none	none	complete/problem plus canonical array expression, identity and consumed-leaf evidence	DELETE	6+
 raw-result	field-observation arrayLength/arrayElements	ConcolicRegionRuntime	none	none	canonical array binding/expression evidence	DELETE	6+
 imported-summary	transformer bindingCount/guard observedOccurrenceCount/runtime rawConditionCount	ConcolicSummaryImporter	none	none	canonical IDs/positions and admission results	DELETE	6+
@@ -168,6 +168,10 @@ imported-summary	heap effect method/result/normalization/source mirrors and admi
 composer-manifest	fatal occurrence/outcome/region-instance and bounded-region reachability mirrors	ConcolicSmtComposer	none	none	fatal site, exact imported reach paths, resolved producers and typed gaps	DELETE	6+
 raw-result	branch flat outcome/index/PC-size/VM-attestation mirrors	ConcolicRegionRuntime	ConcolicSummaryImporter	none	typed BranchWitness/ExactConcreteBranchObservation plus canonical raw PC boundary	DELETE_AND_UPDATE_READER	6+
 raw-result	rootMethod/model-assignment count/isolation-policy claims	ConcolicRegionRuntime	ConcolicSummaryImporter	none	activation identity, exact assignment arrays and runtime implementation	DELETE	6+
+static-region	seed-guard derivation/broad-input diagnostic mirrors	SymbolicRegionPlanner	none	none	mandatory guard inputs, unresolved inputs and inputSelectionComplete	DELETE	6+
+runtime-planner	ignored Result.warnings and index counters	RuntimeRegionPlanner	tests only	none	canonical activation admission/outputClosureIssues plus thrown I/O errors	DELETE_AND_UPDATE_TEST	6+
+branch-replay	runtime duplicate replay-contract validation/observation positions	ConcolicRegionRuntime	none	none	Importer BranchReplayObservationValidator result validity/failures	DELETE_DUPLICATE_VALIDATION	6+
+composer	MergeStats assertion-name counters	ConcolicSmtComposer	none	none	assertNamed deterministic collision handling	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

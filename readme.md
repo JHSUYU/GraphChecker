@@ -1573,7 +1573,26 @@ fatal/bounded-region reachability镜像。
 
 该批 baseline generic workflow 已完整闭合 target 和两个 producer worklist，Composer
 无 gap，Z3 报告 `REACHABLE`。手写生产 Java 为 76,441 行，相对 81,581 行冻结基线累计
-净减 5,140 行；完整 13-fixture 矩阵结果在本段后续里程碑提交验证后记录。
+净减 5,140 行。对应里程碑 `0233c247` 的隔离干净 worktree 13-fixture 并行真实
+custom-JDK/Z3 矩阵零失败，保持 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T083622Z.1899755`。
+
+截至 `1abd8085`，branch replay 的唯一事实载体已经收敛为 typed
+`BranchWitness`：raw result 不再并列输出 outcome、condition index、PC size 和 VM
+authority 镜像，Importer 通过 canonical witness 与 activation-owned raw PC 在
+trust boundary 做一次完整 replay-contract 校验。随后一批继续删除 Runtime 中同一
+contract 的重复验证、只供展示的 replay positions、Composer 的 `MergeStats` 名称
+计数、Runtime Planner 的无人读取 warning/counter，以及静态 region 的 seed-guard
+诊断镜像。缺失或不可读的必需静态 artifact 现在直接报具体路径并终止；合法但不完整的
+output closure 仍通过 canonical issue/gap fail closed。
+
+这一轮首次 clean matrix 暴露的是 robustness shell 仍读取已经退休的
+`allModelAssignmentsApplied`，而对应 container 候选本身已为 `SAT/REACHABLE` 且无
+gap。这是一次性 schema 切换遗漏的旧 shell reader，不是 path exploration 漂移；脚本
+已改为检查 canonical `modelAssignmentsApplied` 唯一 key/value 集合。当前手写生产
+Java 为 76,091 行，相对冻结基线累计净减 5,490 行；57 项快速回归通过，完整矩阵结果
+在该批里程碑提交后的隔离验证中记录。
 
 ### 明确不能删除
 
