@@ -98,7 +98,6 @@ public final class ConcolicSummaryImporter {
                 }
             }
         }
-        System.out.println(GSON.toJson(imported.summary));
         if (imported.validSummaryCount == 0 && imported.rawResultCount > 0) {
             System.exit(2);
         }
@@ -115,12 +114,9 @@ public final class ConcolicSummaryImporter {
         List<JsonObject> summaries = new ArrayList<>();
         List<JsonObject> diagnostics = new ArrayList<>();
         Set<String> emittedContentHashes = new LinkedHashSet<>();
-        int skippedEvents = 0;
-
         for (JsonObject raw : rawResults) {
             String event = strictString(raw, "event");
             if (!"CONCOLIC_REGION_RESULT".equals(event)) {
-                skippedEvents++;
                 diagnostics.add(diagnostic(raw, "SKIPPED_RUNTIME_EVENT",
                         firstNonBlank(string(raw, "reason"), event)));
                 continue;
@@ -396,20 +392,8 @@ public final class ConcolicSummaryImporter {
 
         writeJsonlAtomic(outputFile, summaries);
         writeDiagnostics(diagnosticFile, diagnostics);
-        ImportResult result = new ImportResult(rawResults.size(), summaries.size(),
-                diagnostics.size(), skippedEvents);
-        result.summary.addProperty("rawResultCount", result.rawResultCount);
-        result.summary.addProperty("validSummaryCount", result.validSummaryCount);
-        result.summary.addProperty("diagnosticCount", result.diagnosticCount);
-        result.summary.addProperty("skippedEventCount", result.skippedEventCount);
-        result.summary.addProperty("output", outputFile.toAbsolutePath().toString());
-        result.summary.addProperty("diagnosticsPersisted",
-                !diagnostics.isEmpty());
-        if (!diagnostics.isEmpty()) {
-            result.summary.addProperty("diagnosticsOutput",
-                    diagnosticFile.toAbsolutePath().toString());
-        }
-        return result;
+        return new ImportResult(rawResults.size(), summaries.size(),
+                diagnostics.size());
     }
 
     private static JsonArray symbolicInputs(JsonObject activation) {
@@ -8257,8 +8241,8 @@ public final class ConcolicSummaryImporter {
                 conditionIndexes.add(index);
             }
         }
-        return new RuntimePathContamination(pathCondition.size(),
-                conditionIndexes, codePositions);
+        return new RuntimePathContamination(conditionIndexes,
+                codePositions);
     }
 
     /**
@@ -8290,8 +8274,8 @@ public final class ConcolicSummaryImporter {
                 conditionIndexes.add(index);
             }
         }
-        return new RuntimePathContamination(pathCondition.size(),
-                conditionIndexes, codePositions);
+        return new RuntimePathContamination(conditionIndexes,
+                codePositions);
     }
 
     private static void collectCodePositions(JsonElement expression,
@@ -8886,7 +8870,6 @@ public final class ConcolicSummaryImporter {
         }
         JsonObject proof = new JsonObject();
         proof.addProperty("inputPort", inputPort);
-        proof.addProperty("bindingCount", bindingCount);
         proof.add("exactTransformerSinkSites",
                 GSON.toJsonTree(sinkSites));
         proof.add("inputDependentGuardSites",
@@ -9640,27 +9623,21 @@ public final class ConcolicSummaryImporter {
         public final int rawResultCount;
         public final int validSummaryCount;
         public final int diagnosticCount;
-        public final int skippedEventCount;
-        public final JsonObject summary = new JsonObject();
 
         private ImportResult(int rawResultCount, int validSummaryCount,
-                             int diagnosticCount, int skippedEventCount) {
+                             int diagnosticCount) {
             this.rawResultCount = rawResultCount;
             this.validSummaryCount = validSummaryCount;
             this.diagnosticCount = diagnosticCount;
-            this.skippedEventCount = skippedEventCount;
         }
     }
 
     private static final class RuntimePathContamination {
-        private final int rawConditionCount;
         private final JsonArray conditionIndexes;
         private final JsonArray codePositions;
 
-        private RuntimePathContamination(int rawConditionCount,
-                                         JsonArray conditionIndexes,
+        private RuntimePathContamination(JsonArray conditionIndexes,
                                          JsonArray codePositions) {
-            this.rawConditionCount = rawConditionCount;
             this.conditionIndexes = conditionIndexes;
             this.codePositions = codePositions;
         }
@@ -9673,7 +9650,6 @@ public final class ConcolicSummaryImporter {
             JsonObject result = new JsonObject();
             result.addProperty("policy",
                     "REJECT_GRAPH_CHECKER_RUNTIME_CODE_POSITIONS");
-            result.addProperty("rawConditionCount", rawConditionCount);
             result.add("contaminatedConditionIndexes",
                     conditionIndexes.deepCopy());
             result.add("runtimeCodePositions", codePositions.deepCopy());
@@ -10387,8 +10363,6 @@ public final class ConcolicSummaryImporter {
             match.addProperty("guardSiteId", proof.guardSiteId);
             match.addProperty("requiredOutcome", proof.requiredOutcome);
             match.addProperty("observedOutcome", !proof.requiredOutcome);
-            match.addProperty("observedOccurrenceCount",
-                    observedOccurrenceCount);
             match.addProperty("requestedOutputPort", requestedOutputPort);
             match.addProperty("authority",
                     "RUNTIME_OBSERVED_DOMINATING_GUARD_EXCLUDES_WRITE");

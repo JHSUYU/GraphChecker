@@ -13,6 +13,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /**
  * The single polarity algebra for binary concolic branch predicates.
  *
@@ -135,12 +137,6 @@ public final class BranchPredicateAlgebra {
                 ? "" : symbol);
         while (matcher.find()) ports.add(matcher.group(1));
         return ports.size() == 1 ? ports.iterator().next() : "";
-    }
-
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value == null || !value.isJsonPrimitive()
-                ? "" : value.getAsString();
     }
 
     private static Map<String, String> complements() {

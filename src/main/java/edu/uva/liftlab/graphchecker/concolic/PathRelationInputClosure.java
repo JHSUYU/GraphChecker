@@ -8,6 +8,9 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /** Path-local input closure for exact VM-guarded constant outputs. */
 final class PathRelationInputClosure {
     private static final String FIELD_CONSTANT_AUTHORITY =
@@ -52,7 +55,7 @@ final class PathRelationInputClosure {
             uniqueAction = action;
         }
         if (actionCount != 1 || uniqueAction == null
-                || !bool(uniqueAction, "lazy")) {
+                || !bool(uniqueAction, "lazy", false)) {
             return null;
         }
 
@@ -142,19 +145,4 @@ final class PathRelationInputClosure {
         return false;
     }
 
-    private static String string(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        return value != null && value.isJsonPrimitive()
-                ? value.getAsString() : "";
-    }
-
-    private static boolean bool(JsonObject object, String name) {
-        JsonElement value = object == null ? null : object.get(name);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    && value.getAsBoolean();
-        } catch (RuntimeException malformed) {
-            return false;
-        }
-    }
 }

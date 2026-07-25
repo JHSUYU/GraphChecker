@@ -866,8 +866,7 @@ validate_compound_target_artifacts() {
     and (if $expectation == "positive"
       then .reachedPathCount > 1
         and all(.paths[];
-          (.constraints | length) >= 3
-          and .branchWitnessCount == (.constraints | length))
+          (.constraints | length) >= 3)
         and any(.paths[]; (.constraints | length) >= 4)
       else .reachedPathCount == 0
       end)

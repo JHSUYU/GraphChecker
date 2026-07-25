@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
@@ -12,6 +11,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Solves exactly one canonical path-flip task and emits its singleton replay
@@ -128,17 +129,6 @@ public final class ConcolicPathFlipSolver {
             content.append(JSON.toJson(row)).append(System.lineSeparator());
         }
         ArtifactIO.replace(path, content.toString());
-    }
-
-    private static String string(JsonObject object, String field) {
-        if (object == null) return "";
-        JsonElement value = object.get(field);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsString() : "";
-        } catch (RuntimeException ignored) {
-            return "";
-        }
     }
 
     static final class Arguments {

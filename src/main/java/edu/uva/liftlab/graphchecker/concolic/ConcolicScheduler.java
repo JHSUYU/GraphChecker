@@ -337,7 +337,6 @@ public final class ConcolicScheduler {
                 || executionScopeReady(result, outputClosure,
                 definitions, definitionMethods));
         result.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
-        result.addProperty("outputCaptureReady", outputCaptureReady);
         result.add("concreteFallbacks",
                 materialization.concreteFallbacks.deepCopy());
         result.add("materializations", materialization.actions.deepCopy());
@@ -1387,8 +1386,6 @@ public final class ConcolicScheduler {
             return false;
         }
         binding.addProperty("arrayFieldMaterializationComplete", true);
-        binding.addProperty("arrayFieldMaterializationAuthority",
-                "PLANNER_EXACT_CONSUMED_FIELD_EVIDENCE_PRESERVED_V1");
         return true;
     }
 

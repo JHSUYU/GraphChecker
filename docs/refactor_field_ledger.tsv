@@ -149,6 +149,15 @@ concolic-internal	duplicated forgiving JSON field readers	seven concolic stages	
 concolic-internal	duplicated SHA-256 implementations	six concolic stages	local stage only	none	ArtifactIO.sha256	CONSOLIDATE_AND_DELETE	6+
 concolic-boundary	duplicated permissive JSONL readers	Scheduler/Importer/Composer/Merger	local stage only	none	ArtifactIO strict JSONL reader	CONSOLIDATE_AND_FAIL_CLOSED	6+
 replay-admission	generic model/branch/output-closure revalidation	ConcolicReplayValidator	ConcolicSummaryImporter	none	Importer ReplayAdmission plus canonical summary construction	DELETE_DUPLICATE_KEEP_DYNAMIC_REBINDING	6+
+concolic-internal	remaining duplicated forgiving JSON field readers	eight concolic value/query stages	local stage only	none	JsonFields	CONSOLIDATE_AND_DELETE	6+
+import-result	summary/skippedEventCount	ConcolicSummaryImporter	stdout/tests	none	canonical summary JSONL plus raw/valid/diagnostic counts	DELETE_AND_UPDATE_TEST	6+
+activation	outputCaptureReady	ConcolicScheduler	tests only	none	admission.state	DELETE_AND_UPDATE_TEST	6+
+activation-binding	arrayFieldMaterializationAuthority	ConcolicScheduler	none	none	arrayFieldMaterializationComplete	DELETE	6+
+target-query	branchWitnessCount	TargetReachPathQueryBuilder	run_robustness_matrix.sh	matrix	branchWitnesses size; duplicate-PC-position gate remains internal	DELETE_AND_UPDATE_READER	6+
+raw-result	assignmentIdentityError/modelAssignmentCount	ConcolicRegionRuntime	none	none	unresolvedInputs plus modelAssignmentAppliedCount/allModelAssignmentsApplied	DELETE	6+
+raw-result	engine array internal-validation mirrors	ConcolicRegionRuntime	none	none	complete/problem plus canonical array expression, identity and consumed-leaf evidence	DELETE	6+
+raw-result	field-observation arrayLength/arrayElements	ConcolicRegionRuntime	none	none	canonical array binding/expression evidence	DELETE	6+
+imported-summary	transformer bindingCount/guard observedOccurrenceCount/runtime rawConditionCount	ConcolicSummaryImporter	none	none	canonical IDs/positions and admission results	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

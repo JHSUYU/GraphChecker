@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -15,6 +14,8 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Plans the deterministic branch-flip frontier for one captured output
@@ -131,17 +132,6 @@ public final class ConcolicPathFlipPlanner {
             content.append(JSON.toJson(row)).append(System.lineSeparator());
         }
         ArtifactIO.replace(path, content.toString());
-    }
-
-    private static String string(JsonObject object, String field) {
-        if (object == null) return "";
-        JsonElement value = object.get(field);
-        try {
-            return value != null && value.isJsonPrimitive()
-                    ? value.getAsString() : "";
-        } catch (RuntimeException ignored) {
-            return "";
-        }
     }
 
     static final class Arguments {

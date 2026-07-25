@@ -4,6 +4,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /** Builds the executable activation for one solver-selected path replay. */
 final class ReplayActivationFactory {
     private ReplayActivationFactory() {
@@ -69,12 +71,6 @@ final class ReplayActivationFactory {
                     "path replay task requires replayContract");
         }
         return BranchReplayContract.fromJson(encoded.getAsJsonObject());
-    }
-
-    private static String string(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        return value == null || !value.isJsonPrimitive()
-                ? "" : value.getAsString();
     }
 
     private static String shortHash(String value) {

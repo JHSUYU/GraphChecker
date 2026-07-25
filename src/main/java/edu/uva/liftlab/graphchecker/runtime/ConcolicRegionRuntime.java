@@ -2965,10 +2965,6 @@ public final class ConcolicRegionRuntime {
             row.addProperty("assignmentIdentityAuthority", primitiveField
                     ? "EXACT_DECLARED_FIELD_REFLECTION_AND_BOXED_VALUE_EQUALITY"
                     : "EXACT_DECLARED_FIELD_REFLECTION_AND_REFERENCE_IDENTITY");
-            if (!observation.error.isEmpty()) {
-                row.addProperty("assignmentIdentityError",
-                        observation.error);
-            }
             if (!identityVerified) {
                 active.unresolved.add(request.captureBindingId
                         + ": post-assignment field identity verification "
@@ -3873,8 +3869,6 @@ public final class ConcolicRegionRuntime {
                     target.binding));
         }
         result.add("finalFieldObservations", finalFields);
-        result.addProperty("modelAssignmentCount",
-                active.activation.modelAssignments.size());
         result.addProperty("modelAssignmentAppliedCount",
                 active.modelAssignmentsApplied.size());
         result.addProperty("allModelAssignmentsApplied",
@@ -4669,26 +4663,7 @@ public final class ConcolicRegionRuntime {
                 keys.add(primitiveObservation(key));
             }
             result.add("mapKeys", keys);
-        } else if (value != null && value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            result.addProperty("arrayLength", length);
-            JsonArray elements = new JsonArray();
-            for (int index = 0; index < length && index < 32; index++) {
-                Object element = Array.get(value, index);
-                JsonObject item = new JsonObject();
-                item.addProperty("index", index);
-                item.addProperty("class", element == null ? "null"
-                        : element.getClass().getName());
-                item.addProperty("identity", element == null ? 0
-                        : System.identityHashCode(element));
-                Object keyId = readField(element, "keyId");
-                if (keyId != MissingValue.INSTANCE) {
-                    item.add("keyId", primitiveObservation(keyId));
-                }
-                elements.add(item);
-            }
-            result.add("arrayElements", elements);
-        } else {
+        } else if (value == null || !value.getClass().isArray()) {
             result.add("value", primitiveObservation(value));
         }
     }
@@ -5362,7 +5337,6 @@ public final class ConcolicRegionRuntime {
         private final boolean dynamicInput;
         private final String inputJavaType;
         private final String inputJavaTypeDescriptor;
-        private final String inputJavaTypeAuthority;
         private final long arrayObjectToken;
         private final long symbolizationArrayObjectToken;
         private final String symbolizationPrefix;
@@ -5385,7 +5359,6 @@ public final class ConcolicRegionRuntime {
         private int vmConcreteLength = -1;
         private boolean sameArrayObjectTokenVerified;
         private boolean fieldPrePostReferenceVerified;
-        private long postReadArrayObjectToken;
         private boolean vmActive;
         private boolean vmSymbolic;
         private boolean complete;
@@ -5394,7 +5367,6 @@ public final class ConcolicRegionRuntime {
         private String consumedLeafFieldSignature = "";
         private final List<String> consumedLogicalFieldPath =
                 new ArrayList<>();
-        private boolean logicalRootIdentityVerified;
 
         private EngineArrayInputBinding(ActiveRegion active,
                                         SymbolizeAction action,
@@ -5413,7 +5385,6 @@ public final class ConcolicRegionRuntime {
                     : dynamicBinding.dynamicBindingId;
             this.dynamicInput = dynamicBinding != null;
             this.inputJavaType = safe(declaredType.javaType);
-            this.inputJavaTypeAuthority = safe(declaredType.authority);
             this.inputJavaTypeDescriptor = reflectionDescriptor(
                     array == null ? null : array.getClass());
             this.arrayObjectToken = active.objectToken(array);
@@ -5462,8 +5433,6 @@ public final class ConcolicRegionRuntime {
                 binding.fail("symbolized live input is not a non-null array");
                 return binding;
             }
-            binding.postReadArrayObjectToken = active.objectToken(
-                    postReadArray);
             binding.fieldPrePostReferenceVerified = postReadArray == array;
             if (!binding.fieldPrePostReferenceVerified) {
                 binding.fail("field value reference changed between direct "
@@ -5765,7 +5734,6 @@ public final class ConcolicRegionRuntime {
             this.consumedLeafFieldSignature = safe(leafFieldSignature);
             this.consumedLogicalFieldPath.clear();
             this.consumedLogicalFieldPath.addAll(logicalFieldPath);
-            this.logicalRootIdentityVerified = true;
         }
 
         private JsonObject toJson() {
@@ -5783,8 +5751,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("inputJavaType", inputJavaType);
             result.addProperty("inputJavaTypeDescriptor",
                     inputJavaTypeDescriptor);
-            result.addProperty("inputJavaTypeAuthority",
-                    inputJavaTypeAuthority);
             result.addProperty("symbolizationPrefix",
                     symbolizationPrefix);
             result.addProperty("symbolizationMode", symbolizationMode);
@@ -5804,23 +5770,8 @@ public final class ConcolicRegionRuntime {
             result.addProperty("captureLocation", captureLocation);
             result.add("arrayValueExpression",
                     copyJsonTree(arrayValueExpression));
-            result.addProperty("vmArrayValueAuthority",
-                    vmArrayValueAuthority);
-            result.addProperty("vmArrayJavaTypeDescriptor",
-                    vmArrayJavaTypeDescriptor);
-            result.addProperty("vmComponentJavaTypeDescriptor",
-                    vmComponentJavaTypeDescriptor);
-            result.addProperty("reflectedArrayLength",
-                    reflectedArrayLength);
-            result.addProperty("vmConcreteLength", vmConcreteLength);
-            result.addProperty("vmActive", vmActive);
-            result.addProperty("vmSymbolic", vmSymbolic);
             result.addProperty("sameArrayObjectTokenVerified",
                     sameArrayObjectTokenVerified);
-            result.addProperty("fieldPrePostReferenceVerified",
-                    fieldPrePostReferenceVerified);
-            result.addProperty("postReadArrayObjectToken",
-                    postReadArrayObjectToken);
             result.addProperty("consumedLeafOwnerObjectToken",
                     consumedLeafOwnerObjectToken);
             if (!consumedLeafFieldSignature.isEmpty()) {
@@ -5829,8 +5780,6 @@ public final class ConcolicRegionRuntime {
                 result.add("consumedLogicalFieldPath",
                         GSON.toJsonTree(consumedLogicalFieldPath));
             }
-            result.addProperty("logicalRootIdentityVerified",
-                    logicalRootIdentityVerified);
             result.addProperty("complete", complete);
             if (!problem.isEmpty()) result.addProperty("problem", problem);
             return result;

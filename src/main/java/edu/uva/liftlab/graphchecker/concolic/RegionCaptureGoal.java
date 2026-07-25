@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+
 /**
  * The reason a region is captured.
  *
@@ -69,14 +71,4 @@ public final class RegionCaptureGoal {
         if (row != null) row.add(FIELD, toJson());
     }
 
-    private static String string(JsonObject object, String name) {
-        if (object == null) return "";
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
 }
