@@ -1469,7 +1469,9 @@ edge ID、transformer issue、capture/read-from/object identity 等准入证据�
 Scheduler 也不再序列化整个 alternative writer group 后做字符串 `contains(regionId)`
 筛选；精确 selected binding 本身就是 typed instance gate。PMD unused-private 审计后的
 零消费者方法、字段和参数同步删除。该里程碑生产 Java 净减少而不是把索引代码叠加到旧
-实现上；57 项快速回归已通过，完整 13-fixture/真实 Z3 矩阵是提交后的最终验收门。
+实现上。57 项快速回归、baseline 单独端到端和干净 worktree 的 13-fixture 并行真实
+Z3 矩阵均已通过；矩阵零失败并保持 6 `SAT/REACHABLE`、7
+`UNSAT/UNREACHABLE`。
 
 ### 明确不能删除
 
