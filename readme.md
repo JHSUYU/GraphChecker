@@ -2046,6 +2046,24 @@ UNSAT/UNREACHABLE；日志目录为
 `target/robustness-matrix-logs/20260725T170553Z.599731`。该结果是最终 release gate，
 主工作树中未暂存的用户 container fixture 修改没有进入构建、提交或矩阵。
 
+closure-goal follow-up 由 `30dd0704`、`d4fe4ee8`、`98d30d89` 三个里程碑完成并推送：
+同一个动态 region instance 现在只保存一个 `RegionInstancePlan` envelope，语义需求是
+嵌套的 `OUTPUT_RELATION` / `TARGET_REACH` closure goal，branch flip 只产生
+`PathQuery` / `ExecutionTask`，不再伪装成 `ACT.UPSTREAM.*` 或 `ACT.PATH.*`。
+primitive field 的 no-write path 由 same-cell `HEAP_PRESTATE`、唯一 root-to-owner
+field path、精确安装的 capture hook 和每个 binding 的实际 execution count 共同证明；
+若写点执行但 requested occurrence 未捕获则 fail closed，不能误判为 frame condition。
+这一轮同时删除 test-only Scheduler output 准备路径、重复 canonical JSON、旧 bundle
+清理和多余计数镜像。当前手写生产 Java 为 69,696 行；新增行属于此前缺失的 frame
+correctness，不为进入某个行数区间删除证明。
+
+提交 `98d30d89` 的 62 项快速回归全部通过。随后在不含用户 container 修改、但使用相同
+custom-JDK build 的独立 clean worktree，以 13 个外层 worker 再跑真实 concolic/Z3：
+`completed=13 failures=0`，保持 6 SAT/REACHABLE、7 UNSAT/UNREACHABLE；日志目录为
+`target/robustness-matrix-logs/20260725T193226Z.1354005`。主工作树中用户修改后的
+container 也单独完成所有 closure，`gaps=[]`，按其当前约束得到 UNSAT；该文件没有进入
+上述提交或权威矩阵。
+
 ### 明确不能删除
 
 必须保留：
