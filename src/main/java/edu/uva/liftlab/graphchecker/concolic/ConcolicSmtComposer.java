@@ -273,8 +273,6 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("fatalConstraintAuthority", targetPathSet
                 ? "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
                 : "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
-        manifest.addProperty("fatalPathCount", targetPathSet
-                ? array(fatal, "paths").size() : 1);
         manifest.add("resolvedProducerKeys",
                 GSON.toJsonTree(resolved.producerKeyStrings()));
         manifest.add("resolvedEdgeBindings",
@@ -344,9 +342,7 @@ public final class ConcolicSmtComposer {
         if ("TARGET_REACH_PATH_SET_QUERY".equals(kind)) {
             if (!"CLOSED".equals(string(fatal, "pathClosureState"))
                     || !"CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1".equals(
-                    string(fatal, "constraintAuthority"))
-                    || integer(fatal, "reachedPathCount", -1)
-                    != array(fatal, "paths").size()) {
+                    string(fatal, "constraintAuthority"))) {
                 throw new IOException(
                         "Incomplete closed target reach path query");
             }
@@ -3449,7 +3445,6 @@ public final class ConcolicSmtComposer {
                 JsonObject row = element.getAsJsonObject();
                 String identity = string(row, "placeholderIdentity");
                 String function = string(row, "placeholderFunction");
-                int count = integer(row, "placeholderCount", -1);
                 String port = string(row, "inputPort");
                 String cell = string(row, "cell");
                 Port schema = ports.get(port);
@@ -3458,8 +3453,8 @@ public final class ConcolicSmtComposer {
                 boolean valid = integer(row, "schemaVersion", -1) == 1
                         && "VM_INTRINSIC_PLACEHOLDER_PORT_BINDING".equals(
                         string(row, "kind"))
-                        && count > 0
-                        && identity.equals(function + "#" + count)
+                        && identity.matches(Pattern.quote(function)
+                        + "#[1-9][0-9]*")
                         && "currentTimeMills".equals(function)
                         && SymbolicEnvironment.isCurrentTimeMillisReturn(cell)
                         && "J".equals(string(row, "javaTypeDescriptor"))
@@ -4179,8 +4174,7 @@ public final class ConcolicSmtComposer {
                     "objectTokenAuthority", "objectTokenScope",
                     "entryReadObservationId", "keyExpression",
                     "keyExpressionAuthority", "containerSelector",
-                    "mapProjectionSelector", "entrySnapshotElementCount",
-                    "outputElementCount",
+                    "mapProjectionSelector",
                     "entrySnapshotElementObjectTokens",
                     "entrySnapshotMapKeyExpressions",
                     "entryKeyExpressionAuthority",
@@ -4255,13 +4249,11 @@ public final class ConcolicSmtComposer {
             int index = integer(selector, "outputIndex", -1);
             int occurrence = integer(selector,
                     "elementOccurrence", -1);
-            int entryCount = integer(binding,
-                    "entrySnapshotElementCount", -1);
-            int outputCount = integer(binding, "outputElementCount", -1);
             JsonArray tokens = array(binding,
                     "entrySnapshotElementObjectTokens");
             JsonArray keys = array(binding,
                     "entrySnapshotMapKeyExpressions");
+            int entryCount = tokens.size();
             String outputMode = string(binding, "outputValidationMode");
             String outputAuthority = string(selector,
                     "outputVerificationAuthority");
@@ -4296,8 +4288,7 @@ public final class ConcolicSmtComposer {
                     && leaf > 0L && map > 0L && element == leaf
                     && output > 0L
                     && map != element && map != output && element != output
-                    && entryCount > 0 && outputCount == entryCount
-                    && tokens.size() == entryCount
+                    && entryCount > 0
                     && keys.size() == entryCount && index < entryCount
                     && jsonLong(tokens.get(index), -1L) == element
                     && selector.get("expectedMapKey") != null
@@ -4927,10 +4918,6 @@ public final class ConcolicSmtComposer {
                     binding, "fieldExpressionAuthority"))
                     && NON_MUTATING_MAP_ENTRY_READ_STATE_AUTHORITY.equals(
                     string(binding, "observationStateBindingAuthority"))
-                    && integer(proof, "candidateMutationCount", -1) == 0
-                    && integer(proof, "heapEffectCount", -1) == 0
-                    && integer(proof,
-                    "ignoredRuntimeHeapEvidenceCount", -1) == 0
                     && emptyOrMissingArray(summary, "heapEffects")
                     && emptyOrMissingArray(summary,
                     "heapStateInitializers")
@@ -5338,8 +5325,8 @@ public final class ConcolicSmtComposer {
                     && containsString(array(initializer, "proofEdgeIds"),
                     allocationEdge)
                     && bool(initializer, "proofComplete", false)
-                    && integer(initializer,
-                    "constructorArgumentCount", -1) == 0
+                    && string(initializer, "constructor").contains(
+                    "<init>()")
                     && "STATIC_UNIQUE_DEFAULT_ALLOCATION_TO_REQUESTED_"
                     .concat("OUTPUT_PLUS_RUNTIME_UNIQUE_MAP_RECEIVER")
                     .equals(string(initializer, "bindingAuthority"))
@@ -5795,12 +5782,11 @@ public final class ConcolicSmtComposer {
                 String outputCell = string(firstSelector, "outputCell");
                 String operation = string(firstSelector,
                         "mapProjectionOperation");
-                int count = integer(first,
-                        "entrySnapshotElementCount", -1);
+                int count = array(first,
+                        "entrySnapshotElementObjectTokens").size();
                 Port mapSchema = ports.get(mapPort);
                 Port outputSchema = ports.get(outputPort);
                 if (count <= 0
-                        || integer(first, "outputElementCount", -1) != count
                         || mapSchema == null || mapSchema.sort != Sort.MAP
                         || !mapCell.equals(mapSchema.cell)
                         || outputSchema == null
@@ -5834,12 +5820,11 @@ public final class ConcolicSmtComposer {
                             "mapProjectionSelector");
                     JsonArray bindingKeys = array(binding,
                             "entrySnapshotMapKeyExpressions");
+                    JsonArray bindingTokens = array(binding,
+                            "entrySnapshotElementObjectTokens");
                     int index = integer(selector, "outputIndex", -1);
                     String declaration = string(selector, "bindingId");
-                    valid &= count == integer(binding,
-                            "entrySnapshotElementCount", -2)
-                            && count == integer(binding,
-                            "outputElementCount", -2)
+                    valid &= bindingTokens.size() == count
                             && mapPort.equals(string(selector,
                             "mapInputPort"))
                             && mapCell.equals(string(selector,
@@ -5931,10 +5916,6 @@ public final class ConcolicSmtComposer {
                 assertNamed(label + "_entry_snapshot_length",
                         "(= (finite_array_length " + output + ") "
                                 + count + ")");
-                assertNamed(label + "_output_identity_length",
-                        "(= (finite_array_length " + output + ") "
-                                + integer(first, "outputElementCount", -1)
-                                + ")");
 
                 List<String> keys = new ArrayList<>();
                 List<String> selectedValues = new ArrayList<>();
@@ -8714,10 +8695,6 @@ public final class ConcolicSmtComposer {
                 "^<[^:]+:\\s+([^<>\\s]+)\\s+[^<>\\s(]+\\([^>]*\\)>"
                         + "\\.return(?:#.*)?$").matcher(value);
         return returned.matches() ? returned.group(1).trim() : "";
-    }
-
-    static boolean isArrayCell(String cell) {
-        return isArrayType(cellJavaType(cell));
     }
 
     private static boolean isArrayType(String type) {

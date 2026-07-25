@@ -12,7 +12,6 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -104,13 +103,6 @@ final class ArtifactIO {
         } finally {
             Files.deleteIfExists(temporary);
         }
-    }
-
-    static void writeNew(Path path, String value) throws IOException {
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Files.write(path, utf8(value), StandardOpenOption.CREATE_NEW,
-                StandardOpenOption.WRITE);
     }
 
     static String sha256(Path path) throws IOException {

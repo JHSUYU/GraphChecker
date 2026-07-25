@@ -1052,7 +1052,7 @@ report_path_worklist_failure() {
   echo "  manifest: ${manifest}" >&2
   echo "  worklist: ${worklist}" >&2
   jq -r '
-    "  state=\(.state) observedPaths=\(.observedPathCount) pendingTasks=\(.pendingTaskCount)",
+    "  state=\(.state) observedPaths=\(.observedPathCount)",
     (.gaps[]?
       | "  blocking-gap kind=\(.kind) reason=\(.reason) site=\(.siteId) occurrence=\(.occurrence) path=\(.pathKey)"),
     (.deferredObservations[]?
@@ -1227,7 +1227,7 @@ explore_region_paths() {
         "${campaign}/region_path_closure.json"
       break
     fi
-    jq -e '.state == "PENDING" and .pendingTaskCount > 0' \
+    jq -e '.state == "PENDING"' \
       "${planner_dir}/region_path_manifest.json" >/dev/null \
       || die "${label} path planner emitted neither pending nor closed state"
     observed_paths=$(jq -er '.observedPathCount' \
@@ -1331,12 +1331,11 @@ do_explore_target() {
     and .[0].kind == "TARGET_REACH_PATH_SET_QUERY"
     and .[0].readyForSolver == true
     and .[0].pathClosureState == "CLOSED"
-    and .[0].reachedPathCount == (.[0].paths | length)
   ' "${target_schedule}/branch_queries.jsonl" >/dev/null \
     || die "closed target reach query is incomplete"
   discard_successful_iteration "${campaign}"
   discard_successful_campaign_state "${campaign}"
-  echo "[three-thread-rpc] target reach paths: $(jq -r '.reachedPathCount' "${target_schedule}/branch_queries.jsonl")"
+  echo "[three-thread-rpc] target reach paths: $(jq -r '.paths | length' "${target_schedule}/branch_queries.jsonl")"
 }
 
 run_producer_seed_pipeline() {

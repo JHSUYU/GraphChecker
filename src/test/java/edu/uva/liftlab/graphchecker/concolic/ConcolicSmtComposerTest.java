@@ -249,7 +249,6 @@ public class ConcolicSmtComposerTest {
             reachedPaths.add(secondPath);
             fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
             fatal.addProperty("pathClosureState", "CLOSED");
-            fatal.addProperty("reachedPathCount", reachedPaths.size());
             fatal.addProperty("constraintAuthority",
                     "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
             fatal.add("paths", reachedPaths);
@@ -270,7 +269,6 @@ public class ConcolicSmtComposerTest {
             assertEquals("CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1",
                     result.manifest.get("fatalConstraintAuthority")
                             .getAsString());
-            assertEquals(2, result.manifest.get("fatalPathCount").getAsInt());
             assertTrue(result.smtLib.contains(":named fatal_path"));
             assertTrue(result.smtLib.contains("(or "));
             JsonArray catalog = result.manifest.getAsJsonArray(
@@ -946,7 +944,6 @@ public class ConcolicSmtComposerTest {
         initializer.addProperty("staticInitializerId",
                 "STATIC_INIT.REGION.P.0");
         initializer.addProperty("allocationEdgeId", "EDGE.ALLOC.0");
-        initializer.addProperty("constructorArgumentCount", 0);
         JsonArray proof = new JsonArray();
         proof.add("EDGE.ALLOC.0");
         initializer.add("proofEdgeIds", proof);
@@ -1228,7 +1225,6 @@ public class ConcolicSmtComposerTest {
                 "VM_INTRINSIC_PLACEHOLDER_PORT_BINDING");
         binding.addProperty("placeholderIdentity", identity);
         binding.addProperty("placeholderFunction", "currentTimeMills");
-        binding.addProperty("placeholderCount", count);
         binding.addProperty("inputPort", inputPort);
         binding.addProperty("cell", cell);
         binding.addProperty("javaTypeDescriptor", "J");
@@ -1457,9 +1453,6 @@ public class ConcolicSmtComposerTest {
         proof.addProperty("mapExpressionWitnessAuthority",
                 "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN_TO_"
                         + "SCOPED_REF_SYMBOL_V1");
-        proof.addProperty("candidateMutationCount", 0);
-        proof.addProperty("heapEffectCount", 0);
-        proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
         proof.addProperty("selectorDigest", selectorDigest);
         proof.addProperty("statePortDerivationAuthority",
                 "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1");
@@ -1601,8 +1594,6 @@ public class ConcolicSmtComposerTest {
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
             binding.addProperty("objectTokenScope", "ACT.P");
             binding.addProperty("fieldJavaType", "long");
-            binding.addProperty("entrySnapshotElementCount", 2);
-            binding.addProperty("outputElementCount", 2);
             binding.add("entrySnapshotElementObjectTokens",
                     tokens.deepCopy());
             binding.add("entrySnapshotMapKeyExpressions",
@@ -1713,7 +1704,6 @@ public class ConcolicSmtComposerTest {
         bounds.addProperty("maxWallClockMillis", 30_000L);
         result.add("bounds", bounds);
         result.addProperty("observedPathCount", 1);
-        result.addProperty("pendingTaskCount", 0);
         result.add(OutputClosureContract.FIELD, contract.toJson());
         result.add("gaps", new JsonArray());
         return result;
@@ -2013,8 +2003,6 @@ public class ConcolicSmtComposerTest {
         }
         slice.add("containerElementFieldBindings", declarations);
         slice.add("requestedStateTransformerObligations", obligations);
-        slice.addProperty("requestedStateTransformerObligationCount",
-                obligations.size());
         summary.add("dynamicFieldBindings", runtimeBindings);
     }
 

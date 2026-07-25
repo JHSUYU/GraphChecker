@@ -2067,8 +2067,6 @@ public class ConcolicSummaryImporterTest {
                 "requestedStateTransformerContractOutputCell", outputCell);
         metadata.add("requestedStateTransformerObligations",
                 obligations.deepCopy());
-        metadata.addProperty("requestedStateTransformerObligationCount",
-                obligations.size());
         metadata.add("requestedStateTransformerContractIssues",
                 new JsonArray());
         metadata.addProperty(
@@ -2538,9 +2536,6 @@ public class ConcolicSummaryImporterTest {
                 method + "#u" + guardUnitIndex, "GUARD",
                 "heap_mutation_path_guard");
         edge.addProperty("guardSiteId", method + "#u" + guardUnitIndex);
-        edge.addProperty("guardedMutationCount", 1);
-        edge.addProperty("guardedMutationsAuthority",
-                "STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE");
         JsonObject mutation = new JsonObject();
         mutation.addProperty("guardSiteId",
                 method + "#u" + guardUnitIndex);
@@ -2685,7 +2680,6 @@ public class ConcolicSummaryImporterTest {
         initializer.addProperty("allocationSiteId", "SITE.ALLOC.0");
         initializer.addProperty("constructor",
                 "<java.util.HashMap: void <init>()>");
-        initializer.addProperty("constructorArgumentCount", 0);
         initializer.addProperty("outputPort", "REGION.P.out.0");
         JsonArray proof = new JsonArray();
         proof.add("EDGE.ALLOC.0");
@@ -3716,7 +3710,6 @@ public class ConcolicSummaryImporterTest {
         snapshotKeys.add(constant("Y_I_22", "java/lang/Integer"));
         JsonObject entry = mapProjectionObservation("ENTRY_SNAPSHOT",
                 operation, mapPort, outputPort, outputCell, 501L);
-        entry.addProperty("snapshotElementCount", 2);
         entry.add("snapshotElementObjectTokens", snapshotTokens.deepCopy());
         entry.add("snapshotEntryKeyExpressions", snapshotKeys.deepCopy());
         entry.addProperty("entryKeyExpressionAuthority",
@@ -3729,8 +3722,6 @@ public class ConcolicSummaryImporterTest {
         outputObservation.addProperty("outputArrayObjectToken", 701L);
         outputObservation.addProperty("outputVerificationAuthority",
                 "ACTIVE_REGION_ROOT_RETURN_EXACT_PROJECTED_FIELD");
-        outputObservation.addProperty("projectedFieldBindingCount", 2);
-        outputObservation.addProperty("outputFieldValueVerifiedCount", 2);
         outputObservation.addProperty("outputFieldValueFlowVerified", true);
         outputObservation.addProperty("fieldValueFlowAuthority",
                 "SAME_EXECUTION_BOUNDED_OBSERVED_SCHEDULE_EXACT_"
@@ -3817,7 +3808,7 @@ public class ConcolicSummaryImporterTest {
             JsonElement first = bindings.remove(0);
             bindings.add(first);
         } else if ("LENGTH".equals(fault)) {
-            entry.addProperty("snapshotElementCount", 3);
+            entry.getAsJsonArray("snapshotElementObjectTokens").add(603L);
         } else if ("IDENTITY".equals(fault)) {
             outputObservation.addProperty("outputIdentityVerified", false);
         } else if ("TYPE".equals(fault)) {

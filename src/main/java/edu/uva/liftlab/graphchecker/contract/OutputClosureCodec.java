@@ -220,15 +220,6 @@ public final class OutputClosureCodec {
         return result;
     }
 
-    public static JsonArray executionOutputs(
-            OutputClosureContract contract) {
-        JsonArray result = new JsonArray();
-        for (OutputClosureContract.Member member : contract.members()) {
-            result.add(member.executionOutput());
-        }
-        return result;
-    }
-
     private static OutputClosureContract.Member decodeMember(
             JsonObject encoded, int index) {
         String path = "outputClosure.members[" + index + "]";

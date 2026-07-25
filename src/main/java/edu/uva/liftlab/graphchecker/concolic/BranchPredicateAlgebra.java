@@ -84,10 +84,6 @@ public final class BranchPredicateAlgebra {
                 portableReplayIdentity(right));
     }
 
-    public static boolean isComparisonOperator(String operator) {
-        return COMPLEMENTS.containsKey(operator);
-    }
-
     public static String complementOperator(String operator) {
         String result = COMPLEMENTS.get(operator);
         if (result == null) {

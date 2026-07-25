@@ -343,8 +343,6 @@ public class RegionSummaryMergerTest {
         bounds.addProperty("maxWallClockMillis", 30_000L);
         manifest.add("bounds", bounds);
         manifest.addProperty("observedPathCount", 1);
-        manifest.addProperty("pendingTaskCount",
-                state == RegionPathWorklist.State.PENDING ? 1 : 0);
         manifest.add("gaps", new JsonArray());
         return manifest;
     }

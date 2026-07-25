@@ -490,7 +490,6 @@ public final class RegionPathWorklist {
             result.addProperty("state", state.name());
             result.add("bounds", bounds.toJson());
             result.addProperty("observedPathCount", observedPathCount);
-            result.addProperty("pendingTaskCount", tasks.size());
             if (scopes.size() == 1) {
                 ExplorationScope scope = scopes.values().iterator().next();
                 if (scope.contract != null) {
@@ -746,8 +745,6 @@ public final class RegionPathWorklist {
             copyStable(source, stable, "keyExpression");
             copyStable(source, stable, "keyExpressionAuthority");
             copyStable(source, stable, "mapProjectionSelector");
-            copyStable(source, stable, "entrySnapshotElementCount");
-            copyStable(source, stable, "outputElementCount");
             copyStable(source, stable, "runtimeSymbolizationAuthority");
             copyStable(source, stable, "projectionEvidenceAuthority");
             copyStable(source, stable, "outputValidationMode");

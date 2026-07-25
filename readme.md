@@ -1596,6 +1596,23 @@ Java 为 76,091 行，相对冻结基线累计净减 5,490 行；57 项快速回
 保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
 `target/robustness-matrix-logs/20260725T090733Z.2280847`。
 
+下一批把 artifact 中可由 canonical collection/state 直接推导的计数和固定说明继续原子
+删除：path worklist 只保留 `state`、实际 worklist 和 observed paths；target query、
+merged relation、Composer manifest、static coverage、Map projection、transformer
+obligation、VM placeholder 与 fresh-map initializer 均以实际数组、typed identity 或
+constructor signature 为事实源。Java、shell 和测试 reader 已在同一批切换，没有旧字段
+fallback。
+
+同时，包级调用审计确认 output-independence branch 只有 reader 而从无生产 writer，故其
+`PATH_ASSUMPTION` 路径在真实执行中不可达。该伪协议及相关 authority/reason/checked-output
+字段已整体删除；output slice 内的 causal branch 统一维持 `EXPLORE`，branch witness、
+solver path context 和 required successor evidence 不变。十个零调用 helper/API 也一并
+退休，避免保留“看似支持、实际无人调用”的表面积。
+
+当前手写生产 Java 为 75,769 行，相对 81,581 行冻结基线累计净减 5,812 行。57 项快速
+回归、PMD 和 generic shell 语法检查通过；本段将在对应 clean 13-fixture 矩阵通过后记录
+提交与日志。
+
 ### 明确不能删除
 
 必须保留：

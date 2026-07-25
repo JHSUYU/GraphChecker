@@ -6031,7 +6031,6 @@ public final class ConcolicRegionRuntime {
 
         private JsonObject entryObservation() {
             JsonObject row = baseObservation("ENTRY_SNAPSHOT");
-            row.addProperty("snapshotElementCount", elements.length);
             JsonArray tokens = new JsonArray();
             for (long token : elementObjectTokens) {
                 tokens.add(new JsonPrimitive(Long.valueOf(token)));
@@ -6135,9 +6134,6 @@ public final class ConcolicRegionRuntime {
                     outputArrayObjectToken);
             row.addProperty("outputVerificationAuthority",
                     outputVerificationAuthority);
-            row.addProperty("projectedFieldBindingCount", bindings.size());
-            row.addProperty("outputFieldValueVerifiedCount",
-                    outputFieldValueVerifiedCount);
             row.addProperty("outputFieldValueFlowVerified",
                     complete && outputFieldValueVerifiedCount
                     == bindings.size() && !bindings.isEmpty());

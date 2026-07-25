@@ -180,8 +180,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"guardSiteId\":\"" + updater + "#u6\","
                     + "\"guardedMutationSiteId\":\"" + updater + "#u15\","
                     + "\"requiredOutcome\":false,"
-                    + "\"guardedMutationCount\":1,"
-                    + "\"guardedMutationsAuthority\":\"STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE\","
                     + "\"guardedMutations\":[{"
                     + "\"guardSiteId\":\"" + updater + "#u6\","
                     + "\"guardedMutationSiteId\":\"" + updater + "#u15\","
@@ -210,7 +208,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"kind\":\"field_mutation\","
                     + "\"causalEdgeIds\":[\"DF.WRITE\"],"
                     + "\"authority\":\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
-                    + "\"requestedStateTransformerObligationCount\":1,"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
                     + "\"requestedStateTransformerContractAuthority\":"
@@ -219,7 +216,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"initializerId\":\"STATIC_INIT.REGION.W.0\","
                     + "\"kind\":\"FRESH_DEFAULT_CONSTRUCTED_OBJECT\","
                     + "\"allocatedType\":\"java.util.HashMap\","
-                    + "\"constructorArgumentCount\":0,"
                     + "\"outputPort\":\"REGION.W.out.0\","
                     + "\"outputCell\":\"" + field + "\","
                     + "\"proofEdgeIds\":[\"DF.1\"],"
@@ -374,8 +370,6 @@ public class RuntimeRegionPlannerTest {
                     "requestedStateTransformerContractVersion"));
             assertEquals(true, retainedSlice.get(
                     "requestedStateTransformerContractComplete"));
-            assertEquals(1, retainedSlice.get(
-                    "requestedStateTransformerObligationCount"));
             assertTrue(String.valueOf(retainedSlice.get(
                     "requestedStateTransformerObligations")).contains(
                     updater + "#u15"));
@@ -385,8 +379,6 @@ public class RuntimeRegionPlannerTest {
             assertTrue(String.valueOf(retainedSlice.get("inputBindings"))
                     .contains("requestedStateTransformerGuardSites=["
                             + updater + "#u14]"));
-            assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
-                    .contains("STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
                     .contains("guardedMutationSiteId=" + updater + "#u15"));
             assertTrue(String.valueOf(retainedSlice.get("causalEdges"))
@@ -600,7 +592,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"causalEdgeIds\":[\"DF.U\"],"
                     + "\"authority\":\"STATIC_EXACT_REQUESTED_"
                     + "OUTPUT_TARGET_CELL\"}],"
-                    + "\"requestedStateTransformerObligationCount\":2,"
                     + "\"requestedStateTransformerContractIssues\":[],"
                     + "\"requestedStateTransformerContractComplete\":true,"
                     + "\"requestedStateTransformerContractAuthority\":"
@@ -729,8 +720,6 @@ public class RuntimeRegionPlannerTest {
                     "captureDischargeAuthority"));
             assertEquals(Boolean.TRUE, slice.get(
                     "requestedStateTransformerContractComplete"));
-            assertEquals(1, slice.get(
-                    "requestedStateTransformerObligationCount"));
             assertTrue(((java.util.List<?>) slice.get("captureBindings"))
                     .isEmpty());
             assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
@@ -1570,7 +1559,6 @@ public class RuntimeRegionPlannerTest {
                     + "\"causalEdgeIds\":[\"DF.U\"],"
                     + "\"authority\":"
                     + "\"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL\"}],"
-                    + "\"requestedStateTransformerObligationCount\":2,"
                     + "\"requestedStateTransformerContractIssues\":"
                     + contractIssues + ","
                     + "\"requestedStateTransformerContractComplete\":"

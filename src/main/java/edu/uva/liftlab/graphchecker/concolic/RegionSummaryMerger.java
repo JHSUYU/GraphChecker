@@ -194,7 +194,6 @@ public final class RegionSummaryMerger {
         relation.addProperty("schemaVersion", 1);
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
         relation.add("cases", cases);
-        relation.addProperty("pathClosureState", pathState);
 
         String relationHash = sha256(region + "\n"
                 + firstInput.outputIdentity + "\n"

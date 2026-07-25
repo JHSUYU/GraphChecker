@@ -44,7 +44,6 @@ public final class TargetReachPathQueryBuilder {
     static JsonObject build(Arguments arguments) throws IOException {
         JsonObject manifest = ArtifactIO.readObject(arguments.pathManifest);
         if (!"CLOSED".equals(string(manifest, "state"))
-                || integer(manifest, "pendingTaskCount", -1) != 0
                 || array(manifest, "gaps").size() != 0
                 || !"TARGET_BRANCH".equals(string(manifest,
                 "captureGoal"))) {
@@ -141,7 +140,6 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("pathClosureState", "CLOSED");
         result.addProperty("observedPathCount",
                 integer(manifest, "observedPathCount", 0));
-        result.addProperty("reachedPathCount", paths.size());
         result.add("paths", encodedPaths);
         result.add("seedReplayContract",
                 object(seed, "replayContract").deepCopy());

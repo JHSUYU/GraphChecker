@@ -3875,10 +3875,7 @@ public final class ConcolicSummaryImporter {
         }
         JsonArray obligations = array(slice,
                 "requestedStateTransformerObligations");
-        if (obligations.size() == 0
-                || integer(slice,
-                "requestedStateTransformerObligationCount", -1)
-                != obligations.size()) {
+        if (obligations.size() == 0) {
             return "MISSING_HEAP_EFFECT_TRANSFORMER_OBLIGATIONS";
         }
         for (JsonElement element : obligations) {
@@ -5284,16 +5281,16 @@ public final class ConcolicSummaryImporter {
         if (entries.size() != 1 || outputs.size() != 1) return null;
         JsonObject entry = entries.get(0);
         JsonObject output = outputs.get(0);
-        int snapshotCount = integer(entry, "snapshotElementCount", -1);
         JsonArray snapshotTokens = array(entry,
                 "snapshotElementObjectTokens");
         JsonArray snapshotKeys = array(entry,
                 "snapshotEntryKeyExpressions");
+        int snapshotCount = snapshotTokens.size();
         complete &= completeMapProjectionObservation(entry, activationId,
                 groupId, mapPort, outputPort, outputCell, operation)
                 && completeMapProjectionObservation(output, activationId,
                 groupId, mapPort, outputPort, outputCell, operation)
-                && snapshotCount > 0 && snapshotTokens.size() == snapshotCount
+                && snapshotCount > 0
                 && snapshotKeys.size() == snapshotCount
                 && outputIndex < snapshotCount
                 && bool(entry, "entrySnapshotComplete", false)
@@ -5308,9 +5305,6 @@ public final class ConcolicSummaryImporter {
                         snapshotKeys.get(outputIndex))
                 && bool(output, "outputIdentityVerified", false)
                 && bool(output, "outputFieldValueFlowVerified", false)
-                && integer(output, "projectedFieldBindingCount", -1) > 0
-                && integer(output, "outputFieldValueVerifiedCount", -2)
-                == integer(output, "projectedFieldBindingCount", -1)
                 && "SAME_EXECUTION_BOUNDED_OBSERVED_SCHEDULE_EXACT_"
                 .concat("DECLARED_FIELD_ENTRY_VALUE_PLUS_NO_INTERVENING_")
                 .concat("RUNTIME_FIELD_WRITE_AND_EXACT_OUTPUT_RECHECK")
@@ -5368,8 +5362,6 @@ public final class ConcolicSummaryImporter {
         normalized.addProperty("fieldJavaType", fieldJavaType(signature));
         normalized.addProperty("outputValidationMode",
                 outputValidationMode);
-        normalized.addProperty("entrySnapshotElementCount", snapshotCount);
-        normalized.addProperty("outputElementCount", snapshotCount);
         normalized.add("entrySnapshotElementObjectTokens",
                 snapshotTokens.deepCopy());
         normalized.add("entrySnapshotMapKeyExpressions",
@@ -6558,9 +6550,6 @@ public final class ConcolicSummaryImporter {
                 "mapExpressionWitnessObjectTokenScope"));
         proof.addProperty("mapExpressionWitnessAuthority", string(
                 observation.record, "mapExpressionWitnessAuthority"));
-        proof.addProperty("candidateMutationCount", 0);
-        proof.addProperty("heapEffectCount", 0);
-        proof.addProperty("ignoredRuntimeHeapEvidenceCount", 0);
         proof.addProperty("selectorDigest", selectorDigest);
         proof.addProperty("statePortDerivationAuthority",
                 "REGION_AND_STATIC_OBSERVATION_SELECTOR_SHA256_V1");
@@ -7266,10 +7255,8 @@ public final class ConcolicSummaryImporter {
                     "requestedStateTransformerContractOutputCell"))
                     && array(slice,
                     "requestedStateTransformerContractIssues").size() == 0
-                    && integer(slice,
-                    "requestedStateTransformerObligationCount", -1)
-                    == array(slice,
-                    "requestedStateTransformerObligations").size();
+                    && array(slice,
+                    "requestedStateTransformerObligations").size() > 0;
             if (!headerValid) {
                 addTransformerContractIssue(transformerContractIssues,
                         "INVALID_OR_INCOMPLETE_CONTRACT_HEADER");
@@ -7934,16 +7921,12 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             JsonObject edge = element.getAsJsonObject();
-            if (!"heap_mutation_path_guard".equals(string(edge, "kind"))
-                    || !"STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE".equals(
-                    string(edge, "guardedMutationsAuthority"))) {
+            if (!"heap_mutation_path_guard".equals(string(edge, "kind"))) {
                 continue;
             }
             String edgeGuardSite = string(edge, "guardSiteId");
             JsonArray guarded = array(edge, "guardedMutations");
-            if (edgeGuardSite.isEmpty() || guarded.size() == 0
-                    || integer(edge, "guardedMutationCount", -1)
-                    != guarded.size()) {
+            if (edgeGuardSite.isEmpty() || guarded.size() == 0) {
                 continue;
             }
             for (JsonElement guardedElement : guarded) {
@@ -9028,22 +9011,12 @@ public final class ConcolicSummaryImporter {
                         + "EVIDENCED:" + port + ":" + identity);
                 continue;
             }
-            int separator = identity.lastIndexOf('#');
-            int count;
-            try {
-                count = Integer.parseInt(identity.substring(separator + 1));
-            } catch (NumberFormatException invalidCount) {
-                failures.add("VM_INTRINSIC_PLACEHOLDER_COUNT_INVALID:"
-                        + identity);
-                continue;
-            }
             JsonObject binding = new JsonObject();
             binding.addProperty("schemaVersion", 1);
             binding.addProperty("kind",
                     "VM_INTRINSIC_PLACEHOLDER_PORT_BINDING");
             binding.addProperty("placeholderIdentity", identity);
             binding.addProperty("placeholderFunction", function);
-            binding.addProperty("placeholderCount", count);
             binding.addProperty("inputPort", port);
             binding.addProperty("cell", string(requirement, "cell"));
             binding.addProperty("javaTypeDescriptor", "J");
@@ -10434,8 +10407,6 @@ public final class ConcolicSummaryImporter {
                     string(evidence, "allocationSiteId"));
             result.addProperty("constructor",
                     string(evidence, "constructor"));
-            result.addProperty("constructorArgumentCount",
-                    integer(evidence, "constructorArgumentCount", -1));
             result.add("proofEdgeIds", copy(evidence.get("proofEdgeIds"),
                     new JsonArray()));
             result.addProperty("proofComplete",
@@ -10515,8 +10486,6 @@ public final class ConcolicSummaryImporter {
                 if (!"FRESH_DEFAULT_CONSTRUCTED_OBJECT".equals(
                         string(initializer, "kind"))
                         || !bool(initializer, "proofComplete", false)
-                        || integer(initializer,
-                        "constructorArgumentCount", -1) != 0
                         || !"STATIC_ALLOCATION_CONSTRUCTOR_AND_"
                         .concat("FORWARD_CAUSAL_PATH").equals(
                                 string(initializer, "selectionAuthority"))

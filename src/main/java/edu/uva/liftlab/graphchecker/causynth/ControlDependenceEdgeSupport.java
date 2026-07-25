@@ -18,13 +18,6 @@ import java.util.Set;
  */
 final class ControlDependenceEdgeSupport {
     static final String PATH_GUARD_KIND = "path_guard_dependency";
-    private static final String PATH_GUARD_AUTHORITY =
-            "SOOT_CFG_REQUIRED_OUTCOME_TO_EXACT_RELEVANT_DEFINITION_V1";
-    private static final String MULTIWAY_PATH_GUARD_AUTHORITY =
-            "SOOT_CFG_REQUIRED_SUCCESSORS_TO_EXACT_RELEVANT_DEFINITION_V1";
-    private static final String OUTPUT_INDEPENDENCE_AUTHORITY =
-            "SOOT_CFG_BOTH_SIDES_EQUIVALENT_FOR_ALL_REGION_OUTPUTS_V1";
-
     private ControlDependenceEdgeSupport() {
     }
 
@@ -86,9 +79,6 @@ final class ControlDependenceEdgeSupport {
                     Objects.equals(guardCell, definitionCell));
             definitions.add(definition);
         }
-        edge.put("controlledDefinitionCount", definitions.size());
-        edge.put("controlledDefinitionsAuthority",
-                "STATIC_CONTROL_DEPENDENCE_PER_DEFINITION_SITE_V1");
         if (definitions.size() == 1) {
             edge.put("controlledDefinitionSiteId", definitionSiteId);
             edge.put("controlledDefinitionUnitIndex",
@@ -110,41 +100,11 @@ final class ControlDependenceEdgeSupport {
             edge.remove("reachingSuccessorIndices");
             edge.remove("sameCellRedefinition");
         }
-        edge.put("controlDependenceAuthority",
-                requiredOutcome instanceof Boolean
-                        ? PATH_GUARD_AUTHORITY
-                        : MULTIWAY_PATH_GUARD_AUTHORITY);
     }
 
     static boolean requiresSiteIdentity(String kind) {
         return kind != null && (PATH_GUARD_KIND.equals(kind)
                 || kind.endsWith("_path_guard"));
-    }
-
-    static void annotateOutputIndependentGuard(
-            Map<String, Object> edge, Collection<String> checkedOutputs,
-            String reason) {
-        List<String> outputs = stringList(checkedOutputs);
-        if (outputs.isEmpty() || stringValue(reason).isEmpty()) {
-            throw new IllegalArgumentException(
-                    "output-independence proof requires outputs and reason");
-        }
-        edge.put("outputPathIndependenceProven", true);
-        edge.put("outputPathIndependenceAuthority",
-                OUTPUT_INDEPENDENCE_AUTHORITY);
-        edge.put("outputPathIndependenceReason", reason);
-        edge.put("outputPathIndependenceCheckedOutputs", outputs);
-    }
-
-    static boolean hasAuditableOutputIndependenceProof(
-            Map<String, Object> edge) {
-        return Boolean.TRUE.equals(edge.get("outputPathIndependenceProven"))
-                && OUTPUT_INDEPENDENCE_AUTHORITY.equals(stringValue(
-                edge.get("outputPathIndependenceAuthority")))
-                && !stringValue(edge.get(
-                "outputPathIndependenceReason")).isEmpty()
-                && !stringList(edge.get(
-                "outputPathIndependenceCheckedOutputs")).isEmpty();
     }
 
     static boolean annotateGuardedMutation(
@@ -188,9 +148,6 @@ final class ControlDependenceEdgeSupport {
             item.put("reachingSuccessorIndices", successorIndices);
             guardedMutations.add(item);
         }
-        edge.put("guardedMutationCount", guardedMutations.size());
-        edge.put("guardedMutationsAuthority",
-                "STATIC_CONTROL_DEPENDENCE_PER_MUTATION_SITE");
         if (guardedMutations.size() == 1) {
             edge.put("guardedMutationSiteId", mutationSiteId);
             if (requiredOutcome instanceof Boolean) {
@@ -250,9 +207,6 @@ final class ControlDependenceEdgeSupport {
             item.put("reachingSuccessorIndices", successorIndices);
             effects.add(item);
         }
-        edge.put("guardedEffectCount", effects.size());
-        edge.put("guardedEffectsAuthority",
-                "STATIC_CONTROL_DEPENDENCE_PER_RECEIVER_EFFECT_SITE_V1");
         if (effects.size() == 1) {
             if (requiredOutcome instanceof Boolean) {
                 edge.put("requiredOutcome", requiredOutcome);
@@ -289,20 +243,6 @@ final class ControlDependenceEdgeSupport {
             }
         }
         return new ArrayList<>(unique);
-    }
-
-    private static List<String> stringList(Object values) {
-        if (!(values instanceof Collection)) {
-            return Collections.emptyList();
-        }
-        List<String> result = new ArrayList<>();
-        for (Object value : (Collection<?>) values) {
-            String text = stringValue(value);
-            if (!text.isEmpty() && !result.contains(text)) {
-                result.add(text);
-            }
-        }
-        return result;
     }
 
     private static String siteId(String method, int unitIndex, String kind) {

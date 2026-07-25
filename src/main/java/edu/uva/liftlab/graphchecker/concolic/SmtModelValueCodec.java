@@ -84,49 +84,6 @@ public final class SmtModelValueCodec {
         return Double.toString(decoded);
     }
 
-    /** Decodes the canonical FP terms printed by Z3 {@code get-value}. */
-    public static String floatingPointTermToJavaLiteral(String value,
-                                                        String descriptor) {
-        String raw = value == null ? "" : value.trim();
-        String direct = floatingPointBitsToJavaLiteral(raw, descriptor);
-        if (direct != null) return direct;
-        int exponentWidth = "F".equals(descriptor) ? 8
-                : "D".equals(descriptor) ? 11 : 0;
-        int significandWidth = "F".equals(descriptor) ? 23
-                : "D".equals(descriptor) ? 52 : 0;
-        if (exponentWidth == 0) return null;
-
-        List<String> special = applicationArguments(raw, "_");
-        if (special != null && special.size() == 3
-                && Integer.toString(exponentWidth).equals(special.get(1))
-                && Integer.toString(significandWidth + 1).equals(
-                special.get(2))) {
-            if ("+zero".equals(special.get(0))) return "0.0";
-            if ("-zero".equals(special.get(0))) return "-0.0";
-            if ("+oo".equals(special.get(0))) return "Infinity";
-            if ("-oo".equals(special.get(0))) return "-Infinity";
-            if ("NaN".equals(special.get(0))) return "NaN";
-        }
-
-        List<String> fields = applicationArguments(raw, "fp");
-        if (fields == null || fields.size() != 3) return null;
-        String sign = bitString(fields.get(0), 1);
-        String exponent = bitString(fields.get(1), exponentWidth);
-        String significand = bitString(fields.get(2), significandWidth);
-        if (sign == null || exponent == null || significand == null) {
-            return null;
-        }
-        BigInteger bits = new BigInteger(sign + exponent + significand, 2);
-        String hex = bits.toString(16);
-        int digits = (1 + exponentWidth + significandWidth) / 4;
-        StringBuilder padded = new StringBuilder("#x");
-        for (int index = hex.length(); index < digits; index++) {
-            padded.append('0');
-        }
-        return floatingPointBitsToJavaLiteral(padded.append(hex).toString(),
-                descriptor);
-    }
-
     /** Decodes SMT-LIB's doubled-quote escaping. */
     public static String decodeString(String value) {
         String raw = value == null ? "" : value;
@@ -188,28 +145,6 @@ public final class SmtModelValueCodec {
             return null;
         }
         return null;
-    }
-
-    private static String bitString(String value, int width) {
-        String raw = value == null ? "" : value.trim();
-        String bits;
-        if (raw.startsWith("#b")) {
-            bits = raw.substring(2);
-        } else if (raw.startsWith("#x")) {
-            try {
-                bits = new BigInteger(raw.substring(2), 16).toString(2);
-            } catch (RuntimeException malformed) {
-                return null;
-            }
-        } else {
-            return null;
-        }
-        if (bits.length() > width) return null;
-        StringBuilder result = new StringBuilder(width);
-        for (int index = bits.length(); index < width; index++) {
-            result.append('0');
-        }
-        return result.append(bits).toString();
     }
 
     private static boolean numericAtom(String value) {

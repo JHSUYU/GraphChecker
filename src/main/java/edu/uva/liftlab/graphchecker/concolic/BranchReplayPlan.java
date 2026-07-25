@@ -96,13 +96,4 @@ public final class BranchReplayPlan {
         return solverPathContext;
     }
 
-    /** All solver predicates; ordering is immaterial because they conjoin. */
-    public JsonArray solverPredicates() {
-        JsonArray result = solverPathContext.expressions();
-        for (JsonElement predicate : replayContract.requiredPathPredicates()) {
-            result.add(predicate);
-        }
-        return result;
-    }
-
 }

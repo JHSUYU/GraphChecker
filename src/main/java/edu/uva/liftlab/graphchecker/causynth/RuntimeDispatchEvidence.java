@@ -124,10 +124,6 @@ final class RuntimeDispatchEvidence {
         return rowCount;
     }
 
-    int siteCount() {
-        return observations.size();
-    }
-
     int rejectedRowCount() {
         return rejectedRowCount;
     }

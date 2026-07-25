@@ -237,7 +237,6 @@ public class CausynthPipelineTest {
         slice.addProperty("requestedStateTransformerContractOutputCell",
                 outputCell);
         slice.add("requestedStateTransformerContractIssues", new JsonArray());
-        slice.addProperty("requestedStateTransformerObligationCount", 1);
         JsonObject obligation = new JsonObject();
         obligation.addProperty("siteId", "<example.Manager: void add()>#u1");
         obligation.addProperty("method", "<example.Manager: void add()>");

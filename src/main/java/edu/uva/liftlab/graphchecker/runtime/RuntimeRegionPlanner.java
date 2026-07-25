@@ -1812,7 +1812,6 @@ final class RuntimeRegionPlanner {
                     "switchCaseKeys", policy.switchCaseKeys,
                     "defaultSuccessorIndex",
                     policy.defaultSuccessorIndex,
-                    "successorCount", policy.successorCount,
                     "observed", event != null,
                     "observedOutcome", observedOutcome,
                     "matchesRequiredOutcome", matchesRequired,
@@ -5200,8 +5199,7 @@ final class RuntimeRegionPlanner {
                                 "requiredSuccessorIndices"),
                         jsonString(object, "branchKind"),
                         jsonIntArray(object, "switchCaseKeys"),
-                        jsonInt(object, "defaultSuccessorIndex", -1),
-                        jsonInt(object, "successorCount", -1)));
+                        jsonInt(object, "defaultSuccessorIndex", -1)));
             }
             for (String object : jsonObjectArray(json, "argumentPathFields")) {
                 String method = jsonString(object, "method");
@@ -6945,7 +6943,6 @@ final class RuntimeRegionPlanner {
         private String requestedStateTransformerContractOutputCell = "";
         private final List<Map<String, Object>>
                 requestedStateTransformerObligations = new ArrayList<>();
-        private int requestedStateTransformerObligationCount;
         private final List<String> requestedStateTransformerContractIssues =
                 new ArrayList<>();
         private boolean requestedStateTransformerContractComplete;
@@ -7084,9 +7081,6 @@ final class RuntimeRegionPlanner {
                         "causalEdgeIds"),
                         "authority", jsonString(obligation, "authority")));
             }
-            slice.requestedStateTransformerObligationCount = jsonInt(json,
-                    "requestedStateTransformerObligationCount",
-                    slice.requestedStateTransformerObligations.size());
             slice.requestedStateTransformerContractIssues.addAll(
                     jsonStringArray(json,
                             "requestedStateTransformerContractIssues"));
@@ -7117,8 +7111,6 @@ final class RuntimeRegionPlanner {
                         "allocationUnitIndex", -1),
                         "constructor", jsonString(initializer,
                         "constructor"),
-                        "constructorArgumentCount", jsonInt(initializer,
-                        "constructorArgumentCount", -1),
                         "constructorSiteId", jsonString(initializer,
                         "constructorSiteId"),
                         "constructorUnitIndex", jsonInt(initializer,
@@ -7470,12 +7462,9 @@ final class RuntimeRegionPlanner {
             }
             copyString(json, result, "guardSiteId");
             copyString(json, result, "guardedMutationSiteId");
-            copyString(json, result, "guardedMutationsAuthority");
             Boolean required = jsonOptionalBoolean(json,
                     "requiredOutcome");
             if (required != null) result.put("requiredOutcome", required);
-            int count = jsonInt(json, "guardedMutationCount", -1);
-            if (count >= 0) result.put("guardedMutationCount", count);
             List<Map<String, Object>> mutations = new ArrayList<>();
             for (String mutation : jsonObjectArray(json,
                     "guardedMutations")) {
@@ -7652,9 +7641,6 @@ final class RuntimeRegionPlanner {
                     refined.runtimeRefinementComplete = false;
                 }
             }
-            refined.requestedStateTransformerObligationCount =
-                    refined.requestedStateTransformerObligations.size();
-
             Set<String> staticBranchSites = new LinkedHashSet<>();
             for (BranchPolicy branch : evidence.region.branches) {
                 staticBranchSites.add(branch.siteId);
@@ -7892,8 +7878,7 @@ final class RuntimeRegionPlanner {
             boolean staticTransformerContractLedgerComplete =
                     requestedStateTransformerContractComplete
                             && requestedStateTransformerContractIssues.isEmpty()
-                            && requestedStateTransformerObligationCount
-                            == requestedStateTransformerObligations.size();
+                            && !requestedStateTransformerObligations.isEmpty();
             // This fact is deliberately independent of
             // runtimeRefinementComplete.  Capture discharge consumes both
             // facts as siblings below; making either one define the other
@@ -8043,9 +8028,7 @@ final class RuntimeRegionPlanner {
                     || !"STATIC_EXACT_REQUESTED_OUTPUT_TARGET_CELL_V1"
                     .equals(requestedStateTransformerContractAuthority)
                     || !requestedStateTransformerContractIssues.isEmpty()
-                    || requestedStateTransformerObligations.isEmpty()
-                    || requestedStateTransformerObligationCount
-                    != requestedStateTransformerObligations.size()) {
+                    || requestedStateTransformerObligations.isEmpty()) {
                 return false;
             }
 
@@ -8432,8 +8415,6 @@ final class RuntimeRegionPlanner {
                         requestedStateTransformerContractOutputCell);
                 result.put("requestedStateTransformerObligations",
                         requestedStateTransformerObligations);
-                result.put("requestedStateTransformerObligationCount",
-                        requestedStateTransformerObligationCount);
                 result.put("requestedStateTransformerContractIssues",
                         requestedStateTransformerContractIssues);
                 result.put("requestedStateTransformerContractComplete",
@@ -8576,15 +8557,13 @@ final class RuntimeRegionPlanner {
         private final String branchKind;
         private final List<Integer> switchCaseKeys;
         private final int defaultSuccessorIndex;
-        private final int successorCount;
 
         private BranchPolicy(String siteId, String policy, String guard,
                              Boolean requiredOutcome,
                              List<Integer> requiredSuccessorIndices,
                              String branchKind,
                              List<Integer> switchCaseKeys,
-                             int defaultSuccessorIndex,
-                             int successorCount) {
+                             int defaultSuccessorIndex) {
             this.siteId = safe(siteId);
             this.policy = safe(policy);
             this.guard = safe(guard);
@@ -8595,7 +8574,6 @@ final class RuntimeRegionPlanner {
             this.switchCaseKeys = Collections.unmodifiableList(
                     new ArrayList<>(switchCaseKeys));
             this.defaultSuccessorIndex = defaultSuccessorIndex;
-            this.successorCount = successorCount;
         }
 
         private boolean isSwitch() {

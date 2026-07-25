@@ -102,10 +102,6 @@ public final class BranchWitness {
                 string(json, "predicateNormalization"));
     }
 
-    public static BranchWitness fromMapping(JsonObject mapping) {
-        return fromJson(object(mapping, "witness"));
-    }
-
     public JsonObject toJson() {
         return coreJson();
     }
@@ -140,11 +136,6 @@ public final class BranchWitness {
 
     public String predicateNormalization() {
         return predicateNormalization;
-    }
-
-    public boolean sameBranchEvent(BranchWitness other) {
-        return other != null && siteId.equals(other.siteId)
-                && occurrence == other.occurrence;
     }
 
     public boolean sameContent(BranchWitness other) {

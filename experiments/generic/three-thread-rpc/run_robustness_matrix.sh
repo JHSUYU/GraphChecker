@@ -273,11 +273,10 @@ validate_multitype_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputClosure"] | sort)
+        "state", "bounds", "observedPathCount", "gaps",
+        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "multitype producer path closure is incomplete or single-path"
@@ -287,7 +286,6 @@ validate_multitype_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         .guard.kind == "PATH_CONDITION"
@@ -399,11 +397,10 @@ validate_dependent_scalar_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
       and .observedPathCount > 1
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputClosure"] | sort)
+        "state", "bounds", "observedPathCount", "gaps",
+        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
     and ([.[].observedPathCount] | sort) == [2, 6]
   ' "${path_closures[@]}" >/dev/null \
@@ -421,7 +418,6 @@ validate_dependent_scalar_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         (.guard.conditions | length) > 0
@@ -474,11 +470,10 @@ validate_container_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
       and .observedPathCount >= 2
       and (keys | sort) == (["schemaVersion", "kind", "regionId",
-        "state", "bounds", "observedPathCount", "pendingTaskCount",
-        "gaps", "outputClosure"] | sort)
+        "state", "bounds", "observedPathCount", "gaps",
+        "outputClosure"] | sort)
       and (.outputClosure.kind == "OUTPUT_CLOSURE_CONTRACT"))
   ' "${path_closures[@]}" >/dev/null \
     || die "container producer path closure is incomplete"
@@ -518,7 +513,6 @@ validate_container_producer_artifacts() {
     | $outputSlice.containerElementFieldBindings[0] as $static
     | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
-    and .regionRelation.pathClosureState == "CLOSED"
     and (.regionRelation.cases | length) == 2
     and ($outputSlice.containerElementFieldBindings | length) == 1
     and $static.schemaVersion == 2
@@ -569,7 +563,6 @@ validate_container_producer_artifacts() {
     (singleton_output_member | .slice) as $outputSlice
     | (.relationallyComplete == true
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
-    and .regionRelation.pathClosureState == "CLOSED"
     and (.regionRelation.cases | length) >= 2
     and ($outputSlice.inputAliasCanonicalizations | length) >= 3
     and all($outputSlice.inputAliasCanonicalizations[];
@@ -666,7 +659,6 @@ validate_unreachable_parity_producer_artifacts() {
       and (.regionId | type == "string" and length > 0)
       and .state == "CLOSED"
       and (.gaps | length) == 0
-      and .pendingTaskCount == 0
       and .observedPathCount > 2)
   ' "${path_closures[@]}" >/dev/null \
     || die "unreachable-parity producer path closure is incomplete"
@@ -676,7 +668,6 @@ validate_unreachable_parity_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 2
       and all(.regionRelation.cases[];
         (.guard.conditions | length) > 0
@@ -770,7 +761,6 @@ validate_scalar_unsat_producer_artifacts() {
     length == 2
     and all(.[];
       .state == "CLOSED"
-      and .pendingTaskCount == 0
       and (.gaps | length) == 0
       and .observedPathCount > 1)
   ' "${path_closures[@]}" >/dev/null \
@@ -781,7 +771,6 @@ validate_scalar_unsat_producer_artifacts() {
     and all(.[];
       .relationallyComplete == true
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
-      and .regionRelation.pathClosureState == "CLOSED"
       and (.regionRelation.cases | length) > 1
       and (output_members | map(.output.portId) | sort) as $ports
       | all(.regionRelation.cases[];
@@ -846,7 +835,6 @@ validate_compound_target_artifacts() {
     .kind == "REGION_PATH_WORKLIST"
     and .state == "CLOSED"
     and .captureGoal == "TARGET_BRANCH"
-    and .pendingTaskCount == 0
     and (.gaps | length) == 0
     and .observedPathCount > 2
   ' "${target_closure}" >/dev/null \
@@ -860,13 +848,12 @@ validate_compound_target_artifacts() {
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
     and .readyForSolver == true
     and .observedPathCount == $closure[0].observedPathCount
-    and .reachedPathCount == (.paths | length)
     and (if $expectation == "positive"
-      then .reachedPathCount > 1
+      then (.paths | length) > 1
         and all(.paths[];
           (.constraints | length) >= 3)
         and any(.paths[]; (.constraints | length) >= 4)
-      else .reachedPathCount == 0
+      else (.paths | length) == 0
       end)
   ' "${target_query}" >/dev/null \
     || die "${label} target reach-path query is incomplete"
@@ -908,7 +895,6 @@ validate_compound_target_artifacts() {
     length == 2
     and all(.[];
       .state == "CLOSED"
-      and .pendingTaskCount == 0
       and (.gaps | length) == 0
       and .observedPathCount == 2)
   ' "${producer_closures[@]}" >/dev/null \
@@ -928,8 +914,6 @@ validate_compound_target_artifacts() {
     "${output_closure_helpers}"'
     .fatalConstraintAuthority
       == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
-    and .fatalPathCount
-      == (if $expectation == "positive" then 4 else 0 end)
     and (.includedSummaries | length) == 2
     and (.resolvedProducerKeys | length) == 6
     and (.resolvedEdgeBindings | length) == 6

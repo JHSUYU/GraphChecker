@@ -589,17 +589,12 @@ final class SymbolicRegionPlanner {
                     boundarySites.add(site);
                 }
             }
-            int internalEdges = 0;
-            int interRegionEdges = 0;
-            int alternativePathEdges = 0;
             List<String> uncoveredEdges = new ArrayList<>();
             for (Map<String, Object> edge : graph.edges()) {
                 String method = string(edge.get("method"));
                 String site = string(edge.get("siteId"));
                 if (isBoundary(edge)) {
-                    if (boundarySites.contains(site)) {
-                        interRegionEdges++;
-                    } else {
+                    if (!boundarySites.contains(site)) {
                         uncoveredEdges.add(string(edge.get("id")) + ":" + site);
                     }
                     continue;
@@ -609,35 +604,21 @@ final class SymbolicRegionPlanner {
                     callee = invokedMethodFromCells(edge);
                 }
                 if (!callee.isEmpty() && factsByMethod.containsKey(callee)) {
-                    if (shareRegion(method, callee, regionsByMethod,
-                            methodsByRegion)) {
-                        internalEdges++;
-                    } else if (alternativeNonCausalEdge(edge,
+                    if (!shareRegion(method, callee, regionsByMethod,
+                            methodsByRegion)
+                            && !alternativeNonCausalEdge(edge,
                             regionsByMethod, regionById)) {
-                        alternativePathEdges++;
-                    } else {
                         uncoveredEdges.add(string(edge.get("id")) + ":"
                                 + method + "->" + callee);
                     }
-                } else if (regionsByMethod.containsKey(method)) {
-                    internalEdges++;
-                } else {
+                } else if (!regionsByMethod.containsKey(method)) {
                     uncoveredEdges.add(string(edge.get("id")) + ":" + method);
                 }
             }
             Collections.sort(uncoveredMethods);
             int sampleLimit = Math.min(32, uncoveredEdges.size());
             boolean complete = uncoveredMethods.isEmpty() && uncoveredEdges.isEmpty();
-            result.coverage.put("methodPlanCount", factsByMethod.size());
-            result.coverage.put("regionCoveredMethodCount", regionsByMethod.size());
-            result.coverage.put("uncoveredMethodCount", uncoveredMethods.size());
             result.coverage.put("uncoveredMethods", uncoveredMethods);
-            result.coverage.put("staticEdgeCount", graph.edges().size());
-            result.coverage.put("internalEdgeCount", internalEdges);
-            result.coverage.put("interRegionEdgeCount", interRegionEdges);
-            result.coverage.put("alternativePathEdgeCount",
-                    alternativePathEdges);
-            result.coverage.put("uncoveredEdgeCount", uncoveredEdges.size());
             result.coverage.put("uncoveredEdgeSamples",
                     new ArrayList<>(uncoveredEdges.subList(0, sampleLimit)));
             result.coverage.put("complete", complete);
@@ -1477,7 +1458,7 @@ final class SymbolicRegionPlanner {
                 List<Map<String, Object>> policyEdges =
                         authoritativeBranchPolicyEdges(siteEdges);
                 Map<String, Object> branchPolicy = branchPolicy(
-                        policyEdges, draft, outputCandidates, false);
+                        policyEdges, draft);
                 String site = string(branchPolicy.get("siteId"));
                 sites.add(site);
                 branchPolicies.add(branchPolicy);
@@ -1545,7 +1526,7 @@ final class SymbolicRegionPlanner {
             List<Map<String, Object>> outputSlices = outputSlices(draft,
                     inputPorts, outputPorts);
             mergeRequestedOutputSliceBranchPolicies(draft, outputSlices,
-                    outputCandidates, branchPolicies, sites);
+                    branchPolicies, sites);
 
             if (!draft.exceptionDirected) {
                 for (String method : draft.methods) {
@@ -4380,7 +4361,6 @@ final class SymbolicRegionPlanner {
                                 allocation.get("unitIndex"), -1),
                         "constructor", string(allocation.get(
                                 "allocationConstructor")),
-                        "constructorArgumentCount", 0,
                         "constructorSiteId", string(allocation.get(
                                 "allocationConstructorSiteId")),
                         "constructorUnitIndex", integer(allocation.get(
@@ -7621,24 +7601,17 @@ final class SymbolicRegionPlanner {
         }
 
         private Map<String, Object> branchPolicy(
-                List<Map<String, Object>> policyEdges, RegionDraft draft,
-                Collection<String> outputCandidates,
-                boolean requestedOutputCausal) {
+                List<Map<String, Object>> policyEdges, RegionDraft draft) {
             Map<String, Object> edge = strongestBranchPolicyEdge(
                     policyEdges, draft);
             String site = string(edge.get("siteId"));
             String guard = firstNonEmpty(string(edge.get("unit")),
                     string(edge.get("toCell")), site);
-            Map<String, Object> independenceProof = requestedOutputCausal
-                    ? null : outputIndependenceProof(policyEdges,
-                    outputCandidates);
-            boolean outputIndependent = independenceProof != null;
             Map<String, Object> result = object(
                     "siteId", site,
                     "method", string(edge.get("method")),
                     "unitIndex", integer(edge.get("unitIndex"), -1),
-                    "policy", outputIndependent
-                            ? "PATH_ASSUMPTION" : "EXPLORE",
+                    "policy", "EXPLORE",
                     "guard", guard,
                     "requiredOutcome", commonRequiredOutcome(policyEdges),
                     "requiredSuccessorIndices",
@@ -7647,9 +7620,7 @@ final class SymbolicRegionPlanner {
                     "switchCaseKeys", integerValues(edge.get(
                             "switchCaseKeys")),
                     "defaultSuccessorIndex", integer(edge.get(
-                            "defaultSuccessorIndex"), -1),
-                    "successorCount", integer(edge.get(
-                            "successorCount"), -1));
+                            "defaultSuccessorIndex"), -1));
             return result;
         }
 
@@ -7663,7 +7634,6 @@ final class SymbolicRegionPlanner {
          */
         private void mergeRequestedOutputSliceBranchPolicies(
                 RegionDraft draft, List<Map<String, Object>> outputSlices,
-                Collection<String> outputCandidates,
                 List<Map<String, Object>> branchPolicies,
                 Set<String> sites) {
             Set<String> selectedEdgeIds = new LinkedHashSet<>();
@@ -7697,8 +7667,7 @@ final class SymbolicRegionPlanner {
                     : causalBySite.entrySet()) {
                 List<Map<String, Object>> policyEdges =
                         authoritativeBranchPolicyEdges(entry.getValue());
-                Map<String, Object> policy = branchPolicy(policyEdges,
-                        draft, outputCandidates, true);
+                Map<String, Object> policy = branchPolicy(policyEdges, draft);
                 Integer existingIndex = policyIndexBySite.get(entry.getKey());
                 if (existingIndex == null) {
                     policyIndexBySite.put(entry.getKey(),
@@ -7742,29 +7711,6 @@ final class SymbolicRegionPlanner {
                 }
             }
             return found ? common : null;
-        }
-
-        private Map<String, Object> outputIndependenceProof(
-                Collection<Map<String, Object>> siteEdges,
-                Collection<String> outputs) {
-            for (Map<String, Object> edge : siteEdges) {
-                if (ControlDependenceEdgeSupport
-                        .hasAuditableOutputIndependenceProof(edge)
-                        && outputIndependenceCovers(edge, outputs)) {
-                    return edge;
-                }
-            }
-            return null;
-        }
-
-        private boolean outputIndependenceCovers(
-                Map<String, Object> edge, Collection<String> outputs) {
-            if (outputs == null || outputs.isEmpty()) {
-                return false;
-            }
-            Set<String> checked = new LinkedHashSet<>(strings(edge.get(
-                    "outputPathIndependenceCheckedOutputs")));
-            return checked.containsAll(outputs);
         }
 
         private List<Integer> requiredSuccessorIndices(

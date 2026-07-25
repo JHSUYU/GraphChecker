@@ -184,3 +184,18 @@ correctness	objectIdentity/fingerprint	RuntimeRegionPlanner	Scheduler/Composer	m
 correctness	failClosedGaps	all stages	next stage/run.sh	run.sh,matrix	not derivable	KEEP_AND_UNIFY	5
 correctness	CANDIDATE_ONLY	Composer/result builder	final consumers	matrix	not derivable	KEEP	-
 correctness	artifactSha256	result builder	final consumers	matrix	not derivable	KEEP	-
+path-worklist	pendingTaskCount	RegionPathWorklist	run.sh,matrix	run.sh,matrix	state plus persisted worklist entries	DELETE_AND_UPDATE_READERS	6+
+target-query	reachedPathCount	TargetReachPathQueryBuilder	run.sh,matrix	run.sh,matrix	paths.length	DELETE_AND_UPDATE_READERS	6+
+merged-relation	pathClosureState	RegionSummaryMerger	matrix	matrix	successful merge requires CLOSED worklist admission	DELETE_AND_UPDATE_READER	6+
+composer-manifest	fatalPathCount	ConcolicSmtComposer	matrix	matrix	fatal paths.length	DELETE_AND_UPDATE_READER	6+
+static-edge	branch successor/authority mirrors	CausynthBranchShape	RuntimeRegionPlanner/tests	none	switchCaseKeys/defaultSuccessorIndex and CFG successors	DELETE_AND_UPDATE_READERS	6+
+static-edge	control-dependence count/authority mirrors	ControlDependenceEdgeSupport	RuntimeRegionPlanner/tests	none	controlledDefinitions/guardedMutations/guardedEffects arrays	DELETE_AND_UPDATE_READERS	6+
+static-coverage	method/edge count mirrors	SymbolicRegionPlanner	none	none	canonical methods/edges plus uncovered arrays and complete gate	DELETE	6+
+raw-result	map projection count mirrors	ConcolicRegionRuntime	ConcolicSummaryImporter/tests	none	snapshot token/key/binding arrays and verified boolean	DELETE_AND_UPDATE_READERS	6+
+activation	transformer obligation count	RuntimeRegionPlanner	RuntimeRegionPlanner/tests	none	requestedStateTransformerObligations.length	DELETE_AND_UPDATE_READERS	6+
+summary	map entry/output element count mirrors	ConcolicSummaryImporter	ConcolicSmtComposer/tests	none	canonical token/key arrays	DELETE_AND_UPDATE_READERS	6+
+summary	nonmutating candidate/effect zero counts	ConcolicSummaryImporter	ConcolicSmtComposer/tests	none	proof kind plus absence of mutation/effect evidence	DELETE_AND_UPDATE_READERS	6+
+activation	vm placeholderCount	RuntimeRegionPlanner	ConcolicSmtComposer/tests	none	canonical currentTimeMills#N identity	DELETE_AND_UPDATE_READERS	6+
+static-output	fresh-map constructorArgumentCount	SymbolicRegionPlanner	Importer/Composer/tests	none	exact default-constructor signature	DELETE_AND_UPDATE_READERS	6+
+static-edge	output-independence pseudo-proof	none	SymbolicRegionPlanner	none	no production writer; branch always EXPLORE	DELETE_UNREACHABLE_PROTOCOL	6+
+production-api	ten zero-call helper methods	multiple packages	none	none	no production/test callers	DELETE	6+
