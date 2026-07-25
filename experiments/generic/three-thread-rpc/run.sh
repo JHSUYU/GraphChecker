@@ -1446,12 +1446,11 @@ do_candidate_compose() {
     CAUSYNTH_FATAL_REGION="${target_region}" \
     CAUSYNTH_FATAL_ACTIVATION_ID="${target_activation}" \
     "${runner}" --config "${config}" compose "${bounded_args[@]}")
-  jq -e --argjson expected "${#channels[@]}" '
+  jq -e '
     .schemaVersion == 2
     and .kind == "CONCOLIC_COMPOSED_SMT"
     and .state == "CANDIDATE_READY"
     and .trustState == "CANDIDATE_ONLY"
-    and ((.boundedUpstreamRegions // []) | length) == $expected
     and (.gaps | type == "array" and length == 0)
   ' "${candidate_root}/candidate_composition_manifest.json" >/dev/null \
     || die "composition is not a structurally complete candidate model"

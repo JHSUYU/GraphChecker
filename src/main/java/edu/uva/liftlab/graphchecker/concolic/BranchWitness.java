@@ -3,10 +3,6 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.util.Arrays;
-import java.util.LinkedHashSet;
-import java.util.Set;
-
 /**
  * Immutable authority for one observed binary branch.
  *
@@ -86,17 +82,12 @@ public final class BranchWitness {
     }
 
     public static BranchWitness fromJson(JsonObject json) {
-        requireExactKeys(json, "branch witness", "schemaVersion", "kind",
-                "site", "sourceTakenOutcome", "sourceSatisfiedPredicate",
-                "vmPcIndex", "predicateNormalization");
         if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(json, "kind"))) {
             throw new IllegalArgumentException(
                     "unsupported binary branch witness schema");
         }
         JsonObject site = object(json, "site");
-        requireExactKeys(site, "branch witness site", "siteId", "method",
-                "unitIndex", "occurrence");
         JsonElement outcome = json.get("sourceTakenOutcome");
         if (outcome == null || !outcome.isJsonPrimitive()
                 || !outcome.getAsJsonPrimitive().isBoolean()) {
@@ -188,23 +179,6 @@ public final class BranchWitness {
         result.addProperty("predicateNormalization",
                 predicateNormalization);
         return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    private static void requireExactKeys(JsonObject object, String label,
-                                         String... allowed) {
-        if (object == null) {
-            throw new IllegalArgumentException(label + " is required");
-        }
-        Set<String> expected = new LinkedHashSet<>(Arrays.asList(allowed));
-        Set<String> actual = new LinkedHashSet<>();
-        for (java.util.Map.Entry<String, JsonElement> entry
-                : object.entrySet()) {
-            actual.add(entry.getKey());
-        }
-        if (!actual.equals(expected)) {
-            throw new IllegalArgumentException(label + " keys must be "
-                    + expected + " but were " + actual);
-        }
     }
 
     private static JsonObject object(JsonObject parent, String name) {

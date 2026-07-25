@@ -14,7 +14,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * Versioned structural codec for {@link OutputClosureContract}.
@@ -26,15 +25,6 @@ import java.util.TreeSet;
 public final class OutputClosureCodec {
     private static final int MAX_MEMBERS = 128;
     private static final int MAX_DESCRIPTOR_LENGTH = 1024;
-    private static final Set<String> ENVELOPE_KEYS = set(
-            "schemaVersion", "kind", "producer", "members");
-    private static final Set<String> PRODUCER_KEYS = set(
-            "regionId", "regionInstanceId", "rootCallId");
-    private static final Set<String> MEMBER_KEYS = set(
-            "output", "slice");
-    private static final Set<String> OUTPUT_KEYS = set(
-            "portId", "cell", "kind", "javaTypeDescriptor",
-            "selectionAuthority");
     private static final Set<String> OUTPUT_KINDS = set(
             "REGION_OUTPUT", "SINK_STATE", "HEAP_STATE",
             "FAILURE_PREDICATE", "RETURN");
@@ -78,12 +68,10 @@ public final class OutputClosureCodec {
     }
 
     public static OutputClosureContract decodeEnvelope(JsonObject envelope) {
-        exactKeys(envelope, ENVELOPE_KEYS, "outputClosure");
         requireInt(envelope, "schemaVersion",
                 OutputClosureContract.SCHEMA_VERSION);
         requireText(envelope, "kind", OutputClosureContract.KIND);
         JsonObject scope = requireObject(envelope, "producer");
-        exactKeys(scope, PRODUCER_KEYS, "outputClosure.producer");
         OutputClosureContract.Producer producer =
                 new OutputClosureContract.Producer(
                         requireText(scope, "regionId"),
@@ -244,9 +232,7 @@ public final class OutputClosureCodec {
     private static OutputClosureContract.Member decodeMember(
             JsonObject encoded, int index) {
         String path = "outputClosure.members[" + index + "]";
-        exactKeys(encoded, MEMBER_KEYS, path);
         JsonObject output = requireObject(encoded, "output");
-        exactKeys(output, OUTPUT_KEYS, path + ".output");
         String port = requireText(output, "portId");
         String cell = requireText(output, "cell");
         String kind = requireText(output, "kind");
@@ -528,21 +514,6 @@ public final class OutputClosureCodec {
             }
         }
         return result;
-    }
-
-    private static void exactKeys(
-            JsonObject object, Set<String> expected, String path) {
-        if (object == null || !object.keySet().equals(expected)) {
-            TreeSet<String> missing = new TreeSet<>(expected);
-            missing.removeAll(object == null
-                    ? Collections.<String>emptySet() : object.keySet());
-            TreeSet<String> extra = new TreeSet<>(object == null
-                    ? Collections.<String>emptySet() : object.keySet());
-            extra.removeAll(expected);
-            throw new IllegalArgumentException(path
-                    + " keys mismatch; missing=" + missing
-                    + ", extra=" + extra);
-        }
     }
 
     private static JsonObject requireObject(JsonObject object, String name) {

@@ -25,6 +25,7 @@ import java.util.regex.Pattern;
  * The unit of concolic execution is a region, not an individual edge.</p>
  */
 final class SymbolicRegionPlanner {
+    private static final int REGION_SCHEMA_VERSION = 2;
     private static final int MAX_ANCHORS = 16;
     private static final int MAX_REGIONS = 64;
     private static final int MAX_REGION_METHODS = 64;
@@ -1552,7 +1553,7 @@ final class SymbolicRegionPlanner {
                 }
             }
             return object(
-                    "schemaVersion", StaticRegionArtifactSchema.VERSION,
+                    "schemaVersion", REGION_SCHEMA_VERSION,
                     "regionId", draft.regionId,
                     "rootMethod", draft.rootMethod,
                     "anchorMethod", draft.anchorMethod,
@@ -7139,7 +7140,7 @@ final class SymbolicRegionPlanner {
                         }
                         Map<String, Object> regionEdge = object(
                                 "schemaVersion",
-                                StaticRegionArtifactSchema.VERSION,
+                                REGION_SCHEMA_VERSION,
                                 "edgeId", "REGION_EDGE." + index++,
                                 "fromRegion", fromRegionId,
                                 "fromPort", fromCell,
@@ -7248,7 +7249,7 @@ final class SymbolicRegionPlanner {
                         }
                         Map<String, Object> sharedEdge = object(
                                 "schemaVersion",
-                                StaticRegionArtifactSchema.VERSION,
+                                REGION_SCHEMA_VERSION,
                                 "edgeId", "REGION_EDGE." + index++,
                                 "fromRegion", producer,
                                 "fromPort", field,

@@ -5,7 +5,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -86,8 +85,6 @@ public final class SolverPathContext {
     }
 
     public static SolverPathContext fromJson(JsonObject json) {
-        requireExactKeys(json, "solver path context", "schemaVersion",
-                "kind", "constraints", "authority");
         if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(json, "kind"))
                 || !AUTHORITY.equals(string(json, "authority"))) {
@@ -106,8 +103,6 @@ public final class SolverPathContext {
                         "positioned solver constraint must be an object");
             }
             JsonObject row = element.getAsJsonObject();
-            requireExactKeys(row, "positioned solver constraint",
-                    "summaryPcIndex", "expression");
             int position = integer(row, "summaryPcIndex", -1);
             JsonElement expression = row.get("expression");
             constraints.add(new PositionedConstraint(position,
@@ -162,23 +157,6 @@ public final class SolverPathContext {
             throw new IllegalArgumentException(
                     "unwitnessed path predicate is not an admitted "
                             + "non-branch constraint: " + type);
-        }
-    }
-
-    private static void requireExactKeys(JsonObject object, String label,
-                                         String... allowed) {
-        if (object == null) {
-            throw new IllegalArgumentException(label + " is required");
-        }
-        Set<String> expected = new LinkedHashSet<>(Arrays.asList(allowed));
-        Set<String> actual = new LinkedHashSet<>();
-        for (java.util.Map.Entry<String, JsonElement> entry
-                : object.entrySet()) {
-            actual.add(entry.getKey());
-        }
-        if (!actual.equals(expected)) {
-            throw new IllegalArgumentException(label + " keys must be "
-                    + expected + " but were " + actual);
         }
     }
 

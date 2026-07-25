@@ -94,6 +94,7 @@ public final class ConcolicScheduler {
         requireFile(arguments.regions, "symbolic regions");
         requireFile(arguments.activations, "activation plan");
         requireFile(arguments.edgeValidations, "runtime edge validation");
+        requireFile(arguments.staticGraph, "static data-flow graph");
         Files.createDirectories(arguments.outputDirectory);
 
         List<JsonObject> regions = readJsonl(arguments.regions);
@@ -103,17 +104,8 @@ public final class ConcolicScheduler {
                 || arguments.summaries == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.summaries);
-        List<JsonObject> staticGraph = arguments.staticGraph == null
-                ? Collections.<JsonObject>emptyList()
-                : readJsonl(arguments.staticGraph);
-        List<JsonObject> authoritativeStaticGraph =
-                authoritativeStaticGraph(staticGraph,
-                        arguments.staticGraph != null)
-                        ? staticGraph
-                        : Collections.<JsonObject>emptyList();
-        DefinitionIndex definitions = authoritativeStaticGraph.isEmpty()
-                ? DefinitionIndex.fallback()
-                : DefinitionIndex.from(authoritativeStaticGraph);
+        List<JsonObject> staticGraph = readJsonl(arguments.staticGraph);
+        DefinitionIndex definitions = DefinitionIndex.from(staticGraph);
 
         Map<String, Region> regionIndex = new LinkedHashMap<>();
         for (JsonObject row : regions) {
@@ -124,7 +116,7 @@ public final class ConcolicScheduler {
         }
 
         MergePlan mergePlan = buildMergePlan(regionIndex, edges,
-                authoritativeStaticGraph);
+                staticGraph);
         List<Candidate> candidates = candidates(arguments, activations,
                 regionIndex, definitions);
         Collections.sort(candidates, Candidate.ORDER);
@@ -306,6 +298,10 @@ public final class ConcolicScheduler {
      */
     public static JsonObject prepareOutputCapture(
             JsonObject activation, List<JsonObject> staticGraph) {
+        if (staticGraph == null) {
+            throw new IllegalArgumentException(
+                    "static data-flow graph is required");
+        }
         JsonObject result = activation == null
                 ? new JsonObject() : activation.deepCopy();
         RegionCaptureGoal captureGoal = RegionCaptureGoal.from(result);
@@ -316,9 +312,7 @@ public final class ConcolicScheduler {
         if (outputClosure != null) {
             result = compileOutputClosure(result, outputClosure);
         }
-        DefinitionIndex definitions = staticGraph == null
-                || staticGraph.isEmpty() ? DefinitionIndex.fallback()
-                : DefinitionIndex.from(staticGraph);
+        DefinitionIndex definitions = DefinitionIndex.from(staticGraph);
         Set<String> definitionMethods =
                 result.has("runtimeDefinitionMethods")
                         ? runtimeDefinitionMethods(result)
@@ -735,21 +729,14 @@ public final class ConcolicScheduler {
                         outputClosure != null);
                 boolean pendingArrayFieldRoot =
                         pendingArrayFieldCallReturnRoot(action);
-                if (pendingArrayFieldRoot
-                        && (!definitions.authoritative
-                        || sites.size() != 1)) {
+                if (pendingArrayFieldRoot && sites.size() != 1) {
                     binding.add("definitionSites", sites.deepCopy());
                     binding.addProperty("definitionAuthority",
-                            definitions.authoritative
-                                    ? "STATIC_DATAFLOW_DEF_SITE"
-                                    : "LOCAL_NAME_FALLBACK");
+                            "STATIC_DATAFLOW_DEF_SITE");
                     binding.addProperty(
                             "arrayFieldMaterializationComplete", false);
                     binding.addProperty("materializationIssue",
-                            !definitions.authoritative
-                                    ? "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
-                                    + "AUTHORITATIVE_DEFINITION_INDEX"
-                                    : "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
+                            "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
                                     + "ONE_EXACT_FILTERED_RETURN_SITE:"
                                     + sites.size());
                     concreteFallbacks.add(concreteFallback(binding,
@@ -758,9 +745,7 @@ public final class ConcolicScheduler {
                 }
                 if (sites.size() == 0) {
                     binding.addProperty("definitionAuthority",
-                            definitions.authoritative
-                                    ? "STATIC_DATAFLOW_DEF_SITE"
-                                    : "LOCAL_NAME_FALLBACK");
+                            "STATIC_DATAFLOW_DEF_SITE");
                     concreteFallbacks.add(concreteFallback(binding,
                             "UNRESOLVED_CALL_RETURN_DEFINITION"));
                     continue;
@@ -785,8 +770,7 @@ public final class ConcolicScheduler {
                             "AUTHORITATIVE_STATIC_CALL_RETURN_DEFINITION_"
                                     + "SITE_V1");
                     localBinding.addProperty("lazy", true);
-                    finalizePendingLocalArrayRoot(localBinding,
-                            definitions.authoritative);
+                    finalizePendingLocalArrayRoot(localBinding, true);
                     if (!validateExactArrayFieldMaterialization(
                             localBinding)) {
                         concreteFallbacks.add(concreteFallback(localBinding,
@@ -880,17 +864,14 @@ public final class ConcolicScheduler {
                             true);
                     binding.add("definitionSites", sites);
                     binding.addProperty("definitionAuthority",
-                            definitions.authoritative
-                                    ? "STATIC_DATAFLOW_DEF_SITE"
-                                    : "LOCAL_NAME_FALLBACK");
-                    if (definitions.authoritative && sites.size() == 1) {
+                            "STATIC_DATAFLOW_DEF_SITE");
+                    if (sites.size() == 1) {
                         dischargeDeferredResolution(binding,
                                 "AUTHORITATIVE_STATIC_LOCAL_DEFINITION_"
                                         + "SITE_V1");
                     }
-                    finalizePendingLocalArrayRoot(binding,
-                            definitions.authoritative);
-                    if (definitions.authoritative && sites.size() == 0) {
+                    finalizePendingLocalArrayRoot(binding, true);
+                    if (sites.size() == 0) {
                         concreteFallbacks.add(concreteFallback(binding,
                                 "UNRESOLVED_LOCAL_DEFINITION"));
                         continue;
@@ -2052,23 +2033,8 @@ public final class ConcolicScheduler {
         values.add(value);
     }
 
-    private static boolean authoritativeStaticGraph(
-            List<JsonObject> rows, boolean supplied) {
-        if (!supplied || rows.isEmpty()) return false;
-        Set<String> ids = new LinkedHashSet<>();
-        for (JsonObject row : rows) {
-            String id = string(row, "id");
-            if (integer(row, "schemaVersion", -1) != 2
-                    || id.isEmpty() || !ids.add(id)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     /** Exact Jimple definitions for live-in locals, recovered from the static graph. */
     private static final class DefinitionIndex {
-        private final boolean authoritative;
         private final Set<String> edgeIds = new LinkedHashSet<>();
         private final Map<String, List<JsonObject>> byCell =
                 new LinkedHashMap<>();
@@ -2077,16 +2043,8 @@ public final class ConcolicScheduler {
         private final Map<String, Set<String>> callsByMethod =
                 new LinkedHashMap<>();
 
-        private DefinitionIndex(boolean authoritative) {
-            this.authoritative = authoritative;
-        }
-
-        private static DefinitionIndex fallback() {
-            return new DefinitionIndex(false);
-        }
-
         private static DefinitionIndex from(List<JsonObject> edges) {
-            DefinitionIndex result = new DefinitionIndex(true);
+            DefinitionIndex result = new DefinitionIndex();
             Set<String> seen = new LinkedHashSet<>();
             Set<String> seenCallReturns = new LinkedHashSet<>();
             for (JsonObject edge : edges) {
@@ -2213,7 +2171,7 @@ public final class ConcolicScheduler {
         }
 
         private boolean containsAllEdges(Set<String> expected) {
-            return authoritative && edgeIds.containsAll(expected);
+            return edgeIds.containsAll(expected);
         }
 
     }
@@ -2799,7 +2757,7 @@ public final class ConcolicScheduler {
             Path edges = requiredPath(values, "edge-validations");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     sibling(activations, "concolic-schedule").toString()));
-            Path staticGraph = optionalPath(values.get("static-graph"));
+            Path staticGraph = requiredPath(values, "static-graph");
             Path summaries = optionalPath(values.get("summaries"));
             return new Arguments(regions, activations, edges, staticGraph,
                     summaries, output,

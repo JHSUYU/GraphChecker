@@ -5,7 +5,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -60,8 +59,6 @@ public final class BranchReplayContract {
     }
 
     public static BranchReplayContract fromJson(JsonObject json) {
-        requireExactKeys(json, "branch replay contract", "schemaVersion",
-                "kind", "orderedPrefix", "source", "suffixPolicy");
         if (integer(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(json, "kind"))
                 || !DROP_SOURCE_SUFFIX.equals(string(json,
@@ -147,23 +144,6 @@ public final class BranchReplayContract {
 
     private static String eventIdentity(BranchWitness witness) {
         return witness.siteId() + "\u0000" + witness.occurrence();
-    }
-
-    private static void requireExactKeys(JsonObject object, String label,
-                                         String... allowed) {
-        if (object == null) {
-            throw new IllegalArgumentException(label + " is required");
-        }
-        Set<String> expected = new LinkedHashSet<>(Arrays.asList(allowed));
-        Set<String> actual = new LinkedHashSet<>();
-        for (java.util.Map.Entry<String, JsonElement> entry
-                : object.entrySet()) {
-            actual.add(entry.getKey());
-        }
-        if (!actual.equals(expected)) {
-            throw new IllegalArgumentException(label + " keys must be "
-                    + expected + " but were " + actual);
-        }
     }
 
     private static JsonObject object(JsonObject parent, String name) {

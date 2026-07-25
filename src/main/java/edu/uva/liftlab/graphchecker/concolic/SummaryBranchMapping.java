@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -106,8 +105,6 @@ public final class SummaryBranchMapping {
         }
         Policy policy = Policy.parse(json);
         if (hasWitness) {
-            requireExactKeys(json, "witnessed summary branch mapping",
-                    "witness", "summaryPcIndex", "policy");
             JsonElement encoded = json.get("witness");
             if (encoded == null || !encoded.isJsonObject()) {
                 throw new IllegalArgumentException(
@@ -117,8 +114,6 @@ public final class SummaryBranchMapping {
                     encoded.getAsJsonObject()),
                     integer(json, "summaryPcIndex"), policy);
         }
-        requireExactKeys(json, "concrete summary branch mapping",
-                "concreteObservation", "policy");
         JsonElement encoded = json.get("concreteObservation");
         if (encoded == null || !encoded.isJsonObject()) {
             throw new IllegalArgumentException(
@@ -256,17 +251,4 @@ public final class SummaryBranchMapping {
         }
     }
 
-    private static void requireExactKeys(JsonObject object, String label,
-                                         String... allowed) {
-        Set<String> expected = new LinkedHashSet<>(Arrays.asList(allowed));
-        Set<String> actual = new LinkedHashSet<>();
-        for (java.util.Map.Entry<String, JsonElement> entry
-                : object.entrySet()) {
-            actual.add(entry.getKey());
-        }
-        if (!actual.equals(expected)) {
-            throw new IllegalArgumentException(label + " keys must be "
-                    + expected + " but were " + actual);
-        }
-    }
 }

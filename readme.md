@@ -1556,6 +1556,25 @@ custom-JDK/Z3 矩阵全部通过，仍为 6 `SAT/REACHABLE`、7
 `UNSAT/UNREACHABLE`、零 failure；日志目录为
 `target/robustness-matrix-logs/20260725T080803Z.1672266`。
 
+下一批继续执行“全新 schema、无 fallback”的原子切换。Scheduler 现在必须消费
+canonical static graph，删除了 graphless `DefinitionIndex` 和 local-name 猜测路径；
+Planner 直接把 canonical typed region/edge row 交给 writer，不再在同一进程中
+deep-copy 后用 `StaticRegionArtifactSchema` 重复验证自己刚生成的数据。真正跨 artifact
+的 decoder、ID join 和 fail-closed gap 仍保留。
+
+Instrumentation selection 只负责它自己的最小准入：唯一 activation、可执行 admission、
+complete canonical `outputClosure` 和 exact heap discharge。branch replay、model
+assignment、bundle identity 等仍在实际 Runtime/Importer trust boundary 校验，不在
+selection 阶段复制一套。五个 branch/closure value codec 也不再拒绝未来无害的附加
+JSON key，但 schema/kind、所有必需语义字段、类型、canonical ordering、capture ledger
+和 completeness 仍严格校验。Runtime、Importer 与 Composer 同步删除了只供展示的
+engine-array location、map expected-count、heap effect method/result/normalization 以及
+fatal/bounded-region reachability镜像。
+
+该批 baseline generic workflow 已完整闭合 target 和两个 producer worklist，Composer
+无 gap，Z3 报告 `REACHABLE`。手写生产 Java 为 76,441 行，相对 81,581 行冻结基线累计
+净减 5,140 行；完整 13-fixture 矩阵结果在本段后续里程碑提交验证后记录。
+
 ### 明确不能删除
 
 必须保留：

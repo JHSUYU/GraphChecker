@@ -155,9 +155,6 @@ public final class ConcolicSmtComposer {
                 fatalSolverPathContext);
         BranchWitness fatalSource = fatalReplayContract.source();
         String fatalSite = fatalSource.siteId();
-        int fatalOccurrence = fatalSource.occurrence();
-        boolean fatalDesiredOutcome = fatalReplayContract
-                .requiredTakenOutcome();
 
         // This composer consumes a seed query.  A solver-ready branch replay
         // contract is sufficient to build the candidate SMT, but it is not an
@@ -268,32 +265,18 @@ public final class ConcolicSmtComposer {
         for (Path input : arguments.summaries) {
             summaryInputArtifacts.add(artifact(input));
         }
-        String fatalRegionInstanceId = firstNonBlank(string(fatal,
-                "regionInstanceId"), string(object(fatal,
-                "symbolicContext"), "regionInstanceId"));
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 2);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
         manifest.addProperty("fatalRegion", fatalRegion);
-        manifest.addProperty("fatalRegionInstanceId",
-                fatalRegionInstanceId);
-        manifest.addProperty("fatalOccurrence", fatalOccurrence);
-        manifest.addProperty("fatalDesiredOutcome", fatalDesiredOutcome);
         manifest.addProperty("fatalSite", fatalSite);
         manifest.addProperty("fatalConstraintAuthority", targetPathSet
                 ? "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
                 : "IMMUTABLE_BRANCH_REPLAY_CONTRACT_V1");
         manifest.addProperty("fatalPathCount", targetPathSet
                 ? array(fatal, "paths").size() : 1);
-        manifest.add("boundedUpstreamRegions", GSON.toJsonTree(
-                arguments.boundedUpstreamRegions));
-        manifest.add("relevantRegions", GSON.toJsonTree(relevantRegions));
         manifest.add("resolvedProducerKeys",
                 GSON.toJsonTree(resolved.producerKeyStrings()));
-        manifest.add("reachedBoundedUpstreamRegions",
-                GSON.toJsonTree(resolved.reachedBoundedRegions));
-        manifest.add("unreachableBoundedUpstreamRegions",
-                GSON.toJsonTree(resolved.unreachableBoundedRegions));
         manifest.add("resolvedEdgeBindings",
                 resolved.resolvedEdgeCatalog());
         manifest.add("includedSummaries", GSON.toJsonTree(includedSummaries));
@@ -1264,8 +1247,6 @@ public final class ConcolicSmtComposer {
         private final Set<String> relevantRegions = new LinkedHashSet<>();
         private final Set<String> reachedBoundedRegions =
                 new LinkedHashSet<>();
-        private final Set<String> unreachableBoundedRegions =
-                new LinkedHashSet<>();
         private final Set<String> missingSummaryRegions =
                 new LinkedHashSet<>();
         private final Map<String, Set<String>> missingPortsByRegion =
@@ -1399,7 +1380,6 @@ public final class ConcolicSmtComposer {
         private void finishBounds() {
             for (String region : boundedRegions) {
                 if (!reachedBoundedRegions.contains(region)) {
-                    unreachableBoundedRegions.add(region);
                     gaps.add("UnreachableBoundedRegion:" + region);
                 }
             }
@@ -7549,7 +7529,6 @@ public final class ConcolicSmtComposer {
             JsonObject roles = new JsonObject();
             roles.addProperty("left", left);
             roles.addProperty("right", right);
-            roles.addProperty("guarded", !currentGuard.isEmpty());
             String candidateId = currentGuard.isEmpty() ? id : id
                     + "_guard_" + Integer.toHexString(
                     currentGuard.hashCode());

@@ -23,12 +23,9 @@ final class CausynthArtifactWriter {
         Files.createDirectories(outputDir);
         writeJson("target_resolved.json", result.targetResolved);
         writeJsonl("static_dataflow_edges.jsonl", result.edges);
-        writeJsonl("symbolic_regions.jsonl",
-                StaticRegionArtifactSchema.regions(result.symbolicRegions,
-                        result.edges));
+        writeJsonl("symbolic_regions.jsonl", result.symbolicRegions);
         writeJsonl("symbolic_region_edges.jsonl",
-                StaticRegionArtifactSchema.regionEdges(
-                        result.symbolicRegionEdges));
+                result.symbolicRegionEdges);
     }
 
     private void writeJson(String fileName, Object value) throws IOException {

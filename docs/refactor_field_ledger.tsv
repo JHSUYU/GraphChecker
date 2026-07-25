@@ -158,6 +158,14 @@ raw-result	assignmentIdentityError/modelAssignmentCount	ConcolicRegionRuntime	no
 raw-result	engine array internal-validation mirrors	ConcolicRegionRuntime	none	none	complete/problem plus canonical array expression, identity and consumed-leaf evidence	DELETE	6+
 raw-result	field-observation arrayLength/arrayElements	ConcolicRegionRuntime	none	none	canonical array binding/expression evidence	DELETE	6+
 imported-summary	transformer bindingCount/guard observedOccurrenceCount/runtime rawConditionCount	ConcolicSummaryImporter	none	none	canonical IDs/positions and admission results	DELETE	6+
+static-artifact	same-process StaticRegionArtifactSchema copy/edge-reference revalidation	CausynthArtifactWriter	none	none	Planner canonical typed rows plus downstream artifact-boundary decoders	DELETE_OVERVALIDATION	6+
+scheduler	graphless DefinitionIndex fallback	ConcolicScheduler	none	none	required canonical static graph	DELETE_FALLBACK	6+
+instrumentation-selection	bundle/replay/model-assignment duplicate admission checks	ConcolicInstrumentationSelections	none	none	executable admission plus canonical complete output closure and exact heap discharge	DELETE_DUPLICATE_VALIDATION	6+
+output-closure	exact JSON object key sets	OutputClosureCodec	none	none	required semantic fields, canonical ordering, capture ledger and slice completeness	DELETE_OVERVALIDATION	6+
+branch-contract	exact JSON object key sets	branch value codecs	none	none	required semantic fields and typed constructors	DELETE_OVERVALIDATION	6+
+raw-result	engine-array base/location/dynamic mirrors and map projection expected counts	ConcolicRegionRuntime	none	none	canonical binding identity/expression plus unresolved gap	DELETE	6+
+imported-summary	heap effect method/result/normalization/source mirrors and admission-authority list	ConcolicSummaryImporter	none	none	canonical effect/binding IDs, normalized expression and admission outcome	DELETE	6+
+composer-manifest	fatal occurrence/outcome/region-instance and bounded-region reachability mirrors	ConcolicSmtComposer	none	none	fatal site, exact imported reach paths, resolved producers and typed gaps	DELETE	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

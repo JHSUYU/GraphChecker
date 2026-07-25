@@ -186,8 +186,6 @@ public class ConcolicSmtComposerTest {
             assertEquals(1, resolvedEdges.size());
             assertEquals("EDGE.REGION.U.TO.REGION.P",
                     resolvedEdges.get(0).getAsString());
-            assertEquals(0, result.manifest.getAsJsonArray(
-                    "unreachableBoundedUpstreamRegions").size());
             assertTrue(result.smtLib.contains(
                     "port__REGION_U_out_0 port__REGION_P_in_0"));
             assertTrue(result.smtLib.contains(

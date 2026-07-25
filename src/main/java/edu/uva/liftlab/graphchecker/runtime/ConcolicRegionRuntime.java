@@ -977,7 +977,7 @@ public final class ConcolicRegionRuntime {
         }
         active.captureEngineArrayInputBinding(action, consumedValue,
                 consumedValue, consumedToken, pending.declaredType,
-                "EXACT_CONSUMED_LEAF_GETFIELD", api);
+                api);
         EngineArrayInputBinding captured = active.engineArrayInputByPort.get(
                 action.symbol);
         if (captured != null) {
@@ -1155,7 +1155,7 @@ public final class ConcolicRegionRuntime {
                         active.captureEngineArrayInputBinding(action,
                                 liveFieldValue, postSymbolizationValue,
                                 symbolizationToken, declaredType,
-                                "FIELD_ACCESS", engine());
+                                engine());
                     } else {
                         engine().symbolizeField(leafOwner, action.leafField,
                                 action.symbol);
@@ -1221,7 +1221,7 @@ public final class ConcolicRegionRuntime {
             active.fieldObservations.add(observation);
             if (active.engineBacked) {
                 symbolizeDynamicField(active, action, binding, leafOwner,
-                        "DYNAMIC_CONTAINER_ELEMENT_FIELD_ACCESS", engine());
+                        engine());
             }
         } catch (Throwable throwable) {
             active.addUnresolvedOnce(binding.dynamicBindingId
@@ -1303,7 +1303,7 @@ public final class ConcolicRegionRuntime {
             active.fieldObservations.add(observation);
             if (active.engineBacked) {
                 symbolizeDynamicField(active, action, binding, leafOwner,
-                        "DYNAMIC_MAP_ENTRY_FIELD_ACCESS", engine());
+                        engine());
                 // Iterator.next precedes the guarded field read.  Refresh the
                 // same runtime entry after its value has acquired a symbolic
                 // field, and retain the dynamic rather than static symbol.
@@ -1323,7 +1323,7 @@ public final class ConcolicRegionRuntime {
 
     private static void symbolizeDynamicField(
             ActiveRegion active, SymbolizeAction action,
-            DynamicFieldBinding binding, Object leafOwner, String location,
+            DynamicFieldBinding binding, Object leafOwner,
             EngineApi api) throws Exception {
         Object preSymbolizationValue = readField(leafOwner,
                 action.leafField);
@@ -1351,7 +1351,7 @@ public final class ConcolicRegionRuntime {
                 action.leafField);
         active.captureDynamicEngineArrayInputBinding(action, binding,
                 preSymbolizationValue, postSymbolizationValue, token,
-                declaredType, location, api);
+                declaredType, api);
     }
 
     /**
@@ -1402,7 +1402,7 @@ public final class ConcolicRegionRuntime {
         if (cursor == null) {
             return;
         }
-        cursor.resetForNext(siteId(method, unitIndex), element);
+        cursor.resetForNext(element);
         try {
             if ("ENTRY_SET".equals(cursor.binding.viewKind)) {
                 if (!(element instanceof Map.Entry)) {
@@ -1833,7 +1833,6 @@ public final class ConcolicRegionRuntime {
                 cursor.binding.originSiteId);
         observation.addProperty("iteratorOriginSiteId",
                 cursor.iteratorOriginSiteId);
-        observation.addProperty("nextOriginSiteId", cursor.nextOriginSiteId);
         observation.addProperty("rawPathConditionBoundary",
                 cursor.pathConditionSize);
         observation.addProperty("pcBoundary", cursor.pathConditionSize);
@@ -3988,9 +3987,7 @@ public final class ConcolicRegionRuntime {
                 Object postSymbolizationValue = readField(owner, field);
                 active.captureEngineArrayInputBinding(action,
                         preSymbolizationValue, postSymbolizationValue,
-                        symbolizationToken, declaredType,
-                        safe(action.location) + ":" + safe(symbolicPath),
-                        api);
+                        symbolizationToken, declaredType, api);
             } else {
                 api.symbolizeField(owner, field, symbol);
                 active.symbolized.add(symbol);
@@ -4381,7 +4378,7 @@ public final class ConcolicRegionRuntime {
             if (declaredArray && !liveArray) {
                 active.captureEngineArrayInputBinding(action, value, value,
                         symbolizationToken, action.directArrayType(value),
-                        safe(action.location), api);
+                        api);
                 return;
             }
             api.symbolize(value, action.symbol);
@@ -4389,7 +4386,7 @@ public final class ConcolicRegionRuntime {
             if (liveArray) {
                 active.captureEngineArrayInputBinding(action, value, value,
                         symbolizationToken, action.directArrayType(value),
-                        safe(action.location), api);
+                        api);
             }
         } catch (Throwable throwable) {
             active.unresolved.add(action.symbol + ": symbolize failed: "
@@ -5146,7 +5143,6 @@ public final class ConcolicRegionRuntime {
     private static final class MapIteratorCursor {
         private final MapViewBinding binding;
         private final String iteratorOriginSiteId;
-        private String nextOriginSiteId = "";
         private Object element;
         private Object key;
         private Object value;
@@ -5178,8 +5174,7 @@ public final class ConcolicRegionRuntime {
             this.iteratorOriginSiteId = iteratorOriginSiteId;
         }
 
-        private void resetForNext(String originSiteId, Object current) {
-            nextOriginSiteId = originSiteId;
+        private void resetForNext(Object current) {
             element = current;
             key = null;
             value = null;
@@ -5332,9 +5327,7 @@ public final class ConcolicRegionRuntime {
         private final String sourceActivationId;
         private final String inputPort;
         private final String inputCell;
-        private final String baseInputPort;
         private final String dynamicBindingId;
-        private final boolean dynamicInput;
         private final String inputJavaType;
         private final String inputJavaTypeDescriptor;
         private final long arrayObjectToken;
@@ -5348,7 +5341,6 @@ public final class ConcolicRegionRuntime {
         private final String objectTokenAuthority = TOKEN_AUTHORITY;
         private final String objectTokenScope;
         private final String captureAuthority = CAPTURE_AUTHORITY;
-        private final String captureLocation;
         private String engineArrayId = "";
         private String engineArrayIdAuthority = "";
         private String vmArrayValueAuthority = "";
@@ -5369,21 +5361,17 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
 
         private EngineArrayInputBinding(ActiveRegion active,
-                                        SymbolizeAction action,
                                         Object array,
                                         long expectedToken,
                                         DeclaredArrayInputType declaredType,
-                                        String location,
                                         String canonicalInputPort,
                                         String canonicalInputCell,
                                         DynamicFieldBinding dynamicBinding) {
             this.sourceActivationId = active.activation.activationId;
             this.inputPort = safe(canonicalInputPort);
             this.inputCell = safe(canonicalInputCell);
-            this.baseInputPort = action.symbol;
             this.dynamicBindingId = dynamicBinding == null ? ""
                     : dynamicBinding.dynamicBindingId;
-            this.dynamicInput = dynamicBinding != null;
             this.inputJavaType = safe(declaredType.javaType);
             this.inputJavaTypeDescriptor = reflectionDescriptor(
                     array == null ? null : array.getClass());
@@ -5391,28 +5379,27 @@ public final class ConcolicRegionRuntime {
             this.symbolizationArrayObjectToken = expectedToken;
             this.symbolizationPrefix = this.inputPort;
             this.objectTokenScope = active.activation.activationId;
-            this.captureLocation = safe(location);
         }
 
         private static EngineArrayInputBinding capture(
                 ActiveRegion active, SymbolizeAction action, Object array,
                 Object postReadArray, long expectedToken,
-                DeclaredArrayInputType declaredType, String location,
+                DeclaredArrayInputType declaredType,
                 EngineApi api) {
             return capture(active, action, array, postReadArray,
-                    expectedToken, declaredType, location, action.symbol,
+                    expectedToken, declaredType, action.symbol,
                     action.cell, null, api);
         }
 
         private static EngineArrayInputBinding capture(
                 ActiveRegion active, SymbolizeAction action, Object array,
                 Object postReadArray, long expectedToken,
-                DeclaredArrayInputType declaredType, String location,
+                DeclaredArrayInputType declaredType,
                 String canonicalInputPort, String canonicalInputCell,
                 DynamicFieldBinding dynamicBinding, EngineApi api) {
             EngineArrayInputBinding binding = new EngineArrayInputBinding(
-                    active, action, array, expectedToken,
-                    declaredType, location, canonicalInputPort,
+                    active, array, expectedToken,
+                    declaredType, canonicalInputPort,
                     canonicalInputCell, dynamicBinding);
             boolean exactStaticAction = active.activation.actionCount(
                     action.symbol) == 1 && !action.symbol.isEmpty()
@@ -5743,8 +5730,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("sourceActivationId", sourceActivationId);
             result.addProperty("inputPort", inputPort);
             result.addProperty("inputCell", inputCell);
-            result.addProperty("baseInputPort", baseInputPort);
-            result.addProperty("dynamicInput", dynamicInput);
             if (!dynamicBindingId.isEmpty()) {
                 result.addProperty("dynamicBindingId", dynamicBindingId);
             }
@@ -5767,7 +5752,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("objectTokenScope", objectTokenScope);
             result.addProperty("crossExecutionOrdinalAuthority", "NONE");
             result.addProperty("captureAuthority", captureAuthority);
-            result.addProperty("captureLocation", captureLocation);
             result.add("arrayValueExpression",
                     copyJsonTree(arrayValueExpression));
             result.addProperty("sameArrayObjectTokenVerified",
@@ -5802,8 +5786,6 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
         private final Map<String, Integer> authorizedReplayIndices =
                 new LinkedHashMap<>();
-        private int expectedMapKeyAssignmentCount;
-        private int expectedMapKeyValidatedCount;
         private boolean entrySetViewOrderVerified;
         private boolean complete;
         private boolean outputIdentityVerified;
@@ -6100,7 +6082,6 @@ public final class ConcolicRegionRuntime {
                     selected = spec;
                 }
                 if (selected == null) continue;
-                expectedMapKeyAssignmentCount++;
                 int currentIndex = uniqueIndexForExpectedKey(assignment);
                 if (currentIndex < 0) {
                     fail("replay expected immutable map key is absent, "
@@ -6127,7 +6108,6 @@ public final class ConcolicRegionRuntime {
                             + "projection " + assignment.engineSymbol);
                     continue;
                 }
-                expectedMapKeyValidatedCount++;
             }
         }
 
@@ -6175,10 +6155,6 @@ public final class ConcolicRegionRuntime {
             row.add("snapshotEntryKeyExpressions", keys);
             row.addProperty("entryKeyExpressionAuthority",
                     "CONCRETE_IMMUTABLE_MAP_ENTRY_KEY_AT_ENTRYSET_SNAPSHOT");
-            row.addProperty("expectedMapKeyAssignmentCount",
-                    expectedMapKeyAssignmentCount);
-            row.addProperty("expectedMapKeyValidatedCount",
-                    expectedMapKeyValidatedCount);
             row.addProperty("entrySnapshotComplete", complete);
             return row;
         }
@@ -6995,7 +6971,7 @@ public final class ConcolicRegionRuntime {
         private void captureEngineArrayInputBinding(
                 SymbolizeAction action, Object symbolizedValue,
                 Object postReadValue, long symbolizationToken,
-                DeclaredArrayInputType declaredType, String location,
+                DeclaredArrayInputType declaredType,
                 EngineApi api) {
             if (!engineBacked) {
                 return;
@@ -7003,7 +6979,7 @@ public final class ConcolicRegionRuntime {
             EngineArrayInputBinding candidate =
                     EngineArrayInputBinding.capture(this, action,
                             symbolizedValue, postReadValue,
-                            symbolizationToken, declaredType, location, api);
+                            symbolizationToken, declaredType, api);
             EngineArrayInputBinding samePort = engineArrayInputByPort.get(
                     candidate.inputPort);
             if (samePort != null) {
@@ -7053,13 +7029,13 @@ public final class ConcolicRegionRuntime {
                 SymbolizeAction action, DynamicFieldBinding dynamicBinding,
                 Object symbolizedValue, Object postReadValue,
                 long symbolizationToken,
-                DeclaredArrayInputType declaredType, String location,
+                DeclaredArrayInputType declaredType,
                 EngineApi api) {
             if (!engineBacked || dynamicBinding == null) return;
             EngineArrayInputBinding candidate =
                     EngineArrayInputBinding.capture(this, action,
                             symbolizedValue, postReadValue,
-                            symbolizationToken, declaredType, location,
+                            symbolizationToken, declaredType,
                             dynamicBinding.dynamicFieldSymbol, action.cell,
                             dynamicBinding, api);
             EngineArrayInputBinding samePort = engineArrayInputByPort.get(
