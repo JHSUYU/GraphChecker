@@ -4200,11 +4200,6 @@ public final class ConcolicSmtComposer {
                     "objectTokenAuthority", "objectTokenScope",
                     "entryReadObservationId", "keyExpression",
                     "keyExpressionAuthority", "containerSelector",
-                    "containerBindingId", "containerInputPort",
-                    "containerInputCell", "selectorAuthority",
-                    "resolvedFromSelectorAuthority",
-                    "elementIndex", "elementOccurrence",
-                    "declaredFieldOwnerClass", "declaredFieldType",
                     "actualHookSiteId", "actualHookOccurrence",
                     "effectiveMaterializationSiteId",
                     "effectiveMaterializationOccurrence",
@@ -6420,8 +6415,7 @@ public final class ConcolicSmtComposer {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
                 JsonObject selector = object(binding, "containerSelector");
-                String runtimeId = firstNonBlank(string(binding,
-                        "containerBindingId"), string(selector, "bindingId"));
+                String runtimeId = string(selector, "bindingId");
                 if ("DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING".equals(
                         string(binding, "kind"))
                         && id.equals(runtimeId)

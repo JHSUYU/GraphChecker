@@ -550,15 +550,16 @@ validate_container_producer_artifacts() {
           and $dynamic.kind
             == "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING"
           and $dynamic.complete == true
-          and $dynamic.containerBindingId == $static.bindingId
           and $dynamic.baseInputSymbol == $static.baseInputSymbol
-          and $dynamic.containerInputPort == $static.containerInputPort
-          and $dynamic.selectorAuthority == "EXACT_ARRAY_INDEX"
-          and $dynamic.elementIndex == 1
-          and $dynamic.elementOccurrence == 1
           and $dynamic.fieldPath == $static.fieldPath
           and $dynamic.containerSelector.complete == true
+          and $dynamic.containerSelector.bindingId == $static.bindingId
+          and $dynamic.containerSelector.containerInputPort
+            == $static.containerInputPort
+          and $dynamic.containerSelector.selectorAuthority
+            == "EXACT_ARRAY_INDEX"
           and $dynamic.containerSelector.elementIndex == 1
+          and $dynamic.containerSelector.elementOccurrence == 1
           and $dynamic.fieldExpression._type == "SymbolExpression"
           and $dynamic.fieldExpression._java_type == "Z"
           and ($dynamic.fieldExpression._exp

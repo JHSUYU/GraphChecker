@@ -2379,7 +2379,6 @@ public final class ConcolicRegionRuntime {
         if (binding.containerSelector != null) {
             target.add("containerSelector",
                     binding.containerSelector.toJson());
-            binding.containerSelector.addFlatCompatibilityFields(target);
         }
         target.addProperty("dynamicFieldBindingAuthority",
                 binding.authority);
@@ -8478,7 +8477,6 @@ public final class ConcolicRegionRuntime {
             if (containerSelector != null) {
                 result.add("containerSelector",
                         containerSelector.toJson());
-                containerSelector.addFlatCompatibilityFields(result);
             }
             result.addProperty("authority", authority);
             result.addProperty("complete", complete);
@@ -8571,19 +8569,6 @@ public final class ConcolicRegionRuntime {
             return result;
         }
 
-        private void addFlatCompatibilityFields(JsonObject target) {
-            target.addProperty("containerBindingId", bindingId);
-            target.addProperty("containerInputPort", containerInputPort);
-            target.addProperty("containerInputCell", containerInputCell);
-            target.addProperty("selectorAuthority", selectorAuthority);
-            target.addProperty("resolvedFromSelectorAuthority",
-                    resolvedFromSelectorAuthority);
-            target.addProperty("elementIndex", elementIndex);
-            target.addProperty("elementOccurrence", elementOccurrence);
-            target.addProperty("declaredFieldOwnerClass",
-                    declaredFieldOwnerClass);
-            target.addProperty("declaredFieldType", declaredFieldType);
-        }
     }
 
     private static final class FieldObservationTarget {
@@ -9822,30 +9807,20 @@ public final class ConcolicRegionRuntime {
             JsonObject selector = selectorElement != null
                     && selectorElement.isJsonObject()
                     ? selectorElement.getAsJsonObject() : new JsonObject();
-            this.containerBindingId = firstNonBlank(
-                    string(selector, "bindingId"),
-                    string(json, "containerBindingId"));
-            this.containerInputPort = firstNonBlank(
-                    string(selector, "containerInputPort"),
-                    string(json, "containerInputPort"));
-            this.containerInputCell = firstNonBlank(
-                    string(selector, "containerInputCell"),
-                    string(json, "containerInputCell"));
-            this.selectorAuthority = firstNonBlank(
-                    string(selector, "selectorAuthority"),
-                    string(json, "selectorAuthority"));
-            this.elementIndex = selector.has("elementIndex")
-                    ? integer(selector, "elementIndex", -1)
-                    : integer(json, "elementIndex", -1);
-            this.elementOccurrence = selector.has("elementOccurrence")
-                    ? integer(selector, "elementOccurrence", -1)
-                    : integer(json, "elementOccurrence", -1);
-            this.declaredFieldOwnerClass = firstNonBlank(
-                    string(selector, "declaredFieldOwnerClass"),
-                    string(json, "declaredFieldOwnerClass"));
-            this.declaredFieldType = normalizeFieldType(firstNonBlank(
-                    string(selector, "declaredFieldType"),
-                    string(json, "declaredFieldType")));
+            this.containerBindingId = string(selector, "bindingId");
+            this.containerInputPort = string(selector,
+                    "containerInputPort");
+            this.containerInputCell = string(selector,
+                    "containerInputCell");
+            this.selectorAuthority = string(selector,
+                    "selectorAuthority");
+            this.elementIndex = integer(selector, "elementIndex", -1);
+            this.elementOccurrence = integer(selector,
+                    "elementOccurrence", -1);
+            this.declaredFieldOwnerClass = string(selector,
+                    "declaredFieldOwnerClass");
+            this.declaredFieldType = normalizeFieldType(string(selector,
+                    "declaredFieldType"));
             JsonElement mapSelectorElement = json.get(
                     "mapProjectionSelector");
             JsonObject mapSelector = mapSelectorElement != null

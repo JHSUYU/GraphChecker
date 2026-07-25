@@ -5919,24 +5919,7 @@ public final class ConcolicSummaryImporter {
                 && "EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_"
                 .concat("ACTIVATION_LOCAL_ELEMENT_IDENTITY").equals(
                         string(selector, "authority"))
-                && bool(selector, "complete", false)
-                && selectorBindingId.equals(string(record,
-                "containerBindingId"))
-                && containerPort.equals(string(record,
-                "containerInputPort"))
-                && containerCell.equals(string(record,
-                "containerInputCell"))
-                && selectorAuthority.equals(string(record,
-                "selectorAuthority"))
-                && resolvedFrom.equals(string(record,
-                "resolvedFromSelectorAuthority"))
-                && elementIndex == integer(record, "elementIndex", -2)
-                && elementOccurrence == integer(record,
-                "elementOccurrence", -2)
-                && declaredOwner.equals(normalizeContainerType(string(record,
-                "declaredFieldOwnerClass")))
-                && declaredType.equals(normalizeContainerType(string(record,
-                "declaredFieldType")));
+                && bool(selector, "complete", false);
 
         JsonObject action = snapshotDeclaration
                 ? declaredActions.get(base) : actions.get(base);
@@ -6441,35 +6424,10 @@ public final class ConcolicSummaryImporter {
                 && activationId.equals(string(observation,
                 "objectTokenScope"))
                 && selector.equals(observedSelector)
-                && sameContainerSelectorFlatFields(observation, selector)
                 && string(binding, "authority").equals(string(observation,
                 "dynamicFieldBindingAuthority"))
                 && bool(observation, "dynamicFieldBindingComplete", false)
                 && bool(observation, "complete", false);
-    }
-
-    private static boolean sameContainerSelectorFlatFields(
-            JsonObject target, JsonObject selector) {
-        return string(selector, "bindingId").equals(string(target,
-                "containerBindingId"))
-                && string(selector, "containerInputPort").equals(string(
-                target, "containerInputPort"))
-                && string(selector, "containerInputCell").equals(string(
-                target, "containerInputCell"))
-                && string(selector, "selectorAuthority").equals(string(
-                target, "selectorAuthority"))
-                && string(selector, "resolvedFromSelectorAuthority").equals(
-                string(target, "resolvedFromSelectorAuthority"))
-                && integer(selector, "elementIndex", -1)
-                == integer(target, "elementIndex", -2)
-                && integer(selector, "elementOccurrence", -1)
-                == integer(target, "elementOccurrence", -2)
-                && normalizeContainerType(string(selector,
-                "declaredFieldOwnerClass")).equals(normalizeContainerType(
-                string(target, "declaredFieldOwnerClass")))
-                && normalizeContainerType(string(selector,
-                "declaredFieldType")).equals(normalizeContainerType(
-                string(target, "declaredFieldType")));
     }
 
     private static String normalizeContainerType(String type) {

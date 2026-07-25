@@ -2156,13 +2156,6 @@ public final class ConcolicConstraintSolver {
                         CONTAINER_REPLAY_REBINDING_AUTHORITY);
                 assignment.addProperty(
                         "sourceContainerObjectTokensRetained", false);
-                for (String member : new String[]{"containerBindingId",
-                        "containerInputPort", "containerInputCell",
-                        "selectorAuthority", "elementIndex",
-                        "elementOccurrence", "declaredFieldOwnerClass",
-                        "declaredFieldType"}) {
-                    copy(raw, assignment, member);
-                }
             } else {
                 // Never put a seed-JVM entry id or concrete key into the
                 // replay plan.  They identify an activation-local observation,
