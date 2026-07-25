@@ -29,8 +29,8 @@ public class RegionPathWorklistTest {
         targetActivation.remove("outputClosure");
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                Arrays.asList(summary, targetSummary),
-                Arrays.asList(activation, targetActivation),
+                Collections.singletonList(summary),
+                Collections.singletonList(activation),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults());
 
@@ -47,6 +47,28 @@ public class RegionPathWorklistTest {
                         .get("suffixPolicy").getAsString());
         assertEquals(RegionPathWorklist.State.PENDING.name(),
                 result.manifest.get("state").getAsString());
+
+        JsonArray targetBranches = new JsonArray();
+        for (String site : Arrays.asList("SITE.0", "SITE.1")) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("siteId", site);
+            branch.addProperty("policy", "EXPLORE");
+            targetBranches.add(branch);
+        }
+        targetActivation.add("branches", targetBranches);
+        RegionPathWorklist.Result targetResult = RegionPathWorklist.plan(
+                Collections.singletonList(targetSummary),
+                Collections.singletonList(targetActivation),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(2, targetResult.tasks.size());
+        for (JsonObject task : targetResult.tasks) {
+            assertEquals("TARGET_BRANCH", task.getAsJsonObject(
+                    "captureGoal").get("kind").getAsString());
+            assertFalse(task.has("outputClosure"));
+        }
+        assertEquals("TARGET_BRANCH", targetResult.manifest.get(
+                "captureGoal").getAsString());
     }
 
     @Test

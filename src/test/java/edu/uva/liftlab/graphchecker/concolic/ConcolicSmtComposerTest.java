@@ -245,6 +245,27 @@ public class ConcolicSmtComposerTest {
             JsonArray constraints = new JsonArray();
             constraints.add(integerCondition("REGION.F.in.8", ">", 0));
             setFatalConstraints(fatal, constraints);
+            JsonObject seedReplayContract = fatal.getAsJsonObject(
+                    "replayContract").deepCopy();
+            JsonObject firstPath = new JsonObject();
+            firstPath.add("constraints", constraints.deepCopy());
+            JsonObject secondPath = new JsonObject();
+            JsonArray secondConstraints = new JsonArray();
+            secondConstraints.add(integerCondition(
+                    "REGION.F.in.8", "<", 0));
+            secondPath.add("constraints", secondConstraints);
+            JsonArray reachedPaths = new JsonArray();
+            reachedPaths.add(firstPath);
+            reachedPaths.add(secondPath);
+            fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
+            fatal.addProperty("pathClosureState", "CLOSED");
+            fatal.addProperty("reachedPathCount", reachedPaths.size());
+            fatal.addProperty("constraintAuthority",
+                    "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
+            fatal.add("paths", reachedPaths);
+            fatal.add("seedReplayContract", seedReplayContract);
+            fatal.remove("replayContract");
+            fatal.remove("solverPathContext");
             Files.write(fixture.fatal, (fatal + "\n").getBytes(
                     StandardCharsets.UTF_8));
 
@@ -256,6 +277,12 @@ public class ConcolicSmtComposerTest {
                     "includedSummaries").size());
             assertEquals(6, result.manifest.getAsJsonArray(
                     "resolvedProducerKeys").size());
+            assertEquals("CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1",
+                    result.manifest.get("fatalConstraintAuthority")
+                            .getAsString());
+            assertEquals(2, result.manifest.get("fatalPathCount").getAsInt());
+            assertTrue(result.smtLib.contains(":named fatal_path"));
+            assertTrue(result.smtLib.contains("(or "));
             JsonArray catalog = result.manifest.getAsJsonArray(
                     "caseProjectionCatalog");
             assertEquals(2, catalog.size());

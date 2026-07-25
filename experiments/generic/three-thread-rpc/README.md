@@ -95,9 +95,11 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    shared-field read-from bindings. Re-slice the frozen graph inside the
    concrete call closure; unresolved dependencies stay concrete rather than
    becoming free symbols. No generated `REGION.*` identity is assumed.
-3. Capture an unforced target seed and schedule its solver-ready target query.
-   The seed schedule contains no forced branch. The query is an input to
-   candidate composition; this workflow does not execute a target replay.
+3. Capture an unforced target seed, then close the target function's feasible
+   binary-branch paths with the same independent-worker worklist used for
+   producer exploration. Normal exits and exact-exception exits are both valid
+   replay evidence. After closure, retain only full path conditions which
+   threw the configured exact exception type.
 4. Capture every producer seed. For each producer,
    `ConcolicPathFlipPlanner` computes one immutable frontier per wave, then up
    to `CAUSYNTH_CONCOLIC_JOBS` independent workers solve and naturally execute
@@ -106,8 +108,9 @@ the selected fixture and performs only these evidence-gated end-to-end stages:
    the worklist manifest is closed, then `RegionSummaryMerger` builds the
    guarded producer relation. The default worker count is `nproc`; set it to
    `1` for serial debugging.
-5. Compose the closed producer relations with the target seed into one
-   structurally complete candidate SMT model.
+5. Compose the closed producer relations with the OR of all exact target
+   exception path conditions into one structurally complete candidate SMT
+   model.
 6. Solve that candidate model by enumerating its discovered Boolean roots while
    leaving other scalar roots existential, invoke Z3 independently on the
    emitted SMT, and hash-bind the SMT, composition manifest, relationship
@@ -209,6 +212,18 @@ introducing a second RPC model:
   Boolean leaves through helpers; its two complete output images remain
   disjoint by odd/even parity.
 
+Two compound-target profiles exercise the consumer side itself:
+
+- `compound-target/` has a preceding early-return guard followed by
+  `(a > b && c > d) || x > y`; its exact Boolean truth table is
+  `00=unsat, 01/10/11=sat`.
+- `unreachable-compound-target/` adds a contradictory inner guard below the
+  same short-circuit expression, so all four Boolean valuations are `unsat`.
+
+Both use nested-object Boolean producer inputs and publish six primitive
+fields. Every field is written once and read once in one deterministic
+three-thread run.
+
 These workloads use the same deterministic protocol as the maintained RPC
 fixtures. Both producers rendezvous, the first publisher signals the second,
 the harness waits for both producers to terminate, and only then starts the
@@ -264,7 +279,7 @@ and input-only unforced producer-path replay. Its two Boolean roots produce four
 relations, the exact odd/even output images, zero satisfying rows, four
 unsatisfying rows, and direct Z3 `unsat`. The five scalar object-field UNSAT
 profiles require the same four unsatisfying rows; the correlated-fields profile
-also checks that its two outputs remain one atomic relation. Run all eleven
+also checks that its two outputs remain one atomic relation. Run all thirteen
 maintained profiles with `run_robustness_matrix.sh all`. Unit tests are not run
 by this command.
 

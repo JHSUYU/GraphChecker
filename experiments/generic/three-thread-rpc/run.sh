@@ -83,6 +83,7 @@ activation_plan=$(configured_value runtime_activation_plan)
 target_schedule=$(configured_value schedule_output_dir)
 target_classes="${work_root}/concolic-target-classes"
 producer_campaign_root="${work_root}/producer-campaign"
+target_campaign_root="${work_root}/target-campaign"
 candidate_root="${work_root}/candidate"
 
 usage() {
@@ -95,6 +96,7 @@ Usage: experiments/generic/three-thread-rpc/run.sh <command> [args]
   discover                Resolve channel producers and target from evidence
   schedule-target         Schedule one unforced consumer target seed
   seed-target             Capture/import the unforced target seed query
+  explore-target          Close target-function paths and build reach query
   schedule-producer CH    Schedule one discovered channel's OUTPUT_CLOSURE
   instrument CH           Instrument that producer's scheduled activation
   replay CH [b1 b2]       Run one real custom-JDK concolic capture
@@ -873,8 +875,8 @@ discard_successful_iteration() {
   local campaign=$1
   local scratch="${campaign}/current"
   debug_enabled && return 0
-  [[ "${campaign}" == "${producer_campaign_root}/"* ]] \
-    || die "refusing to clean producer scratch outside campaign root: ${campaign}"
+  [[ "${campaign}" == "${work_root}/"* ]] \
+    || die "refusing to clean path scratch outside work root: ${campaign}"
   [[ "${scratch}" == "${campaign}/current" ]] \
     || die "invalid producer scratch path: ${scratch}"
   [[ -d "${scratch}" && ! -L "${scratch}" ]] \
@@ -887,8 +889,8 @@ discard_successful_campaign_state() {
   local campaign=$1
   local state="${campaign}/.state"
   debug_enabled && return 0
-  [[ "${campaign}" == "${producer_campaign_root}/"* ]] \
-    || die "refusing to clean producer state outside campaign root: ${campaign}"
+  [[ "${campaign}" == "${work_root}/"* ]] \
+    || die "refusing to clean path state outside work root: ${campaign}"
   [[ "${state}" == "${campaign}/.state" ]] \
     || die "invalid producer state path: ${state}"
   [[ -d "${state}" && ! -L "${state}" ]] \
@@ -1131,26 +1133,22 @@ publish_path_wave() {
   mv -f "${state_dir}/next_records.jsonl" "${records}"
 }
 
-do_explore_producer() {
-  local requested=$1
-  local channel schedule classes campaign region binding
+explore_region_paths() {
+  local label=$1
+  local region=$2
+  local schedule=$3
+  local classes=$4
+  local campaign=$5
   local summaries activations raw_results records state_dir planner_dir
   local z3 solver_timeout planner_status query_key iteration jobs task_dir
   local observed_paths max_paths remaining_paths wave_limit
   local bound_spec bound_property bound_option bound_value
   local -a planner_bound_args=() wave_query_keys=() worker_pids=()
-  validate_discovery_inputs
-  channel=$(producer_owner_channel "${requested}") || return $?
-  binding=$(producer_binding "${channel}") || return $?
-  IFS=$'\t' read -r region _ <<< "${binding}"
-  schedule=$(channel_schedule "${channel}") || return $?
-  classes=$(channel_classes "${channel}") || return $?
-  require_file "producer seed summary" \
+  require_file "${label} seed summary" \
     "${schedule}/concolic_region_summaries.jsonl"
-  require_directory "producer concolic classes" "${classes}"
-  campaign=$(producer_campaign_directory "${channel}") || return $?
+  require_directory "${label} concolic classes" "${classes}"
   [[ ! -e "${campaign}" ]] \
-    || die "producer campaign already exists: ${campaign}"
+    || die "${label} campaign already exists: ${campaign}"
   mkdir -p "${campaign}"
   state_dir="${campaign}/.state"
   mkdir -p "${state_dir}"
@@ -1200,28 +1198,28 @@ do_explore_producer() {
       "${planner_bound_args[@]}"
     planner_status=$?
     set -e
-    require_file "producer path worklist manifest" \
+    require_file "${label} path worklist manifest" \
       "${planner_dir}/region_path_manifest.json"
     if [[ "${planner_status}" -eq 2 ]]; then
       jq -e '.state == "GAPPED" or .state == "NOT_STARTED"' \
         "${planner_dir}/region_path_manifest.json" >/dev/null \
-        || die "producer path planner failed with exit ${planner_status}"
+        || die "${label} path planner failed with exit ${planner_status}"
       report_path_worklist_failure "${planner_dir}"
-      die "producer path worklist is not executable; inspect ${planner_dir}/region_path_manifest.json"
+      die "${label} path worklist is not executable; inspect ${planner_dir}/region_path_manifest.json"
     fi
     [[ "${planner_status}" -eq 0 ]] \
-      || die "producer path planner failed with exit ${planner_status}"
+      || die "${label} path planner failed with exit ${planner_status}"
     if jq -e '.state == "CLOSED"' \
         "${planner_dir}/region_path_manifest.json" >/dev/null; then
       [[ ! -s "${planner_dir}/region_path_worklist.jsonl" ]] \
-        || die "closed producer worklist retained pending tasks"
+        || die "closed ${label} worklist retained pending tasks"
       cp -f "${planner_dir}/region_path_manifest.json" \
         "${campaign}/region_path_closure.json"
       break
     fi
     jq -e '.state == "PENDING" and .pendingTaskCount > 0' \
       "${planner_dir}/region_path_manifest.json" >/dev/null \
-      || die "producer path planner emitted neither pending nor closed state"
+      || die "${label} path planner emitted neither pending nor closed state"
     observed_paths=$(jq -er '.observedPathCount' \
       "${planner_dir}/region_path_manifest.json")
     max_paths=$(jq -er '.bounds.maxPathsPerRegion' \
@@ -1229,7 +1227,7 @@ do_explore_producer() {
     remaining_paths=$((max_paths - observed_paths))
     if (( remaining_paths <= 0 )); then
       report_path_worklist_failure "${planner_dir}"
-      die "producer path bound reached with pending work; inspect ${planner_dir}/region_path_manifest.json"
+      die "${label} path bound reached with pending work; inspect ${planner_dir}/region_path_manifest.json"
     fi
     wave_limit=${jobs}
     if (( wave_limit > remaining_paths )); then
@@ -1240,10 +1238,10 @@ do_explore_producer() {
       sort_by(.queryKey) | .[0:$limit][] | .queryKey
     ' "${planner_dir}/region_path_worklist.jsonl")
     [[ ${#wave_query_keys[@]} -gt 0 ]] \
-      || die "pending producer worklist has no deterministic query key"
+      || die "pending ${label} worklist has no deterministic query key"
 
     worker_pids=()
-    echo "[three-thread-rpc] producer ${channel} wave ${iteration}: running ${#wave_query_keys[@]} path worker(s), cap=${jobs}"
+    echo "[three-thread-rpc] ${label} wave ${iteration}: running ${#wave_query_keys[@]} path worker(s), cap=${jobs}"
     for query_key in "${wave_query_keys[@]}"; do
       task_dir="${planner_dir}/task-${query_key}"
       mkdir -p "${task_dir}"
@@ -1258,13 +1256,30 @@ do_explore_producer() {
     done
     if ! wait_for_path_wave "${worker_pids[@]}"; then
       report_path_wave_failure "${planner_dir}"
-      die "producer ${channel} path wave ${iteration} failed; inspect ${planner_dir}"
+      die "${label} path wave ${iteration} failed; inspect ${planner_dir}"
     fi
     publish_path_wave "${planner_dir}" "${state_dir}" "${summaries}" \
       "${activations}" "${raw_results}" "${records}"
     discard_successful_iteration "${campaign}"
     iteration=$((iteration + 1))
   done
+  echo "[three-thread-rpc] ${label} path worklist closed after $((iteration - 1)) wave(s)"
+}
+
+do_explore_producer() {
+  local requested=$1
+  local channel schedule classes campaign region binding
+  local summaries
+  validate_discovery_inputs
+  channel=$(producer_owner_channel "${requested}") || return $?
+  binding=$(producer_binding "${channel}") || return $?
+  IFS=$'\t' read -r region _ <<< "${binding}"
+  schedule=$(channel_schedule "${channel}") || return $?
+  classes=$(channel_classes "${channel}") || return $?
+  campaign=$(producer_campaign_directory "${channel}") || return $?
+  explore_region_paths "producer ${channel}" "${region}" "${schedule}" \
+    "${classes}" "${campaign}"
+  summaries="${campaign}/observed_path_summaries.jsonl"
 
   run_graphchecker_main \
     edu.uva.liftlab.graphchecker.concolic.RegionSummaryMerger \
@@ -1281,7 +1296,38 @@ do_explore_producer() {
     || die "producer merged relation is not complete for channel ${channel}"
   discard_successful_iteration "${campaign}"
   discard_successful_campaign_state "${campaign}"
-  echo "[three-thread-rpc] producer ${channel} path worklist closed after $((iteration - 1)) wave(s)"
+}
+
+do_explore_target() {
+  local binding region campaign exception_type
+  validate_discovery_inputs
+  binding=$(target_binding) || return $?
+  IFS=$'\t' read -r region _ <<< "${binding}"
+  campaign="${target_campaign_root}"
+  explore_region_paths "target" "${region}" "${target_schedule}" \
+    "${target_classes}" "${campaign}"
+  exception_type=$(jq -er '
+    .seedException | select(type == "string" and length > 0)
+  ' "${work_root}/analysis/target_resolved.json") \
+    || die "target resolution has no seedException"
+  run_graphchecker_main \
+    edu.uva.liftlab.graphchecker.concolic.TargetReachPathQueryBuilder \
+    --summaries "${campaign}/observed_path_summaries.jsonl" \
+    --path-manifest "${campaign}/region_path_closure.json" \
+    --seed-query "${target_schedule}/branch_queries.jsonl" \
+    --exception-type "${exception_type}" \
+    --output "${target_schedule}/branch_queries.jsonl" >/dev/null
+  jq -e -s '
+    length == 1
+    and .[0].kind == "TARGET_REACH_PATH_SET_QUERY"
+    and .[0].readyForSolver == true
+    and .[0].pathClosureState == "CLOSED"
+    and .[0].reachedPathCount == (.[0].paths | length)
+  ' "${target_schedule}/branch_queries.jsonl" >/dev/null \
+    || die "closed target reach query is incomplete"
+  discard_successful_iteration "${campaign}"
+  discard_successful_campaign_state "${campaign}"
+  echo "[three-thread-rpc] target reach paths: $(jq -r '.reachedPathCount' "${target_schedule}/branch_queries.jsonl")"
 }
 
 run_producer_seed_pipeline() {
@@ -1591,6 +1637,7 @@ do_candidate() {
   do_discover
   do_schedule_target
   do_seed_target
+  do_explore_target
   run_producers_parallel
   do_candidate_compose
   do_candidate_solve
@@ -1610,6 +1657,7 @@ case "${command_name}" in
   discover) [[ $# -eq 0 ]] || die "discover takes no arguments"; do_discover ;;
   schedule-target) [[ $# -eq 0 ]] || die "schedule-target takes no arguments"; do_schedule_target ;;
   seed-target) [[ $# -eq 0 ]] || die "seed-target takes no arguments"; do_seed_target ;;
+  explore-target) [[ $# -eq 0 ]] || die "explore-target takes no arguments"; do_explore_target ;;
   schedule-producer) [[ $# -eq 1 ]] || die "schedule-producer needs one discovered channel"; do_schedule_producer "$1" ;;
   instrument) [[ $# -eq 1 ]] || die "instrument needs one discovered channel"; do_instrument "$1" ;;
   replay)

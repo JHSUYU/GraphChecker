@@ -2750,10 +2750,45 @@ final class RuntimeRegionPlanner {
                     "STATIC_CELL_IDENTITY_PLUS_RUNTIME_READ_FROM"));
         }
         if (!sliceReady) {
+            List<String> causes = new ArrayList<>();
+            if (!outputSlice.complete) {
+                causes.add("STATIC_SLICE_INCOMPLETE");
+            }
+            if (!outputSlice.captureBindingsComplete) {
+                causes.add("CAPTURE_BINDINGS_INCOMPLETE");
+            }
+            if (!inputSelectionComplete) {
+                Set<String> missing = new LinkedHashSet<>(
+                        outputSlice.inputPorts);
+                missing.removeAll(selectedInputPorts);
+                causes.add("MISSING_INPUT_PORTS=" + missing);
+            }
+            if (!inputAliasesReady) {
+                causes.add("INPUT_ALIASES_UNRESOLVED");
+            }
+            if (!containerBindingsReady) {
+                causes.add("CONTAINER_BINDINGS_UNRESOLVED");
+            }
+            if (!symbolizeActionsReady(selectedInputs)) {
+                List<String> unready = new ArrayList<>();
+                for (Map<String, Object> action : selectedInputs) {
+                    if (!symbolizeActionsReady(Collections.singletonList(
+                            action))) {
+                        unready.add(string(action.get("symbol")) + "@"
+                                + string(action.get("location")) + "["
+                                + string(action.get("cell")) + "]");
+                    }
+                }
+                causes.add("SYMBOLIZE_ACTIONS_INCOMPLETE=" + unready);
+            }
+            if (!branchActionsReady(selectedBranches)) {
+                causes.add("BRANCH_ACTIONS_INCOMPLETE");
+            }
             return new UpstreamOutputMemberPlan(first.output, outputSlice,
                     selectedInputs, selectedBranches, containerBindings,
                     heapBindings, null,
-                    "OUTPUT_MEMBER_INCOMPLETE:" + first.output.portId);
+                    "OUTPUT_MEMBER_INCOMPLETE:" + first.output.portId
+                            + ":" + String.join(",", causes));
         }
 
         final OutputClosureContract contract;

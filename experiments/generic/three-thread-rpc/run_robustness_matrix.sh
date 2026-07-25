@@ -21,7 +21,8 @@ Usage: experiments/generic/three-thread-rpc/run_robustness_matrix.sh [MODE]
   baseline | cross-method-fields | multitype | dependent-scalar | containers |
   unreachable-parity | unreachable-correlated-fields |
   unreachable-nested-object | unreachable-inherited-alias |
-  unreachable-mutated-object | unreachable-long-fields
+  unreachable-mutated-object | unreachable-long-fields |
+  compound-target | unreachable-compound-target
         Run one named workload. This is useful for an exact post-fix gate.
 
 Each entry runs the fixture runner's clean and candidate commands, invokes Z3
@@ -852,6 +853,132 @@ validate_scalar_unsat_producer_artifacts() {
   fi
 }
 
+validate_compound_target_artifacts() {
+  local label=$1
+  local work_root=$2
+  local activation_plan="${work_root}/runtime/concolic_activation_plan.jsonl"
+  local target_closure="${work_root}/target-campaign/region_path_closure.json"
+  local target_query="${work_root}/schedule/branch_queries.jsonl"
+  local composition="${work_root}/candidate/candidate_composition_manifest.json"
+  local campaign_root="${work_root}/producer-campaign"
+  local expected_reached consumer_name
+  local -a producer_closures merged_summaries
+
+  expected_reached=positive
+  consumer_name='$ReachableConsumerThread: void executeWorker()>'
+  [[ "${label}" == "unreachable-compound-target" ]] \
+    && {
+      expected_reached=zero
+      consumer_name='$UnreachableConsumerThread: void executeWorker()>'
+    }
+  require_file "${label} activation plan" "${activation_plan}"
+  require_file "${label} target closure" "${target_closure}"
+  require_file "${label} target path query" "${target_query}"
+  require_file "${label} composition manifest" "${composition}"
+  [[ -d "${campaign_root}" ]] \
+    || die "${label} producer campaign not found: ${campaign_root}"
+
+  jq -e '
+    .kind == "REGION_PATH_WORKLIST"
+    and .state == "CLOSED"
+    and .captureGoal == "TARGET_BRANCH"
+    and .pendingTaskCount == 0
+    and (.gaps | length) == 0
+    and .observedPathCount > 2
+  ' "${target_closure}" >/dev/null \
+    || die "${label} target-function path worklist is incomplete"
+
+  jq -e --arg expectation "${expected_reached}" \
+    --slurpfile closure "${target_closure}" '
+    .kind == "TARGET_REACH_PATH_SET_QUERY"
+    and .pathClosureState == "CLOSED"
+    and .constraintAuthority
+      == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
+    and .readyForSolver == true
+    and .observedPathCount == $closure[0].observedPathCount
+    and .reachedPathCount == (.paths | length)
+    and (if $expectation == "positive"
+      then .reachedPathCount > 1
+        and all(.paths[];
+          (.constraints | length) >= 3
+          and .branchWitnessCount == (.constraints | length))
+        and any(.paths[]; (.constraints | length) >= 4)
+      else .reachedPathCount == 0
+      end)
+  ' "${target_query}" >/dev/null \
+    || die "${label} target reach-path query is incomplete"
+
+  jq -e -s --arg consumer "${consumer_name}" \
+    --arg target_region "$(jq -r '.regionId' "${target_closure}")" '
+    [.[] | select(.captureGoal.kind == "OUTPUT_CLOSURE"
+      and .symbolicReady == true and .replayable == true)] as $producers
+    | [.[] | select(.captureGoal.kind == "TARGET_BRANCH"
+      and .replayable == true
+      and .regionId == $target_region
+      and any(.branches[]?;
+        .policy == "EXPLORE" and (.siteId | contains($consumer))))] as $targets
+    | ($producers | length) == 2
+    and all($producers[];
+      (.outputClosure.members | length) == 3
+      and all(.outputClosure.members[]; .slice.complete == true))
+    and ([$producers[].edgeBindings[]?
+      | select(.relation == "READ_FROM"
+        and .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM")]
+      | length) == 6
+    and ($targets | length) == 1
+    and ([$targets[0].branches[]
+      | select(.policy == "EXPLORE"
+        and (.siteId | contains($consumer)))] | length) >= 5
+  ' "${activation_plan}" >/dev/null \
+    || die "${label} lost its two joint three-output producer demands"
+
+  mapfile -t producer_closures < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name region_path_closure.json | sort)
+  mapfile -t merged_summaries < <(find "${campaign_root}" -mindepth 2 \
+    -maxdepth 2 -type f -name merged_region_summaries.jsonl | sort)
+  [[ ${#producer_closures[@]} -eq 2 ]] \
+    || die "${label} expected two producer path closures"
+  [[ ${#merged_summaries[@]} -eq 2 ]] \
+    || die "${label} expected two producer guarded merges"
+  jq -e -s '
+    length == 2
+    and all(.[];
+      .state == "CLOSED"
+      and .pendingTaskCount == 0
+      and (.gaps | length) == 0
+      and .observedPathCount == 2)
+  ' "${producer_closures[@]}" >/dev/null \
+    || die "${label} producer path closure is incomplete"
+  jq -e -s "${output_closure_helpers}"'
+    length == 2
+    and all(.[];
+      (output_members | length) == 3
+      and .relationallyComplete == true
+      and .regionRelation.complete == true
+      and .regionRelation.caseCount == 2
+      and all(.regionRelation.cases[];
+        (.outputExpressions | length) == 3))
+  ' "${merged_summaries[@]}" >/dev/null \
+    || die "${label} joint producer summaries lost output correlation"
+
+  jq -e --arg expectation "${expected_reached}" '
+    .fatalConstraintAuthority
+      == "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1"
+    and .fatalPathCount
+      == (if $expectation == "positive" then 4 else 0 end)
+    and (.includedSummaries | length) == 2
+    and (.resolvedProducerKeys | length) == 6
+    and (.resolvedEdgeBindings | length) == 6
+    and all(.resolvedEdgeBindings[];
+      .selectionAuthority == "RUNTIME_CONFIRMED_READ_FROM"
+      and .binding.fromOutputCell == .binding.toInputCell
+      and .binding.objectIdentityConfirmed == true
+      and .binding.orderConfirmed == true
+      and .binding.writerOccurrence == 1)
+  ' "${composition}" >/dev/null \
+    || die "${label} composition lost target paths or shared-field bindings"
+}
+
 validate_semantic_profile() {
   local label=$1
   local smt=$2
@@ -1136,6 +1263,30 @@ validate_semantic_profile() {
         || die "${label} lost its nested long-field roots"
       validate_scalar_unsat_producer_artifacts "${label}" "${work_root}"
       ;;
+    compound-target)
+      jq -e '
+        .state == "CANDIDATE_READY"
+        and .trustState == "CANDIDATE_ONLY"
+        and .reachability == "REACHABLE"
+        and (.rootBooleanInputs | length) == 2
+        and (.existentialNonBooleanRootInputs | length) == 0
+        and (.truthTable | length) == 4
+        and ([.truthTable[] | select(.reachesBug) | .valuationKey]
+          == ["01", "10", "11"])
+        and ([.truthTable[] | select(.reachesBug == false)
+          | .valuationKey] == ["00"])
+      ' "${reach_report}" >/dev/null \
+        || die "${label} lost its compound short-circuit truth table"
+      grep -Fq ':named fatal_path' "${smt}" \
+        || die "${label} SMT omitted the target reach-path assertion"
+      grep -Fq '(or ' "${smt}" \
+        || die "${label} SMT did not disjoin reached target paths"
+      validate_compound_target_artifacts "${label}" "${work_root}"
+      ;;
+    unreachable-compound-target)
+      validate_two_boolean_unsat_report "${label}" "${reach_report}" 0 I
+      validate_compound_target_artifacts "${label}" "${work_root}"
+      ;;
     *) die "no semantic profile for matrix label: ${label}" ;;
   esac
 }
@@ -1271,7 +1422,7 @@ run_case() {
 mode=${1:-core}
 [[ $# -le 1 ]] || die "expected at most one mode argument"
 case "${mode}" in
-  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias|unreachable-mutated-object|unreachable-long-fields) ;;
+  core|all|baseline|cross-method-fields|multitype|dependent-scalar|containers|unreachable-parity|unreachable-correlated-fields|unreachable-nested-object|unreachable-inherited-alias|unreachable-mutated-object|unreachable-long-fields|compound-target|unreachable-compound-target) ;;
   help|-h|--help) usage; exit 0 ;;
   *) usage >&2; die "unknown matrix mode: ${mode}" ;;
 esac
@@ -1298,7 +1449,8 @@ case "${mode}" in
     labels=(baseline cross-method-fields multitype dependent-scalar containers \
       unreachable-parity unreachable-correlated-fields \
       unreachable-nested-object unreachable-inherited-alias \
-      unreachable-mutated-object unreachable-long-fields)
+      unreachable-mutated-object unreachable-long-fields compound-target \
+      unreachable-compound-target)
     configs=(workflow.properties cross-method-fields/workflow.properties \
       multitype/workflow.properties dependent-scalar/workflow.properties \
       containers/workflow.properties unreachable-parity/workflow.properties \
@@ -1306,7 +1458,9 @@ case "${mode}" in
       unreachable-nested-object/workflow.properties \
       unreachable-inherited-alias/workflow.properties \
       unreachable-mutated-object/workflow.properties \
-      unreachable-long-fields/workflow.properties)
+      unreachable-long-fields/workflow.properties \
+      compound-target/workflow.properties \
+      unreachable-compound-target/workflow.properties)
     ;;
   baseline)
     labels=(baseline)
@@ -1351,6 +1505,14 @@ case "${mode}" in
   unreachable-long-fields)
     labels=(unreachable-long-fields)
     configs=(unreachable-long-fields/workflow.properties)
+    ;;
+  compound-target)
+    labels=(compound-target)
+    configs=(compound-target/workflow.properties)
+    ;;
+  unreachable-compound-target)
+    labels=(unreachable-compound-target)
+    configs=(unreachable-compound-target/workflow.properties)
     ;;
 esac
 

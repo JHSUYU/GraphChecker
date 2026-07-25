@@ -8740,7 +8740,9 @@ public final class ConcolicSummaryImporter {
         JsonArray appliedAssignments = array(raw,
                 "modelAssignmentsApplied");
         boolean outputPathFlip = "REPLAY_OUTPUT_PATH_FLIP".equals(phase);
-        boolean required = outputPathFlip
+        boolean targetPathFlip = "REPLAY_TARGET_PATH_FLIP".equals(phase);
+        boolean pathFlip = outputPathFlip || targetPathFlip;
+        boolean required = pathFlip
                 || expectedAssignments.size() > 0
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
@@ -8748,7 +8750,7 @@ public final class ConcolicSummaryImporter {
             return new ReplayAdmission(false, true, failures);
         }
 
-        if (outputPathFlip) {
+        if (pathFlip) {
             JsonElement replayContract = activation.get("replayContract");
             if (replayContract == null) {
                 failures.add("BRANCH_REPLAY_CONTRACT_MISSING");
@@ -8757,7 +8759,7 @@ public final class ConcolicSummaryImporter {
                         failures);
             }
         }
-        if (outputPathFlip) {
+        if (pathFlip) {
             String activationQueryKey = strictString(activation,
                     "pathQueryKey");
             if (activationQueryKey.isEmpty()
@@ -8778,12 +8780,13 @@ public final class ConcolicSummaryImporter {
             failures.add("MODEL_ASSIGNMENTS_NOT_FULLY_APPLIED");
         }
 
-        // A region can contain statically shared failure outputs even when
-        // this activation is replaying an ordinary producer output.  Only a
-        // target/fatal replay promises to observe that exception; an output
-        // closure is validated by its requested output and exact path replay
-        // evidence instead.
-        boolean exceptionObservationRequired = goal.isTargetBranch();
+        // A target path worklist must admit both throwing and normal exits:
+        // the latter expose short-circuit successors needed to close the
+        // target function. Exact exception filtering happens only when the
+        // closed reach-path query is built. An ordinary producer path flip is
+        // likewise validated by its output and replay evidence.
+        boolean exceptionObservationRequired = goal.isTargetBranch()
+                && !targetPathFlip;
         Set<String> expectedExceptions = exceptionObservationRequired
                 ? failureExceptions(region) : Collections.<String>emptySet();
         if (!expectedExceptions.isEmpty()) {

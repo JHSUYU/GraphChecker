@@ -65,10 +65,11 @@ public final class ConcolicPathReplayVerifier {
         report.addProperty("schemaVersion", 1);
         report.addProperty("kind",
                 "CONCOLIC_PATH_REPLAY_VERIFICATION_MANIFEST");
+        RegionCaptureGoal goal = RegionCaptureGoal.from(task);
         require(failures, "TASK_IS_NOT_REGION_PATH_FLIP",
                 "REGION_PATH_FLIP".equals(string(task, "kind")));
-        require(failures, "TASK_IS_NOT_OUTPUT_CLOSURE",
-                RegionCaptureGoal.from(task).isOutputClosure());
+        require(failures, "TASK_CAPTURE_GOAL_IS_NOT_EXPLORABLE",
+                goal.isOutputClosure() || goal.isTargetBranch());
         require(failures, "TASK_QUERY_KEY_MISSING",
                 !string(task, "queryKey").isEmpty());
         require(failures, "TASK_QUERY_KEY_IS_NOT_LOWERCASE_SHA256",
@@ -87,7 +88,8 @@ public final class ConcolicPathReplayVerifier {
         report.addProperty("regionId", regionId);
         report.addProperty("queryKey", queryKey);
 
-        validateActivation(task, activation, replayContract, failures);
+        validateActivation(task, activation, replayContract, goal,
+                failures);
 
         require(failures, "RAW_RESULTS_FILE_ROW_COUNT_NOT_ONE",
                 rawRows.size() == 1);
@@ -155,7 +157,9 @@ public final class ConcolicPathReplayVerifier {
                 && bool(replayValidation, "valid", false);
         report.addProperty("valid", valid);
         report.addProperty("status", valid
+                ? goal.isOutputClosure()
                 ? "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
+                : "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY"
                 : "PATH_FLIP_REPLAY_REJECTED");
         report.addProperty("admissionAuthority", valid
                 ? "IMMUTABLE_BRANCH_REPLAY_CONTRACT_PLUS_"
@@ -166,6 +170,7 @@ public final class ConcolicPathReplayVerifier {
     private static void validateActivation(JsonObject task,
                                            JsonObject activation,
                                            BranchReplayContract contract,
+                                           RegionCaptureGoal goal,
                                            JsonArray failures) {
         String activationId = string(activation, "activationId");
         String scheduleId = string(activation, "scheduleId");
@@ -179,10 +184,13 @@ public final class ConcolicPathReplayVerifier {
         require(failures, "REPLAY_SCHEDULE_ID_QUERY_HASH_MISMATCH",
                 ("SCHEDULE.PATH." + pathId).equals(scheduleId));
         require(failures, "WRONG_REPLAY_EXECUTION_PHASE",
-                "REPLAY_OUTPUT_PATH_FLIP".equals(string(activation,
-                        "executionPhase")));
-        require(failures, "REPLAY_CAPTURE_GOAL_IS_NOT_OUTPUT_CLOSURE",
-                RegionCaptureGoal.from(activation).isOutputClosure());
+                (goal.isOutputClosure()
+                        ? "REPLAY_OUTPUT_PATH_FLIP"
+                        : "REPLAY_TARGET_PATH_FLIP").equals(
+                        string(activation, "executionPhase")));
+        require(failures, "REPLAY_CAPTURE_GOAL_MISMATCH",
+                goal.kind().equals(
+                        RegionCaptureGoal.from(activation).kind()));
         require(failures, "REPLAY_REGION_ID_MISMATCH",
                 string(task, "regionId").equals(string(activation,
                         "regionId")));
