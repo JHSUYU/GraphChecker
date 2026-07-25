@@ -1834,6 +1834,11 @@ V2 `state/trustState/gaps/artifact`。Runtime selector 中一个对永远非空
 `RootContextSelector` 的 null compatibility 分支也已删除。其余命中 “fallback/legacy”
 的代码均有实际生产消费者，或表达 fail-closed 禁止降级的语义，不能为了字符串清零而删。
 清场后手写生产 Java 为 69,269 行，相对冻结基线累计净减 12,312 行。
+清场提交 `200bd576` 的独立 clean worktree 随后再次完成全部 13 个真实
+custom-JDK/Z3 fixture：`completed=13 failures=0`，仍为 6 SAT/REACHABLE、7
+UNSAT/UNREACHABLE；日志目录为
+`target/robustness-matrix-logs/20260725T170553Z.599731`。该结果是最终 release gate，
+主工作树中未暂存的用户 container fixture 修改没有进入构建、提交或矩阵。
 
 ### 明确不能删除
 
