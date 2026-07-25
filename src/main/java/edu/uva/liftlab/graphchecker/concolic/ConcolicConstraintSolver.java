@@ -17,8 +17,6 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -28,6 +26,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Solves one normalized concolic branch-flip query and maps scalar model values
@@ -67,7 +74,7 @@ public final class ConcolicConstraintSolver {
         String smt = encoder.finish();
         JsonObject record = baseRecord(task);
         record.addProperty("solver", "Z3_SMT2");
-        record.addProperty("solverInputHash", sha256(smt));
+        record.addProperty("solverInputHash", ArtifactIO.sha256(smt));
         record.add("unsupported", GSON.toJsonTree(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
@@ -2447,39 +2454,10 @@ public final class ConcolicConstraintSolver {
                 .toLowerCase();
     }
 
-    private static String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest((value == null ? "" : value)
-                    .getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte current : bytes) {
-                result.append(String.format("%02x", current & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException(exception);
-        }
-    }
-
     private static String firstLine(String value) {
         if (value == null) return "";
         int newline = value.indexOf('\n');
         return (newline < 0 ? value : value.substring(0, newline)).trim();
-    }
-
-    private static JsonObject object(JsonObject parent, String name) {
-        if (parent == null) return new JsonObject();
-        JsonElement value = parent.get(name);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static JsonArray array(JsonObject parent, String name) {
-        if (parent == null) return new JsonArray();
-        JsonElement value = parent.get(name);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
     }
 
     private static List<String> stringList(JsonArray values) {
@@ -2498,60 +2476,4 @@ public final class ConcolicConstraintSolver {
         return result;
     }
 
-    private static String string(JsonObject object, String name) {
-        if (object == null) return "";
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static boolean bool(JsonObject object, String name,
-                                boolean fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int integer(JsonObject object, String name, int fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String name,
-                                    long fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
 }

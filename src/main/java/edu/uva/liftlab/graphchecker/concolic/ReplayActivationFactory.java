@@ -4,10 +4,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-
 /** Builds the executable activation for one solver-selected path replay. */
 final class ReplayActivationFactory {
     private ReplayActivationFactory() {
@@ -82,18 +78,6 @@ final class ReplayActivationFactory {
     }
 
     private static String shortHash(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest((value == null ? "" : value)
-                    .getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.substring(0, 16);
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is unavailable",
-                    impossible);
-        }
+        return ArtifactIO.sha256(value).substring(0, 16);
     }
 }

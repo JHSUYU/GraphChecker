@@ -145,6 +145,10 @@ composer-internal	dynamicTermSourceAuthority/heapObservationId/relationshipId mi
 path-input-proof	output authority/path count/materialization mode mirrors	PathRelationInputClosure	none	none	proof admission inputs plus canonical proof authority	DELETE	6+
 merge-manifest	pathWorklistState	RegionSummaryMerger	none	none	worklist completion enforced before merge plus complete/gaps	DELETE	6+
 replay-result	failureCount	ConcolicReplayValidator	none	none	failures.length	DELETE	6+
+concolic-internal	duplicated forgiving JSON field readers	seven concolic stages	local stage only	none	JsonFields	CONSOLIDATE_AND_DELETE	6+
+concolic-internal	duplicated SHA-256 implementations	six concolic stages	local stage only	none	ArtifactIO.sha256	CONSOLIDATE_AND_DELETE	6+
+concolic-boundary	duplicated permissive JSONL readers	Scheduler/Importer/Composer/Merger	local stage only	none	ArtifactIO strict JSONL reader	CONSOLIDATE_AND_FAIL_CLOSED	6+
+replay-admission	generic model/branch/output-closure revalidation	ConcolicReplayValidator	ConcolicSummaryImporter	none	Importer ReplayAdmission plus canonical summary construction	DELETE_DUPLICATE_KEEP_DYNAMIC_REBINDING	6+
 correctness	outputClosure	Planner/Scheduler/Importer	all stages	run.sh,matrix	not derivable	KEEP	-
 correctness	captureBindings	static planner	Scheduler/Importer	matrix	not derivable	KEEP	-
 correctness	transformerObligations	static planner	Runtime/Importer	matrix	not derivable	KEEP	-

@@ -11,9 +11,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -21,8 +19,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +37,15 @@ import java.util.regex.Pattern;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
+
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Composes one selected fatal-region query with concolic summaries of its
@@ -8943,20 +8948,7 @@ public final class ConcolicSmtComposer {
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        if (path == null || !Files.isRegularFile(path)) {
-            return Collections.emptyList();
-        }
-        List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                JsonElement parsed = JsonParser.parseString(line);
-                if (parsed.isJsonObject()) result.add(parsed.getAsJsonObject());
-            }
-        }
-        return result;
+        return ArtifactIO.readJsonl(path);
     }
 
     private static void write(Path path, String value) throws IOException {
@@ -8978,21 +8970,6 @@ public final class ConcolicSmtComposer {
                 .toString());
         result.addProperty("sha256", sha256(exact));
         return result;
-    }
-
-    private static String sha256(byte[] value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value == null ? new byte[0] : value);
-            StringBuilder result = new StringBuilder(bytes.length * 2);
-            for (byte current : bytes) {
-                result.append(String.format(Locale.ROOT, "%02x",
-                        current & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
     }
 
     private static String heapObservationStateSelectorDigest(
@@ -9018,51 +8995,8 @@ public final class ConcolicSmtComposer {
         return parent == null ? Paths.get(name) : parent.resolve(name);
     }
 
-    private static JsonArray array(JsonObject object, String field) {
-        JsonElement element = object == null ? null : object.get(field);
-        return element != null && element.isJsonArray()
-                ? element.getAsJsonArray() : new JsonArray();
-    }
-
     private static JsonArray edgeBindings(JsonObject object) {
         return array(object, "edgeBindings");
-    }
-
-    private static JsonObject object(JsonObject object, String field) {
-        JsonElement element = object == null ? null : object.get(field);
-        return element != null && element.isJsonObject()
-                ? element.getAsJsonObject() : new JsonObject();
-    }
-
-    private static String string(JsonObject object, String field) {
-        JsonElement element = object == null ? null : object.get(field);
-        try {
-            return element == null || element.isJsonNull()
-                    ? "" : element.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static int integer(JsonObject object, String field, int fallback) {
-        JsonElement element = object == null ? null : object.get(field);
-        try {
-            return element == null || element.isJsonNull()
-                    ? fallback : element.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String field,
-                                    long fallback) {
-        JsonElement element = object == null ? null : object.get(field);
-        try {
-            return element == null || element.isJsonNull()
-                    ? fallback : element.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
     }
 
     private static long firstLong(JsonObject object, String... fields) {
@@ -9074,25 +9008,4 @@ public final class ConcolicSmtComposer {
         return -1L;
     }
 
-    private static boolean bool(JsonObject object, String field,
-                                boolean fallback) {
-        JsonElement element = object == null ? null : object.get(field);
-        try {
-            return element == null || element.isJsonNull()
-                    ? fallback : element.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
-    }
 }

@@ -7,19 +7,15 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -30,6 +26,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Builds graph-directed concolic jobs from static regions and concrete
@@ -1994,25 +1998,8 @@ public final class ConcolicScheduler {
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        if (path == null) {
-            return Collections.emptyList();
-        }
-        requireFile(path, "JSONL input");
-        List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed = JsonParser.parseString(line);
-                if (parsed.isJsonObject()) {
-                    result.add(parsed.getAsJsonObject());
-                }
-            }
-        }
-        return result;
+        return path == null ? Collections.<JsonObject>emptyList()
+                : ArtifactIO.readJsonl(path);
     }
 
     private static void writeJsonl(Path path, List<JsonObject> rows)
@@ -2046,59 +2033,6 @@ public final class ConcolicScheduler {
         }
     }
 
-    private static JsonArray array(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
-
-    private static JsonObject object(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    private static String string(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        try {
-            return value == null || value.isJsonNull() ? "" : value.getAsString();
-        } catch (RuntimeException ignored) {
-            return "";
-        }
-    }
-
-    private static boolean bool(JsonObject object, String field,
-                                boolean fallback) {
-        JsonElement value = object == null ? null : object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static int integer(JsonObject object, String field, int fallback) {
-        JsonElement value = object == null ? null : object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longInteger(JsonObject object, String field,
-                                    long fallback) {
-        JsonElement value = object == null ? null : object.get(field);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
     private static long firstLong(JsonObject object, String... fields) {
         for (String field : fields) {
             if (object != null && object.has(field)) {
@@ -2106,17 +2040,6 @@ public final class ConcolicScheduler {
             }
         }
         return -1L;
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values != null) {
-            for (String value : values) {
-                if (value != null && !value.trim().isEmpty()) {
-                    return value.trim();
-                }
-            }
-        }
-        return "";
     }
 
     private static String safe(String value) {
@@ -2374,18 +2297,7 @@ public final class ConcolicScheduler {
                 + keyComponent(firstNonBlank(pathPrefixHash, "NO_PATH"))
                 + keyComponent(firstNonBlank(boundedContextHash,
                 "NO_CONTEXT"));
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(firstNonBlank(canonical)
-                    .getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 unavailable", impossible);
-        }
+        return ArtifactIO.sha256(canonical);
     }
 
     private static String canonicalQueryPort(String value) {

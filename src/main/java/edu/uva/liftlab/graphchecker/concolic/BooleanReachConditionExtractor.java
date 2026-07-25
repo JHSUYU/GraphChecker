@@ -7,7 +7,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import java.io.File;
 import java.io.IOException;
@@ -1179,16 +1178,11 @@ public final class BooleanReachConditionExtractor {
     }
 
     private static JsonObject readJson(Path path) throws IOException {
-        JsonElement value = JsonParser.parseString(ArtifactIO.readText(path));
-        if (!value.isJsonObject()) {
-            throw new IOException("Expected JSON object: " + path);
-        }
-        return value.getAsJsonObject();
+        return ArtifactIO.readObject(path);
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        return ArtifactIO.readJsonl(path, null,
-                "Expected JSON object at %1$s:%2$d");
+        return ArtifactIO.readJsonl(path);
     }
 
     private static String cellJavaType(String cell) {

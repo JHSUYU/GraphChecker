@@ -11,7 +11,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -21,8 +20,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -33,6 +30,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 
 /**
  * Validates raw VM region results and normalizes them into composable
@@ -334,18 +333,25 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("summaryId", "SUMMARY." + regionId + "."
                     + contentHash);
             if (isPathFlip(activation)) {
-                JsonObject replayTask = activation.deepCopy();
-                replayTask.addProperty("queryKey",
-                        strictString(activation, "pathQueryKey"));
-                replayTask.addProperty("activationId",
-                        strictString(activation, "sourceActivationId"));
-                JsonObject replayValidation =
-                        ConcolicReplayValidator.validate(
-                                replayTask, raw, summary);
-                if (!bool(replayValidation, "valid", false)) {
+                List<String> replayFailures = new ArrayList<>(
+                        ConcolicReplayValidator.validateDynamicRebindings(
+                                activation, raw, summary));
+                if (captureGoal.isOutputClosure()
+                        && !bool(summary, "relationallyComplete", false)) {
+                    replayFailures.add(
+                            "IMPORTED_OUTPUT_SUMMARY_NOT_RELATIONALLY_"
+                                    + "COMPLETE");
+                }
+                if (captureGoal.isOutputClosure()
+                        && (!bool(summary, "normalExit", false)
+                        || !string(summary, "exceptionType").isEmpty())) {
+                    replayFailures.add(
+                            "IMPORTED_OUTPUT_SUMMARY_NOT_NORMAL_EXIT");
+                }
+                if (!replayFailures.isEmpty()) {
                     diagnostics.add(diagnostic(raw,
                             "PATH_REPLAY_ADMISSION_REJECTED",
-                            GSON.toJson(replayValidation.get("failures"))));
+                            GSON.toJson(replayFailures)));
                     continue;
                 }
             }
@@ -9478,38 +9484,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static List<JsonObject> readJsonl(Path path) throws IOException {
-        if (path == null || !Files.isRegularFile(path)) {
-            return Collections.emptyList();
-        }
-        List<JsonObject> result = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                JsonElement parsed = JsonParser.parseString(line);
-                if (parsed.isJsonObject()) {
-                    result.add(parsed.getAsJsonObject());
-                }
-            }
-        }
-        return result;
-    }
-
-    private static String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder();
-            for (byte item : bytes) {
-                result.append(String.format("%02x", item & 0xff));
-            }
-            return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
+        return ArtifactIO.readJsonl(path);
     }
 
     private static JsonObject object(JsonObject parent, String field) {
