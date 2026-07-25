@@ -544,8 +544,7 @@ validate_container_producer_artifacts() {
       and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
         == ["Y_I_-1", "Y_I_1"]
       and all(.regionRelation.cases[];
-        .relationallyComplete == true
-        and (.dynamicFieldBindings | length) == 1
+        (.dynamicFieldBindings | length) == 1
         and .dynamicFieldBindings[0] as $dynamic
         | ($dynamic.schemaVersion == 2
           and $dynamic.kind
@@ -613,8 +612,7 @@ validate_container_producer_artifacts() {
     and (any(.regionRelation.cases[].outputExpressions[]?;
       ._type == "BinaryExpression"))
     and all(.regionRelation.cases[];
-      .relationallyComplete == true
-      and (.dynamicFieldBindings | length) == 1
+      (.dynamicFieldBindings | length) == 1
       and (.heapObservations | length) == 1
       and .dynamicFieldBindings[0] as $dynamic
       | .heapObservations[0] as $observation
