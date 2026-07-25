@@ -22,12 +22,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -49,7 +45,7 @@ public class ConcolicRegionRuntimeTest {
         String field = "<example.StaticInputs: int t>";
         String symbol = "REGION.TEST.in.t";
 
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.MODEL.STATIC.PRIMITIVE", root, 1);
         JsonObject action = new JsonObject();
         action.addProperty("symbol", symbol);
@@ -90,6 +86,9 @@ public class ConcolicRegionRuntimeTest {
 
         String[] old = installPlan(plan, results, "concrete-model-test");
         try {
+            DelayedExpressionEngine.reset();
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegionFrame(root,
                     new Object(), new Object[0]);
             assertTrue(token > 0L);
@@ -130,8 +129,8 @@ public class ConcolicRegionRuntimeTest {
         Path plan = folder.getRoot().toPath().resolve("tasks.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = "<example.SelectedTask: void run()>";
-        JsonObject first = concreteActivation("ACT.SELECT.FIRST", root, 1);
-        JsonObject second = concreteActivation("ACT.SELECT.SECOND", root, 1);
+        JsonObject first = symbolicTask("ACT.SELECT.FIRST", root, 1);
+        JsonObject second = symbolicTask("ACT.SELECT.SECOND", root, 1);
         Files.write(plan, (first + "\n" + second + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
@@ -141,6 +140,9 @@ public class ConcolicRegionRuntimeTest {
             System.setProperty("causynth.concolic.task.id",
                     "TASK.ACT.SELECT.SECOND");
             ConcolicRegionRuntime.resetForTests();
+            DelayedExpressionEngine.reset();
+            ConcolicRegionRuntime.installEngineApiForTests(
+                    DelayedExpressionEngine.class);
             long token = ConcolicRegionRuntime.enterRegionFrame(root,
                     new Object(), new Object[0]);
             assertTrue(token > 0L);
@@ -207,11 +209,10 @@ public class ConcolicRegionRuntimeTest {
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String method = "<example.Target: java.lang.Object lookup(int)>";
-        JsonObject activation = concreteActivation("ACT.EXACT.BRANCH",
+        JsonObject activation = symbolicTask("ACT.EXACT.BRANCH",
                 method, 1);
         activation.addProperty("regionId", "REGION.EXACT.BRANCH");
         activation.addProperty("test", "exact-branch-test");
-        activation.addProperty("concreteReplayOnly", false);
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
 
@@ -260,11 +261,10 @@ public class ConcolicRegionRuntimeTest {
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String method = "<example.Target: int choose(int)>";
         String siteId = method + "#u7";
-        JsonObject activation = concreteActivation("ACT.EXACT.SWITCH",
+        JsonObject activation = symbolicTask("ACT.EXACT.SWITCH",
                 method, 1);
         activation.addProperty("regionId", "REGION.EXACT.SWITCH");
         activation.addProperty("test", "exact-switch-test");
-        activation.addProperty("concreteReplayOnly", false);
         JsonObject branch = new JsonObject();
         branch.addProperty("siteId", siteId);
         branch.addProperty("policy", "EXPLORE");
@@ -347,10 +347,9 @@ public class ConcolicRegionRuntimeTest {
         String caller = "<example.Client: void send()>";
         String callee = "<example.Protocol: void accept(java.lang.String)>";
         String cell = callee + ".param0:java.lang.String";
-        JsonObject activation = concreteActivation("ACT.OUTPUT.EXACT", root,
+        JsonObject activation = symbolicTask("ACT.OUTPUT.EXACT", root,
                 1);
         activation.addProperty("test", "output-capture-test");
-        activation.addProperty("concreteReplayOnly", false);
         JsonObject capture = new JsonObject();
         capture.addProperty("captureKind", "CALL_ARGUMENT");
         capture.addProperty("captureBindingId",
@@ -420,10 +419,9 @@ public class ConcolicRegionRuntimeTest {
         String secondCallee = "<example.Protocol: void second(long)>";
         String firstCell = firstCallee + ".param0:int";
         String secondCell = secondCallee + ".param0:long";
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.OUTPUT.JOINT", root, 1);
         activation.addProperty("test", "joint-output-capture-test");
-        activation.addProperty("concreteReplayOnly", false);
 
         JsonObject first = new JsonObject();
         first.addProperty("captureKind", "CALL_ARGUMENT");
@@ -508,7 +506,7 @@ public class ConcolicRegionRuntimeTest {
         String caller = "<example.Client: void send()>";
         String callee = "<example.Protocol: void accept(int)>";
         String cell = callee + ".param0:int";
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.OUTPUT.MALFORMED", root, 1);
         JsonObject capture = new JsonObject();
         capture.addProperty("captureKind", "CALL_ARGUMENT");
@@ -556,10 +554,9 @@ public class ConcolicRegionRuntimeTest {
         String method = "<example.Heartbeat: void install(java.lang.Object)>";
         String field = "<" + AssignmentOwner.class.getName()
                 + ": java.lang.Object assigned>";
-        JsonObject activation = concreteActivation("ACT.FIELD.OUTPUT", root,
+        JsonObject activation = symbolicTask("ACT.FIELD.OUTPUT", root,
                 1);
         activation.addProperty("test", "field-output-capture-test");
-        activation.addProperty("concreteReplayOnly", false);
         JsonObject capture = new JsonObject();
         capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
         capture.addProperty("captureBindingId",
@@ -687,12 +684,11 @@ public class ConcolicRegionRuntimeTest {
                 HiddenArrayBase.class.getName());
         action.addProperty("leafOwnerClass",
                 HiddenArrayBase.class.getName());
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.ENGINE.ARRAY.HIDDEN."
                         + (consumeSubclassField ? "REJECT" : "EXACT"),
                 root, 1);
         activation.addProperty("test", "mock-symbolic-test");
-        activation.addProperty("concreteReplayOnly", false);
         addExecutableActions(activation, singleton(consumedFieldAction(action,
                 root, 23,
                 "DIRECT_EXACT_LEAF_GETFIELD_BASE_IS_INPUT_OWNER_V1")));
@@ -735,10 +731,9 @@ public class ConcolicRegionRuntimeTest {
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = "<example.ArrayInput: void run(" + Current.class
                 .getName() + "[])>";
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.ENGINE.ARRAY.FAIL." + expressionMode, root, 1);
         activation.addProperty("test", "mock-symbolic-test");
-        activation.addProperty("concreteReplayOnly", false);
         addExecutableActions(activation, singleton(engineArrayArgumentAction(
                 "REGION.ARRAY.in.0", root, 0)));
         Files.write(plan, (activation + "\n").getBytes(
@@ -781,10 +776,9 @@ public class ConcolicRegionRuntimeTest {
         action.addProperty("location", "ARGUMENT");
         action.addProperty("bindingMode", "ROOT_ENTRY");
         action.addProperty("index", 0);
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.ENGINE.PRIMITIVE.ARRAY." + mode, root, 1);
         activation.addProperty("test", "mock-symbolic-test");
-        activation.addProperty("concreteReplayOnly", false);
         addExecutableActions(activation, singleton(action));
         Files.write(plan, (activation + "\n").getBytes(
                 StandardCharsets.UTF_8));
@@ -815,10 +809,9 @@ public class ConcolicRegionRuntimeTest {
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = "<example.ArrayInput: void run(" + Current.class
                 .getName() + "[]," + Current.class.getName() + "[])>";
-        JsonObject activation = concreteActivation(
+        JsonObject activation = symbolicTask(
                 "ACT.ENGINE.ARRAY.ID.COLLISION", root, 1);
         activation.addProperty("test", "mock-symbolic-test");
-        activation.addProperty("concreteReplayOnly", false);
         JsonArray actions = new JsonArray();
         actions.add(engineArrayArgumentAction("REGION.ARRAY.in.0",
                 root, 0));
@@ -928,25 +921,14 @@ public class ConcolicRegionRuntimeTest {
     private static JsonObject runMapProjectionRuntimeCase(
             String activationId, String outputValidationMode,
             String mutation, JsonObject assignment,
-            boolean concreteReplayOnly) throws Exception {
-        return runMapProjectionRuntimeCase(activationId,
-                outputValidationMode, mutation, assignment,
-                concreteReplayOnly, false);
-    }
-
-    private static JsonObject runMapProjectionRuntimeCase(
-            String activationId, String outputValidationMode,
-            String mutation, JsonObject assignment,
-            boolean concreteReplayOnly,
             boolean mapStateObservationOnly) throws Exception {
         TemporaryFolder folder = new TemporaryFolder();
         folder.create();
         Path plan = folder.getRoot().toPath().resolve("activation.jsonl");
         Path results = folder.getRoot().toPath().resolve("results.jsonl");
         String root = mapProjectionRoot();
-        JsonObject activation = concreteActivation(activationId, root, 1);
+        JsonObject activation = symbolicTask(activationId, root, 1);
         activation.addProperty("test", "mock-symbolic-test");
-        activation.addProperty("concreteReplayOnly", concreteReplayOnly);
         JsonObject mapAction = mapProjectionMapAction();
         if (mapStateObservationOnly) {
             mapAction.addProperty("bindingMode",
@@ -1018,42 +1000,30 @@ public class ConcolicRegionRuntimeTest {
             // producer entry, never synthesized by the output-capture hook.
             // Three recursive element-field symbols plus the existing
             // shallow backing-map field symbol.
-            if (concreteReplayOnly) {
-                assertEquals(0,
-                        DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                                .size());
-            } else {
-                boolean projectionRejectedAtEntry = Arrays.asList(
-                        "FLOAT_KEY", "IDENTITY_MAP", "SHADOW_FIELD",
-                        "KEY_SET_VIEW").contains(mutation);
-                int mapReferenceSymbols = mapStateObservationOnly ? 0 : 1;
-                assertEquals(projectionRejectedAtEntry
-                                ? mapReferenceSymbols
-                                : mapReferenceSymbols + 3,
-                        DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                                .size());
-                assertEquals(!mapStateObservationOnly,
-                        DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                                .containsKey(producer));
-                if (!projectionRejectedAtEntry) {
-                    assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                            .containsKey(first));
-                    assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                            .containsKey(second));
-                    assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
-                            .containsKey(third));
-                }
+            boolean projectionRejectedAtEntry =
+                    "FLOAT_KEY".equals(mutation)
+                            || "IDENTITY_MAP".equals(mutation)
+                            || "SHADOW_FIELD".equals(mutation)
+                            || "KEY_SET_VIEW".equals(mutation);
+            int mapReferenceSymbols = mapStateObservationOnly ? 0 : 1;
+            assertEquals(projectionRejectedAtEntry
+                            ? mapReferenceSymbols
+                            : mapReferenceSymbols + 3,
+                    DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES.size());
+            assertEquals(!mapStateObservationOnly,
+                    DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
+                            .containsKey(producer));
+            if (!projectionRejectedAtEntry) {
+                assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
+                        .containsKey(first));
+                assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
+                        .containsKey(second));
+                assertTrue(DelayedExpressionEngine.SYMBOLIC_FIELD_PREFIXES
+                        .containsKey(third));
             }
-            if (assignment != null && !concreteReplayOnly) {
+            if (assignment != null) {
                 assertEquals("wrong-scope model must not mutate input", 11L,
                         first.expiryDate);
-            }
-            if (assignment != null && concreteReplayOnly
-                    && "IDENTICAL".equals(mutation)
-                    && activationId.equals(assignment.getAsJsonObject(
-                    "mapProjectionSelector").get("objectTokenScope")
-                    .getAsString())) {
-                assertEquals(99L, first.expiryDate);
             }
 
             if ("CROSS_THREAD_WRITE".equals(mutation)
@@ -1282,27 +1252,6 @@ public class ConcolicRegionRuntimeTest {
                 + ": long expiryDate>";
     }
 
-    private static Thread concreteObserver(
-            String root, String branchMethod, AtomicLong token,
-            CountDownLatch entered, CountDownLatch release) {
-        return new Thread(() -> {
-            long value = ConcolicRegionRuntime.enterRegion(root,
-                    new Object(), null);
-            token.set(value);
-            entered.countDown();
-            try {
-                release.await(5, TimeUnit.SECONDS);
-                if (value > 0L) {
-                    assertFalse(ConcolicRegionRuntime.resolveBranch(0L, 0L,
-                            branchMethod, 8, "result != null", false));
-                    ConcolicRegionRuntime.exitRegion(value, null, "");
-                }
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
-        });
-    }
-
     private static void runEntryFieldActivation(
             String root,
             java.util.LinkedHashMap<Integer, ExpiringValue> map,
@@ -1329,7 +1278,7 @@ public class ConcolicRegionRuntimeTest {
         ConcolicRegionRuntime.exitRegion(token, null, "");
     }
 
-    private static JsonObject concreteActivation(
+    private static JsonObject symbolicTask(
             String id, String root, int ordinal) {
         JsonObject activation = new JsonObject();
         activation.addProperty("goalId", id + ".GOAL");
@@ -1347,10 +1296,9 @@ public class ConcolicRegionRuntimeTest {
         activation.add("rootSelector", rootSelector);
         JsonObject admission = new JsonObject();
         admission.addProperty("state", "EXECUTABLE");
-        admission.addProperty("mode", "TEST_CONCRETE_REPLAY");
+        admission.addProperty("mode", "TEST_SYMBOLIC_CONCOLIC");
         admission.add("blockers", new JsonArray());
         activation.add("admission", admission);
-        activation.addProperty("concreteReplayOnly", true);
         activation.add("inputActions", new JsonArray());
         activation.add("modelAssignments", new JsonArray());
         return activation;
@@ -1659,15 +1607,6 @@ public class ConcolicRegionRuntimeTest {
 
     private static String metadataExpiryFieldSignature() {
         return "<" + Metadata.class.getName() + ": long expiry>";
-    }
-
-    private static JsonObject concreteIntegerExpression(int value) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("kind", "CONCRETE_RUNTIME_VALUE");
-        expression.addProperty("symbolic", false);
-        expression.addProperty("valueType", Integer.class.getName());
-        expression.addProperty("value", value);
-        return expression;
     }
 
     private static List<JsonObject> resultRows(Path results)

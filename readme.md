@@ -539,7 +539,7 @@ CAUSYNTH_CONCOLIC_JOBS=64 experiments/generic/three-thread-rpc/run.sh all
 | --- | --- |
 | `SymbolicRegionPlanner` | 静态 region、live-in/live-out、output slice 和候选 edge |
 | `RuntimeRegionPlanner` | 每个动态 region instance 构造一个 plan，并挂载 bounded closure goals |
-| `RegionClosureExplorer` / `RegionPathWorklist` | 在 goal 内规划 frontier、pending query、稳定去重和 closure |
+| `RegionClosureExplorer` / `RegionPathWorklist` | 在 goal 内规划 frontier、稳定去重，并在 CLOSED 时生成 guarded relation |
 | `ConcolicScheduler` | 把 ready query 编译成小型 execution task，不承担 closure 语义 |
 | `ConcolicPathFlipSolver` | 精确求解一个 query，为 SAT frontier 产生 replay task input |
 | `ConcolicRegionRuntime` | 执行 task，记录 task-scoped PC、capture、heap 与 branch observation |
@@ -547,7 +547,6 @@ CAUSYNTH_CONCOLIC_JOBS=64 experiments/generic/three-thread-rpc/run.sh all
 | `SolverPathContext` | 与 branch authority 分离的、有位置的 typed 非 branch solver constraints |
 | `BranchReplayObservationValidator` | 在 runtime 与 Importer 边界验证有序 witness 流 |
 | `ConcolicSummaryImporter` | 将 raw custom-JDK 结果严格导入 `R(in,out)` path summary |
-| `RegionSummaryMerger` | 把同一 region 的已验证路径合成 guarded relation |
 | `ConcolicSmtComposer` | 递归绑定上游 out 与下游 in，生成 composed SMT |
 | `BooleanReachConditionExtractor` | 调用 Z3 枚举 Boolean roots 并生成 reach condition |
 | `run_engine.sh` | 配置驱动的通用阶段编排 |
@@ -1409,7 +1408,7 @@ Scheduler binding 候选：
 - `discoveredExecutionId`
 - `discoveredExecutionIds`
 
-#### Worklist、Merger、Composer
+#### Worklist、Composer
 
 核查并删除：
 
@@ -1422,7 +1421,9 @@ Scheduler binding 候选：
 - `caseProjectionCatalogComplete`
 - relationship 的固定 `status=UNVERIFIED_CANDIDATE`
 
-从 `RegionSummaryMerger` 核查并删除可由 canonical 数组、`gaps`、`kind/schema` 推导的：
+独立 `RegionSummaryMerger` 已删除；relation 只由 Worklist 在
+`CLOSED + OUTPUT_RELATION_CLOSURE` 转移中产生。原 Merger 中可由 canonical 数组、
+`gaps`、`kind/schema` 推导的下列镜像也不再存在：
 
 - `caseCount`
 - `guardSemantics`
@@ -2112,6 +2113,21 @@ producer-demand 与 canonical-output 选择统一调用同一个推导：truncat
 为空、causal edge 非空、capture complete，且适用时 transformer contract complete。
 这修复了“wire writer 已删除但类内旧 reader 把所有 slice 判为 incomplete”的原子迁移
 遗漏，同时没有恢复第二份 readiness boolean。
+
+随后三条独立旧路径被原子收敛。`ConcolicRegionRuntime` 删除了从无 Scheduler/Planner
+writer、且 Importer 明确拒绝的 whole-task `concreteReplayOnly/observationOnlyReplay`
+模式；action-level concrete materialization、frame execution counts、read-from 与 object
+identity 均保留。`RegionPathWorklist` 成为 relation closure 的唯一 authority，只在
+`CLOSED + OUTPUT_RELATION_CLOSURE` 时生成原有 wire-compatible guarded relation，
+因此独立 `RegionSummaryMerger` 及其第二遍 scope/path/evidence 校验被删除。Soot 插桩侧
+两套巨型 hook holder 合并为一个 typed `HookCatalog`，三份 primitive
+box/pause/materialize/resume/unbox 模板合并为唯一 round-trip emitter。
+
+logical input port 类型也统一由 `MaterializationSpec.logicalJavaType()` 给出；Composer 和
+Boolean reach extractor 不再分别把 nested field 的中间 owner 类型当成 leaf 类型。这既
+决定 SMT sort，也决定 Boolean root catalog。当前手写生产 Java 为 68,923 行；快速回归
+维持在 67 项并全部通过。正式 release gate 仍是 clean worktree 的 13 个真实
+custom-JDK/Z3 fixture。
 
 ### 明确不能删除
 

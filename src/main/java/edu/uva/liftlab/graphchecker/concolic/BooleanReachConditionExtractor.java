@@ -14,6 +14,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -610,7 +611,7 @@ public final class BooleanReachConditionExtractor {
                     if (!id.isEmpty()) {
                         result.inputs.put(id, new PortInfo(id, regionId,
                                 string(row, "cell"),
-                                string(row, "javaType")));
+                                MaterializationSpec.logicalJavaType(row)));
                     }
                 }
                 for (JsonElement element : array(region, "outputs")) {

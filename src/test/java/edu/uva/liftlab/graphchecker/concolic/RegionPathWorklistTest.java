@@ -57,6 +57,7 @@ public class RegionPathWorklistTest {
         assertEquals(RegionPathWorklist.State.PENDING.name(),
                 result.manifest.get("state").getAsString());
         assertFalse(result.manifest.has("observedPathCount"));
+        assertTrue(result.relations.isEmpty());
 
         RegionPathWorklist.Result bounded = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -90,6 +91,7 @@ public class RegionPathWorklistTest {
                     task.get("goalKind").getAsString());
             assertFalse(task.has("outputClosure"));
         }
+        assertTrue(targetResult.relations.isEmpty());
         assertEquals("TARGET_REACH_CLOSURE",
                 targetResult.manifest.get("goalKind").getAsString());
     }
@@ -104,6 +106,26 @@ public class RegionPathWorklistTest {
                 "<P: int x>", "PROOF.EMPTY");
         attachClosure(summary, closure);
         attachClosure(executionTask, closure);
+        summary.getAsJsonObject("outputExpressions").add(
+                "REGION.3.out.0", binary("+", 1));
+        String[] evidenceFields = new String[]{"heapStateInitializers",
+                "heapObservations", "finiteMapSnapshots",
+                "dynamicFieldBindings", "engineArrayInputBindings",
+                "vmIntrinsicPlaceholderBindings",
+                "unforcedEnvironmentValidationRequirements",
+                "heapEffects"};
+        for (String field : evidenceFields) {
+            JsonObject marker = new JsonObject();
+            marker.addProperty("evidenceField", field);
+            JsonArray evidence = new JsonArray();
+            evidence.add(marker);
+            summary.add(field, evidence);
+        }
+        JsonObject binding = new JsonObject();
+        binding.addProperty("edgeId", "EDGE.TEST");
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        summary.add("edgeBindings", bindings);
 
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
                 Collections.singletonList(summary),
@@ -114,6 +136,148 @@ public class RegionPathWorklistTest {
         assertTrue(result.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 result.manifest.get("state").getAsString());
+        assertEquals(1, result.relations.size());
+        JsonObject merged = result.relations.get(0);
+        assertEquals("CONCOLIC_REGION_SUMMARY",
+                merged.get("kind").getAsString());
+        assertTrue(merged.get("relationallyComplete").getAsBoolean());
+        assertEquals("GUARDED_PATH_MERGE", merged.getAsJsonObject(
+                "regionRelation").get("kind").getAsString());
+        JsonObject pathCase = merged.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject();
+        assertEquals("TASK.ACT.EMPTY.SLICE",
+                pathCase.get("sourceTaskId").getAsString());
+        for (String field : evidenceFields) {
+            assertEquals(summary.getAsJsonArray(field),
+                    pathCase.getAsJsonArray(field));
+        }
+        assertEquals(bindings, merged.getAsJsonArray("edgeBindings"));
+        assertEquals(OutputClosureCodec.decode(summary).closureFingerprint(),
+                OutputClosureCodec.decode(merged).closureFingerprint());
+
+        JsonObject targetSummary = summary("ACT.CLOSED.TARGET",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject targetTask = executionTask("ACT.CLOSED.TARGET",
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        targetSummary.remove("outputClosure");
+        targetTask.remove("outputClosure");
+        targetSummary.add("branchMappings", new JsonArray());
+        targetTask.add("branches", new JsonArray());
+        RegionPathWorklist.Result target = RegionPathWorklist.plan(
+                Collections.singletonList(targetSummary),
+                Collections.singletonList(targetTask),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                target.manifest.get("state").getAsString());
+        assertTrue(target.relations.isEmpty());
+    }
+
+    @Test
+    public void closedJointRelationRequiresEveryOutputExpression() {
+        JsonObject summary = summary("ACT.JOINT",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.JOINT");
+        JsonObject second = closure.getAsJsonArray("members").get(0)
+                .getAsJsonObject().deepCopy();
+        second.getAsJsonObject("output").addProperty(
+                "portId", "REGION.3.out.1");
+        second.getAsJsonObject("output").addProperty(
+                "cell", "<P: int y>");
+        second.getAsJsonObject("slice").addProperty(
+                "outputPort", "REGION.3.out.1");
+        second.getAsJsonObject("slice").addProperty(
+                "outputCell", "<P: int y>");
+        closure.getAsJsonArray("members").add(second);
+        for (int index = 0; index < 2; index++) {
+            JsonObject member = closure.getAsJsonArray("members").get(index)
+                    .getAsJsonObject();
+            String port = member.getAsJsonObject("output")
+                    .get("portId").getAsString();
+            String cell = member.getAsJsonObject("output")
+                    .get("cell").getAsString();
+            JsonObject capture = new JsonObject();
+            capture.addProperty("captureBindingId",
+                    "CAPTURE.JOINT." + index);
+            capture.addProperty("captureKind", "FIELD_ASSIGNMENT_RHS");
+            capture.addProperty("outputPort", port);
+            capture.addProperty("outputCell", cell);
+            capture.addProperty("method", "<P: void produce()>");
+            capture.addProperty("unitIndex", index);
+            capture.addProperty("siteId",
+                    "<P: void produce()>#u" + index);
+            capture.addProperty("fieldSignature", cell);
+            JsonArray captures = new JsonArray();
+            captures.add(capture);
+            member.getAsJsonObject("slice").addProperty(
+                    "captureBindingsRequired", true);
+            member.getAsJsonObject("slice").add(
+                    "captureBindings", captures);
+        }
+        attachClosure(summary, closure);
+        summary.add("branchMappings", new JsonArray());
+        summary.getAsJsonObject("outputExpressions").add(
+                "REGION.3.out.0", binary("+", 1));
+
+        RegionPathWorklist.Result incomplete = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                incomplete.manifest.get("state").getAsString());
+        assertTrue(incomplete.relations.isEmpty());
+        assertTrue(incomplete.manifest.getAsJsonArray("gaps").toString()
+                .contains("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH"));
+
+        summary.getAsJsonObject("outputExpressions").add(
+                "REGION.3.out.1", binary("-", 1));
+        RegionPathWorklist.Result complete = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                complete.manifest.get("state").getAsString());
+        assertEquals(1, complete.relations.size());
+        assertEquals(2, complete.relations.get(0)
+                .getAsJsonObject("regionRelation").getAsJsonArray("cases")
+                .get(0).getAsJsonObject().getAsJsonObject(
+                        "outputExpressions").size());
+    }
+
+    @Test
+    public void conflictingDuplicatePathEvidenceCannotProduceRelation() {
+        JsonObject first = summary("ACT.DUPLICATE.A",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject second = summary("ACT.DUPLICATE.B",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.DUPLICATE");
+        attachClosure(first, closure);
+        attachClosure(second, closure);
+        shareGoal(first, second);
+        first.add("branchMappings", new JsonArray());
+        second.add("branchMappings", new JsonArray());
+        JsonObject observation = new JsonObject();
+        observation.addProperty("observationId", "DIFFERENT");
+        JsonArray observations = new JsonArray();
+        observations.add(observation);
+        second.add("heapObservations", observations);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(first, second),
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertTrue(result.relations.isEmpty());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("CONFLICTING_DUPLICATE_PATH_PAYLOAD"));
     }
 
     @Test
@@ -317,6 +481,7 @@ public class RegionPathWorklistTest {
         assertTrue(exhausted.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.GAPPED.name(),
                 exhausted.manifest.get("state").getAsString());
+        assertTrue(exhausted.relations.isEmpty());
         assertTrue(exhausted.manifest.getAsJsonArray("gaps").toString()
                 .contains("SITE.LATE"));
         assertFalse(exhausted.manifest.has("deferredObservations"));

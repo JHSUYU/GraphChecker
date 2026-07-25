@@ -5,7 +5,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Assume;
 import org.junit.Test;
@@ -16,6 +15,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -94,10 +94,9 @@ public class ConcolicSmtComposerTest {
             installTwoEntryContainerEvidence(nonPositive);
             nonPositive.getAsJsonArray("pathCondition").add(
                     integerCondition("<=", 0));
-            RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
-                    java.util.Arrays.asList(positive, nonPositive),
-                    closedPathManifest(positive));
-            writeSummary(fixture, merged.summaries.get(0));
+            List<JsonObject> merged = closedRelations(
+                    java.util.Arrays.asList(positive, nonPositive));
+            writeSummary(fixture, merged.get(0));
 
             ConcolicSmtComposer.Result result = ConcolicSmtComposer.compose(
                     arguments(fixture));
@@ -1607,27 +1606,6 @@ public class ConcolicSmtComposerTest {
         return result;
     }
 
-    private static JsonObject closedPathManifest(JsonObject summary) {
-        OutputClosureContract contract = OutputClosureCodec.decode(summary);
-        JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("kind", "REGION_PATH_WORKLIST");
-        result.addProperty("regionId", summary.get(
-                "regionId").getAsString());
-        result.addProperty("state", RegionPathWorklist.State.CLOSED.name());
-        result.addProperty("goalId", summary.get(
-                "goalId").getAsString());
-        JsonObject bounds = new JsonObject();
-        bounds.addProperty("maxPathsPerRegion", 64);
-        bounds.addProperty("maxFlipsPerPath", 32);
-        bounds.addProperty("maxTasks", 256);
-        bounds.addProperty("maxWallClockMillis", 30_000L);
-        result.add("bounds", bounds);
-        result.add(OutputClosureContract.FIELD, contract.toJson());
-        result.add("gaps", new JsonArray());
-        return result;
-    }
-
     private static JsonObject bindingForPort(JsonObject projection,
                                              String portId) {
         for (JsonElement element : projection.getAsJsonArray("bindings")) {
@@ -1909,11 +1887,31 @@ public class ConcolicSmtComposerTest {
                 .getAsString() : "")) {
             return summary;
         }
-        RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
-                java.util.Collections.singletonList(summary),
-                closedPathManifest(summary));
-        assertFalse(merged.manifest.toString(), merged.summaries.isEmpty());
-        return merged.summaries.get(0);
+        List<JsonObject> merged = closedRelations(
+                java.util.Collections.singletonList(summary));
+        assertFalse(merged.isEmpty());
+        return merged.get(0);
+    }
+
+    private static List<JsonObject> closedRelations(
+            List<JsonObject> summaries) {
+        List<JsonObject> normalized = new java.util.ArrayList<>();
+        for (JsonObject summary : summaries) {
+            JsonObject copy = summary.deepCopy();
+            if (!copy.has("branchMappings")) {
+                copy.add("branchMappings", new JsonArray());
+            }
+            normalized.add(copy);
+        }
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                normalized, java.util.Collections.<JsonObject>emptyList(),
+                java.util.Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals(result.manifest.toString(),
+                RegionPathWorklist.State.CLOSED.name(),
+                result.manifest.get("state").getAsString());
+        assertFalse(result.manifest.toString(), result.relations.isEmpty());
+        return result.relations;
     }
 
     private static ConcolicSmtComposer.Arguments arguments(Fixture fixture) {

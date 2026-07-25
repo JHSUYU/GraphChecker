@@ -4451,9 +4451,7 @@ public final class ConcolicSummaryImporter {
                 && record.get("mapExpression").isJsonObject()
                 && ("CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_FIRST_ENTRY_SET_"
                 .concat("NEXT").equals(string(record,
-                        "mapExpressionAuthority"))
-                || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_FIRST_ENTRY_SET_NEXT"
-                .equals(string(record, "mapExpressionAuthority")))
+                        "mapExpressionAuthority")))
                 && count >= 1 && count <= 4096
                 && "CONCRETE_IMMUTABLE_MAP_ENTRY_KEYS_AT_SAME_EXECUTION_"
                 .concat("ENTRY_SET_SNAPSHOT").equals(string(record,
@@ -4645,21 +4643,15 @@ public final class ConcolicSummaryImporter {
         String value = string(record, "valueExpressionAuthority");
         boolean generic = "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT"
                 .equals(expression)
-                || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT".equals(
-                expression)
                 || MAP_REF_WITNESS_AUTHORITY.equals(expression)
                 && validMapRefWitness(record, taskId);
         boolean keyExact =
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT".equals(key)
-                || "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT".equals(key)
-                || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT".equals(
-                key);
+                || "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT".equals(key);
         boolean valueExact =
                 "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT".equals(
                         value)
                 || "AFTER_MATCHED_FIELD_SYMBOLIZATION".equals(value)
-                || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT".equals(
-                value)
                 || VALUE_REF_WITNESS_AUTHORITY.equals(value)
                 && validValueRefWitness(record, taskId);
         return generic && keyExact && valueExact;
@@ -4977,8 +4969,6 @@ public final class ConcolicSummaryImporter {
                     "CUSTOM_JDK_PUBLIC_EXPRESSION_API_AT_ITERATOR_NEXT".equals(
                             keyAuthority)
                     || "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT".equals(
-                            keyAuthority)
-                    || "CONCRETE_REPLAY_RUNTIME_VALUE_AT_ITERATOR_NEXT".equals(
                             keyAuthority);
             boolean structureComplete = integer(record, "schemaVersion", -1)
                     == 1

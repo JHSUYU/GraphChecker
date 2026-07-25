@@ -359,16 +359,16 @@ are never compared across executions. Only then may the importer append the
 canonical summary and let the path worklist mark the task covered. The former
 standalone path replay verifier and its scratch manifest no longer exist.
 
-## 9. Guarded merging
+## 9. Guarded closure finalization
 
-`RegionSummaryMerger` groups path summaries by exact producer invocation,
-canonical output demand, and closure fingerprint. Each case carries its own
-path-condition guard, the complete demanded output-expression set, heap
-initializers, and heap effects. The merge is complete only when the path
-worklist itself is closed without gaps.
+`RegionPathWorklist` owns both closure and guarded-relation finalization. On
+the single `CLOSED + OUTPUT_RELATION_CLOSURE` transition it groups admitted
+paths by exact producer invocation, canonical output demand, and closure
+fingerprint. Each case carries its own path-condition guard, the complete
+demanded output-expression set, heap initializers, and heap effects.
 
-Unexplored or rejected paths are never treated as infeasible. An incomplete
-merge may be emitted for diagnostics, but the composer marks it incomplete.
+Unexplored or rejected paths are never treated as infeasible. `PENDING`,
+`GAPPED`, and target-reach worklists emit no producer relation.
 
 ## 10. Maintained workload orchestration
 
@@ -381,8 +381,7 @@ capture one unforced target observation and candidate query
 for each producer, in isolated processes:
   capture an unforced output seed
   repeat plan -> solve -> input-only replay -> import within bounds
-  stop only at CLOSED with no gaps
-  merge admitted paths into one guarded relation
+  stop only at CLOSED with no gaps and atomically finalize one guarded relation
 compose producer relations with the target query
 run Z3 and Boolean-root projection
 write the five terminal candidate artifacts

@@ -1203,6 +1203,8 @@ explore_region_paths() {
         || die "closed ${label} worklist retained pending tasks"
       cp -f "${planner_dir}/region_path_manifest.json" \
         "${campaign}/region_path_closure.json"
+      cp -f "${planner_dir}/merged_region_summaries.jsonl" \
+        "${campaign}/merged_region_summaries.jsonl"
       break
     fi
     jq -e '.state == "PENDING"' \
@@ -1245,7 +1247,6 @@ explore_region_paths() {
 do_explore_producer() {
   local requested=$1
   local channel schedule classes campaign region instance goal binding
-  local summaries
   validate_discovery_inputs
   channel=$(producer_owner_channel "${requested}") || return $?
   binding=$(producer_binding "${channel}") || return $?
@@ -1255,13 +1256,7 @@ do_explore_producer() {
   campaign=$(producer_campaign_directory "${channel}") || return $?
   explore_region_paths "producer ${channel}" "${region}" "${goal}" "${schedule}" \
     "${classes}" "${campaign}"
-  summaries="${campaign}/observed_path_summaries.jsonl"
 
-  run_graphchecker_main \
-    edu.uva.liftlab.graphchecker.concolic.RegionSummaryMerger \
-    --summaries "${summaries}" \
-    --path-manifest "${campaign}/region_path_closure.json" \
-    --output "${campaign}/merged_region_summaries.jsonl"
   debug_merged_relation "${campaign}/merged_region_summaries.jsonl"
   jq -e -s --arg region "${region}" '
     length == 1

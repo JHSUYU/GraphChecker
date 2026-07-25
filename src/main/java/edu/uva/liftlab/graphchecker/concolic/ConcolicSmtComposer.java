@@ -7278,8 +7278,7 @@ public final class ConcolicSmtComposer {
     }
 
     static String materializedPortJavaType(JsonObject port) {
-        return firstNonBlank(MaterializationSpec.decode(port).javaType(),
-                string(port, "javaType"));
+        return MaterializationSpec.logicalJavaType(port);
     }
 
     private static final class PortIndex {

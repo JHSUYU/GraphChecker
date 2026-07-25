@@ -21,10 +21,10 @@ GraphChecker checkout:
 ```
 
 Guarded relation construction belongs to the workload-specific producer
-exploration loop: it closes the path worklist and invokes
-`RegionSummaryMerger` with that exact closure manifest. The generic runner
-therefore consumes those relations at `compose` instead of exposing a second,
-detached merge path.
+exploration loop: `RegionPathWorklist` atomically emits the guarded relation
+only when the exact output closure reaches `CLOSED`. The generic runner
+therefore consumes that relation at `compose` without a second detached merge
+or validation pass.
 
 `reach` calls `BooleanReachConditionExtractor` and asks the configured Z3
 executable about every valuation of the automatically discovered Boolean root

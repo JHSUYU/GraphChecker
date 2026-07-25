@@ -359,8 +359,8 @@ public class CausynthPipelineTest {
                             plan, "TASK.CAPTURE").outputCaptures();
             assertEquals(1, selection.targets().size());
             Class<?> refsClass = Class.forName(
-                    CausynthPipeline.class.getName() + "$ConcolicRegionRefs");
-            Method create = refsClass.getDeclaredMethod("create");
+                    CausynthPipeline.class.getName() + "$HookCatalog");
+            Method create = refsClass.getDeclaredMethod("concolic");
             create.setAccessible(true);
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(
@@ -466,8 +466,8 @@ public class CausynthPipelineTest {
                             .outputCaptures();
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName()
-                            + "$ConcolicRegionRefs");
-            Method create = refsClass.getDeclaredMethod("create");
+                            + "$HookCatalog");
+            Method create = refsClass.getDeclaredMethod("concolic");
             create.setAccessible(true);
             Object refs = create.invoke(null);
             Method instrument = CausynthPipeline.class.getDeclaredMethod(

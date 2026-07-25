@@ -216,7 +216,173 @@ public final class RegionPathWorklist {
 
             JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
-            return new Result(tasks, manifest);
+            List<JsonObject> relations = new ArrayList<>();
+            if (State.CLOSED.name().equals(string(manifest, "state"))) {
+                relations.addAll(closedRelations(observedScopes));
+                if (!gaps.isEmpty()) {
+                    relations.clear();
+                    manifest = manifest(!seenPaths.isEmpty(),
+                            observedRegions, observedScopes);
+                }
+            }
+            return new Result(tasks, manifest, relations);
+        }
+
+        private List<JsonObject> closedRelations(
+                Map<String, ExplorationScope> observedScopes) {
+            if (observedScopes.size() != 1) {
+                return Collections.emptyList();
+            }
+            ExplorationScope scope =
+                    observedScopes.values().iterator().next();
+            if (!scope.goalKind.capturesOutputRelation()) {
+                return Collections.emptyList();
+            }
+            if (scope.contract == null) {
+                gap("INVALID_OUTPUT_CLOSURE",
+                        "CANONICAL_OUTPUT_CLOSURE_REQUIRED",
+                        "", "", "", -1);
+                return Collections.emptyList();
+            }
+
+            String region = scope.contract.producer().regionId();
+            String outputIdentity = CanonicalJson.render(
+                    scope.contract.toJson());
+            Map<String, String> payloadByPath = new LinkedHashMap<>();
+            Map<String, JsonObject> caseByPath = new LinkedHashMap<>();
+            Map<String, JsonObject> bindingsByKey = new LinkedHashMap<>();
+            for (JsonObject summary : summaries) {
+                if (!ClosureGoalKind.fromTask(summary)
+                        .capturesOutputRelation()) {
+                    continue;
+                }
+                OutputClosureContract contract;
+                try {
+                    contract = OutputClosureCodec.decode(summary);
+                } catch (IllegalArgumentException malformed) {
+                    gap("INVALID_OUTPUT_CLOSURE",
+                            firstNonBlank(malformed.getMessage(), "UNKNOWN"),
+                            string(summary, "regionId"), "", "", -1);
+                    continue;
+                }
+                if (!outputIdentity.equals(CanonicalJson.render(
+                        contract.toJson()))) {
+                    gap("OUTPUT_CLOSURE_SCOPE_MISMATCH",
+                            "CLOSED_PATHS_HAVE_DIFFERENT_OUTPUT_CLOSURES",
+                            string(summary, "regionId"), "", "", -1);
+                    continue;
+                }
+
+                String pathKey = stablePathKey(summary);
+                String payload = stableCasePayload(summary);
+                String previous = payloadByPath.putIfAbsent(pathKey, payload);
+                if (previous != null) {
+                    if (!previous.equals(payload)) {
+                        gap("CONFLICTING_DUPLICATE_PATH_PAYLOAD",
+                                "PATH_CERTIFICATES_DISAGREE",
+                                region, pathKey, "", -1);
+                    }
+                } else if (contract.members().size() > 1
+                        && !exactOutputExpressions(summary,
+                        contract.outputPorts())) {
+                    gap("JOINT_OUTPUT_EXPRESSION_SET_MISMATCH",
+                            "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
+                            region, pathKey, "", -1);
+                } else {
+                    caseByPath.put(pathKey, pathCase(summary, pathKey));
+                }
+                for (JsonElement element : array(summary, "edgeBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    bindingsByKey.put(CanonicalJson.render(binding),
+                            binding.deepCopy());
+                }
+            }
+            if (!gaps.isEmpty()) {
+                return Collections.emptyList();
+            }
+            if (caseByPath.isEmpty()) {
+                gap("NO_VALID_OUTPUT_CLOSURE_RELATIONS",
+                        "CLOSED_OUTPUT_SCOPE_HAS_NO_CASES",
+                        region, "", "", -1);
+                return Collections.emptyList();
+            }
+
+            JsonArray cases = new JsonArray();
+            List<String> pathKeys = new ArrayList<>(caseByPath.keySet());
+            Collections.sort(pathKeys);
+            for (String pathKey : pathKeys) {
+                cases.add(caseByPath.get(pathKey));
+            }
+            JsonArray mergedBindings = new JsonArray();
+            List<String> bindingKeys =
+                    new ArrayList<>(bindingsByKey.keySet());
+            Collections.sort(bindingKeys);
+            for (String key : bindingKeys) {
+                mergedBindings.add(bindingsByKey.get(key));
+            }
+
+            JsonObject relation = new JsonObject();
+            relation.addProperty("schemaVersion", 1);
+            relation.addProperty("kind", "GUARDED_PATH_MERGE");
+            relation.add("cases", cases);
+            String relationHash = sha256(region + "\n"
+                    + outputIdentity + "\n"
+                    + CanonicalJson.render(cases));
+            JsonObject merged = new JsonObject();
+            merged.addProperty("schemaVersion", 1);
+            merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
+            merged.addProperty("summaryId", "SUMMARY." + region
+                    + ".MERGED." + relationHash);
+            merged.addProperty("regionId", region);
+            merged.addProperty("goalId", scope.goalId);
+            scope.goalKind.writeToTask(merged);
+            OutputClosureCodec.writeTo(merged, scope.contract);
+            merged.add("edgeBindings", mergedBindings);
+            merged.add("regionRelation", relation);
+            merged.addProperty("relationallyComplete", true);
+            return Collections.singletonList(merged);
+        }
+
+        private JsonObject pathCase(JsonObject summary, String pathKey) {
+            JsonObject item = new JsonObject();
+            item.addProperty("caseId", "CASE." + pathKey);
+            JsonObject guard = new JsonObject();
+            guard.addProperty("kind", "PATH_CONDITION");
+            guard.add("conditions", array(summary,
+                    "pathCondition").deepCopy());
+            item.add("guard", guard);
+            item.add("outputExpressions", object(summary,
+                    "outputExpressions").deepCopy());
+            for (String field : new String[]{"heapStateInitializers",
+                    "heapObservations", "finiteMapSnapshots",
+                    "dynamicFieldBindings", "engineArrayInputBindings",
+                    "vmIntrinsicPlaceholderBindings",
+                    "unforcedEnvironmentValidationRequirements",
+                    "heapEffects"}) {
+                item.add(field, array(summary, field).deepCopy());
+            }
+            item.addProperty("sourceTaskId", string(summary, "taskId"));
+            return item;
+        }
+
+        private String stableCasePayload(JsonObject summary) {
+            JsonObject stable = new JsonObject();
+            for (String field : new String[]{"heapStateInitializers",
+                    "heapObservations", "finiteMapSnapshots",
+                    "vmIntrinsicPlaceholderBindings",
+                    "unforcedEnvironmentValidationRequirements"}) {
+                stable.add(field, array(summary, field).deepCopy());
+            }
+            return CanonicalJson.render(stable);
+        }
+
+        private boolean exactOutputExpressions(
+                JsonObject summary, Set<String> outputPorts) {
+            JsonElement encoded = summary.get("outputExpressions");
+            return encoded != null && encoded.isJsonObject()
+                    && new TreeSet<>(encoded.getAsJsonObject().keySet())
+                    .equals(new TreeSet<>(outputPorts));
         }
 
         private void planSummary(
@@ -571,10 +737,13 @@ public final class RegionPathWorklist {
     public static final class Result {
         public final List<JsonObject> tasks;
         public final JsonObject manifest;
+        public final List<JsonObject> relations;
 
-        private Result(List<JsonObject> tasks, JsonObject manifest) {
+        private Result(List<JsonObject> tasks, JsonObject manifest,
+                       List<JsonObject> relations) {
             this.tasks = tasks;
             this.manifest = manifest;
+            this.relations = relations;
         }
     }
 

@@ -102,6 +102,13 @@ public final class MaterializationSpec {
                 text(json, "implementationMethod"));
     }
 
+    /** Java type of the value bound to the logical input port. */
+    public static String logicalJavaType(JsonObject port) {
+        MaterializationSpec materialization = decode(port);
+        return materialization.javaType.isEmpty()
+                ? text(port, "javaType") : materialization.javaType;
+    }
+
     public Kind kind() {
         return kind;
     }
