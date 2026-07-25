@@ -1927,7 +1927,7 @@ public final class ConcolicConstraintSolver {
             if (!map && !container) {
                 result.add("WRONG_KIND");
             }
-            int expectedSchema = container ? 2 : 1;
+            int expectedSchema = container ? 3 : 1;
             if (integer(raw, "schemaVersion", -1) != expectedSchema) {
                 result.add("UNSUPPORTED_SCHEMA_VERSION");
             }
