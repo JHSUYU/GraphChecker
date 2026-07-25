@@ -106,9 +106,9 @@ final class ConcolicInstrumentationSelections {
                 }
                 JsonObject row = parsed.getAsJsonObject();
                 String activationId = jsonString(row, "activationId");
+                JsonObject bundle = bundle(row);
                 if (!selected.isEmpty()
-                        && "ALL".equals(jsonString(row,
-                        "activationSelectionRequired"))
+                        && "ALL".equals(jsonString(bundle, "selection"))
                         && selected.equals(activationId)) {
                     throw new IOException("Activation " + selected
                             + " belongs to a reachability bundle that "
@@ -193,18 +193,16 @@ final class ConcolicInstrumentationSelections {
         }
 
         String scheduleId = jsonString(row, "scheduleId");
+        JsonObject bundle = bundle(row);
         if (!selected.equals(jsonString(row, "activationId"))
-                || !selected.equals(jsonString(row,
-                "activationSelectionRequired"))
-                || !selected.equals(jsonString(row,
-                "activationBundleRootActivationId"))
+                || !selected.equals(jsonString(bundle, "selection"))
+                || !selected.equals(jsonString(bundle,
+                "rootActivationId"))
                 || scheduleId.isEmpty()
-                || !scheduleId.equals(jsonString(row,
-                "activationBundleScheduleId"))
-                || !strictJsonIntEquals(row, "activationBundleSize", 1)
-                || !strictJsonIntEquals(row, "activationBundleIndex", 0)
-                || !"PRIMARY".equals(jsonString(row,
-                "activationBundleMemberRole"))) {
+                || !scheduleId.equals(jsonString(bundle, "scheduleId"))
+                || !strictJsonIntEquals(bundle, "size", 1)
+                || !strictJsonIntEquals(bundle, "index", 0)
+                || !"PRIMARY".equals(jsonString(bundle, "role"))) {
             return false;
         }
 
@@ -1431,6 +1429,12 @@ final class ConcolicInstrumentationSelections {
 
     private static JsonObject admission(JsonObject row) {
         JsonElement value = row == null ? null : row.get("admission");
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : null;
+    }
+
+    private static JsonObject bundle(JsonObject row) {
+        JsonElement value = row == null ? null : row.get("bundle");
         return value != null && value.isJsonObject()
                 ? value.getAsJsonObject() : null;
     }

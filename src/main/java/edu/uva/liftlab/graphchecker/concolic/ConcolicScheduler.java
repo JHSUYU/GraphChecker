@@ -188,8 +188,8 @@ public final class ConcolicScheduler {
                     scheduledActivation, scheduleId);
             int supportCount = 0;
             for (JsonObject member : activationBundle) {
-                if ("REACHABILITY_SUPPORT".equals(string(member,
-                        "activationBundleMemberRole"))) {
+                if ("REACHABILITY_SUPPORT".equals(string(
+                        object(member, "bundle"), "role"))) {
                     supportCount++;
                 }
             }
@@ -213,8 +213,6 @@ public final class ConcolicScheduler {
                 reachabilitySupportActivationCount);
         result.summary.addProperty("activationBundleJobCount",
                 activationBundleJobCount);
-        result.summary.addProperty("activationSelectionRequired",
-                activationBundleJobCount > 0 ? "ALL" : "EXACT_JOB_ACTIVATION");
         result.summary.addProperty("equalityClassCount",
                 mergePlan.equalityClasses.size());
         result.summary.addProperty("versionedStateMergeCount",
@@ -260,10 +258,12 @@ public final class ConcolicScheduler {
         int bundleSize = definitions.size();
         for (int index = 0; index < definitions.size(); index++) {
             JsonObject member = definitions.get(index);
-            member.addProperty("activationBundleIndex", index);
-            member.addProperty("activationBundleSize", bundleSize);
-            member.addProperty("activationSelectionRequired",
+            JsonObject bundle = object(member, "bundle");
+            bundle.addProperty("index", index);
+            bundle.addProperty("size", bundleSize);
+            bundle.addProperty("selection",
                     bundleSize > 1 ? "ALL" : primaryId);
+            member.add("bundle", bundle);
         }
         return definitions;
     }
@@ -307,15 +307,15 @@ public final class ConcolicScheduler {
             return;
         }
         definitions.put(activationId, normalized.deepCopy());
-        normalized.addProperty("activationBundleRootActivationId",
-                primaryId);
-        normalized.addProperty("activationBundleScheduleId", scheduleId);
-        normalized.addProperty("activationBundleMemberRole", support
+        JsonObject bundle = new JsonObject();
+        bundle.addProperty("rootActivationId", primaryId);
+        bundle.addProperty("scheduleId", scheduleId);
+        bundle.addProperty("role", support
                 ? "REACHABILITY_SUPPORT" : "PRIMARY");
         if (support) {
-            normalized.addProperty("reachabilitySupportForActivationId",
-                    primaryId);
+            bundle.addProperty("supportFor", primaryId);
         }
+        normalized.add("bundle", bundle);
         result.add(normalized);
     }
 
@@ -328,16 +328,8 @@ public final class ConcolicScheduler {
             if (previous != null) {
                 JsonObject left = previous.deepCopy();
                 JsonObject right = activation.deepCopy();
-                for (String annotation : new String[]{
-                        "activationBundleRootActivationId",
-                        "activationBundleScheduleId",
-                        "activationBundleMemberRole",
-                        "reachabilitySupportForActivationId",
-                        "activationBundleIndex", "activationBundleSize",
-                        "activationSelectionRequired"}) {
-                    left.remove(annotation);
-                    right.remove(annotation);
-                }
+                left.remove("bundle");
+                right.remove("bundle");
                 if (!left.equals(right)) {
                     throw new IOException("Conflicting scheduled activation "
                             + "definitions for " + activationId);

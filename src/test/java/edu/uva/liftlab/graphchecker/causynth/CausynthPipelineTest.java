@@ -156,13 +156,15 @@ public class CausynthPipelineTest {
         String inputPort = "REGION.15.in.32";
         JsonObject row = new JsonObject();
         row.addProperty("activationId", activationId);
-        row.addProperty("activationSelectionRequired", activationId);
-        row.addProperty("activationBundleRootActivationId", activationId);
         row.addProperty("scheduleId", "SCHEDULE.0");
-        row.addProperty("activationBundleScheduleId", "SCHEDULE.0");
-        row.addProperty("activationBundleSize", 1);
-        row.addProperty("activationBundleIndex", 0);
-        row.addProperty("activationBundleMemberRole", "PRIMARY");
+        JsonObject bundle = new JsonObject();
+        bundle.addProperty("rootActivationId", activationId);
+        bundle.addProperty("scheduleId", "SCHEDULE.0");
+        bundle.addProperty("size", 1);
+        bundle.addProperty("index", 0);
+        bundle.addProperty("role", "PRIMARY");
+        bundle.addProperty("selection", activationId);
+        row.add("bundle", bundle);
         row.addProperty("regionId", "REGION.15");
         row.addProperty("regionInstanceId", "REGION.15@TEST#call0");
         row.addProperty("rootCallId", 0);
@@ -267,7 +269,7 @@ public class CausynthPipelineTest {
         JsonObject row = readyBoundedOutputClosure(activation);
         row.addProperty("scheduleId",
                 "SCHEDULE.PATH.3a35b5ac15765178");
-        row.addProperty("activationBundleScheduleId",
+        row.getAsJsonObject("bundle").addProperty("scheduleId",
                 "SCHEDULE.PATH.3a35b5ac15765178");
         row.addProperty("executionPhase", "REPLAY_OUTPUT_PATH_FLIP");
         row.addProperty("pathQueryKey",

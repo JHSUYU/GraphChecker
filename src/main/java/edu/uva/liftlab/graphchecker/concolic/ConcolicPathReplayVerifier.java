@@ -197,19 +197,16 @@ public final class ConcolicPathReplayVerifier {
         require(failures, "REPLAY_QUERY_KEY_MISMATCH",
                 string(task, "queryKey").equals(string(activation,
                         "pathQueryKey")));
+        JsonObject bundle = object(activation, "bundle");
         require(failures, "REPLAY_ACTIVATION_SELECTION_MISMATCH",
-                activationId.equals(string(activation,
-                        "activationSelectionRequired")));
+                activationId.equals(string(bundle, "selection")));
         require(failures, "REPLAY_BUNDLE_ROOT_MISMATCH",
-                activationId.equals(string(activation,
-                        "activationBundleRootActivationId")));
+                activationId.equals(string(bundle, "rootActivationId")));
         require(failures, "REPLAY_BUNDLE_SCHEDULE_MISMATCH",
-                scheduleId.equals(string(activation,
-                        "activationBundleScheduleId")));
+                scheduleId.equals(string(bundle, "scheduleId")));
         require(failures, "REPLAY_BUNDLE_IS_NOT_SINGLETON",
-                integer(activation, "activationBundleSize", -1) == 1
-                        && integer(activation, "activationBundleIndex", -1)
-                        == 0);
+                integer(bundle, "size", -1) == 1
+                        && integer(bundle, "index", -1) == 0);
 
         JsonArray taskAssignments = array(task, "modelAssignments");
         JsonArray activationAssignments = array(activation,
@@ -311,6 +308,12 @@ public final class ConcolicPathReplayVerifier {
         JsonElement value = object == null ? null : object.get(member);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
+    }
+
+    private static JsonObject object(JsonObject object, String member) {
+        JsonElement value = object == null ? null : object.get(member);
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : new JsonObject();
     }
 
     private static String string(JsonObject object, String member) {

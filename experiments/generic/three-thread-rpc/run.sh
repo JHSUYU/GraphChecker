@@ -488,7 +488,7 @@ scheduled_activation() {
       end;
 
     select(
-      .activationBundleMemberRole == "PRIMARY"
+      .bundle.role == "PRIMARY"
       and .activationId == $sourceActivation
       and .regionId == $region
       and .captureGoal.kind == "OUTPUT_CLOSURE")
@@ -510,7 +510,7 @@ scheduled_target_activation() {
   mapfile -t matches < <(jq -r \
     --arg region "${region}" --arg activation "${source_activation}" '
     select(
-      .activationBundleMemberRole == "PRIMARY"
+      .bundle.role == "PRIMARY"
       and .regionId == $region
       and .activationId == $activation
       and .captureGoal.kind == "TARGET_BRANCH")
@@ -627,7 +627,7 @@ instrument_plan() {
     select_all=true
     selected=""
   elif [[ "${selected}" == "ALL" ]]; then
-    die "ALL selection requires activationSelectionRequired=ALL plan rows: ${plan}"
+    die "ALL selection requires bundle.selection=ALL plan rows: ${plan}"
   fi
   [[ "${select_all}" == "true" || -n "${selected}" ]] \
     || die "exact activation selection is empty for non-bundle plan: ${plan}"
@@ -651,7 +651,7 @@ instrument_plan() {
 plan_requires_all() {
   local plan=$1
   require_command jq
-  jq -e -s 'any(.[]; .activationSelectionRequired == "ALL")' \
+  jq -e -s 'any(.[]; .bundle.selection == "ALL")' \
     "${plan}" >/dev/null
 }
 
@@ -693,7 +693,7 @@ run_custom_plan() {
     select_all=true
     selected=""
   elif [[ "${selected}" == "ALL" ]]; then
-    die "ALL selection requires activationSelectionRequired=ALL plan rows: ${plan}"
+    die "ALL selection requires bundle.selection=ALL plan rows: ${plan}"
   fi
   [[ "${select_all}" == "true" || -n "${selected}" ]] \
     || die "exact activation selection is empty for non-bundle plan: ${plan}"
@@ -768,7 +768,7 @@ run_custom_plan() {
     if [[ "${select_all}" == "true" ]]; then
       local -a primary_activations
       mapfile -t primary_activations < <(jq -r '
-        select(.activationBundleMemberRole == "PRIMARY") | .activationId
+        select(.bundle.role == "PRIMARY") | .activationId
       ' "${plan}")
       [[ ${#primary_activations[@]} -eq 1 ]] \
         || die "nonzero bundle replay requires one PRIMARY row"

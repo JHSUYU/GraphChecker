@@ -38,14 +38,14 @@ final class ReplayActivationFactory {
         result.addProperty("scheduleId", scheduleId);
         result.addProperty("executionPhase", goal.isOutputClosure()
                 ? "REPLAY_OUTPUT_PATH_FLIP" : "REPLAY_TARGET_PATH_FLIP");
-        result.addProperty("activationSelectionRequired", activationId);
-        result.addProperty("activationBundleRootActivationId",
-                activationId);
-        result.addProperty("activationBundleScheduleId", scheduleId);
-        result.addProperty("activationBundleSize", 1);
-        result.addProperty("activationBundleIndex", 0);
-        result.addProperty("activationBundleMemberRole", "PRIMARY");
-        result.remove("reachabilitySupportForActivationId");
+        JsonObject bundle = new JsonObject();
+        bundle.addProperty("rootActivationId", activationId);
+        bundle.addProperty("scheduleId", scheduleId);
+        bundle.addProperty("role", "PRIMARY");
+        bundle.addProperty("index", 0);
+        bundle.addProperty("size", 1);
+        bundle.addProperty("selection", activationId);
+        result.add("bundle", bundle);
         result.add("captureGoal", goal.toJson());
         result.add("modelAssignments", assignments.deepCopy());
         result.add("replayContract", contract.toJson());

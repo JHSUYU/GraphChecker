@@ -1329,8 +1329,10 @@ replay/truncation 字段已由唯一 `admission {state,mode,blockers}` 替代。
 fallback 或兼容 reader。57 项快速回归全部通过，baseline 的 target 与两个 producer
 path campaign、summary merge、SMT composition 和 Z3 端到端结果仍为 `sat`。回归还发现
 并修正了 Scheduler 遗留的 static graph V1 authority 常量；否则 V2 图会被错误降级并使
-producer activation 阻塞。PR 3 剩余的 `rootSelector`、bundle 与 edge evidence 收敛继续
-作为后续原子切换完成。
+producer activation 阻塞。第二个原子切换将七个顶层 activation bundle 镜像压缩为唯一
+`bundle {rootActivationId,scheduleId,role,index,size,selection}`，同步切换 Java 与 shell
+reader，无双写；57 项快速回归与 baseline 端到端 Z3 仍通过。PR 3 剩余的
+`rootSelector` 与 edge evidence 收敛继续作为后续原子切换完成。
 
 ### PR 4：压缩 trace、Importer 和 replay admission
 

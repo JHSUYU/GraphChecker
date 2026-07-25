@@ -10986,8 +10986,8 @@ public final class ConcolicRegionRuntime {
             this.rootContextSelector = RootContextSelector.from(json);
             this.rootArgumentSelector = RootArgumentSelector.from(json);
             this.replayable = admissionExecutable(json);
-            this.requiresAllSelection = "ALL".equals(string(json,
-                    "activationSelectionRequired"));
+            this.requiresAllSelection = "ALL".equals(string(
+                    jsonObject(json, "bundle"), "selection"));
             this.concreteReplayOnly = bool(json, "concreteReplayOnly", false);
             this.observationOnlyReplay = bool(json,
                     "observationOnlyReplay", false);
