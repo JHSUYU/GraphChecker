@@ -69,7 +69,8 @@ public class ConcolicRegionRuntimeTest {
         JsonArray fieldPath = new JsonArray();
         fieldPath.add("t");
         action.add("fieldPath", fieldPath);
-        activation.add("materializations", singleton(action));
+        action.addProperty("mode", "SYMBOLIC");
+        activation.add("inputActions", singleton(action));
 
         JsonObject assignment = new JsonObject();
         assignment.addProperty("engineSymbol", "M_I_field_" + symbol);
@@ -1350,16 +1351,20 @@ public class ConcolicRegionRuntimeTest {
         admission.add("blockers", new JsonArray());
         activation.add("admission", admission);
         activation.addProperty("concreteReplayOnly", true);
-        activation.add("symbolize", new JsonArray());
-        activation.add("materializations", new JsonArray());
+        activation.add("inputActions", new JsonArray());
         activation.add("modelAssignments", new JsonArray());
         return activation;
     }
 
     private static void addExecutableActions(JsonObject activation,
                                              JsonArray actions) {
-        activation.add("symbolize", actions.deepCopy());
-        activation.add("materializations", actions);
+        JsonArray catalog = new JsonArray();
+        for (JsonElement element : actions) {
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.addProperty("mode", "SYMBOLIC");
+            catalog.add(action);
+        }
+        activation.add("inputActions", catalog);
     }
 
     private static void addRootArgumentSelector(

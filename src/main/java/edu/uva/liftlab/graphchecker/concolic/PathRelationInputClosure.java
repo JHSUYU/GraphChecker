@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -103,21 +104,7 @@ final class PathRelationInputClosure {
     }
 
     private static JsonArray runtimeActions(JsonObject activation) {
-        JsonElement encoded = activation == null
-                ? null : activation.get("materializations");
-        if (encoded == null || encoded.isJsonNull()
-                || !encoded.isJsonArray()) {
-            throw new IllegalArgumentException(
-                    "executable activation requires materializations array");
-        }
-        JsonArray actions = encoded.getAsJsonArray();
-        for (int index = 0; index < actions.size(); index++) {
-            if (!actions.get(index).isJsonObject()) {
-                throw new IllegalArgumentException("materializations["
-                        + index + "] must be a JSON object");
-            }
-        }
-        return actions;
+        return InputActionCatalog.decode(activation).symbolic();
     }
 
     private static boolean containsPortReference(String expression,

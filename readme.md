@@ -2064,6 +2064,22 @@ custom-JDK build 的独立 clean worktree，以 13 个外层 worker 再跑真实
 container 也单独完成所有 closure，`gaps=[]`，按其当前约束得到 UNSAT；该文件没有进入
 上述提交或权威矩阵。
 
+最新 schema 收敛继续遵守“不过度验证、不过度设计”：字段声明、projected field path 和
+exact leaf declaration 只由 `FieldPathSpec` 解析；静态输入的 field/accessor
+materialization 只由 `MaterializationSpec` 携带；Scheduler 产生的 worker 输入只使用
+`InputActionCatalog.inputActions`，不再同时传递 `symbolize`、`materializations` 和
+`concreteFallbacks` 三份执行视图。静态 output slice 的未解决输入也只保存
+`inputGaps`，`complete` 由 gap 是否为空推导。旧字段不保留 writer、reader 或兼容
+fallback。
+
+该切换后的干净 core workflow 已逐个验证 baseline、cross-method-fields 和 multitype：
+三个候选均 `gaps=[]`、relation worklist `CLOSED`、真实 Z3 为 `sat`；其中
+cross-method-fields 覆盖深层 object.field/accessor materialization，multitype 覆盖
+`int/long/double/String/Boolean`。下一步不是再增加 proof wrapper，而是在 Importer 为每个
+raw execution 建一个保留重复 row 的只读 `EvidenceIndex`，让完整 capture composite、
+site/occurrence、event sequence 和 object identity 继续 fail closed，同时删除 joint-output
+member 之间对相同 capture、branch、dynamic-field 和 input-action evidence 的重复扫描。
+
 ### 明确不能删除
 
 必须保留：

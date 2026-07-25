@@ -11,6 +11,9 @@ import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -152,10 +155,6 @@ public final class ConcolicRegionRuntime {
             RECEIVER_SELECTOR_STATES = new LinkedHashMap<>();
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
             "<[^:]+:\\s+[^()<>]+\\s+([^\\s()>]+)>");
-    private static final Pattern FIELD_DETAIL = Pattern.compile(
-            "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
-    private static final Pattern FIELD_PROJECTION = Pattern.compile(
-            "#field:([^#]+)");
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
     private static final Pattern BRANCH_OPERATOR = Pattern.compile(
@@ -3916,18 +3915,18 @@ public final class ConcolicRegionRuntime {
     /** Resolves no subclass-first fallback: owner, type and name are exact. */
     private static Field exactDeclaredInstanceField(
             Object owner, String fieldSignature) {
-        String[] declared = declaredField(fieldSignature);
+        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
         if (owner == null || declared == null) return null;
         Class<?> declaringClass = owner.getClass();
         while (declaringClass != null
-                && !declared[0].equals(declaringClass.getName())) {
+                && !declared.owner().equals(declaringClass.getName())) {
             declaringClass = declaringClass.getSuperclass();
         }
         if (declaringClass == null) return null;
         try {
-            Field field = declaringClass.getDeclaredField(declared[2]);
+            Field field = declaringClass.getDeclaredField(declared.name());
             if (Modifier.isStatic(field.getModifiers())
-                    || !javaTypeDescriptor(declared[1]).equals(
+                    || !javaTypeDescriptor(declared.type()).equals(
                     reflectionDescriptor(field.getType()))) {
                 return null;
             }
@@ -4175,7 +4174,7 @@ public final class ConcolicRegionRuntime {
     private static ExactFieldObservation observeExactField(
             Object owner, String fieldSignature) {
         ExactFieldObservation result = new ExactFieldObservation();
-        String[] declared = declaredField(fieldSignature);
+        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
         if (declared == null) {
             result.error = "invalid field signature";
             return result;
@@ -4186,12 +4185,12 @@ public final class ConcolicRegionRuntime {
         }
         Class<?> declaringClass = owner.getClass();
         while (declaringClass != null
-                && !declared[0].equals(declaringClass.getName())) {
+                && !declared.owner().equals(declaringClass.getName())) {
             declaringClass = declaringClass.getSuperclass();
         }
         if (declaringClass == null) {
             result.error = "owner is not an instance of declared field owner "
-                    + declared[0];
+                    + declared.owner();
             return result;
         }
         result.ownerVerified = true;
@@ -4202,7 +4201,8 @@ public final class ConcolicRegionRuntime {
             Field field = exactDeclaredInstanceField(owner, fieldSignature);
             if (field == null) {
                 result.error = "declared instance field is absent, static, "
-                        + "or has a signature type mismatch: " + declared[2];
+                        + "or has a signature type mismatch: "
+                        + declared.name();
                 return result;
             }
             result.fieldType = field.getType();
@@ -4234,8 +4234,8 @@ public final class ConcolicRegionRuntime {
     }
 
     private static String inputJavaTypeFromCell(String cell) {
-        String[] field = declaredField(cell);
-        if (field != null) return field[1];
+        DeclaredField field = FieldPathSpec.declaredField(cell);
+        if (field != null) return field.type();
         Matcher parameter = Pattern.compile(
                 "\\.param\\d+:([^#]+)").matcher(safe(cell));
         return parameter.find() ? parameter.group(1).trim() : "";
@@ -5709,8 +5709,9 @@ public final class ConcolicRegionRuntime {
                                         boolean candidateIsProjectedValue) {
             JsonObject row = baseObservation("OUTPUT_IDENTITY_VALIDATION");
             Object array;
-            String[] outputField = specs.isEmpty() ? null
-                    : declaredField(specs.get(0).outputCell);
+            DeclaredField outputField = specs.isEmpty() ? null
+                    : FieldPathSpec.declaredField(
+                    specs.get(0).outputCell);
             if (!candidateIsProjectedValue && outputField != null) {
                 ExactFieldObservation exact = observeExactField(candidate,
                         specs.get(0).outputCell);
@@ -7186,7 +7187,7 @@ public final class ConcolicRegionRuntime {
 
         private synchronized void observeFieldWrite(Object owner,
                                                     String signature) {
-            String[] declared = declaredField(signature);
+            DeclaredField declared = FieldPathSpec.declaredField(signature);
             if (owner == null || declared == null) return;
             Map<String, Long> signatures = observedFieldWrites.get(owner);
             if (signatures == null) {
@@ -7200,7 +7201,7 @@ public final class ConcolicRegionRuntime {
 
         private synchronized long observedFieldWriteCount(Object owner,
                                                           String signature) {
-            String[] declared = declaredField(signature);
+            DeclaredField declared = FieldPathSpec.declaredField(signature);
             Map<String, Long> signatures = owner == null || declared == null
                     ? null : observedFieldWrites.get(owner);
             Long count = signatures == null ? null
@@ -7816,31 +7817,18 @@ public final class ConcolicRegionRuntime {
                     localCellMatches ? localCell.group(1) : "");
             this.local = firstNonBlank(string(json, "local"),
                     localCellMatches ? localCell.group(2) : "");
-            this.fieldPath = new ArrayList<>();
-            for (JsonElement element : array(json, "fieldPath")) {
-                if (element.isJsonPrimitive()) {
-                    this.fieldPath.add(element.getAsString());
-                }
-            }
-            String[] declaredField = declaredField(this.cell);
-            if (this.fieldPath.isEmpty() && declaredField != null) {
-                this.fieldPath.add(declaredField[2]);
-                Matcher projection = FIELD_PROJECTION.matcher(this.cell);
-                while (projection.find()) {
-                    this.fieldPath.add(projection.group(1));
-                }
-            } else if (this.fieldPath.isEmpty()) {
-                Matcher projection = FIELD_PROJECTION.matcher(this.cell);
-                while (projection.find()) {
-                    this.fieldPath.add(projection.group(1));
-                }
-            }
+            List<String> encodedFieldPath = FieldPathSpec.stringArray(
+                    json, "fieldPath");
+            this.fieldPath = new ArrayList<>(encodedFieldPath.isEmpty()
+                    ? FieldPathSpec.path(this.cell) : encodedFieldPath);
+            DeclaredField declaredField = FieldPathSpec.declaredField(
+                    this.cell);
             this.accessField = firstNonBlank(string(json, "accessField"),
                     this.fieldPath.isEmpty() ? "" : this.fieldPath.get(0),
                     fieldName(this.cell));
             this.accessOwnerClass = firstNonBlank(
                     string(json, "accessOwnerClass"),
-                    declaredField == null ? "" : declaredField[0]);
+                    declaredField == null ? "" : declaredField.owner());
             this.accessFieldType = string(json, "accessFieldType");
             this.accessFieldSignature = string(json,
                     "accessFieldSignature");
@@ -7875,29 +7863,16 @@ public final class ConcolicRegionRuntime {
             this.leafOwnerClass = firstNonBlank(
                     string(json, "leafOwnerClass"),
                     declaredField == null ? ""
-                            : (projected ? declaredField[1]
-                            : declaredField[0]));
+                            : (projected ? declaredField.type()
+                            : declaredField.owner()));
             this.fields = new ArrayList<>();
             for (JsonElement element : array(json, "fields")) {
                 if (element.isJsonPrimitive()) {
                     this.fields.add(element.getAsString());
                 }
             }
-            this.fieldPaths = new ArrayList<>();
-            for (JsonElement pathElement : array(json, "fieldPaths")) {
-                if (!pathElement.isJsonArray()) {
-                    continue;
-                }
-                List<String> path = new ArrayList<>();
-                for (JsonElement segment : pathElement.getAsJsonArray()) {
-                    if (segment.isJsonPrimitive()) {
-                        path.add(segment.getAsString());
-                    }
-                }
-                if (!path.isEmpty()) {
-                    this.fieldPaths.add(path);
-                }
-            }
+            this.fieldPaths = new ArrayList<>(
+                    FieldPathSpec.paths(json, "fieldPaths"));
             for (JsonElement declarationElement : array(json,
                     "fieldPathLeafDeclarations")) {
                 if (!declarationElement.isJsonObject()) continue;
@@ -7912,7 +7887,8 @@ public final class ConcolicRegionRuntime {
                 }
                 String signature = string(declaration,
                         "fieldSignature");
-                if (!path.isEmpty() && declaredField(signature) != null) {
+                if (!path.isEmpty() && FieldPathSpec.declaredField(
+                        signature) != null) {
                     leafFieldSignaturesByPath.put(joinFieldPath(path),
                             signature);
                     declaredConsumedSite = firstNonBlank(
@@ -7926,7 +7902,8 @@ public final class ConcolicRegionRuntime {
             String explicitLeafSignature = string(json,
                     "leafFieldSignature");
             if (!this.fieldPath.isEmpty()
-                    && declaredField(explicitLeafSignature) != null) {
+                    && FieldPathSpec.declaredField(
+                    explicitLeafSignature) != null) {
                 leafFieldSignaturesByPath.put(joinFieldPath(
                         this.fieldPath), explicitLeafSignature);
             }
@@ -7960,18 +7937,19 @@ public final class ConcolicRegionRuntime {
         private boolean declaresArrayInput(List<String> actualPath) {
             String pathSignature = leafFieldSignaturesByPath.get(
                     joinFieldPath(actualPath));
-            String[] declared = declaredField(pathSignature);
+            DeclaredField declared = FieldPathSpec.declaredField(
+                    pathSignature);
             if (declared != null
-                    && javaTypeDescriptor(declared[1]).startsWith("[")) {
+                    && javaTypeDescriptor(declared.type()).startsWith("[")) {
                 return true;
             }
             for (String signature : new String[]{accessFieldSignature,
                     field, cell}) {
-                declared = declaredField(signature);
+                declared = FieldPathSpec.declaredField(signature);
                 if (declared != null
-                        && javaTypeDescriptor(declared[1]).startsWith("[")
+                        && javaTypeDescriptor(declared.type()).startsWith("[")
                         && (actualPath == null || actualPath.isEmpty()
-                        || declared[2].equals(actualPath.get(
+                        || declared.name().equals(actualPath.get(
                         actualPath.size() - 1)))) {
                     return true;
                 }
@@ -7996,10 +7974,10 @@ public final class ConcolicRegionRuntime {
                     && accessField.equals(field)) {
                 candidates.add(accessFieldSignature);
             }
-            if (declaredField(this.field) != null) {
+            if (FieldPathSpec.declaredField(this.field) != null) {
                 candidates.add(this.field);
             }
-            if (declaredField(cell) != null) {
+            if (FieldPathSpec.declaredField(cell) != null) {
                 candidates.add(cell);
             }
             String pathSignature = leafFieldSignaturesByPath.get(
@@ -8014,10 +7992,11 @@ public final class ConcolicRegionRuntime {
             String selectedType = "";
             String selectedSignature = "";
             for (String signature : candidates) {
-                String[] declared = declaredField(signature);
-                if (declared == null || !declared[2].equals(field)
+                DeclaredField declared = FieldPathSpec.declaredField(
+                        signature);
+                if (declared == null || !declared.name().equals(field)
                         || owner == null || !instanceOfName(
-                        owner.getClass(), declared[0])) {
+                        owner.getClass(), declared.owner())) {
                     continue;
                 }
                 ExactFieldObservation exact = observeExactField(owner,
@@ -8034,7 +8013,7 @@ public final class ConcolicRegionRuntime {
                                     + "matches the input action");
                 }
                 selectedSignature = signature;
-                selectedType = declared[1];
+                selectedType = declared.type();
             }
             if (selectedSignature.isEmpty()) {
                 return DeclaredArrayInputType.incomplete(
@@ -8055,10 +8034,11 @@ public final class ConcolicRegionRuntime {
         private DeclaredArrayInputType exactConsumedLeafArrayType(
                 Object leafOwner, String actualSignature,
                 String actualField) {
-            String[] actual = declaredField(actualSignature);
-            if (actual == null || !actual[2].equals(safe(actualField))
+            DeclaredField actual = FieldPathSpec.declaredField(
+                    actualSignature);
+            if (actual == null || !actual.name().equals(safe(actualField))
                     || leafOwner == null || !instanceOfName(
-                    leafOwner.getClass(), actual[0])) {
+                    leafOwner.getClass(), actual.owner())) {
                 return DeclaredArrayInputType.incomplete(
                         "consumed getfield has no exact declared leaf "
                                 + "signature/owner join");
@@ -8079,19 +8059,19 @@ public final class ConcolicRegionRuntime {
             if (reflected == null || Modifier.isStatic(
                     reflected.getModifiers())
                     || !reflected.getType().isArray()
-                    || !javaTypeDescriptor(actual[1]).equals(
+                    || !javaTypeDescriptor(actual.type()).equals(
                     reflectionDescriptor(reflected.getType()))) {
-                return DeclaredArrayInputType.incomplete(actual[1],
+                return DeclaredArrayInputType.incomplete(actual.type(),
                         "actual consumed leaf reflection/type is not one "
                                 + "exact instance array field");
             }
             if (!javaTypeDescriptor(javaType).equals(
-                    javaTypeDescriptor(actual[1]))) {
-                return DeclaredArrayInputType.incomplete(actual[1],
+                    javaTypeDescriptor(actual.type()))) {
+                return DeclaredArrayInputType.incomplete(actual.type(),
                         "action javaType does not equal the exact consumed "
                                 + "leaf array type");
             }
-            return DeclaredArrayInputType.exact(actual[1],
+            return DeclaredArrayInputType.exact(actual.type(),
                     "EXACT_CONSUMED_LEAF_FIELD_SIGNATURE_AND_REFLECTION:"
                             + safe(actualSignature));
         }
@@ -8099,17 +8079,19 @@ public final class ConcolicRegionRuntime {
         private boolean identifiesConsumedLeaf(
                 Object leafOwner, String actualSignature,
                 String actualField) {
-            String[] actual = declaredField(actualSignature);
+            DeclaredField actual = FieldPathSpec.declaredField(
+                    actualSignature);
             if (actual == null || leafOwner == null
-                    || !actual[2].equals(safe(actualField))
-                    || !instanceOfName(leafOwner.getClass(), actual[0])) {
+                    || !actual.name().equals(safe(actualField))
+                    || !instanceOfName(leafOwner.getClass(),
+                    actual.owner())) {
                 return false;
             }
             return declaresConsumedLeaf(actualSignature, actual);
         }
 
         private boolean declaresConsumedLeaf(String actualSignature,
-                                             String[] actual) {
+                                             DeclaredField actual) {
             Set<String> candidates = new LinkedHashSet<>(
                     leafFieldSignaturesByPath.values());
             candidates.add(accessFieldSignature);
@@ -8121,13 +8103,14 @@ public final class ConcolicRegionRuntime {
                         + " " + leafField + ">");
             }
             for (String candidate : candidates) {
-                String[] declaration = declaredField(candidate);
+                DeclaredField declaration = FieldPathSpec.declaredField(
+                        candidate);
                 if (safe(candidate).equals(safe(actualSignature))
                         && declaration != null
-                        && declaration[0].equals(actual[0])
-                        && declaration[2].equals(actual[2])
-                        && javaTypeDescriptor(declaration[1]).equals(
-                        javaTypeDescriptor(actual[1]))) {
+                        && declaration.owner().equals(actual.owner())
+                        && declaration.name().equals(actual.name())
+                        && javaTypeDescriptor(declaration.type()).equals(
+                        javaTypeDescriptor(actual.type()))) {
                     return true;
                 }
             }
@@ -8188,8 +8171,10 @@ public final class ConcolicRegionRuntime {
             if (fields.contains(safe(actualField))) {
                 return Collections.singletonList(safe(actualField));
             }
-            String[] declared = declaredField(actualSignature);
-            if (declared != null && safe(actualField).equals(declared[2])
+            DeclaredField declared = FieldPathSpec.declaredField(
+                    actualSignature);
+            if (declared != null
+                    && safe(actualField).equals(declared.name())
                     && (safe(actualSignature).equals(field)
                     || safe(actualSignature).equals(cell)
                     || safe(actualSignature).equals(
@@ -8214,14 +8199,15 @@ public final class ConcolicRegionRuntime {
                 return false;
             }
             String exactSignature = safe(signature);
-            String[] declaration = declaredField(exactSignature);
+            DeclaredField declaration = FieldPathSpec.declaredField(
+                    exactSignature);
             if (declaration == null
-                    || !declaration[2].equals(safe(actualField))
+                    || !declaration.name().equals(safe(actualField))
                     || !accessField.equals(safe(actualField))) {
                 return false;
             }
             if (!accessOwnerClass.isEmpty()
-                    && !accessOwnerClass.equals(declaration[0])) {
+                    && !accessOwnerClass.equals(declaration.owner())) {
                 return false;
             }
             if (!accessFieldSignature.isEmpty()
@@ -8257,19 +8243,20 @@ public final class ConcolicRegionRuntime {
         private List<String> exactStaticFieldPath(
                 String signature, String actualField) {
             String exactSignature = safe(signature);
-            String[] declaration = declaredField(exactSignature);
+            DeclaredField declaration = FieldPathSpec.declaredField(
+                    exactSignature);
             if (declaration == null
-                    || !declaration[2].equals(safe(actualField))
+                    || !declaration.name().equals(safe(actualField))
                     || fieldPath.size() != 1
                     || !fieldPath.get(0).equals(actualField)
                     || !accessField.equals(actualField)
                     || !accessFieldSignature.isEmpty()
                     && !accessFieldSignature.equals(exactSignature)
                     || !accessOwnerClass.isEmpty()
-                    && !accessOwnerClass.equals(declaration[0])
+                    && !accessOwnerClass.equals(declaration.owner())
                     || !javaType.isEmpty()
                     && !javaTypeDescriptor(javaType).equals(
-                    javaTypeDescriptor(declaration[1]))) {
+                    javaTypeDescriptor(declaration.type()))) {
                 return null;
             }
             return Collections.singletonList(actualField);
@@ -8385,9 +8372,10 @@ public final class ConcolicRegionRuntime {
         private String exactLeafFieldSignature() {
             String explicit = leafFieldSignaturesByPath.get(
                     joinFieldPath(fieldPath));
-            String[] declaration = declaredField(explicit);
+            DeclaredField declaration = FieldPathSpec.declaredField(
+                    explicit);
             if (declaration != null
-                    && declaration[2].equals(leafField)) {
+                    && declaration.name().equals(leafField)) {
                 return explicit;
             }
             if (fieldPath.size() != 1) {
@@ -8396,9 +8384,9 @@ public final class ConcolicRegionRuntime {
             String selected = "";
             for (String candidate : new String[]{accessFieldSignature,
                     field, cell}) {
-                declaration = declaredField(candidate);
+                declaration = FieldPathSpec.declaredField(candidate);
                 if (declaration == null
-                        || !declaration[2].equals(leafField)) {
+                        || !declaration.name().equals(leafField)) {
                     continue;
                 }
                 if (!selected.isEmpty() && !selected.equals(candidate)) {
@@ -8410,23 +8398,11 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static String[] declaredField(String cell) {
-        String value = safe(cell);
-        int projection = value.indexOf("#field:");
-        String base = projection < 0 ? value
-                : value.substring(0, projection);
-        Matcher matcher = FIELD_DETAIL.matcher(base);
-        if (!matcher.matches()) {
-            return null;
-        }
-        return new String[]{matcher.group(1).trim(),
-                matcher.group(2).trim(), matcher.group(3).trim()};
-    }
-
-    private static String exactFieldIdentity(String[] declared) {
-        return declared == null || declared.length != 3 ? ""
-                : declared[0] + "\u0000" + normalizeFieldType(declared[1])
-                + "\u0000" + declared[2];
+    private static String exactFieldIdentity(DeclaredField declared) {
+        return declared == null ? ""
+                : declared.owner() + "\u0000"
+                + normalizeFieldType(declared.type())
+                + "\u0000" + declared.name();
     }
 
     /**
@@ -8436,7 +8412,7 @@ public final class ConcolicRegionRuntime {
      */
     private static boolean uniqueNameResolvesExactDeclaredField(
             Object owner, String fieldSignature) {
-        String[] declared = declaredField(fieldSignature);
+        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
         Field exact = exactDeclaredInstanceField(owner, fieldSignature);
         if (owner == null || declared == null || exact == null) return false;
         int occurrences = 0;
@@ -8444,14 +8420,15 @@ public final class ConcolicRegionRuntime {
         while (current != null) {
             for (Field candidate : current.getDeclaredFields()) {
                 if (!Modifier.isStatic(candidate.getModifiers())
-                        && declared[2].equals(candidate.getName())) {
+                        && declared.name().equals(candidate.getName())) {
                     occurrences++;
                 }
             }
             current = current.getSuperclass();
         }
         return occurrences == 1
-                && exact.getDeclaringClass().getName().equals(declared[0]);
+                && exact.getDeclaringClass().getName().equals(
+                declared.owner());
     }
 
     /**
@@ -8572,12 +8549,13 @@ public final class ConcolicRegionRuntime {
                     outputValidationMode))) {
                 return "output identity validation mode is unsupported";
             }
-            String[] declared = declaredField(declaredFieldSignature);
+            DeclaredField declared = FieldPathSpec.declaredField(
+                    declaredFieldSignature);
             if (declared == null
-                    || !declaredFieldOwnerClass.equals(declared[0])
+                    || !declaredFieldOwnerClass.equals(declared.owner())
                     || !declaredFieldType.equals(normalizeFieldType(
-                    declared[1]))
-                    || !declaredFieldName.equals(declared[2])
+                    declared.type()))
+                    || !declaredFieldName.equals(declared.name())
                     || !fieldPath.equals(Collections.singletonList(
                     declaredFieldName))) {
                 return "demanded field declaration is not exact";
@@ -8588,10 +8566,11 @@ public final class ConcolicRegionRuntime {
                     || downstreamContainerBindingId.isEmpty()) {
                 return "downstream selected demand provenance is incomplete";
             }
-            String[] outputDeclared = declaredField(outputCell);
+            DeclaredField outputDeclared = FieldPathSpec.declaredField(
+                    outputCell);
             if (outputDeclared != null
                     && !outputFieldPath.equals(Collections.singletonList(
-                    outputDeclared[2]))) {
+                    outputDeclared.name()))) {
                 return "projected output field path is not exact";
             }
             if (outputDeclared == null && !outputFieldPath.isEmpty()) {
@@ -8723,14 +8702,15 @@ public final class ConcolicRegionRuntime {
                     || !fieldPath.equals(action.fieldPath)) {
                 return "base input or field path does not match action";
             }
-            String[] declared = declaredField(fieldSignature);
+            DeclaredField declared = FieldPathSpec.declaredField(
+                    fieldSignature);
             if (!declaredFieldSignature.equals(safe(fieldSignature))
                     || declared == null
-                    || !declaredFieldOwnerClass.equals(declared[0])
+                    || !declaredFieldOwnerClass.equals(declared.owner())
                     || !declaredFieldType.equals(
-                    normalizeFieldType(declared[1]))
+                    normalizeFieldType(declared.type()))
                     || action.fieldPath.isEmpty()
-                    || !declared[2].equals(action.leafField)) {
+                    || !declared.name().equals(action.leafField)) {
                 return "declared owner/type/field does not match hook";
             }
             if (leafOwner == null || !instanceOfName(leafOwner.getClass(),
@@ -9615,7 +9595,8 @@ public final class ConcolicRegionRuntime {
             }
             if (FIELD_ASSIGNMENT_RHS.equals(captureKind)) {
                 return !method.isEmpty() && !fieldSignature.isEmpty()
-                        && declaredField(fieldSignature) != null;
+                        && FieldPathSpec.declaredField(
+                        fieldSignature) != null;
             }
             return CALL_ARGUMENT.equals(captureKind)
                     && !callerMethod.isEmpty() && !calleeMethod.isEmpty()
@@ -9997,9 +9978,12 @@ public final class ConcolicRegionRuntime {
             this.containerElementFieldBindings = new ArrayList<>();
             this.mapValueElementFieldProjections = new ArrayList<>();
             this.outputCaptures = new ArrayList<>();
-            JsonArray materializations = executableMaterializations(json,
-                    replayable, taskId);
-            JsonArray declaredActions = array(json, "symbolize");
+            InputActionCatalog inputActions = replayable
+                    ? InputActionCatalog.decode(json) : null;
+            JsonArray materializations = inputActions == null
+                    ? new JsonArray() : inputActions.symbolic();
+            JsonArray declaredActions = inputActions == null
+                    ? new JsonArray() : inputActions.all();
             for (JsonElement element : declaredActions) {
                 if (element.isJsonObject()) {
                     this.declaredSymbolize.add(new SymbolizeAction(
@@ -10077,28 +10061,6 @@ public final class ConcolicRegionRuntime {
                     outputCaptures.add(request);
                 }
             }
-        }
-
-        private static JsonArray executableMaterializations(
-                JsonObject task, boolean replayable, String taskId) {
-            if (!replayable) {
-                return new JsonArray();
-            }
-            JsonElement encoded = task.get("materializations");
-            if (encoded == null || !encoded.isJsonArray()) {
-                throw new IllegalArgumentException("Replayable task "
-                        + taskId + " requires materializations to be a "
-                        + "JSON array");
-            }
-            JsonArray actions = encoded.getAsJsonArray();
-            for (int index = 0; index < actions.size(); index++) {
-                if (!actions.get(index).isJsonObject()) {
-                    throw new IllegalArgumentException("Replayable task "
-                            + taskId + " materializations[" + index
-                            + "] must be a JSON object");
-                }
-            }
-            return actions;
         }
 
         private List<ContainerElementFieldBindingSpec>

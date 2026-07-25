@@ -18,7 +18,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -4189,15 +4191,7 @@ public class ConcolicSummaryImporterTest {
                                 textForTest(activation, "regionId")
                                         + "@test#call" + rootCallId);
                     }
-                    if (!activation.has("materializations")) {
-                        JsonElement declarations = activation.get(
-                                "symbolize");
-                        activation.add("materializations",
-                                declarations != null
-                                        && declarations.isJsonArray()
-                                        ? declarations.deepCopy()
-                                        : new JsonArray());
-                    }
+                    canonicalInputActionsForTest(activation);
                     canonicalizeOutputClosureForTest(activation);
                     TEST_TASK_REGION_INSTANCES.put(
                             textForTest(activation, "taskId"),
@@ -4209,6 +4203,52 @@ public class ConcolicSummaryImporterTest {
             if (index + 1 < lines.length) canonical.append('\n');
         }
         writeVerbatim(path, canonical.toString());
+    }
+
+    private static void canonicalInputActionsForTest(
+            JsonObject activation) {
+        if (activation.has("inputActions")) return;
+        JsonArray declared = activation.has("symbolize")
+                && activation.get("symbolize").isJsonArray()
+                ? activation.getAsJsonArray("symbolize") : new JsonArray();
+        JsonArray symbolic = activation.has("materializations")
+                && activation.get("materializations").isJsonArray()
+                ? activation.getAsJsonArray("materializations")
+                : declared;
+        JsonArray concrete = activation.has("concreteFallbacks")
+                && activation.get("concreteFallbacks").isJsonArray()
+                ? activation.getAsJsonArray("concreteFallbacks")
+                : new JsonArray();
+        JsonArray actions = new JsonArray();
+        Set<String> represented = new LinkedHashSet<>();
+        addInputActionsForTest(actions, symbolic, "SYMBOLIC", represented);
+        addInputActionsForTest(actions, concrete, "CONCRETE", represented);
+        for (JsonElement element : declared) {
+            if (!element.isJsonObject()
+                    || represented.contains(textForTest(
+                    element.getAsJsonObject(), "symbol"))) {
+                continue;
+            }
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.addProperty("mode", "DECLARATION_ONLY");
+            actions.add(action);
+        }
+        activation.remove("symbolize");
+        activation.remove("materializations");
+        activation.remove("concreteFallbacks");
+        activation.add("inputActions", actions);
+    }
+
+    private static void addInputActionsForTest(
+            JsonArray target, JsonArray source, String mode,
+            Set<String> represented) {
+        for (JsonElement element : source) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.addProperty("mode", mode);
+            represented.add(textForTest(action, "symbol"));
+            target.add(action);
+        }
     }
 
     private static void canonicalizeOutputClosureForTest(

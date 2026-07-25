@@ -1,5 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,8 +65,6 @@ final class SymbolicRegionPlanner {
      */
     private static final Pattern FIELD_PATH_SEGMENT_PATTERN =
             Pattern.compile("#field:([^#]+)");
-    private static final Pattern DECLARED_FIELD_PATTERN = Pattern.compile(
-            "^<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>$");
     private static final Pattern PROJECTED_RETURN_FIELD_PATTERN =
             Pattern.compile("^<[^:]+:\\s+([^\\s]+)\\s+[^\\s(]+"
                     + "\\([^)]*\\)>\\.return#field:([^#]+)$");
@@ -89,8 +91,6 @@ final class SymbolicRegionPlanner {
                     + "(.*)$");
     private static final Pattern FORMAL_PARAMETER_PATTERN = Pattern.compile(
             "^<.+>\\.param\\d+:([^#]+)$");
-    private static final Pattern FIELD_SIGNATURE_PATTERN = Pattern.compile(
-            "<([^:]+):\\s+.+\\s+([^\\s()>]+)>");
     private static final Pattern METHOD_OWNER_PATTERN = Pattern.compile(
             "<([^:]+):");
     private static final Pattern REQUIRED_OUTCOME_PATTERN = Pattern.compile(
@@ -1365,8 +1365,6 @@ final class SymbolicRegionPlanner {
                     "anchorMethod", draft.anchorMethod,
                     "methods", methods,
                     "symbolicInputs", inputPorts,
-                    "unresolvedInputs", limitedSorted(
-                            inputSelection.unresolvedInputs, MAX_PORTS),
                     "inputSelectionComplete",
                     inputSelection.unresolvedInputs.isEmpty()
                             && !broadInputPortTruncated,
@@ -1514,8 +1512,6 @@ final class SymbolicRegionPlanner {
                 int promotionCapacityOmittedInputCount = 0;
                 Set<String> selectedPorts = new LinkedHashSet<>();
                 List<Map<String, Object>> inputBindings = new ArrayList<>();
-                Set<String> unresolved = new LinkedHashSet<>(
-                        selection.unresolvedInputs);
                 Map<String, Map<String, Object>> unresolvedDetails =
                         new LinkedHashMap<>(selection.unresolvedInputDetails);
 
@@ -1641,7 +1637,6 @@ final class SymbolicRegionPlanner {
                                 + MAX_INPUT_PORTS_WITH_OUTPUT_SLICE_PROMOTIONS
                                 + "]"
                                 : " [output slice input has no region port]");
-                        unresolved.add(diagnostic);
                         unresolvedDetails.put(diagnostic, object(
                                 "dependencyCell", input,
                                 "dependencyMethods",
@@ -1654,10 +1649,7 @@ final class SymbolicRegionPlanner {
                                         + "DECLARED_FIELD_PORT"
                                         : "OUTPUT_SLICE_INPUT_HAS_NO_"
                                         + "REGION_PORT",
-                                "diagnostic", diagnostic,
-                                "provenanceAuthority",
-                                "STATIC_EXACT_DEPENDENCY_METHOD_"
-                                        + "CONSUMER_SET_V1"));
+                                "diagnostic", diagnostic));
                     } else {
                         // A requested-output port can be promoted by an
                         // earlier slice and then reused here.  Promotion
@@ -1775,15 +1767,8 @@ final class SymbolicRegionPlanner {
                                 string(output.get("portId")));
                 boolean structuralComplete = !slice.truncated
                         && !slice.causalEdges.isEmpty();
-                boolean unresolvedInputProvenanceComplete =
-                        unresolved.size() == unresolvedDetails.size();
-                for (Map<String, Object> detail
-                        : unresolvedDetails.values()) {
-                    unresolvedInputProvenanceComplete &= !strings(
-                            detail.get("dependencyMethods")).isEmpty();
-                }
                 boolean complete = structuralComplete
-                        && unresolved.isEmpty()
+                        && unresolvedDetails.isEmpty()
                         && (!heapStateOutput
                         || transformerContract.complete)
                         && outputCapture.complete;
@@ -1810,11 +1795,8 @@ final class SymbolicRegionPlanner {
                         "captureBindingIssues", outputCapture.issues,
                         "containerElementFieldBindings",
                         containerBindings,
-                        "unresolvedInputs", sorted(unresolved),
-                        "unresolvedInputDetails",
+                        "inputGaps",
                         new ArrayList<>(unresolvedDetails.values()),
-                        "unresolvedInputProvenanceComplete",
-                        unresolvedInputProvenanceComplete,
                         "structuralComplete", structuralComplete,
                         "complete", complete,
                         "selection",
@@ -2661,13 +2643,13 @@ final class SymbolicRegionPlanner {
         }
 
         private DeclaredFieldIdentity declaredField(String value) {
-            Matcher matcher = DECLARED_FIELD_PATTERN.matcher(string(value));
-            if (!matcher.matches()) {
+            String signature = string(value);
+            DeclaredField field = FieldPathSpec.declaredField(signature);
+            if (field == null || !field.signature().equals(signature)) {
                 return null;
             }
-            return new DeclaredFieldIdentity(string(value),
-                    matcher.group(1).trim(), matcher.group(2).trim(),
-                    matcher.group(3).trim());
+            return new DeclaredFieldIdentity(signature, field.owner(),
+                    field.type(), field.name());
         }
 
         private boolean declaredMetadataMatches(
@@ -3010,40 +2992,36 @@ final class SymbolicRegionPlanner {
             if (access == null) {
                 return;
             }
-            port.put("bindingMode", "FIELD_ACCESS");
-            port.put("javaType", access.field.type);
-            port.put("accessFieldSignature", access.field.signature);
             if (access.accessorCall) {
                 admitPostSelectionSliceMethod(slice,
                         access.accessorImplementationMethod);
-                port.put("accessorCallerMethod", access.method);
-                port.put("accessorCallSiteId", access.siteId);
-                port.put("accessorCallUnitIndex", access.unitIndex);
-                port.put("accessorDeclaredCallee", access.invokedMethod);
-                port.put("accessorImplementationMethod",
-                        access.accessorImplementationMethod);
+                port.put("materialization", MaterializationSpec
+                        .accessorReturn(access.field.type,
+                                access.field.signature,
+                                Collections.singletonList(
+                                        access.field.name),
+                                access.method, access.siteId,
+                                access.unitIndex, access.invokedMethod,
+                                access.accessorImplementationMethod)
+                        .toMap());
             } else {
-                port.put("accessMethod", access.method);
-                port.put("accessSiteId", access.siteId);
-                port.put("accessUnitIndex", access.unitIndex);
+                port.put("materialization", MaterializationSpec.fieldRead(
+                        access.field.type, access.field.signature,
+                        access.field.signature,
+                        Collections.singletonList(access.field.name),
+                        Collections.<String>emptyList(), access.method,
+                        access.siteId, access.unitIndex).toMap());
             }
-            port.put("fieldPath", Collections.singletonList(
-                    access.field.name));
-            port.put("leafFieldSignature", access.field.signature);
         }
 
         private void addDeclaredFieldPathMaterializationMetadata(
                 Map<String, Object> port,
                 DeclaredFieldPathAccess access) {
-            port.put("bindingMode", "FIELD_ACCESS");
-            port.put("javaType", access.leafField.type);
-            port.put("accessFieldSignature", access.rootField.signature);
-            port.put("accessMethod", access.method);
-            port.put("accessSiteId", access.siteId);
-            port.put("accessUnitIndex", access.unitIndex);
-            port.put("fieldPath", access.fieldPath);
-            port.put("leafFieldSignature", access.leafField.signature);
-            port.put("fieldPathProofCausalEdgeIds", access.proofEdgeIds);
+            port.put("materialization", MaterializationSpec.fieldRead(
+                    access.leafField.type, access.rootField.signature,
+                    access.leafField.signature, access.fieldPath,
+                    access.proofEdgeIds, access.method, access.siteId,
+                    access.unitIndex).toMap());
         }
 
         /**
@@ -3095,17 +3073,12 @@ final class SymbolicRegionPlanner {
             if (selected == null) {
                 return;
             }
-            port.put("bindingMode", "FIELD_ACCESS");
-            port.put("javaType", field.type);
-            port.put("accessFieldSignature", field.signature);
-            port.put("accessorCallerMethod", selected.method);
-            port.put("accessorCallSiteId", selected.siteId);
-            port.put("accessorCallUnitIndex", selected.unitIndex);
-            port.put("accessorDeclaredCallee", selected.invokedMethod);
-            port.put("accessorImplementationMethod",
-                    selected.accessorImplementationMethod);
-            port.put("fieldPath", Collections.singletonList(field.name));
-            port.put("leafFieldSignature", field.signature);
+            port.put("materialization", MaterializationSpec.accessorReturn(
+                    field.type, field.signature,
+                    Collections.singletonList(field.name),
+                    selected.method, selected.siteId, selected.unitIndex,
+                    selected.invokedMethod,
+                    selected.accessorImplementationMethod).toMap());
         }
 
         /**
@@ -3122,29 +3095,27 @@ final class SymbolicRegionPlanner {
             if (port == null) {
                 return false;
             }
+            Map<String, Object> spec = materialization(port);
             if (cell.contains("#field:")) {
                 DeclaredFieldPathAccess access =
                         materializableDeclaredFieldPathAccess(cell, slice);
-                boolean pathConstrained = strings(port.get(
-                        "fieldPath")).size() > 1;
+                boolean pathConstrained = strings(spec.get("path"))
+                        .size() > 1;
                 if (access != null || pathConstrained) {
                     return access != null
-                        && access.rootField.signature.equals(string(port.get(
-                        "accessFieldSignature")))
-                        && access.leafField.signature.equals(string(port.get(
-                        "leafFieldSignature")))
-                        && access.method.equals(string(port.get(
-                        "accessMethod")))
-                        && access.siteId.equals(string(port.get(
-                        "accessSiteId")))
-                        && access.unitIndex == integer(port.get(
-                        "accessUnitIndex"), -1)
-                        && access.fieldPath.equals(strings(port.get(
-                        "fieldPath")));
+                        && "FIELD_READ".equals(string(spec.get("kind")))
+                        && access.rootField.signature.equals(string(spec.get(
+                        "rootField")))
+                        && access.leafField.signature.equals(string(spec.get(
+                        "leafField")))
+                        && access.method.equals(string(spec.get("method")))
+                        && access.siteId.equals(string(spec.get("siteId")))
+                        && access.unitIndex == integer(spec.get(
+                        "unitIndex"), -1)
+                        && access.fieldPath.equals(strings(spec.get("path")));
                 }
             }
-            boolean constrained = !string(port.get("accessSiteId")).isEmpty()
-                    || !string(port.get("accessorCallSiteId")).isEmpty()
+            boolean constrained = !spec.isEmpty()
                     || "OUTPUT_SLICE_MATERIALIZABLE_DECLARED_FIELD_FRONTIER"
                     .equals(string(port.get("selectionReason")));
             if (!constrained) {
@@ -3210,6 +3181,15 @@ final class SymbolicRegionPlanner {
             return null;
         }
 
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> materialization(
+                Map<String, Object> port) {
+            Object value = port == null ? null : port.get("materialization");
+            return value instanceof Map
+                    ? (Map<String, Object>) value
+                    : Collections.<String, Object>emptyMap();
+        }
+
         /**
          * Revalidates a shared promoted field port against the dependency in
          * one particular requested-output slice.  Metadata on the port is not
@@ -3218,10 +3198,11 @@ final class SymbolicRegionPlanner {
          */
         private DeclaredFieldAccess matchingPromotedDeclaredFieldAccess(
                 String cell, Map<String, Object> port, RegionDraft slice) {
+            Map<String, Object> spec = materialization(port);
             DeclaredFieldIdentity field = declaredField(cell);
             if (field == null
-                    || !field.signature.equals(string(port.get(
-                    "accessFieldSignature")))) {
+                    || !field.signature.equals(string(spec.get(
+                    "rootField")))) {
                 return null;
             }
             DeclaredFieldAccess selected = null;
@@ -3233,24 +3214,22 @@ final class SymbolicRegionPlanner {
                 }
                 boolean matches;
                 if (access.accessorCall) {
-                    matches = access.method.equals(string(port.get(
-                            "accessorCallerMethod")))
-                            && access.siteId.equals(string(port.get(
-                            "accessorCallSiteId")))
-                            && access.unitIndex == integer(port.get(
-                            "accessorCallUnitIndex"), -1)
-                            && access.invokedMethod.equals(string(port.get(
-                            "accessorDeclaredCallee")))
+                    matches = "ACCESSOR_RETURN".equals(string(spec.get(
+                            "kind")))
+                            && access.method.equals(string(spec.get("method")))
+                            && access.siteId.equals(string(spec.get("siteId")))
+                            && access.unitIndex == integer(spec.get(
+                            "unitIndex"), -1)
+                            && access.invokedMethod.equals(string(spec.get(
+                            "declaredCallee")))
                             && access.accessorImplementationMethod.equals(
-                            string(port.get(
-                                    "accessorImplementationMethod")));
+                            string(spec.get("implementationMethod")));
                 } else {
-                    matches = access.method.equals(string(port.get(
-                            "accessMethod")))
-                            && access.siteId.equals(string(port.get(
-                            "accessSiteId")))
-                            && access.unitIndex == integer(port.get(
-                            "accessUnitIndex"), -1);
+                    matches = "FIELD_READ".equals(string(spec.get("kind")))
+                            && access.method.equals(string(spec.get("method")))
+                            && access.siteId.equals(string(spec.get("siteId")))
+                            && access.unitIndex == integer(spec.get(
+                            "unitIndex"), -1);
                 }
                 if (!matches) {
                     continue;
@@ -4698,18 +4677,16 @@ final class SymbolicRegionPlanner {
          */
         private boolean exactAliasMaterializationPort(
                 Map<String, Object> port) {
-            if (!"FIELD_ACCESS".equals(string(port.get("bindingMode")))
-                    || strings(port.get("fieldPath")).isEmpty()
-                    || string(port.get("leafFieldSignature")).isEmpty()) {
+            Map<String, Object> spec = materialization(port);
+            if (strings(spec.get("path")).isEmpty()
+                    || string(spec.get("leafField")).isEmpty()) {
                 return false;
             }
-            boolean direct = !string(port.get("accessSiteId")).isEmpty();
-            boolean accessor = !string(port.get(
-                    "accessorCallSiteId")).isEmpty();
-            if (!direct && !accessor) {
+            if (!"FIELD_READ".equals(string(spec.get("kind")))
+                    && !"ACCESSOR_RETURN".equals(string(spec.get("kind")))) {
                 return false;
             }
-            Collection<String> path = strings(port.get("fieldPath"));
+            Collection<String> path = strings(spec.get("path"));
             return path.size() >= 1 && path.size() <= 4;
         }
 
@@ -5414,9 +5391,7 @@ final class SymbolicRegionPlanner {
                             "reason",
                             "NO_MATERIALIZABLE_REGION_BOUNDARY_"
                                     + "REPRESENTATION",
-                            "diagnostic", diagnostic,
-                            "provenanceAuthority",
-                            "STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1"));
+                            "diagnostic", diagnostic));
                     continue;
                 }
                 result.externalInputs.add(candidate);
@@ -7196,12 +7171,13 @@ final class SymbolicRegionPlanner {
         }
 
         private FieldSignature fieldSignature(String field) {
-            Matcher matcher = FIELD_SIGNATURE_PATTERN.matcher(
-                    field == null ? "" : field);
-            if (!matcher.matches()) {
-                return null;
-            }
-            return new FieldSignature(matcher.group(1), matcher.group(2));
+            String signature = field == null ? "" : field.trim();
+            DeclaredField declaration = FieldPathSpec.declaredField(
+                    signature);
+            return declaration == null
+                    || !declaration.signature().equals(signature) ? null
+                    : new FieldSignature(declaration.owner(),
+                    declaration.name());
         }
 
         private String ownerOfMethod(String method) {

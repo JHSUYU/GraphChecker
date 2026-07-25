@@ -122,7 +122,7 @@ public class CausynthPipelineTest {
             member.add("slice", slice);
             members.add(member);
         }
-        activation.add("materializations", new JsonArray());
+        activation.add("inputActions", new JsonArray());
         activation.addProperty("goalId", outputGoalId(activation));
         activation.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
         envelope.add("members", members);

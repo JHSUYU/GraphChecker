@@ -102,7 +102,7 @@ public class ConcolicSchedulerTest {
             ConcolicScheduler.Result mapState =
                     ConcolicScheduler.schedule(arguments);
             JsonObject mapBinding = mapState.executionTasks.get(0)
-                    .getAsJsonArray("materializations").get(0)
+                    .getAsJsonArray("inputActions").get(0)
                     .getAsJsonObject();
             assertEquals("MAP_STATE_INPUT_OBSERVATION",
                     mapBinding.get("bindingMode").getAsString());
@@ -158,9 +158,10 @@ public class ConcolicSchedulerTest {
             assertEquals("EXECUTABLE", admissionState(
                     deferredClosure.executionTasks.get(0)));
             JsonObject fallback = deferredClosure.executionTasks.get(0)
-                    .getAsJsonArray("concreteFallbacks").get(0)
+                    .getAsJsonArray("inputActions").get(0)
                     .getAsJsonObject();
-            assertEquals(1, fallback.size());
+            assertEquals("CONCRETE",
+                    fallback.get("mode").getAsString());
             assertTrue(fallback.has("symbol"));
         } finally {
             folder.delete();
@@ -214,7 +215,7 @@ public class ConcolicSchedulerTest {
             assertFalse(scheduled.has("requestedOutputSlice"));
             assertFalse(scheduled.has("requestedOutputCapture"));
             assertFalse(scheduled.has("outputs"));
-            assertEquals(2, scheduled.getAsJsonArray("symbolize").size());
+            assertEquals(2, scheduled.getAsJsonArray("inputActions").size());
             assertEquals(2, scheduled.getAsJsonArray("branches").size());
         } finally {
             folder.delete();

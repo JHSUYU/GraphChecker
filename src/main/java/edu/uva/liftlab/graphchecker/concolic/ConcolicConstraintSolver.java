@@ -8,6 +8,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -1264,38 +1265,26 @@ public final class ConcolicConstraintSolver {
 
     private static MaterializationActionCatalog materializationActions(
             JsonObject activation) throws IOException {
+        InputActionCatalog catalog;
+        try {
+            catalog = InputActionCatalog.decode(activation);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("invalid input actions: "
+                    + malformed.getMessage(), malformed);
+        }
         List<JsonObject> executable = new ArrayList<>();
-        for (JsonElement element : requireMaterializations(activation)) {
+        for (JsonElement element : catalog.symbolic()) {
             executable.add(element.getAsJsonObject());
         }
         List<JsonObject> declared = new ArrayList<>();
-        for (JsonElement element : array(activation, "symbolize")) {
-            if (element.isJsonObject()) {
-                declared.add(element.getAsJsonObject());
-            }
+        for (JsonElement element : catalog.all()) {
+            declared.add(element.getAsJsonObject());
         }
         Comparator<JsonObject> bySymbol = Comparator.comparing(
                 value -> string(value, "symbol"));
         Collections.sort(executable, bySymbol);
         Collections.sort(declared, bySymbol);
         return new MaterializationActionCatalog(executable, declared);
-    }
-
-    private static JsonArray requireMaterializations(JsonObject activation)
-            throws IOException {
-        JsonElement encoded = activation == null ? null
-                : activation.get("materializations");
-        if (encoded == null || !encoded.isJsonArray()) {
-            throw new IOException(
-                    "activation requires materializations array");
-        }
-        for (JsonElement element : encoded.getAsJsonArray()) {
-            if (!element.isJsonObject()) {
-                throw new IOException(
-                        "activation materializations must contain objects");
-            }
-        }
-        return encoded.getAsJsonArray();
     }
 
     private static BranchReplayContract replayContract(JsonObject task)

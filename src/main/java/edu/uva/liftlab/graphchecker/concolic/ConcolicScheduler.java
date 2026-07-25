@@ -7,6 +7,9 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -53,10 +56,6 @@ public final class ConcolicScheduler {
             .disableHtmlEscaping().create();
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
-    private static final Pattern FIELD_DETAIL = Pattern.compile(
-            "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
-    private static final Pattern FIELD_PROJECTION = Pattern.compile(
-            "#field:([^#]+)");
     private static final String LOCAL_FIELD_ROOT_AUTHORITY =
             "LOCAL_DEFINITION_IDENTITY_AT_EXACT_DEFINITION_SITE_AND_"
                     + "LOGICAL_PATH_PREFIX_REFERENCE_EQUALITY";
@@ -134,10 +133,9 @@ public final class ConcolicScheduler {
                     candidate.activation);
             goal.writeToTask(executionTask);
             executionTask.addProperty("executionPhase", executionPhase);
-            executionTask.add("materializations",
-                    materialization.actions.deepCopy());
-            executionTask.add("concreteFallbacks",
-                    materialization.concreteFallbacks.deepCopy());
+            executionTask.remove("symbolize");
+            executionTask.add(InputActionCatalog.FIELD,
+                    materialization.inputActions.deepCopy());
             if (candidate.outputContract != null) {
                 OutputClosureCodec.writeTo(executionTask,
                         candidate.outputContract);
@@ -737,7 +735,8 @@ public final class ConcolicScheduler {
         }
         boolean ready = sourceActions.size() == 0 || result.size() > 0
                 || concreteFallbacks.size() > 0;
-        return new MaterializationPlan(result, concreteFallbacks, ready);
+        return new MaterializationPlan(inputActionCatalog(sourceActions,
+                result, concreteFallbacks), ready);
     }
 
     private static Set<String> containerBindingSymbols(
@@ -848,8 +847,8 @@ public final class ConcolicScheduler {
                 string(binding, "leafFieldSignature"),
                 string(binding, "accessFieldSignature"),
                 string(binding, "field"), string(binding, "cell")}) {
-            String[] declared = declaredField(candidate);
-            if (declared != null && isMapReferenceType(declared[1])) {
+            DeclaredField declared = FieldPathSpec.declaredField(candidate);
+            if (declared != null && isMapReferenceType(declared.type())) {
                 return true;
             }
         }
@@ -881,9 +880,40 @@ public final class ConcolicScheduler {
     }
 
     private static JsonObject concreteFallback(JsonObject action) {
-        JsonObject fallback = new JsonObject();
-        fallback.addProperty("symbol", string(action, "symbol"));
+        JsonObject fallback = action.deepCopy();
         return fallback;
+    }
+
+    private static JsonArray inputActionCatalog(
+            JsonArray declared, JsonArray symbolic, JsonArray concrete) {
+        JsonArray result = new JsonArray();
+        Set<String> represented = new LinkedHashSet<>();
+        for (JsonElement element : symbolic) {
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.addProperty("mode",
+                    InputActionCatalog.Mode.SYMBOLIC.name());
+            represented.add(string(action, "symbol"));
+            result.add(action);
+        }
+        for (JsonElement element : concrete) {
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.addProperty("mode",
+                    InputActionCatalog.Mode.CONCRETE.name());
+            represented.add(string(action, "symbol"));
+            result.add(action);
+        }
+        for (JsonElement element : declared) {
+            if (!element.isJsonObject()
+                    || represented.contains(string(
+                    element.getAsJsonObject(), "symbol"))) {
+                continue;
+            }
+            JsonObject action = element.getAsJsonObject().deepCopy();
+            action.addProperty("mode",
+                    InputActionCatalog.Mode.DECLARATION_ONLY.name());
+            result.add(action);
+        }
+        return result;
     }
 
     /**
@@ -894,64 +924,13 @@ public final class ConcolicScheduler {
      */
     private static JsonObject exactDeclaredFieldPathLeaf(
             JsonObject action, List<String> expectedPath) {
-        if (expectedPath.size() < 2
-                || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
-                string(action, "fieldPathAuthority"))) {
-            return null;
-        }
-        JsonArray declarations = array(action,
-                "fieldPathLeafDeclarations");
-        JsonObject selected = null;
-        for (JsonElement element : declarations) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject declaration = element.getAsJsonObject();
-            if (!bool(declaration, "complete", false)
-                    || string(declaration, "fieldSignature").isEmpty()
-                    || string(declaration,
-                    "declaredFieldOwnerClass").isEmpty()
-                    || string(declaration, "declaredFieldType").isEmpty()) {
-                continue;
-            }
-            JsonArray declaredPath = array(declaration, "fieldPath");
-            if (declaredPath.size() != expectedPath.size()) {
-                continue;
-            }
-            boolean matches = true;
-            for (int index = 0; index < expectedPath.size(); index++) {
-                JsonElement segment = declaredPath.get(index);
-                if (!segment.isJsonPrimitive()
-                        || !expectedPath.get(index).equals(
-                        segment.getAsString())) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) {
-                if (selected != null) {
-                    return null;
-                }
-                selected = declaration;
-            }
-        }
-        if (selected == null) {
-            return null;
-        }
-        String signature = string(selected, "fieldSignature");
-        String[] leaf = declaredField(signature);
-        return leaf != null
-                && leaf[0].equals(string(selected,
-                "declaredFieldOwnerClass"))
-                && leaf[1].equals(string(selected, "declaredFieldType"))
-                && leaf[2].equals(expectedPath.get(
-                expectedPath.size() - 1))
-                ? selected : null;
+        return FieldPathSpec.exactLeafDeclaration(action, expectedPath,
+                "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
     }
 
     private static String declaredFieldName(String signature) {
-        String[] field = declaredField(signature);
-        return field == null ? "" : field[2];
+        DeclaredField field = FieldPathSpec.declaredField(signature);
+        return field == null ? "" : field.name();
     }
 
     private static void dischargeDeferredResolution(JsonObject binding) {
@@ -1006,23 +985,7 @@ public final class ConcolicScheduler {
     }
 
     private static boolean validFieldPaths(JsonObject action) {
-        JsonArray paths = array(action, "fieldPaths");
-        if (paths.size() == 0) {
-            return false;
-        }
-        for (JsonElement pathElement : paths) {
-            if (!pathElement.isJsonArray()
-                    || pathElement.getAsJsonArray().size() == 0) {
-                return false;
-            }
-            for (JsonElement segment : pathElement.getAsJsonArray()) {
-                if (!segment.isJsonPrimitive()
-                        || safe(segment.getAsString()).trim().isEmpty()) {
-                    return false;
-                }
-            }
-        }
-        return true;
+        return FieldPathSpec.hasNonEmptyPaths(action, "fieldPaths");
     }
 
     private static boolean retainOrVerifyDerived(JsonObject binding,
@@ -1103,19 +1066,22 @@ public final class ConcolicScheduler {
         if (!fieldShape) return false;
         for (String member : new String[]{"leafFieldSignature",
                 "accessFieldSignature", "field", "cell"}) {
-            String[] declaration = declaredField(string(binding, member));
-            if (declaration != null && (declaration[1].startsWith("[")
-                    || declaration[1].endsWith("[]"))) {
+            DeclaredField declaration = FieldPathSpec.declaredField(
+                    string(binding, member));
+            if (declaration != null
+                    && (declaration.type().startsWith("[")
+                    || declaration.type().endsWith("[]"))) {
                 return true;
             }
         }
         for (JsonElement element : array(binding,
                 "fieldPathLeafDeclarations")) {
             if (!element.isJsonObject()) continue;
-            String[] declaration = declaredField(string(
+            DeclaredField declaration = FieldPathSpec.declaredField(string(
                     element.getAsJsonObject(), "fieldSignature"));
-            if (declaration != null && (declaration[1].startsWith("[")
-                    || declaration[1].endsWith("[]"))) {
+            if (declaration != null
+                    && (declaration.type().startsWith("[")
+                    || declaration.type().endsWith("[]"))) {
                 return true;
             }
         }
@@ -1138,64 +1104,19 @@ public final class ConcolicScheduler {
     }
 
     private static String leafField(String cell) {
-        String value = safe(cell);
-        int projected = value.lastIndexOf("#field:");
-        if (projected >= 0) {
-            String leaf = value.substring(projected + 7);
-            int end = leaf.indexOf('#');
-            return (end < 0 ? leaf : leaf.substring(0, end)).trim();
-        }
-        String[] declared = declaredField(value);
-        return declared == null ? "" : declared[2];
+        return FieldPathSpec.leafName(cell);
     }
 
     private static String leafOwnerClass(String cell) {
-        String[] declared = declaredField(cell);
-        if (declared == null) {
-            return "";
-        }
-        return safe(cell).contains("#field:")
-                ? declared[1] : declared[0];
+        return FieldPathSpec.leafOwner(cell);
     }
 
     private static String accessOwnerClass(String cell) {
-        String[] declared = declaredField(cell);
-        return declared == null ? "" : declared[0];
+        return FieldPathSpec.accessOwner(cell);
     }
 
     private static List<String> fieldPath(String cell) {
-        List<String> result = new ArrayList<>();
-        String[] declared = declaredField(cell);
-        if (declared != null) {
-            result.add(declared[2]);
-        }
-        Matcher projection = FIELD_PROJECTION.matcher(safe(cell));
-        while (projection.find()) {
-            String field = projection.group(1).trim();
-            if (!field.isEmpty()) {
-                result.add(field);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Parses only an actual Soot field signature.  Method locals and method
-     * returns may also carry {@code #field:...} projections, but the method
-     * name (for example {@code <init>}) is not a field-path component and its
-     * declaring class is not the runtime owner of the projected value.
-     */
-    private static String[] declaredField(String cell) {
-        String value = safe(cell);
-        int projection = value.indexOf("#field:");
-        String base = projection < 0 ? value
-                : value.substring(0, projection);
-        Matcher matcher = FIELD_DETAIL.matcher(base);
-        if (!matcher.matches()) {
-            return null;
-        }
-        return new String[]{matcher.group(1).trim(),
-                matcher.group(2).trim(), matcher.group(3).trim()};
+        return FieldPathSpec.path(cell);
     }
 
     private static MergePlan buildMergePlan(Map<String, Region> regions,
@@ -1375,15 +1296,16 @@ public final class ConcolicScheduler {
         }
         String declaredSignature = string(proof,
                 "declaredFieldSignature");
-        String[] declared = declaredField(declaredSignature);
+        DeclaredField declared = FieldPathSpec.declaredField(
+                declaredSignature);
         String invoke = string(proof, "invoke");
         String implementation = string(proof,
                 "accessorImplementationMethod");
         return declared != null
                 && declaredSignature.equals(inputCell)
                 && !invoke.isEmpty() && !implementation.isEmpty()
-                && declared[1].equals(methodReturnType(invoke))
-                && declared[1].equals(methodReturnType(implementation));
+                && declared.type().equals(methodReturnType(invoke))
+                && declared.type().equals(methodReturnType(implementation));
     }
 
     private static String methodReturnType(String signature) {
@@ -1767,20 +1689,16 @@ public final class ConcolicScheduler {
     }
 
     private static final class MaterializationPlan {
-        private final JsonArray actions;
-        private final JsonArray concreteFallbacks;
+        private final JsonArray inputActions;
         private final boolean ready;
 
-        private MaterializationPlan(JsonArray actions,
-                                    JsonArray concreteFallbacks,
-                                    boolean ready) {
-            this.actions = actions;
-            this.concreteFallbacks = concreteFallbacks;
+        private MaterializationPlan(JsonArray inputActions, boolean ready) {
+            this.inputActions = inputActions;
             this.ready = ready;
         }
 
         private MaterializationPlan notReady() {
-            return new MaterializationPlan(actions, concreteFallbacks, false);
+            return new MaterializationPlan(inputActions, false);
         }
     }
 

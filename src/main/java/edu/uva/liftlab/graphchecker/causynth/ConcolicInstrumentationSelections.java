@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import soot.SootClass;
@@ -388,21 +389,16 @@ final class ConcolicInstrumentationSelections {
             ConcolicMaterializationSelection result =
                     new ConcolicMaterializationSelection();
             String taskId = jsonString(row, "taskId");
-            JsonElement actions = row.get("materializations");
-            if (actions == null || !actions.isJsonArray()) {
+            InputActionCatalog catalog;
+            try {
+                catalog = InputActionCatalog.decode(row);
+            } catch (IllegalArgumentException malformed) {
                 throw new IOException("Replayable execution task "
-                        + taskId + " requires materializations "
-                        + "to be a JSON array");
+                        + taskId + " has invalid input actions: "
+                        + malformed.getMessage(), malformed);
             }
-            int actionIndex = 0;
-            for (JsonElement element : actions.getAsJsonArray()) {
-                if (!element.isJsonObject()) {
-                    throw new IOException("Replayable execution task "
-                            + taskId + " materializations["
-                            + actionIndex + "] must be a JSON object");
-                }
+            for (JsonElement element : catalog.symbolic()) {
                 result.add(element.getAsJsonObject());
-                actionIndex++;
             }
             if (result.unsupported) {
                 throw new IOException(

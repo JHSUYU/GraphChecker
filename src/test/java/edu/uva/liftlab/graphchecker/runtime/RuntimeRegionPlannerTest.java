@@ -616,16 +616,11 @@ public class RuntimeRegionPlannerTest {
                     // Broad-region truncation is diagnostic once the output
                     // slice was independently rebuilt within its own budget.
                     + "\"regionTruncated\":true,"
-                    + "\"unresolvedInputs\":[\""
-                    + unresolvedAlternative + "\"],"
-                    + "\"unresolvedInputDetails\":[{"
+                    + "\"inputGaps\":[{"
                     + "\"dependencyCell\":\"" + alternative + "\","
                     + "\"dependencyMethods\":[\"" + constructor + "\"],"
                     + "\"reason\":\"OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT\","
-                    + "\"diagnostic\":\"" + unresolvedAlternative + "\","
-                    + "\"provenanceAuthority\":"
-                    + "\"STATIC_EXACT_DEPENDENCY_METHOD_"
-                    + "CONSUMER_SET_V1\"}],"
+                    + "\"diagnostic\":\"" + unresolvedAlternative + "\"}],"
                     + "\"requestedStateTransformerContractVersion\":1,"
                     + "\"requestedStateTransformerContractApplicable\":true,"
                     + "\"requestedStateTransformerContractOutputPort\":"
@@ -781,7 +776,7 @@ public class RuntimeRegionPlannerTest {
                     "requestedStateTransformerContractComplete"));
             assertTrue(((java.util.List<?>) slice.get("captureBindings"))
                     .isEmpty());
-            assertTrue(((List<?>) slice.get("unresolvedInputs")).isEmpty());
+            assertTrue(((List<?>) slice.get("inputGaps")).isEmpty());
         } finally {
             folder.delete();
         }
@@ -1487,15 +1482,12 @@ public class RuntimeRegionPlannerTest {
                     + "\",\"transferKind\":\"HEAP_WRITE\","
                     + "\"kind\":\"" + retainedKind + "\"}],"
                     + "\"structuralComplete\":true,"
-                    + "\"unresolvedInputs\":[\"" + diagnostic + "\"],"
-                    + "\"unresolvedInputDetails\":[{"
+                    + "\"inputGaps\":[{"
                     + "\"dependencyCell\":\"" + missing + "\","
                     + "\"dependencyMethods\":[\"" + unresolvedMethod
                     + "\"],\"reason\":"
                     + "\"OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT\","
-                    + "\"diagnostic\":\"" + diagnostic + "\","
-                    + "\"provenanceAuthority\":"
-                    + "\"STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1\"}],"
+                    + "\"diagnostic\":\"" + diagnostic + "\"}],"
                     + "\"requestedStateTransformerContractVersion\":1,"
                     + "\"requestedStateTransformerContractApplicable\":true,"
                     + "\"requestedStateTransformerContractOutputPort\":"

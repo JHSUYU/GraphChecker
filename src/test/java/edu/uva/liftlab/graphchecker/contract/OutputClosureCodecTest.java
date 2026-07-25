@@ -184,7 +184,6 @@ public class OutputClosureCodecTest {
         slice.addProperty("runtimeRefinementComplete", true);
         slice.addProperty("runtimeRefinementAuthority",
                 "OBSERVED_REGION_CALL_TREE");
-        slice.addProperty("unresolvedInputProvenanceComplete", true);
         slice.addProperty("inputAliasCanonicalizationComplete", true);
         slice.addProperty("captureBindingsRequired", true);
         slice.addProperty("captureBindingsComplete", true);
@@ -192,8 +191,7 @@ public class OutputClosureCodecTest {
         slice.addProperty("truncated", false);
         slice.addProperty("methodBudgetTruncated", false);
         slice.addProperty("causalCellBudgetTruncated", false);
-        slice.add("unresolvedInputs", new JsonArray());
-        slice.add("unresolvedInputDetails", new JsonArray());
+        slice.add("inputGaps", new JsonArray());
         slice.add("truncationReasons", new JsonArray());
         slice.add("captureBindingIssues", new JsonArray());
         slice.add("inputAliasCanonicalizationIssues", new JsonArray());

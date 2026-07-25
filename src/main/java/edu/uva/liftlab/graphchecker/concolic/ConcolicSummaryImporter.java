@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -418,34 +419,23 @@ public final class ConcolicSummaryImporter {
     /** Returns the scheduler-produced executable plan. */
     private static JsonArray runtimeMaterializationActions(
             JsonObject executionTask) {
-        return executionTask.get("materializations").getAsJsonArray();
+        return InputActionCatalog.decode(executionTask).symbolic();
     }
 
     /**
      * Validates the executable half of an executionTask at the importer trust
-     * boundary.  {@code symbolize} is a discovery declaration; only the
-     * scheduler-produced {@code materializations} array may drive runtime
-     * interpretation.  An explicit empty plan is therefore meaningful and
-     * must not fall back to the declarations.
+     * boundary. Only the scheduler-produced {@code inputActions} catalog may
+     * drive runtime interpretation. An explicit empty catalog is therefore
+     * meaningful and must not fall back to discovery declarations.
      */
     private static String canonicalExecutionTaskSchemaIssue(
             JsonObject executionTask) {
-        JsonElement encoded = executionTask == null
-                ? null : executionTask.get("materializations");
-        if (encoded == null || encoded.isJsonNull()) {
-            return "materializations must be present as a JSON object array";
+        try {
+            InputActionCatalog.decode(executionTask);
+            return "";
+        } catch (IllegalArgumentException malformed) {
+            return malformed.getMessage();
         }
-        if (!encoded.isJsonArray()) {
-            return "materializations must be a JSON array";
-        }
-        JsonArray actions = encoded.getAsJsonArray();
-        for (int index = 0; index < actions.size(); index++) {
-            if (!actions.get(index).isJsonObject()) {
-                return "materializations[" + index
-                        + "] must be a JSON object";
-            }
-        }
-        return "";
     }
 
     /**
@@ -1397,8 +1387,8 @@ public final class ConcolicSummaryImporter {
         }
 
         int actions = 0;
-        for (JsonElement element : array(analysis.executionTask,
-                "symbolize")) {
+        for (JsonElement element : InputActionCatalog.decode(
+                analysis.executionTask).all()) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             if (inputPort.equals(string(action, "symbol"))
@@ -4746,7 +4736,8 @@ public final class ConcolicSummaryImporter {
         }
         Map<String, JsonObject> declaredActions = new LinkedHashMap<>();
         Set<String> duplicateDeclaredActions = new LinkedHashSet<>();
-        for (JsonElement element : array(executionTask, "symbolize")) {
+        for (JsonElement element : InputActionCatalog.decode(
+                executionTask).all()) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             String symbol = string(action, "symbol");
@@ -8381,8 +8372,8 @@ public final class ConcolicSummaryImporter {
                 "symbolizedInputs"));
         Set<String> admittedObservedInputs =
                 exactObservedContainerInputs(raw, executionTask);
-        Set<String> scheduledConcreteFallbacks = actionSymbols(array(
-                executionTask, "concreteFallbacks"));
+        Set<String> scheduledConcreteFallbacks =
+                InputActionCatalog.decode(executionTask).concreteSymbols();
         Set<String> missing = new LinkedHashSet<>();
         Set<String> admittedVmIntrinsicPlaceholders =
                 new LinkedHashSet<>();
@@ -8648,18 +8639,6 @@ public final class ConcolicSummaryImporter {
         return true;
     }
 
-    private static Set<String> actionSymbols(JsonArray actions) {
-        Set<String> result = new LinkedHashSet<>();
-        for (JsonElement element : actions) {
-            if (!element.isJsonObject()) continue;
-            String symbol = firstNonBlank(string(element.getAsJsonObject(),
-                    "symbol"), string(element.getAsJsonObject(),
-                    "inputPort"));
-            if (!symbol.isEmpty()) result.add(symbol);
-        }
-        return result;
-    }
-
     private static boolean coversSliceInput(Set<String> candidates,
                                              String requiredInput) {
         for (String candidate : candidates) {
@@ -8796,7 +8775,8 @@ public final class ConcolicSummaryImporter {
     private static VmIntrinsicPlaceholderAdmission
     vmIntrinsicPlaceholderAdmission(JsonObject raw, JsonObject executionTask,
                                     String requiredInput) {
-        JsonArray materializations = array(executionTask, "materializations");
+        InputActionCatalog catalog = InputActionCatalog.decode(executionTask);
+        JsonArray materializations = catalog.symbolic();
         List<JsonObject> samePort = new ArrayList<>();
         boolean placeholderCandidate = false;
         for (JsonElement element : materializations) {
@@ -8816,7 +8796,7 @@ public final class ConcolicSummaryImporter {
                     || action.has("placeholderFunction")
                     || action.has("captureAuthority");
         }
-        for (JsonElement element : array(executionTask, "symbolize")) {
+        for (JsonElement element : catalog.all()) {
             if (!element.isJsonObject()) {
                 continue;
             }

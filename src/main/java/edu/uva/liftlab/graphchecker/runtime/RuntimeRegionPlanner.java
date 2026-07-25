@@ -6,6 +6,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -51,8 +54,6 @@ final class RuntimeRegionPlanner {
             "\\.param\\d+:([^#]+)#field:");
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
-    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
-            "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
     private static final Pattern FIELD_PROJECTION = Pattern.compile(
             "#field:([^#@]+)");
     private static final Pattern GETTER_IN_GUARD = Pattern.compile(
@@ -70,8 +71,6 @@ final class RuntimeRegionPlanner {
             "EXACT_VM_INTRINSIC_PLACEHOLDER_SCHEDULER_VALIDATION_V1";
     private static final String CALL_RETURN_DEFERRED_AUTHORITY =
             "AUTHORITATIVE_SCHEDULER_DEFINITION_INDEX_REQUIRED_V1";
-    private static final String UNRESOLVED_INPUT_PROVENANCE_AUTHORITY =
-            "STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1";
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
     static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
@@ -770,17 +769,11 @@ final class RuntimeRegionPlanner {
         }
         FieldCell expected = fieldCell(port.cell);
         FieldCell actual = fieldCell(field.field);
-        String method = string(port.materializationMetadata.get(
-                "accessMethod"));
-        String site = string(port.materializationMetadata.get(
-                "accessSiteId"));
-        String authority = string(port.materializationMetadata.get(
-                "accessSiteAuthority"));
-        int unit = port.materializationMetadata.get("accessUnitIndex")
-                instanceof Number ? ((Number) port.materializationMetadata.get(
-                "accessUnitIndex")).intValue() : -1;
-        return "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1".equals(
-                authority)
+        String method = port.materialization.method();
+        String site = port.materialization.siteId();
+        int unit = port.materialization.unitIndex();
+        return port.materialization.kind()
+                == MaterializationSpec.Kind.FIELD_READ
                 && expected.declaredSignature
                 && actual.declaredSignature
                 && expected.signature().equals(actual.signature())
@@ -868,75 +861,41 @@ final class RuntimeRegionPlanner {
             if (!sameField(expected, fieldCell(field.field))) {
                 continue;
             }
-            String accessMethod = string(port.materializationMetadata.get(
-                    "accessMethod"));
-            String accessSiteId = string(port.materializationMetadata.get(
-                    "accessSiteId"));
-            String accessAuthority = string(port.materializationMetadata.get(
-                    "accessSiteAuthority"));
-            int accessUnitIndex = port.materializationMetadata.get(
-                    "accessUnitIndex") instanceof Number
-                    ? ((Number) port.materializationMetadata.get(
-                    "accessUnitIndex")).intValue() : -1;
-            boolean directSiteConstrained = !accessMethod.isEmpty()
-                    || !accessSiteId.isEmpty() || accessUnitIndex >= 0
-                    || !accessAuthority.isEmpty();
+            String accessMethod = port.materialization.method();
+            String accessSiteId = port.materialization.siteId();
+            int accessUnitIndex = port.materialization.unitIndex();
+            boolean directSiteConstrained = port.materialization.kind()
+                    == MaterializationSpec.Kind.FIELD_READ;
             if (directSiteConstrained
-                    && (!("STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1"
-                    .equals(accessAuthority))
-                    || !accessMethod.equals(field.method)
+                    && (!accessMethod.equals(field.method)
                     || accessUnitIndex != field.unitIndex
                     || !accessSiteId.equals(field.siteId)
                     || !accessSiteId.equals(field.method + "#u"
                     + field.unitIndex))) {
                 continue;
             }
-            String accessorCallerMethod = string(
-                    port.materializationMetadata.get(
-                            "accessorCallerMethod"));
-            String accessorCallSiteId = string(
-                    port.materializationMetadata.get(
-                            "accessorCallSiteId"));
-            String accessorDeclaredCallee = string(
-                    port.materializationMetadata.get(
-                            "accessorDeclaredCallee"));
-            String accessorAuthority = string(
-                    port.materializationMetadata.get(
-                            "accessorCallSiteAuthority"));
-            String accessorImplementationMethod = string(
-                    port.materializationMetadata.get(
-                            "accessorImplementationMethod"));
-            String accessorImplementationAuthority = string(
-                    port.materializationMetadata.get(
-                            "accessorImplementationAuthority"));
-            int accessorCallUnitIndex = port.materializationMetadata.get(
-                    "accessorCallUnitIndex") instanceof Number
-                    ? ((Number) port.materializationMetadata.get(
-                    "accessorCallUnitIndex")).intValue() : -1;
-            boolean accessorConstrained = !accessorCallerMethod.isEmpty()
-                    || !accessorCallSiteId.isEmpty()
-                    || !accessorDeclaredCallee.isEmpty()
-                    || !accessorAuthority.isEmpty()
-                    || !accessorImplementationMethod.isEmpty()
-                    || !accessorImplementationAuthority.isEmpty()
-                    || accessorCallUnitIndex >= 0;
+            String accessorCallerMethod = port.materialization.method();
+            String accessorCallSiteId = port.materialization.siteId();
+            String accessorDeclaredCallee =
+                    port.materialization.declaredCallee();
+            String accessorImplementationMethod =
+                    port.materialization.implementationMethod();
+            int accessorCallUnitIndex =
+                    port.materialization.unitIndex();
+            boolean accessorConstrained = port.materialization.kind()
+                    == MaterializationSpec.Kind.ACCESSOR_RETURN;
             if (accessorConstrained) {
                 MethodEvent fieldMethod = methodsByCall.get(field.callId);
                 RuntimeEvent parentSite = fieldMethod == null ? null
                         : callSitesByInvocation.get(
                         fieldMethod.parentSiteId);
-                if (!("STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                        .concat("ACCESSOR_CALLSITE_V1").equals(
-                                accessorAuthority))
-                        || parentSite == null
+                if (parentSite == null
                         || !accessorCallerMethod.equals(parentSite.method)
                         || !accessorCallSiteId.equals(parentSite.siteId)
                         || !accessorCallSiteId.equals(accessorCallerMethod
                         + "#u" + accessorCallUnitIndex)
                         || !accessorDeclaredCallee.equals(
                         parentSite.declaredCallee)
-                        || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
-                        .equals(accessorImplementationAuthority)
                         || !accessorImplementationMethod.equals(
                         field.method)) {
                     continue;
@@ -1012,14 +971,15 @@ final class RuntimeRegionPlanner {
                     "location", location.isEmpty()
                             ? locationFor(port) : location,
                     "observed", Boolean.TRUE.equals(observation.get("observed")));
-            String declaredJavaType = declaredJavaType(port.cell);
+            String declaredJavaType = firstNonBlank(port.javaType,
+                    declaredJavaType(port.cell));
             if (!declaredJavaType.isEmpty()) {
                 action.put("javaType", declaredJavaType);
             }
             // Preserve exact leaf/path declarations carried by the static
             // port.  They are required for local/call-return array leaves,
             // whose root definition is resolved only by the scheduler.
-            action.putAll(port.materializationMetadata);
+            action.putAll(port.materialization.actionFields());
             copy(observation, action, "index", "field", "objectId",
                     "fieldReceiverObjectId", "valueObjectId", "runtimeType",
                     "primitiveValue", "deferredResolution",
@@ -1088,15 +1048,13 @@ final class RuntimeRegionPlanner {
     private static void restoreExactDirectFieldPathLeafMetadata(
             StaticPort port, Map<String, Object> action,
             FieldCell observedRoot) {
-        Map<String, Object> metadata = port.materializationMetadata;
-        if (!"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1".equals(
-                string(metadata.get("fieldPathAuthority")))) {
+        MaterializationSpec spec = port.materialization;
+        if (!spec.directFieldPath()) {
             return;
         }
-        List<String> path = stringList(metadata.get("fieldPath"));
+        List<String> path = spec.path();
         FieldCell staticRoot = fieldCell(port.cell);
-        FieldCell leaf = fieldCell(string(metadata.get(
-                "leafFieldSignature")));
+        FieldCell leaf = fieldCell(spec.leafField());
         if (path.size() < 2 || path.size() > 4
                 || !path.equals(dependencyFieldPath(port.cell))
                 || !staticRoot.declaredSignature
@@ -1105,12 +1063,7 @@ final class RuntimeRegionPlanner {
                 || !leaf.declaredSignature
                 || !leaf.name.equals(path.get(path.size() - 1))
                 || !primitiveType(leaf.type)
-                || !staticRoot.signature().equals(string(metadata.get(
-                "accessFieldSignature")))
-                || !staticRoot.owner.equals(string(metadata.get(
-                "accessOwnerClass")))
-                || !staticRoot.name.equals(string(metadata.get(
-                "accessField")))) {
+                || !staticRoot.signature().equals(spec.rootField())) {
             return;
         }
         action.put("bindingMode", "FIELD_ACCESS");
@@ -3413,21 +3366,7 @@ final class RuntimeRegionPlanner {
     }
 
     private static List<String> dependencyFieldPath(String cell) {
-        List<String> result = new ArrayList<>();
-        Matcher signature = FIELD_SIGNATURE.matcher(safe(cell));
-        if (!signature.find()) {
-            return result;
-        }
-        result.add(signature.group(3).trim());
-        Matcher projection = FIELD_PROJECTION.matcher(
-                safe(cell).substring(signature.end()));
-        while (projection.find()) {
-            String field = projection.group(1).trim();
-            if (!field.isEmpty()) {
-                result.add(field);
-            }
-        }
-        return result;
+        return FieldPathSpec.path(cell);
     }
 
     private static List<List<String>> deepestFieldPaths(
@@ -4824,13 +4763,16 @@ final class RuntimeRegionPlanner {
                         jsonString(object, "cell"),
                         jsonString(object, "sourceKind"),
                         jsonString(object, "projection"), "",
-                        StaticPort.materializationMetadata(object)));
+                        jsonString(object, "javaType"),
+                        MaterializationSpec.decode(object)));
             }
             for (JsonObject object : jsonObjectArray(json, "outputs")) {
                 region.outputs.add(new StaticPort(
                         jsonString(object, "portId"),
                         jsonString(object, "cell"), "", "",
-                        jsonString(object, "kind")));
+                        jsonString(object, "kind"),
+                        jsonString(object, "javaType"),
+                        MaterializationSpec.none()));
             }
             for (JsonObject object : jsonObjectArray(json,
                     "outputSlices")) {
@@ -6380,10 +6322,8 @@ final class RuntimeRegionPlanner {
         private boolean captureDischargedByHeapEffectTransformer;
         private String captureDischargeInputPort = "";
         private String captureDischargeAuthority = "";
-        private final List<String> unresolvedInputs = new ArrayList<>();
-        private final List<Map<String, Object>> unresolvedInputDetails =
+        private final List<Map<String, Object>> inputGaps =
                 new ArrayList<>();
-        private boolean unresolvedInputProvenanceComplete;
         private boolean runtimeRefinementComplete = true;
         private final Set<String> staticSites = new LinkedHashSet<>();
 
@@ -6556,19 +6496,14 @@ final class RuntimeRegionPlanner {
             }
             slice.captureBindingIssues.addAll(jsonStringArray(json,
                     "captureBindingIssues"));
-            slice.unresolvedInputs.addAll(jsonStringArray(json,
-                    "unresolvedInputs"));
-            for (JsonObject detail : jsonObjectArray(json,
-                    "unresolvedInputDetails")) {
-                slice.unresolvedInputDetails.add(object(
+            for (JsonObject detail : jsonObjectArray(json, "inputGaps")) {
+                slice.inputGaps.add(object(
                         "dependencyCell", jsonString(detail,
                         "dependencyCell"),
                         "dependencyMethods", jsonStringArray(detail,
                         "dependencyMethods"),
                         "reason", jsonString(detail, "reason"),
-                        "diagnostic", jsonString(detail, "diagnostic"),
-                        "provenanceAuthority", jsonString(detail,
-                        "provenanceAuthority")));
+                        "diagnostic", jsonString(detail, "diagnostic")));
             }
             slice.regionTruncated = jsonBoolean(json,
                     "regionTruncated", false);
@@ -6581,8 +6516,6 @@ final class RuntimeRegionPlanner {
                     "truncationReasons"));
             slice.structuralComplete = jsonBoolean(json,
                     "structuralComplete", false);
-            slice.unresolvedInputProvenanceComplete =
-                    slice.validateUnresolvedInputProvenance();
             return slice;
         }
 
@@ -6894,17 +6827,9 @@ final class RuntimeRegionPlanner {
             if (!value.isEmpty()) result.put(field, value);
         }
 
-        private boolean validateUnresolvedInputProvenance() {
-            if (unresolvedInputs.isEmpty()) {
-                return unresolvedInputDetails.isEmpty();
-            }
-            if (unresolvedInputDetails.size() != unresolvedInputs.size()
-                    || new LinkedHashSet<>(unresolvedInputs).size()
-                    != unresolvedInputs.size()) {
-                return false;
-            }
+        private boolean validInputGaps() {
             Set<String> diagnostics = new LinkedHashSet<>();
-            for (Map<String, Object> detail : unresolvedInputDetails) {
+            for (Map<String, Object> detail : inputGaps) {
                 String diagnostic = string(detail.get("diagnostic"));
                 String cell = string(detail.get("dependencyCell"));
                 String reason = string(detail.get("reason"));
@@ -6918,13 +6843,11 @@ final class RuntimeRegionPlanner {
                         != ((Collection<?>) rawMethods).size()
                         || !diagnostic.startsWith(cell + " [")
                         || !supportedUnresolvedInputReason(reason)
-                        || !UNRESOLVED_INPUT_PROVENANCE_AUTHORITY.equals(
-                        string(detail.get("provenanceAuthority")))
                         || !diagnostics.add(diagnostic)) {
                     return false;
                 }
             }
-            return diagnostics.equals(new LinkedHashSet<>(unresolvedInputs));
+            return true;
         }
 
         private static boolean supportedUnresolvedInputReason(
@@ -6938,22 +6861,14 @@ final class RuntimeRegionPlanner {
                     || "OUTPUT_SLICE_INPUT_HAS_NO_REGION_PORT".equals(reason);
         }
 
-        private void refineUnresolvedInputs(Set<String> observed,
-                                            StaticOutputSlice refined) {
-            boolean provenanceComplete =
-                    validateUnresolvedInputProvenance();
-            refined.unresolvedInputProvenanceComplete = provenanceComplete;
-            if (!provenanceComplete) {
-                refined.unresolvedInputs.addAll(unresolvedInputs);
-                refined.unresolvedInputDetails.addAll(
-                        copyRows(unresolvedInputDetails));
-                if (!unresolvedInputs.isEmpty()
-                        || !unresolvedInputDetails.isEmpty()) {
-                    refined.runtimeRefinementComplete = false;
-                }
+        private void refineInputGaps(Set<String> observed,
+                                     StaticOutputSlice refined) {
+            if (!validInputGaps()) {
+                refined.inputGaps.addAll(copyRows(inputGaps));
+                refined.runtimeRefinementComplete = false;
                 return;
             }
-            for (Map<String, Object> detail : unresolvedInputDetails) {
+            for (Map<String, Object> detail : inputGaps) {
                 Set<String> dependencyMethods = stringSet(
                         detail.get("dependencyMethods"));
                 boolean exactStaticMethods = !dependencyMethods.isEmpty()
@@ -6963,15 +6878,11 @@ final class RuntimeRegionPlanner {
                 if (exactStaticMethods && !observedDependency) {
                     continue;
                 }
-                String diagnostic = string(detail.get("diagnostic"));
-                refined.unresolvedInputs.add(diagnostic);
-                refined.unresolvedInputDetails.add(
-                        new LinkedHashMap<>(detail));
+                refined.inputGaps.add(new LinkedHashMap<>(detail));
                 if (!exactStaticMethods) {
                     // A missing, ambiguous, or out-of-slice method set must
                     // never be interpreted as proof of an unobserved path.
                     refined.runtimeRefinementComplete = false;
-                    refined.unresolvedInputProvenanceComplete = false;
                 }
             }
         }
@@ -7005,7 +6916,7 @@ final class RuntimeRegionPlanner {
             Set<String> observed = new LinkedHashSet<>(
                     evidence.observedMethods);
             observed.retainAll(methods);
-            refineUnresolvedInputs(observed, refined);
+            refineInputGaps(observed, refined);
             refined.methods.addAll(sorted(observed));
             boolean filtersAlternatives = observed.size() != methods.size();
 
@@ -7279,8 +7190,7 @@ final class RuntimeRegionPlanner {
                             || refined.requestedStateTransformerContractComplete;
             refined.complete = refined.structuralComplete
                     && refined.runtimeRefinementComplete
-                    && refined.unresolvedInputs.isEmpty()
-                    && refined.unresolvedInputProvenanceComplete
+                    && refined.inputGaps.isEmpty()
                     && transformerContractReady
                     && refined.captureBindingsComplete;
             return refined;
@@ -7365,17 +7275,12 @@ final class RuntimeRegionPlanner {
 
         private FieldPathRuntimeCandidate runtimeFieldPathCandidate(
                 InstanceEvidence evidence, StaticPort port) {
-            if (port == null || !"STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
-                    .equals(string(port.materializationMetadata.get(
-                            "fieldPathAuthority")))) {
+            if (port == null || !port.materialization.directFieldPath()) {
                 return null;
             }
-            List<String> path = stringList(port.materializationMetadata.get(
-                    "fieldPath"));
-            String leaf = string(port.materializationMetadata.get(
-                    "leafFieldSignature"));
-            String method = string(port.materializationMetadata.get(
-                    "accessMethod"));
+            List<String> path = port.materialization.path();
+            String leaf = port.materialization.leafField();
+            String method = port.materialization.method();
             if (path.size() < 2 || leaf.isEmpty() || method.isEmpty()) {
                 return null;
             }
@@ -7605,8 +7510,7 @@ final class RuntimeRegionPlanner {
                     || !evidence.runtimePathEvidenceComplete
                     || !refined.structuralComplete
                     || !refined.runtimeRefinementComplete
-                    || !refined.unresolvedInputs.isEmpty()
-                    || !refined.unresolvedInputProvenanceComplete
+                    || !refined.inputGaps.isEmpty()
                     || !refined.requestedStateTransformerContractComplete) {
                 return false;
             }
@@ -7758,8 +7662,7 @@ final class RuntimeRegionPlanner {
                     captureDischargeAuthority,
                     "containerElementFieldBindings",
                     containerElementFieldBindings,
-                    "unresolvedInputs", unresolvedInputs,
-                    "unresolvedInputDetails", unresolvedInputDetails,
+                    "inputGaps", inputGaps,
                     "truncationReasons", structuralIssues,
                     "complete", complete,
                     "selection", selection);
@@ -7782,119 +7685,20 @@ final class RuntimeRegionPlanner {
         private final String sourceKind;
         private final String projection;
         private final String kind;
-        private final Map<String, Object> materializationMetadata;
+        private final String javaType;
+        private final MaterializationSpec materialization;
 
         private StaticPort(String portId, String cell, String sourceKind,
-                           String projection, String kind) {
-            this(portId, cell, sourceKind, projection, kind,
-                    Collections.<String, Object>emptyMap());
-        }
-
-        private StaticPort(String portId, String cell, String sourceKind,
-                           String projection, String kind,
-                           Map<String, Object> materializationMetadata) {
+                           String projection, String kind, String javaType,
+                           MaterializationSpec materialization) {
             this.portId = safe(portId);
             this.cell = safe(cell);
             this.sourceKind = safe(sourceKind);
             this.projection = safe(projection);
             this.kind = safe(kind);
-            this.materializationMetadata = new LinkedHashMap<>(
-                    materializationMetadata == null
-                            ? Collections.<String, Object>emptyMap()
-                            : materializationMetadata);
-        }
-
-        private static Map<String, Object> materializationMetadata(
-                JsonObject json) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (String field : new String[]{"javaType", "inputJavaType",
-                    "field", "leafFieldSignature", "accessFieldSignature",
-                    "bindingMode", "method", "local", "accessMethod",
-                    "accessSiteId",
-                    "accessorCallerMethod", "accessorCallSiteId",
-                    "accessorDeclaredCallee",
-                    "accessorImplementationMethod"}) {
-                String value = jsonString(json, field);
-                if (!value.isEmpty()) result.put(field, value);
-            }
-            int accessUnitIndex = jsonInt(json, "accessUnitIndex", -1);
-            if (accessUnitIndex >= 0) {
-                result.put("accessUnitIndex", accessUnitIndex);
-            }
-            int accessorCallUnitIndex = jsonInt(json,
-                    "accessorCallUnitIndex", -1);
-            if (accessorCallUnitIndex >= 0) {
-                result.put("accessorCallUnitIndex",
-                        accessorCallUnitIndex);
-            }
-            List<String> path = jsonStringArray(json, "fieldPath");
-            if (!path.isEmpty()) result.put("fieldPath", path);
-            FieldCell access = fieldCell(jsonString(json,
-                    "accessFieldSignature"));
-            if (access.declaredSignature) {
-                result.put("accessOwnerClass", access.owner);
-                result.put("accessFieldType", access.type);
-                result.put("accessField", access.name);
-            }
-            FieldCell leaf = fieldCell(jsonString(json,
-                    "leafFieldSignature"));
-            if (leaf.declaredSignature) {
-                result.put("leafOwnerClass", leaf.owner);
-                result.put("leafField", leaf.name);
-            }
-            String accessMethod = string(result.get("accessMethod"));
-            String accessSite = string(result.get("accessSiteId"));
-            if (access.declaredSignature && accessUnitIndex >= 0
-                    && accessSite.equals(accessMethod + "#u"
-                    + accessUnitIndex)) {
-                result.put("accessSiteAuthority",
-                        "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
-            }
-            String accessorCaller = string(result.get(
-                    "accessorCallerMethod"));
-            String accessorSite = string(result.get(
-                    "accessorCallSiteId"));
-            String implementation = string(result.get(
-                    "accessorImplementationMethod"));
-            if (access.declaredSignature && accessorCallUnitIndex >= 0
-                    && !implementation.isEmpty()
-                    && accessorSite.equals(accessorCaller + "#u"
-                    + accessorCallUnitIndex)) {
-                result.put("accessorCallSiteAuthority",
-                        "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                                + "ACCESSOR_CALLSITE_V1");
-                result.put("accessorImplementationAuthority",
-                        "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
-            }
-            if (access.declaredSignature && leaf.declaredSignature
-                    && path.size() > 1 && path.size() <= 4
-                    && !jsonStringArray(json,
-                    "fieldPathProofCausalEdgeIds").isEmpty()) {
-                result.put("fieldPathAuthority",
-                        "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
-            }
-            List<Map<String, Object>> declarations = new ArrayList<>();
-            for (JsonObject declaration : jsonObjectArray(json,
-                    "fieldPathLeafDeclarations")) {
-                String signature = jsonString(declaration,
-                        "fieldSignature");
-                List<String> declarationPath = jsonStringArray(
-                        declaration, "fieldPath");
-                if (!signature.isEmpty() && !declarationPath.isEmpty()) {
-                    FieldCell field = fieldCell(signature);
-                    declarations.add(object(
-                            "fieldPath", declarationPath,
-                            "fieldSignature", signature,
-                            "declaredFieldOwnerClass", field.owner,
-                            "declaredFieldType", field.type,
-                            "complete", jsonBoolean(declaration,
-                            "complete", true)));
-                }
-            }
-            if (!declarations.isEmpty()) {
-                result.put("fieldPathLeafDeclarations", declarations);
-            }
-            return result;
+            this.javaType = safe(javaType);
+            this.materialization = materialization == null
+                    ? MaterializationSpec.none() : materialization;
         }
     }
 
@@ -8018,10 +7822,10 @@ final class RuntimeRegionPlanner {
 
     private static FieldCell fieldCell(String value) {
         String cell = safe(value);
-        Matcher declared = FIELD_SIGNATURE.matcher(cell);
-        if (declared.find()) {
-            return new FieldCell(declared.group(1), declared.group(2),
-                    declared.group(3), true);
+        DeclaredField declared = FieldPathSpec.declaredField(cell);
+        if (declared != null) {
+            return new FieldCell(declared.owner(), declared.type(),
+                    declared.name(), true);
         }
 
         Matcher projection = FIELD_PROJECTION.matcher(cell);
@@ -8056,7 +7860,8 @@ final class RuntimeRegionPlanner {
     /** True only for a canonical declared field cell, not a carrier with a
      * trailing {@code #field:...} projection. */
     private static boolean exactDeclaredFieldCell(String value) {
-        return FIELD_SIGNATURE.matcher(safe(value)).matches();
+        DeclaredField field = FieldPathSpec.declaredField(value);
+        return field != null && field.signature().equals(safe(value));
     }
 
     private static String methodReturnType(String signature) {
