@@ -1639,7 +1639,10 @@ Trace aggregation 也切换为 parse-once：offline aggregator 对每条 runtime
 原来按字段动态编译/缓存正则、重复扫描整行以及手写 JSON unescape 的实现已删除。
 这同时正确处理标准 Unicode escape，避免不同字段 decoder 对同一 row 得出不同结果。
 手写生产 Java 进一步降至 75,330 行；57 项快速回归、PMD 与真实
-custom-JDK/Z3 baseline 通过。
+custom-JDK/Z3 baseline 通过。对应里程碑 `89fde48a` 的隔离干净 worktree
+13-fixture 并行真实 custom-JDK/Z3 矩阵也已零失败，保持 6
+`SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`；日志目录为
+`target/robustness-matrix-logs/20260725T132252Z.2990822`。
 
 ### 明确不能删除
 
