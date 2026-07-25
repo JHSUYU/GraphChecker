@@ -1473,6 +1473,35 @@ Scheduler 也不再序列化整个 alternative writer group 后做字符串 `con
 Z3 矩阵均已通过；矩阵零失败并保持 6 `SAT/REACHABLE`、7
 `UNSAT/UNREACHABLE`。
 
+### PR 6 后续：删除 current-schema 内部镜像
+
+PR 0–6 完成后继续按 field ledger 做原子切换，不恢复历史 artifact 兼容：
+
+- heap transformer admission 只接受
+  `requestedStateTransformerContractVersion=1` 的 exact obligation。已删除按 observed
+  effect 数量猜测 write-site coverage、把任意无 edge 的 `void` slice method 当作
+  transformer，以及 historical-slice 分支；contract 缺失或错误仍由 Importer fail
+  closed；
+- dynamic container field binding 的 selector 只存在于 canonical
+  `containerSelector`。Runtime 不再同时写九个 flat mirror，Solver、Runtime、
+  Importer、Composer 和 robustness shell 已一次性切换到 nested selector；
+- field observation 只记录 observation 自身的 path、owner/value identity、expression
+  和唯一 `dynamicBindingId`。完整 binding、container selector、bridge、key 与 capture
+  metadata 只存在于 `dynamicFieldBindings`；Importer 通过唯一 ID 做 join，不再逐字段
+  比较同一 Runtime writer 生成的副本；
+- instrumentation coverage admission 只判断能否安全使用 bounded closure：唯一选中
+  activation、可执行 admission、合法且 complete 的 canonical `outputClosure`，以及
+  capture/heap-discharge gate。Z3 assignment、branch replay、exact heap obligation
+  仍分别由 Runtime 与 Importer 在真实 trust boundary 校验，不在 instrumentation
+  selection 中重复实现。
+
+这些删除不是弱化证明：canonical binding、object token/scope、field path、read-from、
+transformer obligation、branch contract 和所有 Importer/Composer gap gate 均保留。
+截至 `2be9e02e`，手写生产 Java 为 78,273 行，相对 81,581 行冻结基线累计净减
+3,308 行。57 项快速回归和干净 worktree 的 13-fixture 并行真实 Z3 矩阵再次通过，
+保持 6 `SAT/REACHABLE`、7 `UNSAT/UNREACHABLE`、零 failure。61k–69k 仍是后续
+净删除目标，不把尚未实现的行数写成完成结果。
+
 ### 明确不能删除
 
 必须保留：
