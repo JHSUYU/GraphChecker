@@ -1773,6 +1773,12 @@ producer 也都 CLOSED 且 merge/compose `gaps=[]`，但其修改后语义为 `U
 SAT profile 断言评价该文件。权威 6 SAT/7 UNSAT release gate 仍必须在不含该用户修改的
 clean commit worktree 上通过后，才记录本批为已完成。
 
+提交 `a380e791` 已在独立 clean worktree 以 13 个外层 worker 完成权威矩阵：
+`completed=13 failures=0`，保持 6 SAT/7 UNSAT。日志目录为
+`target/robustness-matrix-logs/20260725T161007Z.147459`。这确认 signature-only field
+declaration、EngineArrayInputBinding V2、replay/solver/boolean/trace 收敛没有改变既有
+deterministic shared-field RPC 语义。
+
 ### 明确不能删除
 
 必须保留：
