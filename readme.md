@@ -1339,8 +1339,15 @@ selector schema/authority 镜像，不保留 legacy/global fallback。迁移回�
 worklist identity 的旧顶层 root 读点；57 项快速回归和 baseline 全流程仍通过。PR 3
 同时删除 runtime planner 的 graphless overload、`catalogSupplied=false` 和
 `legacyStatic()` 宽泛输入路径；所有 planning 现在必须消费同一份 frozen static graph，
-57 项快速回归和 baseline 全流程仍通过。PR 3 剩余的 edge evidence 收敛继续作为后续
-原子切换完成。
+57 项快速回归和 baseline 全流程仍通过。最后一个原子切换将 runtime edge binding
+统一成三种 discriminated evidence：
+`COMPLETE_VALUE_EQUALITY_V1`、`FIELD_ASSIGNMENT_READ_FROM_V1` 和
+`CONTAINER_MUTATION_READ_FROM_V1`。writer、Scheduler、Composer 与回归 fixture
+一次性切换到 `evidenceKind + writerEventSeq + readerEventSeq + kind-specific payload`；
+已删除 `relation/relationKind`、sequence aliases、`confirmed` boolean、固定 authority、
+path-completeness 镜像和只写不读的 write-evidence wrapper 字段。证据种类本身决定
+必需 payload，reader 不猜旧字段，也不保留兼容 fallback。57 项快速回归通过；完整
+13-fixture matrix 是该 PR 合入前的最终 gate。
 
 ### PR 4：压缩 trace、Importer 和 replay admission
 

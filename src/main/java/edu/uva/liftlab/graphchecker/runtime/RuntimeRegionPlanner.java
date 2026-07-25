@@ -71,22 +71,6 @@ final class RuntimeRegionPlanner {
             "STATIC_EXACT_DEPENDENCY_METHOD_CONSUMER_SET_V1";
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
-    static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
-            "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
-                    + "COMPLETED_MUTATION_BEFORE_READ_V1";
-    static final String CONTAINER_MUTATION_SEMANTIC_ASSUMPTION =
-            "DECLARED_CONTAINER_MUTATOR_CHANGES_RECEIVER_STATE_V1";
-    static final String CONTAINER_MUTATOR_CONTRACT_AUTHORITY =
-            "DECLARED_CALLEE_MUTATOR_METHOD_NAME_ALLOWLIST_V1";
-    static final String PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY =
-            "PROCESS_LOCAL_RECORDER_OBJECT_IDENTITY_TOKEN_V1";
-    static final String TRACE_ORDER_AUTHORITY =
-            "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1";
-    static final String CONTAINED_CALL_READ_FROM_AUTHORITY =
-            "RUNTIME_COMPLETE_CONTAINED_CALL_TREE_MEMBERSHIP_V1";
-    static final String TRUNCATED_PATH_READ_FROM_ASSUMPTION =
-            "TRUNCATED_BRANCH_PATH_SIGNATURE_DOES_NOT_INVALIDATE_EXACT_"
-                    + "CONTAINED_FIELD_AND_CALL_EVENT_ORDER_V1";
     static final String RUNTIME_UNIQUE_EXACT_FIELD_READ_SITE_AUTHORITY =
             "RUNTIME_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1";
     static final String FROZEN_STATIC_ACCESSOR_JOIN_AUTHORITY =
@@ -2108,115 +2092,25 @@ final class RuntimeRegionPlanner {
                     valueEqualityPairs += valueMatches.size();
                     Map<String, Object> row = object(
                             "fromRegionInstance", upstream.instanceId,
-                            "toRegionInstance", downstream.instanceId,
-                            "test", upstream.root.test,
-                            "fromProcess", upstream.root.process,
-                            "fromThreadId", upstream.root.tid,
-                            "toProcess", downstream.root.process,
-                            "toThreadId", downstream.root.tid,
-                            "sameProcess", sameProcess,
-                            "differentThread", !sameProcess
-                                    || upstream.root.tid != downstream.root.tid,
-                            "siteObserved", siteObserved,
-                            "orderConfirmed", ordered);
-                    if (valueMatch != null) {
-                        row.put("fromEndpointSeq", valueMatch.from.seq);
-                        row.put("toEndpointSeq", valueMatch.to.seq);
-                        row.put("fromFingerprintSource",
-                                valueMatch.from.source);
-                        row.put("toFingerprintSource",
-                                valueMatch.to.source);
-                        row.put("valueFingerprint",
-                                valueMatch.from.digest);
-                        row.put("valueEqualityObserved", true);
-                        row.put("valueEqualityAuthority",
-                                "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
-                        row.put("endpointOrderAuthority",
-                                "GLOBAL_TRACE_ENDPOINT_SEQUENCE");
-                        row.put("endpointCorrelationAuthority",
-                                endpointCorrelationAuthority);
-                    }
+                            "toRegionInstance", downstream.instanceId);
                     if (readFrom != null) {
-                        row.put("writeSeq", readFrom.writerEventSeq());
-                        row.put("readSeq", readFrom.read.seq);
-                        row.put("field", readFrom.write.field);
-                        row.put("writeEvidenceKind",
-                                readFrom.writeEvidence.kind);
-                        row.put("writeEvidenceAuthority",
-                                readFrom.writeEvidence.authority);
-                        row.put("writerAssociationAuthority",
-                                readFrom.writeEvidence.associationAuthority);
-                        row.put("containerMutationSemanticAssumption",
-                                readFrom.writeEvidence.semanticAssumption);
-                        row.put("pathSignatureTruncationAssumption",
-                                readFrom.pathSignatureAssumption());
-                        row.put("writerPathSignatureComplete",
-                                readFrom.writerPathSignatureComplete);
-                        row.put("readerPathSignatureComplete",
-                                readFrom.readerPathSignatureComplete);
-                        row.put("writerSiteId", readFrom.writerSiteId());
-                        row.put("writerCallId", readFrom.writerCallId());
-                        row.put("mutatorEnterSeq",
-                                readFrom.writeEvidence.mutation == null ? 0L
-                                        : readFrom.writeEvidence.mutation.seq);
-                        row.put("mutationCompletionSeq",
-                                readFrom.writeEvidence.completion == null ? 0L
-                                        : readFrom.writeEvidence.completion.seq);
-                        row.put("writerOccurrence",
-                                upstream.runtimeOccurrence(
-                                        readFrom.writeEvidence.mutation));
-                        row.put("writerFieldReadSeq", readFrom.write.seq);
-                        row.put("mutationInvocationId",
-                                readFrom.writeEvidence.mutation == null ? 0L
-                                        : readFrom.writeEvidence.mutation
-                                        .invocationId);
-                        row.put("mutatorDeclaredCallee",
-                                readFrom.writeEvidence.mutation == null ? ""
-                                        : readFrom.writeEvidence.mutation
-                                        .declaredCallee);
-                        row.put("mutatorRuntimeType",
-                                readFrom.writeEvidence.mutation == null ? ""
-                                        : readFrom.writeEvidence.mutation
-                                        .runtimeType);
-                        row.put("mutationContractAuthority",
-                                readFrom.writeEvidence.mutation == null ? ""
-                                        : CONTAINER_MUTATOR_CONTRACT_AUTHORITY);
-                        row.put("orderAuthority", TRACE_ORDER_AUTHORITY);
-                        row.put("receiverObjectId",
-                                readFrom.write.receiverObjectId);
-                        row.put("valueObjectId",
-                                readFrom.write.valueObjectId);
-                        row.put("readerValueObjectId",
-                                readFrom.read.valueObjectId);
-                        row.put("fieldReceiverIdentityConfirmed", true);
-                        row.put("fieldReceiverIdentityAuthority",
-                                PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY);
-                        row.put("containerIdentityConfirmed",
-                                readFrom.containerIdentityConfirmed());
-                        row.put("containerIdentityAuthority",
-                                readFrom.containerIdentityConfirmed()
-                                        ? PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY
-                                        : "");
+                        addReadFromEvidence(row, readFrom);
+                    } else if (valueMatch != null) {
+                        addValueEqualityEvidence(row, valueMatch,
+                                endpointCorrelationAuthority);
                     }
                     if (readFrom != null || valueMatch != null) {
                         validatedBindings.add(row);
                     }
-                    for (int matchIndex = 1;
+                    for (int matchIndex = readFrom == null ? 1
+                            : valueMatches.size();
                          matchIndex < valueMatches.size(); matchIndex++) {
                         FingerprintMatch additional = valueMatches.get(
                                 matchIndex);
                         Map<String, Object> additionalRow =
                                 new LinkedHashMap<>(row);
-                        additionalRow.put("fromEndpointSeq",
-                                additional.from.seq);
-                        additionalRow.put("toEndpointSeq",
-                                additional.to.seq);
-                        additionalRow.put("fromFingerprintSource",
-                                additional.from.source);
-                        additionalRow.put("toFingerprintSource",
-                                additional.to.source);
-                        additionalRow.put("valueFingerprint",
-                                additional.from.digest);
+                        addValueEqualityEvidence(additionalRow, additional,
+                                endpointCorrelationAuthority);
                         validatedBindings.add(additionalRow);
                     }
                 }
@@ -2256,16 +2150,10 @@ final class RuntimeRegionPlanner {
                     "transportKind", edge.kind,
                     "fromPort", edge.fromPort,
                     "toPort", edge.toPort,
-                    "requiresOrder", edge.requiresOrder,
-                    "requiresObjectIdentity", edge.requiresObjectIdentity,
                     "state", state,
                     "bindings", validatedBindings);
             if (!edge.mappingKind.isEmpty()) {
                 validationRow.put("mappingKind", edge.mappingKind);
-            }
-            if (!"SHARED_STATE".equals(edge.kind)) {
-                validationRow.put("mappingAuthority",
-                        "STATIC_FORMAT_AND_PORT_MAPPING");
             }
             if (edge.canonicalMetadataPresent) {
                 validationRow.put("fromOutputPort", edge.fromOutputPort);
@@ -2284,6 +2172,44 @@ final class RuntimeRegionPlanner {
             result.edgeValidations.add(validationRow);
         }
         enforceUniqueExpandedProtocolProducer(result.edgeValidations);
+    }
+
+    private static void addValueEqualityEvidence(
+            Map<String, Object> target, FingerprintMatch match,
+            String correlationAuthority) {
+        target.put("evidenceKind", "COMPLETE_VALUE_EQUALITY_V1");
+        target.put("writerEventSeq", match.from.seq);
+        target.put("readerEventSeq", match.to.seq);
+        target.put("valueFingerprint", match.from.digest);
+        if (!safe(correlationAuthority).isEmpty()) {
+            target.put("correlationAuthority", correlationAuthority);
+        }
+    }
+
+    private static void addReadFromEvidence(
+            Map<String, Object> target, SharedReadFrom readFrom) {
+        boolean mutation = readFrom.writeEvidence.mutation != null;
+        target.put("evidenceKind", mutation
+                ? "CONTAINER_MUTATION_READ_FROM_V1"
+                : "FIELD_ASSIGNMENT_READ_FROM_V1");
+        target.put("writerEventSeq", readFrom.writerEventSeq());
+        target.put("readerEventSeq", readFrom.read.seq);
+        target.put("field", readFrom.write.field);
+        target.put("receiverObjectId", readFrom.write.receiverObjectId);
+        if (!mutation) {
+            return;
+        }
+        target.put("valueObjectId", readFrom.write.valueObjectId);
+        target.put("readerValueObjectId", readFrom.read.valueObjectId);
+        target.put("writerFieldReadSeq", readFrom.write.seq);
+        target.put("mutatorEnterSeq",
+                readFrom.writeEvidence.mutation.seq);
+        target.put("mutationCompletionSeq",
+                readFrom.writeEvidence.completion.seq);
+        target.put("mutationInvocationId",
+                readFrom.writeEvidence.mutation.invocationId);
+        target.put("mutatorDeclaredCallee",
+                readFrom.writeEvidence.mutation.declaredCallee);
     }
 
     /**
@@ -2580,10 +2506,6 @@ final class RuntimeRegionPlanner {
             }
             binding.downstreamInput = inputResolution.port;
             binding.downstreamInputProjection = inputResolution.projection;
-            binding.downstreamInputResolutionAuthority =
-                    inputResolution.authority;
-            binding.downstreamInputResolutionEvidenceEdgeIds =
-                    new ArrayList<>(inputResolution.evidenceEdgeIds);
             String identity = binding.identity();
             if (!seen.add(identity)) {
                 continue;
@@ -4257,9 +4179,7 @@ final class RuntimeRegionPlanner {
                     continue;
                 }
                 SharedReadFrom candidate = new SharedReadFrom(write, read,
-                        writeEvidence,
-                        upstream.pathSignatureComplete,
-                        downstream.pathSignatureComplete);
+                        writeEvidence);
                 if (selected == null
                         || candidate.writerEventSeq()
                         > selected.writerEventSeq()) {
@@ -4277,8 +4197,7 @@ final class RuntimeRegionPlanner {
             if (field.seq > readSeq) {
                 return null;
             }
-            return new WriteEvidence("FIELD_ASSIGNMENT", null,
-                    null, "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1", "", "");
+            return new WriteEvidence(null, null);
         }
         if (!"FIELD_READ".equals(field.kind) || field.valueObjectId == 0) {
             return null;
@@ -4296,17 +4215,11 @@ final class RuntimeRegionPlanner {
             if (completion == null || completion.seq > readSeq) {
                 continue;
             }
-            String association = event.callId == field.callId
-                    ? "RUNTIME_SAME_CALL_FIELD_VALUE_TO_MUTATOR_RECEIVER_V1"
-                    : instance.calls.contains(event.callId)
-                    ? CONTAINED_CALL_READ_FROM_AUTHORITY : "";
-            if (association.isEmpty()) {
+            if (event.callId != field.callId
+                    && !instance.calls.contains(event.callId)) {
                 continue;
             }
-            WriteEvidence candidate = new WriteEvidence(
-                    "FIELD_CONTAINER_MUTATION", event, completion,
-                    CONTAINER_MUTATION_READ_FROM_AUTHORITY, association,
-                    CONTAINER_MUTATION_SEMANTIC_ASSUMPTION);
+            WriteEvidence candidate = new WriteEvidence(event, completion);
             if (selected == null
                     || candidate.writerEventSeq()
                     > selected.writerEventSeq()) {
@@ -6681,18 +6594,12 @@ final class RuntimeRegionPlanner {
         private final FieldAccessEvent write;
         private final FieldAccessEvent read;
         private final WriteEvidence writeEvidence;
-        private final boolean writerPathSignatureComplete;
-        private final boolean readerPathSignatureComplete;
 
         private SharedReadFrom(FieldAccessEvent write, FieldAccessEvent read,
-                               WriteEvidence writeEvidence,
-                               boolean writerPathSignatureComplete,
-                               boolean readerPathSignatureComplete) {
+                               WriteEvidence writeEvidence) {
             this.write = write;
             this.read = read;
             this.writeEvidence = writeEvidence;
-            this.writerPathSignatureComplete = writerPathSignatureComplete;
-            this.readerPathSignatureComplete = readerPathSignatureComplete;
         }
 
         private long writerEventSeq() {
@@ -6700,26 +6607,6 @@ final class RuntimeRegionPlanner {
                     ? write.seq : writeEvidence.writerEventSeq();
         }
 
-        private long writerCallId() {
-            return writeEvidence.mutation == null
-                    ? write.callId : writeEvidence.mutation.callId;
-        }
-
-        private String writerSiteId() {
-            return writeEvidence.mutation == null
-                    ? "" : writeEvidence.mutation.siteId;
-        }
-
-        private String pathSignatureAssumption() {
-            return writerPathSignatureComplete && readerPathSignatureComplete
-                    ? "" : TRUNCATED_PATH_READ_FROM_ASSUMPTION;
-        }
-
-        private boolean containerIdentityConfirmed() {
-            return writeEvidence.mutation != null
-                    && write.valueObjectId != 0
-                    && write.valueObjectId == read.valueObjectId;
-        }
     }
 
     private static final class EndpointFingerprint {
@@ -6750,24 +6637,13 @@ final class RuntimeRegionPlanner {
     }
 
     private static final class WriteEvidence {
-        private final String kind;
         private final RuntimeEvent mutation;
         private final RuntimeEvent completion;
-        private final String authority;
-        private final String associationAuthority;
-        private final String semanticAssumption;
 
-        private WriteEvidence(String kind, RuntimeEvent mutation,
-                              RuntimeEvent completion,
-                              String authority,
-                              String associationAuthority,
-                              String semanticAssumption) {
-            this.kind = kind;
+        private WriteEvidence(RuntimeEvent mutation,
+                              RuntimeEvent completion) {
             this.mutation = mutation;
             this.completion = completion;
-            this.authority = safe(authority);
-            this.associationAuthority = safe(associationAuthority);
-            this.semanticAssumption = safe(semanticAssumption);
         }
 
         private long writerEventSeq() {
@@ -6784,9 +6660,6 @@ final class RuntimeRegionPlanner {
         private StaticPort output;
         private StaticPort downstreamInput;
         private StaticProjectionProof downstreamInputProjection;
-        private String downstreamInputResolutionAuthority = "";
-        private List<String> downstreamInputResolutionEvidenceEdgeIds =
-                Collections.emptyList();
 
         private UpstreamEdgeBinding(StaticRegionEdge edge,
                                     InstanceEvidence upstream,
@@ -6806,8 +6679,8 @@ final class RuntimeRegionPlanner {
 
         private Map<String, Object> toMap() {
             Map<String, Object> result = object(
+                    "schemaVersion", 2,
                     "edgeId", edge.edgeId,
-                    "relation", "READ_FROM",
                     "fromRegion", edge.fromRegion,
                     "toRegion", edge.toRegion,
                     "fromRegionInstance", upstream.instanceId,
@@ -6816,79 +6689,9 @@ final class RuntimeRegionPlanner {
                     "toRootCallId", downstream.root.callId,
                     "fromOutputPort", output.portId,
                     "fromOutputCell", output.cell,
-                    "toInputPort", downstreamInput == null
-                            ? edge.toPort : downstreamInput.portId,
-                    "toInputCell", downstreamInput == null
-                            ? edge.toPort : downstreamInput.cell,
-                    "writerEventSeq", readFrom.writerEventSeq(),
-                    "readerEventSeq", readFrom.read.seq,
-                    "writerCallId", readFrom.writerCallId(),
-                    "writerSiteId", readFrom.writerSiteId(),
-                    "mutatorEnterSeq",
-                    readFrom.writeEvidence.mutation == null ? 0L
-                            : readFrom.writeEvidence.mutation.seq,
-                    "mutationCompletionSeq",
-                    readFrom.writeEvidence.completion == null ? 0L
-                            : readFrom.writeEvidence.completion.seq,
-                    "writerFieldReadSeq", readFrom.write.seq,
-                    "mutationInvocationId",
-                    readFrom.writeEvidence.mutation == null ? 0L
-                            : readFrom.writeEvidence.mutation.invocationId,
-                    "mutatorDeclaredCallee",
-                    readFrom.writeEvidence.mutation == null ? ""
-                            : readFrom.writeEvidence.mutation.declaredCallee,
-                    "mutatorRuntimeType",
-                    readFrom.writeEvidence.mutation == null ? ""
-                            : readFrom.writeEvidence.mutation.runtimeType,
-                    "mutationContractAuthority",
-                    readFrom.writeEvidence.mutation == null ? ""
-                            : CONTAINER_MUTATOR_CONTRACT_AUTHORITY,
-                    "writerOccurrence", upstream.runtimeOccurrence(
-                            readFrom.writeEvidence.mutation),
-                    "writeEvidenceKind", readFrom.writeEvidence.kind,
-                    "writeEvidenceAuthority",
-                    readFrom.writeEvidence.authority,
-                    "writerAssociationAuthority",
-                    readFrom.writeEvidence.associationAuthority,
-                    "containerMutationSemanticAssumption",
-                    readFrom.writeEvidence.semanticAssumption,
-                    "pathSignatureTruncationAssumption",
-                    readFrom.pathSignatureAssumption(),
-                    "writerPathSignatureComplete",
-                    readFrom.writerPathSignatureComplete,
-                    "readerPathSignatureComplete",
-                    readFrom.readerPathSignatureComplete,
-                    "field", readFrom.write.field,
-                    "receiverObjectId", readFrom.write.receiverObjectId,
-                    "valueObjectId", readFrom.write.valueObjectId,
-                    "readerValueObjectId", readFrom.read.valueObjectId,
-                    "fieldReceiverIdentityConfirmed", true,
-                    "fieldReceiverIdentityAuthority",
-                    PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY,
-                    "containerIdentityConfirmed",
-                    readFrom.containerIdentityConfirmed(),
-                    "containerIdentityAuthority",
-                    readFrom.containerIdentityConfirmed()
-                            ? PROCESS_LOCAL_OBJECT_IDENTITY_AUTHORITY : "",
-                    "orderAuthority", TRACE_ORDER_AUTHORITY,
-                    "orderConfirmed", true,
-                    "objectIdentityConfirmed",
-                    readFrom.write.receiverObjectId
-                            == readFrom.read.receiverObjectId,
-                    "selectionAuthority",
-                    "RUNTIME_CONFIRMED_READ_FROM");
-            result.put("rawFromPort", edge.fromPort);
-            result.put("rawToInputCell", edge.toPort);
-            result.put("canonicalOutputAliasUsed",
-                    edge.usesCanonicalOutput());
-            result.put("canonicalInputResolutionUsed",
-                    downstreamInput != null);
-            result.put("canonicalInputResolutionAuthority",
-                    downstreamInput == null ? ""
-                            : downstreamInputResolutionAuthority);
-            result.put("canonicalInputResolutionEvidenceEdgeIds",
-                    new ArrayList<>(
-                            downstreamInputResolutionEvidenceEdgeIds));
+                    "toInputPort", downstreamInput.portId,
+                    "toInputCell", downstreamInput.cell);
+            addReadFromEvidence(result, readFrom);
             result.put("inputProjectionUsed",
                     downstreamInputProjection != null);
             if (downstreamInputProjection != null) {

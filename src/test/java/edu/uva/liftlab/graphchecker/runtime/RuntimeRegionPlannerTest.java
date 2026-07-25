@@ -398,11 +398,9 @@ public class RuntimeRegionPlannerTest {
             Map<String, Object> edgeBinding =
                     ((List<Map<String, Object>>) upstream.get(
                             "edgeBindings")).get(0);
-            assertEquals(field, edgeBinding.get("rawToInputCell"));
-            assertEquals(Boolean.TRUE, edgeBinding.get(
-                    "canonicalInputResolutionUsed"));
-            assertEquals("UNIQUE_EXACT_TARGET_REGION_SYMBOLIC_INPUT_CELL_V1",
-                    edgeBinding.get("canonicalInputResolutionAuthority"));
+            assertEquals(field, edgeBinding.get("toInputCell"));
+            assertEquals("FIELD_ASSIGNMENT_READ_FROM_V1",
+                    edgeBinding.get("evidenceKind"));
             assertTrue(result.activationsJsonl().contains(
                     "\"writerEventSeq\":2"));
             assertEquals(1, derivedActivationCount(result));

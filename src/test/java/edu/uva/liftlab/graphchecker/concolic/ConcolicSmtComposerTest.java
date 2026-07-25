@@ -192,8 +192,9 @@ public class ConcolicSmtComposerTest {
             assertEquals("REGION.P.in.0", recursive.get(
                     "targetInput").getAsString());
             assertTrue(recursive.get("recursive").getAsBoolean());
-            assertEquals("RUNTIME_CONFIRMED_READ_FROM", recursive.get(
-                    "selectionAuthority").getAsString());
+            assertEquals("FIELD_ASSIGNMENT_READ_FROM_V1", recursive
+                    .getAsJsonObject("binding").get(
+                            "evidenceKind").getAsString());
             assertEquals(0, result.manifest.getAsJsonArray(
                     "unreachableBoundedUpstreamRegions").size());
             assertTrue(result.smtLib.contains(
@@ -516,22 +517,12 @@ public class ConcolicSmtComposerTest {
         relation.addProperty("fromEndpoint", from);
         relation.addProperty("toEndpoint", "REGION.F.in.0");
         relation.addProperty("guardSymbol", guard);
-        relation.addProperty("requiresOrder", true);
-        relation.addProperty("requiresObjectIdentity", true);
         JsonObject binding = new JsonObject();
-        binding.addProperty("relation", "READ_FROM");
-        binding.addProperty("relationKind", "READ_FROM");
-        binding.addProperty("orderConfirmed", true);
-        binding.addProperty("objectIdentityConfirmed", true);
-        binding.addProperty("fieldReceiverIdentityConfirmed", true);
-        binding.addProperty("writeSeq", writeSeq);
-        binding.addProperty("readSeq", readSeq);
+        binding.addProperty("evidenceKind",
+                "FIELD_ASSIGNMENT_READ_FROM_V1");
+        binding.addProperty("writerEventSeq", writeSeq);
+        binding.addProperty("readerEventSeq", readSeq);
         binding.addProperty("receiverObjectId", 41);
-        binding.addProperty("writeEvidenceKind", "FIELD_ASSIGNMENT");
-        binding.addProperty("writeEvidenceAuthority",
-                "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1");
-        binding.addProperty("orderAuthority",
-                "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1");
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
         relation.add("selectedBindings", bindings);
@@ -820,8 +811,8 @@ public class ConcolicSmtComposerTest {
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", "EDGE." + fromRegion + ".TO."
                 + toRegion);
-        binding.addProperty("relation", "READ_FROM");
-        binding.addProperty("relationKind", "READ_FROM");
+        binding.addProperty("evidenceKind",
+                "FIELD_ASSIGNMENT_READ_FROM_V1");
         binding.addProperty("fromRegion", fromRegion);
         binding.addProperty("toRegion", toRegion);
         binding.addProperty("fromRegionInstance", fromInstance);
@@ -831,16 +822,6 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("writerEventSeq", writeSeq);
         binding.addProperty("readerEventSeq", readSeq);
         binding.addProperty("receiverObjectId", receiver);
-        binding.addProperty("orderConfirmed", true);
-        binding.addProperty("objectIdentityConfirmed", true);
-        binding.addProperty("fieldReceiverIdentityConfirmed", true);
-        binding.addProperty("writeEvidenceKind", "FIELD_ASSIGNMENT");
-        binding.addProperty("writeEvidenceAuthority",
-                "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1");
-        binding.addProperty("orderAuthority",
-                "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1");
-        binding.addProperty("selectionAuthority",
-                "RUNTIME_CONFIRMED_READ_FROM");
         return binding;
     }
 
@@ -851,8 +832,8 @@ public class ConcolicSmtComposerTest {
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", "EDGE." + fromRegion + ".TO."
                 + toRegion);
-        binding.addProperty("relation", "EQUALITY");
-        binding.addProperty("relationKind", "EQUALITY");
+        binding.addProperty("evidenceKind",
+                "COMPLETE_VALUE_EQUALITY_V1");
         binding.addProperty("fromRegion", fromRegion);
         binding.addProperty("toRegion", toRegion);
         binding.addProperty("fromRegionInstance", fromInstance);
@@ -861,17 +842,8 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("toInputPort", toInput);
         binding.addProperty("writerEventSeq", writerSeq);
         binding.addProperty("readerEventSeq", readerSeq);
-        binding.addProperty("orderConfirmed", true);
-        binding.addProperty("valueEqualityObserved", true);
-        binding.addProperty("valueEqualityAuthority",
-                "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
-        binding.addProperty("endpointOrderAuthority",
-                "GLOBAL_TRACE_ENDPOINT_SEQUENCE");
         binding.addProperty("valueFingerprint", "sha256:" + fromInstance
                 + ":" + toInstance + ":" + writerSeq + ":" + readerSeq);
-        binding.addProperty("selectionAuthority",
-                "RUNTIME_CONFIRMED_VALUE_EQUALITY");
-        binding.addProperty("objectIdentityRequired", false);
         return binding;
     }
 
@@ -2192,8 +2164,7 @@ public class ConcolicSmtComposerTest {
                 + "\"fromEndpoint\":\"REGION.P.out.0\","
                 + "\"toEndpoint\":\"REGION.F.in.0\","
                 + "\"selectedBindings\":[{"
-                + "\"relation\":\"READ_FROM\","
-                + "\"relationKind\":\"READ_FROM\","
+                + "\"evidenceKind\":\"FIELD_ASSIGNMENT_READ_FROM_V1\","
                 + "\"fromRegion\":\"REGION.P\","
                 + "\"toRegion\":\"REGION.F\","
                 + "\"fromRegionInstance\":"
@@ -2203,18 +2174,7 @@ public class ConcolicSmtComposerTest {
                 + "\"fromOutputPort\":\"REGION.P.out.0\","
                 + "\"toInputPort\":\"REGION.F.in.0\","
                 + "\"writerEventSeq\":10,\"readerEventSeq\":20,"
-                + "\"writeSeq\":10,\"readSeq\":20,"
-                + "\"receiverObjectId\":41,"
-                + "\"orderConfirmed\":true,"
-                + "\"objectIdentityConfirmed\":true,"
-                + "\"fieldReceiverIdentityConfirmed\":true,"
-                + "\"writeEvidenceKind\":\"FIELD_ASSIGNMENT\","
-                + "\"writeEvidenceAuthority\":"
-                + "\"RUNTIME_EXACT_FIELD_WRITE_EVENT_V1\","
-                + "\"orderAuthority\":"
-                + "\"GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1\","
-                + "\"selectionAuthority\":"
-                + "\"RUNTIME_CONFIRMED_READ_FROM\"}]}]}";
+                + "\"receiverObjectId\":41}]}]}";
         JsonObject fatal = new JsonObject();
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");

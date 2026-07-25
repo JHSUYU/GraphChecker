@@ -1763,12 +1763,6 @@ public final class ConcolicScheduler {
                 JsonObject state = relation(edge, from, to,
                         "VERSIONED_HEAP_READ_FROM");
                 consumer.addProof(state);
-                state.addProperty("requiresOrder",
-                        bool(edge, "requiresOrder", true));
-                state.addProperty("requiresObjectIdentity",
-                        bool(edge, "requiresObjectIdentity", true));
-                state.addProperty("confirmedReadFromPairCount",
-                        runtimeBindings(edge).size());
                 stateMerges.add(state);
             }
         }
@@ -1865,10 +1859,6 @@ public final class ConcolicScheduler {
         result.addProperty("fromCell", from.cell);
         result.addProperty("toEndpoint", to.id);
         result.addProperty("toCell", to.cell);
-        result.addProperty("mappingKind", string(edge, "mappingKind"));
-        result.addProperty("mappingAuthority",
-                string(edge, "mappingAuthority"));
-        result.addProperty("runtimeState", string(edge, "state"));
         result.add("runtimeBindings", runtimeBindings(edge).deepCopy());
         return result;
     }
@@ -2730,41 +2720,18 @@ public final class ConcolicScheduler {
                     String fromInstance = string(raw,
                             "fromRegionInstance");
                     String toInstance = string(raw, "toRegionInstance");
-                    long writer = firstLong(raw, "fromEndpointSeq",
-                            "writerEventSeq", "writeSeq");
-                    long reader = firstLong(raw, "toEndpointSeq",
-                            "readerEventSeq", "readSeq");
-                    String orderAuthority = firstNonBlank(string(raw,
-                            "endpointOrderAuthority"), string(relation,
-                            "endpointOrderAuthority"));
-                    String correlationAuthority = firstNonBlank(string(raw,
-                            "endpointCorrelationAuthority"), string(relation,
-                            "endpointCorrelationAuthority"));
                     if (!instance.equals(fromInstance)
                             || toInstance.isEmpty()
-                            || writer < 0L || reader <= writer
-                            || !bool(raw, "orderConfirmed", false)
                             || !AutomaticRegionEdge
-                            .VALUE_EQUALITY_ORDER_AUTHORITY.equals(
-                                    orderAuthority)
-                            || !bool(raw, "valueEqualityObserved", false)
-                            || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(
-                            string(raw, "valueEqualityAuthority"))
-                            || string(raw, "valueFingerprint").isEmpty()) {
+                            .trustedRuntimeValueEqualityEvidence(raw)) {
                         continue;
                     }
                     JsonObject normalized = new JsonObject();
-                    normalized.addProperty("schemaVersion", 1);
+                    normalized.addProperty("schemaVersion", 2);
                     normalized.addProperty("edgeId", string(relation,
                             "edgeId"));
-                    normalized.addProperty("relation", "EQUALITY");
-                    normalized.addProperty("relationKind", "EQUALITY");
-                    normalized.addProperty("transportKind", string(
-                            relation, "transportKind"));
-                    normalized.addProperty("mappingKind", string(relation,
-                            "mappingKind"));
-                    normalized.addProperty("mappingAuthority", string(
-                            relation, "mappingAuthority"));
+                    normalized.addProperty("evidenceKind",
+                            AutomaticRegionEdge.COMPLETE_VALUE_EQUALITY);
                     normalized.addProperty("fromRegion", fromRegion);
                     normalized.addProperty("toRegion", toRegion);
                     normalized.addProperty("fromRegionInstance",
@@ -2776,43 +2743,23 @@ public final class ConcolicScheduler {
                             relation, "fromCell"));
                     normalized.addProperty("toInputCell", string(relation,
                             "toCell"));
-                    normalized.addProperty("writerEventSeq", writer);
-                    normalized.addProperty("readerEventSeq", reader);
-                    normalized.addProperty("fromEndpointSeq", writer);
-                    normalized.addProperty("toEndpointSeq", reader);
-                    normalized.addProperty("orderConfirmed", true);
-                    normalized.addProperty("valueEqualityObserved", true);
-                    normalized.addProperty("valueEqualityAuthority",
-                            "RUNTIME_COMPLETE_VALUE_FINGERPRINT");
+                    normalized.addProperty("writerEventSeq",
+                            raw.get("writerEventSeq").getAsLong());
+                    normalized.addProperty("readerEventSeq",
+                            raw.get("readerEventSeq").getAsLong());
                     normalized.addProperty("valueFingerprint", string(raw,
                             "valueFingerprint"));
-                    normalized.addProperty("endpointOrderAuthority",
-                            orderAuthority);
+                    String correlationAuthority = string(raw,
+                            "correlationAuthority");
                     if (!correlationAuthority.isEmpty()) {
-                        normalized.addProperty("endpointCorrelationAuthority",
+                        normalized.addProperty("correlationAuthority",
                                 correlationAuthority);
                     }
-                    normalized.addProperty("selectionAuthority",
-                            "RUNTIME_CONFIRMED_VALUE_EQUALITY");
-                    copyIfPresent(raw, normalized, "test", "fromProcess",
-                            "fromThreadId", "toProcess", "toThreadId",
-                            "fromFingerprintSource", "toFingerprintSource");
                     addUniqueBinding(bindings, normalized);
                 }
             }
             if (bindings.size() > 0) {
                 activation.add("edgeBindings", bindings);
-            }
-        }
-
-        private static void copyIfPresent(JsonObject source,
-                                          JsonObject target,
-                                          String... fields) {
-            for (String field : fields) {
-                JsonElement value = source.get(field);
-                if (value != null && !value.isJsonNull()) {
-                    target.add(field, value.deepCopy());
-                }
             }
         }
 
@@ -2837,14 +2784,10 @@ public final class ConcolicScheduler {
         /** Chooses one stable nearest ordered pair for a semantic transfer. */
         private static int compareRuntimeEqualityWitness(JsonObject left,
                                                          JsonObject right) {
-            long leftWriter = firstLong(left, "writerEventSeq", "writeSeq",
-                    "fromEndpointSeq");
-            long leftReader = firstLong(left, "readerEventSeq", "readSeq",
-                    "toEndpointSeq");
-            long rightWriter = firstLong(right, "writerEventSeq", "writeSeq",
-                    "fromEndpointSeq");
-            long rightReader = firstLong(right, "readerEventSeq", "readSeq",
-                    "toEndpointSeq");
+            long leftWriter = firstLong(left, "writerEventSeq");
+            long leftReader = firstLong(left, "readerEventSeq");
+            long rightWriter = firstLong(right, "writerEventSeq");
+            long rightReader = firstLong(right, "readerEventSeq");
             int compared = Long.compare(leftReader - leftWriter,
                     rightReader - rightWriter);
             if (compared != 0) return compared;
@@ -2858,7 +2801,7 @@ public final class ConcolicScheduler {
 
         private static String bindingIdentity(JsonObject binding) {
             return string(binding, "edgeId") + "\n"
-                    + string(binding, "relationKind") + "\n"
+                    + string(binding, "evidenceKind") + "\n"
                     + string(binding, "fromRegionInstance") + "\n"
                     + string(binding, "toRegionInstance") + "\n"
                     + string(binding, "fromOutputPort") + "\n"
@@ -2897,8 +2840,6 @@ public final class ConcolicScheduler {
                 value.addProperty("canonicalSymbol",
                         "SELECTED.EQ." + equalityIndex++);
                 value.add("members", members);
-                value.addProperty("selectionAuthority",
-                        "INSTANCE_MATCHED_COMPLETE_RUNTIME_FINGERPRINT");
                 equality.add(value);
             }
             JsonArray states = new JsonArray();
@@ -2974,18 +2915,13 @@ public final class ConcolicScheduler {
                     continue;
                 }
                 if (requireHeapWitness
-                        && (!binding.has("writeSeq")
-                        || !binding.has("readSeq")
-                        || !binding.has("receiverObjectId")
-                        || !AutomaticRegionEdge
-                        .trustedReadFromEvidence(binding))) {
+                        && !AutomaticRegionEdge
+                        .trustedReadFromEvidence(binding)) {
                     continue;
                 }
                 if (!requireHeapWitness
-                        && (!bool(binding, "valueEqualityObserved", false)
-                        || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(
-                        string(binding, "valueEqualityAuthority"))
-                        || string(binding, "valueFingerprint").isEmpty())) {
+                        && !AutomaticRegionEdge
+                        .trustedRuntimeValueEqualityEvidence(binding)) {
                     continue;
                 }
                 result.add(binding.deepCopy());

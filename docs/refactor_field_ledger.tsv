@@ -89,6 +89,16 @@ activation	pathSignatureTruncated	RuntimeRegionPlanner	Scheduler	matrix	admissio
 activation	containedCallTreeTruncated	RuntimeRegionPlanner	Scheduler	matrix	admission.blockers	CUTOVER	3
 activation	runtimeGaps	RuntimeRegionPlanner	Scheduler	matrix	admission.blockers	CUTOVER	3
 activation	replayMode	RuntimeRegionPlanner	none	matrix	admission.mode	CUTOVER	3
+runtime-edge	relation/relationKind	RuntimeRegionPlanner/Scheduler	Composer	none	evidenceKind	CUTOVER	3
+runtime-edge	orderConfirmed	RuntimeRegionPlanner/Scheduler	Composer	none	valid evidenceKind payload	CUTOVER	3
+runtime-edge	valueEqualityObserved	RuntimeRegionPlanner	Scheduler	none	COMPLETE_VALUE_EQUALITY_V1	CUTOVER	3
+runtime-edge	valueEqualityAuthority	RuntimeRegionPlanner	Scheduler	none	COMPLETE_VALUE_EQUALITY_V1	CUTOVER	3
+runtime-edge	writeEvidenceKind	RuntimeRegionPlanner	Scheduler/Composer	none	read-from evidenceKind	CUTOVER	3
+runtime-edge	writeEvidenceAuthority	RuntimeRegionPlanner	Scheduler/Composer	none	read-from evidenceKind	CUTOVER	3
+runtime-edge	fromEndpointSeq/toEndpointSeq	RuntimeRegionPlanner	Scheduler/Composer	none	writerEventSeq/readerEventSeq	CUTOVER	3
+runtime-edge	order/identity authority mirrors	RuntimeRegionPlanner	Scheduler/Composer	none	typed evidence payload	CUTOVER	3
+runtime-edge	path-completeness mirrors	RuntimeRegionPlanner	none	none	exact event evidence	DELETE	3
+runtime-edge	objectIdentityConfirmed	RuntimeRegionPlanner	Scheduler/Composer	none	nonzero receiver/value identity payload	CUTOVER	3
 trace	timeNanos	CausynthTraceRecorder	RuntimeRegionPlanner/tests	none	event order sequence	DELETE_AFTER_INDEX_AUDIT	4
 trace	test	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
 trace	process	CausynthTraceRecorder	RuntimeRegionPlanner	none	run-level context	CUTOVER	4
@@ -104,7 +114,7 @@ correctness	sourceActivationId	RegionPathWorklist	solver/verifier	none	not deriv
 correctness	dynamicFieldBindings	Runtime/Importer	worklist/replay/composer	none	not derivable	KEEP	-
 correctness	branchReplayContract	Scheduler/worklist	runtime/importer/verifier	none	not derivable	KEEP	-
 correctness	solverPathContext	worklist	solver/composer	none	not derivable	KEEP	-
-correctness	writerEventSeq/readSeq	RuntimeRegionPlanner	Scheduler/Composer	matrix	not derivable	KEEP	-
+correctness	writerEventSeq/readerEventSeq	RuntimeRegionPlanner	Scheduler/Composer	matrix	not derivable	KEEP	-
 correctness	objectIdentity/fingerprint	RuntimeRegionPlanner	Scheduler/Composer	matrix	not derivable	KEEP	-
 correctness	failClosedGaps	all stages	next stage/run.sh	run.sh,matrix	not derivable	KEEP_AND_UNIFY	5
 correctness	CANDIDATE_ONLY	Composer/result builder	final consumers	matrix	not derivable	KEEP	-

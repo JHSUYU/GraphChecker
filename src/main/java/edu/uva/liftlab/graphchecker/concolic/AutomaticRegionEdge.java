@@ -16,15 +16,12 @@ public final class AutomaticRegionEdge {
     static final int RUNTIME_EDGE_SCHEMA_VERSION = 2;
     static final String RUNTIME_EDGE_KIND =
             "RUNTIME_REGION_EDGE_EVIDENCE";
-    static final String CONTAINER_MUTATION_READ_FROM_AUTHORITY =
-            "RUNTIME_EXACT_FIELD_OWNER_AND_CONTAINER_RECEIVER_IDENTITY_"
-                    + "COMPLETED_MUTATION_BEFORE_READ_V1";
-    static final String CONTAINER_MUTATOR_CONTRACT_AUTHORITY =
-            "DECLARED_CALLEE_MUTATOR_METHOD_NAME_ALLOWLIST_V1";
-    static final String TRACE_ORDER_AUTHORITY =
-            "GLOBAL_RECORDER_MONOTONIC_SEQUENCE_ORDER_V1";
-    static final String VALUE_EQUALITY_ORDER_AUTHORITY =
-            "GLOBAL_TRACE_ENDPOINT_SEQUENCE";
+    static final String COMPLETE_VALUE_EQUALITY =
+            "COMPLETE_VALUE_EQUALITY_V1";
+    static final String FIELD_ASSIGNMENT_READ_FROM =
+            "FIELD_ASSIGNMENT_READ_FROM_V1";
+    static final String CONTAINER_MUTATION_READ_FROM =
+            "CONTAINER_MUTATION_READ_FROM_V1";
 
     private AutomaticRegionEdge() {
     }
@@ -93,10 +90,7 @@ public final class AutomaticRegionEdge {
      * the same process-local container identity on both field reads.
      */
     public static boolean trustedRuntimeReadFromBinding(JsonObject binding) {
-        return binding != null
-                && "RUNTIME_CONFIRMED_READ_FROM".equals(string(binding,
-                "selectionAuthority"))
-                && trustedReadFromEvidence(binding);
+        return trustedReadFromEvidence(binding);
     }
 
     /**
@@ -111,26 +105,17 @@ public final class AutomaticRegionEdge {
     public static boolean trustedRuntimeValueEqualityBinding(
             JsonObject binding) {
         if (binding == null
-                || !"RUNTIME_CONFIRMED_VALUE_EQUALITY".equals(string(
-                binding, "selectionAuthority"))
-                || !"EQUALITY".equals(string(binding, "relationKind"))
+                || !COMPLETE_VALUE_EQUALITY.equals(string(binding,
+                "evidenceKind"))
                 || string(binding, "fromRegionInstance").isEmpty()
                 || string(binding, "toRegionInstance").isEmpty()
                 || string(binding, "fromOutputPort").isEmpty()
                 || string(binding, "toInputPort").isEmpty()
-                || !bool(binding, "valueEqualityObserved", false)
-                || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(string(
-                binding, "valueEqualityAuthority"))
-                || string(binding, "valueFingerprint").isEmpty()
-                || !VALUE_EQUALITY_ORDER_AUTHORITY.equals(string(binding,
-                "endpointOrderAuthority"))
-                || !bool(binding, "orderConfirmed", false)) {
+                || string(binding, "valueFingerprint").isEmpty()) {
             return false;
         }
-        long writer = firstLong(binding, "writerEventSeq", "writeSeq",
-                "fromEndpointSeq", "fromEventSeq");
-        long reader = firstLong(binding, "readerEventSeq", "readSeq",
-                "toEndpointSeq", "toEventSeq");
+        long writer = longInteger(binding, "writerEventSeq", -1L);
+        long reader = longInteger(binding, "readerEventSeq", -1L);
         return writer >= 0L && reader > writer;
     }
 
@@ -141,21 +126,15 @@ public final class AutomaticRegionEdge {
     public static boolean trustedRuntimeValueEqualityEvidence(
             JsonObject evidence) {
         if (evidence == null
+                || !COMPLETE_VALUE_EQUALITY.equals(string(evidence,
+                "evidenceKind"))
                 || string(evidence, "fromRegionInstance").isEmpty()
                 || string(evidence, "toRegionInstance").isEmpty()
-                || !bool(evidence, "valueEqualityObserved", false)
-                || !"RUNTIME_COMPLETE_VALUE_FINGERPRINT".equals(string(
-                evidence, "valueEqualityAuthority"))
-                || string(evidence, "valueFingerprint").isEmpty()
-                || !VALUE_EQUALITY_ORDER_AUTHORITY.equals(string(evidence,
-                "endpointOrderAuthority"))
-                || !bool(evidence, "orderConfirmed", false)) {
+                || string(evidence, "valueFingerprint").isEmpty()) {
             return false;
         }
-        long writer = firstLong(evidence, "fromEndpointSeq",
-                "writerEventSeq", "writeSeq", "fromEventSeq");
-        long reader = firstLong(evidence, "toEndpointSeq",
-                "readerEventSeq", "readSeq", "toEventSeq");
+        long writer = longInteger(evidence, "writerEventSeq", -1L);
+        long reader = longInteger(evidence, "readerEventSeq", -1L);
         return writer >= 0L && reader > writer;
     }
 
@@ -168,29 +147,14 @@ public final class AutomaticRegionEdge {
 
     public static boolean trustedReadFromEvidence(JsonObject evidence) {
         if (evidence == null) return false;
-        String kind = string(evidence, "writeEvidenceKind");
-        if ("FIELD_ASSIGNMENT".equals(kind)) {
-            long writer = firstLong(evidence, "writerEventSeq", "writeSeq");
-            long reader = firstLong(evidence, "readerEventSeq", "readSeq");
-            return "RUNTIME_EXACT_FIELD_WRITE_EVENT_V1".equals(string(
-                    evidence, "writeEvidenceAuthority"))
-                    && TRACE_ORDER_AUTHORITY.equals(string(evidence,
-                    "orderAuthority"))
-                    && bool(evidence, "orderConfirmed", false)
-                    && bool(evidence, "fieldReceiverIdentityConfirmed", false)
-                    && longInteger(evidence, "receiverObjectId", 0L) != 0L
+        String kind = string(evidence, "evidenceKind");
+        long writer = longInteger(evidence, "writerEventSeq", -1L);
+        long reader = longInteger(evidence, "readerEventSeq", -1L);
+        if (FIELD_ASSIGNMENT_READ_FROM.equals(kind)) {
+            return longInteger(evidence, "receiverObjectId", 0L) != 0L
                     && writer >= 0L && reader > writer;
         }
-        if (!"FIELD_CONTAINER_MUTATION".equals(kind)
-                || !CONTAINER_MUTATION_READ_FROM_AUTHORITY.equals(string(
-                evidence, "writeEvidenceAuthority"))
-                || !CONTAINER_MUTATOR_CONTRACT_AUTHORITY.equals(string(
-                evidence, "mutationContractAuthority"))
-                || !TRACE_ORDER_AUTHORITY.equals(string(evidence,
-                "orderAuthority"))
-                || !bool(evidence, "orderConfirmed", false)
-                || !bool(evidence, "containerIdentityConfirmed", false)
-                || !bool(evidence, "fieldReceiverIdentityConfirmed", false)
+        if (!CONTAINER_MUTATION_READ_FROM.equals(kind)
                 || string(evidence, "mutatorDeclaredCallee").isEmpty()) {
             return false;
         }
@@ -198,8 +162,6 @@ public final class AutomaticRegionEdge {
         long enter = longInteger(evidence, "mutatorEnterSeq", -1L);
         long completion = longInteger(evidence,
                 "mutationCompletionSeq", -1L);
-        long writer = firstLong(evidence, "writerEventSeq", "writeSeq");
-        long reader = firstLong(evidence, "readerEventSeq", "readSeq");
         long fieldReceiver = longInteger(evidence,
                 "receiverObjectId", 0L);
         long writerContainer = longInteger(evidence, "valueObjectId", 0L);
@@ -224,18 +186,6 @@ public final class AutomaticRegionEdge {
         }
     }
 
-    private static boolean bool(JsonObject object, String name,
-                                boolean fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
     private static int integer(JsonObject object, String name, int fallback) {
         if (object == null) return fallback;
         JsonElement value = object.get(name);
@@ -257,15 +207,6 @@ public final class AutomaticRegionEdge {
         } catch (RuntimeException ignored) {
             return fallback;
         }
-    }
-
-    private static long firstLong(JsonObject object, String... names) {
-        for (String name : names) {
-            if (object != null && object.has(name)) {
-                return longInteger(object, name, -1L);
-            }
-        }
-        return -1L;
     }
 
 }
