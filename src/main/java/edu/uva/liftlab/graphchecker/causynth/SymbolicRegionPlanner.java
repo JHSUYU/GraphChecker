@@ -106,9 +106,7 @@ final class SymbolicRegionPlanner {
     static final class Result {
         final List<Map<String, Object>> regions = new ArrayList<>();
         final List<Map<String, Object>> regionEdges = new ArrayList<>();
-        final List<Map<String, Object>> modelSummaries = new ArrayList<>();
         final Map<String, Object> coverage = new LinkedHashMap<>();
-        final Map<String, Object> summary = new LinkedHashMap<>();
     }
 
     private static final class FieldSignature {
@@ -450,21 +448,6 @@ final class SymbolicRegionPlanner {
             buildRegionEdges(result);
             buildCoverageAudit(result);
 
-            Map<String, Integer> rootCounts = new LinkedHashMap<>();
-            for (Map<String, Object> region : result.regions) {
-                increment(rootCounts, string(region.get("rootMethod")));
-            }
-            result.summary.put("regionCount", result.regions.size());
-            result.summary.put("regionEdgeCount", result.regionEdges.size());
-            result.summary.put("seedAnchorCount", anchors.size());
-            result.summary.put("expandedAnchorCount", expandedAnchors.size());
-            result.summary.put("rootMethods", rootCounts);
-            result.summary.put("rootSelection", "RUNTIME_CALL_TREE");
-            result.summary.put("maxRegionMethods", MAX_REGION_METHODS);
-            result.summary.put("maxRegions", MAX_REGIONS);
-            result.summary.put("modelCount", result.modelSummaries.size());
-            result.summary.put("coverageComplete", result.coverage.get("complete"));
-            result.summary.put("precision", "STATIC_OVER_APPROXIMATION");
             return result;
         }
 
@@ -489,14 +472,9 @@ final class SymbolicRegionPlanner {
                             ignored -> new LinkedHashSet<>()).add(regionId);
                 }
             }
-            Set<String> modeledMethods = new LinkedHashSet<>();
-            for (Map<String, Object> model : result.modelSummaries) {
-                modeledMethods.add(string(model.get("method")));
-            }
             List<String> uncoveredMethods = new ArrayList<>();
             for (String method : plansByMethod.keySet()) {
-                if (!regionsByMethod.containsKey(method)
-                        && !modeledMethods.contains(method)) {
+                if (!regionsByMethod.containsKey(method)) {
                     uncoveredMethods.add(method);
                 }
             }
@@ -510,7 +488,6 @@ final class SymbolicRegionPlanner {
             }
             int internalEdges = 0;
             int interRegionEdges = 0;
-            int modelEdges = 0;
             int alternativePathEdges = 0;
             List<String> uncoveredEdges = new ArrayList<>();
             for (Map<String, Object> edge : graph.edges()) {
@@ -524,18 +501,12 @@ final class SymbolicRegionPlanner {
                     }
                     continue;
                 }
-                if (modeledMethods.contains(method)) {
-                    modelEdges++;
-                    continue;
-                }
                 String callee = string(edge.get("invoke"));
                 if (callee.isEmpty() || !plansByMethod.containsKey(callee)) {
                     callee = invokedMethodFromCells(edge);
                 }
                 if (!callee.isEmpty() && plansByMethod.containsKey(callee)) {
-                    if (modeledMethods.contains(callee)) {
-                        modelEdges++;
-                    } else if (shareRegion(method, callee, regionsByMethod,
+                    if (shareRegion(method, callee, regionsByMethod,
                             methodsByRegion)) {
                         internalEdges++;
                     } else if (alternativeNonCausalEdge(edge,
@@ -547,8 +518,6 @@ final class SymbolicRegionPlanner {
                     }
                 } else if (regionsByMethod.containsKey(method)) {
                     internalEdges++;
-                } else if (modeledMethods.contains(method)) {
-                    modelEdges++;
                 } else {
                     uncoveredEdges.add(string(edge.get("id")) + ":" + method);
                 }
@@ -558,13 +527,11 @@ final class SymbolicRegionPlanner {
             boolean complete = uncoveredMethods.isEmpty() && uncoveredEdges.isEmpty();
             result.coverage.put("methodPlanCount", plansByMethod.size());
             result.coverage.put("regionCoveredMethodCount", regionsByMethod.size());
-            result.coverage.put("modeledMethodCount", modeledMethods.size());
             result.coverage.put("uncoveredMethodCount", uncoveredMethods.size());
             result.coverage.put("uncoveredMethods", uncoveredMethods);
             result.coverage.put("staticEdgeCount", graph.edges().size());
             result.coverage.put("internalEdgeCount", internalEdges);
             result.coverage.put("interRegionEdgeCount", interRegionEdges);
-            result.coverage.put("modelEdgeCount", modelEdges);
             result.coverage.put("alternativePathEdgeCount",
                     alternativePathEdges);
             result.coverage.put("uncoveredEdgeCount", uncoveredEdges.size());
@@ -1333,7 +1300,6 @@ final class SymbolicRegionPlanner {
             Set<String> produced = new LinkedHashSet<>();
             Set<String> inputCandidates = new LinkedHashSet<>();
             Set<String> outputCandidates = new LinkedHashSet<>();
-            Set<String> models = new LinkedHashSet<>();
             Set<String> pathAssumptions = new LinkedHashSet<>();
             Set<String> exploreBranches = new LinkedHashSet<>();
             List<Map<String, Object>> branchPolicies = new ArrayList<>();
@@ -1358,7 +1324,6 @@ final class SymbolicRegionPlanner {
                         states.add(output);
                     }
                 }
-                models.addAll(strings(plan.get("requiredModels")));
                 if (!draft.exceptionDirected) {
                     sites.addAll(strings(plan.get("siteIds")));
                 }
@@ -1549,7 +1514,6 @@ final class SymbolicRegionPlanner {
                     "pathAssumptionSites", limitedSorted(pathAssumptions, MAX_PORTS),
                     "exploreBranchSites", limitedSorted(exploreBranches, MAX_PORTS),
                     "branchPolicies", branchPolicies,
-                    "models", limitedSorted(models, MAX_PORTS),
                     "methodCount", draft.methods.size(),
                     "methodLimit", MAX_REGION_METHODS,
                     "methodBudgetTruncated", draft.methodBudgetTruncated,
@@ -7264,7 +7228,6 @@ final class SymbolicRegionPlanner {
                                 // promote the candidate only after observing a
                                 // complete value fingerprint on both endpoints.
                                 "relation", "",
-                                "candidateRelation", "EQUALITY",
                                 "requiresOrder", true,
                                 "mappingKind", staticMappingKind,
                                 "mappingAuthority",
@@ -7775,12 +7738,6 @@ final class SymbolicRegionPlanner {
                     "switchArmIdentityAuthority", string(edge.get(
                             "switchArmIdentityAuthority")),
                     "role", "REACHABILITY",
-                    "sourceEdgeId", string(edge.get("id")),
-                    "sourceEdgeIds", branchPolicyEdgeValues(policyEdges,
-                            "id"),
-                    "sourceEdgeKind", string(edge.get("kind")),
-                    "sourceEdgeKinds", branchPolicyEdgeValues(policyEdges,
-                            "kind"),
                     "controlDependenceAuthority", string(edge.get(
                             "controlDependenceAuthority")),
                     "controlDependenceAuthorities",

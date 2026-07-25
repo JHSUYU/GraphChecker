@@ -87,7 +87,7 @@ public final class ConcolicScheduler {
         Arguments arguments = Arguments.parse(args);
         Result result = schedule(arguments);
         System.out.println(GSON.toJson(result.summary));
-        if (result.jobs.isEmpty()) {
+        if (result.scheduledPrimaryCount == 0) {
             System.exit(2);
         }
     }
@@ -132,7 +132,6 @@ public final class ConcolicScheduler {
         Collections.sort(candidates, Candidate.ORDER);
 
         Result result = new Result();
-        result.mergePlan = mergePlan.json;
         Set<String> selectedRegions = new LinkedHashSet<>();
         Map<String, JsonObject> emittedActivationDefinitions =
                 new LinkedHashMap<>();
@@ -140,14 +139,14 @@ public final class ConcolicScheduler {
         int reachabilitySupportActivationCount = 0;
         int activationBundleJobCount = 0;
         for (Candidate candidate : candidates) {
-            if (result.jobs.size() >= arguments.maxJobs) {
+            if (result.scheduledPrimaryCount >= arguments.maxJobs) {
                 break;
             }
             if (!arguments.allowMultipleJobsPerRegion
                     && !selectedRegions.add(candidate.region.regionId)) {
                 continue;
             }
-            String scheduleId = "SCHEDULE." + result.jobs.size();
+            String scheduleId = "SCHEDULE." + result.scheduledPrimaryCount;
             MaterializationPlan materialization = candidate.materialization;
             JsonObject scheduledActivation = candidate.activation.deepCopy();
             mergePlan.attachOutboundValueEqualityBindings(
@@ -178,76 +177,35 @@ public final class ConcolicScheduler {
             }
             compactScheduledActivation(scheduledActivation);
 
-            JsonObject job = new JsonObject();
-            job.addProperty("scheduleId", scheduleId);
-            job.addProperty("phase", executionPhase);
-            job.addProperty("activationId", candidate.activationId);
-            job.addProperty("regionId", candidate.region.regionId);
-            job.addProperty("test", string(candidate.activation, "test"));
-            job.addProperty("rootMethod",
-                    string(candidate.activation, "rootMethod"));
-            job.addProperty("invocationOrdinal",
-                    integer(candidate.activation, "invocationOrdinal", 1));
-            job.addProperty("workloadKind", workloadKind(candidate, edges));
-            job.addProperty("selectionReason", candidate.reason);
-            job.add("captureGoal", goal.toJson());
-            job.addProperty("captureReady", materialization.ready);
             if (candidate.outputClosure) {
                 upstreamCaptureJobCount++;
-                job.add(OutputClosureContract.FIELD,
-                        candidate.outputContract.toJson());
-                job.addProperty("regionInstanceId",
-                        candidate.outputContract.producer()
-                                .regionInstanceId());
-                job.addProperty("rootCallId",
-                        candidate.outputContract.producer().rootCallId());
-                JsonElement edgeBindings = scheduledActivation.get(
-                        "edgeBindings");
-                job.add("edgeBindings", edgeBindings == null
-                        ? new JsonArray() : edgeBindings.deepCopy());
             }
-            job.add("materializations", materialization.actions.deepCopy());
-            job.add("symbolicContext",
-                    mergePlan.contextFor(candidate.region.regionId,
-                            string(candidate.activation, "regionInstanceId")));
             if (captured != null && !candidate.outputClosure) {
                 JsonObject query = branchQuery(candidate, captured,
                         mergePlan);
-                job.add("branchQuery", query);
-                if (object(query, "symbolicContext").size() > 0) {
-                    job.add("symbolicContext", object(query,
-                            "symbolicContext").deepCopy());
-                }
                 result.queries.add(query);
             }
             List<JsonObject> activationBundle = scheduledActivationBundle(
                     scheduledActivation, scheduleId);
-            JsonArray supportActivationIds = new JsonArray();
+            int supportCount = 0;
             for (JsonObject member : activationBundle) {
                 if ("REACHABILITY_SUPPORT".equals(string(member,
                         "activationBundleMemberRole"))) {
-                    supportActivationIds.add(string(member,
-                            "activationId"));
+                    supportCount++;
                 }
             }
-            int supportCount = supportActivationIds.size();
-            job.addProperty("reachabilitySupportActivationCount",
-                    supportCount);
-            job.add("reachabilitySupportActivationIds",
-                    supportActivationIds);
-            job.addProperty("activationSelectionRequired", supportCount > 0
-                    ? "ALL" : candidate.activationId);
             if (supportCount > 0) {
                 activationBundleJobCount++;
                 reachabilitySupportActivationCount += supportCount;
             }
-            result.jobs.add(job);
             appendUniqueActivationBundle(result.scheduledActivations,
                     emittedActivationDefinitions, activationBundle);
+            result.scheduledPrimaryCount++;
         }
 
         result.summary.addProperty("candidateCount", candidates.size());
-        result.summary.addProperty("scheduledJobCount", result.jobs.size());
+        result.summary.addProperty("scheduledJobCount",
+                result.scheduledPrimaryCount);
         result.summary.addProperty("scheduledActivationCount",
                 result.scheduledActivations.size());
         result.summary.addProperty("upstreamCaptureJobCount",
@@ -1895,17 +1853,8 @@ public final class ConcolicScheduler {
             equalityClasses.add(value);
         }
 
-        JsonObject json = new JsonObject();
-        json.addProperty("schemaVersion", 1);
-        json.add("equalityClasses", JSONL_GSON.toJsonTree(equalityClasses));
-        json.add("equalityRelations", JSONL_GSON.toJsonTree(equalityRelations));
-        json.add("versionedStateMerges",
-                JSONL_GSON.toJsonTree(directStateMerges));
-        json.add("alternativeWriterGroups",
-                JSONL_GSON.toJsonTree(alternativeWriterGroups));
-        json.addProperty("heapMergeSemantics",
-                "SINGLE_READ_FROM_OR_EXACTLY_ONE_GUARDED_ALTERNATIVE");
-        return new MergePlan(json, equalityClasses, directStateMerges,
+        return new MergePlan(equalityRelations, equalityClasses,
+                directStateMerges,
                 alternativeWriterGroups);
     }
 
@@ -2113,25 +2062,6 @@ public final class ConcolicScheduler {
         return query;
     }
 
-    private static String workloadKind(Candidate candidate,
-                                       List<JsonObject> edges) {
-        for (JsonObject edge : edges) {
-            if (!candidate.region.regionId.equals(string(edge, "toRegion"))) {
-                continue;
-            }
-            for (JsonElement item : runtimeBindings(edge)) {
-                if (!item.isJsonObject()) continue;
-                JsonObject evidence = item.getAsJsonObject();
-                if (bool(evidence, "differentThread", false)
-                        || !string(evidence, "fromProcess").equals(
-                        string(evidence, "toProcess"))) {
-                    return "LOCAL_MULTI_CONTEXT_UNIT_TEST";
-                }
-            }
-        }
-        return "LOCAL_UNIT_TEST";
-    }
-
     private static JsonArray runtimeBindings(JsonObject edge) {
         return array(edge, "bindings");
     }
@@ -2293,16 +2223,6 @@ public final class ConcolicScheduler {
             }
         }
         return "";
-    }
-
-    private static JsonElement firstElement(JsonObject object,
-                                            String... names) {
-        if (object == null) return null;
-        for (String name : names) {
-            JsonElement value = object.get(name);
-            if (value != null && !value.isJsonNull()) return value;
-        }
-        return null;
     }
 
     private static String safe(String value) {
@@ -2712,7 +2632,6 @@ public final class ConcolicScheduler {
         private final boolean outputClosure;
         private final OutputClosureContract outputContract;
         private final MaterializationPlan materialization;
-        private final String reason;
 
         private Candidate(JsonObject activation, String activationId,
                           Region region, TargetBranch target,
@@ -2727,11 +2646,6 @@ public final class ConcolicScheduler {
             this.outputClosure = outputContract != null;
             this.directed = this.outputClosure || !hasRequiredWitness;
             this.materialization = materialization;
-            this.reason = this.outputClosure
-                    ? "runtime-confirmed upstream region selected for output closure"
-                    : directed
-                    ? "runtime path reaches the branch but misses the static required outcome"
-                    : "static branch is explicitly explorable";
         }
     }
 
@@ -2762,15 +2676,16 @@ public final class ConcolicScheduler {
     }
 
     private static final class MergePlan {
-        private final JsonObject json;
+        private final List<JsonObject> equalityRelations;
         private final List<JsonObject> equalityClasses;
         private final List<JsonObject> stateMerges;
         private final List<JsonObject> alternativeWriterGroups;
 
-        private MergePlan(JsonObject json, List<JsonObject> equalityClasses,
+        private MergePlan(List<JsonObject> equalityRelations,
+                          List<JsonObject> equalityClasses,
                           List<JsonObject> stateMerges,
                           List<JsonObject> alternativeWriterGroups) {
-            this.json = json;
+            this.equalityRelations = equalityRelations;
             this.equalityClasses = equalityClasses;
             this.stateMerges = stateMerges;
             this.alternativeWriterGroups = alternativeWriterGroups;
@@ -2813,10 +2728,7 @@ public final class ConcolicScheduler {
                     ? Collections.<String>emptySet()
                     : outputClosure.outputPorts();
 
-            for (JsonElement relationElement : array(json,
-                    "equalityRelations")) {
-                if (!relationElement.isJsonObject()) continue;
-                JsonObject relation = relationElement.getAsJsonObject();
+            for (JsonObject relation : equalityRelations) {
                 String fromRegion = firstNonBlank(string(relation,
                         "fromRegion"), regionOfEndpoint(string(relation,
                         "fromEndpoint")));
@@ -2849,9 +2761,6 @@ public final class ConcolicScheduler {
                     String correlationAuthority = firstNonBlank(string(raw,
                             "endpointCorrelationAuthority"), string(relation,
                             "endpointCorrelationAuthority"));
-                    String discoveredExecution = firstNonBlank(string(raw,
-                            "discoveredExecutionId"), string(relation,
-                            "discoveredExecutionId"));
                     if (!instance.equals(fromInstance)
                             || toInstance.isEmpty()
                             || writer < 0L || reader <= writer
@@ -2904,23 +2813,8 @@ public final class ConcolicScheduler {
                         normalized.addProperty("endpointCorrelationAuthority",
                                 correlationAuthority);
                     }
-                    if (!discoveredExecution.isEmpty()) {
-                        normalized.addProperty("discoveredExecutionId",
-                                discoveredExecution);
-                    }
-                    JsonElement discoveredExecutions = firstElement(raw,
-                            "discoveredExecutionIds");
-                    if (discoveredExecutions == null) {
-                        discoveredExecutions = firstElement(relation,
-                                "discoveredExecutionIds");
-                    }
-                    if (discoveredExecutions != null) {
-                        normalized.add("discoveredExecutionIds",
-                                discoveredExecutions.deepCopy());
-                    }
                     normalized.addProperty("selectionAuthority",
                             "RUNTIME_CONFIRMED_VALUE_EQUALITY");
-                    normalized.addProperty("objectIdentityRequired", false);
                     copyIfPresent(raw, normalized, "test", "fromProcess",
                             "fromThreadId", "toProcess", "toThreadId",
                             "fromFingerprintSource", "toFingerprintSource");
@@ -2996,8 +2890,7 @@ public final class ConcolicScheduler {
         private JsonObject contextFor(String regionId, String regionInstanceId) {
             JsonObject context = new JsonObject();
             JsonArray equalityBindings = new JsonArray();
-            for (JsonElement element : array(json, "equalityRelations")) {
-                JsonObject value = element.getAsJsonObject();
+            for (JsonObject value : equalityRelations) {
                 if (!relevant(value, regionId)) {
                     continue;
                 }
@@ -3124,11 +3017,10 @@ public final class ConcolicScheduler {
     }
 
     public static final class Result {
-        public final List<JsonObject> jobs = new ArrayList<>();
         public final List<JsonObject> scheduledActivations = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
         public final JsonObject summary = new JsonObject();
-        public JsonObject mergePlan = new JsonObject();
+        public int scheduledPrimaryCount;
     }
 
     public static final class Arguments {

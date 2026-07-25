@@ -59,21 +59,18 @@ public class ConcolicSchedulerTest {
             ConcolicScheduler.Result result =
                     ConcolicScheduler.schedule(arguments);
 
-            assertEquals(1, result.jobs.size());
-            assertEquals("CAPTURE_OUTPUT_PATH", result.jobs.get(0)
-                    .get("phase").getAsString());
-            assertEquals("OUTPUT_CLOSURE", result.jobs.get(0)
+            assertEquals(1, result.scheduledPrimaryCount);
+            JsonObject scheduled = result.scheduledActivations.get(0);
+            assertEquals("CAPTURE_OUTPUT_PATH", scheduled
+                    .get("executionPhase").getAsString());
+            assertEquals("OUTPUT_CLOSURE", scheduled
                     .getAsJsonObject("captureGoal").get("kind")
                     .getAsString());
             assertEquals(0, result.queries.size());
             assertEquals(1, result.summary.get("upstreamCaptureJobCount")
                     .getAsInt());
-            assertTrue(result.jobs.get(0).has(OutputClosureContract.FIELD));
-            assertFalse(result.jobs.get(0).has("requestedOutput"));
-            assertTrue(result.scheduledActivations.get(0)
-                    .has(OutputClosureContract.FIELD));
-            assertFalse(result.scheduledActivations.get(0)
-                    .has("requestedOutput"));
+            assertTrue(scheduled.has(OutputClosureContract.FIELD));
+            assertFalse(scheduled.has("requestedOutput"));
 
             JsonObject observedMapPrestate = activation.deepCopy();
             JsonObject mapInput = new JsonObject();
@@ -115,7 +112,8 @@ public class ConcolicSchedulerTest {
                             StandardCharsets.UTF_8));
             ConcolicScheduler.Result blocked =
                     ConcolicScheduler.schedule(arguments);
-            assertFalse(blocked.jobs.get(0).get("captureReady")
+            assertFalse(blocked.scheduledActivations.get(0)
+                    .get("schedulerReady")
                     .getAsBoolean());
 
             incompleteSlice.remove(OutputClosureContract.FIELD);
@@ -124,7 +122,7 @@ public class ConcolicSchedulerTest {
                             StandardCharsets.UTF_8));
             ConcolicScheduler.Result missingNestedSlice =
                     ConcolicScheduler.schedule(arguments);
-            assertEquals(0, missingNestedSlice.jobs.size());
+            assertEquals(0, missingNestedSlice.scheduledPrimaryCount);
             assertFalse(blocked.scheduledActivations.get(0)
                     .get("schedulerReady").getAsBoolean());
 
@@ -145,7 +143,8 @@ public class ConcolicSchedulerTest {
                     (deferred + "\n").getBytes(StandardCharsets.UTF_8));
             ConcolicScheduler.Result deferredClosure =
                     ConcolicScheduler.schedule(arguments);
-            assertTrue(deferredClosure.jobs.get(0).get("captureReady")
+            assertTrue(deferredClosure.scheduledActivations.get(0)
+                    .get("schedulerReady")
                     .getAsBoolean());
             assertEquals(1, deferredClosure.scheduledActivations.get(0)
                     .getAsJsonArray("concreteFallbacks").size());
@@ -258,14 +257,12 @@ public class ConcolicSchedulerTest {
             ConcolicScheduler.Result result =
                     ConcolicScheduler.schedule(arguments);
 
-            assertEquals(1, result.jobs.size());
-            assertTrue(result.jobs.get(0).has(OutputClosureContract.FIELD));
-            assertFalse(result.jobs.get(0).has("requestedOutput"));
-            assertEquals(2, OutputClosureCodec.decode(result.jobs.get(0))
-                    .members().size());
+            assertEquals(1, result.scheduledPrimaryCount);
             JsonObject scheduled = result.scheduledActivations.get(0);
             assertTrue(scheduled.has(OutputClosureContract.FIELD));
             assertFalse(scheduled.has("requestedOutput"));
+            assertEquals(2, OutputClosureCodec.decode(scheduled)
+                    .members().size());
             assertFalse(scheduled.has("requestedOutputSlice"));
             assertFalse(scheduled.has("requestedOutputCapture"));
             assertFalse(scheduled.has("outputs"));

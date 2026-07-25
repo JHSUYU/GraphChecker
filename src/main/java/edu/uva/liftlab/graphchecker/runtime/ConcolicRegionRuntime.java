@@ -403,7 +403,7 @@ public final class ConcolicRegionRuntime {
             pathConditionPaused = true;
             token = TOKEN_COUNTER.incrementAndGet();
             ActiveRegion active = new ActiveRegion(token, activation, receiver,
-                    Thread.currentThread(), System.nanoTime());
+                    Thread.currentThread());
             ACTIVE.put(token, active);
             CURRENT_TOKEN.set(token);
             symbolizeReceiverFields(active, api);
@@ -476,7 +476,7 @@ public final class ConcolicRegionRuntime {
         try {
             token = TOKEN_COUNTER.incrementAndGet();
             ActiveRegion active = new ActiveRegion(token, activation,
-                    receiver, Thread.currentThread(), System.nanoTime());
+                    receiver, Thread.currentThread());
             ACTIVE.put(token, active);
             CURRENT_TOKEN.set(token);
             return token;
@@ -3093,7 +3093,7 @@ public final class ConcolicRegionRuntime {
     /** Normal region exit. */
     public static void exitRegion(long token, Object returnValue,
                                   String primitiveValue) {
-        finish(token, "NORMAL", "", returnValue, primitiveValue);
+        finish(token, "NORMAL", "", returnValue);
     }
 
     /**
@@ -3118,7 +3118,7 @@ public final class ConcolicRegionRuntime {
     public static void throwRegion(long token, Throwable throwable) {
         finish(token, "THROW",
                 throwable == null ? "" : throwable.getClass().getName(),
-                throwable, "");
+                throwable);
     }
 
     /**
@@ -3867,8 +3867,8 @@ public final class ConcolicRegionRuntime {
         return key == expectedKey ? left.toString() : "";
     }
 
-    private static void finish(long token, String exitKind, String exceptionType,
-                               Object output, String primitiveValue) {
+    private static void finish(long token, String exitKind,
+                               String exceptionType, Object output) {
         ActiveRegion active = ownerRegion(token);
         if (active == null || !active.finished.compareAndSet(false, true)
                 || !ACTIVE.remove(token, active)) {
@@ -3880,7 +3880,7 @@ public final class ConcolicRegionRuntime {
         clearAccessorCallContexts(token);
         if (!active.engineBacked) {
             finishConcreteReplay(active, token, exitKind, exceptionType,
-                    output, primitiveValue);
+                    output);
             return;
         }
         JsonObject result = new JsonObject();
@@ -3893,7 +3893,7 @@ public final class ConcolicRegionRuntime {
             api.pausePathCondition();
             populateCompletedResult(result, active, "SYMBOLIC_CONCOLIC",
                     "GRAPH_CHECKER_RUNTIME_HOOKS_PAUSED_V1", exitKind,
-                    exceptionType, output, primitiveValue, true);
+                    exceptionType, output, true);
             try {
                 String expression = api.expression(output);
                 result.add("rootOutputExpression", parseJson(expression));
@@ -3937,7 +3937,7 @@ public final class ConcolicRegionRuntime {
     private static void populateCompletedResult(
             JsonObject result, ActiveRegion active, String executionMode,
             String isolationPolicy, String exitKind, String exceptionType,
-            Object output, String primitiveValue, boolean symbolicInputs) {
+            Object output, boolean symbolicInputs) {
         active.verifyRootMapProjectionOutputs(output, exitKind);
         result.addProperty("event", "CONCOLIC_REGION_RESULT");
         result.addProperty("schemaVersion", 1);
@@ -3946,20 +3946,12 @@ public final class ConcolicRegionRuntime {
         result.addProperty("activationId", active.activation.activationId);
         result.addProperty("regionId", active.activation.regionId);
         result.addProperty("rootMethod", active.activation.rootMethod);
-        result.addProperty("test", active.activation.test);
         addActivationReplayEvidence(result, active.activation);
-        result.addProperty("invocationOrdinal",
-                active.activation.invocationOrdinal);
-        result.addProperty("runtimeThread", active.thread.getName());
-        result.addProperty("runtimeThreadId", active.thread.getId());
         result.addProperty("exitKind", exitKind);
         result.addProperty("exceptionType", safe(exceptionType));
         if (output instanceof Throwable) {
             result.add("exceptionChain", exceptionChain((Throwable) output));
         }
-        result.addProperty("concretePrimitiveOutput", safe(primitiveValue));
-        result.addProperty("durationNanos",
-                System.nanoTime() - active.startNanos);
         if (active.pendingArrayFieldMaterialization != null) {
             active.addUnresolvedOnce(
                     active.pendingArrayFieldMaterialization.siteId
@@ -3967,9 +3959,7 @@ public final class ConcolicRegionRuntime {
             active.pendingArrayFieldMaterialization = null;
         }
         active.validateContainerElementFieldCoverage();
-        BranchReplayObservationValidator.Result replayValidation =
-                active.validateBranchReplayContract();
-        result.add("branchReplayValidation", replayValidation.toJson());
+        active.validateBranchReplayContract();
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", symbolicInputs
                 ? GSON.toJsonTree(active.symbolized) : new JsonArray());
@@ -4007,12 +3997,12 @@ public final class ConcolicRegionRuntime {
 
     private static void finishConcreteReplay(
             ActiveRegion active, long token, String exitKind,
-            String exceptionType, Object output, String primitiveValue) {
+            String exceptionType, Object output) {
         JsonObject result = new JsonObject();
         try {
             populateCompletedResult(result, active, "CONCRETE_REPLAY_ONLY",
                     "CONCRETE_REPLAY_NO_SYMBOLIC_ENGINE_V1", exitKind,
-                    exceptionType, output, primitiveValue, false);
+                    exceptionType, output, false);
             JsonObject summary = new JsonObject();
             summary.addProperty("schemaVersion", 1);
             summary.addProperty("engine", "CONCRETE_REPLAY_ONLY");
@@ -6943,7 +6933,6 @@ public final class ConcolicRegionRuntime {
         private final Activation activation;
         private final Object receiver;
         private final Thread thread;
-        private final long startNanos;
         private final boolean engineBacked;
         private final AtomicBoolean finished = new AtomicBoolean();
         private final List<String> symbolized = new ArrayList<>();
@@ -7033,12 +7022,11 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
 
         private ActiveRegion(long token, Activation activation, Object receiver,
-                             Thread thread, long startNanos) {
+                             Thread thread) {
             this.token = token;
             this.activation = activation;
             this.receiver = receiver;
             this.thread = thread;
-            this.startNanos = startNanos;
             this.engineBacked = !activation.concreteReplayOnly;
             if (!activation.modelAssignmentKeysUnique) {
                 addUnresolvedOnce("activation has duplicate or empty model "

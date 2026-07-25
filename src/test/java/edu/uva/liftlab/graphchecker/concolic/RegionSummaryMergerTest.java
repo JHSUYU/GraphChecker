@@ -34,7 +34,8 @@ public class RegionSummaryMergerTest {
                 .getAsJsonObject("regionRelation");
         assertEquals("GUARDED_PATH_MERGE",
                 relation.get("kind").getAsString());
-        assertEquals(2, relation.get("caseCount").getAsInt());
+        assertEquals(2, relation.getAsJsonArray("cases").size());
+        assertFalse(relation.has("caseCount"));
         for (com.google.gson.JsonElement element : relation.getAsJsonArray(
                 "cases")) {
             JsonObject pathCase = element.getAsJsonObject();
@@ -99,7 +100,7 @@ public class RegionSummaryMergerTest {
 
         JsonObject missingRelation = missingResult.summaries.get(0)
                 .getAsJsonObject("regionRelation");
-        assertEquals(0, missingRelation.get("caseCount").getAsInt());
+        assertEquals(0, missingRelation.getAsJsonArray("cases").size());
         assertFalse(missingRelation.get("complete").getAsBoolean());
         assertTrue(missingResult.manifest.getAsJsonArray(
                 "diagnostics").toString()
@@ -134,7 +135,7 @@ public class RegionSummaryMergerTest {
 
         JsonObject duplicateRelation = duplicateResult.summaries.get(0)
                 .getAsJsonObject("regionRelation");
-        assertEquals(1, duplicateRelation.get("caseCount").getAsInt());
+        assertEquals(1, duplicateRelation.getAsJsonArray("cases").size());
         assertFalse(duplicateRelation.get("complete").getAsBoolean());
         assertTrue(duplicateResult.manifest.getAsJsonArray(
                 "diagnostics").toString()

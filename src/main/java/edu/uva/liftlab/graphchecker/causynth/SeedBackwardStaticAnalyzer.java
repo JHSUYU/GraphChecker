@@ -136,15 +136,7 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final List<Map<String, Object>> edges = new ArrayList<>();
     private boolean globalStaticIndexBuilt;
-    private int globalStaticIndexCandidateMethodCount;
-    private int globalStaticIndexIndexedMethodCount;
-    private int globalStaticIndexUnreadableMethodCount;
     private int edgeCounter;
-    private int projectedPassEdgeChecks;
-    private int projectedPassUnsupported;
-    private int projectedPassNoSuffix;
-    private int projectedPassCandidates;
-    private int projectedPassEmitted;
 
     SeedBackwardStaticAnalyzer(CausynthTargetContext target) {
         this.target = target;
@@ -283,14 +275,6 @@ final class SeedBackwardStaticAnalyzer {
         result.targetResolved.put("exceptionTarget",
                 target.exceptionTargetSite.toMap());
         result.targetResolved.put("analysisScope", target.analysisScope);
-        result.seeds.add(object(
-                "id", "seed.exception_target",
-                "kind", "annotated_exception_target",
-                "exception", target.seedException,
-                "site", target.exceptionTargetSite.toMap(),
-                "discovery",
-                "CLASSFILE_ANNOTATION_THEN_STATIC_THROW_GUARD_AND_PAYLOAD"));
-
         Set<String> candidateClasses = findCandidateClasses();
         loadClasses(candidateClasses);
         initializeExceptionSeedAnchors();
@@ -298,35 +282,7 @@ final class SeedBackwardStaticAnalyzer {
         finishSeedDiscovery(result);
 
         result.edges.addAll(edges);
-        result.cells.addAll(collectCells());
         result.traceMethods.addAll(collectTraceMethods());
-        result.slices.put("strategy",
-                "annotation-directed backward static analysis from one exact exception construction");
-        result.slices.put("candidateClassCount", candidateClasses.size());
-        result.slices.put("rpcMappingCount", emittedRpcMappings.size());
-        result.slices.put("fieldWriterIndexedFieldCount",
-                fieldWritersByField.size());
-        result.slices.put("fieldWriterExpandedFieldCount",
-                expandedFieldWriterFields.size());
-        result.slices.put("constructorCallerIndexedConstructorCount",
-                constructorCallersByCallee.size());
-        result.slices.put("constructorCallerExpandedConstructorCount",
-                expandedConstructorCallees.size());
-        result.slices.put("methodCallerIndexedMethodCount",
-                methodCallersByCallee.size());
-        result.slices.put("methodCallerExpandedKeyCount",
-                expandedMethodCallerKeys.size());
-        addGlobalStaticIndexSummary(result.slices);
-        addRuntimeDispatchSummary(result.slices);
-        result.slices.put("loadedMethodCount", factsByMethod.size());
-        result.slices.put("selectedMethodCount", selectedMethods.size());
-        result.slices.put("edgeCount", edges.size());
-        result.slices.put("edgeKinds", summarizeEdgeKinds(edges));
-        result.slices.put("projectedPassEdgeChecks", projectedPassEdgeChecks);
-        result.slices.put("projectedPassUnsupported", projectedPassUnsupported);
-        result.slices.put("projectedPassNoSuffix", projectedPassNoSuffix);
-        result.slices.put("projectedPassCandidates", projectedPassCandidates);
-        result.slices.put("projectedPassEmitted", projectedPassEmitted);
         addStaticAnalysisBudgetSummary(result);
         return result;
     }
@@ -348,66 +304,11 @@ final class SeedBackwardStaticAnalyzer {
                 "edgeCapReached", edgeCapReached,
                 "capReached", methodCapReached || edgeCapReached,
                 "complete", !methodCapReached && !edgeCapReached);
-        result.slices.put("staticAnalysisBudget", budget);
         result.symbolicCoverage.put("staticAnalysisBudget",
                 new LinkedHashMap<>(budget));
     }
 
-    private void addGlobalStaticIndexSummary(Map<String, Object> slices) {
-        slices.put("globalStaticIndexScope",
-                "ALL_APPLICATION_CONCRETE_METHODS");
-        slices.put("globalStaticIndexCandidateMethodCount",
-                globalStaticIndexCandidateMethodCount);
-        slices.put("globalStaticIndexIndexedMethodCount",
-                globalStaticIndexIndexedMethodCount);
-        slices.put("globalStaticIndexUnreadableMethodCount",
-                globalStaticIndexUnreadableMethodCount);
-        slices.put("fieldWriterIndexTruncatedFieldCount",
-                truncatedFieldWriterIndexFields.size());
-        slices.put("methodCallerIndexTruncatedMethodCount",
-                truncatedMethodCallerIndexMethods.size());
-        slices.put("globalStaticIndexComplete", globalStaticIndexBuilt
-                && globalStaticIndexUnreadableMethodCount == 0
-                && truncatedFieldWriterIndexFields.isEmpty()
-                && truncatedMethodCallerIndexMethods.isEmpty());
-        slices.put("globalStaticIndexAuthority",
-                "ALL_APPLICATION_METHOD_SCAN_WITH_EXPLICIT_INCOMPLETE_ON_BOUND_OR_BODY_FAILURE_V1");
-    }
-
-    private void addRuntimeDispatchSummary(Map<String, Object> slices) {
-        slices.put("runtimeDispatchEvidenceConfigured",
-                runtimeDispatchEvidence.configured());
-        slices.put("runtimeDispatchEvidenceSource",
-                runtimeDispatchEvidence.source());
-        slices.put("runtimeDispatchEvidenceRowCount",
-                runtimeDispatchEvidence.rowCount());
-        slices.put("runtimeDispatchEvidenceSiteCount",
-                runtimeDispatchEvidence.siteCount());
-        slices.put("runtimeDispatchEvidenceRejectedRowCount",
-                runtimeDispatchEvidence.rejectedRowCount());
-        slices.put("runtimeSelectedDispatchSiteCount",
-                runtimeSelectedDispatchSites.size());
-        slices.put("runtimeSelectedDispatchSites",
-                sortedLimited(runtimeSelectedDispatchSites,
-                        Integer.MAX_VALUE));
-        slices.put("runtimeRecursiveMethodCount",
-                runtimeRecursiveMethods.size());
-        slices.put("runtimeRecursiveMethods",
-                sortedLimited(runtimeRecursiveMethods,
-                        Integer.MAX_VALUE));
-        slices.put("blockedRuntimeDispatchSites",
-                new LinkedHashMap<>(blockedRuntimeDispatchSites));
-        slices.put("runtimeDispatchSelectionComplete",
-                runtimeDispatchEvidence.rejectedRowCount() == 0
-                        && blockedRuntimeDispatchSites.isEmpty());
-        slices.put("runtimeDispatchSelectionAuthority",
-                runtimeDispatchEvidence.configured()
-                        ? "UNIQUE_CALLSITE_CORRELATED_ACTUAL_CALLEE_V1"
-                        : "STATIC_CLASS_HIERARCHY_FALLBACK");
-    }
-
     private void finishSeedDiscovery(CausynthAnalysisResult result) {
-        result.seeds.addAll(discoveredExceptionSeeds);
         result.targetResolved.put("discoveredSeedCount",
                 discoveredExceptionSeeds.size());
         result.targetResolved.put("discoveredSeedMethods",
@@ -1712,16 +1613,13 @@ final class SeedBackwardStaticAnalyzer {
                     || !method.getDeclaringClass().isApplicationClass()) {
                 continue;
             }
-            globalStaticIndexCandidateMethodCount++;
             List<Fact> facts = factsByMethod.get(method.getSignature());
             if (facts == null) {
                 facts = factsFromMethod(method);
             }
             if (facts.isEmpty()) {
-                globalStaticIndexUnreadableMethodCount++;
                 continue;
             }
-            globalStaticIndexIndexedMethodCount++;
             for (FieldWrite write : fieldWritesInMethod(method.getSignature(), facts)) {
                 addIndexedFieldWrite(write);
             }
@@ -3859,26 +3757,21 @@ final class SeedBackwardStaticAnalyzer {
             String from = String.valueOf(edge.get("fromCell"));
             String to = String.valueOf(edge.get("toCell"));
             String method = String.valueOf(edge.get("method"));
-            projectedPassEdgeChecks++;
             boolean edgeHasInvoke = edge.get("invoke") != null;
             if (!supportsProjectedPropagation(kind)
                     || ("local_def_use".equals(kind) && edgeHasInvoke)
                     || !canCarryProjectedFields(from)
                     || !canCarryProjectedFields(to)) {
-                projectedPassUnsupported++;
                 continue;
             }
             Set<String> suffixes = new LinkedHashSet<>();
             suffixes.addAll(projectionSuffixesForBase(method, from));
             suffixes.addAll(projectionSuffixesForBase(method, to));
             if (suffixes.isEmpty()) {
-                projectedPassNoSuffix++;
                 continue;
             }
-            projectedPassCandidates++;
             if (addProjectedEdgesForObjectFlow(kind, from, to, method,
                     null, edge)) {
-                projectedPassEmitted++;
                 changed = true;
             }
         }
@@ -3894,23 +3787,6 @@ final class SeedBackwardStaticAnalyzer {
                 && !method.getDeclaringClass().isInterface()
                 && !method.getDeclaringClass().isAbstract()
                 && structuralFieldAccessor(sig) == null;
-    }
-
-    private List<Map<String, Object>> collectCells() {
-        Set<String> cells = new LinkedHashSet<>();
-        for (Map<String, Object> edge : edges) {
-            cells.add(String.valueOf(edge.get("fromCell")));
-            cells.add(String.valueOf(edge.get("toCell")));
-        }
-        List<Map<String, Object>> output = new ArrayList<>();
-        int index = 0;
-        for (String cell : cells) {
-            output.add(object(
-                    "id", "C." + index++,
-                    "cell", cell,
-                    "kind", cellKind(cell)));
-        }
-        return output;
     }
 
     private Set<String> relevant(String method) {
@@ -4663,7 +4539,6 @@ final class SeedBackwardStaticAnalyzer {
                     "kind", kind,
                     "transferKind", edgeTransferKind,
                     "relation", mappingOnly ? "" : relation,
-                    "candidateRelation", relation,
                     "fromCell", fromText,
                     "toCell", toText,
                     "method", method,
@@ -5065,39 +4940,6 @@ final class SeedBackwardStaticAnalyzer {
             return sorted;
         }
         return new ArrayList<>(sorted.subList(0, limit));
-    }
-
-    private static Map<String, Object> summarizeEdgeKinds(List<Map<String, Object>> edges) {
-        Map<String, Object> counts = object();
-        for (Map<String, Object> edge : edges) {
-            String kind = String.valueOf(edge.get("kind"));
-            Object previous = counts.get(kind);
-            counts.put(kind, previous instanceof Number
-                    ? ((Number) previous).intValue() + 1 : 1);
-        }
-        return counts;
-    }
-
-    private static String cellKind(String cell) {
-        if (cell.contains("#exception:")) {
-            return "exception";
-        }
-        if (cell.contains(".param")) {
-            return "parameter";
-        }
-        if (cell.endsWith(".return")) {
-            return "return";
-        }
-        if (cell.contains("#u")) {
-            return "unit";
-        }
-        if (cell.startsWith("<") && cell.contains(":")) {
-            return cell.contains(" ") ? "field_or_method" : "signature";
-        }
-        if (cell.contains("::")) {
-            return "local";
-        }
-        return "seed";
     }
 
     private static String firstNonBlank(String... values) {

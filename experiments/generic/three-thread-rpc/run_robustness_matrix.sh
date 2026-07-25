@@ -289,10 +289,7 @@ validate_multitype_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.guardSemantics
-        == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount > 1
-      and .regionRelation.caseCount == (.regionRelation.cases | length)
+      and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         .guard.kind == "PATH_CONDITION"
         and ((.guard.conditions // []) | length) > 0))
@@ -434,20 +431,17 @@ validate_dependent_scalar_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.guardSemantics
-        == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount == (.regionRelation.cases | length)
-      and .regionRelation.caseCount > 1
+      and (.regionRelation.cases | length) > 1
       and all(.regionRelation.cases[];
         .relationallyComplete == true
         and (.guard.conditions | length) > 0
         and (.outputExpressions | length) == 1))
     and any(.[];
       (singleton_output_member | .slice.outputCell == $arithmetic)
-      and .regionRelation.caseCount == 6)
+      and (.regionRelation.cases | length) == 6)
     and any(.[];
       (singleton_output_member | .slice.outputCell == $text)
-      and .regionRelation.caseCount == 2
+      and (.regionRelation.cases | length) == 2
       and ([.regionRelation.cases[].outputExpressions[]?._exp] | sort)
         == ["Y_I_5", "Y_I_9"]
       and ([.regionRelation.cases[].guard.conditions[]
@@ -538,9 +532,7 @@ validate_container_producer_artifacts() {
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
-    and .regionRelation.guardSemantics
-      == "EXACT_NORMALIZED_PATH_CONDITION"
-    and .regionRelation.caseCount == 2
+    and (.regionRelation.cases | length) == 2
     and ($outputSlice.containerElementFieldBindings | length) == 1
     and $static.schemaVersion == 2
       and $static.kind == "ARRAY_ELEMENT_FIELD"
@@ -592,8 +584,6 @@ validate_container_producer_artifacts() {
     and .regionRelation.kind == "GUARDED_PATH_MERGE"
     and .regionRelation.complete == true
     and .regionRelation.pathClosureState == "CLOSED"
-    and .regionRelation.guardSemantics
-      == "EXACT_NORMALIZED_PATH_CONDITION"
     and (.regionRelation.cases | length) >= 2
     and ($outputSlice.inputAliasCanonicalizations | length) >= 3
     and all($outputSlice.inputAliasCanonicalizations[];
@@ -703,11 +693,7 @@ validate_unreachable_parity_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.guardSemantics
-        == "EXACT_NORMALIZED_PATH_CONDITION"
-      and .regionRelation.caseCount
-        == (.regionRelation.cases | length)
-      and .regionRelation.caseCount > 2
+      and (.regionRelation.cases | length) > 2
       and all(.regionRelation.cases[];
         .relationallyComplete == true
         and (.guard.conditions | length) > 0
@@ -814,8 +800,7 @@ validate_scalar_unsat_producer_artifacts() {
       and .regionRelation.kind == "GUARDED_PATH_MERGE"
       and .regionRelation.complete == true
       and .regionRelation.pathClosureState == "CLOSED"
-      and .regionRelation.caseCount > 1
-      and .regionRelation.caseCount == (.regionRelation.cases | length)
+      and (.regionRelation.cases | length) > 1
       and (output_members | map(.output.portId) | sort) as $ports
       | all(.regionRelation.cases[];
           (.outputExpressions | keys | sort) == $ports))
@@ -955,7 +940,7 @@ validate_compound_target_artifacts() {
       (output_members | length) == 3
       and .relationallyComplete == true
       and .regionRelation.complete == true
-      and .regionRelation.caseCount == 2
+      and (.regionRelation.cases | length) == 2
       and all(.regionRelation.cases[];
         (.outputExpressions | length) == 3))
   ' "${merged_summaries[@]}" >/dev/null \

@@ -3765,8 +3765,7 @@ public final class ConcolicSmtComposer {
             if (!bool(relation, "complete", false)) {
                 heapGap(region, "IncompleteGuardedPathMerge@" + region);
             }
-            if (integer(relation, "caseCount", -1) != cases.size()
-                    || cases.size() == 0) {
+            if (cases.size() == 0) {
                 heapGap(region, "GuardedPathCaseCountGap@" + region);
                 return;
             }
@@ -4572,7 +4571,6 @@ public final class ConcolicSmtComposer {
             candidate.addProperty("kind", kind);
             candidate.addProperty("formula", formula);
             candidate.addProperty("required", required);
-            candidate.addProperty("status", "UNVERIFIED_CANDIDATE");
             candidate.add("roles", roles.deepCopy());
             JsonArray sources = new JsonArray();
             for (String value : provenance) sources.add(value);

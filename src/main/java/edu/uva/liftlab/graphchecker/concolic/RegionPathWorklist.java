@@ -328,26 +328,15 @@ public final class RegionPathWorklist {
             task.addProperty("sourcePathKey", pathKey);
             task.addProperty("sourceActivationId", string(summary,
                     "activationId"));
-            task.addProperty("rootMethod", firstNonBlank(string(summary,
-                    "rootMethod"), string(activation, "rootMethod")));
-            task.addProperty("regionInstanceId", scope.regionInstanceId);
-            task.addProperty("rootCallId", scope.rootCallId);
             if (scope.contract != null) {
                 task.add(OutputClosureContract.FIELD,
                         scope.contract.toJson());
-                task.addProperty("outputDemandKey", scope.demandKey);
-                task.addProperty("outputClosureFingerprint",
-                        scope.fingerprint);
             }
             task.add("replayContract", replayContract.toJson());
             task.add("solverPathContext",
                     replay.solverPathContext().toJson());
             task.add("dynamicFieldBindings", array(summary,
                     "dynamicFieldBindings").deepCopy());
-            task.add("engineArrayInputBindings", array(summary,
-                    "engineArrayInputBindings").deepCopy());
-            task.addProperty("status", "PENDING_SOLVE");
-            task.addProperty("dynamicIdsExcludedFromQueryKey", true);
             tasks.add(task);
         }
 
@@ -609,25 +598,19 @@ public final class RegionPathWorklist {
         private final String identity;
         private final String demandKey;
         private final String fingerprint;
-        private final String regionInstanceId;
-        private final long rootCallId;
 
         private ExplorationScope(RegionCaptureGoal goal,
                                  OutputClosureContract contract,
                                  Set<String> branchSites,
                                  String identity,
                                  String demandKey,
-                                 String fingerprint,
-                                 String regionInstanceId,
-                                 long rootCallId) {
+                                 String fingerprint) {
             this.goal = goal;
             this.contract = contract;
             this.branchSites = branchSites;
             this.identity = identity;
             this.demandKey = demandKey;
             this.fingerprint = fingerprint;
-            this.regionInstanceId = regionInstanceId;
-            this.rootCallId = rootCallId;
         }
 
         private static ExplorationScope from(JsonObject summary,
@@ -675,9 +658,7 @@ public final class RegionPathWorklist {
                 return new ExplorationScope(goal, null, sites,
                         "TARGET_BRANCH_V1\n" + region + "\n" + instance
                                 + "\n" + targetMethod + "\n" + rootMethod,
-                        "", "", instance,
-                        longValue(source, "rootCallId",
-                                longValue(summary, "rootCallId", 0L)));
+                        "", "");
             }
             OutputClosureContract summaryContract = decode(summary);
             OutputClosureContract activationContract =
@@ -702,9 +683,7 @@ public final class RegionPathWorklist {
             String fingerprint = contract.closureFingerprint();
             return new ExplorationScope(goal, contract, sites,
                     "OUTPUT_CLOSURE_V1\n" + demand + "\n" + fingerprint,
-                    demand, fingerprint,
-                    contract.producer().regionInstanceId(),
-                    contract.producer().rootCallId());
+                    demand, fingerprint);
         }
 
         private static OutputClosureContract decode(JsonObject value) {
@@ -1133,18 +1112,6 @@ public final class RegionPathWorklist {
         try {
             return value == null || value.isJsonNull()
                     ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static long longValue(JsonObject object, String name,
-                                  long fallback) {
-        if (object == null) return fallback;
-        JsonElement value = object.get(name);
-        try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
         } catch (RuntimeException ignored) {
             return fallback;
         }

@@ -56,10 +56,6 @@ final class SymbolicPlanningStage {
         for (SymbolicExecutionPlanBuilder builder : ordered) {
             result.symbolicPlan.add(builder.toRow("SP." + index++));
         }
-        result.slices.put("symbolicPlanMethodCount",
-                result.symbolicPlan.size());
-        result.slices.put("symbolicPlanClassifications",
-                summarizePlanClassifications(result.symbolicPlan));
     }
 
     static String transferKind(String kind, String unit, String invoke,
@@ -217,18 +213,6 @@ final class SymbolicPlanningStage {
             return method + "#u" + unitIndex;
         }
         return method + "#synthetic:" + firstNonBlank(kind, "edge");
-    }
-
-    private static Map<String, Object> summarizePlanClassifications(
-            List<Map<String, Object>> plan) {
-        Map<String, Object> counts = new LinkedHashMap<>();
-        for (Map<String, Object> row : plan) {
-            String classification = stringValue(row.get("classification"));
-            Object previous = counts.get(classification);
-            counts.put(classification, previous instanceof Number
-                    ? ((Number) previous).intValue() + 1 : 1);
-        }
-        return counts;
     }
 
     private static String stringValue(Object value) {

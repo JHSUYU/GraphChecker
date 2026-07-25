@@ -24,7 +24,6 @@ final class SymbolicExecutionPlanBuilder {
     private final Set<String> possibleCallees = new LinkedHashSet<>();
     private final Set<String> transferKinds = new LinkedHashSet<>();
     private final Set<String> siteIds = new LinkedHashSet<>();
-    private final Set<String> requiredModels = new LinkedHashSet<>();
     private final Set<String> reasons = new LinkedHashSet<>();
     private int edgeCount;
 
@@ -71,14 +70,12 @@ final class SymbolicExecutionPlanBuilder {
             reasons.add("writes coordination-relevant heap state");
         }
         if ("HEAP_LOOKUP".equals(transfer)) {
-            requiredModels.add("symbolic_map_state");
             reasons.add("selects or looks up state by symbolic key");
         }
         if ("MODEL_TRANSFORM".equals(transfer)) {
             reasons.add("requires an observed region summary for the "
                     + "transformation");
             if (edge.containsKey("containerProjectionContractVersion")) {
-                requiredModels.add("symbolic_container_projection");
                 reasons.add("preserves collection elements through an "
                         + "exact Java collection API contract");
             }
@@ -88,7 +85,6 @@ final class SymbolicExecutionPlanBuilder {
                     + "requires region capture and runtime mapping");
         }
         if ("DYNAMIC_DISPATCH".equals(transfer)) {
-            requiredModels.add("dynamic_dispatch_resolution");
             reasons.add("selects a runtime callee or receiver state");
         }
         if ("COMPUTE".equals(transfer)) {
@@ -141,7 +137,6 @@ final class SymbolicExecutionPlanBuilder {
                 "transferKinds", sortedLimited(transferKinds),
                 "possibleCallees", sortedLimited(possibleCallees),
                 "runtimeObservedCallees", Collections.emptyList(),
-                "requiredModels", sortedLimited(requiredModels),
                 "siteIds", sortedLimited(siteIds),
                 "truncated", truncated,
                 "precision", "graph_directed_static_slice");

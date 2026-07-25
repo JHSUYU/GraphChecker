@@ -38,10 +38,7 @@ final class SymbolicRegionAssemblyStage {
         addArgumentPathFieldContracts(planned.regions);
         result.symbolicRegions.addAll(planned.regions);
         result.symbolicRegionEdges.addAll(planned.regionEdges);
-        result.symbolicModels.addAll(planned.modelSummaries);
         result.symbolicCoverage.putAll(planned.coverage);
-        result.slices.put("symbolicRegions", planned.summary);
-        result.slices.put("symbolicCoverage", planned.coverage);
     }
 
     /** Reattaches per-site mutation guards to compact causal-edge rows. */
