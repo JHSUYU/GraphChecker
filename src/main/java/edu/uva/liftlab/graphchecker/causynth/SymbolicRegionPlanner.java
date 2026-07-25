@@ -101,15 +101,8 @@ final class SymbolicRegionPlanner {
     private SymbolicRegionPlanner() {
     }
 
-    static Result plan(List<Map<String, Object>> edges) {
-        Planner planner = new Planner(edges);
-        return planner.plan();
-    }
-
-    static final class Result {
-        final List<Map<String, Object>> regions = new ArrayList<>();
-        final List<Map<String, Object>> regionEdges = new ArrayList<>();
-        boolean coverageComplete;
+    static void plan(StaticProgram program) {
+        new Planner(program.edges).plan(program);
     }
 
     private static final class FieldSignature {
@@ -344,8 +337,7 @@ final class SymbolicRegionPlanner {
             index();
         }
 
-        private Result plan() {
-            Result result = new Result();
+        private void plan(StaticProgram result) {
             List<String> anchors = new ArrayList<>(anchorMethods);
             Collections.sort(anchors);
             if (anchors.isEmpty()) {
@@ -413,7 +405,6 @@ final class SymbolicRegionPlanner {
             buildRegionEdges(result);
             result.coverageComplete = coverageComplete(result);
 
-            return result;
         }
 
         private String regionDedupKey(RegionDraft draft) {
@@ -423,7 +414,7 @@ final class SymbolicRegionPlanner {
                     + joinSorted(draft.methods);
         }
 
-        private boolean coverageComplete(Result result) {
+        private boolean coverageComplete(StaticProgram result) {
             Map<String, Set<String>> regionsByMethod = new LinkedHashMap<>();
             Map<String, Set<String>> methodsByRegion = new LinkedHashMap<>();
             Map<String, Map<String, Object>> regionById = new LinkedHashMap<>();
@@ -6715,7 +6706,7 @@ final class SymbolicRegionPlanner {
             return false;
         }
 
-        private void buildRegionEdges(Result result) {
+        private void buildRegionEdges(StaticProgram result) {
             Map<String, List<Map<String, Object>>> regionsByMethod = new LinkedHashMap<>();
             for (Map<String, Object> region : result.regions) {
                 for (String method : strings(region.get("methods"))) {

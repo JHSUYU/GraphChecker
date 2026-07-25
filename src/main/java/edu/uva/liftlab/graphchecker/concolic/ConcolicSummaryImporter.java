@@ -179,14 +179,16 @@ public final class ConcolicSummaryImporter {
                         malformedContract.getMessage()));
                 continue;
             }
-            String taskSchemaIssue =
-                    canonicalExecutionTaskSchemaIssue(executionTask);
-            if (!taskSchemaIssue.isEmpty()) {
+            final InputActionCatalog inputActions;
+            try {
+                inputActions = InputActionCatalog.decode(executionTask);
+            } catch (IllegalArgumentException malformedActions) {
                 diagnostics.add(diagnostic(raw,
                         "INVALID_EXECUTION_TASK_SCHEMA",
-                        taskSchemaIssue));
+                        malformedActions.getMessage()));
                 continue;
             }
+            EvidenceIndex evidence = new EvidenceIndex(raw, inputActions);
             JsonObject region = regions.get(regionId);
             if (region == null) {
                 diagnostics.add(diagnostic(raw, "UNKNOWN_REGION", regionId));
@@ -197,13 +199,7 @@ public final class ConcolicSummaryImporter {
                         regionId + " != " + string(executionTask, "regionId")));
                 continue;
             }
-            JsonObject engine = object(raw, "engineSummary");
-            JsonArray enginePathCondition = engine.getAsJsonArray(
-                    "pathCondition");
-            JsonArray runtimeHeapObservations = raw.getAsJsonArray(
-                    "runtimeHeapObservations");
-            JsonArray dynamicFieldBindings = raw.getAsJsonArray(
-                    "dynamicFieldBindings");
+            JsonArray enginePathCondition = evidence.enginePathCondition;
             RuntimePathContamination runtimePathContamination =
                     runtimePathContamination(enginePathCondition);
             RuntimePathContamination nestedRuntimePathContamination =
@@ -217,11 +213,10 @@ public final class ConcolicSummaryImporter {
             PathAdmissionPolicy admission = pathAdmissionPolicy(region,
                     executionTask, outputContract);
             boolean outputClosure = goalKind.capturesOutputRelation();
-            JsonArray rawBranchMappings = array(raw, "branchMappings");
+            JsonArray rawBranchMappings = evidence.branchMappings;
             DynamicSemanticPcFallbackCatalog dynamicPcFallbacks =
-                    dynamicSemanticPcFallbacks(raw, executionTask,
-                            enginePathCondition, rawBranchMappings,
-                            admission);
+                    dynamicSemanticPcFallbacks(executionTask,
+                            enginePathCondition, admission, evidence);
             Set<Integer> mappedConditions = mappedConditionIndices(
                     rawBranchMappings);
             Map<Integer, JsonElement> semanticBranchConditions =
@@ -231,7 +226,7 @@ public final class ConcolicSummaryImporter {
                     enginePathCondition, admission, mappedConditions,
                     semanticBranchConditions,
                     outputClosure || !mappedConditions.isEmpty(), executionTask,
-                    outputContract, dynamicPcFallbacks);
+                    outputContract, dynamicPcFallbacks, evidence);
             boolean outputClosurePathMappingComplete = !outputClosure
                     || !normalization.hasFilteredReason(
                     UNMAPPED_BINARY_CONDITION);
@@ -255,20 +250,17 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             EngineArrayInputBindingExtraction engineArrayBindings =
-                    engineArrayInputBindings(raw, executionTask, region,
-                            enginePathCondition, pathCondition);
+                    engineArrayInputBindings(executionTask, region,
+                            enginePathCondition, pathCondition, evidence);
             RelationalExtraction relational = relationalExtraction(
-                    raw, enginePathCondition, normalization,
-                    runtimeHeapObservations,
-                    raw.get("fieldObservations"),
-                    dynamicFieldBindings, rawBranchMappings,
-                    executionTask, outputContract, region,
+                    raw, normalization, executionTask, outputContract, region,
                     regionId, goalKind, pathCondition,
-                    dynamicPcFallbacks, engineArrayBindings.bindings);
+                    dynamicPcFallbacks, engineArrayBindings.bindings,
+                    evidence);
             VmIntrinsicPlaceholderBindingExtraction placeholderBindings =
                     vmIntrinsicPlaceholderBindings(pathCondition,
                             relational.inputAdmission);
-            if (!relational.replayAdmission.valid) {
+            if (relational.replayAdmission.failures.size() != 0) {
                 diagnostics.add(diagnostic(raw, "TARGET_REPLAY_REJECTED",
                         relational.replayAdmission.failures.toString()));
                 continue;
@@ -280,7 +272,7 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("regionId", regionId);
             summary.addProperty("regionInstanceId", regionInstanceId);
             goalKind.writeToTask(summary);
-            summary.add("symbolicInputs", symbolicInputs(executionTask));
+            summary.add("symbolicInputs", symbolicInputs(evidence));
             if (outputContract != null) {
                 summary.add(OutputClosureContract.FIELD,
                         outputContract.toJson());
@@ -310,10 +302,10 @@ public final class ConcolicSummaryImporter {
             summary.addProperty("relationallyComplete",
                     relational.heapComplete
                             && outputSliceComplete
-                            && relational.inputAdmission.complete
-                            && placeholderBindings.complete
-                            && engineArrayBindings.complete
-                            && relational.outputExtraction.complete
+                            && relational.inputAdmission.failures.size() == 0
+                            && placeholderBindings.failures.size() == 0
+                            && engineArrayBindings.issues.isEmpty()
+                            && relational.outputExtraction.issues.isEmpty()
                             && outputSetComplete
                             && outputClosurePathMappingComplete);
             summary.add("unforcedEnvironmentValidationRequirements",
@@ -364,12 +356,12 @@ public final class ConcolicSummaryImporter {
                     : engineArrayBindings.issues) {
                 diagnostics.add(diagnostic(raw, issue.code, issue.detail));
             }
-            if (!relational.inputAdmission.complete) {
+            if (relational.inputAdmission.failures.size() != 0) {
                 diagnostics.add(diagnostic(raw,
                         "INCOMPLETE_OUTPUT_INPUT_MATERIALIZATION",
                         relational.inputAdmission.failures.toString()));
             }
-            if (!placeholderBindings.complete) {
+            if (placeholderBindings.failures.size() != 0) {
                 diagnostics.add(diagnostic(raw,
                         "INCOMPLETE_VM_INTRINSIC_PLACEHOLDER_BINDING",
                         placeholderBindings.failures.toString()));
@@ -401,10 +393,9 @@ public final class ConcolicSummaryImporter {
                 diagnostics.size());
     }
 
-    private static JsonArray symbolicInputs(JsonObject executionTask) {
+    private static JsonArray symbolicInputs(EvidenceIndex evidence) {
         JsonArray result = new JsonArray();
-        for (JsonElement element : runtimeMaterializationActions(
-                executionTask)) {
+        for (JsonElement element : evidence.inputActions.symbolic()) {
             if (!element.isJsonObject()) {
                 continue;
             }
@@ -416,28 +407,6 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
-    /** Returns the scheduler-produced executable plan. */
-    private static JsonArray runtimeMaterializationActions(
-            JsonObject executionTask) {
-        return InputActionCatalog.decode(executionTask).symbolic();
-    }
-
-    /**
-     * Validates the executable half of an executionTask at the importer trust
-     * boundary. Only the scheduler-produced {@code inputActions} catalog may
-     * drive runtime interpretation. An explicit empty catalog is therefore
-     * meaningful and must not fall back to discovery declarations.
-     */
-    private static String canonicalExecutionTaskSchemaIssue(
-            JsonObject executionTask) {
-        try {
-            InputActionCatalog.decode(executionTask);
-            return "";
-        } catch (IllegalArgumentException malformed) {
-            return malformed.getMessage();
-        }
-    }
-
     /**
      * Joins a VM execution-local symbolic array id to exactly one canonical
      * region input.  The bridge is admitted only when the executionTask action,
@@ -446,10 +415,10 @@ public final class ConcolicSummaryImporter {
      * silently replacing the input that was actually symbolized by the VM.
      */
     private static EngineArrayInputBindingExtraction
-    engineArrayInputBindings(JsonObject raw, JsonObject executionTask,
-                             JsonObject region,
+    engineArrayInputBindings(JsonObject executionTask, JsonObject region,
                              JsonArray enginePathCondition,
-                             JsonArray normalizedPathCondition) {
+                             JsonArray normalizedPathCondition,
+                             EvidenceIndex evidence) {
         List<EngineArrayInputBindingIssue> issues = new ArrayList<>();
         ArrayEventCatalog rawEvents = arrayEvents(enginePathCondition);
         ArrayEventCatalog normalizedEvents = arrayEvents(
@@ -466,36 +435,23 @@ public final class ConcolicSummaryImporter {
         }
 
         Set<String> requiredArrayIds = normalizedEvents.loadIds;
-        JsonElement declared = raw.get("engineArrayInputBindings");
+        JsonElement declared = evidence.engineArrayInputBindings;
         if (declared == null || declared.isJsonNull()) {
             for (String id : requiredArrayIds) {
                 issues.add(new EngineArrayInputBindingIssue(
                         "MISSING_ENGINE_ARRAY_INPUT_BINDING", id));
             }
             return new EngineArrayInputBindingExtraction(new JsonArray(),
-                    issues.isEmpty(), issues);
+                    issues);
         }
         if (!declared.isJsonArray()) {
             issues.add(new EngineArrayInputBindingIssue(
                     "MALFORMED_ENGINE_ARRAY_INPUT_BINDINGS",
                     "expected JSON array"));
             return new EngineArrayInputBindingExtraction(new JsonArray(),
-                    false, issues);
+                    issues);
         }
 
-        Map<String, List<JsonObject>> actionsByPort = new LinkedHashMap<>();
-        for (JsonElement element : runtimeMaterializationActions(executionTask)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            String port = string(action, "symbol");
-            if (port.isEmpty()) continue;
-            List<JsonObject> actions = actionsByPort.get(port);
-            if (actions == null) {
-                actions = new ArrayList<>();
-                actionsByPort.put(port, actions);
-            }
-            actions.add(action);
-        }
         Map<String, List<JsonObject>> regionInputs = new LinkedHashMap<>();
         for (JsonElement element : array(region, "symbolicInputs")) {
             if (!element.isJsonObject()) continue;
@@ -511,7 +467,7 @@ public final class ConcolicSummaryImporter {
             values.add(input);
         }
         Map<String, Integer> observedInputCounts = new LinkedHashMap<>();
-        for (JsonElement element : array(raw, "symbolizedInputs")) {
+        for (JsonElement element : evidence.rawSymbolizedInputs) {
             if (!element.isJsonPrimitive()
                     || !element.getAsJsonPrimitive().isString()) {
                 issues.add(new EngineArrayInputBindingIssue(
@@ -576,8 +532,8 @@ public final class ConcolicSummaryImporter {
             if (objectToken <= 0L) {
                 rowIssues.add("ARRAY_OBJECT_IDENTITY_INVALID");
             }
-            List<JsonObject> actions = actionsByPort.get(port);
-            if (actions == null || actions.size() != 1) {
+            List<JsonObject> actions = evidence.actions(port);
+            if (actions.size() != 1) {
                 rowIssues.add("INPUT_ACTION_NOT_UNIQUE");
             } else {
                 JsonObject action = actions.get(0);
@@ -672,8 +628,7 @@ public final class ConcolicSummaryImporter {
         });
         JsonArray normalized = new JsonArray();
         for (JsonObject row : admitted) normalized.add(row);
-        return new EngineArrayInputBindingExtraction(normalized,
-                issues.isEmpty(), issues);
+        return new EngineArrayInputBindingExtraction(normalized, issues);
     }
 
     private static void validateEngineArrayValueExpression(
@@ -816,6 +771,238 @@ public final class ConcolicSummaryImporter {
     }
 
     /**
+     * Read-only indexes for evidence shared by every member of one joint
+     * output result. Lists deliberately retain duplicates; callers still own
+     * exact matching and uniqueness checks.
+     */
+    private static final class EvidenceIndex {
+        private final InputActionCatalog inputActions;
+        private final JsonArray enginePathCondition;
+        private final JsonArray outputCaptures;
+        private final JsonArray heapObservations;
+        private final JsonArray fieldObservations;
+        private final JsonArray dynamicFieldBindings;
+        private final JsonArray branchMappings;
+        private final JsonArray runtimeApproximations;
+        private final JsonArray rawSymbolizedInputs;
+        private final JsonElement engineArrayInputBindings;
+        private final Map<String, List<JsonObject>> capturesByBinding =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> actionsBySymbol =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> heapByObservation =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> heapByMethod =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> fieldsByBindingSymbol =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> dynamicBindingsById =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> branchesBySite =
+                new LinkedHashMap<>();
+        private final Map<Integer, List<JsonObject>> branchesByRawIndex =
+                new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>>
+                branchesByMethodOccurrence = new LinkedHashMap<>();
+        private final Map<String, List<JsonObject>> projectionsByGroupPhase =
+                new LinkedHashMap<>();
+        private final Map<String, Integer> projectionOrdinals =
+                new LinkedHashMap<>();
+        private final Set<String> symbolizedInputs;
+
+        private EvidenceIndex(JsonObject raw,
+                              InputActionCatalog inputActions) {
+            this.inputActions = inputActions;
+            this.enginePathCondition = array(object(raw, "engineSummary"),
+                    "pathCondition");
+            this.outputCaptures = array(raw, "outputCaptures");
+            this.heapObservations = array(raw, "runtimeHeapObservations");
+            this.fieldObservations = array(raw, "fieldObservations");
+            this.dynamicFieldBindings = array(raw,
+                    "dynamicFieldBindings");
+            this.branchMappings = array(raw, "branchMappings");
+            this.runtimeApproximations = array(raw,
+                    "runtimeApproximations");
+            this.rawSymbolizedInputs = array(raw, "symbolizedInputs");
+            this.engineArrayInputBindings = raw.get(
+                    "engineArrayInputBindings");
+            this.symbolizedInputs = primitiveStrings(rawSymbolizedInputs);
+            index(outputCaptures, "captureBindingId", capturesByBinding);
+            if (inputActions != null) {
+                index(inputActions.all(), "symbol", actionsBySymbol);
+            }
+            index(heapObservations, "observationId", heapByObservation);
+            index(heapObservations, "originMethod", heapByMethod);
+            index(dynamicFieldBindings, "dynamicBindingId",
+                    dynamicBindingsById);
+            for (JsonElement element : fieldObservations) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                add(fieldsByBindingSymbol, pair(string(row,
+                        "dynamicBindingId"), string(row, "symbol")), row);
+            }
+            for (JsonElement element : branchMappings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                add(branchesBySite, string(row, "siteId"), row);
+                int rawIndex = integer(row, "rawConditionIndex", -1);
+                List<JsonObject> byRaw = branchesByRawIndex.get(rawIndex);
+                if (byRaw == null) {
+                    byRaw = new ArrayList<>();
+                    branchesByRawIndex.put(rawIndex, byRaw);
+                }
+                byRaw.add(row);
+                add(branchesByMethodOccurrence, pair(string(row, "method"),
+                        String.valueOf(integer(row, "occurrence", -1))), row);
+            }
+            JsonArray projections = array(raw,
+                    "mapValueElementProjectionObservations");
+            for (int ordinal = 0; ordinal < projections.size(); ordinal++) {
+                JsonElement element = projections.get(ordinal);
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String key = pair(string(row, "groupId"),
+                        string(row, "phase"));
+                add(projectionsByGroupPhase, key, row);
+                if (!projectionOrdinals.containsKey(key)) {
+                    projectionOrdinals.put(key, ordinal);
+                }
+            }
+        }
+
+        private List<JsonObject> captureCandidates(JsonObject request) {
+            String bindingId = string(request, "captureBindingId");
+            if (!bindingId.isEmpty()) {
+                return values(capturesByBinding, bindingId);
+            }
+            List<JsonObject> all = new ArrayList<>();
+            for (JsonElement element : outputCaptures) {
+                if (element.isJsonObject()) {
+                    all.add(element.getAsJsonObject());
+                }
+            }
+            return all;
+        }
+
+        private List<JsonObject> actions(String symbol) {
+            return values(actionsBySymbol, symbol);
+        }
+
+        private JsonObject uniqueAction(String symbol, boolean symbolicOnly,
+                                        String... bindingModes) {
+            JsonObject match = null;
+            for (JsonObject action : actions(symbol)) {
+                if (symbolicOnly
+                        && !"SYMBOLIC".equals(string(action, "mode"))) {
+                    continue;
+                }
+                String mode = string(action, "bindingMode");
+                boolean accepted = false;
+                for (String bindingMode : bindingModes) {
+                    accepted |= bindingMode.equals(mode);
+                }
+                if (!accepted) continue;
+                if (match != null) return null;
+                match = action;
+            }
+            return match;
+        }
+
+        private List<JsonObject> heapObservations(String observationId) {
+            return values(heapByObservation, observationId);
+        }
+
+        private List<JsonObject> fieldObservations(
+                String bindingId, String symbol) {
+            return values(fieldsByBindingSymbol, pair(bindingId, symbol));
+        }
+
+        private List<JsonObject> mapProjectionFields(
+                String bindingId, String symbol) {
+            List<JsonObject> result = new ArrayList<>();
+            for (JsonObject row : fieldObservations(bindingId, symbol)) {
+                if ("DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING"
+                        .equals(string(row, "dynamicFieldBindingKind"))) {
+                    result.add(row);
+                }
+            }
+            return result;
+        }
+
+        private List<JsonObject> dynamicBindings(String bindingId) {
+            return values(dynamicBindingsById, bindingId);
+        }
+
+        private List<JsonObject> branchesAt(String siteId) {
+            return values(branchesBySite, siteId);
+        }
+
+        private List<JsonObject> branchesAt(int rawIndex) {
+            List<JsonObject> result = branchesByRawIndex.get(rawIndex);
+            return result == null
+                    ? Collections.<JsonObject>emptyList() : result;
+        }
+
+        private List<JsonObject> branchesAt(
+                String method, int occurrence) {
+            return values(branchesByMethodOccurrence, pair(method,
+                    String.valueOf(occurrence)));
+        }
+
+        private List<JsonObject> projections(String groupId, String phase) {
+            return values(projectionsByGroupPhase, pair(groupId, phase));
+        }
+
+        private int projectionOrdinal(String groupId, String phase) {
+            Integer ordinal = projectionOrdinals.get(pair(groupId, phase));
+            return ordinal == null ? -1 : ordinal;
+        }
+
+        private int nextHeapBoundary(String method, int boundary) {
+            int next = Integer.MAX_VALUE;
+            for (JsonObject row : values(heapByMethod, method)) {
+                int candidate = integer(row, "pcBoundary", -1);
+                if (candidate > boundary && candidate < next) {
+                    next = candidate;
+                }
+            }
+            return next == Integer.MAX_VALUE ? -1 : next;
+        }
+
+        private static void index(
+                JsonArray rows, String field,
+                Map<String, List<JsonObject>> target) {
+            for (JsonElement element : rows) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String key = string(row, field);
+                add(target, key, row);
+            }
+        }
+
+        private static void add(Map<String, List<JsonObject>> target,
+                                String key, JsonObject row) {
+            List<JsonObject> values = target.get(key);
+            if (values == null) {
+                values = new ArrayList<>();
+                target.put(key, values);
+            }
+            values.add(row);
+        }
+
+        private static String pair(String left, String right) {
+            return left + '\u0000' + right;
+        }
+
+        private static List<JsonObject> values(
+                Map<String, List<JsonObject>> index, String key) {
+            List<JsonObject> result = index.get(key);
+            return result == null
+                    ? Collections.<JsonObject>emptyList() : result;
+        }
+    }
+
+    /**
      * Gives the existing heap validators their canonical executionTask plus one
      * typed output member without manufacturing singular JSON fields.
      */
@@ -823,13 +1010,16 @@ public final class ConcolicSummaryImporter {
         private final JsonObject executionTask;
         private final OutputClosureContract contract;
         private final OutputClosureContract.Member member;
+        private final EvidenceIndex evidence;
 
         private OutputMemberAnalysis(
                 JsonObject executionTask, OutputClosureContract contract,
-                OutputClosureContract.Member member) {
+                OutputClosureContract.Member member,
+                EvidenceIndex evidence) {
             this.executionTask = executionTask;
             this.contract = contract;
             this.member = member;
+            this.evidence = evidence;
         }
 
         private JsonObject output() {
@@ -882,33 +1072,27 @@ public final class ConcolicSummaryImporter {
     }
 
     private static RelationalExtraction relationalExtraction(
-            JsonObject raw, JsonArray enginePathCondition,
-            PathNormalization normalization,
-            JsonArray runtimeHeapObservations,
-            JsonElement fieldObservations,
-            JsonArray dynamicFieldBindings, JsonArray rawBranchMappings,
+            JsonObject raw, PathNormalization normalization,
             JsonObject executionTask,
             OutputClosureContract contract, JsonObject region,
             String regionId, ClosureGoalKind goalKind,
             JsonArray pathCondition,
             DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
-            JsonArray engineArrayBindings) {
+            JsonArray engineArrayBindings, EvidenceIndex evidence) {
         if (contract == null) {
             OutputMemberAnalysis analysis =
-                    new OutputMemberAnalysis(executionTask, null, null);
+                    new OutputMemberAnalysis(executionTask, null, null,
+                            evidence);
             HeapEffectExtraction heap = extractHeapEffects(
-                    raw, enginePathCondition, normalization,
-                    runtimeHeapObservations, fieldObservations,
-                    dynamicFieldBindings, rawBranchMappings,
-                    analysis, regionId, dynamicPcFallbacks,
-                    engineArrayBindings);
+                    raw, normalization, analysis, regionId,
+                    dynamicPcFallbacks, engineArrayBindings);
             OutputExpressionExtraction output = outputExpressions(
-                    raw, analysis, goalKind, normalization);
+                    raw, analysis, goalKind, normalization, evidence);
             InputAdmission inputs = inputAdmission(raw,
                     analysis, goalKind.capturesOutputRelation(),
-                    heap.staticCoverage, pathCondition, output);
+                    heap.staticCoverage, pathCondition, output, evidence);
             ReplayAdmission replay = replayAdmission(raw,
-                    executionTask, region, goalKind);
+                    executionTask, region, goalKind, evidence);
             heap.bindOutputExpressions(output.expressions);
             return RelationalExtraction.single(
                     heap, output, inputs, replay);
@@ -925,22 +1109,20 @@ public final class ConcolicSummaryImporter {
         List<String> outputIssues = new ArrayList<>();
         List<InputAdmission> inputAdmissions = new ArrayList<>();
         boolean heapComplete = true;
-        boolean outputComplete = true;
         ReplayAdmission replay = replayAdmission(
-                raw, executionTask, region, goalKind);
+                raw, executionTask, region, goalKind, evidence);
 
         for (OutputClosureContract.Member member : contract.members()) {
             OutputMemberAnalysis analysis =
-                    new OutputMemberAnalysis(executionTask, contract, member);
+                    new OutputMemberAnalysis(executionTask, contract, member,
+                            evidence);
             HeapEffectExtraction heap = extractHeapEffects(
-                    raw, enginePathCondition, normalization,
-                    runtimeHeapObservations, fieldObservations,
-                    dynamicFieldBindings, rawBranchMappings, analysis,
-                    regionId, dynamicPcFallbacks, engineArrayBindings);
+                    raw, normalization, analysis, regionId,
+                    dynamicPcFallbacks, engineArrayBindings);
             OutputExpressionExtraction output = outputExpressions(
-                    raw, analysis, goalKind, normalization);
+                    raw, analysis, goalKind, normalization, evidence);
             InputAdmission inputs = inputAdmission(raw, analysis, true,
-                    heap.staticCoverage, pathCondition, output);
+                    heap.staticCoverage, pathCondition, output, evidence);
 
             for (Map.Entry<String, JsonElement> entry
                     : output.expressions.entrySet()) {
@@ -955,10 +1137,6 @@ public final class ConcolicSummaryImporter {
             }
             for (String issue : output.issues) {
                 outputIssues.add(member.portId() + ":" + issue);
-            }
-            if (!output.complete && output.issues.isEmpty()) {
-                outputIssues.add(member.portId()
-                        + ":INCOMPLETE_MEMBER_OUTPUT_EXPRESSION");
             }
             heapComplete &= appendUniqueByIdentity(initializers,
                     heap.initializers, "initializerId",
@@ -980,15 +1158,13 @@ public final class ConcolicSummaryImporter {
                 if (heapIssueKeys.add(key)) heapIssues.add(issue);
             }
             heapComplete &= heap.complete();
-            outputComplete &= output.complete;
             inputAdmissions.add(inputs);
         }
 
         outputIssues.addAll(observedCaptureBijectionIssues(
-                raw, executionTask, contract));
+                raw, executionTask, contract, evidence));
         OutputExpressionExtraction output =
                 new OutputExpressionExtraction(expressions,
-                        outputComplete && outputIssues.isEmpty(),
                         outputIssues, "JOINT_EXACT_OUTPUT_CAPTURES");
         return new RelationalExtraction(initializers, effects,
                 observations, snapshots, bindings, heapIssues,
@@ -998,21 +1174,21 @@ public final class ConcolicSummaryImporter {
 
     private static List<String> observedCaptureBijectionIssues(
             JsonObject raw, JsonObject executionTask,
-            OutputClosureContract contract) {
+            OutputClosureContract contract, EvidenceIndex evidence) {
         List<String> issues = new ArrayList<>();
         JsonArray requests = new JsonArray();
         for (OutputClosureContract.Member member : contract.members()) {
             OutputMemberAnalysis analysis = new OutputMemberAnalysis(
-                    executionTask, contract, member);
+                    executionTask, contract, member, evidence);
             if (frameConditionDischarge(raw, analysis,
-                    member.portId()).complete) {
+                    member.portId(), evidence).expression != null) {
                 continue;
             }
             for (JsonElement request : member.captures()) {
                 requests.add(request.deepCopy());
             }
         }
-        JsonArray observed = array(raw, "outputCaptures");
+        JsonArray observed = evidence.outputCaptures;
         if (observed.size() != requests.size()) {
             issues.add("OUTPUT_CAPTURE_CARDINALITY_MISMATCH:"
                     + observed.size() + ":" + requests.size());
@@ -1093,14 +1269,12 @@ public final class ConcolicSummaryImporter {
 
     private static InputAdmission mergeInputAdmissions(
             List<InputAdmission> values) {
-        boolean complete = true;
         Set<String> globalRequired = new LinkedHashSet<>();
         Set<String> required = new LinkedHashSet<>();
         Set<String> placeholders = new LinkedHashSet<>();
         JsonArray requirements = new JsonArray();
         JsonArray failures = new JsonArray();
         for (InputAdmission value : values) {
-            complete &= value.complete;
             globalRequired.addAll(value.globalRequired);
             required.addAll(value.required);
             placeholders.addAll(value.admittedVmIntrinsicPlaceholders);
@@ -1108,14 +1282,14 @@ public final class ConcolicSummaryImporter {
                     value.unforcedEnvironmentValidationRequirements);
             appendUnique(failures, value.failures);
         }
-        return new InputAdmission(complete, globalRequired, required,
+        return new InputAdmission(globalRequired, required,
                 placeholders, requirements, failures);
     }
 
     private static OutputExpressionExtraction outputExpressions(
             JsonObject raw, OutputMemberAnalysis analysis,
             ClosureGoalKind goalKind,
-            PathNormalization normalization) {
+            PathNormalization normalization, EvidenceIndex evidence) {
         JsonObject result = new JsonObject();
         JsonElement rootExpression = copy(raw.get("rootOutputExpression"),
                 new JsonObject());
@@ -1133,7 +1307,7 @@ public final class ConcolicSummaryImporter {
                 || fieldAssignmentCapture);
         if (exactRequestedCapture) {
             return exactOutputCaptureExpressions(raw, analysis,
-                    requestedPort, normalization);
+                    requestedPort, normalization, evidence);
         }
         if (requestedPort.isEmpty()) {
             result.add("$rootOutput", rootExpression.deepCopy());
@@ -1171,14 +1345,14 @@ public final class ConcolicSummaryImporter {
     private static OutputExpressionExtraction exactOutputCaptureExpressions(
             JsonObject raw, OutputMemberAnalysis analysis,
             String requestedPort,
-            PathNormalization normalization) {
+            PathNormalization normalization, EvidenceIndex evidence) {
         JsonObject executionTask = analysis.executionTask;
         JsonObject expressions = new JsonObject();
         List<String> issues = new ArrayList<>();
         if (requestedPort.isEmpty()) {
             issues.add("MISSING_REQUESTED_OUTPUT_PORT");
-            return new OutputExpressionExtraction(expressions, false,
-                    issues, "EXACT_CALL_ARGUMENT");
+            return new OutputExpressionExtraction(expressions, issues,
+                    "EXACT_CALL_ARGUMENT");
         }
         List<JsonObject> requests = new ArrayList<>();
         for (JsonElement element : analysis.captures()) {
@@ -1216,9 +1390,7 @@ public final class ConcolicSummaryImporter {
 
         List<JsonObject> matches = new ArrayList<>();
         for (JsonObject request : requests) {
-            for (JsonElement element : array(raw, "outputCaptures")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject capture = element.getAsJsonObject();
+            for (JsonObject capture : evidence.captureCandidates(request)) {
                 if (exactOutputCaptureMatch(request, capture)) {
                     matches.add(capture);
                 }
@@ -1226,15 +1398,16 @@ public final class ConcolicSummaryImporter {
         }
         FrameConditionDischarge frame = fieldAssignment
                 && matches.isEmpty()
-                ? frameConditionDischarge(raw, analysis, requestedPort)
+                ? frameConditionDischarge(raw, analysis, requestedPort,
+                evidence)
                 : FrameConditionDischarge.notApplicable();
-        if (matches.size() != 1 && !frame.complete) {
+        if (matches.size() != 1 && frame.expression == null) {
             issues.add(matches.isEmpty()
                     ? "MISSING_EXACT_OUTPUT_EXPRESSION_CAPTURE"
                     : "AMBIGUOUS_EXACT_OUTPUT_EXPRESSION_CAPTURE:"
                     + matches.size());
         }
-        JsonElement expression = frame.complete ? frame.expression
+        JsonElement expression = frame.expression != null ? frame.expression
                 : matches.size() == 1
                 ? matches.get(0).get("expression") : null;
         ProjectedFieldOutputDischarge projectedFieldDischarge =
@@ -1243,7 +1416,7 @@ public final class ConcolicSummaryImporter {
                         ? projectedFieldOutputDischarge(requests.get(0),
                         matches.get(0), analysis)
                         : ProjectedFieldOutputDischarge.notApplicable();
-        if (projectedFieldDischarge.complete) {
+        if (projectedFieldDischarge.expression != null) {
             expression = projectedFieldDischarge.expression;
         } else if (matches.size() == 1 && !bool(matches.get(0),
                 "expressionCaptured", false)) {
@@ -1269,8 +1442,8 @@ public final class ConcolicSummaryImporter {
         collectSymbolicExpressionSymbols(expression, expressionSymbols);
         ExactPathGuardDependency pathGuardDependency = fieldAssignment
                 && isConstantExpression(expression)
-                        ? exactVmPathGuardDependency(raw, analysis,
-                        sliceInputs, normalization)
+                        ? exactVmPathGuardDependency(analysis, sliceInputs,
+                        normalization)
                         : ExactPathGuardDependency.notApplicable();
         boolean guardedConstant = pathGuardDependency.complete;
         boolean dependsOnSliceInput = false;
@@ -1310,9 +1483,9 @@ public final class ConcolicSummaryImporter {
         }
         String authority;
         if (fieldAssignment) {
-            authority = frame.complete
+            authority = frame.expression != null
                     ? frame.authority
-                    : projectedFieldDischarge.complete
+                    : projectedFieldDischarge.expression != null
                     ? projectedFieldDischarge.authority
                     : guardedConstant
                     ? "EXACT_FIELD_ASSIGNMENT_RHS_WITH_VM_ATTESTED_PATH_GUARD"
@@ -1320,8 +1493,7 @@ public final class ConcolicSummaryImporter {
         } else {
             authority = "EXACT_CALL_ARGUMENT";
         }
-        return new OutputExpressionExtraction(expressions,
-                issues.isEmpty(), issues, authority);
+        return new OutputExpressionExtraction(expressions, issues, authority);
     }
 
     /**
@@ -1332,7 +1504,7 @@ public final class ConcolicSummaryImporter {
      */
     private static FrameConditionDischarge frameConditionDischarge(
             JsonObject raw, OutputMemberAnalysis analysis,
-            String requestedPort) {
+            String requestedPort, EvidenceIndex evidence) {
         if (!"NORMAL".equals(string(raw, "exitKind"))
                 || requestedPort.isEmpty()) {
             return FrameConditionDischarge.notApplicable();
@@ -1354,11 +1526,8 @@ public final class ConcolicSummaryImporter {
                     || count.getAsInt() != 0) {
                 return FrameConditionDischarge.notApplicable();
             }
-            for (JsonElement captureElement : array(raw,
-                    "outputCaptures")) {
-                if (captureElement.isJsonObject()
-                        && exactOutputCaptureMatch(request,
-                        captureElement.getAsJsonObject())) {
+            for (JsonObject capture : evidence.captureCandidates(request)) {
+                if (exactOutputCaptureMatch(request, capture)) {
                     observedCaptures++;
                 }
             }
@@ -1387,12 +1556,8 @@ public final class ConcolicSummaryImporter {
         }
 
         int actions = 0;
-        for (JsonElement element : InputActionCatalog.decode(
-                analysis.executionTask).all()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            if (inputPort.equals(string(action, "symbol"))
-                    && "HEAP_PRESTATE".equals(string(action,
+        for (JsonObject action : evidence.actions(inputPort)) {
+            if ("HEAP_PRESTATE".equals(string(action,
                     "sourceKind"))
                     && "RECEIVER_FIELD".equals(string(action,
                     "location"))
@@ -1407,8 +1572,7 @@ public final class ConcolicSummaryImporter {
 
         String rawSymbol = "";
         int symbols = 0;
-        for (String candidate : primitiveStrings(array(raw,
-                "symbolizedInputs"))) {
+        for (String candidate : evidence.symbolizedInputs) {
             if (candidate.equals(inputPort)
                     || candidate.startsWith(inputPort + ".")) {
                 rawSymbol = candidate;
@@ -1430,7 +1594,7 @@ public final class ConcolicSummaryImporter {
         expression.addProperty("_java_type", descriptor);
         expression.addProperty("_exp", rawSymbol);
         return new FrameConditionDischarge(expression,
-                "EXACT_HEAP_PRESTATE_FRAME_CONDITION", true);
+                "EXACT_HEAP_PRESTATE_FRAME_CONDITION");
     }
 
     /**
@@ -1723,42 +1887,35 @@ public final class ConcolicSummaryImporter {
     private static final class FrameConditionDischarge {
         private final JsonObject expression;
         private final String authority;
-        private final boolean complete;
 
         private FrameConditionDischarge(JsonObject expression,
-                                        String authority,
-                                        boolean complete) {
+                                        String authority) {
             this.expression = expression;
             this.authority = authority;
-            this.complete = complete;
         }
 
         private static FrameConditionDischarge notApplicable() {
-            return new FrameConditionDischarge(null, "", false);
+            return new FrameConditionDischarge(null, "");
         }
     }
 
     private static final class ProjectedFieldOutputDischarge {
-        private final boolean complete;
         private final JsonObject expression;
         private final String authority;
 
-        private ProjectedFieldOutputDischarge(boolean complete,
-                                              JsonObject expression,
+        private ProjectedFieldOutputDischarge(JsonObject expression,
                                               String authority) {
-            this.complete = complete;
             this.expression = expression;
             this.authority = authority;
         }
 
         private static ProjectedFieldOutputDischarge notApplicable() {
-            return new ProjectedFieldOutputDischarge(false, null, "");
+            return new ProjectedFieldOutputDischarge(null, "");
         }
 
         private static ProjectedFieldOutputDischarge complete(
                 JsonObject expression, String authority) {
-            return new ProjectedFieldOutputDischarge(true, expression,
-                    authority);
+            return new ProjectedFieldOutputDischarge(expression, authority);
         }
     }
 
@@ -1861,12 +2018,10 @@ public final class ConcolicSummaryImporter {
      * PC index cannot turn a concrete value into a summary relation.
      */
     private static ExactPathGuardDependency exactVmPathGuardDependency(
-            JsonObject raw, OutputMemberAnalysis analysis,
-            Set<String> sliceInputs,
+            OutputMemberAnalysis analysis, Set<String> sliceInputs,
             PathNormalization normalization) {
         List<String> issues = new ArrayList<>();
-        JsonArray enginePath = array(object(raw, "engineSummary"),
-                "pathCondition");
+        JsonArray enginePath = analysis.evidence.enginePathCondition;
         Set<String> sliceMethods = new LinkedHashSet<>();
         for (JsonElement method : array(analysis.slice(), "methods")) {
             if (method.isJsonPrimitive()) {
@@ -1878,7 +2033,7 @@ public final class ConcolicSummaryImporter {
         }
         int mappedCount = 0;
         boolean dependsOnSliceInput = false;
-        for (JsonElement element : array(raw, "branchMappings")) {
+        for (JsonElement element : analysis.evidence.branchMappings) {
             if (!element.isJsonObject()) continue;
             JsonObject mapping = element.getAsJsonObject();
             BranchWitness witness = branchWitness(mapping);
@@ -2457,23 +2612,20 @@ public final class ConcolicSummaryImporter {
 
     private static final class OutputExpressionExtraction {
         private final JsonObject expressions;
-        private final boolean complete;
         private final List<String> issues;
         private final String authority;
 
         private OutputExpressionExtraction(JsonObject expressions,
-                                           boolean complete,
                                            List<String> issues,
                                            String authority) {
             this.expressions = expressions;
-            this.complete = complete;
             this.issues = new ArrayList<>(issues);
             this.authority = authority;
         }
 
         private static OutputExpressionExtraction complete(
                 JsonObject expressions, String authority) {
-            return new OutputExpressionExtraction(expressions, true,
+            return new OutputExpressionExtraction(expressions,
                     Collections.<String>emptyList(), authority);
         }
 
@@ -2528,7 +2680,8 @@ public final class ConcolicSummaryImporter {
             Map<Integer, JsonElement> semanticBranchConditions,
             boolean requireMappedBranches, JsonObject executionTask,
             OutputClosureContract outputContract,
-            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks) {
+            DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
+            EvidenceIndex evidence) {
         JsonArray result = new JsonArray();
         int[] rawToNormalized = new int[raw.size()];
         String[] statuses = new String[raw.size()];
@@ -2553,7 +2706,7 @@ public final class ConcolicSummaryImporter {
             String rejection = admission.rejectionReason(codePosition);
             if (!rejection.isEmpty()
                     && requestedHeapMutationAdmission(rawCondition,
-                    executionTask, outputContract)) {
+                    executionTask, outputContract, evidence)) {
                 rejection = "";
             }
             if (rejection.isEmpty() && requireMappedBranches
@@ -2808,20 +2961,17 @@ public final class ConcolicSummaryImporter {
      * branch site supplies one unambiguous JVM-to-Jimple operator template.
      */
     private static DynamicSemanticPcFallbackCatalog dynamicSemanticPcFallbacks(
-            JsonObject raw, JsonObject executionTask, JsonArray pathCondition,
-            JsonArray branchMappings, PathAdmissionPolicy admission) {
+            JsonObject executionTask, JsonArray pathCondition,
+            PathAdmissionPolicy admission, EvidenceIndex evidence) {
         Map<String, DynamicSemanticPcFallback> byDynamic =
                 new LinkedHashMap<>();
         Map<Integer, DynamicSemanticPcFallback> byRaw =
                 new LinkedHashMap<>();
         Set<String> ambiguousDynamics = new LinkedHashSet<>();
         Set<Integer> ambiguousRawIndices = new LinkedHashSet<>();
-        JsonArray bindings = array(raw, "dynamicFieldBindings");
-        JsonArray heapReads = array(raw, "runtimeHeapObservations");
-        JsonArray fieldObservations = array(raw, "fieldObservations");
         String taskId = string(executionTask, "taskId");
 
-        for (JsonElement bindingElement : bindings) {
+        for (JsonElement bindingElement : evidence.dynamicFieldBindings) {
             if (!bindingElement.isJsonObject()) continue;
             JsonObject binding = bindingElement.getAsJsonObject();
             if (integer(binding, "schemaVersion", -1) != 1
@@ -2858,11 +3008,9 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
 
-            List<JsonObject> reads = objectsWithField(heapReads,
-                    "observationId", entryReadId);
-            List<JsonObject> fields =
-                    fieldObservationsForDynamicBinding(fieldObservations,
-                            bindingId, dynamic);
+            List<JsonObject> reads = evidence.heapObservations(entryReadId);
+            List<JsonObject> fields = evidence.fieldObservations(bindingId,
+                    dynamic);
             if (reads.size() != 1 || fields.size() != 1) continue;
             JsonObject read = reads.get(0);
             JsonObject field = fields.get(0);
@@ -2892,14 +3040,9 @@ public final class ConcolicSummaryImporter {
             if (!identityJoin) continue;
 
             List<JsonObject> targets = new ArrayList<>();
-            for (JsonElement mappingElement : branchMappings) {
-                if (!mappingElement.isJsonObject()) continue;
-                JsonObject mapping = mappingElement.getAsJsonObject();
-                int rawIndex = integer(mapping, "rawConditionIndex", -1);
-                if (rawIndex < 0
-                        && occurrence == integer(mapping,
-                        "occurrence", -1)
-                        && originMethod.equals(string(mapping, "method"))
+            for (JsonObject mapping : evidence.branchesAt(originMethod,
+                    occurrence)) {
+                if (integer(mapping, "rawConditionIndex", -1) < 0
                         && !string(mapping, "siteId").isEmpty()) {
                     targets.add(mapping);
                 }
@@ -2915,8 +3058,8 @@ public final class ConcolicSummaryImporter {
                     || pcBoundary < baseline || pcBoundary >= boundary) {
                 continue;
             }
-            int nextEntryBoundary = nextEntryReadBoundary(heapReads,
-                    originMethod, pcBoundary);
+            int nextEntryBoundary = evidence.nextHeapBoundary(originMethod,
+                    pcBoundary);
             int upper = nextEntryBoundary > pcBoundary
                     ? Math.min(boundary, nextEntryBoundary) : boundary;
             String descriptor = javaTypeDescriptor(fieldJavaType(
@@ -2949,11 +3092,8 @@ public final class ConcolicSummaryImporter {
 
             Set<String> semanticOperators = new LinkedHashSet<>();
             String branchSiteId = string(target, "siteId");
-            for (JsonElement mappingElement : branchMappings) {
-                if (!mappingElement.isJsonObject()) continue;
-                JsonObject sibling = mappingElement.getAsJsonObject();
-                if (!branchSiteId.equals(string(sibling, "siteId"))
-                        || integer(sibling, "rawConditionIndex", -1) < 0
+            for (JsonObject sibling : evidence.branchesAt(branchSiteId)) {
+                if (integer(sibling, "rawConditionIndex", -1) < 0
                         || bool(sibling, "observedOutcome", false)
                         != bool(target, "observedOutcome", false)
                         || !candidate.codePosition.equals(firstNonBlank(
@@ -3016,33 +3156,6 @@ public final class ConcolicSummaryImporter {
         return new DynamicSemanticPcFallbackCatalog(byDynamic, byRaw);
     }
 
-    private static List<JsonObject> objectsWithField(
-            JsonArray values, String field, String expected) {
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonElement element : values) {
-            if (element.isJsonObject() && expected.equals(string(
-                    element.getAsJsonObject(), field))) {
-                result.add(element.getAsJsonObject());
-            }
-        }
-        return result;
-    }
-
-    private static int nextEntryReadBoundary(JsonArray observations,
-                                             String method, int boundary) {
-        int next = Integer.MAX_VALUE;
-        for (JsonElement element : observations) {
-            if (!element.isJsonObject()) continue;
-            JsonObject observation = element.getAsJsonObject();
-            int candidate = integer(observation, "pcBoundary", -1);
-            if (method.equals(string(observation, "originMethod"))
-                    && candidate > boundary && candidate < next) {
-                next = candidate;
-            }
-        }
-        return next == Integer.MAX_VALUE ? -1 : next;
-    }
-
     private static List<JsonObject> exactRawSymbolExpressions(
             JsonElement expression, String exactRawSymbol) {
         List<JsonObject> result = new ArrayList<>();
@@ -3080,7 +3193,7 @@ public final class ConcolicSummaryImporter {
 
     private static boolean requestedHeapMutationAdmission(
             JsonElement condition, JsonObject executionTask,
-            OutputClosureContract outputContract) {
+            OutputClosureContract outputContract, EvidenceIndex evidence) {
         if (condition == null || !condition.isJsonObject()
                 || outputContract == null) {
             return false;
@@ -3106,10 +3219,11 @@ public final class ConcolicSummaryImporter {
                 : outputContract.members()) {
             OutputMemberAnalysis analysis =
                     new OutputMemberAnalysis(executionTask, outputContract,
-                            member);
+                            member, evidence);
             if (nestedOutputSliceContractComplete(analysis.slice())
                     && new HeapPortResolver(analysis)
-                    .requestedOutputBinding(parameters.get(0)).resolved) {
+                    .requestedOutputBinding(parameters.get(0))
+                    .outputPort.length() != 0) {
                 matches++;
             }
         }
@@ -3260,15 +3374,13 @@ public final class ConcolicSummaryImporter {
     }
 
     private static HeapEffectExtraction extractHeapEffects(
-            JsonObject raw, JsonArray rawPathCondition,
-            PathNormalization normalization,
-            JsonArray runtimeHeapObservations,
-            JsonElement fieldObservations,
-            JsonArray dynamicFieldBindings, JsonArray rawBranchMappings,
+            JsonObject raw, PathNormalization normalization,
             OutputMemberAnalysis analysis, String regionId,
             DynamicSemanticPcFallbackCatalog dynamicPcFallbacks,
             JsonArray engineArrayInputBindings) {
         JsonObject executionTask = analysis.executionTask;
+        EvidenceIndex evidence = analysis.evidence;
+        JsonArray rawPathCondition = evidence.enginePathCondition;
         List<HeapMutation> mutations = new ArrayList<>();
         List<HeapEffectIssue> issues = new ArrayList<>();
         Map<String, Integer> occurrences = new LinkedHashMap<>();
@@ -3364,20 +3476,17 @@ public final class ConcolicSummaryImporter {
         }
 
         JsonArray selectedRuntimeHeapObservations =
-                selectRuntimeHeapObservations(runtimeHeapObservations,
-                        analysis, rawBranchMappings);
+                selectRuntimeHeapObservations(evidence.heapObservations,
+                        analysis);
         RuntimeHeapObservationCatalog observationCatalog =
                 validateRuntimeHeapObservations(rawPathCondition,
-                        selectedRuntimeHeapObservations,
-                        executionTask, raw);
+                        selectedRuntimeHeapObservations, executionTask,
+                        evidence);
         issues.addAll(observationCatalog.issues);
         HeapPortResolver ports = new HeapPortResolver(analysis);
         DynamicFieldBindingCatalog dynamicBindingCatalog =
-                validateDynamicFieldBindings(dynamicFieldBindings,
-                        observationCatalog, analysis, fieldObservations,
-                        rawBranchMappings, raw.get(
-                        "mapValueElementProjectionObservations"),
-                        raw.get("symbolizedInputs"), mutations, ports);
+                validateDynamicFieldBindings(observationCatalog, analysis,
+                        mutations, ports);
         issues.addAll(dynamicBindingCatalog.issues);
         Map<String, Integer> totals = new LinkedHashMap<>();
         for (HeapMutation mutation : mutations) {
@@ -3491,7 +3600,7 @@ public final class ConcolicSummaryImporter {
 
         HeapObservationExtraction heapObservations =
                 materializeHeapObservations(observationCatalog, effects,
-                        ports, analysis, rawBranchMappings,
+                        ports, analysis, evidence.branchMappings,
                         dynamicBindingCatalog,
                         rawPathCondition, normalization,
                         dynamicPcFallbacks, regionId,
@@ -3500,13 +3609,14 @@ public final class ConcolicSummaryImporter {
                                 && unsupportedCount == 0
                                 && malformedCount == 0
                                 && selectedRuntimeHeapObservations.size()
-                                == runtimeHeapObservations.size()
+                                == evidence.heapObservations.size()
                                 && !supportedMapStateField(string(
                                 analysis.output(), "cell")));
         issues.addAll(heapObservations.issues);
         JsonArray finiteMapSnapshots = runtimeMapInputSnapshots.deepCopy();
         JsonArray entryReadSnapshots = exactRuntimeFiniteMapSnapshots(
-                fieldObservations, heapObservations.observations, effects,
+                evidence.fieldObservations, heapObservations.observations,
+                effects,
                 executionTask);
         for (JsonElement snapshot : entryReadSnapshots) {
             finiteMapSnapshots.add(snapshot.deepCopy());
@@ -3516,11 +3626,11 @@ public final class ConcolicSummaryImporter {
                 hasOutputCaptureKind(analysis, "FIELD_ASSIGNMENT_RHS")
                         ? exactOutputCaptureExpressions(raw, analysis,
                         string(analysis.output(), "portId"),
-                        normalization)
+                        normalization, evidence)
                         : null;
         StaticHeapTransformerCoverage staticCoverage =
                 staticHeapTransformerCoverage(analysis, effects,
-                        rawBranchMappings, fieldAssignmentCapture,
+                        evidence.branchMappings, fieldAssignmentCapture,
                         rawPathCondition, normalization,
                         dynamicBindingCatalog.normalizedBindings(),
                         engineArrayInputBindings,
@@ -3984,13 +4094,12 @@ public final class ConcolicSummaryImporter {
      */
     private static JsonArray selectRuntimeHeapObservations(
             JsonArray observations,
-            OutputMemberAnalysis analysis, JsonArray branchMappings) {
+            OutputMemberAnalysis analysis) {
         JsonArray selectedObservations = new JsonArray();
         for (JsonElement element : observations) {
             if (!element.isJsonObject()
                     || !outsideRequestedOutputSlice(
-                    element.getAsJsonObject(), analysis,
-                    branchMappings)) {
+                    element.getAsJsonObject(), analysis)) {
                 selectedObservations.add(element.deepCopy());
                 continue;
             }
@@ -3999,8 +4108,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static boolean outsideRequestedOutputSlice(
-            JsonObject record, OutputMemberAnalysis analysis,
-            JsonArray branchMappings) {
+            JsonObject record, OutputMemberAnalysis analysis) {
         String kind = string(record, "kind");
         if (!("MAP_ENTRY_READ".equals(kind)
                 || "FINITE_MAP_ENTRY_SNAPSHOT".equals(kind))) {
@@ -4037,14 +4145,10 @@ public final class ConcolicSummaryImporter {
         int conditionIndex = integer(record, "rawPathConditionBoundary",
                 integer(record, "pcBoundary", -1));
         if (conditionIndex >= 0) {
-            for (JsonElement element : branchMappings) {
-                if (!element.isJsonObject()) continue;
-                JsonObject mapping = element.getAsJsonObject();
-                if (integer(mapping, "rawConditionIndex", -1)
-                        == conditionIndex) {
-                    String site = string(mapping, "siteId");
-                    if (!site.isEmpty()) evidenceSites.add(site);
-                }
+            for (JsonObject mapping
+                    : analysis.evidence.branchesAt(conditionIndex)) {
+                String site = string(mapping, "siteId");
+                if (!site.isEmpty()) evidenceSites.add(site);
             }
         }
         return !evidenceSites.isEmpty()
@@ -4110,7 +4214,7 @@ public final class ConcolicSummaryImporter {
 
     private static RuntimeHeapObservationCatalog validateRuntimeHeapObservations(
             JsonArray rawPathCondition, JsonArray records,
-            JsonObject executionTask, JsonObject raw) {
+            JsonObject executionTask, EvidenceIndex evidence) {
         String taskId = string(executionTask, "taskId");
         List<HeapEffectIssue> issues = new ArrayList<>();
         Map<String, RuntimeHeapObservation> byId = new LinkedHashMap<>();
@@ -4139,10 +4243,11 @@ public final class ConcolicSummaryImporter {
                 long eventSequence = longInteger(record,
                         "eventSequence", -1L);
                 JsonObject action = uniqueObservationInputAction(
-                        executionTask, symbol,
+                        evidence, symbol,
                         "MAP_STATE_INPUT_OBSERVATION");
                 long selectedToken = action == null ? -1L
-                        : exactFirstContainerSelectionToken(raw, action);
+                        : exactFirstContainerSelectionToken(evidence,
+                        action);
                 boolean complete = action != null && selectedToken > 0L
                         && completeMapStateInputObservation(record,
                         executionTask, action, selectedToken);
@@ -4272,14 +4377,11 @@ public final class ConcolicSummaryImporter {
     }
 
     private static JsonObject uniqueObservationInputAction(
-            JsonObject executionTask, String symbol, String bindingMode) {
+            EvidenceIndex evidence, String symbol, String bindingMode) {
         JsonObject match = null;
-        for (JsonElement element : runtimeMaterializationActions(executionTask)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            if (!symbol.equals(string(action, "symbol"))
-                    || !bindingMode.equals(string(action,
-                    "bindingMode"))) {
+        for (JsonObject action : evidence.actions(symbol)) {
+            if (!"SYMBOLIC".equals(string(action, "mode"))
+                    || !bindingMode.equals(string(action, "bindingMode"))) {
                 continue;
             }
             if (match != null) return null;
@@ -4705,50 +4807,15 @@ public final class ConcolicSummaryImporter {
      * replay identity.
      */
     private static DynamicFieldBindingCatalog validateDynamicFieldBindings(
-            JsonArray records,
             RuntimeHeapObservationCatalog observations,
-            OutputMemberAnalysis analysis, JsonElement fieldObservations,
-            JsonArray branchMappings,
-            JsonElement mapProjectionObservations,
-            JsonElement symbolizedInputs, List<HeapMutation> mutations,
+            OutputMemberAnalysis analysis, List<HeapMutation> mutations,
             HeapPortResolver ports) {
         JsonObject executionTask = analysis.executionTask;
+        JsonArray records = analysis.evidence.dynamicFieldBindings;
         List<HeapEffectIssue> issues = new ArrayList<>();
         Map<String, RuntimeDynamicFieldBinding> byId = new LinkedHashMap<>();
         Map<String, RuntimeDynamicFieldBinding> byDynamicSymbol =
                 new LinkedHashMap<>();
-        Map<String, JsonObject> actions = new LinkedHashMap<>();
-        Set<String> duplicateActions = new LinkedHashSet<>();
-        for (JsonElement element : runtimeMaterializationActions(
-                executionTask)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            String symbol = string(action, "symbol");
-            String bindingMode = string(action, "bindingMode");
-            if (!("FIELD_ACCESS".equals(bindingMode)
-                    || "CONTAINER_INPUT_OBSERVATION".equals(bindingMode))
-                    || symbol.isEmpty()) {
-                continue;
-            }
-            if (actions.put(symbol, action) != null) {
-                duplicateActions.add(symbol);
-            }
-        }
-        Map<String, JsonObject> declaredActions = new LinkedHashMap<>();
-        Set<String> duplicateDeclaredActions = new LinkedHashSet<>();
-        for (JsonElement element : InputActionCatalog.decode(
-                executionTask).all()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            String symbol = string(action, "symbol");
-            if (!"FIELD_ACCESS".equals(string(action, "bindingMode"))
-                    || symbol.isEmpty()) {
-                continue;
-            }
-            if (declaredActions.put(symbol, action) != null) {
-                duplicateDeclaredActions.add(symbol);
-            }
-        }
 
         Set<String> siteOccurrences = new LinkedHashSet<>();
         Set<String> entryBasePairs = new LinkedHashSet<>();
@@ -4793,9 +4860,8 @@ public final class ConcolicSummaryImporter {
                 }
                 MapProjectionDynamicFieldValidation validated =
                         validateMapProjectionDynamicFieldBinding(record,
-                                analysis, fieldObservations,
-                                mapProjectionObservations,
-                                symbolizedInputs);
+                                analysis,
+                                analysis.evidence.rawSymbolizedInputs);
                 String bindingId = string(record, "dynamicBindingId");
                 String dynamic = string(record, "dynamicFieldSymbol");
                 if (validated == null) {
@@ -4857,10 +4923,7 @@ public final class ConcolicSummaryImporter {
                 }
                 ContainerDynamicFieldValidation validated =
                         validateContainerDynamicFieldBinding(record,
-                                analysis, actions, duplicateActions,
-                                declaredActions, duplicateDeclaredActions,
-                                fieldObservations, branchMappings,
-                                symbolizedInputs, mutations, ports);
+                                analysis, mutations, ports);
                 String bindingId = string(record, "dynamicBindingId");
                 String dynamic = string(record, "dynamicFieldSymbol");
                 if (validated == null) {
@@ -4902,7 +4965,8 @@ public final class ConcolicSummaryImporter {
             long entryValueOwnerToken = longInteger(record,
                     "entryValueOwnerObjectToken", 0L);
             String keyAuthority = string(record, "keyExpressionAuthority");
-            JsonObject action = actions.get(base);
+            JsonObject action = analysis.evidence.uniqueAction(base, true,
+                    "FIELD_ACCESS", "CONTAINER_INPUT_OBSERVATION");
             RuntimeHeapObservation entryRead = observations.byId.get(
                     entryReadId);
             String expectedDynamic = base.isEmpty() || site.isEmpty()
@@ -4939,7 +5003,7 @@ public final class ConcolicSummaryImporter {
                     && "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
                     .concat("FIELD_SITE_OCCURRENCE").equals(string(record,
                     "authority"));
-            if (action == null || duplicateActions.contains(base)
+            if (action == null
                     || !fieldSignature.equals(firstNonBlank(string(action,
                     "field"), string(action, "cell")))
                     || !array(record, "fieldPath").equals(array(action,
@@ -4972,8 +5036,7 @@ public final class ConcolicSummaryImporter {
             }
 
             List<JsonObject> fieldCandidates =
-                    fieldObservationsForDynamicBinding(fieldObservations,
-                            bindingId, dynamic);
+                    analysis.evidence.fieldObservations(bindingId, dynamic);
             if (fieldCandidates.size() != 1
                     || !completeDynamicFieldObservation(
                     fieldCandidates.isEmpty() ? null : fieldCandidates.get(0),
@@ -5072,8 +5135,6 @@ public final class ConcolicSummaryImporter {
     private static MapProjectionDynamicFieldValidation
     validateMapProjectionDynamicFieldBinding(
             JsonObject record, OutputMemberAnalysis analysis,
-            JsonElement fieldObservations,
-            JsonElement projectionObservations,
             JsonElement symbolizedInputs) {
         JsonObject executionTask = analysis.executionTask;
         String taskId = string(executionTask, "taskId");
@@ -5162,8 +5223,7 @@ public final class ConcolicSummaryImporter {
                 fieldJavaType(signature)));
 
         List<JsonObject> mapActions = new ArrayList<>();
-        for (JsonElement element : runtimeMaterializationActions(
-                executionTask)) {
+        for (JsonElement element : analysis.evidence.inputActions.symbolic()) {
             if (element.isJsonObject() && mapPort.equals(string(
                     element.getAsJsonObject(), "symbol"))) {
                 mapActions.add(element.getAsJsonObject());
@@ -5248,10 +5308,9 @@ public final class ConcolicSummaryImporter {
                         selector, "authority"))
                 && bool(selector, "complete", false);
 
-        List<JsonObject> entries = projectionObservations(
-                projectionObservations, groupId, "ENTRY_SNAPSHOT");
-        List<JsonObject> outputs = projectionObservations(
-                projectionObservations, groupId,
+        List<JsonObject> entries = analysis.evidence.projections(groupId,
+                "ENTRY_SNAPSHOT");
+        List<JsonObject> outputs = analysis.evidence.projections(groupId,
                 "OUTPUT_IDENTITY_VALIDATION");
         if (entries.size() != 1 || outputs.size() != 1) return null;
         JsonObject entry = entries.get(0);
@@ -5303,10 +5362,10 @@ public final class ConcolicSummaryImporter {
                 == longInteger(selector, "mapObjectToken", 0L)
                 && longInteger(output, "mapObjectToken", 0L)
                 == longInteger(selector, "mapObjectToken", 0L);
-        complete &= projectionObservationOrdinal(projectionObservations,
-                groupId, "ENTRY_SNAPSHOT")
-                < projectionObservationOrdinal(projectionObservations,
-                groupId, "OUTPUT_IDENTITY_VALIDATION");
+        complete &= analysis.evidence.projectionOrdinal(groupId,
+                "ENTRY_SNAPSHOT")
+                < analysis.evidence.projectionOrdinal(groupId,
+                "OUTPUT_IDENTITY_VALIDATION");
         Set<Long> uniqueTokens = new LinkedHashSet<>();
         Set<String> uniqueKeys = new LinkedHashSet<>();
         for (int index = 0; index < snapshotTokens.size(); index++) {
@@ -5324,8 +5383,8 @@ public final class ConcolicSummaryImporter {
             if (index == outputIndex) complete &= token == leafToken;
         }
 
-        List<JsonObject> observed = mapProjectionFieldObservations(
-                fieldObservations, id, dynamic);
+        List<JsonObject> observed = analysis.evidence.mapProjectionFields(
+                id, dynamic);
         complete &= observed.size() == 1
                 && completeMapProjectionFieldObservation(
                 observed.isEmpty() ? null : observed.get(0), record,
@@ -5363,35 +5422,6 @@ public final class ConcolicSummaryImporter {
                         + "\u0000" + longInteger(selector,
                         "outputArrayObjectToken", 0L),
                 staticBindingId, outputIndex, snapshotCount);
-    }
-
-    private static List<JsonObject> projectionObservations(
-            JsonElement observations, String groupId, String phase) {
-        List<JsonObject> result = new ArrayList<>();
-        if (observations == null || !observations.isJsonArray()) return result;
-        for (JsonElement element : observations.getAsJsonArray()) {
-            if (element.isJsonObject()
-                    && groupId.equals(string(element.getAsJsonObject(),
-                    "groupId"))
-                    && phase.equals(string(element.getAsJsonObject(),
-                    "phase"))) result.add(element.getAsJsonObject());
-        }
-        return result;
-    }
-
-    private static int projectionObservationOrdinal(
-            JsonElement observations, String groupId, String phase) {
-        if (observations == null || !observations.isJsonArray()) return -1;
-        JsonArray rows = observations.getAsJsonArray();
-        for (int index = 0; index < rows.size(); index++) {
-            JsonElement element = rows.get(index);
-            if (element.isJsonObject()
-                    && groupId.equals(string(element.getAsJsonObject(),
-                    "groupId"))
-                    && phase.equals(string(element.getAsJsonObject(),
-                    "phase"))) return index;
-        }
-        return -1;
     }
 
     private static boolean validMapProjectionOutputAuthority(
@@ -5644,23 +5674,6 @@ public final class ConcolicSummaryImporter {
         return count;
     }
 
-    private static List<JsonObject> mapProjectionFieldObservations(
-            JsonElement observations, String bindingId, String dynamic) {
-        List<JsonObject> result = new ArrayList<>();
-        if (observations == null || !observations.isJsonArray()) return result;
-        for (JsonElement element : observations.getAsJsonArray()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            if (bindingId.equals(string(row, "dynamicBindingId"))
-                    && dynamic.equals(string(row, "symbol"))
-                    && "DYNAMIC_MAP_VALUE_OUTPUT_ARRAY_ELEMENT_FIELD_BINDING"
-                    .equals(string(row, "dynamicFieldBindingKind"))) {
-                result.add(row);
-            }
-        }
-        return result;
-    }
-
     /**
      * Closes the runtime container-element selector back to the exact static
      * declaration, concrete field observation, and VM guard expression.  A
@@ -5670,11 +5683,7 @@ public final class ConcolicSummaryImporter {
     private static ContainerDynamicFieldValidation
     validateContainerDynamicFieldBinding(
             JsonObject record, OutputMemberAnalysis analysis,
-            Map<String, JsonObject> actions, Set<String> duplicateActions,
-            Map<String, JsonObject> declaredActions,
-            Set<String> duplicateDeclaredActions,
-            JsonElement fieldObservations, JsonArray branchMappings,
-            JsonElement symbolizedInputs, List<HeapMutation> mutations,
+            List<HeapMutation> mutations,
             HeapPortResolver ports) {
         JsonObject executionTask = analysis.executionTask;
         String taskId = string(executionTask, "taskId");
@@ -5772,13 +5781,14 @@ public final class ConcolicSummaryImporter {
                 && bool(selector, "complete", false);
 
         JsonObject action = snapshotDeclaration
-                ? declaredActions.get(base) : actions.get(base);
-        JsonObject containerAction = actions.get(containerPort);
+                ? analysis.evidence.uniqueAction(base, false,
+                "FIELD_ACCESS")
+                : analysis.evidence.uniqueAction(base, true,
+                "FIELD_ACCESS", "CONTAINER_INPUT_OBSERVATION");
+        JsonObject containerAction = analysis.evidence.uniqueAction(
+                containerPort, true, "FIELD_ACCESS",
+                "CONTAINER_INPUT_OBSERVATION");
         complete &= action != null && containerAction != null
-                && !(snapshotDeclaration
-                ? duplicateDeclaredActions.contains(base)
-                : duplicateActions.contains(base))
-                && !duplicateActions.contains(containerPort)
                 && !base.equals(containerPort)
                 && fieldSignature.equals(firstNonBlank(string(action,
                 "field"), string(action, "cell")))
@@ -5854,8 +5864,8 @@ public final class ConcolicSummaryImporter {
         complete &= declaredOwner.equals(signatureOwner)
                 && declaredType.equals(signatureType);
 
-        List<JsonObject> observed = fieldObservationsForDynamicBinding(
-                fieldObservations, bindingId, dynamic);
+        List<JsonObject> observed = analysis.evidence.fieldObservations(
+                bindingId, dynamic);
         JsonObject observation = observed.size() == 1
                 ? observed.get(0) : null;
         complete &= observed.size() == 1
@@ -5880,11 +5890,13 @@ public final class ConcolicSummaryImporter {
         List<ContainerSnapshotBranchWitness> branchConsumers =
                 snapshotDeclaration
                         ? exactContainerSnapshotBranchWitnesses(analysis,
-                        branchMappings, dynamic, fieldSignature)
+                        analysis.evidence.branchMappings, dynamic,
+                        fieldSignature)
                         : Collections.<ContainerSnapshotBranchWitness>
                         emptyList();
         complete &= snapshotDeclaration
-                ? countString(symbolizedInputs, dynamic) == 1
+                ? countString(analysis.evidence.rawSymbolizedInputs,
+                dynamic) == 1
                 && !branchConsumers.isEmpty()
                 : consumers.size() == 1;
         if (!complete) return null;
@@ -6168,7 +6180,7 @@ public final class ConcolicSummaryImporter {
             }
             HeapPortBinding binding = ports.requestedOutputBinding(
                     mutation.mapExpression);
-            if (binding.resolved) {
+            if (!binding.outputPort.isEmpty()) {
                 result.add(new ContainerPutConsumerWitness(mutation,
                         binding));
             }
@@ -6219,24 +6231,6 @@ public final class ConcolicSummaryImporter {
 
     private static String normalizeContainerType(String type) {
         return type == null ? "" : type.trim().replace('/', '.');
-    }
-
-    private static List<JsonObject> fieldObservationsForDynamicBinding(
-            JsonElement fieldObservations, String bindingId,
-            String dynamicSymbol) {
-        List<JsonObject> result = new ArrayList<>();
-        if (fieldObservations == null || !fieldObservations.isJsonArray()) {
-            return result;
-        }
-        for (JsonElement element : fieldObservations.getAsJsonArray()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject observation = element.getAsJsonObject();
-            if (bindingId.equals(string(observation, "dynamicBindingId"))
-                    && dynamicSymbol.equals(string(observation, "symbol"))) {
-                result.add(observation);
-            }
-        }
-        return result;
     }
 
     private static boolean completeDynamicFieldObservation(
@@ -6553,19 +6547,16 @@ public final class ConcolicSummaryImporter {
 
         Set<String> expressionSymbols = new LinkedHashSet<>();
         int guardMappingCount = 0;
-        for (JsonElement element : branchMappings) {
-            if (!element.isJsonObject()) {
-                continue;
+        for (String guardSite : guardSites) {
+            for (JsonObject mapping
+                    : analysis.evidence.branchesAt(guardSite)) {
+                guardMappingCount++;
+                JsonElement condition = mapping.has("condition")
+                        ? mapping.get("condition")
+                        : mapping.get("rawCondition");
+                HeapPortResolver.collectExpressionSymbols(condition,
+                        expressionSymbols);
             }
-            JsonObject mapping = element.getAsJsonObject();
-            if (!guardSites.contains(string(mapping, "siteId"))) {
-                continue;
-            }
-            guardMappingCount++;
-            JsonElement condition = mapping.has("condition")
-                    ? mapping.get("condition") : mapping.get("rawCondition");
-            HeapPortResolver.collectExpressionSymbols(condition,
-                    expressionSymbols);
         }
         if (!guardSites.isEmpty() && guardMappingCount == 0) {
             issues.add(new HeapEffectIssue(
@@ -6610,8 +6601,7 @@ public final class ConcolicSummaryImporter {
 
         Map<String, JsonObject> expectedActions = new LinkedHashMap<>();
         Set<String> duplicateActions = new LinkedHashSet<>();
-        for (JsonElement element : runtimeMaterializationActions(
-                executionTask)) {
+        for (JsonElement element : analysis.evidence.inputActions.symbolic()) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             String base = string(action, "symbol");
@@ -6742,8 +6732,7 @@ public final class ConcolicSummaryImporter {
             }
             RuntimeDynamicFieldBinding dynamic = exactCandidates.get(0);
             List<JsonObject> actions = new ArrayList<>();
-            for (JsonElement element : runtimeMaterializationActions(
-                    executionTask)) {
+            for (JsonElement element : analysis.evidence.inputActions.symbolic()) {
                 if (element.isJsonObject() && base.equals(
                         string(element.getAsJsonObject(), "symbol"))) {
                     actions.add(element.getAsJsonObject());
@@ -7366,7 +7355,7 @@ public final class ConcolicSummaryImporter {
             exactCoveredWriteSites.add(site);
         }
         if (fieldAssignmentCapture != null
-                && fieldAssignmentCapture.complete) {
+                && fieldAssignmentCapture.issues.isEmpty()) {
             JsonObject exactRequest = null;
             for (JsonElement element : analysis.captures()) {
                 if (!element.isJsonObject()
@@ -7399,7 +7388,7 @@ public final class ConcolicSummaryImporter {
                     continue;
                 }
                 RuntimeGuardExclusion exclusion = runtimeGuardExclusion(
-                        guardsByMutationSite.get(site), rawBranchMappings);
+                        guardsByMutationSite.get(site), analysis.evidence);
                 if (exclusion != null) {
                     guardExcludedWriteSites.put(site, exclusion);
                 }
@@ -7892,19 +7881,13 @@ public final class ConcolicSummaryImporter {
     }
 
     private static RuntimeGuardExclusion runtimeGuardExclusion(
-            List<GuardedMutationProof> proofs, JsonArray branchMappings) {
+            List<GuardedMutationProof> proofs, EvidenceIndex evidence) {
         if (proofs == null || proofs.isEmpty()) {
             return null;
         }
         for (GuardedMutationProof proof : proofs) {
-            List<JsonObject> observed = new ArrayList<>();
-            for (JsonElement element : branchMappings) {
-                if (element.isJsonObject()
-                        && proof.guardSiteId.equals(string(
-                        element.getAsJsonObject(), "siteId"))) {
-                    observed.add(element.getAsJsonObject());
-                }
-            }
+            List<JsonObject> observed = evidence.branchesAt(
+                    proof.guardSiteId);
             if (observed.isEmpty()) {
                 continue;
             }
@@ -8167,7 +8150,8 @@ public final class ConcolicSummaryImporter {
     private static ReplayAdmission replayAdmission(JsonObject raw,
                                                    JsonObject executionTask,
                                                    JsonObject region,
-                                                   ClosureGoalKind goalKind) {
+                                                   ClosureGoalKind goalKind,
+                                                   EvidenceIndex evidence) {
         String phase = strictString(executionTask, "executionPhase");
         JsonArray expectedAssignments = array(executionTask,
                 "modelAssignments");
@@ -8181,14 +8165,14 @@ public final class ConcolicSummaryImporter {
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
         if (!required) {
-            return new ReplayAdmission(true, failures);
+            return new ReplayAdmission(failures);
         }
 
         if (pathFlip) {
             for (String failure
                     : BranchReplayObservationValidator.validateEncoded(
                     executionTask.get("replayContract"),
-                    array(raw, "branchMappings"))) {
+                    evidence.branchMappings)) {
                 failures.add(failure);
             }
         }
@@ -8210,7 +8194,8 @@ public final class ConcolicSummaryImporter {
         if (!assignmentsApplied) {
             failures.add("MODEL_ASSIGNMENTS_NOT_FULLY_APPLIED");
         } else if (pathFlip) {
-            for (String failure : dynamicRebindingAdmissionFailures(raw)) {
+            for (String failure : dynamicRebindingAdmissionFailures(raw,
+                    evidence)) {
                 failures.add(failure);
             }
         }
@@ -8232,8 +8217,7 @@ public final class ConcolicSummaryImporter {
                 failures.add("EXPECTED_FATAL_EXCEPTION_NOT_IN_CHAIN");
             }
         }
-        boolean valid = failures.size() == 0;
-        return new ReplayAdmission(valid, failures);
+        return new ReplayAdmission(failures);
     }
 
     /**
@@ -8243,10 +8227,10 @@ public final class ConcolicSummaryImporter {
      * extraction validates and directly normalizes the raw binding. Only the
      * execution-local key/token evidence belongs here.
      */
-    static List<String> dynamicRebindingAdmissionFailures(JsonObject raw) {
+    static List<String> dynamicRebindingAdmissionFailures(
+            JsonObject raw, EvidenceIndex evidence) {
         List<String> failures = new ArrayList<>();
         Set<String> admitted = new LinkedHashSet<>();
-        JsonArray bindings = array(raw, "dynamicFieldBindings");
         String taskId = string(raw, "taskId");
         for (JsonElement element : array(raw, "modelAssignmentsApplied")) {
             if (!element.isJsonObject()) continue;
@@ -8268,8 +8252,7 @@ public final class ConcolicSummaryImporter {
                 failures.add(prefix + "DYNAMIC_BINDING_ID_NOT_UNIQUE");
                 continue;
             }
-            List<JsonObject> matches = objectsWithField(bindings,
-                    "dynamicBindingId", bindingId);
+            List<JsonObject> matches = evidence.dynamicBindings(bindingId);
             if (matches.size() != 1) {
                 failures.add(prefix + "RAW_BINDING_NOT_UNIQUE");
                 continue;
@@ -8284,6 +8267,11 @@ public final class ConcolicSummaryImporter {
             }
         }
         return failures;
+    }
+
+    static List<String> dynamicRebindingAdmissionFailures(JsonObject raw) {
+        return dynamicRebindingAdmissionFailures(raw,
+                new EvidenceIndex(raw, null));
     }
 
     private static boolean freshReplayBindingComplete(
@@ -8356,10 +8344,10 @@ public final class ConcolicSummaryImporter {
                                                          staticCoverage,
                                                  JsonArray pathCondition,
                                                  OutputExpressionExtraction
-                                                         outputExtraction) {
+                                                         outputExtraction,
+                                                 EvidenceIndex evidence) {
         if (!outputClosure) {
-            return new InputAdmission(true,
-                    new LinkedHashSet<String>(),
+            return new InputAdmission(new LinkedHashSet<String>(),
                     new LinkedHashSet<String>(),
                     new LinkedHashSet<String>(),
                     new JsonArray(), new JsonArray());
@@ -8371,9 +8359,9 @@ public final class ConcolicSummaryImporter {
         Set<String> observed = primitiveStrings(array(raw,
                 "symbolizedInputs"));
         Set<String> admittedObservedInputs =
-                exactObservedContainerInputs(raw, executionTask);
+                exactObservedContainerInputs(executionTask, evidence);
         Set<String> scheduledConcreteFallbacks =
-                InputActionCatalog.decode(executionTask).concreteSymbols();
+                evidence.inputActions.concreteSymbols();
         Set<String> missing = new LinkedHashSet<>();
         Set<String> admittedVmIntrinsicPlaceholders =
                 new LinkedHashSet<>();
@@ -8397,7 +8385,7 @@ public final class ConcolicSummaryImporter {
                         .guardedConstantUnusedInput(
                                 executionTask, requiredInput, pathCondition,
                                 outputExtraction.expressions,
-                                outputExtraction.complete,
+                                outputExtraction.issues.isEmpty(),
                                 outputExtraction.authority,
                                 nestedOutputSliceContractComplete(
                                         analysis.slice()));
@@ -8407,8 +8395,8 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             VmIntrinsicPlaceholderAdmission placeholderAdmission =
-                    vmIntrinsicPlaceholderAdmission(raw, executionTask,
-                            requiredInput);
+                    vmIntrinsicPlaceholderAdmission(raw, requiredInput,
+                            evidence);
             if (placeholderAdmission.applicable && found) {
                 missing.add(requiredInput);
                 placeholderFailures.add(
@@ -8448,17 +8436,16 @@ public final class ConcolicSummaryImporter {
                 }
             }
         }
-        return new InputAdmission(failures.size() == 0, globalRequired,
-                required, admittedVmIntrinsicPlaceholders,
+        return new InputAdmission(globalRequired, required,
+                admittedVmIntrinsicPlaceholders,
                 unforcedEnvironmentValidationRequirements, failures);
     }
 
     private static Set<String> exactObservedContainerInputs(
-            JsonObject raw, JsonObject executionTask) {
+            JsonObject executionTask, EvidenceIndex evidence) {
         Set<String> result = new LinkedHashSet<>();
         Map<String, List<JsonObject>> actions = new LinkedHashMap<>();
-        for (JsonElement element : runtimeMaterializationActions(executionTask)) {
-            if (!element.isJsonObject()) continue;
+        for (JsonElement element : evidence.inputActions.symbolic()) {
             JsonObject action = element.getAsJsonObject();
             String mode = string(action, "bindingMode");
             String symbol = string(action, "symbol");
@@ -8478,12 +8465,12 @@ public final class ConcolicSummaryImporter {
             if (entry.getValue().size() != 1) continue;
             JsonObject action = entry.getValue().get(0);
             long selectedToken = exactFirstContainerSelectionToken(
-                    raw, action);
+                    evidence, action);
             if (selectedToken <= 0L) continue;
             if ("MAP_STATE_INPUT_OBSERVATION".equals(
                     string(action, "bindingMode"))
-                    && exactMapStateInputRecords(raw, executionTask, action,
-                    selectedToken).size() != 1) {
+                    && exactMapStateInputRecords(evidence, executionTask,
+                    action, selectedToken).size() != 1) {
                 continue;
             }
             result.add(entry.getKey());
@@ -8492,13 +8479,13 @@ public final class ConcolicSummaryImporter {
     }
 
     private static long exactFirstContainerSelectionToken(
-            JsonObject raw, JsonObject action) {
+            EvidenceIndex index, JsonObject action) {
         String symbol = string(action, "symbol");
         String cell = string(action, "cell");
         String authority = string(action, "containerObservationAuthority");
         long token = -1L;
         int matches = 0;
-        for (JsonElement element : array(raw, "runtimeApproximations")) {
+        for (JsonElement element : index.runtimeApproximations) {
             if (!element.isJsonObject()) continue;
             JsonObject evidence = element.getAsJsonObject();
             long candidate = longInteger(evidence,
@@ -8523,10 +8510,11 @@ public final class ConcolicSummaryImporter {
     }
 
     private static List<JsonObject> exactMapStateInputRecords(
-            JsonObject raw, JsonObject executionTask, JsonObject action,
+            EvidenceIndex evidence, JsonObject executionTask,
+            JsonObject action,
             long selectedToken) {
         List<JsonObject> result = new ArrayList<>();
-        for (JsonElement element : array(raw, "runtimeHeapObservations")) {
+        for (JsonElement element : evidence.heapObservations) {
             if (!element.isJsonObject()) continue;
             JsonObject record = element.getAsJsonObject();
             if (completeMapStateInputObservation(record, executionTask, action,
@@ -8773,41 +8761,27 @@ public final class ConcolicSummaryImporter {
      * and must remain unforced during replay.
      */
     private static VmIntrinsicPlaceholderAdmission
-    vmIntrinsicPlaceholderAdmission(JsonObject raw, JsonObject executionTask,
-                                    String requiredInput) {
-        InputActionCatalog catalog = InputActionCatalog.decode(executionTask);
-        JsonArray materializations = catalog.symbolic();
+    vmIntrinsicPlaceholderAdmission(JsonObject raw, String requiredInput,
+                                    EvidenceIndex evidence) {
         List<JsonObject> samePort = new ArrayList<>();
         boolean placeholderCandidate = false;
-        for (JsonElement element : materializations) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject action = element.getAsJsonObject();
-            if (!requiredInput.equals(string(action, "symbol"))) {
-                continue;
-            }
-            samePort.add(action);
-            placeholderCandidate |= "VM_INTRINSIC_PLACEHOLDER".equals(
+        for (JsonObject action : evidence.actions(requiredInput)) {
+            if ("SYMBOLIC".equals(string(action, "mode"))) {
+                samePort.add(action);
+                placeholderCandidate |= "VM_INTRINSIC_PLACEHOLDER".equals(
                     string(action, "bindingMode"))
                     || "ENVIRONMENT".equals(string(action, "sourceKind"))
                     || "ENVIRONMENT_MODEL".equals(
                     string(action, "location"))
                     || action.has("placeholderFunction")
                     || action.has("captureAuthority");
-        }
-        for (JsonElement element : catalog.all()) {
-            if (!element.isJsonObject()) {
-                continue;
             }
-            JsonObject action = element.getAsJsonObject();
-            if (requiredInput.equals(string(action, "symbol"))
-                    && ("ENVIRONMENT".equals(
+            if ("ENVIRONMENT".equals(
                     string(action, "sourceKind"))
                     || "ENVIRONMENT_MODEL".equals(
                     string(action, "location"))
                     || SymbolicEnvironment.isCurrentTimeMillisReturn(
-                    string(action, "cell")))) {
+                    string(action, "cell"))) {
                 placeholderCandidate = true;
             }
         }
@@ -9427,11 +9401,9 @@ public final class ConcolicSummaryImporter {
     }
 
     private static final class ReplayAdmission {
-        private final boolean valid;
         private final JsonArray failures;
 
-        private ReplayAdmission(boolean valid, JsonArray failures) {
-            this.valid = valid;
+        private ReplayAdmission(JsonArray failures) {
             this.failures = failures;
         }
     }
@@ -9439,32 +9411,27 @@ public final class ConcolicSummaryImporter {
     private static final class VmIntrinsicPlaceholderBindingExtraction {
         private final JsonArray bindings;
         private final JsonArray failures;
-        private final boolean complete;
 
         private VmIntrinsicPlaceholderBindingExtraction(JsonArray bindings,
                                                          JsonArray failures) {
             this.bindings = bindings;
             this.failures = failures;
-            this.complete = failures.size() == 0;
         }
 
     }
 
     private static final class InputAdmission {
-        private final boolean complete;
         private final Set<String> globalRequired;
         private final Set<String> required;
         private final Set<String> admittedVmIntrinsicPlaceholders;
         private final JsonArray unforcedEnvironmentValidationRequirements;
         private final JsonArray failures;
 
-        private InputAdmission(boolean complete,
-                               Set<String> globalRequired,
+        private InputAdmission(Set<String> globalRequired,
                                Set<String> required,
                                Set<String> admittedVmIntrinsicPlaceholders,
                                JsonArray unforcedEnvironmentValidationRequirements,
                                JsonArray failures) {
-            this.complete = complete;
             this.globalRequired = globalRequired;
             this.required = required;
             this.admittedVmIntrinsicPlaceholders =
@@ -10265,20 +10232,18 @@ public final class ConcolicSummaryImporter {
     }
 
     private static final class HeapPortBinding {
-        private final boolean resolved;
         private final String outputPort;
 
-        private HeapPortBinding(boolean resolved, String outputPort) {
-            this.resolved = resolved;
+        private HeapPortBinding(String outputPort) {
             this.outputPort = outputPort;
         }
 
         private static HeapPortBinding resolved(String outputPort) {
-            return new HeapPortBinding(true, outputPort);
+            return new HeapPortBinding(outputPort);
         }
 
         private static HeapPortBinding unresolved() {
-            return new HeapPortBinding(false, "");
+            return new HeapPortBinding("");
         }
     }
 
@@ -10290,8 +10255,7 @@ public final class ConcolicSummaryImporter {
         private HeapPortResolver(OutputMemberAnalysis analysis) {
             this.analysis = analysis;
             this.executionTask = analysis.executionTask;
-            this.symbolize = runtimeMaterializationActions(
-                    analysis.executionTask);
+            this.symbolize = analysis.evidence.inputActions.symbolic();
         }
 
         private FreshMapInitializerResolution freshMapInitializer(
@@ -10585,14 +10549,11 @@ public final class ConcolicSummaryImporter {
 
     private static final class EngineArrayInputBindingExtraction {
         private final JsonArray bindings;
-        private final boolean complete;
         private final List<EngineArrayInputBindingIssue> issues;
 
         private EngineArrayInputBindingExtraction(
-                JsonArray bindings, boolean complete,
-                List<EngineArrayInputBindingIssue> issues) {
+                JsonArray bindings, List<EngineArrayInputBindingIssue> issues) {
             this.bindings = bindings;
-            this.complete = complete;
             this.issues = issues;
         }
     }

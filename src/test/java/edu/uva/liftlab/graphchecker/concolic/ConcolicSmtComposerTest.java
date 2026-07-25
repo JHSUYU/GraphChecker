@@ -34,6 +34,20 @@ public class ConcolicSmtComposerTest {
                     .contains(message));
         }
     }
+
+    @Test
+    public void materializedFieldPortUsesLeafType() {
+        JsonObject port = new JsonObject();
+        port.addProperty("javaType", "example.GuardNode");
+        JsonObject materialization = new JsonObject();
+        materialization.addProperty("kind", "FIELD_READ");
+        materialization.addProperty("javaType", "boolean");
+        port.add("materialization", materialization);
+
+        assertEquals("boolean",
+                ConcolicSmtComposer.materializedPortJavaType(port));
+    }
+
     @Test
     public void composesAndSolvesVersionedJavaMapMutationChain()
             throws Exception {

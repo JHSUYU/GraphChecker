@@ -274,8 +274,8 @@ final class SeedBackwardStaticAnalyzer {
         return false;
     }
 
-    CausynthAnalysisResult analyze() throws IOException {
-        CausynthAnalysisResult result = new CausynthAnalysisResult();
+    StaticProgram analyze() throws IOException {
+        StaticProgram result = new StaticProgram();
         result.targetResolved.put("schemaVersion", 2);
         result.targetResolved.put("kind", "TARGET_ATTESTATION");
         result.targetResolved.put("targetId",

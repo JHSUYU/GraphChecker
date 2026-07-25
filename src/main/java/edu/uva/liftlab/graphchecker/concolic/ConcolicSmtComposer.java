@@ -5,6 +5,7 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 
 import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 
@@ -426,11 +427,17 @@ public final class ConcolicSmtComposer {
             Set<String> sourceScopeRegions) {
         SummaryIndex summaryIndex = SummaryIndex.build(summaries);
         ProducerDemandIndex knownDemands = new ProducerDemandIndex();
+        List<JsonObject> equalities = relationRows(context,
+                "equalityRelations");
+        List<JsonObject> readFrom = relationRows(context,
+                "versionedStateMerges");
+        List<JsonObject> alternatives = alternativeRelations(context);
         ResolvedSummaryGraph result = null;
         int limit = Math.max(8, summaries.size() * 2 + 4);
         for (int pass = 0; pass < limit; pass++) {
             result = resolveSummaryGraphPass(fatal, context, summaryIndex,
-                    sourceScopeRegions, knownDemands);
+                    sourceScopeRegions, knownDemands, equalities, readFrom,
+                    alternatives);
             if (knownDemands.sameAs(result.demands)) {
                 return result;
             }
@@ -438,7 +445,8 @@ public final class ConcolicSmtComposer {
         }
         if (result == null) {
             result = resolveSummaryGraphPass(fatal, context, summaryIndex,
-                    sourceScopeRegions, knownDemands);
+                    sourceScopeRegions, knownDemands, equalities, readFrom,
+                    alternatives);
         }
         result.gaps.add("ProducerDemandFixpointDidNotConverge:"
                 + limit);
@@ -448,18 +456,15 @@ public final class ConcolicSmtComposer {
     private static ResolvedSummaryGraph resolveSummaryGraphPass(
             JsonObject fatal, JsonObject context, SummaryIndex summaries,
             Set<String> sourceScopeRegions,
-            ProducerDemandIndex knownDemands) {
+            ProducerDemandIndex knownDemands,
+            List<JsonObject> equalities, List<JsonObject> readFrom,
+            List<JsonObject> alternatives) {
         String fatalRegion = string(fatal, "regionId");
         String fatalInstance = firstNonBlank(string(context,
                 "regionInstanceId"), string(fatal, "regionInstanceId"));
         ResolvedSummaryGraph result = new ResolvedSummaryGraph(fatalRegion,
                 fatalInstance, sourceScopeRegions, knownDemands);
 
-        List<JsonObject> equalities = relationRows(context,
-                "equalityRelations");
-        List<JsonObject> readFrom = relationRows(context,
-                "versionedStateMerges");
-        List<JsonObject> alternatives = alternativeRelations(context);
         registerContextDemands(result, sourceScopeRegions,
                 equalities, readFrom, alternatives);
         seedContextRelations(result, summaries, sourceScopeRegions,
@@ -716,19 +721,17 @@ public final class ConcolicSmtComposer {
             return null;
         }
         Map<String, JsonObject> unique = new LinkedHashMap<>();
-        Map<String, OutputClosureContract> closures = new LinkedHashMap<>();
         Set<String> fingerprints = new LinkedHashSet<>();
         for (JsonObject summary : summaries.forRegion(region)) {
-            if (!summary.has(OutputClosureContract.FIELD)) continue;
-            OutputClosureContract closure;
-            try {
-                closure = OutputClosureCodec.decode(summary);
-            } catch (IllegalArgumentException malformed) {
+            String malformed = summaries.closureIssue(summary);
+            if (!malformed.isEmpty()) {
                 graph.gaps.add("MalformedProducerOutputClosure:"
                         + firstNonBlank(string(summary, "summaryId"),
-                        region) + ":" + malformed.getMessage());
+                        region) + ":" + malformed);
                 continue;
             }
+            OutputClosureContract closure = summaries.closure(summary);
+            if (closure == null) continue;
             if (!region.equals(closure.producer().regionId())
                     || !closure.outputPorts().equals(demandedOutputs)) {
                 continue;
@@ -738,7 +741,7 @@ public final class ConcolicSmtComposer {
                     closure.producer().regionInstanceId())) {
                 continue;
             }
-            if (!canonicalProducerPayload(summary, closure)) {
+            if (!summaries.canonical(summary)) {
                 graph.gaps.add("NonCanonicalProducerSummary:"
                         + firstNonBlank(string(summary, "summaryId"), region));
                 continue;
@@ -746,7 +749,6 @@ public final class ConcolicSmtComposer {
             String identity = string(summary, "summaryId");
             if (identity.isEmpty()) continue;
             unique.put(identity, summary);
-            closures.put(identity, closure);
             fingerprints.add(closure.closureFingerprint());
         }
         if (unique.isEmpty()) {
@@ -763,18 +765,14 @@ public final class ConcolicSmtComposer {
                     demandedOutputs) + ":fingerprints=" + fingerprints);
             return null;
         }
-        List<JsonObject> candidates = new ArrayList<>(unique.values());
-        candidates.sort(Comparator.comparing(value ->
-                string(value, "summaryId")));
-        if (candidates.size() > 1) {
+        if (unique.size() > 1) {
             graph.gaps.add("AmbiguousExactProducerSummary:"
                     + producerLabel(region, requestedInstance,
                             demandedOutputs));
             return null;
         }
-        JsonObject selected = candidates.get(0);
-        OutputClosureContract selectedClosure = closures.get(
-                string(selected, "summaryId"));
+        JsonObject selected = unique.values().iterator().next();
+        OutputClosureContract selectedClosure = summaries.closure(selected);
         String instance = firstNonBlank(requestedInstance,
                 selectedClosure.producer().regionInstanceId());
         ProducerKey key = new ProducerKey(region, instance, output);
@@ -858,6 +856,22 @@ public final class ConcolicSmtComposer {
                                               String targetInstance,
                                               String targetInput,
                                               JsonObject preferred) {
+        List<JsonObject> matches = matchingBindings(summary, source,
+                targetRegion, targetInstance, targetInput, preferred, null,
+                bindingRelationKind(preferred));
+        if (matches.isEmpty()) return new JsonObject();
+        String preferredJson = preferred == null ? "" : GSON.toJson(preferred);
+        for (JsonObject match : matches) {
+            if (preferredJson.equals(GSON.toJson(match))) return match;
+        }
+        return matches.size() == 1 ? matches.get(0) : new JsonObject();
+    }
+
+    private static List<JsonObject> matchingBindings(
+            JsonObject summary, ProducerKey source, String targetRegion,
+            String targetInstance, String targetInput,
+            JsonObject expectedRelation, JsonObject expectedBinding,
+            String expectedKind) {
         Map<String, JsonObject> matches = new LinkedHashMap<>();
         for (JsonElement element : array(summary, "edgeBindings")) {
             if (!element.isJsonObject()) continue;
@@ -866,20 +880,18 @@ public final class ConcolicSmtComposer {
                     || !source.outputPort.equals(bindingSourceOutput(binding))
                     || !AutomaticRegionEdge
                     .trustedRuntimeCompositionBinding(binding)
-                    || !sameCompositionRelation(binding, preferred,
-                    bindingRelationKind(preferred))
+                    || !sameCompositionRelation(binding, expectedRelation,
+                    expectedKind)
+                    || expectedBinding != null
+                    && !sameCompositionRelation(binding, expectedBinding,
+                    expectedKind)
                     || !bindingTargets(binding, targetRegion,
                     targetInstance, targetInput)) {
                 continue;
             }
             matches.put(GSON.toJson(binding), binding);
         }
-        if (matches.isEmpty()) return new JsonObject();
-        String preferredJson = preferred == null ? "" : GSON.toJson(preferred);
-        JsonObject exact = matches.get(preferredJson);
-        if (exact != null) return exact;
-        return matches.size() == 1
-                ? matches.values().iterator().next() : new JsonObject();
+        return new ArrayList<>(matches.values());
     }
 
     private static JsonArray selectedBindings(JsonObject relation) {
@@ -988,16 +1000,39 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         private final Map<String, List<JsonObject>> bindingsByTarget =
                 new LinkedHashMap<>();
+        private final Map<JsonObject, OutputClosureContract> closures =
+                new LinkedHashMap<>();
+        private final Map<JsonObject, String> closureIssues =
+                new LinkedHashMap<>();
+        private final Set<JsonObject> canonical = new LinkedHashSet<>();
 
         private static SummaryIndex build(List<JsonObject> summaries) {
             SummaryIndex result = new SummaryIndex();
             for (JsonObject summary : summaries) {
-                String region = string(object(object(summary,
-                        OutputClosureContract.FIELD), "producer"),
-                        "regionId");
+                OutputClosureContract closure = null;
+                String issue = "";
+                if (summary.has(OutputClosureContract.FIELD)) {
+                    try {
+                        closure = OutputClosureCodec.decode(summary);
+                    } catch (IllegalArgumentException malformed) {
+                        issue = malformed.getMessage();
+                    }
+                }
+                String region = closure == null
+                        ? string(object(object(summary,
+                        OutputClosureContract.FIELD), "producer"), "regionId")
+                        : closure.producer().regionId();
                 if (region.isEmpty()) continue;
                 result.byRegion.computeIfAbsent(region,
                         ignored -> new ArrayList<>()).add(summary);
+                if (closure != null) {
+                    result.closures.put(summary, closure);
+                    if (canonicalProducerPayload(summary, closure)) {
+                        result.canonical.add(summary);
+                    }
+                } else if (!issue.isEmpty()) {
+                    result.closureIssues.put(summary, issue);
+                }
                 for (JsonElement element : array(summary, "edgeBindings")) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
@@ -1023,6 +1058,18 @@ public final class ConcolicSmtComposer {
             return bindingsByTarget.getOrDefault(region + "\n" + instance,
                     Collections.emptyList());
         }
+
+        private OutputClosureContract closure(JsonObject summary) {
+            return closures.get(summary);
+        }
+
+        private String closureIssue(JsonObject summary) {
+            return closureIssues.getOrDefault(summary, "");
+        }
+
+        private boolean canonical(JsonObject summary) {
+            return canonical.contains(summary);
+        }
     }
 
     private static final class ProducerDemandIndex {
@@ -1043,12 +1090,8 @@ public final class ConcolicSmtComposer {
                 return;
             }
             String key = key(normalizedRegion, firstNonBlank(instance));
-            Set<String> outputs = outputsByInvocation.get(key);
-            if (outputs == null) {
-                outputs = new LinkedHashSet<>();
-                outputsByInvocation.put(key, outputs);
-            }
-            outputs.add(normalizedOutput);
+            outputsByInvocation.computeIfAbsent(key,
+                    ignored -> new LinkedHashSet<>()).add(normalizedOutput);
         }
 
         private Set<String> outputs(String region, String instance) {
@@ -1068,12 +1111,9 @@ public final class ConcolicSmtComposer {
             if (source == null) return;
             for (Map.Entry<String, Set<String>> entry
                     : source.outputsByInvocation.entrySet()) {
-                Set<String> outputs = outputsByInvocation.get(entry.getKey());
-                if (outputs == null) {
-                    outputs = new LinkedHashSet<>();
-                    outputsByInvocation.put(entry.getKey(), outputs);
-                }
-                outputs.addAll(entry.getValue());
+                outputsByInvocation.computeIfAbsent(entry.getKey(),
+                        ignored -> new LinkedHashSet<>())
+                        .addAll(entry.getValue());
             }
         }
 
@@ -1234,27 +1274,9 @@ public final class ConcolicSmtComposer {
                                                String expectedRelationKind) {
             JsonObject summary = selectedSummaries.get(source);
             if (summary == null) return;
-            List<JsonObject> matches = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
-            for (JsonElement element : array(summary, "edgeBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                if (!source.instanceId.equals(bindingSourceInstance(binding))
-                        || !source.outputPort.equals(
-                        bindingSourceOutput(binding))
-                        || !AutomaticRegionEdge
-                        .trustedRuntimeCompositionBinding(binding)
-                        || !sameCompositionRelation(binding,
-                        expectedRelation, expectedRelationKind)
-                        || expectedBinding != null
-                        && !sameCompositionRelation(binding,
-                        expectedBinding, expectedRelationKind)
-                        || !bindingTargets(binding, targetRegion,
-                        targetInstance, targetInput)) {
-                    continue;
-                }
-                if (seen.add(GSON.toJson(binding))) matches.add(binding);
-            }
+            List<JsonObject> matches = matchingBindings(summary, source,
+                    targetRegion, targetInstance, targetInput,
+                    expectedRelation, expectedBinding, expectedRelationKind);
             if (matches.size() == 1) {
                 addEdge(new ResolvedEdge(summary, matches.get(0)));
             } else if (matches.size() > 1) {
@@ -1377,35 +1399,27 @@ public final class ConcolicSmtComposer {
     }
 
     private static String and(List<String> terms) {
-        List<String> filtered = new ArrayList<>();
-        for (String term : terms) {
-            if (term == null || term.trim().isEmpty()
-                    || "true".equals(term.trim())) {
-                continue;
-            }
-            if ("false".equals(term.trim())) return "false";
-            filtered.add(term);
-        }
-        if (filtered.isEmpty()) return "true";
-        if (filtered.size() == 1) return filtered.get(0);
-        StringBuilder result = new StringBuilder("(and");
-        for (String term : filtered) result.append(' ').append(term);
-        return result.append(')').toString();
+        return booleanNary(terms, true);
     }
 
     private static String or(List<String> terms) {
+        return booleanNary(terms, false);
+    }
+
+    private static String booleanNary(List<String> terms,
+                                      boolean conjunction) {
         List<String> filtered = new ArrayList<>();
         for (String term : terms) {
-            if (term == null || term.trim().isEmpty()
-                    || "false".equals(term.trim())) {
-                continue;
-            }
-            if ("true".equals(term.trim())) return "true";
+            String value = term == null ? "" : term.trim();
+            if (value.isEmpty()
+                    || (conjunction ? "true" : "false").equals(value)) continue;
+            if ((conjunction ? "false" : "true").equals(value)) return value;
             filtered.add(term);
         }
-        if (filtered.isEmpty()) return "false";
+        if (filtered.isEmpty()) return conjunction ? "true" : "false";
         if (filtered.size() == 1) return filtered.get(0);
-        StringBuilder result = new StringBuilder("(or");
+        StringBuilder result = new StringBuilder(conjunction
+                ? "(and" : "(or");
         for (String term : filtered) result.append(' ').append(term);
         return result.append(')').toString();
     }
@@ -2878,17 +2892,17 @@ public final class ConcolicSmtComposer {
 
         private String methodConstraint(JsonObject expression, String origin) {
             String name = string(expression, "_name");
-            if (isJavaParseInt(name)) {
-                Term decoded = parseIntTerm(expression);
-                Term result = term(expression.get("_res_exp"), Sort.INT);
-                return and(Arrays.asList(result.precondition,
-                        decoded.precondition, "(= " + result.text + " "
-                                + decoded.text + ")"));
-            }
-            if (isJavaSplitElement(name)) {
-                Term prefix = splitElementTerm(expression);
-                Term result = term(expression.get("_res_exp"), Sort.STRING);
-                Term boxedPrefix = asValue(prefix);
+            if (isJavaParseInt(name) || isJavaSplitElement(name)) {
+                boolean split = isJavaSplitElement(name);
+                Term value = methodTerm(expression);
+                Term result = term(expression.get("_res_exp"),
+                        split ? Sort.STRING : Sort.INT);
+                if (!split) {
+                    return and(Arrays.asList(result.precondition,
+                            value.precondition, "(= " + result.text + " "
+                                    + value.text + ")"));
+                }
+                Term boxedPrefix = asValue(value);
                 Term boxedResult = asValue(result);
                 return and(Arrays.asList(boxedPrefix.precondition,
                         boxedResult.precondition, "(= " + boxedResult.text
@@ -6083,18 +6097,12 @@ public final class ConcolicSmtComposer {
                 }
                 for (int index = 0; index < bindings.size(); index++) {
                     JsonObject binding = bindings.get(index).getAsJsonObject();
-                    String write = "event_write_" + smtName(firstNonBlank(
-                            string(relation, "edgeId"), "edge")) + "_" + index;
-                    String read = "event_read_" + smtName(firstNonBlank(
-                            string(relation, "edgeId"), "edge")) + "_" + index;
-                    declare(write, Sort.INT);
-                    declare(read, Sort.INT);
-                    assertNamed(write + "_seq", "(= " + write + " "
-                            + integer(binding, "writerEventSeq", 0) + ")");
-                    assertNamed(read + "_seq", "(= " + read + " "
-                            + integer(binding, "readerEventSeq", 0) + ")");
-                    assertNamed("order",
-                            "(< " + write + " " + read + ")");
+                    String suffix = smtName(firstNonBlank(string(relation,
+                            "edgeId"), "edge")) + "_" + index;
+                    emitEventOrder("event_write_" + suffix,
+                            "event_read_" + suffix, "order", "",
+                            integer(binding, "writerEventSeq", 0),
+                            integer(binding, "readerEventSeq", 0));
                 }
             }
             for (JsonElement element : array(context,
@@ -6240,21 +6248,7 @@ public final class ConcolicSmtComposer {
         private boolean assertGuardedPortEquality(String left, String right,
                                                   String guard,
                                                   String label) {
-            if (left.isEmpty() || right.isEmpty()) return false;
-            Sort leftSort = portSort(left);
-            Sort rightSort = portSort(right);
-            if (leftSort != rightSort) {
-                unsupported.add("PortSortMismatch:" + left + ":" + leftSort
-                        + "!=" + right + ":" + rightSort);
-                return false;
-            }
-            if (!compatibleArrayPortTypes(left, right, leftSort)) {
-                return false;
-            }
-            declarePort(left, leftSort);
-            declarePort(right, rightSort);
-            mentionedPorts.add(left);
-            mentionedPorts.add(right);
+            if (!preparePortEquality(left, right)) return false;
             assertNamed(label, "(=> " + guard + " (= " + portName(left)
                     + " " + portName(right) + "))");
             portEqualities.add(new String[]{left, right});
@@ -6271,36 +6265,18 @@ public final class ConcolicSmtComposer {
                 return;
             }
             for (int index = 0; index < bindings.size(); index++) {
-                if (!bindings.get(index).isJsonObject()) continue;
                 JsonObject binding = bindings.get(index).getAsJsonObject();
                 String suffix = smtName(groupId) + "_" + alternative + "_"
                         + index;
-                if (!AutomaticRegionEdge.trustedReadFromEvidence(binding)) {
-                    unsupported.add("AlternativeWriterEvidenceGap:"
-                            + groupId + ":" + alternative + ":" + index);
-                    continue;
-                }
                 String write = "event_write_alt_" + suffix;
                 String read = "event_read_alt_" + suffix;
-                declare(write, Sort.INT);
-                declare(read, Sort.INT);
-                assertNamed(write + "_seq", "(= " + write + " "
-                        + integer(binding, "writerEventSeq", 0) + ")");
-                assertNamed(read + "_seq", "(= " + read + " "
-                        + integer(binding, "readerEventSeq", 0) + ")");
-                assertNamed("order_alt_" + suffix, "(=> " + guard
-                        + " (< " + write + " " + read + "))");
+                emitEventOrder(write, read, "order_alt_" + suffix, guard,
+                        integer(binding, "writerEventSeq", 0),
+                        integer(binding, "readerEventSeq", 0));
                 int receiver = integer(binding, "receiverObjectId", 0);
-                String writer = "receiver_write_alt_" + suffix;
-                String reader = "receiver_read_alt_" + suffix;
-                declare(writer, Sort.INT);
-                declare(reader, Sort.INT);
-                assertNamed(writer + "_id", "(= " + writer + " "
-                        + receiver + ")");
-                assertNamed(reader + "_id", "(= " + reader + " "
-                        + receiver + ")");
-                assertNamed("identity_alt_" + suffix, "(=> " + guard
-                        + " (= " + writer + " " + reader + "))");
+                emitReceiverIdentity("receiver_write_alt_" + suffix,
+                        "receiver_read_alt_" + suffix,
+                        "identity_alt_" + suffix, guard, receiver);
             }
         }
 
@@ -6357,16 +6333,9 @@ public final class ConcolicSmtComposer {
                             + input + ":" + previousIncomingSort + "!="
                             + incomingSort);
                 }
-                String write = "event_write_" + smtName(label);
-                String read = "event_read_" + smtName(label);
-                declare(write, Sort.INT);
-                declare(read, Sort.INT);
-                assertNamed(write + "_seq", "(= " + write + " "
-                        + writeSeq + ")");
-                assertNamed(read + "_seq", "(= " + read + " "
-                        + readSeq + ")");
-                assertNamed("order_" + label,
-                        "(< " + write + " " + read + ")");
+                emitEventOrder("event_write_" + smtName(label),
+                        "event_read_" + smtName(label), "order_" + label, "",
+                        writeSeq, readSeq);
 
                 // A complete serialized value is sufficient for a transport
                 // equality. The receiver-side object is normally a new
@@ -6374,22 +6343,40 @@ public final class ConcolicSmtComposer {
                 if (valueEquality) {
                     continue;
                 }
-
-                String writerReceiver = "receiver_write_"
-                        + smtName(label);
-                String readerReceiver = "receiver_read_"
-                        + smtName(label);
-                declare(writerReceiver, Sort.INT);
-                declare(readerReceiver, Sort.INT);
-                assertNamed(writerReceiver + "_id", "(= "
-                        + writerReceiver + " "
-                        + integer(binding, "receiverObjectId", 0) + ")");
-                assertNamed(readerReceiver + "_id", "(= "
-                        + readerReceiver + " "
-                        + integer(binding, "receiverObjectId", 0) + ")");
-                assertNamed("identity_" + label, "(= "
-                        + writerReceiver + " " + readerReceiver + ")");
+                emitReceiverIdentity("receiver_write_" + smtName(label),
+                        "receiver_read_" + smtName(label),
+                        "identity_" + label, "",
+                        integer(binding, "receiverObjectId", 0));
             }
+        }
+
+        private void emitEventOrder(String write, String read,
+                                    String assertion, String guard,
+                                    long writerSequence,
+                                    long readerSequence) {
+            declare(write, Sort.INT);
+            declare(read, Sort.INT);
+            assertNamed(write + "_seq", "(= " + write + " "
+                    + writerSequence + ")");
+            assertNamed(read + "_seq", "(= " + read + " "
+                    + readerSequence + ")");
+            String order = "(< " + write + " " + read + ")";
+            assertNamed(assertion, guard.isEmpty() ? order
+                    : "(=> " + guard + " " + order + ")");
+        }
+
+        private void emitReceiverIdentity(String writer, String reader,
+                                          String assertion, String guard,
+                                          int receiver) {
+            declare(writer, Sort.INT);
+            declare(reader, Sort.INT);
+            assertNamed(writer + "_id", "(= " + writer + " "
+                    + receiver + ")");
+            assertNamed(reader + "_id", "(= " + reader + " "
+                    + receiver + ")");
+            String identity = "(= " + writer + " " + reader + ")";
+            assertNamed(assertion, guard.isEmpty() ? identity
+                    : "(=> " + guard + " " + identity + ")");
         }
 
         /**
@@ -6450,17 +6437,16 @@ public final class ConcolicSmtComposer {
                     sourceSort = sortOfJava(sourcePort.javaType);
                 }
                 if (!exactCausalScalarSort(sourceSort)) continue;
+                Set<String> reachable = exactCausalReachable(
+                        exactCells.get(source), adjacency);
                 for (String target : targets) {
                     if (source.equals(target)
                             || !exactCells.containsKey(target)) continue;
                     Port targetPort = ports.get(target);
                     if (targetPort == null || sourceSort != sortOfJava(
                             targetPort.javaType)) continue;
-
-                    CausalPath proof = firstExactCausalPath(
-                            exactCells.get(source), exactCells.get(target),
-                            adjacency);
-                    if (proof == null || proof.edges.isEmpty()) continue;
+                    if (Collections.disjoint(reachable,
+                            exactCells.get(target))) continue;
                     String key = firstNonBlank(string(summary,
                             "summaryId"), selection.regionId) + "\n"
                             + source + "\n" + target;
@@ -6580,14 +6566,12 @@ public final class ConcolicSmtComposer {
             return result;
         }
 
-        private CausalPath firstExactCausalPath(List<String> sources,
-                                                List<String> targets,
-                                                Map<String, List<JsonObject>>
-                                                        adjacency) {
-            Set<String> targetSet = new LinkedHashSet<>(targets);
+        private Set<String> exactCausalReachable(
+                List<String> sources,
+                Map<String, List<JsonObject>> adjacency) {
+            Set<String> reachable = new LinkedHashSet<>();
             for (String source : sources) {
                 Deque<String> pending = new ArrayDeque<>();
-                Map<String, JsonObject> predecessor = new LinkedHashMap<>();
                 Map<String, Integer> depths = new LinkedHashMap<>();
                 pending.add(source);
                 depths.put(source, 0);
@@ -6601,29 +6585,12 @@ public final class ConcolicSmtComposer {
                         String next = string(edge, "toCell");
                         if (depths.containsKey(next)) continue;
                         depths.put(next, depth + 1);
-                        predecessor.put(next, edge);
-                        if (targetSet.contains(next)) {
-                            List<JsonObject> path = new ArrayList<>();
-                            String cursor = next;
-                            while (!cursor.equals(source)) {
-                                JsonObject step = predecessor.get(cursor);
-                                if (step == null) {
-                                    path.clear();
-                                    break;
-                                }
-                                path.add(step);
-                                cursor = string(step, "fromCell");
-                            }
-                            Collections.reverse(path);
-                            if (!path.isEmpty()) {
-                                return new CausalPath(path);
-                            }
-                        }
+                        reachable.add(next);
                         pending.addLast(next);
                     }
                 }
             }
-            return null;
+            return reachable;
         }
 
         private boolean exactCausalScalarSort(Sort sort) {
@@ -6789,6 +6756,17 @@ public final class ConcolicSmtComposer {
 
         private boolean assertPortEquality(String left, String right,
                                            String label) {
+            if (!preparePortEquality(left, right)) return false;
+            String formula = "(= " + portName(left) + " "
+                    + portName(right) + ")";
+            assertNamed(label, formula);
+            addAutomaticRelationship("VALIDATED_PORT_EQUALITY", left,
+                    right);
+            portEqualities.add(new String[]{left, right});
+            return true;
+        }
+
+        private boolean preparePortEquality(String left, String right) {
             if (left.isEmpty() || right.isEmpty()) return false;
             Sort leftSort = portSort(left);
             Sort rightSort = portSort(right);
@@ -6804,12 +6782,6 @@ public final class ConcolicSmtComposer {
             declarePort(right, rightSort);
             mentionedPorts.add(left);
             mentionedPorts.add(right);
-            String formula = "(= " + portName(left) + " "
-                    + portName(right) + ")";
-            assertNamed(label, formula);
-            addAutomaticRelationship("VALIDATED_PORT_EQUALITY", left,
-                    right);
-            portEqualities.add(new String[]{left, right});
             return true;
         }
 
@@ -7305,6 +7277,11 @@ public final class ConcolicSmtComposer {
         }
     }
 
+    static String materializedPortJavaType(JsonObject port) {
+        return firstNonBlank(MaterializationSpec.decode(port).javaType(),
+                string(port, "javaType"));
+    }
+
     private static final class PortIndex {
         private final Map<String, Port> ports = new LinkedHashMap<>();
         private final List<String> longestFirst = new ArrayList<>();
@@ -7336,7 +7313,7 @@ public final class ConcolicSmtComposer {
             String id = string(json, "portId");
             if (id.isEmpty()) return;
             String cell = string(json, "cell");
-            String javaType = string(json, "javaType");
+            String javaType = materializedPortJavaType(json);
             Sort sort = isMapCell(cell) || isMapType(javaType)
                     ? Sort.MAP : isArrayType(javaType)
                     ? Sort.ARRAY_VALUE : Sort.VALUE;
@@ -7550,14 +7527,6 @@ public final class ConcolicSmtComposer {
                     && sourceInstance.equals(other.sourceInstance)
                     && targetInstance.equals(other.targetInstance)
                     && expression.equals(other.expression);
-        }
-    }
-
-    private static final class CausalPath {
-        private final List<JsonObject> edges;
-
-        private CausalPath(List<JsonObject> edges) {
-            this.edges = new ArrayList<>(edges);
         }
     }
 

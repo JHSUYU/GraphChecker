@@ -96,6 +96,11 @@ final class RuntimeRegionPlanner {
         Result result = new Result();
         List<StaticRegion> regions = readRegions(regionFile);
         List<StaticRegionEdge> regionEdges = readRegionEdges(regionEdgeFile);
+        Map<String, List<StaticRegion>> regionsByAnchor =
+                new LinkedHashMap<>();
+        for (StaticRegion region : regions) {
+            add(regionsByAnchor, region.anchorMethod, region);
+        }
         StaticProjectionIndex staticProjections =
                 readStaticProjectionIndex(staticGraphFile);
         resolveStaticCausalEdgeReferences(regions, staticProjections);
@@ -120,7 +125,8 @@ final class RuntimeRegionPlanner {
 
         outer:
         for (StaticRegion region : regions) {
-            List<RootCandidate> roots = rootCandidates(region, regions,
+            List<RootCandidate> roots = rootCandidates(region,
+                    values(regionsByAnchor.get(region.anchorMethod)),
                     methodsBySignature, calls);
             if (roots.isEmpty()) {
                 continue;
@@ -188,7 +194,7 @@ final class RuntimeRegionPlanner {
                 evidenceByRegion, sharedStateEvidenceByRegion,
                 staticProjections, relationEvidence);
         Map<String, RegionPlanDraft> planDrafts = buildRegionPlans(
-                allInstanceEvidence, result, trace, methodEvents,
+                allInstanceEvidence, result, trace,
                 rootArgumentRuntimeTypes);
 
         List<UpstreamEdgeBinding> edgeBindings = new ArrayList<>();
@@ -204,12 +210,11 @@ final class RuntimeRegionPlanner {
 
     private static List<RootCandidate> rootCandidates(
             StaticRegion region,
-            List<StaticRegion> regions,
+            List<StaticRegion> anchorPeers,
             Map<String, List<MethodEvent>> methodsBySignature,
             Map<Long, MethodEvent> calls) {
         List<RootCandidate> roots = new ArrayList<>();
         Set<Long> selectedCalls = new LinkedHashSet<>();
-        List<StaticRegion> anchorPeers = regionsSharingAnchor(region, regions);
         List<MethodEvent> anchors = values(
                 methodsBySignature.get(region.anchorMethod));
 
@@ -268,17 +273,6 @@ final class RuntimeRegionPlanner {
             }
         }
         return roots;
-    }
-
-    private static List<StaticRegion> regionsSharingAnchor(
-            StaticRegion region, List<StaticRegion> regions) {
-        List<StaticRegion> result = new ArrayList<>();
-        for (StaticRegion candidate : values(regions)) {
-            if (safe(region.anchorMethod).equals(safe(candidate.anchorMethod))) {
-                result.add(candidate);
-            }
-        }
-        return result;
     }
 
     private static List<MethodEvent> concreteLineage(
@@ -1620,35 +1614,16 @@ final class RuntimeRegionPlanner {
         return selected;
     }
 
-    private static int countObserved(List<Map<String, Object>> observations) {
-        int count = 0;
-        for (Map<String, Object> observation : observations) {
-            if (Boolean.TRUE.equals(observation.get("observed"))) {
-                count++;
+    private static boolean everyRowHasTrue(
+            List<Map<String, Object>> rows, String... fields) {
+        for (Map<String, Object> row : rows) {
+            boolean found = false;
+            for (String field : fields) {
+                found |= Boolean.TRUE.equals(row.get(field));
             }
+            if (!found) return false;
         }
-        return count;
-    }
-
-    private static int countDeferred(List<Map<String, Object>> observations) {
-        int count = 0;
-        for (Map<String, Object> observation : observations) {
-            if (!Boolean.TRUE.equals(observation.get("observed"))
-                    && Boolean.TRUE.equals(observation.get("deferredResolution"))) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    private static int countObservedBranches(List<Map<String, Object>> branches) {
-        int count = 0;
-        for (Map<String, Object> branch : branches) {
-            if (Boolean.TRUE.equals(branch.get("observed"))) {
-                count++;
-            }
-        }
-        return count;
+        return true;
     }
 
     private static void validateRegionEdges(
@@ -1673,7 +1648,7 @@ final class RuntimeRegionPlanner {
             int demandPrunedPairCount = 0;
             List<Map<String, Object>> validatedBindings = new ArrayList<>();
             String endpointCorrelationAuthority =
-                    endpointCorrelationAuthority();
+                    "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
             Map<String, List<FingerprintMatch>> selectedValueMatches =
                     nearestEndpointFingerprintMatches(edge,
                             upstreamInstances, downstreamInstances);
@@ -1957,7 +1932,7 @@ final class RuntimeRegionPlanner {
     /** Builds each region-instance plan once, after all demand promotion. */
     private static Map<String, RegionPlanDraft> buildRegionPlans(
             List<InstanceEvidence> evidence, Result result,
-            RuntimeTraceIndex trace, List<MethodEvent> methodEvents,
+            RuntimeTraceIndex trace,
             RootArgumentRuntimeTypeIndex rootArgumentRuntimeTypes) {
         Map<String, RegionPlanDraft> drafts = new LinkedHashMap<>();
         for (InstanceEvidence instance : evidence) {
@@ -1973,12 +1948,9 @@ final class RuntimeRegionPlanner {
                     instance.fieldEvents);
             List<Map<String, Object>> branches = branchActions(
                     instance.region, instance.runtimeEvents);
-            int observedInputCount = countObserved(inputObjects);
-            int deferredInputCount = countDeferred(inputObjects);
-            boolean inputsResolved = observedInputCount + deferredInputCount
-                    == inputObjects.size();
-            boolean branchesResolved = countObservedBranches(branches)
-                    == branches.size();
+            boolean inputsResolved = everyRowHasTrue(inputObjects,
+                    "observed", "deferredResolution");
+            boolean branchesResolved = everyRowHasTrue(branches, "observed");
             boolean symbolizeReady = symbolizeActionsReady(symbolize);
             boolean symbolicPotential = !concreteInputs.isEmpty()
                     || instance.region.inputs.isEmpty()
@@ -1994,8 +1966,7 @@ final class RuntimeRegionPlanner {
             List<String> runtimeGaps = new ArrayList<>();
             if (!instance.containedCallTreeComplete) {
                 runtimeGaps.add("CONTAINED_CALL_TREE_LIMIT_EXCEEDED");
-            }
-            if (pathSignatureTruncated(instance.runtimeEvents)) {
+            } else if (!instance.runtimePathEvidenceComplete) {
                 runtimeGaps.add("PATH_SIGNATURE_LIMIT_EXCEEDED");
             }
             Map<String, Object> baseExecution = object(
@@ -2027,7 +1998,9 @@ final class RuntimeRegionPlanner {
                     "rootSelector", rootSelector(root,
                             trace.invocationOrdinal(root),
                             trace.invocationOrdinalWithinContext(root),
-                            runtimeRootArgumentSelector(root, methodEvents,
+                            runtimeRootArgumentSelector(root,
+                                    values(trace.methodsBySignature.get(
+                                    root.method)),
                                     rootArgumentRuntimeTypes)),
                     "targetMethod", instance.region.anchorMethod,
                     "closureGoals", closureGoals);
@@ -3513,8 +3486,8 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
                     FingerprintMatch candidate =
-                            nearestMatchingSourceEndpoint(edge,
-                                    values(sourceFingerprints.get(
+                            nearestMatchingSourceEndpoint(values(
+                                    sourceFingerprints.get(
                                             sourceInstance.instanceId)),
                                     target);
                     if (candidate == null) {
@@ -3553,12 +3526,8 @@ final class RuntimeRegionPlanner {
                 currentInstance.instanceId) < 0;
     }
 
-    private static String endpointCorrelationAuthority() {
-        return "NEAREST_PRECEDING_MATCHING_SOURCE_ENDPOINT";
-    }
-
     private static FingerprintMatch nearestMatchingSourceEndpoint(
-            StaticRegionEdge edge, List<EndpointFingerprint> sources,
+            List<EndpointFingerprint> sources,
             EndpointFingerprint target) {
         FingerprintMatch best = null;
         for (EndpointFingerprint source : sources) {
@@ -5938,8 +5907,6 @@ final class RuntimeRegionPlanner {
                     "toRegion", edge.toRegion,
                     "fromRegionInstance", upstream.instanceId,
                     "toRegionInstance", downstream.instanceId,
-                    "fromRootCallId", upstream.root.callId,
-                    "toRootCallId", downstream.root.callId,
                     "fromOutputPort", output.portId,
                     "fromOutputCell", output.cell,
                     "toInputPort", downstreamInput.portId,

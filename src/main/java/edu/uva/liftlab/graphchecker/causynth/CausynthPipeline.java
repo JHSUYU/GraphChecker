@@ -101,7 +101,7 @@ public final class CausynthPipeline {
 
         LOG.info("Seed backward analysis starts at annotated exception {}",
                 exceptionTarget.stableIdentity());
-        CausynthAnalysisResult result =
+        StaticProgram result =
                 new SeedBackwardStaticAnalyzer(target).analyze();
         SymbolicRegionAssemblyStage.assemble(result);
         instrumentRuntimeTrace(result);
@@ -120,20 +120,20 @@ public final class CausynthPipeline {
         }
     }
 
-    private void enforceSymbolicCoverage(CausynthAnalysisResult result,
+    private void enforceSymbolicCoverage(StaticProgram result,
                                          boolean boundedOutputClosureCoverageReady) {
         boolean strictCoverage = Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.coverage.strict"),
                 System.getenv("CAUSYNTH_COVERAGE_STRICT"),
                 "true"));
         if (strictCoverage
-                && !result.symbolicCoverageComplete
+                && !result.coverageComplete
                 && !boundedOutputClosureCoverageReady) {
             throw new IllegalStateException(
                     "Incomplete symbolic-region coverage");
         }
         if (strictCoverage
-                && !result.symbolicCoverageComplete) {
+                && !result.coverageComplete) {
             LOG.info("Global symbolic-region coverage is incomplete, but the "
                             + "exact runtime-selected bounded output closure is "
                             + "ready; preserving strict coverage outside that "
@@ -141,7 +141,7 @@ public final class CausynthPipeline {
         }
     }
 
-    private void instrumentRuntimeTrace(CausynthAnalysisResult result) {
+    private void instrumentRuntimeTrace(StaticProgram result) {
         if (!Boolean.parseBoolean(firstNonBlank(
                 System.getProperty("causynth.instrument.trace"),
                 System.getenv("CAUSYNTH_INSTRUMENT_TRACE"),
@@ -206,13 +206,13 @@ public final class CausynthPipeline {
      * plan. Concolic instrumentation without that plan is not executable.
      */
     private boolean instrumentConcolicRegions(
-            CausynthAnalysisResult result) {
+            StaticProgram result) {
         if (!concolicInstrumentationEnabled()) {
             return false;
         }
         ConcolicRegionRefs refs = ConcolicRegionRefs.create();
         ConcolicBranchSelection branchSelection =
-                ConcolicBranchSelection.from(result.symbolicRegions);
+                ConcolicBranchSelection.from(result.regions);
         InstrumentationPlan plan = ConcolicInstrumentationSelections
                 .instrumentationPlanFromEnvironment();
         ConcolicMaterializationSelection materializationSelection =
@@ -1002,9 +1002,9 @@ public final class CausynthPipeline {
     }
 
     private static Set<String> concolicBackedViewMethods(
-            CausynthAnalysisResult result) {
+            StaticProgram result) {
         Set<String> methods = new LinkedHashSet<>();
-        for (Map<String, Object> region : result.symbolicRegions) {
+        for (Map<String, Object> region : result.regions) {
             Object values = region.get("methods");
             if (!(values instanceof Collection)) {
                 continue;
@@ -1385,7 +1385,7 @@ public final class CausynthPipeline {
     }
 
     private static TraceSiteSelection traceSiteSelection(
-            CausynthAnalysisResult result) {
+            StaticProgram result) {
         TraceSiteSelection selection = new TraceSiteSelection();
         for (Map<String, Object> edge : result.edges) {
             String method = stringValue(edge.get("method"));
@@ -1885,7 +1885,7 @@ public final class CausynthPipeline {
     }
 
     private static TraceFieldSelection traceFieldSelection(
-            CausynthAnalysisResult result) {
+            StaticProgram result) {
         TraceFieldSelection selection = new TraceFieldSelection();
         for (Map<String, Object> edge : result.edges) {
             collectTraceFields(selection, String.valueOf(edge.get("fromCell")));

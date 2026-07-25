@@ -2088,6 +2088,25 @@ complete/truncated boolean，Runtime 由 `truncationReasons + causalEdgeIds + in
 只由 `HEAP_PRESTATE + bindingAuthority` 识别，不再额外写 `frameConditionInput=true`。
 该切换净减 89 行生产 Java，62 项快速回归以及同一三个真实 core workflow 全部通过。
 
+下一批把“同一事实只解析、索引、选择一次”落实到四条主链。静态分析的
+`CausynthAnalysisResult` 与 Planner `Result` 已合并为唯一 `StaticProgram`，Analyzer、
+Assembly、Instrumentation 和 ArtifactWriter 不再逐层复制同一 program。Runtime Planner
+预建 anchor/method 索引并合并 readiness 扫描；Importer 为每个 execution task 只 decode
+一次 `InputActionCatalog`，再用保留重复 row 的 `EvidenceIndex` 共享 capture、heap、
+field、branch、projection 和 dynamic-binding evidence；Composer 同样只 decode/cache
+一次 summary closure 与 canonical payload，并复用 context relation、edge-binding 和
+causal reachability 索引。所有唯一性检查仍在各自 trust boundary 以保留重复 row 的方式
+执行，没有用 `Map` 静默覆盖证据。
+
+这一批同时修复了 schema 切换暴露的 nested-field sort 缺口：静态 port 顶层
+`javaType` 可以表示 field path 的中间对象，但 custom-JDK 实际 symbolized 的是
+`materialization.javaType` 指定的叶子。Composer 现在从 canonical materialization 取得
+logical port type；否则 `StateNode.state.guard.enabled` 会被错误地按 `GuardNode` 而不是
+`boolean` 建模，并产生 `BASE_PORT_FIELD_TYPE_MISMATCH`。聚焦测试锁定这个 contract。
+当前手写生产 Java 为 69,483 行；用户未提交的 container 变体已完整闭合为
+`gaps=[] / CANDIDATE_READY`，并按其当前约束由真实 Z3 得到 `UNSAT`。官方 fixture 的
+SAT/UNSAT release gate 必须继续在排除该用户修改的 clean worktree 运行。
+
 ### 明确不能删除
 
 必须保留：

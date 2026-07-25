@@ -12,20 +12,19 @@ import java.util.Map;
 /** Writes the stable JSON/JSONL artifact set for one static analysis run. */
 final class CausynthArtifactWriter {
     private final Path outputDir;
-    private final CausynthAnalysisResult result;
+    private final StaticProgram program;
 
-    CausynthArtifactWriter(Path outputDir, CausynthAnalysisResult result) {
+    CausynthArtifactWriter(Path outputDir, StaticProgram program) {
         this.outputDir = outputDir;
-        this.result = result;
+        this.program = program;
     }
 
     void writeAll() throws IOException {
         Files.createDirectories(outputDir);
-        writeJson("target_resolved.json", result.targetResolved);
-        writeJsonl("static_dataflow_edges.jsonl", result.edges);
-        writeJsonl("symbolic_regions.jsonl", result.symbolicRegions);
-        writeJsonl("symbolic_region_edges.jsonl",
-                result.symbolicRegionEdges);
+        writeJson("target_resolved.json", program.targetResolved);
+        writeJsonl("static_dataflow_edges.jsonl", program.edges);
+        writeJsonl("symbolic_regions.jsonl", program.regions);
+        writeJsonl("symbolic_region_edges.jsonl", program.regionEdges);
     }
 
     private void writeJson(String fileName, Object value) throws IOException {
