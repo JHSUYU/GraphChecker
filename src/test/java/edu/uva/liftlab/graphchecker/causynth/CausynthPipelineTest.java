@@ -156,6 +156,7 @@ public class CausynthPipelineTest {
         String inputPort = "REGION.15.in.32";
         JsonObject row = new JsonObject();
         row.addProperty("activationId", activationId);
+        addGlobalRootSelector(row, "<example.Manager: void add()>");
         row.addProperty("scheduleId", "SCHEDULE.0");
         JsonObject bundle = new JsonObject();
         bundle.addProperty("rootActivationId", activationId);
@@ -171,6 +172,7 @@ public class CausynthPipelineTest {
         row.addProperty("requestedOutputCaptureComplete", true);
         admitExecutable(row, "RUNTIME_CONFIRMED_UPSTREAM_REGION_REPLAY");
         row.addProperty("executionPhase", "CAPTURE_OUTPUT_PATH");
+        row.add("materializations", new JsonArray());
 
         JsonObject goal = new JsonObject();
         goal.addProperty("kind", "OUTPUT_CLOSURE");
@@ -398,6 +400,7 @@ public class CausynthPipelineTest {
             member.add("slice", slice);
             members.add(member);
         }
+        activation.add("materializations", new JsonArray());
         envelope.add("members", members);
         activation.add("outputClosure", envelope);
     }
@@ -450,37 +453,20 @@ public class CausynthPipelineTest {
             ConcolicInstrumentationSelections
                     .ConcolicOutputCaptureSelection selection =
                     ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.from(
-                            plan, "ACT.JOINT.CAPTURE");
+                            .InstrumentationPlan.from(
+                            plan, "ACT.JOINT.CAPTURE").outputCaptures();
             assertEquals(2, selection.targets().size());
 
-            JsonObject repeated = activation.deepCopy();
-            repeated.addProperty("activationId",
-                    "ACT.JOINT.CAPTURE.REPEATED");
             Files.write(plan, Arrays.asList(activation.toString(),
-                    repeated.toString()), StandardCharsets.UTF_8);
-            assertEquals(2, ConcolicInstrumentationSelections
-                    .ConcolicOutputCaptureSelection.from(plan, "")
-                    .targets().size());
-
-            JsonObject conflicting = repeated.deepCopy();
-            JsonObject conflictingCapture = conflicting.getAsJsonObject(
-                    "outputClosure").getAsJsonArray("members").get(0)
-                    .getAsJsonObject().getAsJsonObject("slice")
-                    .getAsJsonArray("captureBindings").get(0)
-                    .getAsJsonObject();
-            conflictingCapture.addProperty("unitIndex", 9);
-            conflictingCapture.addProperty("siteId", caller + "#u9");
-            Files.write(plan, Arrays.asList(activation.toString(),
-                    conflicting.toString()), StandardCharsets.UTF_8);
-            boolean conflictRejected = false;
+                    activation.toString()), StandardCharsets.UTF_8);
+            boolean duplicateActivationRejected = false;
             try {
-                ConcolicInstrumentationSelections
-                        .ConcolicOutputCaptureSelection.from(plan, "");
+                ConcolicInstrumentationSelections.InstrumentationPlan.from(
+                        plan, "ACT.JOINT.CAPTURE");
             } catch (java.io.IOException expected) {
-                conflictRejected = true;
+                duplicateActivationRejected = true;
             }
-            assertTrue(conflictRejected);
+            assertTrue(duplicateActivationRejected);
 
             JsonObject malformed = activation.deepCopy();
             malformed.getAsJsonObject("outputClosure")
@@ -492,8 +478,8 @@ public class CausynthPipelineTest {
             boolean malformedRejected = false;
             try {
                 ConcolicInstrumentationSelections
-                        .ConcolicOutputCaptureSelection.from(
-                        plan, "ACT.JOINT.CAPTURE");
+                        .InstrumentationPlan.from(
+                        plan, "ACT.JOINT.CAPTURE").outputCaptures();
             } catch (java.io.IOException expected) {
                 malformedRejected = true;
             }
@@ -511,8 +497,8 @@ public class CausynthPipelineTest {
             boolean duplicateRejected = false;
             try {
                 ConcolicInstrumentationSelections
-                        .ConcolicOutputCaptureSelection.from(
-                        plan, "ACT.JOINT.CAPTURE");
+                        .InstrumentationPlan.from(
+                        plan, "ACT.JOINT.CAPTURE").outputCaptures();
             } catch (java.io.IOException expected) {
                 duplicateRejected = true;
             }
@@ -526,9 +512,14 @@ public class CausynthPipelineTest {
             singularOnly.addProperty(
                     "requestedOutputCaptureComplete", true);
             writePlanRow(plan, singularOnly);
-            assertTrue(ConcolicInstrumentationSelections
-                    .ConcolicOutputCaptureSelection.from(
-                    plan, "ACT.JOINT.CAPTURE").targets().isEmpty());
+            boolean singularRejected = false;
+            try {
+                ConcolicInstrumentationSelections.InstrumentationPlan.from(
+                        plan, "ACT.JOINT.CAPTURE");
+            } catch (java.io.IOException expected) {
+                singularRejected = true;
+            }
+            assertTrue(singularRejected);
         } finally {
             folder.delete();
         }
@@ -609,8 +600,8 @@ public class CausynthPipelineTest {
             ConcolicInstrumentationSelections
                     .ConcolicOutputCaptureSelection selection =
                     ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.from(
-                            plan, "ACT.CAPTURE");
+                            .InstrumentationPlan.from(
+                            plan, "ACT.CAPTURE").outputCaptures();
             assertEquals(1, selection.targets().size());
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName() + "$ConcolicRegionRefs");
@@ -623,8 +614,7 @@ public class CausynthPipelineTest {
                             .ConcolicOutputCaptureSelection.class,
                     refsClass);
             instrument.setAccessible(true);
-            assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null), selection, refs));
+            instrument.invoke(new CausynthPipeline(null), selection, refs);
 
             InvokeExpr hook = null;
             for (Unit unit : body.getUnits()) {
@@ -716,8 +706,8 @@ public class CausynthPipelineTest {
             ConcolicInstrumentationSelections
                     .ConcolicOutputCaptureSelection selection =
                     ConcolicInstrumentationSelections
-                            .ConcolicOutputCaptureSelection.from(
-                            plan, "ACT.FIELD.CAPTURE");
+                            .InstrumentationPlan.from(
+                            plan, "ACT.FIELD.CAPTURE").outputCaptures();
             Class<?> refsClass = Class.forName(
                     CausynthPipeline.class.getName()
                             + "$ConcolicRegionRefs");
@@ -730,8 +720,7 @@ public class CausynthPipelineTest {
                             .ConcolicOutputCaptureSelection.class,
                     refsClass);
             instrument.setAccessible(true);
-            assertEquals(1, instrument.invoke(
-                    new CausynthPipeline(null), selection, refs));
+            instrument.invoke(new CausynthPipeline(null), selection, refs);
 
             List<Unit> units = new ArrayList<>();
             for (Unit unit : body.getUnits()) units.add(unit);
@@ -1904,7 +1893,8 @@ public class CausynthPipelineTest {
     private static Object concolicMaterializationSelection(
             Path plan, String activationId) throws Exception {
         return ConcolicInstrumentationSelections
-                .ConcolicMaterializationSelection.from(plan, activationId);
+                .InstrumentationPlan.from(plan, activationId)
+                .materializations();
     }
 
     private static JsonObject exactArrayLeafAction(

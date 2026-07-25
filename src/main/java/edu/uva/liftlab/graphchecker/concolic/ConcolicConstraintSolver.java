@@ -40,10 +40,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * Solves one normalized concolic branch-flip query and maps scalar model values
  * back to region input materialization actions.
  *
- * <p>Unknown library calls retain a deterministic uninterpreted-function
- * rendering only for diagnostic SMT inspection.  They are also recorded as
- * unsupported, so the solver cannot turn missing Java semantics into a replay
- * candidate.</p>
+ * <p>Expressions without exact Java semantics are rejected before Z3.  The
+ * unsupported reason is the diagnostic; this layer never invents a solver
+ * meaning merely to make a failed query printable.</p>
  */
 public final class ConcolicConstraintSolver {
     private static final Gson GSON = new GsonBuilder()
@@ -55,11 +54,10 @@ public final class ConcolicConstraintSolver {
     public static Result solve(JsonObject task, JsonObject activation,
                                Path z3, long timeoutMillis)
             throws IOException, InterruptedException {
-        requireMaterializations(activation);
+        requireCanonicalPathTaskSchema(task);
         Encoder encoder = new Encoder();
         BranchReplayContract replayContract = replayContract(task);
         SolverPathContext solverPathContext = solverPathContext(task);
-        requireCanonicalPathTaskSchema(task);
         JsonArray contextConstraints = solverPathContext.expressions();
         for (int index = 0; index < contextConstraints.size(); index++) {
             encoder.addConstraint(contextConstraints.get(index),
@@ -93,33 +91,19 @@ public final class ConcolicConstraintSolver {
             return new Result(record, smt, new JsonArray());
         }
 
-        Set<String> targetSymbols = symbolicNames(targetConstraint(task));
-        Set<String> unmaterializableTargetSymbols = new LinkedHashSet<>();
-        Set<String> targetResolutionGaps = new LinkedHashSet<>();
+        Set<String> targetSymbols = symbolicNames(
+                replayContract.requiredSatisfiedPredicate());
         MaterializationActionCatalog actions =
                 materializationActions(activation);
-        for (String raw : targetSymbols) {
-            MaterializationResolution resolution =
-                    materializationResolution(raw, actions,
-                            dynamicBindings);
-            if (!"N".equals(raw) && !"V".equals(raw)
-                    && (!regionInput(raw) || !resolution.resolved())) {
-                unmaterializableTargetSymbols.add(raw);
-                if (!resolution.gap.isEmpty()) {
-                    targetResolutionGaps.add(raw + ":" + resolution.gap);
-                }
-            }
-        }
-        if (!unmaterializableTargetSymbols.isEmpty()) {
+        Map<String, String> targetGaps = materializationGaps(targetSymbols,
+                actions, dynamicBindings, true);
+        if (!targetGaps.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
             record.add("unmaterializableFlipSymbols",
-                    GSON.toJsonTree(unmaterializableTargetSymbols));
-            if (!targetResolutionGaps.isEmpty()) {
-                record.add("dynamicBindingResolutionGaps",
-                        GSON.toJsonTree(targetResolutionGaps));
-            }
+                    GSON.toJsonTree(targetGaps.keySet()));
+            writeResolutionGaps(record, targetGaps);
             return new Result(record, smt, new JsonArray());
         }
 
@@ -132,32 +116,16 @@ public final class ConcolicConstraintSolver {
         // Require a real materialization target for every solver-controlled
         // region input before invoking Z3.  Environment terms remain
         // deliberately unforced and are validated separately.
-        Set<String> unmaterializableControlledSymbols =
-                new LinkedHashSet<>();
-        Set<String> controlledResolutionGaps = new LinkedHashSet<>();
-        for (String raw : encoder.controlledSymbols) {
-            MaterializationResolution resolution =
-                    materializationResolution(raw, actions,
-                            dynamicBindings);
-            if (!resolution.resolved()) {
-                unmaterializableControlledSymbols.add(raw);
-                if (!resolution.gap.isEmpty()) {
-                    controlledResolutionGaps.add(raw + ":"
-                            + resolution.gap);
-                }
-            }
-        }
-        if (!unmaterializableControlledSymbols.isEmpty()) {
+        Map<String, String> controlledGaps = materializationGaps(
+                encoder.controlledSymbols, actions, dynamicBindings, false);
+        if (!controlledGaps.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "PATH_CONSTRAINT_DEPENDS_ON_UNMATERIALIZABLE_"
                             + "CONTROLLED_SYMBOLS");
             record.add("unmaterializableControlledSymbols",
-                    GSON.toJsonTree(unmaterializableControlledSymbols));
-            if (!controlledResolutionGaps.isEmpty()) {
-                record.add("dynamicBindingResolutionGaps",
-                        GSON.toJsonTree(controlledResolutionGaps));
-            }
+                    GSON.toJsonTree(controlledGaps.keySet()));
+            writeResolutionGaps(record, controlledGaps);
             return new Result(record, smt, new JsonArray());
         }
 
@@ -223,22 +191,11 @@ public final class ConcolicConstraintSolver {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "NOT_ALL_PATH_INPUT_SYMBOLS_HAVE_MATERIALIZATION_TARGETS");
-            record.add("unmappedInputSymbols", GSON.toJsonTree(
-                    unmapped(projectedControlledSymbols, assignments)));
-            Set<String> resolutionGaps = new LinkedHashSet<>();
-            for (String raw : unmapped(projectedControlledSymbols,
-                    assignments)) {
-                MaterializationResolution resolution =
-                        materializationResolution(raw, actions,
-                                dynamicBindings);
-                if (!resolution.gap.isEmpty()) {
-                    resolutionGaps.add(raw + ":" + resolution.gap);
-                }
-            }
-            if (!resolutionGaps.isEmpty()) {
-                record.add("dynamicBindingResolutionGaps",
-                        GSON.toJsonTree(resolutionGaps));
-            }
+            Set<String> missing = unmapped(projectedControlledSymbols,
+                    assignments);
+            record.add("unmappedInputSymbols", GSON.toJsonTree(missing));
+            writeResolutionGaps(record, materializationGaps(missing,
+                    actions, dynamicBindings, false));
         } else {
             record.addProperty("status", "SAT_MODEL_READY");
         }
@@ -284,9 +241,6 @@ public final class ConcolicConstraintSolver {
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
         private final Set<String> integralRangeConstrainedSymbols =
                 new LinkedHashSet<>();
-        private final Map<String, FunctionSignature> functions =
-                new LinkedHashMap<>();
-
         private void addConstraint(JsonElement expression, String origin) {
             if (expression == null || !expression.isJsonObject()) {
                 unsupported.add(origin + ":NON_OBJECT_EXPRESSION");
@@ -531,22 +485,12 @@ public final class ConcolicConstraintSolver {
                 unsupported.add(origin + ":JAVA_CAST_SOURCE_SORT_CONFLICT:"
                         + firstNonBlank(sourceType, "UNKNOWN") + ":"
                         + source.sort + "!=" + sourceSort);
-                return diagnosticTerm("unsupported_cast", origin,
-                        targetSort == Sort.UNKNOWN ? Sort.REF : targetSort);
+                return null;
             }
             unsupported.add(origin + ":UNSUPPORTED_JAVA_CAST:"
                     + firstNonBlank(sourceType, "UNKNOWN") + "->"
                     + firstNonBlank(targetType, "UNKNOWN"));
-            return diagnosticTerm("unsupported_cast", origin,
-                    targetSort == Sort.UNKNOWN ? Sort.REF : targetSort);
-        }
-
-        private Term diagnosticTerm(String prefix, String origin, Sort sort) {
-            String material = prefix + "\u0000" + origin + "\u0000" + sort;
-            String name = prefix + "__" + safeName(origin) + "__"
-                    + sha256(material).substring(0, 10);
-            declarations.put(name, sort);
-            return new Term(name, sort);
+            return null;
         }
 
         private Term binary(JsonObject expression, String origin) {
@@ -569,13 +513,11 @@ public final class ConcolicConstraintSolver {
                     }
                     unsupported.add(origin
                             + ":AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH");
-                    return diagnosticTerm("ambiguous_integral_unary",
-                            origin, Sort.INT);
+                    return null;
                 }
                 unsupported.add(origin + ":NON_NUMERIC_OR_UNKNOWN_UNARY:"
                         + firstNonBlank(operator, "MISSING"));
-                return operand == null ? null : diagnosticTerm(
-                        "unsupported_unary", origin, operand.sort);
+                return null;
             }
             Term left = term(expression.get("_left"), null,
                     origin + ":left");
@@ -600,7 +542,7 @@ public final class ConcolicConstraintSolver {
                 unsupported.add(origin + ":MALFORMED_JVM_LCMP_OPERANDS:"
                         + left.sort + ":" + left.integralWidth + ":"
                         + right.sort + ":" + right.integralWidth);
-                return diagnosticTerm("malformed_lcmp", origin, Sort.INT);
+                return null;
             }
             if ("--l".equals(operator) || "--g".equals(operator)) {
                 if (left.sort == right.sort && left.sort.floating()) {
@@ -611,7 +553,7 @@ public final class ConcolicConstraintSolver {
                 }
                 unsupported.add(origin + ":MALFORMED_JVM_FP_CMP_OPERANDS:"
                         + operator + ":" + left.sort + ":" + right.sort);
-                return diagnosticTerm("malformed_fp_cmp", origin, Sort.INT);
+                return null;
             }
             if (left.sort != right.sort && numeric(left.sort)
                     && numeric(right.sort)
@@ -703,8 +645,7 @@ public final class ConcolicConstraintSolver {
                     unsupported.add(origin + (result.floating()
                             ? ":JAVA_FLOATING_REMAINDER_UNMODELED"
                             : ":JAVA_INTEGRAL_REMAINDER_UNMODELED"));
-                    return diagnosticTerm("unsupported_remainder", origin,
-                            result);
+                    return null;
                 }
                 if (result.floating()) {
                     String arithmetic = JavaPrimitiveSmtSemantics
@@ -716,14 +657,12 @@ public final class ConcolicConstraintSolver {
                     unsupported.add(origin
                             + ":JAVA_FLOATING_OPERATOR_UNMODELED:"
                             + operator);
-                    return diagnosticTerm("unsupported_floating_arithmetic",
-                            origin, result);
+                    return null;
                 }
                 if ("@".equals(operator) || "/".equals(operator)) {
                     unsupported.add(origin
                             + ":JAVA_INTEGRAL_DIVISION_UNMODELED");
-                    return diagnosticTerm("unsupported_division", origin,
-                            Sort.INT);
+                    return null;
                 }
                 String arithmetic = arithmetic(operator);
                 String arithmeticExpression = "(" + arithmetic + " "
@@ -735,8 +674,7 @@ public final class ConcolicConstraintSolver {
                             + ":AMBIGUOUS_JAVA_INTEGRAL_BINARY_WIDTH:"
                             + operator + ":" + left.integralWidth + ":"
                             + right.integralWidth);
-                    return diagnosticTerm("ambiguous_integral_arithmetic",
-                            origin, Sort.INT);
+                    return null;
                 }
                 return new Term(JavaPrimitiveSmtSemantics.wrap(
                         arithmeticExpression, resultWidth), Sort.INT,
@@ -999,9 +937,10 @@ public final class ConcolicConstraintSolver {
         private String methodConstraint(JsonObject expression,
                                         String origin) {
             Term call = methodTerm(expression, origin);
+            if (call == null) return "";
             Term result = term(expression.get("_res_exp"),
-                    call == null ? null : call.sort, origin + ":result");
-            if (call == null || result == null) return "";
+                    call.sort, origin + ":result");
+            if (result == null) return "";
             if (call.sort != result.sort) {
                 unsupported.add(origin + ":METHOD_RESULT_SORT_MISMATCH");
                 return "";
@@ -1012,39 +951,8 @@ public final class ConcolicConstraintSolver {
         private Term methodTerm(JsonObject expression, String origin) {
             String method = firstNonBlank(string(expression, "_name"),
                     "unknown_method");
-            JsonArray parameters = array(expression, "_param_list");
-            List<Term> arguments = new ArrayList<>();
-            for (int index = 0; index < parameters.size(); index++) {
-                Term argument = term(parameters.get(index), null,
-                        origin + ":arg" + index);
-                if (argument == null) return null;
-                arguments.add(argument);
-            }
-            JsonObject resultExpression = object(expression, "_res_exp");
-            Sort resultSort = sortOfJava(string(resultExpression,
-                    "_java_type"));
-            if (resultSort == Sort.UNKNOWN) resultSort = Sort.REF;
-            String function = "uf__" + safeName(method) + "__"
-                    + sha256(signature(method, arguments, resultSort))
-                    .substring(0, 10);
-            FunctionSignature signature = new FunctionSignature(arguments,
-                    resultSort);
-            FunctionSignature previous = functions.get(function);
-            if (previous != null && !previous.equals(signature)) {
-                unsupported.add(origin + ":INCONSISTENT_METHOD_SIGNATURE:"
-                        + method);
-                return null;
-            }
-            functions.put(function, signature);
-            // Retain the UF only so the diagnostic SMT remains inspectable.
-            // No arbitrary Java call is an exact semantic adapter here, so a
-            // replay candidate must never be confused with admitted meaning.
             unsupported.add(origin + ":METHOD_SEMANTICS_MISSING:" + method);
-            StringBuilder call = new StringBuilder("(").append(function);
-            for (Term argument : arguments) {
-                call.append(' ').append(argument.text);
-            }
-            return new Term(call.append(')').toString(), resultSort);
+            return null;
         }
 
         private String arrayConstraint(JsonObject expression, String origin) {
@@ -1084,18 +992,6 @@ public final class ConcolicConstraintSolver {
                     : declarations.entrySet()) {
                 result.append("(declare-const ").append(declaration.getKey())
                         .append(' ').append(declaration.getValue().smt)
-                        .append(")\n");
-            }
-            for (Map.Entry<String, FunctionSignature> entry
-                    : functions.entrySet()) {
-                result.append("(declare-fun ").append(entry.getKey())
-                        .append(" (");
-                for (int index = 0;
-                     index < entry.getValue().arguments.size(); index++) {
-                    if (index > 0) result.append(' ');
-                    result.append(entry.getValue().arguments.get(index).sort.smt);
-                }
-                result.append(") ").append(entry.getValue().result.smt)
                         .append(")\n");
             }
             for (Map.Entry<String, String> entry
@@ -1254,39 +1150,6 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static final class FunctionSignature {
-        private final List<Term> arguments;
-        private final Sort result;
-
-        private FunctionSignature(List<Term> arguments, Sort result) {
-            this.arguments = new ArrayList<>(arguments);
-            this.result = result;
-        }
-
-        @Override
-        public boolean equals(Object value) {
-            if (!(value instanceof FunctionSignature)) return false;
-            FunctionSignature other = (FunctionSignature) value;
-            if (result != other.result
-                    || arguments.size() != other.arguments.size()) return false;
-            for (int index = 0; index < arguments.size(); index++) {
-                if (arguments.get(index).sort != other.arguments.get(index).sort) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        @Override
-        public int hashCode() {
-            int value = result.hashCode();
-            for (Term argument : arguments) {
-                value = value * 31 + argument.sort.hashCode();
-            }
-            return value;
-        }
-    }
-
     private static JsonArray modelAssignments(Encoder encoder,
                                               Map<String, String> values,
                                               JsonObject activation,
@@ -1441,14 +1304,6 @@ public final class ConcolicConstraintSolver {
         return encoded.getAsJsonArray();
     }
 
-    private static JsonElement targetConstraint(JsonObject task) {
-        try {
-            return replayContract(task).requiredSatisfiedPredicate();
-        } catch (IOException malformed) {
-            return null;
-        }
-    }
-
     private static BranchReplayContract replayContract(JsonObject task)
             throws IOException {
         JsonElement encoded = task == null ? null
@@ -1522,50 +1377,25 @@ public final class ConcolicConstraintSolver {
                                           List<JsonObject> actions) {
         ActionMatch best = null;
         int bestLength = -1;
-        String normalizedRaw = normalized(raw);
         for (JsonObject action : actions) {
-            List<ActionMatch> labels = new ArrayList<>();
             String symbol = string(action, "symbol");
-            if (!symbol.isEmpty()) {
-                labels.add(new ActionMatch(action,
-                        Collections.<String>emptyList(), symbol));
-            }
-            JsonArray singlePath = array(action, "fieldPath");
-            if (singlePath.size() > 0) {
-                StringBuilder label = new StringBuilder(symbol);
-                List<String> segments = new ArrayList<>();
-                for (JsonElement segment : singlePath) {
-                    if (!segment.isJsonPrimitive()) continue;
-                    String value = segment.getAsString();
-                    segments.add(value);
-                    label.append('.').append(value);
-                }
-                labels.add(new ActionMatch(action, segments,
-                        label.toString()));
-            }
+            if (symbol.isEmpty()) continue;
+            List<JsonArray> paths = new ArrayList<>();
+            paths.add(new JsonArray());
+            if (array(action, "fieldPath").size() > 0)
+                paths.add(array(action, "fieldPath"));
             for (JsonElement path : array(action, "fieldPaths")) {
-                if (!path.isJsonArray()) continue;
-                StringBuilder label = new StringBuilder(symbol);
-                List<String> segments = new ArrayList<>();
-                for (JsonElement segment : path.getAsJsonArray()) {
-                    try {
-                        String value = segment.getAsString();
-                        label.append('.').append(value);
-                        segments.add(value);
-                    } catch (RuntimeException ignored) {
-                    }
-                }
-                labels.add(new ActionMatch(action, segments,
-                        label.toString()));
+                if (path.isJsonArray()) paths.add(path.getAsJsonArray());
             }
-            for (ActionMatch label : labels) {
-                String normalizedLabel = normalized(label.label);
-                if (!label.label.isEmpty() && (raw.contains(label.label)
-                        || !normalizedLabel.isEmpty()
-                        && normalizedRaw.contains(normalizedLabel))
-                        && normalizedLabel.length() > bestLength) {
-                    best = label;
-                    bestLength = normalizedLabel.length();
+            for (JsonArray path : paths) {
+                List<String> segments = stringList(path);
+                if (segments.size() != path.size()) continue;
+                String label = symbol + (segments.isEmpty() ? ""
+                        : "." + String.join(".", segments));
+                if (exactEngineSymbol(raw, label)
+                        && label.length() > bestLength) {
+                    best = new ActionMatch(action, segments);
+                    bestLength = label.length();
                 }
             }
         }
@@ -1616,16 +1446,15 @@ public final class ConcolicConstraintSolver {
                 }
             }
             return MaterializationResolution.resolved(new ActionMatch(
-                    exactActions.get(0), exact.fieldPath(),
-                    exact.baseInputSymbol), exact);
+                    exactActions.get(0), exact.fieldPath()), exact);
         }
 
-        ActionMatch legacy = bestAction(raw, actions.executable);
-        if (legacy == null) {
+        ActionMatch direct = bestAction(raw, actions.executable);
+        if (direct == null) {
             return MaterializationResolution.gap(
                     "NO_STATIC_MATERIALIZATION_ACTION");
         }
-        String base = string(legacy.action, "symbol");
+        String base = string(direct.action, "symbol");
         List<DynamicFieldBinding> candidates = registry.forBase(base);
         if (!candidates.isEmpty()) {
             if (exactEngineSymbol(raw, base)) {
@@ -1645,7 +1474,37 @@ public final class ConcolicConstraintSolver {
             return MaterializationResolution.gap(
                     "ENGINE_SYMBOL_NOT_EXACT_DYNAMIC_BINDING:" + raw);
         }
-        return MaterializationResolution.resolved(legacy, null);
+        return MaterializationResolution.resolved(direct, null);
+    }
+
+    private static Map<String, String> materializationGaps(
+            Set<String> symbols, MaterializationActionCatalog actions,
+            DynamicBindingRegistry registry, boolean requireRegionInput) {
+        Map<String, String> result = new LinkedHashMap<>();
+        for (String symbol : symbols) {
+            if ("N".equals(symbol) || "V".equals(symbol)) continue;
+            MaterializationResolution resolution = materializationResolution(
+                    symbol, actions, registry);
+            if ((requireRegionInput && !regionInput(symbol))
+                    || !resolution.resolved()) {
+                result.put(symbol, resolution.gap);
+            }
+        }
+        return result;
+    }
+
+    private static void writeResolutionGaps(JsonObject record,
+                                            Map<String, String> gaps) {
+        Set<String> details = new LinkedHashSet<>();
+        for (Map.Entry<String, String> gap : gaps.entrySet()) {
+            if (!gap.getValue().isEmpty()) {
+                details.add(gap.getKey() + ":" + gap.getValue());
+            }
+        }
+        if (!details.isEmpty()) {
+            record.add("dynamicBindingResolutionGaps",
+                    GSON.toJsonTree(details));
+        }
     }
 
     private static boolean exactEngineSymbol(String raw, String symbol) {
@@ -1709,7 +1568,6 @@ public final class ConcolicConstraintSolver {
     }
 
     private static final class DynamicBindingRegistry {
-        private final List<DynamicFieldBinding> bindings = new ArrayList<>();
         private final Map<String, DynamicFieldBinding> byDynamicSymbol =
                 new LinkedHashMap<>();
         private final Map<String, List<DynamicFieldBinding>> byBase =
@@ -1730,12 +1588,11 @@ public final class ConcolicConstraintSolver {
                 }
                 DynamicFieldBinding binding = new DynamicFieldBinding(
                         element.getAsJsonObject());
-                List<String> validation = binding.validate();
-                for (String problem : validation) {
-                    result.problems.add("BINDING_" + index + ":"
-                            + problem);
+                String problem = binding.validationProblem();
+                if (!problem.isEmpty()) {
+                    result.problems.add("BINDING_" + index + ":" + problem);
+                    continue;
                 }
-                if (!validation.isEmpty()) continue;
                 if (!ids.add(binding.dynamicBindingId)) {
                     result.problems.add("DUPLICATE_DYNAMIC_BINDING_ID:"
                             + binding.dynamicBindingId);
@@ -1753,14 +1610,8 @@ public final class ConcolicConstraintSolver {
                             + binding.materializationSiteId + "#"
                             + binding.materializationOccurrence);
                 }
-                result.bindings.add(binding);
-                List<DynamicFieldBinding> family = result.byBase.get(
-                        binding.baseInputSymbol);
-                if (family == null) {
-                    family = new ArrayList<>();
-                    result.byBase.put(binding.baseInputSymbol, family);
-                }
-                family.add(binding);
+                result.byBase.computeIfAbsent(binding.baseInputSymbol,
+                        ignored -> new ArrayList<>()).add(binding);
             }
             return result;
         }
@@ -1769,7 +1620,7 @@ public final class ConcolicConstraintSolver {
             DynamicFieldBinding direct = byDynamicSymbol.get(raw);
             if (direct != null) return direct;
             DynamicFieldBinding selected = null;
-            for (DynamicFieldBinding binding : bindings) {
+            for (DynamicFieldBinding binding : byDynamicSymbol.values()) {
                 if (!exactEngineSymbol(raw, binding.dynamicFieldSymbol)) {
                     continue;
                 }
@@ -1829,114 +1680,78 @@ public final class ConcolicConstraintSolver {
                     "materializationOccurrence", -1);
         }
 
-        private List<String> validate() {
-            List<String> result = new ArrayList<>();
+        private String validationProblem() {
             String kind = string(raw, "kind");
             boolean map = MAP_KIND.equals(kind);
             boolean container = CONTAINER_KIND.equals(kind);
-            if (!map && !container) {
-                result.add("WRONG_KIND");
-            }
+            if (!map && !container) return "WRONG_KIND";
             int expectedSchema = container ? 3 : 1;
-            if (integer(raw, "schemaVersion", -1) != expectedSchema) {
-                result.add("UNSUPPORTED_SCHEMA_VERSION");
-            }
+            if (integer(raw, "schemaVersion", -1) != expectedSchema)
+                return "UNSUPPORTED_SCHEMA_VERSION";
             String expectedAuthority = container ? CONTAINER_AUTHORITY
                     : MAP_AUTHORITY;
-            if (!expectedAuthority.equals(string(raw, "authority"))) {
-                result.add("WRONG_AUTHORITY");
-            }
-            if (!bool(raw, "complete", false)) {
-                result.add("NOT_COMPLETE");
-            }
-            if (baseInputSymbol.isEmpty()) result.add("MISSING_BASE_INPUT");
-            if (dynamicFieldSymbol.isEmpty()) {
-                result.add("MISSING_DYNAMIC_SYMBOL");
-            }
-            if (materializationSiteId.isEmpty()) {
-                result.add("MISSING_MATERIALIZATION_SITE");
-            }
-            if (materializationOccurrence < 1) {
-                result.add("INVALID_MATERIALIZATION_OCCURRENCE");
-            }
-            if (dynamicBindingId.isEmpty()) {
-                result.add("MISSING_DYNAMIC_BINDING_ID");
-            }
+            if (!expectedAuthority.equals(string(raw, "authority")))
+                return "WRONG_AUTHORITY";
+            if (!bool(raw, "complete", false)) return "NOT_COMPLETE";
+            if (baseInputSymbol.isEmpty()) return "MISSING_BASE_INPUT";
+            if (dynamicFieldSymbol.isEmpty()) return "MISSING_DYNAMIC_SYMBOL";
+            if (materializationSiteId.isEmpty())
+                return "MISSING_MATERIALIZATION_SITE";
+            if (materializationOccurrence < 1)
+                return "INVALID_MATERIALIZATION_OCCURRENCE";
+            if (dynamicBindingId.isEmpty())
+                return "MISSING_DYNAMIC_BINDING_ID";
             if (map) {
                 if (raw.get("keyExpression") == null
-                        || raw.get("keyExpression").isJsonNull()) {
-                    result.add("MISSING_KEY_SELECTOR");
-                }
-                if (string(raw, "keyExpressionAuthority").isEmpty()) {
-                    result.add("MISSING_KEY_SELECTOR_AUTHORITY");
-                }
-            } else if (container) {
-                validateContainerSelector(result);
+                        || raw.get("keyExpression").isJsonNull())
+                    return "MISSING_KEY_SELECTOR";
+                if (string(raw, "keyExpressionAuthority").isEmpty())
+                    return "MISSING_KEY_SELECTOR_AUTHORITY";
             }
             if (!dynamicFieldSymbol.isEmpty()
                     && !dynamicBindingId.equals("DYNAMIC_FIELD:"
-                    + dynamicFieldSymbol)) {
-                result.add("BINDING_ID_SYMBOL_MISMATCH");
-            }
-            if (!baseInputSymbol.isEmpty()
-                    && !materializationSiteId.isEmpty()
-                    && materializationOccurrence > 0) {
-                String expected = baseInputSymbol + ".field."
-                        + sha256(materializationSiteId).substring(0, 12)
-                        + ".occ." + materializationOccurrence;
-                if (!expected.equals(dynamicFieldSymbol)) {
-                    result.add("DYNAMIC_SYMBOL_SITE_OCCURRENCE_MISMATCH");
-                }
-            }
-            return result;
+                    + dynamicFieldSymbol))
+                return "BINDING_ID_SYMBOL_MISMATCH";
+            String expected = baseInputSymbol + ".field."
+                    + sha256(materializationSiteId).substring(0, 12)
+                    + ".occ." + materializationOccurrence;
+            if (!expected.equals(dynamicFieldSymbol))
+                return "DYNAMIC_SYMBOL_SITE_OCCURRENCE_MISMATCH";
+            return container ? containerSelectorProblem() : "";
         }
 
-        private void validateContainerSelector(List<String> result) {
+        private String containerSelectorProblem() {
             JsonObject selector = object(raw, "containerSelector");
-            if (selector.size() == 0) {
-                result.add("MISSING_CONTAINER_SELECTOR");
-                return;
-            }
+            if (selector.size() == 0) return "MISSING_CONTAINER_SELECTOR";
             String bindingId = string(selector, "bindingId");
             String containerPort = string(selector, "containerInputPort");
             String containerCell = string(selector, "containerInputCell");
             int index = integer(selector, "elementIndex", -1);
             int occurrence = integer(selector, "elementOccurrence", -1);
-            if (!"ARRAY_INDEX".equals(string(selector, "kind"))) {
-                result.add("WRONG_CONTAINER_SELECTOR_KIND");
-            }
-            if (!bool(selector, "complete", false)) {
-                result.add("INCOMPLETE_CONTAINER_SELECTOR");
-            }
-            if (bindingId.isEmpty()) {
-                result.add("MISSING_CONTAINER_BINDING_ID");
-            }
-            if (containerPort.isEmpty() || containerCell.isEmpty()) {
-                result.add("MISSING_CONTAINER_ENDPOINT");
-            }
-            if (containerPort.equals(baseInputSymbol)) {
-                result.add("CONTAINER_PORT_EQUALS_BASE_INPUT");
-            }
+            if (!"ARRAY_INDEX".equals(string(selector, "kind")))
+                return "WRONG_CONTAINER_SELECTOR_KIND";
+            if (!bool(selector, "complete", false))
+                return "INCOMPLETE_CONTAINER_SELECTOR";
+            if (bindingId.isEmpty()) return "MISSING_CONTAINER_BINDING_ID";
+            if (containerPort.isEmpty() || containerCell.isEmpty())
+                return "MISSING_CONTAINER_ENDPOINT";
+            if (containerPort.equals(baseInputSymbol))
+                return "CONTAINER_PORT_EQUALS_BASE_INPUT";
             if (!"EXACT_ARRAY_INDEX".equals(string(selector,
-                    "selectorAuthority"))) {
-                result.add("NON_EXACT_CONTAINER_SELECTOR");
-            }
-            if (index < 0) result.add("INVALID_CONTAINER_ELEMENT_INDEX");
+                    "selectorAuthority")))
+                return "NON_EXACT_CONTAINER_SELECTOR";
+            if (index < 0) return "INVALID_CONTAINER_ELEMENT_INDEX";
             if (occurrence < 1
-                    || occurrence != materializationOccurrence) {
-                result.add("CONTAINER_OCCURRENCE_MISMATCH");
-            }
-            if (string(selector, "declaredFieldOwnerClass").isEmpty()) {
-                result.add("MISSING_DECLARED_FIELD_OWNER");
-            }
-            if (string(selector, "declaredFieldType").isEmpty()) {
-                result.add("MISSING_DECLARED_FIELD_TYPE");
-            }
+                    || occurrence != materializationOccurrence)
+                return "CONTAINER_OCCURRENCE_MISMATCH";
+            if (string(selector, "declaredFieldOwnerClass").isEmpty())
+                return "MISSING_DECLARED_FIELD_OWNER";
+            if (string(selector, "declaredFieldType").isEmpty())
+                return "MISSING_DECLARED_FIELD_TYPE";
             if (longInteger(selector, "containerObjectToken", 0L) <= 0L
                     || longInteger(selector,
-                    "elementObjectToken", 0L) <= 0L) {
-                result.add("INVALID_CONTAINER_OBJECT_TOKEN");
-            }
+                    "elementObjectToken", 0L) <= 0L)
+                return "INVALID_CONTAINER_OBJECT_TOKEN";
             String tokenScope = string(selector, "objectTokenScope");
             if (!"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
                     string(selector, "objectTokenAuthority"))
@@ -1945,20 +1760,18 @@ public final class ConcolicConstraintSolver {
                     tokenScope).equals(tokenScope)
                     || !firstNonBlank(string(raw, "objectTokenAuthority"),
                     "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN")
-                    .equals(string(selector, "objectTokenAuthority"))) {
-                result.add("INVALID_CONTAINER_OBJECT_TOKEN_SCOPE");
-            }
+                    .equals(string(selector, "objectTokenAuthority")))
+                return "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE";
             String resolved = string(selector,
                     "resolvedFromSelectorAuthority");
             if (!("EXACT_ARRAY_INDEX".equals(resolved)
-                    || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(resolved))) {
-                result.add("INVALID_CONTAINER_RESOLUTION_AUTHORITY");
-            }
+                    || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(resolved)))
+                return "INVALID_CONTAINER_RESOLUTION_AUTHORITY";
             if (!"EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_"
                     .concat("LOCAL_ELEMENT_IDENTITY").equals(string(
-                            selector, "authority"))) {
-                result.add("INVALID_CONTAINER_SELECTOR_AUTHORITY");
-            }
+                            selector, "authority")))
+                return "INVALID_CONTAINER_SELECTOR_AUTHORITY";
+            return "";
         }
 
         private boolean isContainerElement() {
@@ -2082,13 +1895,10 @@ public final class ConcolicConstraintSolver {
     private static final class ActionMatch {
         private final JsonObject action;
         private final List<String> path;
-        private final String label;
 
-        private ActionMatch(JsonObject action, List<String> path,
-                            String label) {
+        private ActionMatch(JsonObject action, List<String> path) {
             this.action = action;
             this.path = new ArrayList<>(path);
-            this.label = label;
         }
     }
 
@@ -2401,25 +2211,12 @@ public final class ConcolicConstraintSolver {
                 .replace("\"", "\"\"") + "\"";
     }
 
-    private static String signature(String method, List<Term> arguments,
-                                    Sort result) {
-        StringBuilder value = new StringBuilder(method).append("->")
-                .append(result);
-        for (Term argument : arguments) value.append(':').append(argument.sort);
-        return value.toString();
-    }
-
     private static String safeName(String value) {
         String safe = value == null ? "" : value.replaceAll(
                 "[^A-Za-z0-9_]", "_");
         if (safe.isEmpty()) safe = "empty";
         if (Character.isDigit(safe.charAt(0))) safe = "n_" + safe;
         return safe.length() > 80 ? safe.substring(0, 80) : safe;
-    }
-
-    private static String normalized(String value) {
-        return value == null ? "" : value.replaceAll("[^A-Za-z0-9]", "")
-                .toLowerCase();
     }
 
     private static String firstLine(String value) {
@@ -2431,14 +2228,10 @@ public final class ConcolicConstraintSolver {
     private static List<String> stringList(JsonArray values) {
         List<String> result = new ArrayList<>();
         for (JsonElement value : values) {
-            try {
-                if (value.isJsonPrimitive()
-                        && value.getAsJsonPrimitive().isString()
-                        && !value.getAsString().isEmpty()) {
-                    result.add(value.getAsString());
-                }
-            } catch (RuntimeException ignored) {
-                // A malformed path is not usable as replay identity.
+            if (value.isJsonPrimitive()
+                    && value.getAsJsonPrimitive().isString()
+                    && !value.getAsString().isEmpty()) {
+                result.add(value.getAsString());
             }
         }
         return result;

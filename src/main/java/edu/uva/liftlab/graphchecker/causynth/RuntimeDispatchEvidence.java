@@ -28,13 +28,9 @@ import java.util.Set;
  * (or {@code CAUSYNTH_RUNTIME_CALL_EDGES}).</p>
  */
 final class RuntimeDispatchEvidence {
-    private final String source;
     private final Map<String, Set<String>> calleesByCallsite;
 
-    private RuntimeDispatchEvidence(
-            String source,
-            Map<String, Set<String>> calleesByCallsite) {
-        this.source = source;
+    private RuntimeDispatchEvidence(Map<String, Set<String>> calleesByCallsite) {
         this.calleesByCallsite = calleesByCallsite;
     }
 
@@ -43,7 +39,7 @@ final class RuntimeDispatchEvidence {
                 System.getProperty("causynth.runtime.call.edges"),
                 System.getenv("CAUSYNTH_RUNTIME_CALL_EDGES")));
         if (configured.isEmpty()) {
-            return new RuntimeDispatchEvidence("", new LinkedHashMap<>());
+            return new RuntimeDispatchEvidence(new LinkedHashMap<>());
         }
         Path path = Paths.get(configured).toAbsolutePath().normalize();
         if (!Files.isRegularFile(path)) {
@@ -88,16 +84,11 @@ final class RuntimeDispatchEvidence {
                         ignored -> new LinkedHashSet<>()).add(actual);
             }
         }
-        return new RuntimeDispatchEvidence(path.toString(),
-                calleesByCallsite);
+        return new RuntimeDispatchEvidence(calleesByCallsite);
     }
 
     Set<String> lookup(String caller, String siteId, String declared) {
         return calleesByCallsite.get(key(caller, siteId, declared));
-    }
-
-    String source() {
-        return source;
     }
 
     private static String key(String caller, String siteId,
@@ -135,48 +126,38 @@ final class RuntimeDispatchEvidence {
 }
 
 final class RuntimeDispatchSelection {
-    final String siteId;
     final List<String> targets;
-    final String source;
+    final boolean runtimeUnique;
     final boolean blocked;
 
-    private RuntimeDispatchSelection(String siteId,
-                                     Collection<String> targets,
-                                     String source,
+    private RuntimeDispatchSelection(Collection<String> targets,
+                                     boolean runtimeUnique,
                                      boolean blocked) {
-        this.siteId = value(siteId);
         this.targets = new ArrayList<>(targets);
-        this.source = value(source);
+        this.runtimeUnique = runtimeUnique;
         this.blocked = blocked;
     }
 
     static RuntimeDispatchSelection staticFallback(
-            String siteId, Collection<String> targets) {
-        return new RuntimeDispatchSelection(siteId, targets, "",
-                false);
+            Collection<String> targets) {
+        return new RuntimeDispatchSelection(targets, false, false);
     }
 
-    static RuntimeDispatchSelection runtimeUnique(
-            String siteId, String target, String source) {
-        return new RuntimeDispatchSelection(siteId,
-                Collections.singletonList(target), source, false);
+    static RuntimeDispatchSelection runtimeUnique(String target) {
+        return new RuntimeDispatchSelection(
+                Collections.singletonList(target), true, false);
     }
 
-    static RuntimeDispatchSelection blocked(String siteId) {
-        return new RuntimeDispatchSelection(siteId,
-                Collections.emptyList(), "", true);
+    static RuntimeDispatchSelection blockedSelection() {
+        return new RuntimeDispatchSelection(
+                Collections.emptyList(), false, true);
     }
 
     boolean unique() {
-        return !blocked && !source.isEmpty() && targets.size() == 1;
+        return runtimeUnique;
     }
 
     boolean blocked() {
         return blocked;
-    }
-
-    private static String value(Object candidate) {
-        return candidate == null || "null".equals(String.valueOf(candidate))
-                ? "" : String.valueOf(candidate);
     }
 }

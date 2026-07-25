@@ -142,8 +142,12 @@ public class ConcolicSchedulerTest {
                     ConcolicScheduler.schedule(arguments);
             assertEquals("EXECUTABLE", admissionState(
                     deferredClosure.scheduledActivations.get(0)));
-            assertEquals(1, deferredClosure.scheduledActivations.get(0)
-                    .getAsJsonArray("concreteFallbacks").size());
+            JsonObject fallback = deferredClosure.scheduledActivations.get(0)
+                    .getAsJsonArray("concreteFallbacks").get(0)
+                    .getAsJsonObject();
+            assertEquals(2, fallback.size());
+            assertTrue(fallback.has("symbol"));
+            assertTrue(fallback.has("concreteFallbackReason"));
         } finally {
             folder.delete();
         }
@@ -262,6 +266,45 @@ public class ConcolicSchedulerTest {
             assertFalse(scheduled.has("outputs"));
             assertEquals(2, scheduled.getAsJsonArray("symbolize").size());
             assertEquals(2, scheduled.getAsJsonArray("branches").size());
+        } finally {
+            folder.delete();
+        }
+    }
+
+    @Test
+    public void canonicalTargetSummaryNeedsNoRetiredExecutionKind()
+            throws Exception {
+        TemporaryFolder folder = new TemporaryFolder();
+        folder.create();
+        try {
+            Fixture fixture = fixture(folder.getRoot().toPath());
+            Path summaries = folder.getRoot().toPath().resolve(
+                    "summaries.jsonl");
+            JsonObject summary = new JsonObject();
+            summary.addProperty("activationId", "ACT.0");
+            summary.addProperty("regionId", "REGION.0");
+            summary.addProperty("regionInstanceId",
+                    "REGION.0@testMiniDfs#call7");
+            RegionCaptureGoal.targetBranch().writeTo(summary);
+            summary.addProperty("relationallyComplete", true);
+            summary.addProperty("summaryId", "SUMMARY.CANONICAL");
+            Files.write(summaries, (summary + "\n").getBytes(
+                    StandardCharsets.UTF_8));
+
+            ConcolicScheduler.Result result = ConcolicScheduler.schedule(
+                    ConcolicScheduler.Arguments.parse(new String[]{
+                            "--regions", fixture.regions.toString(),
+                            "--activation-plan",
+                            fixture.activations.toString(),
+                            "--edge-validations", fixture.edges.toString(),
+                            "--static-graph", fixture.staticGraph.toString(),
+                            "--summaries", summaries.toString(),
+                            "--output-dir", fixture.output.toString(),
+                            "--max-jobs", "1"}));
+
+            assertEquals(1, result.scheduledPrimaryCount);
+            assertEquals(1, result.queries.size());
+            assertFalse(summary.has("executionKind"));
         } finally {
             folder.delete();
         }

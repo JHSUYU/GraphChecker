@@ -17,6 +17,6 @@ final class CausynthAnalysisResult {
     final List<String> traceMethods = new ArrayList<>();
     final List<Map<String, Object>> symbolicRegions = new ArrayList<>();
     final List<Map<String, Object>> symbolicRegionEdges = new ArrayList<>();
-    final Map<String, Object> symbolicCoverage = new LinkedHashMap<>();
+    boolean symbolicCoverageComplete;
     final Map<String, Object> targetResolved = new LinkedHashMap<>();
 }

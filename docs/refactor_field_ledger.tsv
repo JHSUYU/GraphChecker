@@ -237,3 +237,16 @@ activation-binding	fieldPathSourceCells/fieldPathBindingAuthority/javaTypeAuthor
 map-projection	capture-ready/issues/recursive-composable mirrors	RuntimeRegionPlanner	ConcolicSummaryImporter/tests	none	complete, causal IDs, selector/field/output evidence and admission blockers	DELETE_AND_UPDATE_READERS	6+
 runtime-planner	frozen static accessor input fallback	RuntimeRegionPlanner	none	none	current static port metadata is mandatory and canonical	DELETE_FALLBACK	6+
 replay-admission	generic schema/model/map/closure projection validation	ConcolicReplayValidator	ConcolicSummaryImporter	none	Importer validates canonical raw row once; ReplayValidator keeps only dynamic rebinding joins	DELETE_DUPLICATE_KEEP_DYNAMIC_REBINDING	6+
+runtime-planner	repeated static artifact parser/manual unescape	RuntimeRegionPlanner	local planner only	none	one Gson parse and typed row decoder per artifact	CONSOLIDATE_AND_DELETE	6+
+instrumentation-selection	cross-activation merge/repeated closure scans/instrumentation counters	ConcolicInstrumentationSelections,CausynthPipeline	none	none	one typed InstrumentationPlan and root coverage gate	CONSOLIDATE_AND_DELETE	6+
+static-analysis	symbolic coverage/seed-guard/accessor/dispatch diagnostic maps	SymbolicRegionPlanner,SeedBackwardStaticAnalyzer,CausynthPipeline	final boolean admission only	none	canonical selected inputs/sites/methods and incomplete gate	DELETE	6+
+composer	raw single-path/protocolModel/explicitContracts producer fallback	ConcolicSmtComposer	none	none	canonical relationallyComplete GUARDED_PATH_MERGE	DELETE_FALLBACK	6+
+composer	missing-summary uninterpreted predicate	ConcolicSmtComposer	none	none	typed missing/incomplete-summary gap	DELETE_UNSOUND_FALLBACK	6+
+solver	diagnostic uninterpreted functions/free variables	ConcolicConstraintSolver	none	none	typed unsupported expression and solver-not-invoked status	DELETE_UNSOUND_DIAGNOSTIC_SEMANTICS	6+
+solver-result	materialization/deferred/counter mirrors	ConcolicConstraintSolver,ConcolicScheduler	none	none	canonical symbol plus concreteFallbackReason or typed gap	DELETE	6+
+raw-result	model assignment selector/rebind/concrete-class mirrors	ConcolicRegionRuntime	none	none	canonical assignment key/target/path/value plus separate dynamic binding evidence	DELETE	6+
+raw-result	engine-array consumed-leaf and branch-base mirrors	ConcolicRegionRuntime	none	none	canonical array expression/object scope and typed branch witness	DELETE	6+
+trace	field method-receiver objectId	CausynthTraceRecorder	none	none	field receiver/value identity plus owning call remain canonical	DELETE	6+
+imported-summary	target rootMethod/rootCallId/executionKind	ConcolicSummaryImporter	ConcolicScheduler	run.sh	captureGoal plus exact activation/region/regionInstance identity	DELETE_AND_UPDATE_READERS	6+
+imported-summary	runtime Map-state temporary binding mirrors	ConcolicSummaryImporter	same importer method only	none	typed effect-ID set passed directly to coverage admission	DELETE_INTERNAL_SERIALIZATION	6+
+heap-effect	normalizedConditionIndex/normalizationStatus/fixed provenanceAuthority/outputBinding	ConcolicSummaryImporter	none	none	rawConditionIndex, site/occurrence, state/input/output ports and expressions	DELETE	6+

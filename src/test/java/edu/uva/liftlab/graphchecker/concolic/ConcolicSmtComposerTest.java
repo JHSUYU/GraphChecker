@@ -56,8 +56,6 @@ public class ConcolicSmtComposerTest {
             assertTrue(result.smtLib.contains("(map_clear "));
             assertTrue(result.smtLib.contains("(map_put_all "));
             assertTrue(result.smtLib.contains(
-                    "(map_remove port__local_heap__summary_SUMMARY_P__"));
-            assertTrue(result.smtLib.contains(
                     "__REGION_P_out_heapMap0_state3 port__REGION_P_in_1)"));
             assertZ3Status(result.smtLib, "sat");
         } finally {
@@ -164,7 +162,8 @@ public class ConcolicSmtComposerTest {
             bindings.add(exactBinding);
             upstream.add("edgeBindings", bindings);
             Files.write(fixture.summaries,
-                    (intermediate + "\n" + upstream + "\n").getBytes(
+                    (canonicalSummary(intermediate) + "\n"
+                            + canonicalSummary(upstream) + "\n").getBytes(
                             StandardCharsets.UTF_8));
 
             ConcolicSmtComposer.Arguments bounded =
@@ -354,7 +353,8 @@ public class ConcolicSmtComposerTest {
             bindings.add(firstBinding);
             bindings.add(secondBinding);
             Files.write(fixture.summaries,
-                    (first + "\n" + second + "\n").getBytes(
+                    (canonicalSummary(first) + "\n"
+                            + canonicalSummary(second) + "\n").getBytes(
                             StandardCharsets.UTF_8));
             installFatalRelations(fixture, bindings);
             JsonObject fatal = JsonParser.parseString(new String(
@@ -415,7 +415,8 @@ public class ConcolicSmtComposerTest {
                     .set(0, new com.google.gson.JsonPrimitive(
                             "DF.AMBIGUOUS.SECOND"));
             Files.write(fixture.summaries,
-                    (first + "\n" + second + "\n").getBytes(
+                    (canonicalSummary(first) + "\n"
+                            + canonicalSummary(second) + "\n").getBytes(
                             StandardCharsets.UTF_8));
             installFatalRelations(fixture, singleton(binding));
             JsonObject fatal = JsonParser.parseString(new String(
@@ -1720,7 +1721,8 @@ public class ConcolicSmtComposerTest {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "REGION_PATH_WORKLIST");
-        result.addProperty("regionId", "REGION.P");
+        result.addProperty("regionId", summary.get(
+                "regionId").getAsString());
         result.addProperty("state", RegionPathWorklist.State.CLOSED.name());
         JsonObject bounds = new JsonObject();
         bounds.addProperty("maxPathsPerRegion", 64);
@@ -1728,7 +1730,6 @@ public class ConcolicSmtComposerTest {
         bounds.addProperty("maxTasks", 256);
         bounds.addProperty("maxWallClockMillis", 30_000L);
         result.add("bounds", bounds);
-        result.addProperty("observedPathCount", 1);
         result.add(OutputClosureContract.FIELD, contract.toJson());
         result.add("gaps", new JsonArray());
         return result;
@@ -2034,7 +2035,20 @@ public class ConcolicSmtComposerTest {
     private static void writeSummary(Fixture fixture, JsonObject summary)
             throws Exception {
         Files.write(fixture.summaries,
-                (summary.toString() + "\n").getBytes(StandardCharsets.UTF_8));
+                (canonicalSummary(summary) + "\n").getBytes(
+                        StandardCharsets.UTF_8));
+    }
+
+    private static JsonObject canonicalSummary(JsonObject summary) {
+        if ("GUARDED_PATH_MERGE".equals(summary.has("regionRelation")
+                ? summary.getAsJsonObject("regionRelation").get("kind")
+                .getAsString() : "")) {
+            return summary;
+        }
+        RegionSummaryMerger.Result merged = RegionSummaryMerger.merge(
+                java.util.Collections.singletonList(summary),
+                closedPathManifest(summary));
+        return merged.summaries.get(0);
     }
 
     private static ConcolicSmtComposer.Arguments arguments(Fixture fixture) {

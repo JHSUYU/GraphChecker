@@ -1692,6 +1692,32 @@ custom-JDK/Z3 矩阵也已零失败，保持 6 `SAT/REACHABLE`、7
 `target/robustness-matrix-logs/20260725T141052Z.3416779`。矩阵只读取里程碑 commit，
 没有读取或覆盖主 worktree 中的用户 fixture 修改。
 
+下一批继续沿 trust boundary 删除“写出后无人读取”和“同一 payload 内重复证明”的
+代码。Runtime Planner 的三个静态 JSON artifact 现在各自只由 Gson 解析一次，原手写
+字段扫描器和 unescape 已删除。Instrumentation selection 由一个 typed
+`InstrumentationPlan` 原子选择唯一 activation，并一次派生 root、materialization 与
+capture；不再跨 activation 合并，也不再为同一 output closure 重复 decode 和扫描。
+静态 symbolic coverage 只保留最终 admission boolean，删除没有执行消费者的 seed-guard、
+accessor、dispatch 和计数诊断对象。
+
+Runtime raw result 的 model assignment 只写 Importer 实际 join 的 canonical key/target/
+value core；engine-array 注册、branch mapping base row 和 exact consumed-field 校验各自
+合并为一个实现。Importer 删除只在方法内部写后再读的 Map-state 镜像、未消费的 target
+root/execution metadata，以及 heap effect 的 normalization/authority/output-binding 展示
+字段；raw PC index、site/occurrence、对象身份、表达式、input/output port、capture 与
+transformer obligation 均保留。Composer 只接受 canonical guarded path merge，不再把
+raw single-path、`protocolModel`、`explicitContracts` 或缺失 summary 的自由谓词当成
+可组合语义。Solver 对无法精确编码的 Java IR 直接产生 typed unsupported/gap，不再为
+“可打印 SMT”发明 uninterpreted function 或 diagnostic free variable。
+
+这次一次性退休 target summary 的 `executionKind` 时，真实 baseline gate 发现 Scheduler
+仍有一个遗留 reader，表现为 target seed 已成功 Import、但没有生成 solver query。该
+reader 已删除，并增加一个只锁定 canonical target-summary contract 的聚焦回归；没有恢复
+双写或 fallback。修复后 target 与两个 producer worklist 均闭合，Composer/Importer 无
+gap，真实 Z3 再次报告 `SAT/REACHABLE`。当前手写生产 Java 为 72,113 行，相对
+81,581 行冻结基线累计净减 9,468 行；62 项快速回归通过。隔离干净 worktree 的完整
+13-fixture 结果在本里程碑 commit 后记录，不能用主工作树 artifact 代替。
+
 ### 明确不能删除
 
 必须保留：

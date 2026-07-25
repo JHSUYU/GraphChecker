@@ -67,6 +67,10 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.intValue;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.stringValue;
+
 /**
  * Annotation-directed static backward data-flow analysis.
  *
@@ -101,10 +105,8 @@ public final class CausynthPipeline {
                 new SeedBackwardStaticAnalyzer(target).analyze();
         SymbolicRegionAssemblyStage.assemble(result);
         instrumentRuntimeTrace(result);
-        InstrumentationResult instrumentation =
-                instrumentConcolicRegions(result);
         boolean boundedOutputClosureCoverageReady =
-                instrumentation.boundedOutputClosureCoverageReady();
+                instrumentConcolicRegions(result);
         if (!concolicInstrumentationEnabled()) {
             new CausynthArtifactWriter(target.outputDir, result).writeAll();
         }
@@ -125,13 +127,13 @@ public final class CausynthPipeline {
                 System.getenv("CAUSYNTH_COVERAGE_STRICT"),
                 "true"));
         if (strictCoverage
-                && !Boolean.TRUE.equals(result.symbolicCoverage.get("complete"))
+                && !result.symbolicCoverageComplete
                 && !boundedOutputClosureCoverageReady) {
-            throw new IllegalStateException("Incomplete symbolic-region coverage: "
-                    + result.symbolicCoverage);
+            throw new IllegalStateException(
+                    "Incomplete symbolic-region coverage");
         }
         if (strictCoverage
-                && !Boolean.TRUE.equals(result.symbolicCoverage.get("complete"))) {
+                && !result.symbolicCoverageComplete) {
             LOG.info("Global symbolic-region coverage is incomplete, but the "
                             + "exact runtime-selected bounded output closure is "
                             + "ready; preserving strict coverage outside that "
@@ -154,11 +156,6 @@ public final class CausynthPipeline {
                         ? ConcolicRegionRefs.create() : null;
         TraceFieldSelection traceFields = traceFieldSelection(result);
         TraceSiteSelection traceSites = traceSiteSelection(result);
-        int count = 0;
-        int fieldCount = 0;
-        int richMethodCount = 0;
-        int callSiteCount = 0;
-        int branchCount = 0;
         for (String signature : result.traceMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(signature);
@@ -180,12 +177,9 @@ public final class CausynthPipeline {
                     }
                 }
                 if (traceSites.relevantMethods.contains(signature)) {
-                    RichInstrumentationStats stats = instrumentRichMethod(body, method,
+                    instrumentRichMethod(body, method,
                             originalUnits, insertionPoint, receiver, traceSites,
                             richRefs, observationIsolation);
-                    richMethodCount++;
-                    callSiteCount += stats.callSites;
-                    branchCount += stats.branches;
                 } else {
                     Stmt traceCall = Jimple.v().newInvokeStmt(
                             Jimple.v().newStaticInvokeExpr(recordRef,
@@ -198,48 +192,34 @@ public final class CausynthPipeline {
                             observationIsolation);
                     insertBeforeOrAppend(body, insertionPoint, traceUnits);
                 }
-                fieldCount += instrumentFieldTrace(body, method, recordFieldRef,
+                instrumentFieldTrace(body, method, recordFieldRef,
                         traceFields, originalUnits, observationIsolation);
-                count++;
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping trace instrumentation for {}", signature, exception);
             }
         }
-        LOG.info("Instrumented {} selected methods ({} rich), {} callsites, "
-                        + "{} branches, and {} field accesses for runtime trace",
-                count, richMethodCount, callSiteCount, branchCount, fieldCount);
+        LOG.info("Instrumented selected methods for runtime trace");
     }
 
     /**
      * Inserts region hooks at the roots selected by the runtime activation
      * plan. Concolic instrumentation without that plan is not executable.
      */
-    private InstrumentationResult instrumentConcolicRegions(
+    private boolean instrumentConcolicRegions(
             CausynthAnalysisResult result) {
         if (!concolicInstrumentationEnabled()) {
-            return InstrumentationResult.disabled();
+            return false;
         }
         ConcolicRegionRefs refs = ConcolicRegionRefs.create();
         ConcolicBranchSelection branchSelection =
                 ConcolicBranchSelection.from(result.symbolicRegions);
         InstrumentationPlan plan = ConcolicInstrumentationSelections
                 .instrumentationPlanFromEnvironment();
-        final ConcolicMaterializationSelection materializationSelection;
-        final ConcolicOutputCaptureSelection outputCaptureSelection;
-        try {
-            materializationSelection = plan.materializations();
-            outputCaptureSelection = plan.outputCaptures();
-        } catch (IOException malformedPlan) {
-            throw new IllegalStateException(
-                    "Could not decode concolic instrumentation plan "
-                            + plan.path(), malformedPlan);
-        }
+        ConcolicMaterializationSelection materializationSelection =
+                plan.materializations();
+        ConcolicOutputCaptureSelection outputCaptureSelection =
+                plan.outputCaptures();
         Set<String> roots = plan.roots();
-        if (roots.isEmpty()) {
-            throw new IllegalStateException(
-                    "Activation plan contains no replayable runtime-selected "
-                            + "roots: " + plan.path());
-        }
         Set<String> backedViewMethods = concolicBackedViewMethods(result);
         backedViewMethods.addAll(roots);
         Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
@@ -415,9 +395,8 @@ public final class CausynthPipeline {
         instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented {} symbolic-region roots for concolic replay ({} skipped)",
                 instrumented, skipped);
-        return new InstrumentationResult(true,
-                plan.boundedOutputClosureCoverageReady(), roots.size(),
-                instrumented, skipped);
+        return plan.boundedOutputClosureCoverageReady()
+                && instrumented == 1 && skipped == 0;
     }
 
     /**
@@ -426,10 +405,9 @@ public final class CausynthPipeline {
      * instruction alone; its rethrow remains inside any original enclosing
      * try range, preserving the application's handler semantics.
      */
-    private int instrumentConcolicAccessorCallContexts(
+    private void instrumentConcolicAccessorCallContexts(
             ConcolicMaterializationSelection selection,
             ConcolicRegionRefs refs) {
-        int count = 0;
         for (AccessorCallTarget target : selection.accessorCalls()) {
             SootMethod method;
             Body body;
@@ -532,18 +510,15 @@ public final class CausynthPipeline {
                     "java.lang.Throwable");
             body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
                     normalExit, handler));
-            count++;
         }
-        return count;
     }
 
-    private int instrumentConcolicMaterializations(
+    private void instrumentConcolicMaterializations(
             ConcolicMaterializationSelection selection,
             ConcolicRegionRefs refs) {
         if (selection.isEmpty()) {
-            return 0;
+            return;
         }
-        int count = 0;
         List<SootClass> classes = new ArrayList<>();
         for (SootClass sootClass : Scene.v().getApplicationClasses()) {
             classes.add(sootClass);
@@ -590,7 +565,6 @@ public final class CausynthPipeline {
                             instrumentConsumedStaticPrimitiveFieldRead(body,
                                     method, stmt, unitIndex,
                                     (StaticFieldRef) field, refs);
-                            count++;
                             continue;
                         }
                         if (!(field instanceof InstanceFieldRef)) {
@@ -605,7 +579,6 @@ public final class CausynthPipeline {
                         if (fieldRef.type() instanceof ArrayType) {
                             instrumentConsumedArrayFieldRead(body, method,
                                     stmt, unitIndex, instanceField, refs);
-                            count++;
                             continue;
                         }
                         List<Unit> before = new ArrayList<>();
@@ -625,7 +598,6 @@ public final class CausynthPipeline {
                                 Jimple.v().newStaticInvokeExpr(
                                         refs.resumeObservation)));
                         insertBeforeSequence(body, stmt, before);
-                        count++;
                     }
 
                     if (!(stmt instanceof AssignStmt)) {
@@ -667,12 +639,10 @@ public final class CausynthPipeline {
                     }
                     if (!after.isEmpty()) {
                         insertAfterSequence(body, stmt, after);
-                        count++;
                     }
                 }
             }
         }
-        return count;
     }
 
     /**
@@ -794,10 +764,9 @@ public final class CausynthPipeline {
     }
 
     /** Captures the VM expression at an exact activation-authorized endpoint. */
-    private int instrumentConcolicOutputCaptures(
+    private void instrumentConcolicOutputCaptures(
             ConcolicOutputCaptureSelection selection,
             ConcolicRegionRefs refs) {
-        int count = 0;
         for (OutputCaptureTarget target : selection.targets()) {
             try {
                 SootMethod method = Scene.v().getMethod(
@@ -808,8 +777,8 @@ public final class CausynthPipeline {
                 Body body = method.retrieveActiveBody();
                 Unit unit = originalUnit(body, target.unitIndex);
                 if (target.isFieldAssignmentRhs()) {
-                    count += instrumentFieldAssignmentOutputCapture(body,
-                            unit, target, refs);
+                    instrumentFieldAssignmentOutputCapture(body, unit,
+                            target, refs);
                     continue;
                 }
                 if (!(unit instanceof Stmt)
@@ -853,14 +822,12 @@ public final class CausynthPipeline {
                         Jimple.v().newStaticInvokeExpr(
                                 refs.resumeObservation)));
                 insertBeforeSequence(body, stmt, before);
-                count++;
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping {} concolic output capture for {}#u{}",
                         target.captureKind, target.instrumentedMethod(),
                         target.unitIndex, exception);
             }
         }
-        return count;
     }
 
     /**
@@ -871,16 +838,16 @@ public final class CausynthPipeline {
      * The runtime hook itself is inserted after the write, so a failing
      * {@code putfield} cannot produce a capture.
      */
-    private int instrumentFieldAssignmentOutputCapture(
+    private void instrumentFieldAssignmentOutputCapture(
             Body body, Unit unit, OutputCaptureTarget target,
             ConcolicRegionRefs refs) {
-        if (!(unit instanceof AssignStmt)) return 0;
+        if (!(unit instanceof AssignStmt)) return;
         AssignStmt assignment = (AssignStmt) unit;
-        if (!(assignment.getLeftOp() instanceof InstanceFieldRef)) return 0;
+        if (!(assignment.getLeftOp() instanceof InstanceFieldRef)) return;
         InstanceFieldRef field = (InstanceFieldRef) assignment.getLeftOp();
         if (!target.fieldSignature.equals(
                 field.getFieldRef().getSignature())) {
-            return 0;
+            return;
         }
 
         Value rhs = assignment.getRightOp();
@@ -920,7 +887,6 @@ public final class CausynthPipeline {
         after.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(refs.resumeObservation)));
         insertAfterSequence(body, assignment, after);
-        return 1;
     }
 
     /**
@@ -929,9 +895,8 @@ public final class CausynthPipeline {
      * runtime's active activation and identity bindings decide which concrete
      * views actually belong to the selected heap state.
      */
-    private int instrumentConcolicMapEntryObservations(
+    private void instrumentConcolicMapEntryObservations(
             Set<String> methods, ConcolicRegionRefs refs) {
-        int count = 0;
         for (String signature : methods) {
             try {
                 SootMethod method = Scene.v().getMethod(signature);
@@ -1006,14 +971,12 @@ public final class CausynthPipeline {
                             Jimple.v().newStaticInvokeExpr(
                                     refs.resumeObservation)));
                     insertAfterSequence(body, stmt, after);
-                    count++;
                 }
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping backed-view concolic instrumentation for {}",
                         signature, exception);
             }
         }
-        return count;
     }
 
     private static Set<String> concolicBackedViewMethods(
@@ -1137,9 +1100,8 @@ public final class CausynthPipeline {
         return -1;
     }
 
-    private int instrumentConcolicBranches(ConcolicBranchSelection selection,
-                                           ConcolicRegionRefs refs) {
-        int count = 0;
+    private void instrumentConcolicBranches(
+            ConcolicBranchSelection selection, ConcolicRegionRefs refs) {
         for (String methodSignature : selection.methods()) {
             try {
                 SootMethod method = Scene.v().getMethod(methodSignature);
@@ -1152,11 +1114,9 @@ public final class CausynthPipeline {
                     if (unit instanceof IfStmt) {
                         instrumentConcolicBranch(body, method,
                                 (IfStmt) unit, unitIndex, refs);
-                        count++;
-                    } else if (unit instanceof SwitchStmt
-                            && instrumentConcolicSwitch(body, method,
-                            (SwitchStmt) unit, unitIndex, refs)) {
-                        count++;
+                    } else if (unit instanceof SwitchStmt) {
+                        instrumentConcolicSwitch(body, method,
+                                (SwitchStmt) unit, unitIndex, refs);
                     }
                 }
             } catch (RuntimeException exception) {
@@ -1164,7 +1124,6 @@ public final class CausynthPipeline {
                         methodSignature, exception);
             }
         }
-        return count;
     }
 
     private void instrumentConcolicBranch(Body body, SootMethod method,
@@ -1229,11 +1188,11 @@ public final class CausynthPipeline {
         branch.setTarget(trueEntry);
     }
 
-    private boolean instrumentConcolicSwitch(
+    private void instrumentConcolicSwitch(
             Body body, SootMethod method, SwitchStmt branch, int unitIndex,
             ConcolicRegionRefs refs) {
         CausynthBranchShape shape = CausynthBranchShape.from(body, branch);
-        if (shape == null || !shape.isSwitch()) return false;
+        if (shape == null || !shape.isSwitch()) return;
         String expression = branch.getKey().toString();
         String encodedKeys = shape.encodedCaseKeys();
 
@@ -1288,7 +1247,6 @@ public final class CausynthPipeline {
                         entries.get(successorIndex));
             }
         }
-        return true;
     }
 
     private void insertExactBranchMarkerPrefix(
@@ -1431,11 +1389,10 @@ public final class CausynthPipeline {
         return selection;
     }
 
-    private RichInstrumentationStats instrumentRichMethod(
+    private void instrumentRichMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Value receiver, TraceSiteSelection sites,
             RichTraceRefs refs, ConcolicRegionRefs observationIsolation) {
-        RichInstrumentationStats stats = new RichInstrumentationStats();
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
         beginTraceObservationIsolation(entryUnits, observationIsolation);
@@ -1479,18 +1436,15 @@ public final class CausynthPipeline {
                     && !isRecorderInvoke(stmt.getInvokeExpr())) {
                 instrumentCallSite(body, method, stmt, unitIndex, callId,
                         refs, observationIsolation);
-                stats.callSites++;
             }
             if (branchUnits.contains(unitIndex)) {
                 if (stmt instanceof IfStmt) {
                     instrumentBranch(body, method, (IfStmt) stmt, unitIndex,
                             callId, refs, observationIsolation);
-                    stats.branches++;
-                } else if (stmt instanceof SwitchStmt
-                        && instrumentSwitchBranch(body, method,
-                        (SwitchStmt) stmt, unitIndex, callId, refs,
-                        observationIsolation)) {
-                    stats.branches++;
+                } else if (stmt instanceof SwitchStmt) {
+                    instrumentSwitchBranch(body, method,
+                            (SwitchStmt) stmt, unitIndex, callId, refs,
+                            observationIsolation);
                 }
             }
             if (stmt instanceof ReturnStmt) {
@@ -1506,7 +1460,6 @@ public final class CausynthPipeline {
                         : observationIsolation.pauseObservation,
                 observationIsolation == null ? null
                         : observationIsolation.resumeObservation);
-        return stats;
     }
 
     private void instrumentCallSite(Body body, SootMethod method, Stmt stmt,
@@ -1627,12 +1580,12 @@ public final class CausynthPipeline {
         branch.setTarget(trueEntry);
     }
 
-    private boolean instrumentSwitchBranch(
+    private void instrumentSwitchBranch(
             Body body, SootMethod method, SwitchStmt branch, int unitIndex,
             Local callId, RichTraceRefs refs,
             ConcolicRegionRefs observationIsolation) {
         CausynthBranchShape shape = CausynthBranchShape.from(body, branch);
-        if (shape == null || !shape.isSwitch()) return false;
+        if (shape == null || !shape.isSwitch()) return;
         String expression = branch.getKey().toString();
         String keys = shape.encodedCaseKeys();
         for (int successorIndex = 0;
@@ -1660,7 +1613,6 @@ public final class CausynthPipeline {
                 branch.setTarget(successorIndex, entry);
             }
         }
-        return true;
     }
 
     private void insertMethodExit(Body body, Stmt returnUnit, Value returnValue,
@@ -1806,12 +1758,11 @@ public final class CausynthPipeline {
         }
     }
 
-    private int instrumentFieldTrace(Body body, SootMethod method,
-                                     SootMethodRef recordFieldRef,
-                                     TraceFieldSelection traceFields,
-                                     List<Unit> units,
-                                     ConcolicRegionRefs observationIsolation) {
-        int count = 0;
+    private void instrumentFieldTrace(Body body, SootMethod method,
+                                      SootMethodRef recordFieldRef,
+                                      TraceFieldSelection traceFields,
+                                      List<Unit> units,
+                                      ConcolicRegionRefs observationIsolation) {
         Value methodReceiver = NullConstant.v();
         if (!method.isStatic()) {
             try {
@@ -1833,13 +1784,13 @@ public final class CausynthPipeline {
                 Value left = assign.getLeftOp();
                 Value right = assign.getRightOp();
                 if (left instanceof FieldRef) {
-                    count += insertFieldTrace(body, unit, recordFieldRef, "FIELD_WRITE",
+                    insertFieldTrace(body, unit, recordFieldRef, "FIELD_WRITE",
                             method.getSignature(), unitIndex, (FieldRef) left,
                             methodReceiver, right, true, traceFields,
                             observationIsolation);
                 }
                 if (right instanceof FieldRef) {
-                    count += insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
+                    insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
                             method.getSignature(), unitIndex, (FieldRef) right,
                             methodReceiver, left, true, traceFields,
                             observationIsolation);
@@ -1848,7 +1799,7 @@ public final class CausynthPipeline {
                 for (ValueBox box : stmt.getUseBoxes()) {
                     Value value = box.getValue();
                     if (value instanceof FieldRef) {
-                        count += insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
+                        insertFieldTrace(body, unit, recordFieldRef, "FIELD_READ",
                                 method.getSignature(), unitIndex, (FieldRef) value,
                                 methodReceiver, value, false, traceFields,
                                 observationIsolation);
@@ -1856,19 +1807,18 @@ public final class CausynthPipeline {
                 }
             }
         }
-        return count;
     }
 
-    private int insertFieldTrace(Body body, Unit unit, SootMethodRef recordFieldRef,
-                                 String kind, String method, int unitIndex,
-                                 FieldRef fieldRef, Value methodReceiverValue,
-                                 Value value,
-                                 boolean fieldValueIsReadValue,
-                                 TraceFieldSelection traceFields,
-                                 ConcolicRegionRefs observationIsolation) {
+    private void insertFieldTrace(
+            Body body, Unit unit, SootMethodRef recordFieldRef,
+            String kind, String method, int unitIndex,
+            FieldRef fieldRef, Value methodReceiverValue, Value value,
+            boolean fieldValueIsReadValue,
+            TraceFieldSelection traceFields,
+            ConcolicRegionRefs observationIsolation) {
         String field = fieldRef.getFieldRef().getSignature();
         if (!shouldInstrumentField(field, traceFields)) {
-            return 0;
+            return;
         }
         List<Unit> prefixUnits = new ArrayList<>();
         beginTraceObservationIsolation(prefixUnits, observationIsolation);
@@ -1900,7 +1850,6 @@ public final class CausynthPipeline {
         } else {
             insertBeforeSequence(body, unit, prefixUnits);
         }
-        return 1;
     }
 
     private static boolean shouldInstrumentField(String field,
@@ -2492,11 +2441,6 @@ public final class CausynthPipeline {
         }
     }
 
-    private static final class RichInstrumentationStats {
-        private int callSites;
-        private int branches;
-    }
-
     private static final class TraceFieldSelection {
         private final Set<String> signatures = new LinkedHashSet<>();
         private final Set<String> names = new LinkedHashSet<>();
@@ -2512,61 +2456,6 @@ public final class CausynthPipeline {
                 && Pattern.compile(
                 "<[^:]+:\\s+.+\\s+[^\\s(]+\\((.*)\\)>")
                 .matcher(value).find();
-    }
-
-    private static final class InstrumentationResult {
-        private final boolean enabled;
-        private final boolean selectedClosureReady;
-        private final int rootCount;
-        private final int instrumentedCount;
-        private final int skippedCount;
-
-        private InstrumentationResult(boolean enabled,
-                                      boolean selectedClosureReady,
-                                      int rootCount, int instrumentedCount,
-                                      int skippedCount) {
-            this.enabled = enabled;
-            this.selectedClosureReady = selectedClosureReady;
-            this.rootCount = rootCount;
-            this.instrumentedCount = instrumentedCount;
-            this.skippedCount = skippedCount;
-        }
-
-        private boolean boundedOutputClosureCoverageReady() {
-            return enabled && selectedClosureReady
-                    && rootCount == 1
-                    && instrumentedCount == rootCount
-                    && skippedCount == 0;
-        }
-
-        private static InstrumentationResult disabled() {
-            return new InstrumentationResult(false, false, 0, 0, 0);
-        }
-    }
-
-    private static String stringValue(Object value) {
-        return value == null || "null".equals(String.valueOf(value))
-                ? "" : String.valueOf(value);
-    }
-
-    private static int intValue(Object value, int fallback) {
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return null;
     }
 
     private static boolean concolicInstrumentationEnabled() {

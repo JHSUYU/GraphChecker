@@ -1345,14 +1345,6 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * Retains a constant actual without turning a naked Jimple literal
-     * into a symbolic live-in.  The cell is the exact callsite fact (an
-     * internal expression understood by the region planner); the typed
-     * literal and parameter position are authoritative edge metadata.
-     * This matters for setters such as setNeedKeyUpdate(true), where the
-     * value is fixed but whether the call executes is path dependent.
-     */
     private boolean addTypedLiteralCallerArgument(MethodSig callee,
                                                   int argumentIndex,
                                                   MethodCallsite callsite) {
@@ -1369,25 +1361,9 @@ final class SeedBackwardStaticAnalyzer {
         }
         String source = factNode(callsite.fact);
         String target = formalParam(callee, argumentIndex);
-        boolean changed = addEdge("method_caller_literal_argument",
+        return addEdge("method_caller_literal_argument",
                 source, target, callsite.method, callsite.fact,
                 "exact callsite supplies a typed literal to relevant callee formal");
-        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                "method_caller_literal_argument", source, target,
-                callsite.method, callsite.fact));
-        if (edge != null) {
-            edge.put("argumentIndex", argumentIndex);
-            edge.put("literalJavaType", formalType);
-            edge.put("literalValue", literalValue);
-            edge.put("literalAuthority",
-                    "JIMPLE_TYPED_CONSTANT_AT_EXACT_CALLSITE_V1");
-            edge.put("literalIsSymbolicInput", false);
-            edge.put("calleeMethod", callee.raw);
-            edge.put("effectSiteId", stableSiteId(callsite.method,
-                    callsite.fact.unitIndex,
-                    "method_receiver_field_effect"));
-        }
-        return changed;
     }
 
     private boolean isTypedLiteralArgument(Fact fact, int argumentIndex,
@@ -2190,19 +2166,6 @@ final class SeedBackwardStaticAnalyzer {
                     "Soot-proven constructor parameter initializes demanded scalar leaf field")) {
                 changed = true;
             }
-            Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                    "constructor_field_initialization", source, target,
-                    callerMethod, fact));
-            if (edge != null) {
-                edge.put("constructorMethod", constructor.raw);
-                edge.put("constructorParameterIndex", parameter);
-                edge.put("initializedField", fields.get(0));
-                edge.put("projectedLeafPath", suffix);
-                edge.put("leafOwnerPath", remaining);
-                edge.put("constructorBindingAuthority",
-                        "SOOT_PARAMETER_TO_THIS_FIELD_ASSIGNMENT_V1");
-                edge.put("objectReferenceIsSymbolicScalar", false);
-            }
             changed |= callerRelevant.add(source);
         }
         return changed;
@@ -2677,9 +2640,6 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("declaredFieldName", field.getName());
         edge.put("declaredFieldAuthority",
                 "SOOT_RESOLVED_DECLARATION_HIERARCHY");
-        edge.put("accessorStructuralAuthority",
-                "SOOT_UNIQUE_APPLICATION_IMPLEMENTATION_PURE_FIELD_"
-                        + "RETURN_BODY_V1");
         if (accessor != null) {
             edge.put("accessorImplementationMethod",
                     accessor.getSignature());
@@ -3104,7 +3064,6 @@ final class SeedBackwardStaticAnalyzer {
             if (targetSig == null) {
                 continue;
             }
-            int edgeStart = edges.size();
             Set<String> targetRelevant = relevant(targetMethod);
             boolean runtimeReturnExpansion = runtimeSelection.unique()
                     && !callerRelevant.isEmpty()
@@ -3179,10 +3138,6 @@ final class SeedBackwardStaticAnalyzer {
                 changed |= targetRelevant.add(targetThis);
                 changed |= selectedMethods.add(targetMethod);
             }
-            if (runtimeSelection.unique()) {
-                annotateRuntimeDispatchEdges(edgeStart, callerMethod,
-                        fact, runtimeSelection, runtimeReturnExpansion);
-            }
         }
         return changed;
     }
@@ -3203,18 +3158,16 @@ final class SeedBackwardStaticAnalyzer {
                 runtimeDispatchEvidence.lookup(callerMethod, siteId,
                         callee == null ? "" : callee.raw);
         if (actualCallees == null) {
-            return RuntimeDispatchSelection.staticFallback(siteId,
-                    staticTargets);
+            return RuntimeDispatchSelection.staticFallback(staticTargets);
         }
         if (actualCallees.size() != 1) {
-            return RuntimeDispatchSelection.blocked(siteId);
+            return RuntimeDispatchSelection.blockedSelection();
         }
         String actual = actualCallees.iterator().next();
         if (!staticTargets.contains(actual)) {
-            return RuntimeDispatchSelection.blocked(siteId);
+            return RuntimeDispatchSelection.blockedSelection();
         }
-        return RuntimeDispatchSelection.runtimeUnique(siteId, actual,
-                runtimeDispatchEvidence.source());
+        return RuntimeDispatchSelection.runtimeUnique(actual);
     }
 
     private boolean admitRuntimeRecursiveMethod(String method) {
@@ -3235,35 +3188,6 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         return true;
-    }
-
-    private void annotateRuntimeDispatchEdges(
-            int edgeStart, String callerMethod, Fact fact,
-            RuntimeDispatchSelection selection,
-            boolean recursiveReturnExpansion) {
-        String siteId = stableSiteId(callerMethod,
-                fact == null ? -1 : fact.unitIndex, "dispatch");
-        for (int index = Math.max(0, edgeStart);
-             index < edges.size(); index++) {
-            Map<String, Object> edge = edges.get(index);
-            String kind = stringValue(edge.get("kind"));
-            if (!kind.contains("dispatch")
-                    || !callerMethod.equals(stringValue(
-                    edge.get("method")))
-                    || !siteId.equals(stringValue(edge.get("siteId")))) {
-                continue;
-            }
-            edge.put("runtimeSelectedDispatch", true);
-            edge.put("dispatchSelectionAuthority",
-                    "UNIQUE_CALLSITE_CORRELATED_ACTUAL_CALLEE_V1");
-            edge.put("runtimeCallEdgeSource", selection.source);
-            edge.put("runtimeCallSiteId", selection.siteId);
-            edge.put("runtimeActualCallee",
-                    selection.targets.get(0));
-            edge.put("runtimeEvidenceLevel", "CALLSITE_CORRELATED");
-            edge.put("runtimeRecursiveReturnExpansion",
-                    recursiveReturnExpansion);
-        }
     }
 
     private List<String> resolveDispatchTargets(MethodSig callee) {
@@ -3468,7 +3392,6 @@ final class SeedBackwardStaticAnalyzer {
                         && !admitRuntimeRecursiveMethod(targetMethod)) {
                     continue;
                 }
-                int edgeStart = edges.size();
                 SootMethod callerMethod = methodsBySignature.get(callsite.method);
                 if (callerMethod != null) {
                     loadMethod(callerMethod);
@@ -3502,11 +3425,6 @@ final class SeedBackwardStaticAnalyzer {
                     expandDispatchReceiverFields(targetMethod,
                             targetThis, targetThisProjectionSuffixes,
                             callsite);
-                }
-                if (runtimeSelection.unique()) {
-                    annotateRuntimeDispatchEdges(edgeStart,
-                            callsite.method, callsite.fact,
-                            runtimeSelection, false);
                 }
             }
         }

@@ -266,11 +266,6 @@ public final class ConcolicSummaryImporter {
             if (!captureGoal.isOutputClosure()) {
                 summary.addProperty("regionInstanceId", string(activation,
                         "regionInstanceId"));
-                summary.addProperty("rootCallId", integer(activation,
-                        "rootCallId", -1));
-                summary.addProperty("rootMethod", firstNonBlank(
-                        activationRootMethod(activation),
-                        string(region, "rootMethod")));
             }
             summary.add("symbolicInputs", symbolicInputs(activation));
             if (outputContract != null) {
@@ -316,12 +311,8 @@ public final class ConcolicSummaryImporter {
                     placeholderBindings.bindings.deepCopy());
             summary.addProperty("normalExit", "NORMAL".equals(string(raw, "exitKind")));
             summary.addProperty("exceptionType", string(raw, "exceptionType"));
-            summary.addProperty("executionKind",
-                    relational.replayAdmission.required
-                    ? "INPUT_MODEL_REPLAY" : "UNFORCED_SEED");
             JsonObject semanticPayload = summary.deepCopy();
             semanticPayload.remove("activationId");
-            semanticPayload.remove("rootMethod");
             String contentHash = sha256(CanonicalJson.render(
                     semanticPayload));
             if (!emittedContentHashes.add(contentHash)) {
@@ -3273,17 +3264,15 @@ public final class ConcolicSummaryImporter {
                     ? occurrences.get(siteId) + 1 : 1;
             occurrences.put(siteId, occurrence);
             mutations.add(new HeapMutation(kind, method, rawIndex,
-                    normalization.index(rawIndex),
-                    normalization.status(rawIndex), codePosition, siteId,
-                    occurrence, parameters));
+                    codePosition, siteId, occurrence, parameters));
         }
 
-        RuntimeHeapObservationSelection runtimeHeapEvidence =
+        JsonArray selectedRuntimeHeapObservations =
                 selectRuntimeHeapObservations(runtimeHeapObservations,
                         analysis, rawBranchMappings);
         RuntimeHeapObservationCatalog observationCatalog =
                 validateRuntimeHeapObservations(rawPathCondition,
-                        runtimeHeapEvidence.observations,
+                        selectedRuntimeHeapObservations,
                         activation, raw);
         issues.addAll(observationCatalog.issues);
         HeapPortResolver ports = new HeapPortResolver(analysis);
@@ -3304,6 +3293,7 @@ public final class ConcolicSummaryImporter {
         JsonArray initializers = new JsonArray();
         JsonArray runtimeMapInputSnapshots = new JsonArray();
         JsonArray effects = new JsonArray();
+        Set<String> runtimeMapStateInputEffects = new LinkedHashSet<>();
         Map<String, HeapOutputBinding> outputBindings = new LinkedHashMap<>();
         int effectOrdinal = 0;
 
@@ -3372,19 +3362,11 @@ public final class ConcolicSummaryImporter {
             int after = before + 1;
             boolean last = after == tracker.totalEffects;
             String outputPort;
-            String outputBinding;
             if (last && !tracker.finalOutputPort.isEmpty()) {
                 outputPort = tracker.finalOutputPort;
-                outputBinding = tracker.freshInitialized
-                        ? "STATIC_FRESH_ALLOCATION_TO_REQUESTED_OUTPUT"
-                        : "ACTIVATION_HEAP_OUTPUT";
             } else {
                 outputPort = regionId + ".out.heapMap" + tracker.mapOrdinal
                         + ".state" + after;
-                outputBinding = last ? "SYNTHETIC_FINAL_STATE"
-                        : "SYNTHETIC_INTERMEDIATE_STATE";
-                if (!last) {
-                }
             }
             String preState = tracker.stateFamily + "." + before;
             String postState = tracker.stateFamily + "." + after;
@@ -3398,9 +3380,10 @@ public final class ConcolicSummaryImporter {
                             ? "STATIC_FRESH_EMPTY_MAP"
                             : tracker.syntheticInput
                             ? "SYNTHETIC_PRE_STATE"
-                            : "ACTIVATION_SYMBOL") : "PREVIOUS_EFFECT",
-                    outputBinding);
-            tracker.runtimeMapInput.attach(effect);
+                            : "ACTIVATION_SYMBOL") : "PREVIOUS_EFFECT");
+            if (tracker.runtimeMapInput.resolved()) {
+                runtimeMapStateInputEffects.add(effectId);
+            }
             effects.add(effect);
             tracker.currentPort = outputPort;
             tracker.seen = after;
@@ -3420,8 +3403,8 @@ public final class ConcolicSummaryImporter {
                                 && effects.size() == 0
                                 && unsupportedCount == 0
                                 && malformedCount == 0
-                                && runtimeHeapEvidence.ignoredEvidence.size()
-                                == 0
+                                && selectedRuntimeHeapObservations.size()
+                                == runtimeHeapObservations.size()
                                 && !supportedMapStateField(string(
                                 analysis.output(), "cell")));
         issues.addAll(heapObservations.issues);
@@ -3444,7 +3427,8 @@ public final class ConcolicSummaryImporter {
                         rawBranchMappings, fieldAssignmentCapture,
                         rawPathCondition, normalization,
                         dynamicBindingCatalog.normalizedBindings(),
-                        engineArrayInputBindings);
+                        engineArrayInputBindings,
+                        runtimeMapStateInputEffects);
         issues.addAll(staticCoverage.issues);
         String captureDischargeIssue =
                 heapEffectCaptureDischargeIssue(analysis);
@@ -3902,13 +3886,11 @@ public final class ConcolicSummaryImporter {
      * outputs stay fail-closed because the runtime record may name the same
      * state even when its map expression was not captured.
      */
-    private static RuntimeHeapObservationSelection selectRuntimeHeapObservations(
+    private static JsonArray selectRuntimeHeapObservations(
             JsonArray observations,
             OutputMemberAnalysis analysis, JsonArray branchMappings) {
-        JsonArray ignored = new JsonArray();
         JsonArray selectedObservations = new JsonArray();
-        for (int ordinal = 0; ordinal < observations.size(); ordinal++) {
-            JsonElement element = observations.get(ordinal);
+        for (JsonElement element : observations) {
             if (!element.isJsonObject()
                     || !outsideRequestedOutputSlice(
                     element.getAsJsonObject(), analysis,
@@ -3916,23 +3898,8 @@ public final class ConcolicSummaryImporter {
                 selectedObservations.add(element.deepCopy());
                 continue;
             }
-            JsonObject record = element.getAsJsonObject();
-            JsonObject approximation = new JsonObject();
-            approximation.addProperty("classification", "APPROXIMATION");
-            approximation.addProperty("reason",
-                    "OUTSIDE_REQUESTED_OUTPUT_SLICE");
-            approximation.addProperty("source", "runtimeHeapObservations");
-            approximation.addProperty("ordinal", ordinal);
-            approximation.addProperty("kind", string(record, "kind"));
-            approximation.addProperty("siteId", string(record, "siteId"));
-            approximation.addProperty("requestedOutputCell", string(
-                    analysis.output(), "cell"));
-            approximation.addProperty("authority",
-                    "FROZEN_REQUESTED_OUTPUT_CAUSAL_SITE_CELL_EXCLUSION_V1");
-            ignored.add(approximation);
         }
-        return new RuntimeHeapObservationSelection(selectedObservations,
-                ignored);
+        return selectedObservations;
     }
 
     private static boolean outsideRequestedOutputSlice(
@@ -4979,7 +4946,7 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             if (entryUsesValueRefWitness) {
-                certifyValueRefWitnessJoin(entryRead.record, record,
+                certifyValueRefWitnessJoin(entryRead.record,
                         entryValueOwnerToken,
                         string(activation, "activationId"));
             }
@@ -5023,7 +4990,7 @@ public final class ConcolicSummaryImporter {
     }
 
     private static void certifyValueRefWitnessJoin(
-            JsonObject entryRead, JsonObject dynamicBinding,
+            JsonObject entryRead,
             long entryValueOwnerObjectToken, String activationId) {
         if (!validValueRefWitness(entryRead, activationId)
                 || entryValueOwnerObjectToken <= 0L
@@ -5039,15 +5006,6 @@ public final class ConcolicSummaryImporter {
         entryRead.addProperty(
                 "valueExpressionWitnessCertifiedObjectTokenScope",
                 activationId);
-        dynamicBinding.addProperty("entryValueRefWitnessJoinCertified", true);
-        dynamicBinding.addProperty(
-                "entryValueRefWitnessJoinCertificationAuthority",
-                VALUE_REF_WITNESS_CERTIFICATION_AUTHORITY);
-        dynamicBinding.addProperty(
-                "entryValueRefWitnessJoinObjectToken",
-                entryValueOwnerObjectToken);
-        dynamicBinding.addProperty(
-                "entryValueRefWitnessJoinObjectTokenScope", activationId);
     }
 
     /**
@@ -7109,13 +7067,8 @@ public final class ConcolicSummaryImporter {
         identity.addProperty("effectId", effectId);
         identity.addProperty("kind", "MAP_IDENTITY");
         identity.addProperty("rawConditionIndex", -1);
-        identity.addProperty("normalizedConditionIndex", -1);
-        identity.addProperty("normalizationStatus",
-                "RUNTIME_GUARD_EXCLUDED_ALL_STATIC_WRITES");
         identity.addProperty("siteId", "MAP_IDENTITY." + regionId);
         identity.addProperty("occurrence", 1);
-        identity.addProperty("provenanceAuthority",
-                "RUNTIME_OBSERVED_DOMINATING_GUARDS_EXCLUDE_ALL_WRITES");
         identity.addProperty("stateFamily", stateFamily);
         identity.addProperty("preState", stateFamily + ".0");
         identity.addProperty("postState", stateFamily + ".1");
@@ -7124,7 +7077,6 @@ public final class ConcolicSummaryImporter {
         identity.addProperty("inputPort", inputPort);
         identity.addProperty("outputPort", outputPort);
         identity.addProperty("inputBinding", "ACTIVATION_SYMBOL");
-        identity.addProperty("outputBinding", "ACTIVATION_HEAP_OUTPUT");
         identity.add("mapExpression", mapExpression.deepCopy());
         effects.add(identity);
         outputBindings.put(outputPort, new HeapOutputBinding(
@@ -7146,7 +7098,8 @@ public final class ConcolicSummaryImporter {
             OutputExpressionExtraction fieldAssignmentCapture,
             JsonArray rawPathCondition, PathNormalization normalization,
             JsonArray dynamicFieldBindings,
-            JsonArray engineArrayInputBindings) {
+            JsonArray engineArrayInputBindings,
+            Set<String> runtimeMapStateInputEffects) {
         JsonObject requestedOutput = analysis.output();
         JsonObject slice = analysis.slice();
         if (!"HEAP_STATE".equals(string(requestedOutput, "kind"))
@@ -7312,20 +7265,8 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             requestedStateEffects.add(effect);
-            boolean exactRuntimeMapSnapshotBinding =
-                    bool(effect, "runtimeMapStateInputBindingComplete",
-                            false)
-                    && !string(effect,
-                    "runtimeMapStateInputObservationId").isEmpty()
-                    && !string(effect,
-                    "runtimeMapStateInputSnapshotId").isEmpty()
-                    && longInteger(effect,
-                    "runtimeMapStateInputObjectToken", -1L) > 0L
-                    && "EXACT_STABLE_FIELD_OBJECT_TOKEN_PLUS_STATIC_"
-                    .concat("REQUESTED_MAP_TRANSFORMER_V1").equals(
-                            string(effect,
-                                    "runtimeMapStateInputBindingAuthority"));
-            if (exactRuntimeMapSnapshotBinding) {
+            if (runtimeMapStateInputEffects.contains(string(effect,
+                    "effectId"))) {
                 libraryRequestedStateEffects.add(effect);
             }
         }
@@ -7347,14 +7288,12 @@ public final class ConcolicSummaryImporter {
         Set<String> unmatchedContainerSites = new LinkedHashSet<>();
         boolean unsiteableContainerDeclaration = false;
         for (JsonObject declaration : containerDeclarations) {
-            JsonObject match = exactContainerMutationMatch(analysis,
+            ContainerMutationMatch match = exactContainerMutationMatch(analysis,
                     declaration, writeSitesByMethod,
                     requestedStateEffects, rawPathCondition, normalization,
-                    dynamicFieldBindings, engineArrayInputBindings,
-                    requestedPort, requestedCell);
-            String site = match == null ? "" : string(match, "siteId");
-            int effectIndex = match == null ? -1 : integer(match,
-                    "rawConditionIndex", -1);
+                    dynamicFieldBindings, engineArrayInputBindings);
+            String site = match == null ? "" : match.siteId;
+            int effectIndex = match == null ? -1 : match.rawConditionIndex;
             if (match == null) {
                 String declaredSite = string(declaration,
                         "requestedStateTransformerSiteId");
@@ -7563,14 +7502,15 @@ public final class ConcolicSummaryImporter {
      * are deliberately irrelevant: identity is carried by the declared
      * transformer site and the runtime consumer/effect witnesses.
      */
-    private static JsonObject exactContainerMutationMatch(
+    private static ContainerMutationMatch exactContainerMutationMatch(
             OutputMemberAnalysis analysis, JsonObject declaration,
             Map<String, Set<String>> writeSitesByMethod,
             List<JsonObject> requestedStateEffects,
             JsonArray rawPathCondition, PathNormalization normalization,
             JsonArray dynamicFieldBindings,
-            JsonArray engineArrayInputBindings,
-            String requestedPort, String requestedCell) {
+            JsonArray engineArrayInputBindings) {
+        String requestedPort = string(analysis.output(), "portId");
+        String requestedCell = string(analysis.output(), "cell");
         String bindingId = string(declaration, "bindingId");
         String method = string(declaration, "method");
         String methodKey = ConcolicCodePosition.sootMethodKey(method);
@@ -7734,25 +7674,7 @@ public final class ConcolicSummaryImporter {
         }
         if (loadIndex < 0) return null;
 
-        JsonObject match = new JsonObject();
-        match.addProperty("obligationKind", "DECLARED_HEAP_WRITE_SITE");
-        match.addProperty("method", method);
-        match.addProperty("siteId", transformerSite);
-        match.addProperty("requestedOutputPort", requestedPort);
-        match.addProperty("requestedOutputCell", requestedCell);
-        match.addProperty("stateFamily", string(effect, "stateFamily"));
-        JsonArray effectIds = new JsonArray();
-        effectIds.add(string(effect, "effectId"));
-        match.add("effectIds", effectIds);
-        match.addProperty("dynamicBindingId", string(binding,
-                "dynamicBindingId"));
-        match.addProperty("containerBindingId", bindingId);
-        match.addProperty("elementIndex", selectorIndex);
-        match.addProperty("rawConditionIndex", effectIndex);
-        match.addProperty("engineArrayId", engineArrayId);
-        match.addProperty("authority",
-                "RUNTIME_CONTAINER_SELECTOR_EFFECT_TO_EXACT_STATIC_WRITE_V1");
-        return match;
+        return new ContainerMutationMatch(transformerSite, effectIndex);
     }
 
     private static boolean exactIntConstant(JsonObject expression,
@@ -8205,7 +8127,7 @@ public final class ConcolicSummaryImporter {
                 || appliedAssignments.size() > 0;
         JsonArray failures = new JsonArray();
         if (!required) {
-            return new ReplayAdmission(false, true, failures);
+            return new ReplayAdmission(true, failures);
         }
 
         if (pathFlip) {
@@ -8252,7 +8174,7 @@ public final class ConcolicSummaryImporter {
             }
         }
         boolean valid = failures.size() == 0;
-        return new ReplayAdmission(true, valid, failures);
+        return new ReplayAdmission(valid, failures);
     }
 
     private static boolean isPathFlip(JsonObject activation) {
@@ -8322,10 +8244,7 @@ public final class ConcolicSummaryImporter {
                 exactObservedContainerInputs(raw, activation);
         Set<String> scheduledConcreteFallbacks = actionSymbols(array(
                 activation, "concreteFallbacks"));
-        Set<String> admittedConcreteFallbacks = new LinkedHashSet<>();
         Set<String> missing = new LinkedHashSet<>();
-        Set<String> pathInactive = new LinkedHashSet<>();
-        JsonArray pathInactiveProofs = new JsonArray();
         Set<String> admittedVmIntrinsicPlaceholders =
                 new LinkedHashSet<>();
         JsonArray unforcedEnvironmentValidationRequirements =
@@ -8338,15 +8257,14 @@ public final class ConcolicSummaryImporter {
             if (coversSliceInput(scheduledConcreteFallbacks,
                     requiredInput)) {
                 required.remove(requiredInput);
-                admittedConcreteFallbacks.add(requiredInput);
                 continue;
             }
-            JsonObject inactiveProof = found ? null
-                    : pathInactiveInputProof(raw, analysis, requiredInput,
+            boolean pathInactive = !found
+                    && pathInactiveInput(raw, analysis, requiredInput,
                     staticCoverage);
-            if (inactiveProof == null && !found) {
-                inactiveProof = PathRelationInputClosure
-                        .proveGuardedConstantUnusedInput(
+            if (!pathInactive && !found) {
+                pathInactive = PathRelationInputClosure
+                        .guardedConstantUnusedInput(
                                 activation, requiredInput, pathCondition,
                                 outputExtraction.expressions,
                                 outputExtraction.complete,
@@ -8354,10 +8272,8 @@ public final class ConcolicSummaryImporter {
                                 nestedOutputSliceContractComplete(
                                         analysis.slice()));
             }
-            if (inactiveProof != null) {
+            if (pathInactive) {
                 required.remove(requiredInput);
-                pathInactive.add(requiredInput);
-                pathInactiveProofs.add(inactiveProof);
                 continue;
             }
             VmIntrinsicPlaceholderAdmission placeholderAdmission =
@@ -8637,13 +8553,13 @@ public final class ConcolicSummaryImporter {
      * guard whose own condition depends on the missing input cannot discharge
      * that input's demand.
      */
-    private static JsonObject pathInactiveInputProof(
+    private static boolean pathInactiveInput(
             JsonObject raw, OutputMemberAnalysis analysis, String inputPort,
             StaticHeapTransformerCoverage coverage) {
         if (coverage == null || !coverage.applicable
                 || !coverage.transformerContractValid
                 || unresolvedInput(raw, inputPort)) {
-            return null;
+            return false;
         }
         JsonObject slice = analysis.slice();
         Set<String> sinkSites = new LinkedHashSet<>();
@@ -8679,9 +8595,9 @@ public final class ConcolicSummaryImporter {
                     || !binding.has(
                     "requestedStateTransformerUnclassifiedEdgeIds")
                     || array(binding,
-                    "requestedStateTransformerUnclassifiedEdgeIds")
+                            "requestedStateTransformerUnclassifiedEdgeIds")
                     .size() != 0) {
-                return null;
+                return false;
             }
             Set<String> bindingSinks = strictPrimitiveStrings(array(binding,
                     "requestedStateTransformerSinkSites"));
@@ -8689,17 +8605,15 @@ public final class ConcolicSummaryImporter {
                     "requestedStateTransformerGuardSites"));
             if (bindingSinks == null || bindingSinks.isEmpty()
                     || bindingGuards == null) {
-                return null;
+                return false;
             }
             sinkSites.addAll(bindingSinks);
             dependentGuardSites.addAll(bindingGuards);
         }
         if (bindingCount == 0 || sinkSites.isEmpty()) {
-            return null;
+            return false;
         }
 
-        JsonArray exclusions = new JsonArray();
-        String requestedPort = string(analysis.output(), "portId");
         for (String sinkSite : sinkSites) {
             RuntimeGuardExclusion exclusion =
                     coverage.guardExcludedWriteSites.get(sinkSite);
@@ -8709,21 +8623,10 @@ public final class ConcolicSummaryImporter {
                     || exclusion.proof.guardSiteId.isEmpty()
                     || dependentGuardSites.contains(
                     exclusion.proof.guardSiteId)) {
-                return null;
+                return false;
             }
-            exclusions.add(exclusion.toMatch(sinkSite, requestedPort));
         }
-        JsonObject proof = new JsonObject();
-        proof.addProperty("inputPort", inputPort);
-        proof.add("exactTransformerSinkSites",
-                GSON.toJsonTree(sinkSites));
-        proof.add("inputDependentGuardSites",
-                GSON.toJsonTree(dependentGuardSites));
-        proof.add("runtimeGuardExclusions", exclusions);
-        proof.addProperty("authority",
-                "STATIC_COMPLETE_INPUT_TO_EXACT_TRANSFORMER_SINKS_PLUS_"
-                        + "RUNTIME_STRICT_GUARD_EXCLUSION");
-        return proof;
+        return true;
     }
 
     private static boolean unresolvedInput(JsonObject raw,
@@ -9407,13 +9310,10 @@ public final class ConcolicSummaryImporter {
     }
 
     private static final class ReplayAdmission {
-        private final boolean required;
         private final boolean valid;
         private final JsonArray failures;
 
-        private ReplayAdmission(boolean required, boolean valid,
-                                JsonArray failures) {
-            this.required = required;
+        private ReplayAdmission(boolean valid, JsonArray failures) {
             this.valid = valid;
             this.failures = failures;
         }
@@ -9551,8 +9451,6 @@ public final class ConcolicSummaryImporter {
         private final MapMutationKind kind;
         private final MapMethod method;
         private final int rawIndex;
-        private final int normalizedIndex;
-        private final String normalizationStatus;
         private final String codePosition;
         private final String siteId;
         private final int occurrence;
@@ -9563,15 +9461,12 @@ public final class ConcolicSummaryImporter {
         private final JsonElement sourceExpression;
 
         private HeapMutation(MapMutationKind kind, MapMethod method,
-                             int rawIndex, int normalizedIndex,
-                             String normalizationStatus, String codePosition,
-                             String siteId, int occurrence,
+                             int rawIndex, String codePosition, String siteId,
+                             int occurrence,
                              JsonArray parameters) {
             this.kind = kind;
             this.method = method;
             this.rawIndex = rawIndex;
-            this.normalizedIndex = normalizedIndex;
-            this.normalizationStatus = normalizationStatus;
             this.codePosition = codePosition;
             this.siteId = siteId;
             this.occurrence = occurrence;
@@ -9590,19 +9485,14 @@ public final class ConcolicSummaryImporter {
                                     String outputPort, String stateFamily,
                                     String preState, String postState,
                                     int before, int after,
-                                    String inputBinding,
-                                    String outputBinding) {
+                                    String inputBinding) {
             JsonObject effect = new JsonObject();
             effect.addProperty("effectId", effectId);
             effect.addProperty("kind", kind.name());
             effect.addProperty("rawConditionIndex", rawIndex);
-            effect.addProperty("normalizedConditionIndex", normalizedIndex);
-            effect.addProperty("normalizationStatus", normalizationStatus);
             effect.addProperty("codePosition", codePosition);
             effect.addProperty("siteId", siteId);
             effect.addProperty("occurrence", occurrence);
-            effect.addProperty("provenanceAuthority",
-                    "VM_CODE_POSITION_AND_RAW_PATH_ORDER");
             effect.addProperty("stateFamily", stateFamily);
             effect.addProperty("preState", preState);
             effect.addProperty("postState", postState);
@@ -9611,7 +9501,6 @@ public final class ConcolicSummaryImporter {
             effect.addProperty("inputPort", inputPort);
             effect.addProperty("outputPort", outputPort);
             effect.addProperty("inputBinding", inputBinding);
-            effect.addProperty("outputBinding", outputBinding);
             effect.add("mapExpression", mapExpression.deepCopy());
             if (keyExpression != null) {
                 effect.add("keyExpression", keyExpression.deepCopy());
@@ -9689,17 +9578,6 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    private static final class RuntimeHeapObservationSelection {
-        private final JsonArray observations;
-        private final JsonArray ignoredEvidence;
-
-        private RuntimeHeapObservationSelection(JsonArray observations,
-                                                JsonArray ignoredEvidence) {
-            this.observations = observations;
-            this.ignoredEvidence = ignoredEvidence;
-        }
-    }
-
     private static final class RuntimeMapStateInputObservation {
         private final JsonObject record;
 
@@ -9763,21 +9641,6 @@ public final class ConcolicSummaryImporter {
                     "INITIAL_EXACT_MAP_SIZE_AND_KEYS_PLUS_COMPLETE_"
                             + "ENTRY_READ_BIJECTION_V1");
             return snapshot;
-        }
-
-        private void attach(JsonObject effect) {
-            if (!resolved()) return;
-            JsonObject record = observation.record;
-            effect.addProperty("runtimeMapStateInputObservationId",
-                    string(record, "observationId"));
-            effect.addProperty("runtimeMapStateInputSnapshotId",
-                    snapshotId());
-            effect.addProperty("runtimeMapStateInputObjectToken",
-                    longInteger(record, "mapObjectToken", -1L));
-            effect.addProperty("runtimeMapStateInputBindingComplete", true);
-            effect.addProperty("runtimeMapStateInputBindingAuthority",
-                    "EXACT_STABLE_FIELD_OBJECT_TOKEN_PLUS_STATIC_REQUESTED_"
-                            + "MAP_TRANSFORMER_V1");
         }
     }
 
@@ -9847,6 +9710,17 @@ public final class ConcolicSummaryImporter {
                 HeapMutation mutation, HeapPortBinding binding) {
             this.mutation = mutation;
             this.binding = binding;
+        }
+    }
+
+    private static final class ContainerMutationMatch {
+        private final String siteId;
+        private final int rawConditionIndex;
+
+        private ContainerMutationMatch(String siteId,
+                                       int rawConditionIndex) {
+            this.siteId = siteId;
+            this.rawConditionIndex = rawConditionIndex;
         }
     }
 
@@ -10081,21 +9955,6 @@ public final class ConcolicSummaryImporter {
             this.observedOccurrenceCount = observedOccurrenceCount;
         }
 
-        private JsonObject toMatch(String writeSiteId,
-                                   String requestedOutputPort) {
-            JsonObject match = new JsonObject();
-            match.addProperty("obligationKind",
-                    "DECLARED_HEAP_WRITE_SITE");
-            match.addProperty("method", proof.method);
-            match.addProperty("siteId", writeSiteId);
-            match.addProperty("guardSiteId", proof.guardSiteId);
-            match.addProperty("requiredOutcome", proof.requiredOutcome);
-            match.addProperty("observedOutcome", !proof.requiredOutcome);
-            match.addProperty("requestedOutputPort", requestedOutputPort);
-            match.addProperty("authority",
-                    "RUNTIME_OBSERVED_DOMINATING_GUARD_EXCLUDES_WRITE");
-            return match;
-        }
     }
 
     private static final class StaticHeapTransformerCoverage {
@@ -10742,11 +10601,6 @@ public final class ConcolicSummaryImporter {
         private boolean isSemantic(int rawIndex) {
             return rawIndex >= 0 && rawIndex < statuses.length
                     && !"FILTERED".equals(statuses[rawIndex]);
-        }
-
-        private String status(int rawIndex) {
-            return rawIndex < 0 || rawIndex >= statuses.length
-                    ? "UNKNOWN" : statuses[rawIndex];
         }
 
         private boolean hasFilteredReason(String reason) {

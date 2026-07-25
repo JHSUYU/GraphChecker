@@ -137,8 +137,7 @@ public class ConcolicSummaryImporterTest {
             assertTrue(summary.contains("InvalidToken"));
             JsonObject importedSummary = JsonParser.parseString(
                     summary.trim()).getAsJsonObject();
-            assertEquals("UNFORCED_SEED",
-                    importedSummary.get("executionKind").getAsString());
+            assertFalse(importedSummary.has("executionKind"));
             assertEquals(0, importedSummary.getAsJsonArray(
                     "symbolicInputs").size());
         } finally {

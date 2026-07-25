@@ -453,7 +453,7 @@ public final class ConcolicScheduler {
                 int occurrence = selectedOccurrence(branch, required,
                         !hasWitness);
                 boolean desired = hasWitness ? !observed : required;
-                TargetBranch target = new TargetBranch(siteId, index,
+                TargetBranch target = new TargetBranch(siteId,
                         occurrence, observed, desired);
                 result.add(new Candidate(activation, activationId, region,
                         target, hasWitness,
@@ -655,15 +655,11 @@ public final class ConcolicScheduler {
                 activation, "baseInputSymbol");
         Set<String> containerInputPorts = containerBindingSymbols(
                 activation, "containerInputPort");
-        int sourceActionCount = 0;
-        int executableCount = 0;
-        int vmIntrinsicPlaceholderCount = 0;
         JsonArray sourceActions = array(activation, "symbolize");
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
             }
-            sourceActionCount++;
             JsonObject action = element.getAsJsonObject();
             JsonObject binding = action.deepCopy();
             String location = string(action, "location");
@@ -693,11 +689,9 @@ public final class ConcolicScheduler {
                     || "ARGUMENT_FIELD".equals(location)
                     || "RECEIVER_FIELD".equals(location)) {
                 binding.addProperty("bindingMode", "ROOT_ENTRY");
-                executableCount++;
             } else if ("ARGUMENT_FIELD_PATH".equals(location)) {
                 if (validFieldPaths(action)) {
                     binding.addProperty("bindingMode", "ROOT_ENTRY");
-                    executableCount++;
                 } else {
                     concreteFallbacks.add(concreteFallback(binding,
                             "UNRESOLVED_ARGUMENT_FIELD_PATH"));
@@ -722,22 +716,13 @@ public final class ConcolicScheduler {
                 boolean pendingArrayFieldRoot =
                         pendingArrayFieldCallReturnRoot(action);
                 if (pendingArrayFieldRoot && sites.size() != 1) {
-                    binding.add("definitionSites", sites.deepCopy());
-                    binding.addProperty("definitionAuthority",
-                            "STATIC_DATAFLOW_DEF_SITE");
-                    binding.addProperty(
-                            "arrayFieldMaterializationComplete", false);
-                    binding.addProperty("materializationIssue",
+                    concreteFallbacks.add(concreteFallback(binding,
                             "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
                                     + "ONE_EXACT_FILTERED_RETURN_SITE:"
-                                    + sites.size());
-                    concreteFallbacks.add(concreteFallback(binding,
-                            string(binding, "materializationIssue")));
+                                    + sites.size()));
                     continue;
                 }
                 if (sites.size() == 0) {
-                    binding.addProperty("definitionAuthority",
-                            "STATIC_DATAFLOW_DEF_SITE");
                     concreteFallbacks.add(concreteFallback(binding,
                             "UNRESOLVED_CALL_RETURN_DEFINITION"));
                     continue;
@@ -758,20 +743,17 @@ public final class ConcolicScheduler {
                     localBinding.add("definitionSites", oneSite);
                     localBinding.addProperty("definitionAuthority",
                             "STATIC_DATAFLOW_DEF_SITE");
-                    dischargeDeferredResolution(localBinding,
-                            "AUTHORITATIVE_STATIC_CALL_RETURN_DEFINITION_"
-                                    + "SITE_V1");
+                    dischargeDeferredResolution(localBinding);
                     localBinding.addProperty("lazy", true);
                     finalizePendingLocalArrayRoot(localBinding, true);
-                    if (!validateExactArrayFieldMaterialization(
-                            localBinding)) {
+                    String issue = exactArrayFieldMaterializationIssue(
+                            localBinding);
+                    if (!issue.isEmpty()) {
                         concreteFallbacks.add(concreteFallback(localBinding,
-                                string(localBinding,
-                                        "materializationIssue")));
+                                issue));
                         continue;
                     }
                     result.add(localBinding);
-                    executableCount++;
                 }
                 continue;
             } else if (vmIntrinsic) {
@@ -784,7 +766,6 @@ public final class ConcolicScheduler {
                 binding.addProperty("modelControllable", false);
                 binding.addProperty("replayPolicy",
                         "UNFORCED_CONCRETE_ENVIRONMENT_VALIDATION");
-                vmIntrinsicPlaceholderCount++;
             } else if ("HEAP_OBJECT_FIELD".equals(location)) {
                 binding.addProperty("bindingMode", "FIELD_ACCESS");
                 List<String> path = fieldPath(cell);
@@ -838,8 +819,6 @@ public final class ConcolicScheduler {
                     concreteFallbacks.add(concreteFallback(binding,
                             "RUNTIME_OBSERVED_NULL_PROJECTED_FIELD_ROOT"));
                     continue;
-                } else {
-                    executableCount++;
                 }
             } else if ("REGION_LIVE_IN".equals(location)) {
                 Matcher matcher = LOCAL_CELL.matcher(cell);
@@ -858,17 +837,13 @@ public final class ConcolicScheduler {
                     binding.addProperty("definitionAuthority",
                             "STATIC_DATAFLOW_DEF_SITE");
                     if (sites.size() == 1) {
-                        dischargeDeferredResolution(binding,
-                                "AUTHORITATIVE_STATIC_LOCAL_DEFINITION_"
-                                        + "SITE_V1");
+                        dischargeDeferredResolution(binding);
                     }
                     finalizePendingLocalArrayRoot(binding, true);
                     if (sites.size() == 0) {
                         concreteFallbacks.add(concreteFallback(binding,
                                 "UNRESOLVED_LOCAL_DEFINITION"));
                         continue;
-                    } else {
-                        executableCount++;
                     }
                     binding.addProperty("lazy", true);
                 } else {
@@ -913,19 +888,15 @@ public final class ConcolicScheduler {
                 result.add(binding);
                 continue;
             }
-            if (!validateExactArrayFieldMaterialization(binding)) {
-                if (isExecutableBindingMode(string(binding,
-                        "bindingMode")) && executableCount > 0) {
-                    executableCount--;
-                }
+            String issue = exactArrayFieldMaterializationIssue(binding);
+            if (!issue.isEmpty()) {
                 concreteFallbacks.add(concreteFallback(binding,
-                        string(binding, "materializationIssue")));
+                        issue));
                 continue;
             }
             result.add(binding);
         }
-        boolean ready = sourceActionCount == 0 || executableCount > 0
-                || vmIntrinsicPlaceholderCount > 0
+        boolean ready = sourceActions.size() == 0 || result.size() > 0
                 || concreteFallbacks.size() > 0;
         return new MaterializationPlan(result, concreteFallbacks, ready);
     }
@@ -972,60 +943,39 @@ public final class ConcolicScheduler {
             if (selected != null) return false;
             selected = declaration;
         }
-        if (selected == null
-                || integer(selected, "schemaVersion", -1) != 2
-                || !"ARRAY_ELEMENT_FIELD".equals(string(selected, "kind"))
-                || !"CONTAINER_SNAPSHOT".equals(string(selected,
-                "materializationMode"))
-                || !"STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
-                .equals(string(selected, "proofAuthority"))
-                || !bool(selected, "complete", false)
-                || !"EXACT_ARRAY_INDEX".equals(string(selected,
-                "selectorAuthority"))
-                || integer(selected, "elementIndex", -1) < 0
-                || integer(selected, "elementOccurrence", -1) < 1) {
-            return false;
-        }
+        if (selected == null) return false;
         JsonArray path = array(selected, "fieldPath");
         JsonArray actionPath = array(action, "fieldPath");
-        if (path.size() < 2 || path.size() > 4
-                || !path.equals(actionPath)
-                || array(selected, "proofCausalEdgeIds").size()
-                != 4 * path.size()) {
-            return false;
-        }
-        Set<String> proofIds = new LinkedHashSet<>();
-        for (JsonElement proof : array(selected, "proofCausalEdgeIds")) {
-            if (!proof.isJsonPrimitive()
-                    || proof.getAsString().trim().isEmpty()
-                    || !proofIds.add(proof.getAsString())) {
-                return false;
-            }
-        }
+        JsonArray proofIds = array(selected, "proofCausalEdgeIds");
         String leafSignature = string(selected,
                 "declaredFieldSignature");
         String[] leaf = declaredField(leafSignature);
-        String[] root = declaredField(string(action, "cell"));
-        String[] access = declaredField(string(action,
-                "accessFieldSignature"));
-        return leaf != null && root != null && access != null
+        return integer(selected, "schemaVersion", -1) == 2
+                && "ARRAY_ELEMENT_FIELD".equals(string(selected, "kind"))
+                && "CONTAINER_SNAPSHOT".equals(string(selected,
+                "materializationMode"))
+                && "STATIC_EXACT_DIRECT_ARRAY_ELEMENT_FIELD_PATH_CHAIN_V1"
+                .equals(string(selected, "proofAuthority"))
+                && bool(selected, "complete", false)
+                && "EXACT_ARRAY_INDEX".equals(string(selected,
+                "selectorAuthority"))
+                && integer(selected, "elementIndex", -1) >= 0
+                && integer(selected, "elementOccurrence", -1) > 0
+                && path.size() >= 2 && path.size() <= 4
+                && validStringPath(path) && path.equals(actionPath)
+                && proofIds.size() == 4 * path.size()
+                && stringSet(selected, "proofCausalEdgeIds").size()
+                == proofIds.size()
+                && leaf != null
                 && ("boolean".equals(leaf[1])
                 || "java.lang.Boolean".equals(leaf[1]))
                 && leaf[2].equals(path.get(path.size() - 1).getAsString())
                 && leafSignature.equals(string(action, "field"))
                 && leafSignature.equals(string(action,
-                "leafFieldSignature"))
-                && leaf[0].equals(string(action, "leafOwnerClass"))
-                && leaf[2].equals(string(action, "leafField"))
+                        "leafFieldSignature"))
                 && leaf[0].equals(string(selected,
                 "declaredFieldOwnerClass"))
                 && leaf[1].equals(string(selected, "declaredFieldType"))
-                && root[0].equals(access[0])
-                && root[1].equals(access[1])
-                && root[2].equals(access[2])
-                && access[0].equals(string(action, "accessOwnerClass"))
-                && access[2].equals(string(action, "accessField"))
-                && access[1].equals(string(action, "accessFieldType"))
                 && !string(selected, "containerInputPort").isEmpty()
                 && !symbol.equals(string(selected, "containerInputPort"))
                 && declaredField(string(selected,
@@ -1117,17 +1067,10 @@ public final class ConcolicScheduler {
 
     private static JsonObject concreteFallback(JsonObject action,
                                                String reason) {
-        JsonObject fallback = action.deepCopy();
-        fallback.remove("deferred");
-        fallback.remove("deferredResolution");
-        fallback.remove("deferredResolutionAuthority");
-        fallback.addProperty("bindingMode", "CONCRETE_PASSTHROUGH");
-        fallback.addProperty("concreteFallback", true);
-        fallback.addProperty("modelControllable", false);
+        JsonObject fallback = new JsonObject();
+        fallback.addProperty("symbol", string(action, "symbol"));
         fallback.addProperty("concreteFallbackReason", firstNonBlank(reason,
                 "NO_EXACT_SYMBOLIC_MATERIALIZATION"));
-        fallback.addProperty("concreteFallbackAuthority",
-                "STATIC_RUNTIME_UNCONFIRMED_USE_WORKLOAD_VALUE_V1");
         return fallback;
     }
 
@@ -1199,25 +1142,10 @@ public final class ConcolicScheduler {
         return field == null ? "" : field[2];
     }
 
-    private static void dischargeDeferredResolution(JsonObject binding,
-                                                     String authority) {
-        String requestAuthority = string(binding,
-                "deferredResolutionAuthority");
-        boolean requested = bool(binding, "deferredResolution", false)
-                || bool(binding, "deferred", false)
-                || !requestAuthority.isEmpty();
+    private static void dischargeDeferredResolution(JsonObject binding) {
         binding.remove("deferredResolution");
         binding.remove("deferredResolutionAuthority");
         binding.remove("deferred");
-        if (requested) {
-            binding.addProperty("deferredResolutionDischarged", true);
-            binding.addProperty("deferredResolutionDischargeAuthority",
-                    authority);
-            if (!requestAuthority.isEmpty()) {
-                binding.addProperty("deferredResolutionRequestAuthority",
-                        requestAuthority);
-            }
-        }
     }
 
     private static boolean verifiedVmIntrinsicPlaceholder(
@@ -1306,24 +1234,17 @@ public final class ConcolicScheduler {
         return existing.equals(derived);
     }
 
-    private static boolean isExecutableBindingMode(String mode) {
-        return "ROOT_ENTRY".equals(mode)
-                || "LOCAL_DEFINITION".equals(mode)
-                || "FIELD_ACCESS".equals(mode)
-                || MAP_STATE_INPUT_OBSERVATION_MODE.equals(mode);
-    }
-
     /**
      * Scheduler-side defense for array-valued fields.  The planner's exact
      * consumed-getfield evidence is data, not a hint: definition refinement
      * may preserve it but cannot synthesize a missing field-read site or
      * silently replace its root authority.
      */
-    private static boolean validateExactArrayFieldMaterialization(
+    private static String exactArrayFieldMaterializationIssue(
             JsonObject binding) {
         ArrayFieldContract contract = ArrayFieldContract.from(binding);
         if (!contract.fieldBackedArray) {
-            return true;
+            return "";
         }
         String issue = contract.issue;
         String consumedMethod = string(binding, "consumedFieldMethod");
@@ -1353,13 +1274,7 @@ public final class ConcolicScheduler {
         if (issue.isEmpty()) {
             issue = exactArrayRootIssue(binding, contract.path);
         }
-        if (!issue.isEmpty()) {
-            binding.addProperty("arrayFieldMaterializationComplete", false);
-            binding.addProperty("materializationIssue", issue);
-            return false;
-        }
-        binding.addProperty("arrayFieldMaterializationComplete", true);
-        return true;
+        return issue;
     }
 
     private static void finalizePendingLocalArrayRoot(
@@ -1955,8 +1870,6 @@ public final class ConcolicScheduler {
                     "regionInstanceId"))
                     || !RegionCaptureGoal.from(summary).isTargetBranch()
                     || !bool(summary, "relationallyComplete", false)
-                    || !"UNFORCED_SEED".equals(string(summary,
-                    "executionKind"))
                     || string(summary, "summaryId").isEmpty()) {
                 continue;
             }
@@ -1981,15 +1894,6 @@ public final class ConcolicScheduler {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException(label + " not found: " + path);
         }
-    }
-
-    private static long firstLong(JsonObject object, String... fields) {
-        for (String field : fields) {
-            if (object != null && object.has(field)) {
-                return longInteger(object, field, -1L);
-            }
-        }
-        return -1L;
     }
 
     private static String safe(String value) {
@@ -2324,23 +2228,21 @@ public final class ConcolicScheduler {
 
     private static final class TargetBranch {
         private final String siteId;
-        private final int branchIndex;
         private final int selectedOccurrence;
         private final boolean observedOutcome;
         private final boolean desiredOutcome;
 
-        private TargetBranch(String siteId, int branchIndex,
-                             int selectedOccurrence, boolean observedOutcome,
+        private TargetBranch(String siteId, int selectedOccurrence,
+                             boolean observedOutcome,
                              boolean desiredOutcome) {
             this.siteId = safe(siteId);
-            this.branchIndex = branchIndex;
             this.selectedOccurrence = Math.max(1, selectedOccurrence);
             this.observedOutcome = observedOutcome;
             this.desiredOutcome = desiredOutcome;
         }
 
         private static TargetBranch outputCapture() {
-            return new TargetBranch("", -1, 1, false, false);
+            return new TargetBranch("", 1, false, false);
         }
 
     }
@@ -2349,7 +2251,7 @@ public final class ConcolicScheduler {
         private static final Comparator<Candidate> ORDER =
                 Comparator.comparing((Candidate value) -> !value.directed)
                         .thenComparing(value -> !value.materialization.ready)
-                        .thenComparingInt(value -> value.target.branchIndex)
+                        .thenComparing(value -> value.target.siteId)
                         .thenComparingInt(value -> integer(object(
                                 value.activation, "rootSelector"),
                                 "ordinal", Integer.MAX_VALUE))
@@ -2429,12 +2331,8 @@ public final class ConcolicScheduler {
                     : outputClosure.outputPorts();
 
             for (JsonObject relation : equalityRelations) {
-                String fromRegion = firstNonBlank(string(relation,
-                        "fromRegion"), regionOfEndpoint(string(relation,
-                        "fromEndpoint")));
-                String toRegion = firstNonBlank(string(relation,
-                        "toRegion"), regionOfEndpoint(string(relation,
-                        "toEndpoint")));
+                String fromRegion = string(relation, "fromRegion");
+                String toRegion = string(relation, "toRegion");
                 String fromPort = string(relation, "fromEndpoint");
                 String toPort = string(relation, "toEndpoint");
                 if (!region.equals(fromRegion) || toRegion.isEmpty()
@@ -2515,10 +2413,10 @@ public final class ConcolicScheduler {
         /** Chooses one stable nearest ordered pair for a semantic transfer. */
         private static int compareRuntimeEqualityWitness(JsonObject left,
                                                          JsonObject right) {
-            long leftWriter = firstLong(left, "writerEventSeq");
-            long leftReader = firstLong(left, "readerEventSeq");
-            long rightWriter = firstLong(right, "writerEventSeq");
-            long rightReader = firstLong(right, "readerEventSeq");
+            long leftWriter = longInteger(left, "writerEventSeq", -1L);
+            long leftReader = longInteger(left, "readerEventSeq", -1L);
+            long rightWriter = longInteger(right, "writerEventSeq", -1L);
+            long rightReader = longInteger(right, "readerEventSeq", -1L);
             int compared = Long.compare(leftReader - leftWriter,
                     rightReader - rightWriter);
             if (compared != 0) return compared;

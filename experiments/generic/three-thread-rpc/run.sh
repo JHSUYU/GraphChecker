@@ -1515,9 +1515,9 @@ do_seed_target() {
       and .[0].regionId == $region
       and .[0].activationId == $activation
       and .[0].relationallyComplete == true
-      and .[0].executionKind == "UNFORCED_SEED"
+      and .[0].captureGoal.kind == "TARGET_BRANCH"
     ' "${summary}" >/dev/null; then
-    die "target seed import is not one valid unforced observation"
+    die "target seed import is not one valid target-branch observation"
   fi
   (cd "${graphchecker_dir}" && \
     CAUSYNTH_SCHEDULE_SUMMARIES="${summary}" \

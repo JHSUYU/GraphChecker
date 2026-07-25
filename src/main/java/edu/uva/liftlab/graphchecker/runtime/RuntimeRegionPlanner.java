@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -56,8 +57,6 @@ final class RuntimeRegionPlanner {
             "#u[0-9]+");
     private static final Pattern UNSAFE_TOKEN_CHARACTERS = Pattern.compile(
             "[^A-Za-z0-9_.-]+");
-    private static final Pattern JSON_QUOTED_STRING = Pattern.compile(
-            "\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
     private static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
             Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
     private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
@@ -4104,15 +4103,20 @@ final class RuntimeRegionPlanner {
                     continue;
                 }
                 result.catalogRowCount++;
-                StaticDataflowProjectionEdge edge =
-                        StaticDataflowProjectionEdge.fromJson(line);
-                if (edge == null || edge.edgeId.isEmpty()
-                        || result.byId.containsKey(edge.edgeId)) {
+                try {
+                    JsonObject row = parseJsonObject(line);
+                    StaticDataflowProjectionEdge edge =
+                            StaticDataflowProjectionEdge.fromJson(row);
+                    if (edge == null || edge.edgeId.isEmpty()
+                            || result.byId.containsKey(edge.edgeId)) {
+                        result.catalogInvalidRowCount++;
+                        continue;
+                    }
+                    result.add(edge,
+                            StaticOutputSlice.causalEdgeReference(row));
+                } catch (RuntimeException invalidRow) {
                     result.catalogInvalidRowCount++;
-                    continue;
                 }
-                result.add(edge,
-                        StaticOutputSlice.causalEdgeReference(line));
             }
         } catch (IOException exception) {
             result.catalogReadComplete = false;
@@ -4159,12 +4163,13 @@ final class RuntimeRegionPlanner {
                 if (trimmed.isEmpty()) {
                     continue;
                 }
-                if (jsonTopLevelInt(trimmed, "schemaVersion", -1)
+                JsonObject row = parseJsonObject(trimmed);
+                if (jsonInt(row, "schemaVersion", -1)
                         != STATIC_REGION_SCHEMA_VERSION) {
                     throw new IllegalArgumentException(
                             "unsupported symbolic region schema");
                 }
-                StaticRegion region = StaticRegion.fromJson(trimmed);
+                StaticRegion region = StaticRegion.fromJson(row);
                 if (region.regionId.isEmpty() || region.rootMethod.isEmpty()) {
                     throw new IllegalArgumentException(
                             "malformed symbolic region row");
@@ -4195,7 +4200,8 @@ final class RuntimeRegionPlanner {
                 if (trimmed.isEmpty()) {
                     continue;
                 }
-                StaticRegionEdge edge = StaticRegionEdge.fromJson(trimmed);
+                StaticRegionEdge edge = StaticRegionEdge.fromJson(
+                        parseJsonObject(trimmed));
                 if (edge.edgeId.isEmpty() || edge.fromRegion.isEmpty()
                         || edge.toRegion.isEmpty()) {
                     throw new IllegalArgumentException(
@@ -5033,7 +5039,7 @@ final class RuntimeRegionPlanner {
             return match;
         }
 
-        private static StaticRegion fromJson(String json) {
+        private static StaticRegion fromJson(JsonObject json) {
             StaticRegion region = new StaticRegion();
             region.regionId = jsonString(json, "regionId");
             region.rootMethod = jsonString(json, "rootMethod");
@@ -5041,7 +5047,8 @@ final class RuntimeRegionPlanner {
                     region.rootMethod);
             region.methods.addAll(jsonStringArray(json, "methods"));
             region.methods.add(region.rootMethod);
-            for (String object : jsonObjectArray(json, "symbolicInputs")) {
+            for (JsonObject object : jsonObjectArray(json,
+                    "symbolicInputs")) {
                 region.inputs.add(new StaticPort(
                         jsonString(object, "portId"),
                         jsonString(object, "cell"),
@@ -5049,19 +5056,21 @@ final class RuntimeRegionPlanner {
                         jsonString(object, "projection"), "",
                         StaticPort.materializationMetadata(object)));
             }
-            for (String object : jsonObjectArray(json, "outputs")) {
+            for (JsonObject object : jsonObjectArray(json, "outputs")) {
                 region.outputs.add(new StaticPort(
                         jsonString(object, "portId"),
                         jsonString(object, "cell"), "", "",
                         jsonString(object, "kind")));
             }
-            for (String object : jsonObjectArray(json, "outputSlices")) {
+            for (JsonObject object : jsonObjectArray(json,
+                    "outputSlices")) {
                 StaticOutputSlice slice = StaticOutputSlice.fromJson(object);
                 if (!slice.outputPort.isEmpty()) {
                     region.outputSlices.put(slice.outputPort, slice);
                 }
             }
-            for (String object : jsonObjectArray(json, "branchPolicies")) {
+            for (JsonObject object : jsonObjectArray(json,
+                    "branchPolicies")) {
                 region.branches.add(new BranchPolicy(
                         jsonString(object, "siteId"),
                         jsonString(object, "policy"),
@@ -5073,7 +5082,8 @@ final class RuntimeRegionPlanner {
                         jsonIntArray(object, "switchCaseKeys"),
                         jsonInt(object, "defaultSuccessorIndex", -1)));
             }
-            for (String object : jsonObjectArray(json, "argumentPathFields")) {
+            for (JsonObject object : jsonObjectArray(json,
+                    "argumentPathFields")) {
                 String method = jsonString(object, "method");
                 int argumentIndex = jsonInt(object, "argumentIndex", -1);
                 List<String> fields = jsonStringArray(object, "fields");
@@ -5623,8 +5633,9 @@ final class RuntimeRegionPlanner {
             this.unitIndex = unitIndex;
         }
 
-        private static StaticDataflowProjectionEdge fromJson(String json) {
-            if (jsonTopLevelInt(json, "schemaVersion", -1)
+        private static StaticDataflowProjectionEdge fromJson(
+                JsonObject json) {
+            if (jsonInt(json, "schemaVersion", -1)
                     != STATIC_DATAFLOW_EDGE_SCHEMA_VERSION) {
                 return null;
             }
@@ -5848,7 +5859,7 @@ final class RuntimeRegionPlanner {
         private FieldCell fromField = FieldCell.unresolved();
         private FieldCell toField = FieldCell.unresolved();
 
-        private static StaticRegionEdge fromJson(String json) {
+        private static StaticRegionEdge fromJson(JsonObject json) {
             StaticRegionEdge edge = new StaticRegionEdge();
             edge.edgeId = jsonString(json, "edgeId");
             edge.fromRegion = jsonString(json, "fromRegion");
@@ -6727,7 +6738,7 @@ final class RuntimeRegionPlanner {
             }
         }
 
-        private static StaticOutputSlice fromJson(String json) {
+        private static StaticOutputSlice fromJson(JsonObject json) {
             StaticOutputSlice slice = new StaticOutputSlice();
             slice.outputPort = jsonString(json, "outputPort");
             slice.outputCell = jsonString(json, "outputCell");
@@ -6738,7 +6749,8 @@ final class RuntimeRegionPlanner {
             slice.sites.addAll(jsonStringArray(json, "sites"));
             slice.causalEdgeIds.addAll(jsonStringArray(json,
                     "causalEdgeIds"));
-            for (String binding : jsonObjectArray(json, "inputBindings")) {
+            for (JsonObject binding : jsonObjectArray(json,
+                    "inputBindings")) {
                 Map<String, Object> parsed = object(
                         "dependencyCell", jsonString(binding,
                         "dependencyCell"),
@@ -6795,12 +6807,12 @@ final class RuntimeRegionPlanner {
                 }
                 slice.inputBindings.add(parsed);
             }
-            for (String edge : jsonObjectArray(json, "causalEdges")) {
+            for (JsonObject edge : jsonObjectArray(json, "causalEdges")) {
                 slice.causalEdges.add(causalEdgeReference(edge));
             }
             slice.requestedStateTransformerContractPresent = jsonHasField(
                     json, "requestedStateTransformerContractComplete");
-            for (String obligation : jsonObjectArray(json,
+            for (JsonObject obligation : jsonObjectArray(json,
                     "requestedStateTransformerObligations")) {
                 slice.requestedStateTransformerObligations.add(object(
                         "siteId", jsonString(obligation, "siteId"),
@@ -6819,7 +6831,7 @@ final class RuntimeRegionPlanner {
             slice.requestedStateTransformerContractComplete = jsonBoolean(
                     json, "requestedStateTransformerContractComplete",
                     false);
-            for (String initializer : jsonObjectArray(json,
+            for (JsonObject initializer : jsonObjectArray(json,
                     "heapInitializers")) {
                 slice.heapInitializers.add(object(
                         "initializerId", jsonString(initializer,
@@ -6863,11 +6875,11 @@ final class RuntimeRegionPlanner {
             slice.captureBindingsComplete = jsonBoolean(json,
                     "captureBindingsComplete",
                     !slice.captureBindingsRequired);
-            for (String binding : jsonObjectArray(json,
+            for (JsonObject binding : jsonObjectArray(json,
                     "captureBindings")) {
                 slice.captureBindings.add(outputCaptureBinding(binding));
             }
-            for (String binding : jsonObjectArray(json,
+            for (JsonObject binding : jsonObjectArray(json,
                     "containerElementFieldBindings")) {
                 slice.containerElementFieldBindings.add(
                         containerElementFieldBinding(binding));
@@ -6876,7 +6888,7 @@ final class RuntimeRegionPlanner {
                     "captureBindingIssues"));
             slice.unresolvedInputs.addAll(jsonStringArray(json,
                     "unresolvedInputs"));
-            for (String detail : jsonObjectArray(json,
+            for (JsonObject detail : jsonObjectArray(json,
                     "unresolvedInputDetails")) {
                 slice.unresolvedInputDetails.add(object(
                         "dependencyCell", jsonString(detail,
@@ -6904,7 +6916,8 @@ final class RuntimeRegionPlanner {
             return slice;
         }
 
-        private static Map<String, Object> outputCaptureBinding(String json) {
+        private static Map<String, Object> outputCaptureBinding(
+                JsonObject json) {
             return object(
                     "captureKind", firstNonBlank(jsonString(json,
                     "captureKind"), "CALL_ARGUMENT"),
@@ -6961,7 +6974,7 @@ final class RuntimeRegionPlanner {
         }
 
         private static Map<String, Object> containerElementFieldBinding(
-                String json) {
+                JsonObject json) {
             return object(
                     "schemaVersion", jsonInt(json, "schemaVersion", -1),
                     "kind", jsonString(json, "kind"),
@@ -7153,7 +7166,8 @@ final class RuntimeRegionPlanner {
             return suffix.matches();
         }
 
-        private static Map<String, Object> causalEdgeReference(String json) {
+        private static Map<String, Object> causalEdgeReference(
+                JsonObject json) {
             Map<String, Object> result = object(
                     "edgeId", firstNonBlank(jsonString(json, "edgeId"),
                             jsonString(json, "id")),
@@ -7188,7 +7202,7 @@ final class RuntimeRegionPlanner {
                     "requiredOutcome");
             if (required != null) result.put("requiredOutcome", required);
             List<Map<String, Object>> mutations = new ArrayList<>();
-            for (String mutation : jsonObjectArray(json,
+            for (JsonObject mutation : jsonObjectArray(json,
                     "guardedMutations")) {
                 Map<String, Object> row = object(
                         "guardSiteId", jsonString(mutation, "guardSiteId"),
@@ -7208,7 +7222,7 @@ final class RuntimeRegionPlanner {
             return result;
         }
 
-        private static void copyString(String json,
+        private static void copyString(JsonObject json,
                                        Map<String, Object> result,
                                        String field) {
             String value = jsonString(json, field);
@@ -8126,7 +8140,7 @@ final class RuntimeRegionPlanner {
         }
 
         private static Map<String, Object> materializationMetadata(
-                String json) {
+                JsonObject json) {
             Map<String, Object> result = new LinkedHashMap<>();
             for (String field : new String[]{"javaType", "inputJavaType",
                     "field", "leafFieldSignature", "leafField",
@@ -8156,7 +8170,7 @@ final class RuntimeRegionPlanner {
             List<String> path = jsonStringArray(json, "fieldPath");
             if (!path.isEmpty()) result.put("fieldPath", path);
             List<Map<String, Object>> declarations = new ArrayList<>();
-            for (String declaration : jsonObjectArray(json,
+            for (JsonObject declaration : jsonObjectArray(json,
                     "fieldPathLeafDeclarations")) {
                 String signature = jsonString(declaration,
                         "fieldSignature");
@@ -8579,190 +8593,103 @@ final class RuntimeRegionPlanner {
         return builder.append('"').toString();
     }
 
-    private static String jsonString(String json, String field) {
-        Pattern pattern = Pattern.compile("\\\"" + Pattern.quote(field)
-                + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"");
-        Matcher matcher = pattern.matcher(safe(json));
-        return matcher.find() ? unescape(matcher.group(1)) : "";
+    private static JsonObject parseJsonObject(String json) {
+        JsonElement parsed = JsonParser.parseString(json);
+        if (!parsed.isJsonObject()) {
+            throw new IllegalArgumentException("JSONL row must be an object");
+        }
+        return parsed.getAsJsonObject();
     }
 
-    private static boolean jsonHasField(String json, String field) {
-        return Pattern.compile("\\\"" + Pattern.quote(field)
-                + "\\\"\\s*:").matcher(safe(json)).find();
+    private static String jsonString(JsonObject json, String field) {
+        JsonElement value = json.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isString()
+                ? value.getAsString() : "";
     }
 
-    private static boolean staticDataflowAssertable(String json) {
-        return jsonTopLevelInt(json, "schemaVersion", -1)
+    private static boolean jsonHasField(JsonObject json, String field) {
+        return json.has(field);
+    }
+
+    private static boolean staticDataflowAssertable(JsonObject json) {
+        return jsonInt(json, "schemaVersion", -1)
                 == STATIC_DATAFLOW_EDGE_SCHEMA_VERSION
                 && STATIC_DATAFLOW_ASSERTABLE.equals(
                 jsonString(json, "semanticMode"));
     }
 
-    private static int jsonTopLevelInt(String json, String field,
-                                       int fallback) {
-        try {
-            JsonElement parsed = JsonParser.parseString(json);
-            if (!parsed.isJsonObject()) {
-                return fallback;
-            }
-            JsonObject object = parsed.getAsJsonObject();
-            JsonElement value = object.get(field);
-            return value == null || !value.isJsonPrimitive()
-                    || !value.getAsJsonPrimitive().isNumber()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
-    private static boolean jsonBoolean(String json, String field,
+    private static boolean jsonBoolean(JsonObject json, String field,
                                        boolean fallback) {
-        Pattern pattern = Pattern.compile("\\\"" + Pattern.quote(field)
-                + "\\\"\\s*:\\s*(true|false)");
-        Matcher matcher = pattern.matcher(safe(json));
-        return matcher.find() ? Boolean.parseBoolean(matcher.group(1)) : fallback;
+        Boolean value = jsonOptionalBoolean(json, field);
+        return value == null ? fallback : value;
     }
 
-    private static Boolean jsonOptionalBoolean(String json, String field) {
-        Pattern pattern = Pattern.compile("\\\"" + Pattern.quote(field)
-                + "\\\"\\s*:\\s*(true|false)");
-        Matcher matcher = pattern.matcher(safe(json));
-        return matcher.find() ? Boolean.valueOf(matcher.group(1)) : null;
+    private static Boolean jsonOptionalBoolean(JsonObject json,
+                                                String field) {
+        JsonElement value = json.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean()
+                ? value.getAsBoolean() : null;
     }
 
-    private static int jsonInt(String json, String field, int fallback) {
-        Pattern pattern = Pattern.compile("\\\"" + Pattern.quote(field)
-                + "\\\"\\s*:\\s*(-?[0-9]+)");
-        Matcher matcher = pattern.matcher(safe(json));
-        return matcher.find() ? parseInt(matcher.group(1), fallback) : fallback;
+    private static int jsonInt(JsonObject json, String field, int fallback) {
+        JsonElement value = json.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isNumber()
+                ? value.getAsInt() : fallback;
     }
 
-    private static List<String> jsonStringArray(String json, String field) {
-        String raw = jsonArray(json, field);
-        if (raw.isEmpty()) {
+    private static List<String> jsonStringArray(JsonObject json,
+                                                String field) {
+        JsonArray values = jsonArray(json, field);
+        if (values == null) {
             return Collections.emptyList();
         }
         List<String> result = new ArrayList<>();
-        Matcher matcher = JSON_QUOTED_STRING.matcher(raw);
-        while (matcher.find()) {
-            result.add(unescape(matcher.group(1)));
+        for (JsonElement value : values) {
+            if (value.isJsonPrimitive()
+                    && value.getAsJsonPrimitive().isString()) {
+                result.add(value.getAsString());
+            }
         }
         return result;
     }
 
-    private static List<Integer> jsonIntArray(String json, String field) {
-        String raw = jsonArray(json, field);
-        if (raw.isEmpty()) {
+    private static List<Integer> jsonIntArray(JsonObject json,
+                                              String field) {
+        JsonArray values = jsonArray(json, field);
+        if (values == null) {
             return Collections.emptyList();
         }
         List<Integer> result = new ArrayList<>();
-        Matcher matcher = Pattern.compile("-?(?:0|[1-9][0-9]*)")
-                .matcher(raw);
-        while (matcher.find()) {
-            result.add(parseInt(matcher.group(), 0));
+        for (JsonElement value : values) {
+            if (value.isJsonPrimitive()
+                    && value.getAsJsonPrimitive().isNumber()) {
+                result.add(value.getAsInt());
+            }
         }
         return result;
     }
 
-    private static List<String> jsonObjectArray(String json, String field) {
-        String raw = jsonArray(json, field);
-        if (raw.isEmpty()) {
+    private static List<JsonObject> jsonObjectArray(JsonObject json,
+                                                    String field) {
+        JsonArray values = jsonArray(json, field);
+        if (values == null) {
             return Collections.emptyList();
         }
-        List<String> result = new ArrayList<>();
-        int depth = 0;
-        int start = -1;
-        boolean string = false;
-        boolean escaped = false;
-        for (int index = 0; index < raw.length(); index++) {
-            char ch = raw.charAt(index);
-            if (string) {
-                if (escaped) {
-                    escaped = false;
-                } else if (ch == '\\') {
-                    escaped = true;
-                } else if (ch == '"') {
-                    string = false;
-                }
-                continue;
-            }
-            if (ch == '"') {
-                string = true;
-            } else if (ch == '{') {
-                if (depth++ == 0) {
-                    start = index;
-                }
-            } else if (ch == '}' && depth > 0 && --depth == 0 && start >= 0) {
-                result.add(raw.substring(start, index + 1));
-                start = -1;
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonElement value : values) {
+            if (value.isJsonObject()) {
+                result.add(value.getAsJsonObject());
             }
         }
         return result;
     }
 
-    private static String jsonArray(String json, String field) {
-        String source = safe(json);
-        int fieldAt = source.indexOf('"' + field + '"');
-        if (fieldAt < 0) {
-            return "";
-        }
-        int start = source.indexOf('[', fieldAt + field.length() + 2);
-        if (start < 0) {
-            return "";
-        }
-        int depth = 0;
-        boolean string = false;
-        boolean escaped = false;
-        for (int index = start; index < source.length(); index++) {
-            char ch = source.charAt(index);
-            if (string) {
-                if (escaped) {
-                    escaped = false;
-                } else if (ch == '\\') {
-                    escaped = true;
-                } else if (ch == '"') {
-                    string = false;
-                }
-                continue;
-            }
-            if (ch == '"') {
-                string = true;
-            } else if (ch == '[') {
-                depth++;
-            } else if (ch == ']' && --depth == 0) {
-                return source.substring(start, index + 1);
-            }
-        }
-        return "";
-    }
-
-    private static String unescape(String value) {
-        StringBuilder builder = new StringBuilder();
-        boolean escaped = false;
-        for (int index = 0; index < safe(value).length(); index++) {
-            char ch = value.charAt(index);
-            if (!escaped && ch == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (escaped) {
-                if (ch == 'n') {
-                    builder.append('\n');
-                } else if (ch == 'r') {
-                    builder.append('\r');
-                } else if (ch == 't') {
-                    builder.append('\t');
-                } else {
-                    builder.append(ch);
-                }
-                escaped = false;
-            } else {
-                builder.append(ch);
-            }
-        }
-        if (escaped) {
-            builder.append('\\');
-        }
-        return builder.toString();
+    private static JsonArray jsonArray(JsonObject json, String field) {
+        JsonElement value = json.get(field);
+        return value != null && value.isJsonArray()
+                ? value.getAsJsonArray() : null;
     }
 }

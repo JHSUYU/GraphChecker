@@ -132,6 +132,23 @@ public class ConcolicConstraintSolverTest {
         }
     }
 
+    @Test
+    public void unsupportedExpressionNeverInventsDiagnosticSmtMeaning()
+            throws Exception {
+        JsonObject division = binaryExpression(
+                intSymbol("M_I_field_REGION.3.in.0_example/Input"),
+                "/", intConstant(2));
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(binaryExpression(division, ">", intConstant(0))),
+                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
+
+        assertEquals("UNSUPPORTED",
+                result.record.get("status").getAsString());
+        assertTrue(result.record.getAsJsonArray("unsupported").size() > 0);
+        assertFalse(result.smtLib.contains("unsupported_division"));
+        assertFalse(result.smtLib.contains("declare-fun uf__"));
+    }
+
     private static JsonObject activation() {
         JsonObject activation = new JsonObject();
         JsonArray materializations = new JsonArray();

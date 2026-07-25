@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -370,15 +371,14 @@ public final class CausynthTraceRecorder {
         if (id > maxEvents) {
             return;
         }
-        int methodObjectId = methodReceiver == null ? 0 : System.identityHashCode(methodReceiver);
         int receiverObjectId = fieldReceiver == null ? 0 : System.identityHashCode(fieldReceiver);
         int valueObjectId = valueObject == null ? 0 : System.identityHashCode(valueObject);
         ValueFingerprint fingerprint = valueFingerprintsEnabled
                 ? ValueFingerprint.capture(valueObject, primitiveValue)
                 : ValueFingerprint.disabled();
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
-        FieldEvent event = new FieldEvent(id, method, methodObjectId,
-                unitIndex, kind, field, receiverObjectId,
+        FieldEvent event = new FieldEvent(id, method, unitIndex, kind, field,
+                receiverObjectId,
                 valueObjectId, primitiveValue,
                 activeCall == null ? 0L : activeCall.callId,
                 siteId(method, unitIndex), fingerprint.digest,
@@ -789,7 +789,6 @@ public final class CausynthTraceRecorder {
                     addFieldEvent(new FieldEvent(
                             longInteger(row, "seq", 0L),
                             method,
-                            integer(row, "objectId", 0),
                             integer(row, "unitIndex", -1),
                             eventKind,
                             string(row, "field"),
@@ -896,7 +895,6 @@ public final class CausynthTraceRecorder {
                     "event", event.kind,
                     "seq", event.id,
                     "method", event.method,
-                    "objectId", event.methodObjectId,
                     "callId", event.callId,
                     "siteId", event.siteId,
                     "unitIndex", event.unitIndex,
@@ -1136,18 +1134,6 @@ public final class CausynthTraceRecorder {
                 "maxEvents", maxEvents));
     }
 
-    private static String firstNonBlank(String... values) {
-        if (values == null) {
-            return "";
-        }
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return "";
-    }
-
     private static int parseInt(String value, int fallback) {
         try {
             return Integer.parseInt(value);
@@ -1287,7 +1273,6 @@ public final class CausynthTraceRecorder {
     private static final class FieldEvent {
         private final long id;
         private final String method;
-        private final int methodObjectId;
         private final int unitIndex;
         private final String kind;
         private final String field;
@@ -1302,7 +1287,7 @@ public final class CausynthTraceRecorder {
         private final String siteId;
 
         private FieldEvent(long id, String method,
-                           int methodObjectId, int unitIndex, String kind,
+                           int unitIndex, String kind,
                            String field, int receiverObjectId,
                            int valueObjectId, String primitiveValue,
                            long callId, String siteId,
@@ -1312,7 +1297,6 @@ public final class CausynthTraceRecorder {
                            String valueFingerprintReason) {
             this.id = id;
             this.method = method;
-            this.methodObjectId = methodObjectId;
             this.unitIndex = unitIndex;
             this.kind = kind;
             this.field = field;

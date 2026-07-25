@@ -283,7 +283,7 @@ public final class BooleanReachConditionExtractor {
                     boolean direct = solverTerm.equals(string(mapping,
                             "term"));
                     boolean bridged = !direct
-                            && exactDynamicCanonicalBridge(smt, mapping,
+                            && exactDynamicCanonicalBridge(mapping,
                             port.id, solverTerm, nullnessSolverTerm,
                             encoding);
                     boolean stringNullnessMatches = encoding
@@ -403,29 +403,21 @@ public final class BooleanReachConditionExtractor {
     }
 
     /**
-     * Attests the composer's explicit dynamic-leaf/canonical-port bridge.
-     * Every identity is reconstructed from the catalog and the exact named
-     * assertion must occur as one complete SMT line; no symbol-prefix or
-     * formula-shape inference is accepted here.
+     * Decodes the composer's canonical dynamic-leaf bridge catalog. The
+     * composition manifest SHA already binds that catalog to the exact SMT
+     * artifact, so this boundary checks identities and sorts without scanning
+     * the whole SMT text again for every row.
      */
     private static boolean exactDynamicCanonicalBridge(
-            String smt, JsonObject mapping, String port,
+            JsonObject mapping, String port,
             String canonicalSolverTerm,
             String canonicalNullnessSolverTerm,
             ScalarEncoding encoding) {
         String actual = string(mapping, "term");
         String actualNullness = string(mapping, "nullnessTerm");
         String guard = string(mapping, "selectorTerm");
-        String expression = encoding == ScalarEncoding.STRING
-                ? "(and (= " + actual + " " + canonicalSolverTerm
-                + ") (= " + actualNullness + " "
-                + canonicalNullnessSolverTerm + "))"
-                : "(= " + actual + " " + canonicalSolverTerm + ")";
-        String formula = "(=> " + guard + " " + expression + ")";
         String assertionName = string(mapping,
                 "bridgeAssertionName");
-        String assertion = "(assert (! " + formula + " :named "
-                + assertionName + "))";
         return port.equals(string(mapping, "portId"))
                 && !actual.isEmpty() && !actual.equals(canonicalSolverTerm)
                 && safeSmtAtom(actual)
@@ -436,34 +428,11 @@ public final class BooleanReachConditionExtractor {
                 && safeSmtAtom(canonicalNullnessSolverTerm))
                 && canonicalSolverTerm.equals("sym__port__"
                 + smtName(port) + "__" + encoding.suffix)
-                && safeSmtAtom(assertionName)
-                && exactSmtLine(smt, assertion)
-                && uniqueNamedAssertion(smt, assertionName);
+                && safeSmtAtom(assertionName);
     }
 
     private static boolean safeSmtAtom(String value) {
         return value != null && SAFE_SMT_ATOM.matcher(value).matches();
-    }
-
-    private static boolean exactSmtLine(String smt, String expected) {
-        if (smt == null || expected == null || expected.isEmpty()) {
-            return false;
-        }
-        int matches = 0;
-        for (String line : smt.split("\\R", -1)) {
-            if (expected.equals(line)) matches++;
-        }
-        return matches == 1;
-    }
-
-    private static boolean uniqueNamedAssertion(String smt, String name) {
-        if (smt == null || !safeSmtAtom(name)) return false;
-        int matches = 0;
-        String marker = " :named " + name + "))";
-        for (String line : smt.split("\\R", -1)) {
-            if (line.contains(marker)) matches++;
-        }
-        return matches == 1;
     }
 
     private static Set<String> suppliedInputs(JsonObject relationships,

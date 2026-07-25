@@ -37,7 +37,7 @@ final class SymbolicRegionAssemblyStage {
         addArgumentPathFieldContracts(planned.regions);
         result.symbolicRegions.addAll(planned.regions);
         result.symbolicRegionEdges.addAll(planned.regionEdges);
-        result.symbolicCoverage.putAll(planned.coverage);
+        result.symbolicCoverageComplete = planned.coverageComplete;
     }
 
     /**
@@ -149,7 +149,6 @@ final class SymbolicRegionAssemblyStage {
         }
 
         Map<Integer, Set<String>> fieldsByArgument = new LinkedHashMap<>();
-        Map<Integer, Set<String>> sitesByArgument = new LinkedHashMap<>();
         for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
             Unit unit = units.get(unitIndex);
             if (!(unit instanceof IfStmt)) {
@@ -165,9 +164,6 @@ final class SymbolicRegionAssemblyStage {
             for (ArgumentFieldOrigin origin : origins) {
                 addValue(fieldsByArgument, origin.argumentIndex,
                         origin.field);
-                addValue(sitesByArgument, origin.argumentIndex,
-                        stableSiteId(method.getSignature(), unitIndex,
-                                "branch"));
             }
         }
 
@@ -177,10 +173,7 @@ final class SymbolicRegionAssemblyStage {
                     "method", method.getSignature(),
                     "argumentIndex", argumentIndex,
                     "fields", sortedLimited(
-                            fieldsByArgument.get(argumentIndex)),
-                    "branchSites", sortedLimited(
-                            sitesByArgument.get(argumentIndex)),
-                    "authority", "STATIC_ROOT_BRANCH_DATAFLOW"));
+                            fieldsByArgument.get(argumentIndex))));
         }
         return result;
     }
@@ -238,16 +231,6 @@ final class SymbolicRegionAssemblyStage {
             units.add(unit);
         }
         return units;
-    }
-
-    private static String stableSiteId(String method, int unitIndex,
-                                       String kind) {
-        if (unitIndex >= 0) {
-            return method + "#u" + unitIndex;
-        }
-        return method + "#synthetic:"
-                + (kind == null || kind.trim().isEmpty()
-                ? "edge" : kind.trim());
     }
 
     private static List<String> sortedLimited(Set<String> values) {
