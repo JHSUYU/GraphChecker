@@ -119,7 +119,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.FieldAccessEvent(seq,
                 "FIELD_READ", method, callId, unitIndex,
                 method + "#u" + unitIndex, field, receiverObjectId,
-                valueObjectId, "", "fp", true, 1, "");
+                valueObjectId, "", "fp", true);
     }
 
     @Test
@@ -814,13 +814,11 @@ public class RuntimeRegionPlannerTest {
             RuntimeRegionPlanner.FieldAccessEvent readA =
                     new RuntimeRegionPlanner.FieldAccessEvent(5,
                             "FIELD_READ", getA, 3, 8, getA + "#u8",
-                            fieldA, 77, 0, "-1", "", false, 0,
-                            "TEST_NO_FINGERPRINT");
+                            fieldA, 77, 0, "-1", "", false);
             RuntimeRegionPlanner.FieldAccessEvent readB =
                     new RuntimeRegionPlanner.FieldAccessEvent(6,
                             "FIELD_READ", getB, 4, 8, getB + "#u8",
-                            fieldB, 77, 0, "10", "", false, 0,
-                            "TEST_NO_FINGERPRINT");
+                            fieldB, 77, 0, "10", "", false);
             RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
                     regions.toFile(), null, graph.toFile(), methods,
                     Collections.singletonList(branch),
@@ -963,20 +961,17 @@ public class RuntimeRegionPlannerTest {
                         newWriteInsideClosure ? 1 : 2, 4,
                         (newWriteInsideClosure ? root : externalWriter)
                                 + "#u4",
-                        field, newWriteReceiver, 0, "2", "", false,
-                        0, "TEST_NO_FINGERPRINT"));
+                        field, newWriteReceiver, 0, "2", "", false));
             }
             if (includeOldWrite) {
                 fields.add(new RuntimeRegionPlanner.FieldAccessEvent(4,
                         "FIELD_WRITE", root, 1, 2, root + "#u2",
-                        field, 77, 0, "1", "", false, 0,
-                        "TEST_NO_FINGERPRINT"));
+                        field, 77, 0, "1", "", false));
             }
             fields.add(new RuntimeRegionPlanner.FieldAccessEvent(6,
                     "FIELD_READ", root, 1, 5, root + "#u5", field,
                     77, 0, includeNewWrite && newWriteReceiver == 77
-                    ? "2" : includeOldWrite ? "1" : "0", "", false,
-                    0, "TEST_NO_FINGERPRINT"));
+                    ? "2" : includeOldWrite ? "1" : "0", "", false));
 
             List<RuntimeRegionPlanner.MethodEvent> methods =
                     new ArrayList<>();
@@ -1442,7 +1437,7 @@ public class RuntimeRegionPlannerTest {
                             interveningWrite ? 4 : 3,
                             "FIELD_READ", writer, 11, 6, writer + "#u6",
                             exact, differentReceiver ? 801 : 800, 0, "3",
-                            "", false, 0, "");
+                            "", false);
             RuntimeRegionPlanner.FieldAccessEvent write =
                     new RuntimeRegionPlanner.FieldAccessEvent(
                             interveningWrite ? 5 : 4,
@@ -2365,7 +2360,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, "METHOD_ARGUMENT",
                 SASL_CLIENT, callId, 0, 0, SASL_CLIENT + "#entry", "",
                 3, "java.lang.String", 101, "", false, false,
-                fingerprint, true, 1, "COMPLETE");
+                fingerprint, true);
     }
 
     private static RuntimeRegionPlanner.RuntimeEvent methodArgument(
@@ -2374,7 +2369,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, "METHOD_ARGUMENT",
                 method, callId, 0, 0, method + "#entry", "",
                 argumentIndex, runtimeType, (int) (seq + 100), "", false,
-                false, "", false, 0, "TEST_NO_FINGERPRINT");
+                false, "", false);
     }
 
     private static RuntimeRegionPlanner.RuntimeEvent saslCallbackReturn(
@@ -2382,7 +2377,7 @@ public class RuntimeRegionPlannerTest {
         return new RuntimeRegionPlanner.RuntimeEvent(seq, "CALL_SITE_RETURN",
                 SASL_SERVER, callId, 9, 0, SASL_SERVER + "#u4",
                 NAME_CALLBACK_DEFAULT, -1, "java.lang.String", 102, "",
-                false, false, fingerprint, true, 1, "COMPLETE");
+                false, false, fingerprint, true);
     }
 
     private static RuntimeRegionPlanner.MethodEvent method(long seq, String method,

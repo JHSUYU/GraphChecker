@@ -1367,23 +1367,21 @@ public final class CausynthPipeline {
         TraceSiteSelection selection = new TraceSiteSelection();
         for (Map<String, Object> edge : result.edges) {
             String method = stringValue(edge.get("method"));
-            if (!method.isEmpty()) {
-                selection.relevantMethods.add(method);
-            }
-        }
-        for (Map<String, Object> edge : result.edges) {
-            String method = stringValue(edge.get("method"));
             int unitIndex = intValue(edge.get("unitIndex"), -1);
-            if (method.isEmpty() || unitIndex < 0) {
+            if (method.isEmpty()) {
                 continue;
             }
+            selection.relevantMethods.add(method);
+            if (unitIndex < 0) continue;
             String invoke = stringValue(edge.get("invoke"));
             String transfer = stringValue(edge.get("transferKind"));
             if (!invoke.isEmpty()) {
-                selection.add(selection.callUnits, method, unitIndex);
+                selection.callUnits.computeIfAbsent(method,
+                        ignored -> new LinkedHashSet<>()).add(unitIndex);
             }
             if ("GUARD".equals(transfer)) {
-                selection.add(selection.branchUnits, method, unitIndex);
+                selection.branchUnits.computeIfAbsent(method,
+                        ignored -> new LinkedHashSet<>()).add(unitIndex);
             }
         }
         return selection;
@@ -1889,10 +1887,6 @@ public final class CausynthPipeline {
                 continue;
             }
             selection.signatures.add(signature);
-            String fieldName = fieldNameFromSignature(signature);
-            if (!fieldName.isEmpty()) {
-                selection.names.add(fieldName);
-            }
         }
         collectFieldPathNames(selection, cell);
     }
@@ -2427,12 +2421,6 @@ public final class CausynthPipeline {
         private final Set<String> relevantMethods = new LinkedHashSet<>();
         private final Map<String, Set<Integer>> callUnits = new LinkedHashMap<>();
         private final Map<String, Set<Integer>> branchUnits = new LinkedHashMap<>();
-
-        private void add(Map<String, Set<Integer>> sites, String method,
-                         int unitIndex) {
-            sites.computeIfAbsent(method, ignored -> new LinkedHashSet<>())
-                    .add(unitIndex);
-        }
 
         private Set<Integer> units(Map<String, Set<Integer>> sites,
                                    String method) {

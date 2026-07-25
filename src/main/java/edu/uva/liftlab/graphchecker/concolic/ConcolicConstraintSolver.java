@@ -32,7 +32,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -1236,7 +1235,8 @@ public final class ConcolicConstraintSolver {
                         "JAVA_STRING_CONTENT_PLUS_EXPLICIT_NULLNESS_BOOL_V1");
             } else {
                 assignment.addProperty("valueType", sort.name());
-                assignment.addProperty("value", normalizeModelValue(value));
+                assignment.addProperty("value",
+                        SmtModelValueCodec.normalizeScalar(value));
                 if (sort == Sort.STRING) {
                     assignment.addProperty(
                             "nullableStringEncodingAuthority",
@@ -1649,12 +1649,6 @@ public final class ConcolicConstraintSolver {
                 "DYNAMIC_MAP_ENTRY_FIELD_BINDING";
         private static final String CONTAINER_KIND =
                 "DYNAMIC_CONTAINER_ELEMENT_FIELD_BINDING";
-        private static final String MAP_AUTHORITY =
-                "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
-                        + "FIELD_SITE_OCCURRENCE";
-        private static final String CONTAINER_AUTHORITY =
-                "ACTIVATION_LOCAL_EXPLICIT_ARRAY_INDEX_OWNER_IDENTITY_AND_"
-                        + "STABLE_FIELD_SITE_OCCURRENCE";
         /**
          * A map-entry field model is rebound in the replay JVM by the exact
          * static field-family port, getter site and dynamic occurrence.  The
@@ -1695,11 +1689,6 @@ public final class ConcolicConstraintSolver {
             int expectedSchema = container ? 3 : 1;
             if (integer(raw, "schemaVersion", -1) != expectedSchema)
                 return "UNSUPPORTED_SCHEMA_VERSION";
-            String expectedAuthority = container ? CONTAINER_AUTHORITY
-                    : MAP_AUTHORITY;
-            if (!expectedAuthority.equals(string(raw, "authority")))
-                return "WRONG_AUTHORITY";
-            if (!bool(raw, "complete", false)) return "NOT_COMPLETE";
             if (baseInputSymbol.isEmpty()) return "MISSING_BASE_INPUT";
             if (dynamicFieldSymbol.isEmpty()) return "MISSING_DYNAMIC_SYMBOL";
             if (materializationSiteId.isEmpty())
@@ -1708,13 +1697,6 @@ public final class ConcolicConstraintSolver {
                 return "INVALID_MATERIALIZATION_OCCURRENCE";
             if (dynamicBindingId.isEmpty())
                 return "MISSING_DYNAMIC_BINDING_ID";
-            if (map) {
-                if (raw.get("keyExpression") == null
-                        || raw.get("keyExpression").isJsonNull())
-                    return "MISSING_KEY_SELECTOR";
-                if (string(raw, "keyExpressionAuthority").isEmpty())
-                    return "MISSING_KEY_SELECTOR_AUTHORITY";
-            }
             if (!dynamicFieldSymbol.isEmpty()
                     && !dynamicBindingId.equals("DYNAMIC_FIELD:"
                     + dynamicFieldSymbol))
@@ -1737,8 +1719,6 @@ public final class ConcolicConstraintSolver {
             int occurrence = integer(selector, "elementOccurrence", -1);
             if (!"ARRAY_INDEX".equals(string(selector, "kind")))
                 return "WRONG_CONTAINER_SELECTOR_KIND";
-            if (!bool(selector, "complete", false))
-                return "INCOMPLETE_CONTAINER_SELECTOR";
             if (bindingId.isEmpty()) return "MISSING_CONTAINER_BINDING_ID";
             if (containerPort.isEmpty() || containerCell.isEmpty())
                 return "MISSING_CONTAINER_ENDPOINT";
@@ -1755,29 +1735,6 @@ public final class ConcolicConstraintSolver {
                 return "MISSING_DECLARED_FIELD_OWNER";
             if (string(selector, "declaredFieldType").isEmpty())
                 return "MISSING_DECLARED_FIELD_TYPE";
-            if (longInteger(selector, "containerObjectToken", 0L) <= 0L
-                    || longInteger(selector,
-                    "elementObjectToken", 0L) <= 0L)
-                return "INVALID_CONTAINER_OBJECT_TOKEN";
-            String tokenScope = string(selector, "objectTokenScope");
-            if (!"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN".equals(
-                    string(selector, "objectTokenAuthority"))
-                    || tokenScope.isEmpty()
-                    || !firstNonBlank(string(raw, "objectTokenScope"),
-                    tokenScope).equals(tokenScope)
-                    || !firstNonBlank(string(raw, "objectTokenAuthority"),
-                    "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN")
-                    .equals(string(selector, "objectTokenAuthority")))
-                return "INVALID_CONTAINER_OBJECT_TOKEN_SCOPE";
-            String resolved = string(selector,
-                    "resolvedFromSelectorAuthority");
-            if (!("EXACT_ARRAY_INDEX".equals(resolved)
-                    || "DISCOVER_UNIQUE_IDENTITY_INDEX".equals(resolved)))
-                return "INVALID_CONTAINER_RESOLUTION_AUTHORITY";
-            if (!"EXPLICIT_CONTAINER_INPUT_ARRAY_INDEX_AND_ACTIVATION_"
-                    .concat("LOCAL_ELEMENT_IDENTITY").equals(string(
-                            selector, "authority")))
-                return "INVALID_CONTAINER_SELECTOR_AUTHORITY";
             return "";
         }
 
@@ -1840,16 +1797,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private List<String> fieldPath() {
-            List<String> result = new ArrayList<>();
-            for (JsonElement segment : array(raw, "fieldPath")) {
-                try {
-                    if (segment.isJsonPrimitive()) {
-                        result.add(segment.getAsString());
-                    }
-                } catch (RuntimeException ignored) {
-                }
-            }
-            return result;
+            return stringList(array(raw, "fieldPath"));
         }
 
         private void copySelectorTo(JsonObject assignment) {
@@ -1967,113 +1915,17 @@ public final class ConcolicConstraintSolver {
         Map<String, String> result = new LinkedHashMap<>();
         int newline = output.indexOf('\n');
         if (newline < 0) return result;
-        String values = output.substring(newline + 1).trim();
-        if (values.isEmpty() || values.startsWith("(")) {
-            List<SExpr> expressions = SExpr.parseMany(values);
-            for (SExpr root : expressions) collectValuePairs(root, result);
+        List<String> rows = SmtModelValueCodec.applicationItems(
+                output.substring(newline + 1).trim());
+        if (rows == null) return result;
+        for (String row : rows) {
+            List<String> pair = SmtModelValueCodec.applicationItems(row);
+            if (pair != null && pair.size() == 2
+                    && pair.get(0).startsWith("sym__")) {
+                result.put(pair.get(0), pair.get(1));
+            }
         }
         return result;
-    }
-
-    private static void collectValuePairs(SExpr expression,
-                                          Map<String, String> result) {
-        if (expression.children.size() == 2
-                && expression.children.get(0).children.isEmpty()) {
-            String name = expression.children.get(0).atom;
-            if (name.startsWith("sym__")) {
-                result.put(name, expression.children.get(1).render());
-                return;
-            }
-        }
-        for (SExpr child : expression.children) collectValuePairs(child,
-                result);
-    }
-
-    private static final class SExpr {
-        private final String atom;
-        private final List<SExpr> children;
-
-        private SExpr(String atom, List<SExpr> children) {
-            this.atom = atom;
-            this.children = children;
-        }
-
-        private String render() {
-            if (children.isEmpty()) return atom;
-            StringBuilder result = new StringBuilder("(");
-            for (int index = 0; index < children.size(); index++) {
-                if (index > 0) result.append(' ');
-                result.append(children.get(index).render());
-            }
-            return result.append(')').toString();
-        }
-
-        private static List<SExpr> parseMany(String value) {
-            Parser parser = new Parser(value);
-            List<SExpr> result = new ArrayList<>();
-            while (parser.hasNext()) {
-                SExpr expression = parser.parse();
-                if (expression == null) break;
-                result.add(expression);
-            }
-            return result;
-        }
-    }
-
-    private static final class Parser {
-        private final String value;
-        private int index;
-
-        private Parser(String value) {
-            this.value = value == null ? "" : value;
-        }
-
-        private boolean hasNext() {
-            skip();
-            return index < value.length();
-        }
-
-        private SExpr parse() {
-            skip();
-            if (index >= value.length()) return null;
-            if (value.charAt(index) == '(') {
-                index++;
-                List<SExpr> children = new ArrayList<>();
-                while (true) {
-                    skip();
-                    if (index >= value.length()) break;
-                    if (value.charAt(index) == ')') {
-                        index++;
-                        break;
-                    }
-                    SExpr child = parse();
-                    if (child == null) break;
-                    children.add(child);
-                }
-                return new SExpr("", children);
-            }
-            StringBuilder atom = new StringBuilder();
-            boolean quoted = false;
-            while (index < value.length()) {
-                char current = value.charAt(index);
-                if (current == '"') {
-                    quoted = !quoted;
-                    atom.append(current);
-                    index++;
-                    continue;
-                }
-                if (!quoted && (Character.isWhitespace(current)
-                        || current == '(' || current == ')')) break;
-                atom.append(current);
-                index++;
-            }
-            return new SExpr(atom.toString(), Collections.<SExpr>emptyList());
-        }
-
-        private void skip() {
-            while (index < value.length()
-                    && Character.isWhitespace(value.charAt(index))) index++;
-        }
     }
 
     private static JsonObject baseRecord(JsonObject task) {
@@ -2207,10 +2059,6 @@ public final class ConcolicConstraintSolver {
         } catch (NumberFormatException ignored) {
             return null;
         }
-    }
-
-    private static String normalizeModelValue(String value) {
-        return SmtModelValueCodec.normalizeScalar(value);
     }
 
     private static String quote(String value) {

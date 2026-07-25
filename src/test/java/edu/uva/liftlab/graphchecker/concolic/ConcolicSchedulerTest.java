@@ -145,9 +145,8 @@ public class ConcolicSchedulerTest {
             JsonObject fallback = deferredClosure.scheduledActivations.get(0)
                     .getAsJsonArray("concreteFallbacks").get(0)
                     .getAsJsonObject();
-            assertEquals(2, fallback.size());
+            assertEquals(1, fallback.size());
             assertTrue(fallback.has("symbol"));
-            assertTrue(fallback.has("concreteFallbackReason"));
         } finally {
             folder.delete();
         }

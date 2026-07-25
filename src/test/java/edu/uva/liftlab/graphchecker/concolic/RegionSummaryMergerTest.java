@@ -319,8 +319,8 @@ public class RegionSummaryMergerTest {
 
     private static JsonArray engineArrayBinding(String id, long token) {
         JsonObject binding = new JsonObject();
-        binding.addProperty("schemaVersion", 1);
-        binding.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
+        binding.addProperty("schemaVersion", 2);
+        binding.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
         binding.addProperty("inputPort", "REGION.4.in.1");
         binding.addProperty("engineArrayId", id);
         binding.addProperty("arrayObjectToken", token);

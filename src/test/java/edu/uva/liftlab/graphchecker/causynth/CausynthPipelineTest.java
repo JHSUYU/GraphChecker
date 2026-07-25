@@ -126,30 +126,6 @@ public class CausynthPipelineTest {
         return activation;
     }
 
-    @Test
-    public void boundedOutputClosureMayUseExactScopedCoverageAuthority()
-            throws Exception {
-        TemporaryFolder folder = new TemporaryFolder();
-        folder.create();
-        try {
-            Path plan = folder.getRoot().toPath().resolve("bounded.jsonl");
-            JsonObject row = readyBoundedOutputClosure("ACT.OUTPUT.0");
-            // Broad static input coverage is intentionally not an authority
-            // for a runtime-refined requested-output closure.
-            row.addProperty("staticInputSelectionComplete", false);
-            // The retired top-level refinement mirror has no authority; the
-            // nested immutable slice contract below is canonical.
-            row.addProperty("requestedOutputSliceRefinementComplete", false);
-            Files.write(plan, (row + "\n").getBytes(StandardCharsets.UTF_8));
-
-            assertTrue(ConcolicInstrumentationSelections
-                    .selectedBoundedOutputClosureCoverageReady(plan,
-                            "ACT.OUTPUT.0"));
-        } finally {
-            folder.delete();
-        }
-    }
-
     private static JsonObject readyBoundedOutputClosure(String activationId) {
         String outputPort = "REGION.15.out.122";
         String outputCell = "<example.Manager: java.util.Map allKeys>";

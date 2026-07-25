@@ -1741,6 +1741,38 @@ key expression join；没有降低 container 语义门槛。
 `target/robustness-matrix-logs/20260725T150913Z.3893832`。矩阵只读取提交后的 clean
 worktree，没有读取或覆盖主工作树中的用户 fixture 修改。
 
+下一批继续执行“不过度校验、不过度设计，但不删除不可重建的 correctness evidence”：
+
+- 删除 Runtime Planner 的 mapping-only producer 扩展和旧 accessor-return discovery
+  recovery；新版本只接受 canonical static graph 与真实 `FIELD_READ`。
+- `EngineArrayInputBinding` 一次性切到 schema V2。row 只保留 activation、input
+  port/cell、descriptor、VM array id、activation-local object token 和 finite-array
+  expression；十个固定 authority/`true`/同值别名不再跨层传递。Runtime 仍在唯一能访问
+  live Java array 的位置检查同一对象、reflection length、连续 element、provenance/type
+  以及 concrete primitive literal 的逐元素相等；Importer 保留唯一 input/action/VM-id
+  join，Composer 不再第三次重复整份证明。
+- 静态 field declaration 只保留 `declaredFieldSignature`。owner/type/name 只在
+  static-to-scheduled execution boundary 严格解析一次，供 runtime object/field hook
+  使用，不写回静态 artifact。真实 container gate 暴露过一次遗漏：signature 已在
+  static row 中，但 scheduled container declaration 未派生 execution tuple，造成
+  `0 complete runtime bindings`。修复只补这一派生，不恢复旧静态 tuple 或 fallback；
+  `unreachable-parity` 随后再次完整 CLOSED、merge/compose `gaps=[]`、Z3 `UNSAT`。
+- Replay admission 以 canonical `modelAssignmentKey` 和唯一 `dynamicBindingId` 连接
+  plan/applied/raw/imported row；fresh Map.Entry 的当前 key/observation 和 container 的
+  activation-local token/scope/selector 仍必须逐项存在，不能从 seed identity 推导。
+- Solver 删除宽松的私有 S-expression tree，复用严格 SMT application splitter；任何
+  unsupported 语义都产生 typed gap 和 `(assert false)`，不再发明 diagnostic free
+  constant/UF。Boolean root report 删除无生产消费者的 javaType/sort/case projection
+  镜像，但保留 descriptor、solver term、String nullness term、完整 valuations 与
+  reach condition。
+
+该候选里程碑手写生产 Java 为 70,606 行，相对 81,581 行冻结基线累计净减 10,975 行，
+本批净减 1,608 行。63 项快速回归、PMD report、shell 语法和 `git diff --check` 已通过。
+主工作树矩阵中的 12 个未改 fixture 保持预期；用户正在编辑的 container fixture 的两个
+producer 也都 CLOSED 且 merge/compose `gaps=[]`，但其修改后语义为 `UNSAT`，因此不拿旧
+SAT profile 断言评价该文件。权威 6 SAT/7 UNSAT release gate 仍必须在不含该用户修改的
+clean commit worktree 上通过后，才记录本批为已完成。
+
 ### 明确不能删除
 
 必须保留：

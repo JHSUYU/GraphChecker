@@ -47,19 +47,9 @@ public final class CausynthTraceRecorder {
     private static final List<FieldEvent> FIELD_EVENTS = new ArrayList<>();
     private static final List<ExecutionEvent> EXECUTION_EVENTS = new ArrayList<>();
     private static final ThreadLocal<Deque<ActiveCall>> ACTIVE_CALLS =
-            new ThreadLocal<Deque<ActiveCall>>() {
-                @Override
-                protected Deque<ActiveCall> initialValue() {
-                    return new ArrayDeque<>();
-                }
-            };
+            ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
-            new ThreadLocal<Deque<ActiveCallSite>>() {
-                @Override
-                protected Deque<ActiveCallSite> initialValue() {
-                    return new ArrayDeque<>();
-                }
-            };
+            ThreadLocal.withInitial(ArrayDeque::new);
     private static final int DEFAULT_MAX_EVENTS = 200000;
     /**
      * A plain concolic replay uses the rich-trace call stacks only as exact
@@ -187,7 +177,7 @@ public final class CausynthTraceRecorder {
         long parentSiteId = parentSite == null ? 0L : parentSite.invocationId;
         TraceEvent event = new TraceEvent(id, process, threadName, tid,
                 method, objectId, id, parentCallId, parentSiteId,
-                method + "#entry", runtimeType(receiver));
+                runtimeType(receiver));
         calls.push(new ActiveCall(id, parentSiteId, method));
         if (contextOnlyConcolicReplay) {
             return id;
@@ -382,8 +372,7 @@ public final class CausynthTraceRecorder {
                 valueObjectId, primitiveValue,
                 activeCall == null ? 0L : activeCall.callId,
                 siteId(method, unitIndex), fingerprint.digest,
-                fingerprint.complete, fingerprint.nodes,
-                fingerprint.reason);
+                fingerprint.complete);
         synchronized (LOCK) {
             if (retainRecordedEventsInMemory) {
                 FIELD_EVENTS.add(event);
@@ -781,7 +770,6 @@ public final class CausynthTraceRecorder {
                             longInteger(row, "callId", seq),
                             longInteger(row, "parentCallId", 0L),
                             longInteger(row, "parentSiteId", 0L),
-                            string(row, "siteId"),
                             string(row, "receiverType")));
                 } else if ("FIELD_READ".equals(eventKind)
                         || "FIELD_WRITE".equals(eventKind)) {
@@ -798,9 +786,7 @@ public final class CausynthTraceRecorder {
                             longInteger(row, "callId", 0L),
                             string(row, "siteId"),
                             string(row, "valueFingerprint"),
-                            bool(row, "valueFingerprintComplete", false),
-                            integer(row, "valueFingerprintNodes", 0),
-                            string(row, "valueFingerprintReason")));
+                            bool(row, "valueFingerprintComplete", false)));
                 } else if (isExecutionEventKind(eventKind)) {
                     addExecutionEvent(ExecutionEvent.fromJson(row, eventKind));
                 }
@@ -877,8 +863,7 @@ public final class CausynthTraceRecorder {
                     "receiverType", event.receiverType,
                     "callId", event.callId,
                     "parentCallId", event.parentCallId,
-                    "parentSiteId", event.parentSiteId,
-                    "siteId", event.siteId));
+                    "parentSiteId", event.parentSiteId));
             traceWriter.newLine();
         } catch (IOException ignored) {
             traceWriteFailure = true;
@@ -903,9 +888,8 @@ public final class CausynthTraceRecorder {
                     "valueObjectId", event.valueObjectId,
                     "primitiveValue", event.primitiveValue,
                     "valueFingerprint", event.valueFingerprint,
-                    "valueFingerprintComplete", event.valueFingerprintComplete,
-                    "valueFingerprintNodes", event.valueFingerprintNodes,
-                    "valueFingerprintReason", event.valueFingerprintReason));
+                    "valueFingerprintComplete",
+                    event.valueFingerprintComplete));
             traceWriter.newLine();
         } catch (IOException ignored) {
             traceWriteFailure = true;
@@ -932,9 +916,8 @@ public final class CausynthTraceRecorder {
                     "objectId", event.objectId,
                     "primitiveValue", event.primitiveValue,
                     "valueFingerprint", event.valueFingerprint,
-                    "valueFingerprintComplete", event.valueFingerprintComplete,
-                    "valueFingerprintNodes", event.valueFingerprintNodes,
-                    "valueFingerprintReason", event.valueFingerprintReason,
+                    "valueFingerprintComplete",
+                    event.valueFingerprintComplete,
                     "outcome", event.hasOutcome ? event.outcome : null,
                     "branchKind", event.branchKind,
                     "switchCaseKeys", event.switchCaseKeys,
@@ -1069,8 +1052,6 @@ public final class CausynthTraceRecorder {
                     event.primitiveValue, event.hasOutcome, event.outcome,
                     event.valueFingerprint,
                     event.valueFingerprintComplete,
-                    event.valueFingerprintNodes,
-                    event.valueFingerprintReason,
                     event.hasSuccessorIndex, event.successorIndex,
                     event.branchKind, event.switchCaseKeys));
         }
@@ -1081,9 +1062,7 @@ public final class CausynthTraceRecorder {
                     event.unitIndex, event.siteId, event.field,
                     event.receiverObjectId, event.valueObjectId,
                     event.primitiveValue, event.valueFingerprint,
-                    event.valueFingerprintComplete,
-                    event.valueFingerprintNodes,
-                    event.valueFingerprintReason));
+                    event.valueFingerprintComplete));
         }
 
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
@@ -1152,13 +1131,12 @@ public final class CausynthTraceRecorder {
         private final long callId;
         private final long parentCallId;
         private final long parentSiteId;
-        private final String siteId;
         private final String receiverType;
 
         private TraceEvent(long id, String process, String threadName,
                            long tid, String method, int objectId,
                            long callId, long parentCallId, long parentSiteId,
-            String siteId, String receiverType) {
+                           String receiverType) {
             this.id = id;
             this.process = process;
             this.threadName = threadName;
@@ -1168,7 +1146,6 @@ public final class CausynthTraceRecorder {
             this.callId = callId;
             this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
-            this.siteId = safe(siteId);
             this.receiverType = safe(receiverType);
         }
     }
@@ -1188,8 +1165,6 @@ public final class CausynthTraceRecorder {
         private String primitiveValue = "";
         private String valueFingerprint = "";
         private boolean valueFingerprintComplete;
-        private int valueFingerprintNodes;
-        private String valueFingerprintReason = "";
         private boolean outcome;
         private boolean hasOutcome;
         private String branchKind = "";
@@ -1215,10 +1190,6 @@ public final class CausynthTraceRecorder {
             event.valueFingerprint = string(row, "valueFingerprint");
             event.valueFingerprintComplete = bool(row,
                     "valueFingerprintComplete", false);
-            event.valueFingerprintNodes = integer(row,
-                    "valueFingerprintNodes", 0);
-            event.valueFingerprintReason = string(row,
-                    "valueFingerprintReason");
             event.hasOutcome = row.has("outcome");
             event.outcome = bool(row, "outcome", false);
             event.branchKind = string(row, "branchKind");
@@ -1235,8 +1206,6 @@ public final class CausynthTraceRecorder {
                     : ValueFingerprint.disabled();
             valueFingerprint = fingerprint.digest;
             valueFingerprintComplete = fingerprint.complete;
-            valueFingerprintNodes = fingerprint.nodes;
-            valueFingerprintReason = fingerprint.reason;
         }
     }
 
@@ -1281,8 +1250,6 @@ public final class CausynthTraceRecorder {
         private final String primitiveValue;
         private final String valueFingerprint;
         private final boolean valueFingerprintComplete;
-        private final int valueFingerprintNodes;
-        private final String valueFingerprintReason;
         private final long callId;
         private final String siteId;
 
@@ -1292,9 +1259,7 @@ public final class CausynthTraceRecorder {
                            int valueObjectId, String primitiveValue,
                            long callId, String siteId,
                            String valueFingerprint,
-                           boolean valueFingerprintComplete,
-                           int valueFingerprintNodes,
-                           String valueFingerprintReason) {
+                           boolean valueFingerprintComplete) {
             this.id = id;
             this.method = method;
             this.unitIndex = unitIndex;
@@ -1305,8 +1270,6 @@ public final class CausynthTraceRecorder {
             this.primitiveValue = primitiveValue == null ? "" : primitiveValue;
             this.valueFingerprint = safe(valueFingerprint);
             this.valueFingerprintComplete = valueFingerprintComplete;
-            this.valueFingerprintNodes = valueFingerprintNodes;
-            this.valueFingerprintReason = safe(valueFingerprintReason);
             this.callId = callId;
             this.siteId = safe(siteId);
         }
@@ -1341,20 +1304,14 @@ public final class CausynthTraceRecorder {
 
         private final String digest;
         private final boolean complete;
-        private final int nodes;
-        private final String reason;
 
-        private ValueFingerprint(String digest, boolean complete, int nodes,
-                                 String reason) {
+        private ValueFingerprint(String digest, boolean complete) {
             this.digest = safe(digest);
             this.complete = complete;
-            this.nodes = nodes;
-            this.reason = safe(reason);
         }
 
         private static ValueFingerprint disabled() {
-            return new ValueFingerprint("", false, 0,
-                    "DISABLED_FOR_CONTEXT_ONLY_CONCOLIC_REPLAY");
+            return new ValueFingerprint("", false);
         }
 
         private static ValueFingerprint capture(Object value,
@@ -1368,9 +1325,7 @@ public final class CausynthTraceRecorder {
                 // access failure) must never escape into the instrumented
                 // execution. Incomplete fingerprints are already
                 // ineligible for automatic endpoint equality.
-                String type = failure.getClass().getName();
-                return new ValueFingerprint("", false, 0,
-                        "CAPTURE_FAILURE:" + type);
+                return new ValueFingerprint("", false);
             }
         }
 
@@ -1386,18 +1341,18 @@ public final class CausynthTraceRecorder {
                 appendValue(value, canonical, state, 0);
             }
             return new ValueFingerprint(sha256(canonical.toString()),
-                    state.complete, state.nodes, state.reason);
+                    state.complete);
         }
 
         private static void appendValue(Object value, StringBuilder out,
                                         FingerprintState state, int depth) {
             if (!state.complete) return;
             if (depth > MAX_DEPTH) {
-                state.fail("MAX_DEPTH");
+                state.fail();
                 return;
             }
             if (++state.nodes > state.nodeBudget) {
-                state.fail("MAX_NODES");
+                state.fail();
                 return;
             }
             if (value == null) {
@@ -1427,7 +1382,7 @@ public final class CausynthTraceRecorder {
                     appendValue(Array.get(value, index), out, state,
                             depth + 1);
                 }
-                if (length > limit) state.fail("MAX_ARRAY_ELEMENTS");
+                if (length > limit) state.fail();
                 return;
             }
             if (value instanceof Map<?, ?>) {
@@ -1437,7 +1392,7 @@ public final class CausynthTraceRecorder {
                 int count = 0;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (count++ >= MAX_COLLECTION_ELEMENTS) {
-                        state.fail("MAX_MAP_ENTRIES");
+                        state.fail();
                         break;
                     }
                     if (!state.takeElement()) break;
@@ -1448,14 +1403,14 @@ public final class CausynthTraceRecorder {
                     appendToken(item, entryState, "VALUE", "");
                     appendValue(entry.getValue(), item, entryState, depth + 1);
                     if (!entryState.complete) {
-                        state.fail(entryState.reason);
+                        state.fail();
                         break;
                     }
                     state.nodes += entryState.nodes;
                     state.elements += entryState.elements;
                     state.fields += entryState.fields;
                     if (state.nodes > state.nodeBudget) {
-                        state.fail("MAX_NODES");
+                        state.fail();
                         break;
                     }
                     entries.add(item.toString());
@@ -1474,7 +1429,7 @@ public final class CausynthTraceRecorder {
                 int index = 0;
                 for (Object item : collection) {
                     if (index >= MAX_COLLECTION_ELEMENTS) {
-                        state.fail("MAX_COLLECTION_ELEMENTS");
+                        state.fail();
                         break;
                     }
                     if (!state.takeElement()) break;
@@ -1488,7 +1443,7 @@ public final class CausynthTraceRecorder {
                     || type.getName().startsWith("java.lang.reflect.")) {
                 appendToken(out, state, "OPAQUE_ID", type.getName() + ":"
                         + System.identityHashCode(value));
-                state.fail("UNSUPPORTED_RUNTIME_OBJECT:" + type.getName());
+                state.fail();
                 return;
             }
             /*
@@ -1501,13 +1456,13 @@ public final class CausynthTraceRecorder {
             if (isOpaquePlatformObject(type)) {
                 appendToken(out, state, "OPAQUE_ID", type.getName() + ":"
                         + System.identityHashCode(value));
-                state.fail("OPAQUE_PLATFORM_OBJECT:" + type.getName());
+                state.fail();
                 return;
             }
             appendToken(out, state, "OBJECT", type.getName());
             List<Field> fields = instanceFields(type);
             if (fields.size() > MAX_FIELDS_PER_OBJECT) {
-                state.fail("MAX_OBJECT_FIELDS");
+                state.fail();
                 return;
             }
             for (Field field : fields) {
@@ -1518,9 +1473,7 @@ public final class CausynthTraceRecorder {
                             .getName() + "#" + field.getName());
                     appendValue(field.get(value), out, state, depth + 1);
                 } catch (Throwable failure) {
-                    state.fail("INACCESSIBLE_FIELD:"
-                            + field.getDeclaringClass().getName() + "#"
-                            + field.getName());
+                    state.fail();
                     return;
                 }
             }
@@ -1568,7 +1521,7 @@ public final class CausynthTraceRecorder {
             int remaining = state.byteBudget - state.bytes;
             int typeBytes = utf8LengthCapped(safeType, remaining);
             if (typeBytes > remaining) {
-                state.fail("MAX_CANONICAL_BYTES");
+                state.fail();
                 return;
             }
             remaining -= typeBytes;
@@ -1578,7 +1531,7 @@ public final class CausynthTraceRecorder {
             long tokenBytes = (long) headerBytes + typeBytes + valueBytes;
             if (valueBytes > remaining
                     || tokenBytes > state.byteBudget - state.bytes) {
-                state.fail("MAX_CANONICAL_BYTES");
+                state.fail();
                 return;
             }
             out.append(safeType.length()).append(':').append(safeType)
@@ -1654,7 +1607,6 @@ public final class CausynthTraceRecorder {
         private int elements;
         private int fields;
         private int bytes;
-        private String reason = "COMPLETE";
 
         private FingerprintState() {
             this(ValueFingerprint.MAX_TEXT_BYTES,
@@ -1687,7 +1639,7 @@ public final class CausynthTraceRecorder {
 
         private boolean takeElement() {
             if (++elements > elementBudget) {
-                fail("MAX_TOTAL_ELEMENTS");
+                fail();
                 return false;
             }
             return true;
@@ -1695,16 +1647,14 @@ public final class CausynthTraceRecorder {
 
         private boolean takeField() {
             if (++fields > fieldBudget) {
-                fail("MAX_TOTAL_FIELDS");
+                fail();
                 return false;
             }
             return true;
         }
 
-        private void fail(String why) {
-            if (!complete) return;
+        private void fail() {
             complete = false;
-            reason = firstNonBlank(why, "INCOMPLETE");
         }
     }
 

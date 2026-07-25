@@ -69,19 +69,6 @@ final class ConcolicInstrumentationSelections {
     }
 
     /**
-     * Returns whether one exact scheduler-selected activation carries all of
-     * the evidence needed to analyze only its bounded requested-output
-     * closure. Discovery plans and branch-target plans continue to require
-     * global symbolic-region coverage.
-     */
-    static boolean selectedBoundedOutputClosureCoverageReady(
-            Path activationPlan, String selectedActivation)
-            throws IOException {
-        return InstrumentationPlan.from(activationPlan,
-                selectedActivation).boundedOutputClosureCoverageReady();
-    }
-
-    /**
      * One immutable view of the scheduler-selected activation rows. The
      * instrumentation pipeline builds this once and derives every selection
      * from it instead of reparsing the JSONL for each hook family.

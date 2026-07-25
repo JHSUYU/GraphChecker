@@ -2634,17 +2634,9 @@ final class SeedBackwardStaticAnalyzer {
             return;
         }
         edge.put("declaredFieldSignature", field.getSignature());
-        edge.put("declaredFieldOwner",
-                field.getDeclaringClass().getName());
-        edge.put("declaredFieldType", field.getType().toString());
-        edge.put("declaredFieldName", field.getName());
-        edge.put("declaredFieldAuthority",
-                "SOOT_RESOLVED_DECLARATION_HIERARCHY");
         if (accessor != null) {
             edge.put("accessorImplementationMethod",
                     accessor.getSignature());
-            edge.put("accessorImplementationAuthority",
-                    "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
         }
     }
 
@@ -2673,12 +2665,6 @@ final class SeedBackwardStaticAnalyzer {
             return;
         }
         edge.put("declaredFieldSignature", field.getSignature());
-        edge.put("declaredFieldOwner",
-                field.getDeclaringClass().getName());
-        edge.put("declaredFieldType", field.getType().toString());
-        edge.put("declaredFieldName", field.getName());
-        edge.put("declaredFieldAuthority",
-                "SOOT_RESOLVED_DECLARATION_HIERARCHY");
     }
 
     /**
@@ -4402,7 +4388,6 @@ final class SeedBackwardStaticAnalyzer {
                         ""));
             }
             if (fact != null) {
-                edge.put("line", fact.line);
                 edge.put("unitIndex", fact.unitIndex);
                 edge.put("unit", fact.unitText);
                 if (fact.invoke != null) {

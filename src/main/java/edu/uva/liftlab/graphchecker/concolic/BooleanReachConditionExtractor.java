@@ -63,10 +63,9 @@ public final class BooleanReachConditionExtractor {
                 relationshipsPath, manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis);
-        Extraction extraction = extract(smt, manifest, regions,
+        JsonObject report = extract(smt, manifest, regions,
                 relationships, solver,
                 arguments.maxInputs, arguments.maxValuations);
-        JsonObject report = extraction.report;
         report.add("compositionManifestArtifact",
                 artifact(arguments.manifest));
         report.add("solverArtifact", solver.artifact());
@@ -78,7 +77,7 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    static Extraction extract(String composedSmt, JsonObject manifest,
+    static JsonObject extract(String composedSmt, JsonObject manifest,
                               List<JsonObject> regions,
                               JsonObject relationships, Solver solver,
                               int maxInputs, int maxValuations)
@@ -143,7 +142,6 @@ public final class BooleanReachConditionExtractor {
             valuationRows.add(row);
         }
 
-        Dnf dnf = Dnf.from(inputs, valuations);
         report.add("valuations", valuationRows);
 
         // Every Boolean assignment was queried above; the DNF is built from
@@ -153,7 +151,8 @@ public final class BooleanReachConditionExtractor {
         String reachability = !complete
                 ? "UNKNOWN" : satisfying > 0
                 ? "REACHABLE" : "UNREACHABLE";
-        JsonObject reachCondition = dnf.toJson();
+        JsonObject reachCondition = new JsonObject();
+        reachCondition.addProperty("formula", dnf(inputs, valuations));
         reachCondition.addProperty("reachability", reachability);
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
@@ -164,7 +163,7 @@ public final class BooleanReachConditionExtractor {
         report.add("gaps", resultGaps);
         report.addProperty("state", complete
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
-        return new Extraction(report);
+        return report;
     }
 
     private static void validateCompositionAuthority(
@@ -230,15 +229,11 @@ public final class BooleanReachConditionExtractor {
                             + port);
                     continue;
                 }
-                List<JsonObject> values = mappingsByPort.get(port);
-                if (values == null) {
-                    values = new ArrayList<>();
-                    mappingsByPort.put(port, values);
-                }
                 JsonObject evidence = mapping.deepCopy();
                 evidence.addProperty("caseId", caseId);
                 evidence.addProperty("selectorTerm", selector);
-                values.add(evidence);
+                mappingsByPort.computeIfAbsent(port,
+                        ignored -> new ArrayList<>()).add(evidence);
             }
         }
 
@@ -309,7 +304,7 @@ public final class BooleanReachConditionExtractor {
             }
             if (port.javaBoolean) {
                 BooleanInput input = new BooleanInput(port, solverTerm,
-                        encoding.solverSort, evidence);
+                        encoding.solverSort);
                 domainInputs.add(input);
                 if (upstreamSupplied.contains(port.id)) {
                     continue;
@@ -319,7 +314,7 @@ public final class BooleanReachConditionExtractor {
                 continue;
             } else {
                 scalarRoots.add(new ScalarInput(port, solverTerm,
-                        nullnessSolverTerm, encoding, evidence));
+                        nullnessSolverTerm, encoding));
             }
         }
         Collections.sort(roots, Comparator.comparing(value -> value.port.id));
@@ -507,28 +502,7 @@ public final class BooleanReachConditionExtractor {
         return result;
     }
 
-    private static JsonArray caseProjectionEvidence(
-            List<JsonObject> evidenceRows) {
-        JsonArray cases = new JsonArray();
-        Set<String> seen = new LinkedHashSet<>();
-        for (JsonObject evidence : evidenceRows) {
-            String key = string(evidence, "caseId");
-            if (!seen.add(key)) continue;
-            JsonObject row = new JsonObject();
-            row.addProperty("caseId", string(evidence, "caseId"));
-            row.addProperty("selectorTerm", string(evidence,
-                    "selectorTerm"));
-            for (String member : new String[]{"term", "nullnessTerm",
-                    "bridgeAssertionName"}) {
-                JsonElement value = evidence.get(member);
-                if (value != null) row.add(member, value.deepCopy());
-            }
-            cases.add(row);
-        }
-        return cases;
-    }
-
-    private static Extraction incomplete(JsonObject report,
+    private static JsonObject incomplete(JsonObject report,
                                          List<String> gaps) {
         report.add("valuations", new JsonArray());
         JsonObject reachCondition = new JsonObject();
@@ -537,7 +511,7 @@ public final class BooleanReachConditionExtractor {
         report.add("reachCondition", reachCondition);
         report.add("gaps", GSON.toJsonTree(gaps));
         report.addProperty("state", "CANDIDATE_WITH_GAPS");
-        return new Extraction(report);
+        return report;
     }
 
     interface Solver {
@@ -558,7 +532,6 @@ public final class BooleanReachConditionExtractor {
     static final class Z3Solver implements Solver {
         private final Path executable;
         private final long timeoutMillis;
-        private final String version;
         private final JsonObject artifact;
 
         Z3Solver(String executable, long timeoutMillis)
@@ -566,10 +539,9 @@ public final class BooleanReachConditionExtractor {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
             this.executable = resolveExecutable(firstNonBlank(executable,
                     "z3"));
-            this.version = validateVersion(this.executable,
-                    this.timeoutMillis);
             this.artifact = ArtifactIO.artifact(this.executable);
-            this.artifact.addProperty("version", version);
+            this.artifact.addProperty("version", validateVersion(
+                    this.executable, this.timeoutMillis));
         }
 
         JsonObject artifact() {
@@ -685,21 +657,12 @@ public final class BooleanReachConditionExtractor {
     }
 
     static String solverStatus(String output) {
-        for (String line : firstNonBlank(output).split("\\r?\\n")) {
-            String value = line.trim();
-            if (value.isEmpty()) continue;
-            return "sat".equals(value) || "unsat".equals(value)
-                    || "unknown".equals(value) ? value : "unknown";
-        }
-        return "unknown";
-    }
-
-    static final class Extraction {
-        final JsonObject report;
-
-        Extraction(JsonObject report) {
-            this.report = report;
-        }
+        String normalized = firstNonBlank(output);
+        int newline = normalized.indexOf('\n');
+        String value = (newline < 0
+                ? normalized : normalized.substring(0, newline)).trim();
+        return "sat".equals(value) || "unsat".equals(value)
+                || "unknown".equals(value) ? value : "unknown";
     }
 
     private static final class Discovery {
@@ -721,17 +684,12 @@ public final class BooleanReachConditionExtractor {
         private final PortInfo port;
         private final String solverTerm;
         private final String solverSort;
-        private final List<JsonObject> caseEvidence;
 
         private BooleanInput(PortInfo port, String solverTerm,
-                             String solverSort,
-                             List<JsonObject> caseEvidence) {
+                             String solverSort) {
             this.port = port;
             this.solverTerm = solverTerm;
             this.solverSort = solverSort;
-            this.caseEvidence = caseEvidence == null
-                    ? Collections.<JsonObject>emptyList()
-                    : new ArrayList<>(caseEvidence);
         }
 
         private String literal(boolean value) {
@@ -752,12 +710,8 @@ public final class BooleanReachConditionExtractor {
             result.addProperty("portId", port.id);
             result.addProperty("regionId", port.regionId);
             result.addProperty("cell", port.cell);
-            result.addProperty("javaType", port.javaType);
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
-            result.addProperty("solverSort", solverSort);
-            result.add("caseProjectionEvidence",
-                    caseProjectionEvidence(caseEvidence));
             return result;
         }
     }
@@ -767,19 +721,14 @@ public final class BooleanReachConditionExtractor {
         private final String solverTerm;
         private final String nullnessSolverTerm;
         private final ScalarEncoding encoding;
-        private final List<JsonObject> caseEvidence;
 
         private ScalarInput(PortInfo port, String solverTerm,
                             String nullnessSolverTerm,
-                            ScalarEncoding encoding,
-                            List<JsonObject> caseEvidence) {
+                            ScalarEncoding encoding) {
             this.port = port;
             this.solverTerm = solverTerm;
             this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
             this.encoding = encoding;
-            this.caseEvidence = caseEvidence == null
-                    ? Collections.<JsonObject>emptyList()
-                    : new ArrayList<>(caseEvidence);
         }
 
         private JsonObject toJson() {
@@ -787,17 +736,12 @@ public final class BooleanReachConditionExtractor {
             result.addProperty("portId", port.id);
             result.addProperty("regionId", port.regionId);
             result.addProperty("cell", port.cell);
-            result.addProperty("javaType", port.javaType);
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
-            result.addProperty("solverSort", encoding.solverSort);
             if (encoding == ScalarEncoding.STRING) {
                 result.addProperty("nullnessSolverTerm",
                         nullnessSolverTerm);
-                result.addProperty("nullnessSolverSort", "Bool");
             }
-            result.add("caseProjectionEvidence",
-                    caseProjectionEvidence(caseEvidence));
             return result;
         }
     }
@@ -868,43 +812,21 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static final class Dnf {
-        private final String formula;
-
-        private Dnf(String formula) {
-            this.formula = formula;
-        }
-
-        private static Dnf from(List<BooleanInput> inputs,
-                                List<Valuation> valuations) {
-            List<String> terms = new ArrayList<>();
-            for (Valuation valuation : valuations) {
-                if (!"sat".equals(valuation.status)) continue;
-                List<String> literals = new ArrayList<>();
-                for (int index = 0; index < inputs.size(); index++) {
-                    String literal = inputs.get(index).literal(
-                            valuation.values[index]);
-                    literals.add(literal);
-                }
-                String conjunction = join("and", literals, "true");
-                terms.add(conjunction);
+    private static String dnf(List<BooleanInput> inputs,
+                              List<Valuation> valuations) {
+        List<String> terms = new ArrayList<>();
+        for (Valuation valuation : valuations) {
+            if (!"sat".equals(valuation.status)) continue;
+            List<String> literals = new ArrayList<>();
+            for (int index = 0; index < inputs.size(); index++) {
+                literals.add(inputs.get(index).literal(
+                        valuation.values[index]));
             }
-            String formula;
-            if (terms.isEmpty()) {
-                formula = "false";
-            } else if (terms.size() == valuations.size()) {
-                formula = "true";
-            } else {
-                formula = join("or", terms, "false");
-            }
-            return new Dnf(formula);
+            terms.add(join("and", literals, "true"));
         }
-
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("formula", formula);
-            return result;
-        }
+        if (terms.isEmpty()) return "false";
+        return terms.size() == valuations.size()
+                ? "true" : join("or", terms, "false");
     }
 
     private static String join(String operator, List<String> terms,
@@ -947,8 +869,7 @@ public final class BooleanReachConditionExtractor {
             }
             String cell = string(row, "cell");
             String javaType = string(row, "javaType");
-            PortInfo value = new PortInfo(id, regionId, cell, javaType,
-                    input);
+            PortInfo value = new PortInfo(id, regionId, cell, javaType);
             Map<String, PortInfo> own = input ? inputs : outputs;
             Map<String, PortInfo> other = input ? outputs : inputs;
             PortInfo previous = own.put(id, value);
@@ -979,19 +900,15 @@ public final class BooleanReachConditionExtractor {
         private final String id;
         private final String regionId;
         private final String cell;
-        private final String javaType;
         private final String descriptor;
-        private final boolean input;
         private final boolean javaBoolean;
 
         private PortInfo(String id, String regionId, String cell,
-                         String javaType, boolean input) {
+                         String javaType) {
             this.id = firstNonBlank(id);
             this.regionId = firstNonBlank(regionId);
             this.cell = firstNonBlank(cell);
-            this.javaType = firstNonBlank(javaType);
             this.descriptor = javaTypeDescriptor(javaType);
-            this.input = input;
             this.javaBoolean = "Z".equals(descriptor)
                     || "Ljava/lang/Boolean;".equals(descriptor);
         }
@@ -1000,8 +917,7 @@ public final class BooleanReachConditionExtractor {
             return other != null && id.equals(other.id)
                     && regionId.equals(other.regionId)
                     && cell.equals(other.cell)
-                    && descriptor.equals(other.descriptor)
-                    && input == other.input;
+                    && descriptor.equals(other.descriptor);
         }
     }
 

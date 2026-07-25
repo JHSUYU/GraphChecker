@@ -665,8 +665,6 @@ final class SymbolicRegionPlanner {
             Map<String, List<Map<String, Object>>>
                     demandedSharedConsumers = new LinkedHashMap<>();
             for (Map<String, Object> region : regions) {
-                Set<String> mandatory = new LinkedHashSet<>(strings(
-                        region.get("mandatorySeedGuardInputs")));
                 Object symbolicInputs = region.get("symbolicInputs");
                 if (!(symbolicInputs instanceof Collection<?>)) {
                     continue;
@@ -680,12 +678,12 @@ final class SymbolicRegionPlanner {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> input =
                             (Map<String, Object>) value;
-                    String cell = string(input.get("cell"));
                     String port = string(input.get("portId"));
                     if (!port.isEmpty()) {
                         inputsByPort.put(port, input);
                     }
-                    if (mandatory.contains(cell)) {
+                    if (string(input.get("selectionAuthority")).startsWith(
+                            "SEED_GUARD_AUTHORITATIVE_LIVE_IN_FRONTIER_")) {
                         addDemandedSharedConsumer(demandedSharedConsumers,
                                 region, input);
                     }
@@ -1339,7 +1337,6 @@ final class SymbolicRegionPlanner {
             methods.add(0, draft.rootMethod);
 
             Set<String> sites = new LinkedHashSet<>();
-            Set<String> states = new LinkedHashSet<>();
             Set<String> produced = new LinkedHashSet<>();
             Set<String> inputCandidates = new LinkedHashSet<>();
             Set<String> outputCandidates = new LinkedHashSet<>();
@@ -1355,16 +1352,6 @@ final class SymbolicRegionPlanner {
                 inputCandidates.addAll(inputs);
                 outputCandidates.addAll(outputs);
                 produced.addAll(outputs);
-                for (String input : inputs) {
-                    if (!draft.exceptionDirected || causalCandidate(input, draft)) {
-                        states.add(input);
-                    }
-                }
-                for (String output : outputs) {
-                    if (!draft.exceptionDirected || causalCandidate(output, draft)) {
-                        states.add(output);
-                    }
-                }
                 if (!draft.exceptionDirected) {
                     sites.addAll(facts.siteIds);
                 }
@@ -1441,7 +1428,6 @@ final class SymbolicRegionPlanner {
                         "selectionReason", inputSelection.selectionReasons.get(input),
                         "projection", projection(input));
                 if (inputSelection.mandatorySeedGuardInputs.contains(input)) {
-                    port.put("mandatory", true);
                     port.put("selectionAuthority",
                             "SEED_GUARD_AUTHORITATIVE_LIVE_IN_"
                                     + "FRONTIER_V2");
@@ -1474,7 +1460,6 @@ final class SymbolicRegionPlanner {
                         "javaType", cellJavaType(output),
                         "kind", outputKind(output, draft.anchorMethod));
                 if (prioritySeedOutputs.contains(output)) {
-                    port.put("mandatory", true);
                     port.put("selectionAuthority",
                             "DIRECT_STATIC_SEED_INTERFACE_V1");
                 }
@@ -1491,10 +1476,7 @@ final class SymbolicRegionPlanner {
                     "rootMethod", draft.rootMethod,
                     "anchorMethod", draft.anchorMethod,
                     "methods", methods,
-                    "relevantStates", limitedSorted(states, MAX_PORTS),
                     "symbolicInputs", inputPorts,
-                    "mandatorySeedGuardInputs", sorted(
-                            inputSelection.mandatorySeedGuardInputs),
                     "unresolvedInputs", limitedSorted(
                             inputSelection.unresolvedInputs, MAX_PORTS),
                     "inputSelectionComplete",
@@ -1677,8 +1659,8 @@ final class SymbolicRegionPlanner {
                         Map<String, Object> existing = inputPort(
                                 resolution.portId, inputPorts);
                         if (existing != null
-                                && string(existing.get(
-                                "fieldPathAuthority")).isEmpty()
+                                && strings(existing.get(
+                                "fieldPath")).size() <= 1
                                 && materializableDeclaredFieldPathAccess(
                                 input, slice) != null) {
                             addOutputSliceFrontierMaterializationMetadata(
@@ -2481,10 +2463,6 @@ final class SymbolicRegionPlanner {
                         "fieldPath", candidate.fieldPath,
                         "declaredFieldSignature",
                         candidate.elementField.signature,
-                        "declaredFieldOwnerClass",
-                        candidate.elementField.owner,
-                        "declaredFieldType", candidate.elementField.type,
-                        "declaredFieldName", candidate.elementField.name,
                         "materializationMode",
                         candidate.materializeFromContainerSnapshot
                                 ? "CONTAINER_SNAPSHOT"
@@ -2723,15 +2701,7 @@ final class SymbolicRegionPlanner {
                 Map<String, Object> edge, DeclaredFieldIdentity field) {
             return field != null
                     && field.signature.equals(string(edge.get(
-                    "declaredFieldSignature")))
-                    && field.owner.equals(string(edge.get(
-                    "declaredFieldOwner")))
-                    && field.type.equals(string(edge.get(
-                    "declaredFieldType")))
-                    && field.name.equals(string(edge.get(
-                    "declaredFieldName")))
-                    && "SOOT_RESOLVED_DECLARATION_HIERARCHY".equals(
-                    string(edge.get("declaredFieldAuthority")));
+                    "declaredFieldSignature")));
         }
 
         /**
@@ -3070,9 +3040,6 @@ final class SymbolicRegionPlanner {
             port.put("bindingMode", "FIELD_ACCESS");
             port.put("javaType", access.field.type);
             port.put("accessFieldSignature", access.field.signature);
-            port.put("accessOwnerClass", access.field.owner);
-            port.put("accessFieldType", access.field.type);
-            port.put("accessField", access.field.name);
             if (access.accessorCall) {
                 admitPostSelectionSliceMethod(slice,
                         access.accessorImplementationMethod);
@@ -3082,23 +3049,14 @@ final class SymbolicRegionPlanner {
                 port.put("accessorDeclaredCallee", access.invokedMethod);
                 port.put("accessorImplementationMethod",
                         access.accessorImplementationMethod);
-                port.put("accessorImplementationAuthority",
-                        "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
-                port.put("accessorCallSiteAuthority",
-                        "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                                + "ACCESSOR_CALLSITE_V1");
             } else {
                 port.put("accessMethod", access.method);
                 port.put("accessSiteId", access.siteId);
                 port.put("accessUnitIndex", access.unitIndex);
-                port.put("accessSiteAuthority",
-                        "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
             }
             port.put("fieldPath", Collections.singletonList(
                     access.field.name));
             port.put("leafFieldSignature", access.field.signature);
-            port.put("leafOwnerClass", access.field.owner);
-            port.put("leafField", access.field.name);
         }
 
         private void addDeclaredFieldPathMaterializationMetadata(
@@ -3107,22 +3065,12 @@ final class SymbolicRegionPlanner {
             port.put("bindingMode", "FIELD_ACCESS");
             port.put("javaType", access.leafField.type);
             port.put("accessFieldSignature", access.rootField.signature);
-            port.put("accessOwnerClass", access.rootField.owner);
-            port.put("accessFieldType", access.rootField.type);
-            port.put("accessField", access.rootField.name);
             port.put("accessMethod", access.method);
             port.put("accessSiteId", access.siteId);
             port.put("accessUnitIndex", access.unitIndex);
-            port.put("accessSiteAuthority",
-                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_READ_SITE_V1");
             port.put("fieldPath", access.fieldPath);
             port.put("leafFieldSignature", access.leafField.signature);
-            port.put("leafOwnerClass", access.leafField.owner);
-            port.put("leafFieldType", access.leafField.type);
-            port.put("leafField", access.leafField.name);
             port.put("fieldPathProofCausalEdgeIds", access.proofEdgeIds);
-            port.put("fieldPathAuthority",
-                    "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1");
         }
 
         /**
@@ -3177,24 +3125,14 @@ final class SymbolicRegionPlanner {
             port.put("bindingMode", "FIELD_ACCESS");
             port.put("javaType", field.type);
             port.put("accessFieldSignature", field.signature);
-            port.put("accessOwnerClass", field.owner);
-            port.put("accessFieldType", field.type);
-            port.put("accessField", field.name);
             port.put("accessorCallerMethod", selected.method);
             port.put("accessorCallSiteId", selected.siteId);
             port.put("accessorCallUnitIndex", selected.unitIndex);
             port.put("accessorDeclaredCallee", selected.invokedMethod);
             port.put("accessorImplementationMethod",
                     selected.accessorImplementationMethod);
-            port.put("accessorImplementationAuthority",
-                    "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY");
-            port.put("accessorCallSiteAuthority",
-                    "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                            + "ACCESSOR_CALLSITE_V1");
             port.put("fieldPath", Collections.singletonList(field.name));
             port.put("leafFieldSignature", field.signature);
-            port.put("leafOwnerClass", field.owner);
-            port.put("leafField", field.name);
         }
 
         /**
@@ -3214,8 +3152,8 @@ final class SymbolicRegionPlanner {
             if (cell.contains("#field:")) {
                 DeclaredFieldPathAccess access =
                         materializableDeclaredFieldPathAccess(cell, slice);
-                boolean pathConstrained = !string(port.get(
-                        "fieldPathAuthority")).isEmpty();
+                boolean pathConstrained = strings(port.get(
+                        "fieldPath")).size() > 1;
                 if (access != null || pathConstrained) {
                     return access != null
                         && access.rootField.signature.equals(string(port.get(
@@ -3229,16 +3167,11 @@ final class SymbolicRegionPlanner {
                         && access.unitIndex == integer(port.get(
                         "accessUnitIndex"), -1)
                         && access.fieldPath.equals(strings(port.get(
-                        "fieldPath")))
-                        && "STATIC_UNIQUE_EXACT_DIRECT_GETFIELD_CHAIN_V1"
-                        .equals(string(port.get("fieldPathAuthority")));
+                        "fieldPath")));
                 }
             }
-            String directAuthority = string(port.get("accessSiteAuthority"));
-            String accessorAuthority = string(port.get(
-                    "accessorCallSiteAuthority"));
-            boolean constrained = !directAuthority.isEmpty()
-                    || !accessorAuthority.isEmpty()
+            boolean constrained = !string(port.get("accessSiteId")).isEmpty()
+                    || !string(port.get("accessorCallSiteId")).isEmpty()
                     || "OUTPUT_SLICE_MATERIALIZABLE_DECLARED_FIELD_FRONTIER"
                     .equals(string(port.get("selectionReason")));
             if (!constrained) {
@@ -3318,9 +3251,6 @@ final class SymbolicRegionPlanner {
                     "accessFieldSignature")))) {
                 return null;
             }
-            String directAuthority = string(port.get("accessSiteAuthority"));
-            String accessorAuthority = string(port.get(
-                    "accessorCallSiteAuthority"));
             DeclaredFieldAccess selected = null;
             for (Map<String, Object> edge : slice.causalEdges) {
                 DeclaredFieldAccess access = declaredFieldAccessAtEdge(
@@ -3330,10 +3260,7 @@ final class SymbolicRegionPlanner {
                 }
                 boolean matches;
                 if (access.accessorCall) {
-                    matches = "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                            .concat("ACCESSOR_CALLSITE_V1").equals(
-                                    accessorAuthority)
-                            && access.method.equals(string(port.get(
+                    matches = access.method.equals(string(port.get(
                             "accessorCallerMethod")))
                             && access.siteId.equals(string(port.get(
                             "accessorCallSiteId")))
@@ -3343,14 +3270,9 @@ final class SymbolicRegionPlanner {
                             "accessorDeclaredCallee")))
                             && access.accessorImplementationMethod.equals(
                             string(port.get(
-                                    "accessorImplementationMethod")))
-                            && "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
-                            .equals(string(port.get(
-                                    "accessorImplementationAuthority")));
+                                    "accessorImplementationMethod")));
                 } else {
-                    matches = "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                            .concat("READ_SITE_V1").equals(directAuthority)
-                            && access.method.equals(string(port.get(
+                    matches = access.method.equals(string(port.get(
                             "accessMethod")))
                             && access.siteId.equals(string(port.get(
                             "accessSiteId")))
@@ -3394,10 +3316,7 @@ final class SymbolicRegionPlanner {
                     || !siteId.equals(method + "#u" + unitIndex)
                     || string(edge.get("toCell")).isEmpty()
                     || accessorCall != !invokedMethod.isEmpty()
-                    || accessorCall && (implementation.isEmpty()
-                    || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
-                    .equals(string(edge.get(
-                            "accessorImplementationAuthority"))))
+                    || accessorCall && implementation.isEmpty()
                     || !accessorCall && !kind.contains("field_read")) {
                 return null;
             }
@@ -4498,9 +4417,6 @@ final class SymbolicRegionPlanner {
                         || string(edge.get("toCell")).isEmpty()
                         || declaredCallee.isEmpty()
                         || implementation.isEmpty()
-                        || !"SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY"
-                        .equals(string(edge.get(
-                                "accessorImplementationAuthority")))
                         || !factsByMethod.containsKey(implementation)
                         || declaredSubSignature.isEmpty()
                         || !declaredSubSignature.equals(
@@ -4814,19 +4730,14 @@ final class SymbolicRegionPlanner {
                     || string(port.get("leafFieldSignature")).isEmpty()) {
                 return false;
             }
-            boolean direct = "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                    .concat("READ_SITE_V1").equals(string(port.get(
-                            "accessSiteAuthority")));
-            boolean accessor = "STATIC_UNIQUE_EXACT_DECLARED_FIELD_"
-                    .concat("ACCESSOR_CALLSITE_V1").equals(string(port.get(
-                            "accessorCallSiteAuthority")));
+            boolean direct = !string(port.get("accessSiteId")).isEmpty();
+            boolean accessor = !string(port.get(
+                    "accessorCallSiteId")).isEmpty();
             if (!direct && !accessor) {
                 return false;
             }
             Collection<String> path = strings(port.get("fieldPath"));
-            return path.size() == 1 || "STATIC_UNIQUE_EXACT_DIRECT_"
-                    .concat("GETFIELD_CHAIN_V1").equals(string(port.get(
-                            "fieldPathAuthority")));
+            return path.size() >= 1 && path.size() <= 4;
         }
 
         private String uniquePort(
@@ -4894,15 +4805,7 @@ final class SymbolicRegionPlanner {
 
         private boolean sameExactDefinitionSite(Map<String, Object> first,
                                                 Map<String, Object> second) {
-            return string(first.get("method")).equals(string(second.get(
-                    "method")))
-                    && string(first.get("siteId")).equals(string(second.get(
-                    "siteId")))
-                    && integer(first.get("unitIndex"), -1) >= 0
-                    && integer(first.get("unitIndex"), -1) == integer(
-                    second.get("unitIndex"), -1)
-                    && string(first.get("unit")).equals(string(second.get(
-                    "unit")))
+            return sameExactDefinitionSiteIgnoringTarget(first, second)
                     && string(first.get("toCell")).equals(string(second.get(
                     "toCell")));
         }
@@ -7285,10 +7188,15 @@ final class SymbolicRegionPlanner {
                 return false;
             }
             List<String> candidates = new ArrayList<>();
-            candidates.addAll(strings(region.get("symbolicInputs")));
-            candidates.addAll(strings(region.get("relevantStates")));
-            candidates.addAll(portCells(region.get("inputs")));
+            candidates.addAll(portCells(region.get("symbolicInputs")));
             candidates.addAll(portCells(region.get("outputs")));
+            for (String method : strings(region.get("methods"))) {
+                MethodFacts facts = factsByMethod.get(method);
+                if (facts != null) {
+                    candidates.addAll(facts.symbolicInputs);
+                    candidates.addAll(facts.outputs);
+                }
+            }
             String thisProjection = "@this: " + signature.owner
                     + "#field:" + signature.name;
             for (String candidate : candidates) {

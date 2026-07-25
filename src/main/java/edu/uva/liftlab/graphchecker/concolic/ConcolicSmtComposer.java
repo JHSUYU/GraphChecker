@@ -1547,7 +1547,6 @@ public final class ConcolicSmtComposer {
                 new ArrayList<>();
         private final Set<String> relationshipIds = new LinkedHashSet<>();
         private final JsonArray caseProjectionCatalog = new JsonArray();
-        private int unknownCounter;
         private int assertionCount;
         private String currentGuard = "";
         private String currentSymbolScope = "global";
@@ -1805,10 +1804,7 @@ public final class ConcolicSmtComposer {
                 }
                 unsupported.add("PlaceholderExpression:" + function
                         + "#" + count);
-                String name = scopedName("placeholder",
-                        function + "_" + count);
-                declare(name, Sort.INT);
-                return new Term(name, Sort.INT);
+                return unsupportedTerm(Sort.INT);
             }
             if ("TypeCastExpression".equals(type)) {
                 return typeCast(object);
@@ -1817,10 +1813,8 @@ public final class ConcolicSmtComposer {
                 return methodTerm(object);
             }
             unsupported.add(type.isEmpty() ? "MISSING_TYPE" : type);
-            String name = scopedFreshName("unknown_term");
             Sort sort = expected == null ? Sort.VALUE : expected;
-            declare(name, sort);
-            return new Term(name, sort);
+            return unsupportedTerm(sort);
         }
 
         private Term symbol(JsonObject expression, Sort expected) {
@@ -2211,10 +2205,7 @@ public final class ConcolicSmtComposer {
                 if (!"0".equals(value) && !"1".equals(value)) {
                     unsupported.add("InvalidJavaBooleanLiteral:"
                             + firstNonBlank(raw, "MISSING"));
-                    String name = scopedFreshName(
-                            "invalid_boolean_literal");
-                    declare(name, Sort.BOOL);
-                    result = new Term(name, Sort.BOOL);
+                    result = unsupportedTerm(Sort.BOOL);
                 } else {
                     result = new Term("1".equals(value)
                             ? "true" : "false", Sort.BOOL);
@@ -2249,9 +2240,7 @@ public final class ConcolicSmtComposer {
         private Term invalidNumericLiteral(String raw, Sort sort) {
             unsupported.add("InvalidNumericLiteral:" + sort + ":"
                     + firstNonBlank(raw, "MISSING"));
-            String name = scopedFreshName("invalid_numeric_literal");
-            declare(name, sort);
-            return new Term(name, sort);
+            return unsupportedTerm(sort);
         }
 
         /**
@@ -2287,18 +2276,14 @@ public final class ConcolicSmtComposer {
                         + source.sort + "!=" + sourceSort);
                 Sort diagnosticSort = targetSort == Sort.VALUE
                         ? Sort.REF : targetSort;
-                String name = scopedFreshName("unsupported_cast");
-                declare(name, diagnosticSort);
-                return new Term(name, diagnosticSort);
+                return unsupportedTerm(diagnosticSort);
             }
             unsupported.add("MODEL_SEMANTICS_MISSING:TypeCastExpression:"
                     + firstNonBlank(sourceType, "UNKNOWN") + "->"
                     + firstNonBlank(targetType, "UNKNOWN"));
             Sort diagnosticSort = targetSort == Sort.VALUE
                     ? Sort.REF : targetSort;
-            String name = scopedFreshName("unsupported_cast");
-            declare(name, diagnosticSort);
-            return new Term(name, diagnosticSort);
+            return unsupportedTerm(diagnosticSort);
         }
 
         private Term binary(JsonObject expression) {
@@ -2319,17 +2304,12 @@ public final class ConcolicSmtComposer {
                     }
                     unsupported.add("AmbiguousJavaIntegralUnaryWidth:"
                             + firstNonBlank(operator, "MISSING"));
-                    String unknown = scopedFreshName(
-                            "ambiguous_integral_unary");
-                    declare(unknown, Sort.INT);
-                    return new Term(unknown, Sort.INT);
+                    return unsupportedTerm(Sort.INT);
                 }
                 unsupported.add("NonNumericOrUnknownUnary:"
                         + firstNonBlank(operator, "MISSING") + ":"
                         + operand.sort);
-                String unknown = scopedFreshName("unsupported_unary");
-                declare(unknown, operand.sort);
-                return new Term(unknown, operand.sort);
+                return unsupportedTerm(operand.sort);
             }
             Term left = term(expression.get("_left"), null);
             Term right = term(expression.get("_right"), left.sort);
@@ -2351,9 +2331,7 @@ public final class ConcolicSmtComposer {
                 unsupported.add("MalformedJvmLcmpOperands:"
                         + left.sort + ":" + left.integralWidth + ":"
                         + right.sort + ":" + right.integralWidth);
-                String unknown = scopedFreshName("malformed_lcmp");
-                declare(unknown, Sort.INT);
-                return new Term(unknown, Sort.INT,
+                return new Term("0", Sort.INT,
                         IntegralWidth.JAVA_INT);
             }
             if ("--l".equals(operator) || "--g".equals(operator)) {
@@ -2365,9 +2343,7 @@ public final class ConcolicSmtComposer {
                 }
                 unsupported.add("MalformedJvmFloatingCompareOperands:"
                         + operator + ":" + left.sort + ":" + right.sort);
-                String unknown = scopedFreshName("malformed_fp_cmp");
-                declare(unknown, Sort.INT);
-                return new Term(unknown, Sort.INT,
+                return new Term("0", Sort.INT,
                         IntegralWidth.JAVA_INT);
             }
             if (left.sort != right.sort && numeric(left.sort)
@@ -2401,10 +2377,7 @@ public final class ConcolicSmtComposer {
                 if (left.sort != Sort.BOOL || right.sort != Sort.BOOL) {
                     unsupported.add("NonBooleanLogic:" + operator + ":"
                             + left.sort + ":" + right.sort);
-                    String unknown = scopedFreshName(
-                            "non_boolean_logic");
-                    declare(unknown, Sort.BOOL);
-                    return new Term(unknown, Sort.BOOL);
+                    return unsupportedTerm(Sort.BOOL);
                 }
                 boolean conjunction = "&&".equals(operator);
                 String rightEvaluated = conjunction ? left.text
@@ -2423,9 +2396,7 @@ public final class ConcolicSmtComposer {
                         || "!=".equals(operator)
                         || !comparison(operator).isEmpty()
                         ? Sort.BOOL : left.sort;
-                String unknown = scopedFreshName("binary_sort_conflict");
-                declare(unknown, resultSort);
-                return new Term(unknown, resultSort);
+                return unsupportedTerm(resultSort);
             }
             if ("==".equals(operator) || "!=".equals(operator)) {
                 if (left.sort == Sort.STRING) {
@@ -2439,10 +2410,7 @@ public final class ConcolicSmtComposer {
                     unsupported.add("MODEL_SEMANTICS_MISSING:"
                             + "JAVA_STRING_REFERENCE_IDENTITY:"
                             + operator);
-                    String unknown = scopedFreshName(
-                            "unsupported_string_reference_identity");
-                    declare(unknown, Sort.BOOL);
-                    return dependent(new Term(unknown, Sort.BOOL),
+                    return dependent(unsupportedTerm(Sort.BOOL),
                             left, right);
                 }
                 if (left.sort.floating()) {
@@ -2460,10 +2428,7 @@ public final class ConcolicSmtComposer {
                 if (!numeric(left.sort) || !numeric(right.sort)) {
                     unsupported.add("NonNumericComparison:" + operator + ":"
                             + left.sort);
-                    String unknown = scopedFreshName(
-                            "non_numeric_comparison");
-                    declare(unknown, Sort.BOOL);
-                    return new Term(unknown, Sort.BOOL);
+                    return unsupportedTerm(Sort.BOOL);
                 }
                 if (left.sort.floating()) {
                     return dependent(new Term(JavaPrimitiveSmtSemantics
@@ -2477,20 +2442,14 @@ public final class ConcolicSmtComposer {
                 if (!numeric(left.sort) || !numeric(right.sort)) {
                     unsupported.add("NonNumericArithmetic:" + operator + ":"
                             + left.sort);
-                    String unknown = scopedFreshName(
-                            "non_numeric_arithmetic");
-                    declare(unknown, left.sort);
-                    return new Term(unknown, left.sort);
+                    return unsupportedTerm(left.sort);
                 }
                 Sort resultSort = left.sort;
                 if ("%".equals(operator)) {
                     unsupported.add(resultSort.floating()
                             ? "JavaFloatingRemainderUnmodeled"
                             : "JavaIntegralRemainderUnmodeled");
-                    String unknown = scopedFreshName(
-                            "unsupported_remainder");
-                    declare(unknown, resultSort);
-                    return new Term(unknown, resultSort);
+                    return unsupportedTerm(resultSort);
                 }
                 if (resultSort.floating()) {
                     String floating = JavaPrimitiveSmtSemantics
@@ -2500,17 +2459,11 @@ public final class ConcolicSmtComposer {
                             resultSort), left, right);
                     unsupported.add("JavaFloatingOperatorUnmodeled:"
                             + operator);
-                    String unknown = scopedFreshName(
-                            "unsupported_floating_arithmetic");
-                    declare(unknown, resultSort);
-                    return new Term(unknown, resultSort);
+                    return unsupportedTerm(resultSort);
                 }
                 if ("@".equals(operator) || "/".equals(operator)) {
                     unsupported.add("JavaIntegralDivisionUnmodeled");
-                    String unknown = scopedFreshName(
-                            "unsupported_division");
-                    declare(unknown, Sort.INT);
-                    return new Term(unknown, Sort.INT);
+                    return unsupportedTerm(Sort.INT);
                 }
                 smt = arithmetic(operator);
                 String arithmeticExpression = "(" + smt + " "
@@ -2521,18 +2474,13 @@ public final class ConcolicSmtComposer {
                     unsupported.add("AmbiguousJavaIntegralBinaryWidth:"
                             + operator + ":" + left.integralWidth + ":"
                             + right.integralWidth);
-                    String unknown = scopedFreshName(
-                            "ambiguous_integral_arithmetic");
-                    declare(unknown, Sort.INT);
-                    return new Term(unknown, Sort.INT);
+                    return unsupportedTerm(Sort.INT);
                 }
                 return dependent(new Term(wrapIntegral(arithmeticExpression,
                         resultWidth), Sort.INT, resultWidth), left, right);
             }
             unsupported.add("BinaryOperator:" + operator);
-            String name = scopedFreshName("unknown_binary");
-            declare(name, Sort.BOOL);
-            return new Term(name, Sort.BOOL);
+            return unsupportedTerm(Sort.BOOL);
         }
 
         private Term floatingPromotion(Term term, Sort target,
@@ -2554,9 +2502,7 @@ public final class ConcolicSmtComposer {
             }
             unsupported.add("UnsupportedJavaNumericPromotion:" + origin
                     + ":" + term.sort + "->" + target);
-            String unknown = scopedFreshName("unsupported_fp_promotion");
-            declare(unknown, target);
-            return new Term(unknown, target);
+            return unsupportedTerm(target);
         }
 
         /** Emits exact core Java String predicates/value operations plus the
@@ -2961,10 +2907,7 @@ public final class ConcolicSmtComposer {
         private Term codecGap(String operation, String gap, Sort sort) {
             unsupported.add("MODEL_SEMANTICS_MISSING:" + operation + ":"
                     + gap);
-            String name = scopedFreshName("unknown_codec_"
-                    + smtName(operation));
-            declare(name, sort);
-            return new Term(name, sort);
+            return unsupportedTerm(sort);
         }
 
         private boolean isPrimitiveIntExpression(JsonElement expression) {
@@ -3061,23 +3004,9 @@ public final class ConcolicSmtComposer {
                         + receiver.text + " " + key.text
                         + ") (VRef nullRef)))";
             }
-            JsonArray params = array(expression, "_param_list");
-            List<Term> arguments = new ArrayList<>();
-            for (JsonElement parameter : params) {
-                arguments.add(term(parameter, null));
-            }
-            Term result = term(expression.get("_res_exp"), null);
             unsupported.add("MODEL_SEMANTICS_MISSING:MethodExpression:"
                     + firstNonBlank(name, "unknown"));
-            String function = diagnosticMethodFunction(name, arguments,
-                    result.sort);
-            declareFunction(function, arguments, result.sort);
-            StringBuilder call = new StringBuilder("(").append(function);
-            for (Term argument : arguments) {
-                call.append(' ').append(argument.text);
-            }
-            call.append(')');
-            return "(= " + result.text + " " + call + ")";
+            return "false";
         }
 
         private String arrayConstraint(JsonObject expression, String origin) {
@@ -3132,10 +3061,6 @@ public final class ConcolicSmtComposer {
             String expectedActivation = firstNonBlank(string(container,
                     "activationId"), string(container,
                     "sourceActivationId"));
-            Map<String, String> portToId = new LinkedHashMap<>();
-            Map<String, String> idToPort = new LinkedHashMap<>();
-            Map<String, Long> idToToken = new LinkedHashMap<>();
-            Set<String> rowIds = new LinkedHashSet<>();
             JsonArray rows = declared.getAsJsonArray();
             for (int ordinal = 0; ordinal < rows.size(); ordinal++) {
                 if (!rows.get(ordinal).isJsonObject()) {
@@ -3147,33 +3072,26 @@ public final class ConcolicSmtComposer {
                 List<String> issues = new ArrayList<>();
                 String port = string(row, "inputPort");
                 String cell = string(row, "inputCell");
-                String javaType = string(row, "inputJavaType");
                 String descriptor = string(row,
                         "inputJavaTypeDescriptor");
                 String arrayId = string(row, "engineArrayId");
                 long token = longInteger(row, "arrayObjectToken", 0L);
                 String sourceActivation = string(row,
                         "sourceActivationId");
-                if (integer(row, "schemaVersion", -1) != 1) {
+                if (integer(row, "schemaVersion", -1) != 2) {
                     issues.add("SCHEMA_VERSION_UNSUPPORTED");
                 }
-                if (!"ENGINE_ARRAY_TO_INPUT_PORT".equals(
+                if (!"ENGINE_ARRAY_INPUT_BINDING".equals(
                         string(row, "kind"))) {
                     issues.add("KIND_INVALID");
                 }
-                if (port.isEmpty() || cell.isEmpty() || javaType.isEmpty()
+                if (port.isEmpty() || cell.isEmpty()
                         || descriptor.isEmpty() || arrayId.isEmpty()) {
                     issues.add("REQUIRED_IDENTITY_FIELD_MISSING");
                 }
                 if (!descriptor.equals(javaTypeDescriptor(descriptor))
-                        || !descriptor.startsWith("[")
-                        || !descriptor.equals(javaTypeDescriptor(javaType))) {
+                        || !descriptor.startsWith("[")) {
                     issues.add("INPUT_ARRAY_DESCRIPTOR_INVALID");
-                }
-                if (!port.equals(string(row, "symbolizationPrefix"))
-                        || !"DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX"
-                        .equals(string(row, "symbolizationMode"))) {
-                    issues.add("ARRAY_SYMBOLIZATION_PREFIX_OR_MODE_INVALID");
                 }
                 Port schema = ports.get(port);
                 if (schema == null || !schema.input
@@ -3187,57 +3105,11 @@ public final class ConcolicSmtComposer {
                         && !expectedActivation.equals(sourceActivation)) {
                     issues.add("SOURCE_ACTIVATION_MISMATCH");
                 }
-                if (sourceActivation.isEmpty()
-                        || !sourceActivation.equals(string(row,
-                        "objectTokenScope"))
-                        || token <= 0L
-                        || longInteger(row,
-                        "symbolizationArrayObjectToken", 0L) != token
-                        || row.get("sameArrayObjectTokenVerified") == null
-                        || !row.get("sameArrayObjectTokenVerified")
-                        .isJsonPrimitive()
-                        || !row.get("sameArrayObjectTokenVerified")
-                        .getAsJsonPrimitive().isBoolean()
-                        || !row.get("sameArrayObjectTokenVerified")
-                        .getAsBoolean()
-                        || !"SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        .concat("EXPRESSION_CAPTURE").equals(string(row,
-                                "symbolizationIdentityAuthority"))
-                        || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
-                        .equals(string(row, "objectTokenAuthority"))) {
+                if (sourceActivation.isEmpty() || token <= 0L) {
                     issues.add("ARRAY_OBJECT_IDENTITY_INVALID");
-                }
-                if (!"VM_ACTIVE_SYM_ARRAY_ID_V1".equals(string(row,
-                        "engineArrayIdAuthority"))) {
-                    issues.add("ENGINE_ARRAY_ID_AUTHORITY_INVALID");
-                }
-                JsonElement complete = row.get("complete");
-                if (!"SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_"
-                        .concat("SYMBOLIZATION").equals(string(row,
-                                "captureAuthority"))
-                        || complete == null || !complete.isJsonPrimitive()
-                        || !complete.getAsJsonPrimitive().isBoolean()
-                        || !complete.getAsBoolean()) {
-                    issues.add("CAPTURE_AUTHORITY_OR_COMPLETENESS_INVALID");
                 }
                 validateEngineArrayValueExpression(row, descriptor,
                         arrayId, issues);
-
-                if (!rowIds.add(arrayId)) {
-                    issues.add("ENGINE_ARRAY_ID_DUPLICATE");
-                }
-                String oldId = portToId.put(port, arrayId);
-                if (oldId != null && !oldId.equals(arrayId)) {
-                    issues.add("INPUT_PORT_TO_ARRAY_ID_NOT_FUNCTIONAL");
-                }
-                String oldPort = idToPort.put(arrayId, port);
-                if (oldPort != null && !oldPort.equals(port)) {
-                    issues.add("ARRAY_ID_TO_INPUT_PORT_NOT_FUNCTIONAL");
-                }
-                Long oldToken = idToToken.put(arrayId, token);
-                if (oldToken != null && oldToken.longValue() != token) {
-                    issues.add("ARRAY_ID_TO_OBJECT_TOKEN_NOT_FUNCTIONAL");
-                }
                 String bridgeKey = currentSymbolScope + "\u0000" + arrayId;
                 if (engineArrayInputBridges.containsKey(bridgeKey)) {
                     issues.add("SCOPED_ARRAY_ID_DUPLICATE");
@@ -3469,63 +3341,27 @@ public final class ConcolicSmtComposer {
             }
             if (!descriptor.startsWith("[")
                     || !descriptor.substring(1).equals(component)
-                    || !component.equals(javaTypeDescriptor(component))) {
+                    || !component.equals(javaTypeDescriptor(component))
+                    || component.startsWith("[")) {
                 issues.add("ARRAY_VALUE_COMPONENT_TYPE_MISMATCH");
             }
             if (!arrayId.equals(string(expression, "_engine_array_id"))
                     || !"VM_ACTIVE_SYM_ARRAY_ID_V1".equals(string(
-                    expression, "_engine_array_id_authority"))
-                    || !string(row, "engineArrayIdAuthority").equals(
-                    string(expression, "_engine_array_id_authority"))) {
+                    expression, "_engine_array_id_authority"))) {
                 issues.add("ARRAY_VALUE_ENGINE_ID_MISMATCH");
             }
             int length = integer(expression, "_concrete_length", -1);
             JsonElement lengthExpression = expression.get("_length_exp");
             JsonElement complete = expression.get("_elements_complete");
+            JsonElement elements = expression.get("_elements");
             if (length < 0 || !validFiniteArrayLength(lengthExpression,
                     length)
-                    || lengthExpression == null
-                    || !lengthExpression.isJsonObject()
-                    || !"ConstExpr".equals(string(
-                    lengthExpression.getAsJsonObject(), "_type"))
                     || complete == null || !complete.isJsonPrimitive()
                     || !complete.getAsJsonPrimitive().isBoolean()
-                    || !complete.getAsBoolean()) {
+                    || !complete.getAsBoolean()
+                    || elements == null || !elements.isJsonArray()
+                    || elements.getAsJsonArray().size() != length) {
                 issues.add("ARRAY_VALUE_LENGTH_OR_COMPLETENESS_INVALID");
-            }
-            JsonElement rawElements = expression.get("_elements");
-            if (rawElements == null || !rawElements.isJsonArray()) {
-                issues.add("ARRAY_VALUE_ELEMENTS_MISSING");
-                return;
-            }
-            JsonArray elements = rawElements.getAsJsonArray();
-            if (length < 0 || elements.size() != length) {
-                issues.add("ARRAY_VALUE_ELEMENT_COUNT_MISMATCH");
-            }
-            Set<Integer> indices = new LinkedHashSet<>();
-            for (int ordinal = 0; ordinal < elements.size(); ordinal++) {
-                if (!elements.get(ordinal).isJsonObject()) {
-                    issues.add("ARRAY_VALUE_ELEMENT_MALFORMED:" + ordinal);
-                    continue;
-                }
-                JsonObject element = elements.get(ordinal).getAsJsonObject();
-                int index = integer(element, "index", -1);
-                JsonElement elementExpression = element.get("expression");
-                if (index != ordinal || index < 0 || index >= length
-                        || !indices.add(index)) {
-                    issues.add("ARRAY_VALUE_ELEMENT_INDEX_INVALID:"
-                            + ordinal);
-                }
-                if (elementExpression == null
-                        || !elementExpression.isJsonObject()
-                        || !validFiniteArrayElementProvenance(string(element,
-                        "provenance"),
-                        elementExpression.getAsJsonObject(), component)
-                        || !finiteArrayElementTypeCompatible(
-                        elementExpression.getAsJsonObject(), component)
-                        || component.startsWith("[")) {
-                    issues.add("ARRAY_VALUE_ELEMENT_INVALID:" + ordinal);
-                }
             }
         }
 
@@ -3537,27 +3373,10 @@ public final class ConcolicSmtComposer {
             if (isJavaSplitElement(method)) {
                 return splitElementTerm(expression);
             }
-            JsonArray params = array(expression, "_param_list");
-            List<Term> arguments = new ArrayList<>();
-            for (JsonElement parameter : params) {
-                arguments.add(term(parameter, null));
-            }
             Term result = term(expression.get("_res_exp"), null);
             unsupported.add("MODEL_SEMANTICS_MISSING:MethodExpression:"
                     + firstNonBlank(method, "unknown"));
-            String function = diagnosticMethodFunction(method, arguments,
-                    result.sort);
-            declareFunction(function, arguments, result.sort);
-            StringBuilder call = new StringBuilder("(").append(function);
-            for (Term argument : arguments) {
-                call.append(' ').append(argument.text);
-            }
-            call.append(')');
-            if (result.sort == Sort.BOOL && "V".equals(string(
-                    object(expression, "_res_exp"), "_exp"))) {
-                return new Term(call.toString(), Sort.BOOL);
-            }
-            return new Term(call.toString(), result.sort);
+            return unsupportedTerm(result.sort);
         }
 
         private void regionSummary(JsonObject summary,
@@ -7171,9 +6990,7 @@ public final class ConcolicSmtComposer {
                         Sort.MAP);
             }
             unsupported.add("MapReceiverSort:" + receiver.sort);
-            String name = scopedFreshName("unknown_map");
-            declare(name, Sort.MAP);
-            return new Term(name, Sort.MAP);
+            return unsupportedTerm(Sort.MAP);
         }
 
         /**
@@ -7384,9 +7201,7 @@ public final class ConcolicSmtComposer {
             if (term.sort == Sort.REF) return dependent(new Term("(VRef "
                     + term.text + ")", Sort.VALUE), term);
             unsupported.add("CannotBox:" + term.sort);
-            String name = scopedFreshName("unknown_value");
-            declare(name, Sort.VALUE);
-            return new Term(name, Sort.VALUE);
+            return unsupportedTerm(Sort.VALUE);
         }
 
         private void bindPort(String port, Term value) {
@@ -7507,20 +7322,6 @@ public final class ConcolicSmtComposer {
                     declaration.toString());
         }
 
-        private String diagnosticMethodFunction(String method,
-                                                List<Term> arguments,
-                                                Sort result) {
-            StringBuilder signature = new StringBuilder(
-                    firstNonBlank(method, "unknown"));
-            for (Term argument : arguments) {
-                signature.append('\u0000').append(argument.sort.name());
-            }
-            signature.append("\u0000->").append(result.name());
-            return "uf__" + smtName(firstNonBlank(method, "unknown"))
-                    + "__" + sha256(signature.toString().getBytes(
-                    StandardCharsets.UTF_8)).substring(0, 10);
-        }
-
         private void addDeclaration(String key, String declaration) {
             if (declarationKeys.add(key)) declarations.add(declaration);
         }
@@ -7550,9 +7351,7 @@ public final class ConcolicSmtComposer {
             String key = "UnsupportedConstraint:" + origin + ":"
                     + (expression == null ? "null" : GSON.toJson(expression));
             unsupported.add(key);
-            String name = scopedFreshName("unknown_constraint");
-            declare(name, Sort.BOOL);
-            return name;
+            return "false";
         }
 
         private String scopedName(String prefix, String raw) {
@@ -7560,9 +7359,31 @@ public final class ConcolicSmtComposer {
                     + smtName(raw);
         }
 
-        private String scopedFreshName(String prefix) {
-            return prefix + "__" + scopeToken(currentSymbolScope) + "__"
-                    + unknownCounter++;
+        /**
+         * Unsupported expressions never gain solver freedom.  Their gap is
+         * recorded by the caller, this closed value only keeps the diagnostic
+         * SMT well-sorted, and {@link #finish()} makes every gapped query
+         * non-executable.
+         */
+        private Term unsupportedTerm(Sort sort) {
+            if (sort == Sort.BOOL) return new Term("false", sort);
+            if (sort == Sort.INT) return new Term("0", sort);
+            if (sort == Sort.FLOAT32 || sort == Sort.FLOAT64) {
+                return new Term(JavaPrimitiveSmtSemantics.floatingLiteral(
+                        "0.0", floatingKind(sort)), sort);
+            }
+            if (sort == Sort.STRING) {
+                return Term.nonNullString("\"\"", "true");
+            }
+            if (sort == Sort.REF) return new Term("nullRef", sort);
+            if (sort == Sort.MAP) return new Term("emptyMapState", sort);
+            if (sort == Sort.VALUE) {
+                return new Term("(VRef nullRef)", sort);
+            }
+            String elements = "((as const (Array Int Value))"
+                    + " (VRef nullRef))";
+            if (sort == Sort.ARRAY) return new Term(elements, sort);
+            return new Term("(mkFiniteArrayValue 0 " + elements + ")", sort);
         }
 
         /** A readable prefix plus a reversible UTF-8 encoding avoids scope
@@ -7598,6 +7419,9 @@ public final class ConcolicSmtComposer {
         }
 
         private void finish() {
+            if (!unsupported.isEmpty()) {
+                assertions.add("(assert false) ; fail closed: unsupported");
+            }
             assertions.add("(check-sat)");
         }
 

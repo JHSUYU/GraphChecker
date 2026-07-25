@@ -155,20 +155,26 @@ public final class SmtModelValueCodec {
 
     private static List<String> applicationArguments(String expression,
                                                      String operator) {
-        if (expression == null || operator == null
-                || expression.length() < operator.length() + 3
+        List<String> items = applicationItems(expression);
+        if (items == null || items.size() < 2 || operator == null
+                || !operator.equals(items.get(0))) {
+            return null;
+        }
+        return new ArrayList<>(items.subList(1, items.size()));
+    }
+
+    /**
+     * Splits one complete SMT application without interpreting its terms.
+     * Nested applications and doubled-quote strings stay intact.
+     */
+    static List<String> applicationItems(String expression) {
+        if (expression == null || expression.length() < 2
                 || expression.charAt(0) != '('
                 || expression.charAt(expression.length() - 1) != ')') {
             return null;
         }
         String body = expression.substring(1, expression.length() - 1)
                 .trim();
-        if (!body.startsWith(operator)
-                || body.length() == operator.length()
-                || !Character.isWhitespace(body.charAt(operator.length()))) {
-            return null;
-        }
-        body = body.substring(operator.length()).trim();
         List<String> result = new ArrayList<>();
         int start = -1;
         int depth = 0;
@@ -184,8 +190,8 @@ public final class SmtModelValueCodec {
                 }
             } else if (!quoted && current == '(') {
                 depth++;
-            } else if (!quoted && current == ')') {
-                if (--depth < 0) return null;
+            } else if (!quoted && current == ')' && --depth < 0) {
+                return null;
             }
             boolean separator = !quoted && depth == 0
                     && Character.isWhitespace(current);

@@ -325,7 +325,7 @@ public final class ConcolicSummaryImporter {
             if (isPathFlip(activation)) {
                 List<String> replayFailures = new ArrayList<>(
                         ConcolicReplayValidator.validateDynamicRebindings(
-                                activation, raw, summary));
+                                raw, summary));
                 if (captureGoal.isOutputClosure()
                         && !bool(summary, "relationallyComplete", false)) {
                     replayFailures.add(
@@ -543,68 +543,38 @@ public final class ConcolicSummaryImporter {
             List<String> rowIssues = new ArrayList<>();
             String port = string(row, "inputPort");
             String cell = string(row, "inputCell");
-            String inputJavaType = string(row, "inputJavaType");
             String descriptorField = string(row,
                     "inputJavaTypeDescriptor");
             String descriptor = javaTypeDescriptor(descriptorField);
             String engineArrayId = string(row, "engineArrayId");
             long objectToken = longInteger(row, "arrayObjectToken", 0L);
-            long symbolizationObjectToken = longInteger(row,
-                    "symbolizationArrayObjectToken", 0L);
             String activationId = string(activation, "activationId");
 
-            if (integer(row, "schemaVersion", -1) != 1) {
+            if (integer(row, "schemaVersion", -1) != 2) {
                 rowIssues.add("SCHEMA_VERSION_UNSUPPORTED");
             }
-            if (!"ENGINE_ARRAY_TO_INPUT_PORT".equals(string(row, "kind"))) {
+            if (!"ENGINE_ARRAY_INPUT_BINDING".equals(
+                    string(row, "kind"))) {
                 rowIssues.add("KIND_INVALID");
             }
-            if (activationId.isEmpty() || !activationId.equals(string(row,
-                    "sourceActivationId"))) {
+            if (activationId.isEmpty() || !activationId.equals(
+                    string(row, "sourceActivationId"))) {
                 rowIssues.add("SOURCE_ACTIVATION_MISMATCH");
             }
-            if (port.isEmpty() || cell.isEmpty() || inputJavaType.isEmpty()
+            if (port.isEmpty() || cell.isEmpty()
                     || descriptorField.isEmpty() || engineArrayId.isEmpty()) {
                 rowIssues.add("REQUIRED_IDENTITY_FIELD_MISSING");
             }
             if (descriptor.isEmpty() || !descriptor.startsWith("[")
-                    || !descriptor.equals(descriptorField)
-                    || !descriptor.equals(javaTypeDescriptor(
-                    inputJavaType))) {
+                    || !descriptor.equals(descriptorField)) {
                 rowIssues.add("INPUT_ARRAY_TYPE_DESCRIPTOR_INVALID");
-            }
-            if (!"VM_ACTIVE_SYM_ARRAY_ID_V1".equals(string(row,
-                    "engineArrayIdAuthority"))) {
-                rowIssues.add("ENGINE_ARRAY_ID_AUTHORITY_INVALID");
             }
             if (!engineArrayIdMatchesComponent(engineArrayId,
                     descriptor)) {
                 rowIssues.add("ENGINE_ARRAY_ID_COMPONENT_TYPE_INVALID");
             }
-            if (!port.equals(string(row, "symbolizationPrefix"))
-                    || !"DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX"
-                    .equals(string(row, "symbolizationMode"))) {
-                rowIssues.add("ARRAY_SYMBOLIZATION_PREFIX_OR_MODE_INVALID");
-            }
-            if (objectToken <= 0L
-                    || symbolizationObjectToken != objectToken
-                    || !hasBoolean(row, "sameArrayObjectTokenVerified")
-                    || !row.get("sameArrayObjectTokenVerified")
-                    .getAsBoolean()
-                    || !"SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                    .concat("EXPRESSION_CAPTURE").equals(string(row,
-                            "symbolizationIdentityAuthority"))
-                    || !"ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN"
-                    .equals(string(row, "objectTokenAuthority"))
-                    || !activationId.equals(string(row,
-                    "objectTokenScope"))) {
+            if (objectToken <= 0L) {
                 rowIssues.add("ARRAY_OBJECT_IDENTITY_INVALID");
-            }
-            if (!"SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION"
-                    .equals(string(row, "captureAuthority"))
-                    || !hasBoolean(row, "complete")
-                    || !row.get("complete").getAsBoolean()) {
-                rowIssues.add("CAPTURE_AUTHORITY_OR_COMPLETENESS_INVALID");
             }
             List<JsonObject> actions = actionsByPort.get(port);
             if (actions == null || actions.size() != 1) {
@@ -661,36 +631,17 @@ public final class ConcolicSummaryImporter {
             }
             if (rowIssues.isEmpty()) {
                 JsonObject normalized = new JsonObject();
-                normalized.addProperty("schemaVersion", 1);
+                normalized.addProperty("schemaVersion", 2);
                 normalized.addProperty("kind",
-                        "ENGINE_ARRAY_TO_INPUT_PORT");
+                        "ENGINE_ARRAY_INPUT_BINDING");
                 normalized.addProperty("sourceActivationId", activationId);
                 normalized.addProperty("inputPort", port);
                 normalized.addProperty("inputCell", cell);
-                normalized.addProperty("inputJavaType", inputJavaType);
                 normalized.addProperty("inputJavaTypeDescriptor", descriptor);
-                normalized.addProperty("symbolizationPrefix", port);
-                normalized.addProperty("symbolizationMode",
-                        "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX");
                 normalized.addProperty("engineArrayId", engineArrayId);
-                normalized.addProperty("engineArrayIdAuthority",
-                        "VM_ACTIVE_SYM_ARRAY_ID_V1");
                 normalized.addProperty("arrayObjectToken", objectToken);
-                normalized.addProperty("symbolizationArrayObjectToken",
-                        objectToken);
-                normalized.addProperty("symbolizationIdentityAuthority",
-                        "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                                + "EXPRESSION_CAPTURE");
-                normalized.addProperty("sameArrayObjectTokenVerified", true);
-                normalized.addProperty("objectTokenAuthority",
-                        "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-                normalized.addProperty("objectTokenScope", activationId);
-                normalized.addProperty("captureAuthority",
-                        "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_"
-                                + "SYMBOLIZATION");
                 normalized.add("arrayValueExpression", object(row,
                         "arrayValueExpression").deepCopy());
-                normalized.addProperty("complete", true);
                 admitted.add(normalized);
             } else {
                 issues.add(new EngineArrayInputBindingIssue(
@@ -754,9 +705,7 @@ public final class ConcolicSummaryImporter {
         }
         if (!engineArrayId.equals(string(expression, "_engine_array_id"))
                 || !"VM_ACTIVE_SYM_ARRAY_ID_V1".equals(string(expression,
-                "_engine_array_id_authority"))
-                || !string(row, "engineArrayIdAuthority").equals(
-                string(expression, "_engine_array_id_authority"))) {
+                "_engine_array_id_authority"))) {
             issues.add("ARRAY_VALUE_ENGINE_ARRAY_ID_MISMATCH");
         }
         int length = integer(expression, "_concrete_length", -1);

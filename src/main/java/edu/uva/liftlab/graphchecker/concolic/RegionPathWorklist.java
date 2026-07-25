@@ -808,27 +808,10 @@ public final class RegionPathWorklist {
             stable.addProperty("kind", string(source, "kind"));
             stable.addProperty("inputPort", string(source, "inputPort"));
             stable.addProperty("inputCell", string(source, "inputCell"));
-            stable.addProperty("inputJavaType", string(source,
-                    "inputJavaType"));
             stable.addProperty("inputJavaTypeDescriptor", string(source,
                     "inputJavaTypeDescriptor"));
-            stable.addProperty("symbolizationPrefix", string(source,
-                    "symbolizationPrefix"));
-            stable.addProperty("symbolizationMode", string(source,
-                    "symbolizationMode"));
             stable.addProperty("engineArrayId", alpha.array(string(source,
                     "engineArrayId")));
-            stable.addProperty("engineArrayIdAuthority", string(source,
-                    "engineArrayIdAuthority"));
-            stable.addProperty("objectTokenAuthority", string(source,
-                    "objectTokenAuthority"));
-            stable.addProperty("symbolizationIdentityAuthority",
-                    string(source, "symbolizationIdentityAuthority"));
-            stable.addProperty("sameArrayObjectTokenVerified", bool(source,
-                    "sameArrayObjectTokenVerified", false));
-            stable.addProperty("captureAuthority", string(source,
-                    "captureAuthority"));
-            stable.addProperty("complete", bool(source, "complete", false));
             bindings.add(alphaCanonical(stable, alpha));
         }
         Collections.sort(bindings);

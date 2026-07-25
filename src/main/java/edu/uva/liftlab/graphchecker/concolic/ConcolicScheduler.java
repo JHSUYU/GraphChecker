@@ -75,8 +75,6 @@ public final class ConcolicScheduler {
             "MAP_STATE_INPUT_OBSERVATION";
     private static final String FIRST_CONTAINER_OBSERVATION_AUTHORITY =
             "FIRST_MATCHING_CONTAINER_INSTANCE_APPROXIMATION_V1";
-    static final String ACCESSOR_INPUT_CANONICALIZATION_AUTHORITY =
-            "STATIC_UNIQUE_EXACT_ACCESSOR_FIELD_RETURN_TO_REGION_INPUT_V1";
     private ConcolicScheduler() {
     }
 
@@ -147,7 +145,6 @@ public final class ConcolicScheduler {
             RegionCaptureGoal goal = RegionCaptureGoal.from(
                     candidate.activation);
             goal.writeTo(scheduledActivation);
-            scheduledActivation.remove("summaryMode");
             scheduledActivation.addProperty("scheduleId", scheduleId);
             scheduledActivation.addProperty("executionPhase", executionPhase);
             scheduledActivation.add("materializations",
@@ -260,9 +257,6 @@ public final class ConcolicScheduler {
         bundle.addProperty("scheduleId", scheduleId);
         bundle.addProperty("role", support
                 ? "REACHABILITY_SUPPORT" : "PRIMARY");
-        if (support) {
-            bundle.addProperty("supportFor", primaryId);
-        }
         normalized.add("bundle", bundle);
         result.add(normalized);
     }
@@ -319,7 +313,6 @@ public final class ConcolicScheduler {
                 definitions, definitionMethods,
                 outputClosure);
         RegionCaptureGoal.outputClosure().writeTo(result);
-        result.remove("summaryMode");
         result.remove("modelAssignments");
         boolean outputCaptureReady = outputClosure != null
                 && outputClosureMembersReady(outputClosure);
@@ -672,8 +665,7 @@ public final class ConcolicScheduler {
                     "symbol"))
                     && !authoritativeDefinitionResolutionRequested(action)
                     && !vmIntrinsic) {
-                concreteFallbacks.add(concreteFallback(binding,
-                        "RUNTIME_EXPLICITLY_UNOBSERVED"));
+                concreteFallbacks.add(concreteFallback(binding));
                 continue;
             }
             if (exactContainerSnapshotLeafDeclaration(activation, action)) {
@@ -693,8 +685,7 @@ public final class ConcolicScheduler {
                 if (validFieldPaths(action)) {
                     binding.addProperty("bindingMode", "ROOT_ENTRY");
                 } else {
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "UNRESOLVED_ARGUMENT_FIELD_PATH"));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 }
             } else if ("CALL_RETURN".equals(location)) {
@@ -716,15 +707,11 @@ public final class ConcolicScheduler {
                 boolean pendingArrayFieldRoot =
                         pendingArrayFieldCallReturnRoot(action);
                 if (pendingArrayFieldRoot && sites.size() != 1) {
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "ARRAY_CALL_RETURN_ROOT_REQUIRES_"
-                                    + "ONE_EXACT_FILTERED_RETURN_SITE:"
-                                    + sites.size()));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 }
                 if (sites.size() == 0) {
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "UNRESOLVED_CALL_RETURN_DEFINITION"));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 }
                 for (JsonElement siteElement : sites) {
@@ -749,8 +736,7 @@ public final class ConcolicScheduler {
                     String issue = exactArrayFieldMaterializationIssue(
                             localBinding);
                     if (!issue.isEmpty()) {
-                        concreteFallbacks.add(concreteFallback(localBinding,
-                                issue));
+                        concreteFallbacks.add(concreteFallback(localBinding));
                         continue;
                     }
                     result.add(localBinding);
@@ -773,8 +759,7 @@ public final class ConcolicScheduler {
                         action, path);
                 boolean deepExactDeclarationRequired = path.size() > 2;
                 if (deepExactDeclarationRequired && declaredLeaf == null) {
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "DEEP_FIELD_PATH_LACKS_EXACT_DECLARED_CHAIN"));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 }
                 String derivedLeafOwner = declaredLeaf == null
@@ -804,9 +789,7 @@ public final class ConcolicScheduler {
                         string(declaredLeaf, "declaredFieldType")));
                 binding.addProperty("lazy", true);
                 if (!exactMetadata) {
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "PLANNER_EXACT_FIELD_METADATA_CONFLICTS_WITH_"
-                                    + "STATIC_CELL"));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 } else if (path.size() > 1
                         && action.has("valueObjectId")
@@ -816,8 +799,7 @@ public final class ConcolicScheduler {
                     // traversable, but that does not make it a region-entry
                     // value; keep the workload value instead of creating a
                     // temporal alias for a future object.
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "RUNTIME_OBSERVED_NULL_PROJECTED_FIELD_ROOT"));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 }
             } else if ("REGION_LIVE_IN".equals(location)) {
@@ -841,19 +823,16 @@ public final class ConcolicScheduler {
                     }
                     finalizePendingLocalArrayRoot(binding, true);
                     if (sites.size() == 0) {
-                        concreteFallbacks.add(concreteFallback(binding,
-                                "UNRESOLVED_LOCAL_DEFINITION"));
+                        concreteFallbacks.add(concreteFallback(binding));
                         continue;
                     }
                     binding.addProperty("lazy", true);
                 } else {
-                    concreteFallbacks.add(concreteFallback(binding,
-                            "UNSUPPORTED_LIVE_IN"));
+                    concreteFallbacks.add(concreteFallback(binding));
                     continue;
                 }
             } else {
-                concreteFallbacks.add(concreteFallback(binding,
-                        "UNSUPPORTED_MATERIALIZATION"));
+                concreteFallbacks.add(concreteFallback(binding));
                 continue;
             }
             if (containerInputPorts.contains(string(binding, "symbol"))
@@ -862,8 +841,6 @@ public final class ConcolicScheduler {
                         "CONTAINER_INPUT_OBSERVATION");
                 binding.addProperty("arrayFieldObservationOnly", true);
                 binding.addProperty("modelControllable", false);
-                binding.addProperty("containerObservationPolicy",
-                        "FIRST_MATCHING_CONTAINER_INSTANCE");
                 binding.addProperty("containerObservationAuthority",
                         "FIRST_MATCHING_CONTAINER_INSTANCE_"
                                 + "APPROXIMATION_V1");
@@ -877,8 +854,6 @@ public final class ConcolicScheduler {
                         MAP_STATE_INPUT_OBSERVATION_MODE);
                 binding.addProperty("mapStateObservationOnly", true);
                 binding.addProperty("modelControllable", false);
-                binding.addProperty("containerObservationPolicy",
-                        "FIRST_MATCHING_CONTAINER_INSTANCE");
                 binding.addProperty("containerObservationAuthority",
                         FIRST_CONTAINER_OBSERVATION_AUTHORITY);
                 binding.addProperty("mapStateInputCell",
@@ -890,8 +865,7 @@ public final class ConcolicScheduler {
             }
             String issue = exactArrayFieldMaterializationIssue(binding);
             if (!issue.isEmpty()) {
-                concreteFallbacks.add(concreteFallback(binding,
-                        issue));
+                concreteFallbacks.add(concreteFallback(binding));
                 continue;
             }
             result.add(binding);
@@ -1065,12 +1039,9 @@ public final class ConcolicScheduler {
         }
     }
 
-    private static JsonObject concreteFallback(JsonObject action,
-                                               String reason) {
+    private static JsonObject concreteFallback(JsonObject action) {
         JsonObject fallback = new JsonObject();
         fallback.addProperty("symbol", string(action, "symbol"));
-        fallback.addProperty("concreteFallbackReason", firstNonBlank(reason,
-                "NO_EXACT_SYMBOLIC_MATERIALIZATION"));
         return fallback;
     }
 
@@ -1145,7 +1116,6 @@ public final class ConcolicScheduler {
     private static void dischargeDeferredResolution(JsonObject binding) {
         binding.remove("deferredResolution");
         binding.remove("deferredResolutionAuthority");
-        binding.remove("deferred");
     }
 
     private static boolean verifiedVmIntrinsicPlaceholder(
@@ -1171,7 +1141,6 @@ public final class ConcolicScheduler {
             return false;
         }
         return bool(action, "deferredResolution", false)
-                || bool(action, "deferred", false)
                 || !string(action, "deferredResolutionAuthority").isEmpty();
     }
 
@@ -1319,8 +1288,6 @@ public final class ConcolicScheduler {
                 LOCAL_FIELD_ROOT_AUTHORITY);
         binding.addProperty("consumedFieldBindingComplete", true);
         binding.remove("consumedFieldBindingIssue");
-        binding.addProperty("consumedFieldRootResolutionAuthority",
-                "AUTHORITATIVE_UNIQUE_STATIC_DEFINITION_SITE_V1");
     }
 
     private static String exactArrayRootIssue(JsonObject binding,
@@ -1593,12 +1560,10 @@ public final class ConcolicScheduler {
             if ("EQUALITY".equals(relation)) {
                 JsonObject equality = relation(edge, from, to,
                         "SYMBOLIC_EQUALITY");
-                consumer.addProof(equality);
                 equalityRelations.add(equality);
             } else if ("READ_FROM".equals(relation)) {
                 JsonObject state = relation(edge, from, to,
                         "VERSIONED_HEAP_READ_FROM");
-                consumer.addProof(state);
                 stateMerges.add(state);
             }
         }
@@ -1722,15 +1687,14 @@ public final class ConcolicScheduler {
                     inputCell)) {
                 continue;
             }
-            matches.add(new ConsumerInputProof(inputPort, inputCell,
-                    string(proof, "id")));
+            matches.add(new ConsumerInputProof(inputPort, inputCell));
         }
         if (matches.size() != 1) {
             return ConsumerEndpointResolution.raw(regionId, rawCell);
         }
         ConsumerInputProof proof = matches.get(0);
         return ConsumerEndpointResolution.canonical(proof.inputPort,
-                proof.inputCell, rawCell, proof.edgeId);
+                proof.inputCell);
     }
 
     private static boolean completeAccessorInputProof(JsonObject proof,
@@ -1753,16 +1717,9 @@ public final class ConcolicScheduler {
                 "accessorImplementationMethod");
         return declared != null
                 && declaredSignature.equals(inputCell)
-                && declared[0].equals(string(proof, "declaredFieldOwner"))
-                && declared[1].equals(string(proof, "declaredFieldType"))
-                && declared[2].equals(string(proof, "declaredFieldName"))
-                && "SOOT_RESOLVED_DECLARATION_HIERARCHY".equals(
-                string(proof, "declaredFieldAuthority"))
                 && !invoke.isEmpty() && !implementation.isEmpty()
                 && declared[1].equals(methodReturnType(invoke))
-                && declared[1].equals(methodReturnType(implementation))
-                && "SOOT_RESOLVED_METHOD_DECLARATION_HIERARCHY".equals(
-                string(proof, "accessorImplementationAuthority"));
+                && declared[1].equals(methodReturnType(implementation));
     }
 
     private static String methodReturnType(String signature) {
@@ -2153,58 +2110,34 @@ public final class ConcolicScheduler {
     private static final class ConsumerInputProof {
         private final String inputPort;
         private final String inputCell;
-        private final String edgeId;
 
-        private ConsumerInputProof(String inputPort, String inputCell,
-                                   String edgeId) {
+        private ConsumerInputProof(String inputPort, String inputCell) {
             this.inputPort = safe(inputPort);
             this.inputCell = safe(inputCell);
-            this.edgeId = safe(edgeId);
         }
     }
 
     private static final class ConsumerEndpointResolution {
         private final Endpoint endpoint;
-        private final String rawCell;
-        private final String proofEdgeId;
-        private final String proofAuthority;
 
-        private ConsumerEndpointResolution(Endpoint endpoint,
-                String rawCell, String proofEdgeId, String proofAuthority) {
+        private ConsumerEndpointResolution(Endpoint endpoint) {
             this.endpoint = endpoint;
-            this.rawCell = safe(rawCell);
-            this.proofEdgeId = safe(proofEdgeId);
-            this.proofAuthority = safe(proofAuthority);
         }
 
         private static ConsumerEndpointResolution direct(String port,
                                                           String cell) {
-            return new ConsumerEndpointResolution(new Endpoint(port, cell),
-                    cell, "", "");
+            return new ConsumerEndpointResolution(new Endpoint(port, cell));
         }
 
         private static ConsumerEndpointResolution raw(String regionId,
                                                        String cell) {
             return new ConsumerEndpointResolution(new Endpoint(
-                    safe(regionId) + "::" + safe(cell), cell), cell, "", "");
+                    safe(regionId) + "::" + safe(cell), cell));
         }
 
         private static ConsumerEndpointResolution canonical(
-                String port, String cell, String rawCell, String proofEdgeId) {
-            return new ConsumerEndpointResolution(new Endpoint(port, cell),
-                    rawCell, proofEdgeId,
-                    ACCESSOR_INPUT_CANONICALIZATION_AUTHORITY);
-        }
-
-        private void addProof(JsonObject relation) {
-            if (relation == null || proofEdgeId.isEmpty()) {
-                return;
-            }
-            relation.addProperty("rawToCell", rawCell);
-            relation.addProperty("toCanonicalizationProofEdgeId",
-                    proofEdgeId);
-            relation.addProperty("toCanonicalizationAuthority",
-                    proofAuthority);
+                String port, String cell) {
+            return new ConsumerEndpointResolution(new Endpoint(port, cell));
         }
     }
 
@@ -2459,15 +2392,12 @@ public final class ConcolicScheduler {
             // static class here could transitively assert an equality whose
             // runtime fingerprint belonged to a different invocation.
             JsonArray equality = new JsonArray();
-            int equalityIndex = 0;
             for (JsonElement element : equalityBindings) {
                 JsonObject relation = element.getAsJsonObject();
                 JsonArray members = new JsonArray();
                 members.add(string(relation, "fromEndpoint"));
                 members.add(string(relation, "toEndpoint"));
                 JsonObject value = new JsonObject();
-                value.addProperty("canonicalSymbol",
-                        "SELECTED.EQ." + equalityIndex++);
                 value.add("members", members);
                 equality.add(value);
             }

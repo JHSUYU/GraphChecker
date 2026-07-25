@@ -14,7 +14,6 @@ public class ConcolicReplayValidatorTest {
     public void acceptsReplayWithoutDynamicSelectors() {
         List<String> failures =
                 ConcolicReplayValidator.validateDynamicRebindings(
-                        task(new JsonArray()),
                         raw(new JsonArray(), new JsonArray()),
                         new JsonObject());
 
@@ -49,35 +48,46 @@ public class ConcolicReplayValidatorTest {
 
         List<String> failures =
                 ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(planned)),
                         raw(array(applied), array(rawBinding)), summary);
 
         assertTrue(failures.toString(), failures.isEmpty());
     }
 
     @Test
-    public void rejectsFreshMapPlanThatCarriesSeedKey() {
-        JsonObject planned = freshMapAssignment();
-        planned.add("expectedEntryKey", integerKey(7));
+    public void rejectsFreshMapReplayWithoutCapturedKey() {
+        JsonObject applied = freshMapAssignment();
+        applied.addProperty("freshEntrySelectorCaptured", false);
+        applied.addProperty("sameSeedEntryClaimed", false);
 
         List<String> failures =
                 ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(planned)),
-                        raw(new JsonArray(), new JsonArray()), null);
+                        raw(array(applied), new JsonArray()),
+                        new JsonObject());
 
         assertTrue(failures.toString(), failures.toString().contains(
-                "CONTAINS_SEED_ENTRY_SELECTOR"));
+                "FRESH_ENTRY_SELECTOR_INCOMPLETE"));
     }
 
     @Test
-    public void rejectsMissingAppliedDynamicAssignment() {
+    public void rejectsDuplicateFreshMapRuntimeBinding() {
+        JsonObject applied = freshMapAssignment();
+        applied.addProperty("entryReadObservationId", "MAP.READ.1");
+        applied.add("keyExpression", integerKey(7));
+        applied.addProperty("keyExpressionAuthority",
+                "CONCRETE_IMMUTABLE_ENTRY_KEY_AT_NEXT");
+        applied.addProperty("freshEntrySelectorCaptured", true);
+        applied.addProperty("sameSeedEntryClaimed", false);
+        JsonObject binding = freshMapBinding(applied,
+                "ACTIVATION_LOCAL_ENTRY_VALUE_IDENTITY_AND_STABLE_"
+                        + "FIELD_SITE_OCCURRENCE");
+
         List<String> failures =
                 ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(freshMapAssignment())),
-                        raw(new JsonArray(), new JsonArray()), null);
+                        raw(array(applied), array(binding, binding.deepCopy())),
+                        new JsonObject());
 
         assertTrue(failures.toString(), failures.toString().contains(
-                "DYNAMIC_MODEL_ASSIGNMENT_COUNT_MISMATCH"));
+                "BINDING_NOT_UNIQUE"));
     }
 
     @Test
@@ -90,7 +100,6 @@ public class ConcolicReplayValidatorTest {
 
         List<String> failures =
                 ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(planned)),
                         raw(array(applied), array(binding)), summary);
 
         assertTrue(failures.toString(), failures.isEmpty());
@@ -106,7 +115,6 @@ public class ConcolicReplayValidatorTest {
 
         List<String> failures =
                 ConcolicReplayValidator.validateDynamicRebindings(
-                        task(array(planned)),
                         raw(array(applied), array(binding)), summary);
 
         assertFalse(failures.toString(), failures.isEmpty());
@@ -135,14 +143,6 @@ public class ConcolicReplayValidatorTest {
         applied.addProperty("sameSourceContainerIdentityClaimed", false);
         applied.addProperty("currentContainerSelectorCaptured", true);
         return applied;
-    }
-
-    private static JsonObject task(JsonArray assignments) {
-        JsonObject task = new JsonObject();
-        task.addProperty("activationId", "ACT.REPLAY");
-        task.addProperty("sourceActivationId", "ACT.SOURCE");
-        task.add("modelAssignments", assignments);
-        return task;
     }
 
     private static JsonObject raw(JsonArray assignments,
@@ -270,9 +270,9 @@ public class ConcolicReplayValidatorTest {
         return result;
     }
 
-    private static JsonArray array(JsonObject value) {
+    private static JsonArray array(JsonObject... values) {
         JsonArray result = new JsonArray();
-        result.add(value);
+        for (JsonObject value : values) result.add(value);
         return result;
     }
 }

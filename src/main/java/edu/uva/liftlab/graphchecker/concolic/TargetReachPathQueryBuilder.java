@@ -11,10 +11,8 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
@@ -84,9 +82,8 @@ public final class TargetReachPathQueryBuilder {
             // Parsing is the schema/admission boundary for branch-owned
             // predicates. The importer already normalized the PC; this check
             // prevents a malformed mapping row from entering the path set.
-            List<SummaryBranchMapping> mappings;
             try {
-                mappings = SummaryBranchMapping.fromSummary(summary);
+                SummaryBranchMapping.fromSummary(summary);
             } catch (IllegalArgumentException malformed) {
                 throw new IOException("Malformed target branch mapping: "
                         + malformed.getMessage(), malformed);
@@ -115,7 +112,6 @@ public final class TargetReachPathQueryBuilder {
                 path.add("unforcedEnvironmentValidationRequirements",
                         placeholderRequirements.deepCopy());
             }
-            requireUniqueWitnessPositions(mappings);
             JsonObject previous = pathsByKey.put(pathKey, path);
             if (previous != null && !previous.equals(path)) {
                 throw new IOException(
@@ -147,18 +143,6 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("constraintAuthority",
                 "CLOSED_IMPORTED_TARGET_REACH_PATH_SET_V1");
         return result;
-    }
-
-    private static void requireUniqueWitnessPositions(
-            List<SummaryBranchMapping> mappings) {
-        Set<Integer> positions = new LinkedHashSet<>();
-        for (SummaryBranchMapping mapping : mappings) {
-            if (!mapping.isWitnessed()) continue;
-            if (!positions.add(mapping.summaryPcIndex())) {
-                throw new IllegalArgumentException(
-                        "duplicate witnessed target PC position");
-            }
-        }
     }
 
     static final class Arguments {

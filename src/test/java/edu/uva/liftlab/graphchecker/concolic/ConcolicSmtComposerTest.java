@@ -377,6 +377,9 @@ public class ConcolicSmtComposerTest {
                             + "outputs=[REGION.P.out.3, REGION.P.out.4]]"));
             assertEquals(0, result.manifest.getAsJsonArray(
                     "includedSummaries").size());
+            assertTrue(result.smtLib.contains(
+                    "(assert false) ; fail closed: unsupported"));
+            assertFalse(result.smtLib.contains("uf__"));
         } finally {
             folder.delete();
         }
@@ -1807,18 +1810,6 @@ public class ConcolicSmtComposerTest {
         return "";
     }
 
-    private static String declaredFunctionContaining(String smt,
-                                                     String fragment) {
-        for (String line : smt.split("\r?\n")) {
-            if (!line.startsWith("(declare-fun ")
-                    || !line.contains(fragment)) continue;
-            int start = "(declare-fun ".length();
-            int end = line.indexOf(' ', start);
-            if (end > start) return line.substring(start, end);
-        }
-        return "";
-    }
-
     private static JsonObject arrayValueExpression(
             String javaType, String componentType, boolean complete,
             JsonElement... values) {
@@ -1859,32 +1850,15 @@ public class ConcolicSmtComposerTest {
         expression.addProperty("_engine_array_id_authority",
                 "VM_ACTIVE_SYM_ARRAY_ID_V1");
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
-        result.addProperty("kind", "ENGINE_ARRAY_TO_INPUT_PORT");
+        result.addProperty("schemaVersion", 2);
+        result.addProperty("kind", "ENGINE_ARRAY_INPUT_BINDING");
         result.addProperty("sourceActivationId", activationId);
         result.addProperty("inputPort", inputPort);
         result.addProperty("inputCell", inputCell);
-        result.addProperty("inputJavaType", descriptor);
         result.addProperty("inputJavaTypeDescriptor", descriptor);
-        result.addProperty("symbolizationPrefix", inputPort);
-        result.addProperty("symbolizationMode",
-                "DIRECT_ARRAY_VALUE_WITH_CANONICAL_INPUT_PREFIX");
         result.addProperty("engineArrayId", engineArrayId);
-        result.addProperty("engineArrayIdAuthority",
-                "VM_ACTIVE_SYM_ARRAY_ID_V1");
         result.addProperty("arrayObjectToken", objectToken);
-        result.addProperty("symbolizationArrayObjectToken", objectToken);
-        result.addProperty("symbolizationIdentityAuthority",
-                "SAME_JAVA_REFERENCE_PASSED_TO_SYMBOLIZE_AND_"
-                        + "EXPRESSION_CAPTURE");
-        result.addProperty("sameArrayObjectTokenVerified", true);
-        result.addProperty("objectTokenAuthority",
-                "ACTIVATION_LOCAL_IDENTITY_MAP_MONOTONIC_TOKEN");
-        result.addProperty("objectTokenScope", activationId);
-        result.addProperty("captureAuthority",
-                "SAME_LIVE_ARRAY_AFTER_EXACT_INPUT_ACTION_SYMBOLIZATION");
         result.add("arrayValueExpression", expression);
-        result.addProperty("complete", true);
         return result;
     }
 
