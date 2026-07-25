@@ -7442,12 +7442,9 @@ public final class ConcolicSummaryImporter {
      * Treats a complete requested-output heap slice as a contract, rather
      * than accepting the set of mutations emitted by the VM as self-proving.
      *
-     * <p>Schema-v1 slices declare the exact HEAP_WRITE sites whose target cell
-     * is the requested heap output.  Other heap writes can be causal
-     * prerequisites without transforming that output, and a void helper is
-     * not an obligation merely because it appears in the slice method list.
-     * Historical slices retain the older conservative policy and are never
-     * silently upgraded to the exact-contract authority.</p>
+     * <p>The current schema declares the exact HEAP_WRITE sites whose target
+     * cell is the requested heap output. Other heap writes can be causal
+     * prerequisites without transforming that output.</p>
      */
     private static StaticHeapTransformerCoverage staticHeapTransformerCoverage(
             OutputMemberAnalysis analysis, JsonArray effects,
@@ -7465,10 +7462,11 @@ public final class ConcolicSummaryImporter {
 
         String requestedPort = string(requestedOutput, "portId");
         String requestedCell = string(requestedOutput, "cell");
-        boolean exactTransformerContract = slice.has(
-                "requestedStateTransformerContractVersion");
+        if (!slice.has("requestedStateTransformerContractVersion")) {
+            return StaticHeapTransformerCoverage.invalidContract(
+                    "MISSING_REQUESTED_STATE_TRANSFORMER_CONTRACT");
+        }
         List<HeapEffectIssue> transformerContractIssues = new ArrayList<>();
-        Map<String, Set<String>> causalSitesByMethod = new LinkedHashMap<>();
         Map<String, Set<String>> writeSitesByMethod = new LinkedHashMap<>();
         Map<String, String> signaturesByMethod = new LinkedHashMap<>();
         Map<String, JsonObject> causalWriteBySite = new LinkedHashMap<>();
@@ -7491,28 +7489,23 @@ public final class ConcolicSummaryImporter {
             if (siteId.isEmpty()) {
                 siteId = GSON.toJson(edge);
             }
-            addToSet(causalSitesByMethod, methodKey, siteId);
             String edgeId = string(edge, "edgeId");
             if (!edgeId.isEmpty()) {
                 JsonObject previous = causalByEdgeId.put(edgeId, edge);
-                if (exactTransformerContract && previous != null) {
+                if (previous != null) {
                     addTransformerContractIssue(transformerContractIssues,
                             "DUPLICATE_CAUSAL_EDGE_ID:" + edgeId);
                 }
             }
             if ("HEAP_WRITE".equals(string(edge, "transferKind"))) {
                 causalWriteBySite.put(siteId, edge);
-                if (exactTransformerContract
-                        && requestedCell.equals(string(edge, "toCell"))
+                if (requestedCell.equals(string(edge, "toCell"))
                         && !edgeId.isEmpty()) {
                     addToSet(exactCausalEdgeIdsBySite, siteId, edgeId);
                 }
-                if (!exactTransformerContract) {
-                    addToSet(writeSitesByMethod, methodKey, siteId);
-                }
             }
         }
-        if (exactTransformerContract) {
+        {
             boolean headerValid = integer(slice,
                     "requestedStateTransformerContractVersion", -1) == 1
                     && bool(slice,
@@ -7612,22 +7605,6 @@ public final class ConcolicSummaryImporter {
         Map<String, List<GuardedMutationProof>> guardsByMutationSite =
                 guardedMutationProofs(slice);
 
-        Map<String, String> voidTransformerSignatures = new LinkedHashMap<>();
-        Set<String> processedVoidMethods = new LinkedHashSet<>();
-        for (JsonElement element : exactTransformerContract
-                ? new JsonArray() : array(slice, "methods")) {
-            if (!element.isJsonPrimitive()) {
-                continue;
-            }
-            String signature = element.getAsString();
-            String methodKey = ConcolicCodePosition.sootMethodKey(signature);
-            if (!methodKey.isEmpty() && processedVoidMethods.add(methodKey)
-                    && isVoidMethodSignature(signature)
-                    && !causalSitesByMethod.containsKey(methodKey)) {
-                voidTransformerSignatures.put(methodKey, signature);
-            }
-        }
-
         Set<String> requestedStateFamilies = new LinkedHashSet<>();
         for (JsonElement element : effects) {
             if (!element.isJsonObject()) {
@@ -7642,8 +7619,6 @@ public final class ConcolicSummaryImporter {
             }
         }
 
-        Map<String, List<JsonObject>> observedEffectsByMethod =
-                new LinkedHashMap<>();
         List<JsonObject> requestedStateEffects = new ArrayList<>();
         List<JsonObject> libraryRequestedStateEffects = new ArrayList<>();
         for (JsonElement element : effects) {
@@ -7656,14 +7631,6 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             requestedStateEffects.add(effect);
-            String methodKey = ConcolicCodePosition.vmMethodKey(
-                    string(effect, "codePosition"));
-            List<JsonObject> observed = observedEffectsByMethod.get(methodKey);
-            if (observed == null) {
-                observed = new ArrayList<>();
-                observedEffectsByMethod.put(methodKey, observed);
-            }
-            observed.add(effect);
             boolean exactRuntimeMapSnapshotBinding =
                     bool(effect, "runtimeMapStateInputBindingComplete",
                             false)
@@ -7683,7 +7650,6 @@ public final class ConcolicSummaryImporter {
         }
 
         Set<String> exactCoveredWriteSites = new LinkedHashSet<>();
-        Set<String> exactCoveredVoidMethods = new LinkedHashSet<>();
         List<JsonObject> containerDeclarations = new ArrayList<>();
         for (JsonElement element : array(slice,
                 "containerElementFieldBindings")) {
@@ -7699,9 +7665,7 @@ public final class ConcolicSummaryImporter {
         Set<Integer> containerEffectIndices = new LinkedHashSet<>();
         Set<String> unmatchedContainerSites = new LinkedHashSet<>();
         boolean unsiteableContainerDeclaration = false;
-        for (JsonObject declaration : exactTransformerContract
-                ? containerDeclarations
-                : Collections.<JsonObject>emptyList()) {
+        for (JsonObject declaration : containerDeclarations) {
             JsonObject match = exactContainerMutationMatch(analysis,
                     declaration, writeSitesByMethod,
                     requestedStateEffects, rawPathCondition, normalization,
@@ -7788,32 +7752,13 @@ public final class ConcolicSummaryImporter {
                     uncoveredByExactProvenance.add(site);
                 }
             }
-            int observed = observedEffectsByMethod.containsKey(entry.getKey())
-                    ? observedEffectsByMethod.get(entry.getKey()).size() : 0;
-            int covered = exactTransformerContract ? 0
-                    : Math.min(uncoveredByExactProvenance.size(), observed);
             declaredWriteSiteCount += declared;
-            int ordinal = 0;
             for (String site : uncoveredByExactProvenance) {
-                if (ordinal++ < covered) {
-                    continue;
-                }
                 remaining.add(StaticTransformerObligation.heapWrite(
                         entry.getKey(), firstNonBlank(
                                 signaturesByMethod.get(entry.getKey()),
                                 entry.getKey()), site));
             }
-        }
-
-        for (Map.Entry<String, String> entry
-                : voidTransformerSignatures.entrySet()) {
-            String methodKey = entry.getKey();
-            if (exactCoveredVoidMethods.contains(methodKey)
-                    || observedEffectsByMethod.containsKey(methodKey)) {
-                continue;
-            }
-            remaining.add(StaticTransformerObligation.edgeFreeVoid(
-                    methodKey, entry.getValue()));
         }
 
         int guardExcludedWriteSiteCount = guardExcludedWriteSites.size();
@@ -7841,18 +7786,17 @@ public final class ConcolicSummaryImporter {
         for (JsonObject effect : residualLibraryRequestedStateEffects) {
             libraryFamilies.add(string(effect, "stateFamily"));
         }
-        boolean uniqueLibraryFallbackCandidate =
-                exactTransformerContract
-                && !unmatchedContainerDeclaration
+        boolean uniqueLibraryCandidate =
+                !unmatchedContainerDeclaration
                 && remaining.size() == 1
                 && !residualLibraryRequestedStateEffects.isEmpty()
                 && libraryFamilies.size() == 1;
-        String transformerInvoke = uniqueLibraryFallbackCandidate
+        String transformerInvoke = uniqueLibraryCandidate
                 ? exactTransformerInvoke(analysis, remaining.get(0)) : "";
         boolean incompleteIteratorRemoveApplicationProvenance =
                 "<java.util.Iterator: void remove()>".equals(
                         transformerInvoke);
-        boolean unresolvedTransformerInvoke = uniqueLibraryFallbackCandidate
+        boolean unresolvedTransformerInvoke = uniqueLibraryCandidate
                 && transformerInvoke.isEmpty();
         if (residualStateFamilies.size() > 1) {
             unresolvedStatePortEffectCount =
@@ -7871,8 +7815,7 @@ public final class ConcolicSummaryImporter {
                 && !residualLibraryRequestedStateEffects.isEmpty()
                 && libraryFamilies.size() == 1
                 && libraryEffectsMatchUniqueTransformer(
-                residualLibraryRequestedStateEffects, remaining.get(0),
-                exactTransformerContract)) {
+                residualLibraryRequestedStateEffects, remaining.get(0))) {
             remaining.remove(0);
             unresolvedStatePortEffectCount =
                     residualRequestedStateEffects.size()
@@ -7886,22 +7829,14 @@ public final class ConcolicSummaryImporter {
                 transformerContractIssues);
         Map<String, List<StaticTransformerObligation>> writeGaps =
                 new LinkedHashMap<>();
-        int edgeFreeVoidMethodCount = 0;
         for (StaticTransformerObligation obligation : remaining) {
-            if (obligation.heapWrite) {
-                List<StaticTransformerObligation> methodGaps =
-                        writeGaps.get(obligation.methodKey);
-                if (methodGaps == null) {
-                    methodGaps = new ArrayList<>();
-                    writeGaps.put(obligation.methodKey, methodGaps);
-                }
-                methodGaps.add(obligation);
-                continue;
+            List<StaticTransformerObligation> methodGaps =
+                    writeGaps.get(obligation.methodKey);
+            if (methodGaps == null) {
+                methodGaps = new ArrayList<>();
+                writeGaps.put(obligation.methodKey, methodGaps);
             }
-            edgeFreeVoidMethodCount++;
-            issues.add(new HeapEffectIssue(
-                    "UNMODELED_DECLARED_HEAP_TRANSFORMER", -1,
-                    "requestedOutputSlice.methods", obligation.signature));
+            methodGaps.add(obligation);
         }
 
         int uncoveredWriteSiteCount = 0;
@@ -7933,11 +7868,9 @@ public final class ConcolicSummaryImporter {
             declaredWriteSites.addAll(sites);
         }
         return new StaticHeapTransformerCoverage(true,
-                exactTransformerContract,
-                exactTransformerContract
-                        && transformerContractIssues.isEmpty(),
+                transformerContractIssues.isEmpty(),
                 declaredWriteSiteCount,
-                uncoveredWriteSiteCount, edgeFreeVoidMethodCount,
+                uncoveredWriteSiteCount,
                 guardExcludedWriteSiteCount,
                 unresolvedStatePortEffectCount, issues,
                 declaredWriteSites, guardExcludedWriteSites);
@@ -8166,8 +8099,7 @@ public final class ConcolicSummaryImporter {
     private static String exactTransformerInvoke(
             OutputMemberAnalysis analysis,
             StaticTransformerObligation obligation) {
-        if (obligation == null || !obligation.heapWrite
-                || obligation.siteId.isEmpty()
+        if (obligation == null || obligation.siteId.isEmpty()
                 || obligation.signature.isEmpty()
                 || obligation.methodKey.isEmpty()) {
             return "";
@@ -8226,11 +8158,7 @@ public final class ConcolicSummaryImporter {
 
     private static boolean libraryEffectsMatchUniqueTransformer(
             List<JsonObject> effects,
-            StaticTransformerObligation obligation,
-            boolean exactTransformerContract) {
-        if (!exactTransformerContract) {
-            return true;
-        }
+            StaticTransformerObligation obligation) {
         if (effects.isEmpty() || obligation.methodKey.isEmpty()) {
             return false;
         }
@@ -8392,20 +8320,6 @@ public final class ConcolicSummaryImporter {
             result.add(value);
         }
         return result;
-    }
-
-    private static boolean isVoidMethodSignature(String signature) {
-        if (signature == null) {
-            return false;
-        }
-        String value = signature.trim();
-        int colon = value.indexOf(':');
-        int arguments = value.indexOf('(', colon + 1);
-        if (colon < 0 || arguments < 0) {
-            return false;
-        }
-        String declaration = value.substring(colon + 1, arguments).trim();
-        return declaration.startsWith("void ");
     }
 
     private static boolean isConcreteFalseBoolean(JsonElement expression) {
@@ -9069,7 +8983,6 @@ public final class ConcolicSummaryImporter {
             JsonObject raw, OutputMemberAnalysis analysis, String inputPort,
             StaticHeapTransformerCoverage coverage) {
         if (coverage == null || !coverage.applicable
-                || !coverage.exactTransformerContract
                 || !coverage.transformerContractValid
                 || unresolvedInput(raw, inputPort)) {
             return null;
@@ -10634,16 +10547,13 @@ public final class ConcolicSummaryImporter {
     }
 
     private static final class StaticTransformerObligation {
-        private final boolean heapWrite;
         private final String methodKey;
         private final String signature;
         private final String siteId;
 
-        private StaticTransformerObligation(boolean heapWrite,
-                                            String methodKey,
+        private StaticTransformerObligation(String methodKey,
                                             String signature,
                                             String siteId) {
-            this.heapWrite = heapWrite;
             this.methodKey = methodKey;
             this.signature = signature;
             this.siteId = siteId;
@@ -10651,19 +10561,8 @@ public final class ConcolicSummaryImporter {
 
         private static StaticTransformerObligation heapWrite(
                 String methodKey, String signature, String siteId) {
-            return new StaticTransformerObligation(true, methodKey,
+            return new StaticTransformerObligation(methodKey,
                     signature, siteId);
-        }
-
-        private static StaticTransformerObligation edgeFreeVoid(
-                String methodKey, String signature) {
-            return new StaticTransformerObligation(false, methodKey,
-                    signature, "");
-        }
-
-        private String kind() {
-            return heapWrite ? "DECLARED_HEAP_WRITE_SITE"
-                    : "EDGE_FREE_VOID_SLICE_METHOD";
         }
     }
 
@@ -10712,11 +10611,9 @@ public final class ConcolicSummaryImporter {
 
     private static final class StaticHeapTransformerCoverage {
         private final boolean applicable;
-        private final boolean exactTransformerContract;
         private final boolean transformerContractValid;
         private final int declaredWriteSiteCount;
         private final int uncoveredWriteSiteCount;
-        private final int edgeFreeVoidMethodCount;
         private final int guardExcludedWriteSiteCount;
         private final int unresolvedStatePortEffectCount;
         private final List<HeapEffectIssue> issues;
@@ -10725,11 +10622,10 @@ public final class ConcolicSummaryImporter {
                 guardExcludedWriteSites;
 
         private StaticHeapTransformerCoverage(
-                boolean applicable, boolean exactTransformerContract,
+                boolean applicable,
                 boolean transformerContractValid,
                 int declaredWriteSiteCount,
                 int uncoveredWriteSiteCount,
-                int edgeFreeVoidMethodCount,
                 int guardExcludedWriteSiteCount,
                 int unresolvedStatePortEffectCount,
                 List<HeapEffectIssue> issues,
@@ -10737,11 +10633,9 @@ public final class ConcolicSummaryImporter {
                 Map<String, RuntimeGuardExclusion>
                         guardExcludedWriteSites) {
             this.applicable = applicable;
-            this.exactTransformerContract = exactTransformerContract;
             this.transformerContractValid = transformerContractValid;
             this.declaredWriteSiteCount = declaredWriteSiteCount;
             this.uncoveredWriteSiteCount = uncoveredWriteSiteCount;
-            this.edgeFreeVoidMethodCount = edgeFreeVoidMethodCount;
             this.guardExcludedWriteSiteCount = guardExcludedWriteSiteCount;
             this.unresolvedStatePortEffectCount =
                     unresolvedStatePortEffectCount;
@@ -10753,9 +10647,20 @@ public final class ConcolicSummaryImporter {
         }
 
         private static StaticHeapTransformerCoverage notApplicable() {
-            return new StaticHeapTransformerCoverage(false, false, false,
-                    0, 0, 0, 0, 0,
+            return new StaticHeapTransformerCoverage(false, false,
+                    0, 0, 0, 0,
                     Collections.<HeapEffectIssue>emptyList(),
+                    Collections.<String>emptySet(),
+                    Collections.<String, RuntimeGuardExclusion>emptyMap());
+        }
+
+        private static StaticHeapTransformerCoverage invalidContract(
+                String detail) {
+            return new StaticHeapTransformerCoverage(true, false,
+                    0, 0, 0, 0,
+                    Collections.singletonList(new HeapEffectIssue(
+                            "INVALID_REQUESTED_STATE_TRANSFORMER_CONTRACT",
+                            -1, detail, "requestedOutputSlice")),
                     Collections.<String>emptySet(),
                     Collections.<String, RuntimeGuardExclusion>emptyMap());
         }
@@ -10763,7 +10668,6 @@ public final class ConcolicSummaryImporter {
         private boolean complete() {
             return issues.isEmpty()
                     && uncoveredWriteSiteCount == 0
-                    && edgeFreeVoidMethodCount == 0
                     && unresolvedStatePortEffectCount == 0;
         }
 
